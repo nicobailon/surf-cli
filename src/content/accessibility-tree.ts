@@ -4,26 +4,47 @@ declare global {
   interface Window {
     __piElementMap?: Record<string, { element: WeakRef<Element>; role: string; name: string }>;
     __piRefCounter?: number;
+    __piSnapshotCounter?: number;
+    __piLastSnapshot?: { content: string; timestamp: number };
   }
+}
+
+interface ModalState {
+  type: 'dialog' | 'alertdialog';
+  description: string;
+  clearedBy: string;
 }
 
 if (!window.__piElementMap) window.__piElementMap = {};
 if (!window.__piRefCounter) window.__piRefCounter = 0;
+if (!window.__piSnapshotCounter) window.__piSnapshotCounter = 0;
 
 function getElementMap() {
   return window.__piElementMap!;
 }
 
 function getNextRefId(): string {
-  return `ref_${++window.__piRefCounter!}`;
+  const snapshot = window.__piSnapshotCounter || 0;
+  return `s${snapshot}_ref_${++window.__piRefCounter!}`;
 }
 
 function generateAccessibilityTree(
   filter: "all" | "interactive" = "interactive",
   maxDepth = 15,
-  refId?: string
-): { pageContent: string; viewport: { width: number; height: number }; error?: string } {
+  refId?: string,
+  forceFullSnapshot = false
+): { 
+  pageContent: string;
+  diff?: string;
+  viewport: { width: number; height: number }; 
+  error?: string;
+  modalStates?: ModalState[];
+  modalLimitations?: string;
+  isIncremental?: boolean;
+} {
   try {
+    window.__piSnapshotCounter = (window.__piSnapshotCounter || 0) + 1;
+
     function getRole(element: Element): string {
       const role = element.getAttribute("role");
       if (role) return role;
@@ -75,6 +96,18 @@ function generateAccessibilityTree(
     function getName(element: Element): string {
       const tag = element.tagName.toLowerCase();
 
+      const labelledBy = element.getAttribute('aria-labelledby');
+      if (labelledBy) {
+        const names = labelledBy.split(/\s+/).map(id => {
+          const el = document.getElementById(id);
+          return el?.textContent?.trim() || '';
+        }).filter(Boolean);
+        if (names.length) {
+          const joined = names.join(' ');
+          return joined.length > 100 ? joined.substring(0, 100) + '...' : joined;
+        }
+      }
+
       if (tag === "select") {
         const select = element as HTMLSelectElement;
         const selected = select.querySelector("option[selected]") || 
@@ -119,7 +152,10 @@ function generateAccessibilityTree(
 
       if (/^h[1-6]$/.test(tag)) {
         const text = element.textContent;
-        if (text?.trim()) return text.trim().substring(0, 100);
+        if (text?.trim()) {
+          const t = text.trim();
+          return t.length > 100 ? t.substring(0, 100) + "..." : t;
+        }
       }
 
       if (tag === "img") return "";
@@ -136,6 +172,94 @@ function generateAccessibilityTree(
       }
 
       return "";
+    }
+
+    interface AriaProps {
+      checked?: boolean | 'mixed';
+      disabled?: boolean;
+      expanded?: boolean;
+      level?: number;
+      pressed?: boolean | 'mixed';
+      selected?: boolean;
+      active?: boolean;
+    }
+
+    function getAriaProps(element: Element): AriaProps {
+      const props: AriaProps = {};
+      
+      const checkedAttr = element.getAttribute('aria-checked');
+      if (checkedAttr === 'true') props.checked = true;
+      else if (checkedAttr === 'false') props.checked = false;
+      else if (checkedAttr === 'mixed') props.checked = 'mixed';
+      else if (element instanceof HTMLInputElement && (element.type === 'checkbox' || element.type === 'radio')) {
+        if (element.type === 'checkbox' && element.indeterminate) {
+          props.checked = 'mixed';
+        } else {
+          props.checked = element.checked;
+        }
+      }
+      
+      const isDisableable = element instanceof HTMLButtonElement || 
+                            element instanceof HTMLInputElement || 
+                            element instanceof HTMLSelectElement || 
+                            element instanceof HTMLTextAreaElement;
+      if (element.getAttribute('aria-disabled') === 'true' || 
+          (isDisableable && (element as HTMLButtonElement).disabled) ||
+          element.closest('fieldset:disabled')) {
+        props.disabled = true;
+      }
+      
+      const expandedAttr = element.getAttribute('aria-expanded');
+      if (expandedAttr === 'true') props.expanded = true;
+      else if (expandedAttr === 'false') props.expanded = false;
+      
+      const pressedAttr = element.getAttribute('aria-pressed');
+      if (pressedAttr === 'true') props.pressed = true;
+      else if (pressedAttr === 'false') props.pressed = false;
+      else if (pressedAttr === 'mixed') props.pressed = 'mixed';
+      
+      const selectedAttr = element.getAttribute('aria-selected');
+      if (selectedAttr === 'true') props.selected = true;
+      else if (selectedAttr === 'false') props.selected = false;
+      
+      const activeAttr = element.getAttribute('aria-current');
+      if (activeAttr && activeAttr !== 'false') {
+        props.active = true;
+      }
+      
+      const tag = element.tagName.toLowerCase();
+      if (/^h[1-6]$/.test(tag)) {
+        props.level = parseInt(tag[1], 10);
+      } else {
+        const levelAttr = element.getAttribute('aria-level');
+        if (levelAttr) props.level = parseInt(levelAttr, 10);
+      }
+      
+      return props;
+    }
+
+    function formatAriaProps(props: AriaProps): string {
+      const parts: string[] = [];
+      
+      if (props.checked !== undefined) {
+        parts.push(props.checked === 'mixed' ? '[checked=mixed]' : props.checked ? '[checked]' : '[unchecked]');
+      }
+      if (props.disabled) parts.push('[disabled]');
+      if (props.expanded !== undefined) {
+        parts.push(props.expanded ? '[expanded]' : '[collapsed]');
+      }
+      if (props.pressed !== undefined) {
+        parts.push(props.pressed === 'mixed' ? '[pressed=mixed]' : props.pressed ? '[pressed]' : '[not-pressed]');
+      }
+      if (props.selected !== undefined) {
+        parts.push(props.selected ? '[selected]' : '[not-selected]');
+      }
+      if (props.active) parts.push('[active]');
+      if (props.level !== undefined) {
+        parts.push(`[level=${props.level}]`);
+      }
+      
+      return parts.join(' ');
     }
 
     function isVisible(element: Element): boolean {
@@ -201,6 +325,7 @@ function generateAccessibilityTree(
       if (include) {
         const role = getRole(element);
         const name = getName(element);
+        const ariaProps = getAriaProps(element);
 
         let elemRefId: string | null = null;
         for (const id of Object.keys(elementMap)) {
@@ -226,6 +351,9 @@ function generateAccessibilityTree(
         }
         line += ` [${elemRefId}]`;
 
+        const propsStr = formatAriaProps(ariaProps);
+        if (propsStr) line += ` ${propsStr}`;
+
         const href = element.getAttribute("href");
         if (href) line += ` href="${href}"`;
 
@@ -245,6 +373,88 @@ function generateAccessibilityTree(
       }
 
       return lines;
+    }
+
+    function normalizeLineForDiff(line: string): string {
+      return line.replace(/\[(s\d+_)?ref_\d+\]/g, '[REF]');
+    }
+
+    function countOccurrences(lines: string[]): Map<string, number> {
+      const counts = new Map<string, number>();
+      for (const line of lines) {
+        if (!line.trim()) continue;
+        const norm = normalizeLineForDiff(line);
+        counts.set(norm, (counts.get(norm) || 0) + 1);
+      }
+      return counts;
+    }
+
+    function computeSimpleDiff(oldContent: string, newContent: string): { diff: string; hasChanges: boolean } {
+      const oldLines = oldContent.split('\n');
+      const newLines = newContent.split('\n');
+      
+      const oldCounts = countOccurrences(oldLines);
+      const newCounts = countOccurrences(newLines);
+      
+      const added: string[] = [];
+      const removed: string[] = [];
+      
+      for (const line of newLines) {
+        if (!line.trim()) continue;
+        const norm = normalizeLineForDiff(line);
+        const oldCount = oldCounts.get(norm) || 0;
+        const newCount = newCounts.get(norm) || 0;
+        if (newCount > oldCount) {
+          added.push(line);
+          oldCounts.set(norm, oldCount + 1);
+        }
+      }
+      
+      const oldCountsReset = countOccurrences(oldLines);
+      for (const line of oldLines) {
+        if (!line.trim()) continue;
+        const norm = normalizeLineForDiff(line);
+        const oldCount = oldCountsReset.get(norm) || 0;
+        const newCount = newCounts.get(norm) || 0;
+        if (oldCount > newCount) {
+          removed.push(line);
+          oldCountsReset.set(norm, oldCount - 1);
+        }
+      }
+      
+      if (added.length === 0 && removed.length === 0) {
+        return { diff: '[NO CHANGES]', hasChanges: false };
+      }
+      
+      const diffLines: string[] = [];
+      if (removed.length > 0) {
+        diffLines.push(...removed.map(l => `- ${l}`));
+      }
+      if (added.length > 0) {
+        diffLines.push(...added.map(l => `+ ${l}`));
+      }
+      
+      return { diff: diffLines.join('\n'), hasChanges: true };
+    }
+
+    function detectModalStates(): ModalState[] {
+      const modals: ModalState[] = [];
+      
+      const dialogs = document.querySelectorAll('[role="dialog"], [role="alertdialog"], dialog[open]');
+      dialogs.forEach(dialog => {
+        const role = dialog.getAttribute('role') || 'dialog';
+        let title = dialog.getAttribute('aria-label') || 
+                    dialog.querySelector('[role="heading"], h1, h2, h3')?.textContent?.trim() ||
+                    'Dialog';
+        if (title.length > 100) title = title.substring(0, 100) + '...';
+        modals.push({
+          type: role as 'dialog' | 'alertdialog',
+          description: `${role}: ${title}`,
+          clearedBy: 'computer(action=key, text=Escape)',
+        });
+      });
+      
+      return modals;
     }
 
     const elementMap = getElementMap();
@@ -291,9 +501,28 @@ function generateAccessibilityTree(
       };
     }
 
+    const modalStates = detectModalStates();
+
+    let diff: string | undefined;
+    let isIncremental = false;
+    const lastSnapshot = window.__piLastSnapshot;
+
+    if (!forceFullSnapshot && !refId && lastSnapshot && 
+        Date.now() - lastSnapshot.timestamp < 5000) {
+      const diffResult = computeSimpleDiff(lastSnapshot.content, content);
+      diff = diffResult.diff;
+      isIncremental = true;
+    }
+
+    window.__piLastSnapshot = { content, timestamp: Date.now() };
+
     return {
-      pageContent: content,
+      pageContent: content + `\n\n[Viewport: ${window.innerWidth}x${window.innerHeight}]`,
+      diff: isIncremental ? diff : undefined,
       viewport: { width: window.innerWidth, height: window.innerHeight },
+      modalStates: modalStates.length > 0 ? modalStates : undefined,
+      modalLimitations: 'Only custom modals ([role=dialog]) detected. Native alert/confirm/prompt dialogs and system file choosers cannot be detected from content scripts.',
+      isIncremental,
     };
   } catch (err) {
     return {
@@ -505,7 +734,8 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       const result = generateAccessibilityTree(
         options.filter || "interactive",
         options.depth ?? 15,
-        options.refId
+        options.refId,
+        options.forceFullSnapshot ?? false
       );
       sendResponse(result);
       break;

@@ -38,18 +38,25 @@ const readPageSchema = Type.Object({
   ref_id: Type.Optional(Type.String({
     description: "Focus on subtree of element with this ref_id",
   })),
+  forceFullSnapshot: Type.Optional(Type.Boolean({
+    description: "Force full snapshot even if incremental update is available (default: false)",
+  })),
 });
 const readPageTool: AgentTool<typeof readPageSchema, any> = {
   name: "read_page",
   label: "Read Page",
-  description: "Get accessibility tree with element ref_ids for interaction. Use filter='interactive' for clickable elements only. Returns refs like [ref_1] that can be used with computer tool clicks and form_input. Output limited to 50KB.",
+  description: "Get accessibility tree with element refs for interaction. Use filter='interactive' for clickable elements only. Returns refs like [s1_ref_42] that can be used with computer tool clicks and form_input. Includes ARIA states (checked, disabled, expanded, etc.) and incremental diff when called repeatedly within 5 seconds. Output limited to 50KB.",
   parameters: readPageSchema,
-  execute: async (toolCallId, { filter, ref_id }, signal) => {
+  execute: async (toolCallId, { filter, ref_id, forceFullSnapshot }, signal) => {
     const tabId = await getTargetTabId();
     const result = await chrome.runtime.sendMessage({
       type: "READ_PAGE",
       tabId,
-      options: { filter: filter || "interactive", refId: ref_id },
+      options: { 
+        filter: filter || "interactive", 
+        refId: ref_id,
+        forceFullSnapshot: forceFullSnapshot ?? false,
+      },
     });
     if (result.error) {
       return {
@@ -57,15 +64,33 @@ const readPageTool: AgentTool<typeof readPageSchema, any> = {
         details: { viewport: result.viewport },
       };
     }
+    
+    const parts: string[] = [result.pageContent];
+    
+    if (result.isIncremental && result.diff) {
+      parts.push(`\n--- Diff from previous snapshot ---\n${result.diff}`);
+    }
+    
+    if (result.modalStates && result.modalStates.length > 0) {
+      parts.push(`\n--- Active Modals ---`);
+      for (const modal of result.modalStates) {
+        parts.push(`${modal.description} (dismiss: ${modal.clearedBy})`);
+      }
+    }
+    
     return {
-      content: [{ type: "text", text: result.pageContent }],
-      details: { viewport: result.viewport },
+      content: [{ type: "text", text: parts.join('\n') }],
+      details: { 
+        viewport: result.viewport,
+        isIncremental: result.isIncremental,
+        modalLimitations: result.modalLimitations,
+      },
     };
   },
 };
 
 const formInputSchema = Type.Object({
-  ref: Type.String({ description: "Element ref_id from read_page" }),
+  ref: Type.String({ description: "Element ref from read_page (e.g., s1_ref_42)" }),
   value: Type.Union([Type.String(), Type.Boolean(), Type.Number()], {
     description: "Value to set (string for text, boolean for checkbox, etc.)",
   }),

@@ -160,9 +160,18 @@ function formatToolContent(result) {
   if (result.pageContent !== undefined) {
     const content = result.pageContent || "No content";
     let output = content;
-    if (result.viewport) {
-      output += `\n\n[Viewport: ${result.viewport.width}x${result.viewport.height}]`;
+    
+    if (result.isIncremental && result.diff) {
+      output += `\n--- Diff from previous snapshot ---\n${result.diff}`;
     }
+    
+    if (result.modalStates && result.modalStates.length > 0) {
+      output += `\n--- Active Modals ---`;
+      for (const modal of result.modalStates) {
+        output += `\n${modal.description} (dismiss: ${modal.clearedBy})`;
+      }
+    }
+    
     if (result.error) {
       return text(`Error: ${result.error}\n\n${output}`);
     }
@@ -216,7 +225,8 @@ function mapToolToMessage(tool, args, tabId) {
         options: { 
           filter: a.filter || "all",
           depth: a.depth,
-          refId: a.ref_id
+          refId: a.ref_id,
+          forceFullSnapshot: a.forceFullSnapshot ?? false
         },
         ...baseMsg 
       };
