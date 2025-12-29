@@ -1704,7 +1704,20 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           continue;
         }
         try {
-          if (el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement) {
+          if (el instanceof HTMLInputElement) {
+            const inputType = el.type.toLowerCase();
+            if (inputType === "checkbox" || inputType === "radio") {
+              const shouldCheck = value === true || value === "true" || value === "1" || value === "checked";
+              el.checked = shouldCheck;
+              el.dispatchEvent(new Event("change", { bubbles: true }));
+            } else {
+              el.focus();
+              el.value = String(value);
+              el.dispatchEvent(new Event("input", { bubbles: true }));
+              el.dispatchEvent(new Event("change", { bubbles: true }));
+            }
+            results.push({ ref, success: true });
+          } else if (el instanceof HTMLTextAreaElement) {
             el.focus();
             el.value = String(value);
             el.dispatchEvent(new Event("input", { bubbles: true }));
