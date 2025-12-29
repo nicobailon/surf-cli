@@ -76,6 +76,12 @@ const TOOLS = {
       "network": { desc: "Read network requests", args: [], opts: { clear: "Clear after reading" } },
     }
   },
+  health: {
+    desc: "Health checks",
+    commands: {
+      "health": { desc: "Wait for URL or element", args: [], opts: { url: "URL to check (expects 200)", selector: "CSS selector to wait for", expect: "Expected status code (default: 200)", timeout: "Timeout in ms (default: 30000)" } },
+    }
+  },
 };
 
 const ALL_SOCKET_TOOLS = [
@@ -83,7 +89,7 @@ const ALL_SOCKET_TOOLS = [
   "autocomplete", "set_value", "smart_type", "scroll_to_position", "get_scroll_info",
   "close_dialogs", "page_state", "tabs_context", "javascript_tool", "wait_for_element",
   "wait_for_url", "wait_for_network_idle", "read_console_messages", "read_network_requests",
-  "upload_image", "resize_window", "tabs_create", "tabs_register", "tabs_get_by_name",
+  "upload_image", "resize_window", "tabs_create", "tabs_register", "tabs_get_by_name", "health",
   "tabs_list_named", "tabs_unregister", "list_tabs", "new_tab", "switch_tab", "close_tab",
   "left_click", "right_click", "double_click", "triple_click", "type", "key", "type_submit",
   "click_type", "click_type_submit", "scroll", "scroll_to", "hover", "left_click_drag",
@@ -307,6 +313,7 @@ const PRIMARY_ARG_MAP = {
   javascript_tool: "code",
   key: "key",
   wait: "duration",
+  health: "url",
   new_tab: "url",
   "tab.new": "url",
   switch_tab: "tab_id",
@@ -569,6 +576,19 @@ async function handleResponse(response) {
     if (data?.result !== undefined) {
       const val = data.result.value ?? data.result;
       console.log(typeof val === "string" ? val : JSON.stringify(val, null, 2));
+    } else {
+      console.log(JSON.stringify(data, null, 2));
+    }
+  } else if (tool === "health") {
+    if (data?.success) {
+      const timeStr = data.time ? ` (${data.time}ms)` : "";
+      if (data.status) {
+        console.log(`OK: ${data.status}${timeStr}`);
+      } else if (data.found) {
+        console.log(`OK: element found${timeStr}`);
+      } else {
+        console.log(`OK${timeStr}`);
+      }
     } else {
       console.log(JSON.stringify(data, null, 2));
     }

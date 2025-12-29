@@ -752,6 +752,34 @@ async function handleMessage(
       return { success: true, status: "connected" };
     }
 
+    case "HEALTH_CHECK_URL": {
+      if (!message.url) throw new Error("No url provided");
+      const timeout = message.timeout || 30000;
+      const expect = message.expect || 200;
+      const startTime = Date.now();
+      const pollInterval = 500;
+
+      let lastError: string | null = null;
+      while (Date.now() - startTime < timeout) {
+        try {
+          const response = await fetch(message.url, { method: "GET" });
+          await response.text();
+          if (response.status === expect) {
+            return { success: true, status: response.status, time: Date.now() - startTime };
+          }
+          lastError = `Got status ${response.status}`;
+        } catch (e) {
+          lastError = e instanceof Error ? e.message : String(e);
+        }
+        await new Promise((r) => setTimeout(r, pollInterval));
+      }
+      return { 
+        error: `Timeout waiting for ${message.url} to return ${expect}`, 
+        lastError,
+        time: Date.now() - startTime 
+      };
+    }
+
     case "WAIT_FOR_ELEMENT": {
       if (!tabId) throw new Error("No tabId provided");
       if (!message.selector) throw new Error("No selector provided");

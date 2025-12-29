@@ -420,6 +420,13 @@ function mapToolToMessage(tool, args, tabId) {
       return { type: "PAGE_STATE", ...baseMsg };
     case "wait":
       return { type: "LOCAL_WAIT", seconds: Math.min(30, a.duration || a.seconds || 1) };
+    case "health":
+      if (a.url) {
+        return { type: "HEALTH_CHECK_URL", url: a.url, expect: a.expect || 200, timeout: a.timeout || 30000 };
+      } else if (a.selector) {
+        return { type: "WAIT_FOR_ELEMENT", selector: a.selector, timeout: a.timeout || 30000, ...baseMsg };
+      }
+      return { type: "ERROR", error: "health requires --url or --selector" };
     default:
       return null;
   }
