@@ -586,7 +586,7 @@ function handleToolRequest(msg, socket) {
   }
   
   const { tool, args } = params || {};
-  const tabId = params?.tabId || args?.tabId;
+  const tabId = msg.tabId || params?.tabId || args?.tabId;
   if (!tool) {
     sendToolResponse(socket, originalId, null, "No tool specified");
     return;
