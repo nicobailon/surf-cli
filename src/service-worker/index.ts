@@ -1036,6 +1036,47 @@ async function handleMessage(
       };
     }
 
+    case "EMULATE_NETWORK": {
+      if (!tabId) throw new Error("No tabId provided");
+      if (!message.preset) throw new Error("No preset provided");
+      const result = await cdp.emulateNetwork(tabId, message.preset);
+      if (!result.success) throw new Error(result.error);
+      return { success: true, preset: message.preset };
+    }
+
+    case "EMULATE_CPU": {
+      if (!tabId) throw new Error("No tabId provided");
+      if (message.rate === undefined) throw new Error("No rate provided");
+      const result = await cdp.emulateCPU(tabId, message.rate);
+      if (!result.success) throw new Error(result.error);
+      return { success: true, rate: message.rate };
+    }
+
+    case "EMULATE_GEO": {
+      if (!tabId) throw new Error("No tabId provided");
+      if (message.clear) {
+        const result = await cdp.clearGeolocation(tabId);
+        if (!result.success) throw new Error(result.error);
+        return { success: true, cleared: true };
+      }
+      if (message.latitude === undefined || message.longitude === undefined) {
+        throw new Error("Latitude and longitude required");
+      }
+      const result = await cdp.emulateGeolocation(tabId, message.latitude, message.longitude, message.accuracy);
+      if (!result.success) throw new Error(result.error);
+      return { success: true, latitude: message.latitude, longitude: message.longitude };
+    }
+
+    case "FORM_FILL": {
+      if (!tabId) throw new Error("No tabId provided");
+      if (!message.data) throw new Error("No data provided");
+      const response = await chrome.tabs.sendMessage(tabId, {
+        type: "FORM_FILL",
+        data: message.data,
+      });
+      return response;
+    }
+
     case "EXECUTE_JAVASCRIPT": {
       if (!tabId) throw new Error("No tabId provided");
       if (!message.code) throw new Error("No code provided");

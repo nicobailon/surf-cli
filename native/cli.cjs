@@ -97,6 +97,20 @@ const TOOLS = {
       "dialog.info": { desc: "Get current dialog info", args: [] },
     }
   },
+  emulate: {
+    desc: "Device/network emulation",
+    commands: {
+      "emulate.network": { desc: "Emulate network conditions", args: ["preset"], opts: {} },
+      "emulate.cpu": { desc: "CPU throttling (rate >= 1)", args: ["rate"], opts: {} },
+      "emulate.geo": { desc: "Override geolocation", args: [], opts: { lat: "Latitude", lon: "Longitude", clear: "Clear override" } },
+    }
+  },
+  form: {
+    desc: "Form automation",
+    commands: {
+      "form.fill": { desc: "Batch fill form fields", args: [], opts: { data: "JSON array of {ref, value}" } },
+    }
+  },
 };
 
 const ALL_SOCKET_TOOLS = [
@@ -513,6 +527,8 @@ const PRIMARY_ARG_MAP = {
   scroll_to_position: "position",
   type: "text",
   smart_type: "text",
+  "emulate.network": "preset",
+  "emulate.cpu": "rate",
 };
 
 const toolArgs = { ...options };

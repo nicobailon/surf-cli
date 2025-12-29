@@ -1678,6 +1678,63 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       });
       return true;
     }
+    case "FORM_FILL": {
+      const { data } = message;
+      if (!Array.isArray(data)) {
+        sendResponse({ error: "data must be an array of {ref, value} pairs" });
+        return true;
+      }
+      const elementMap = getElementMap();
+      const results: { ref: string; success: boolean; error?: string }[] = [];
+      for (const item of data) {
+        const { ref, value } = item;
+        if (!ref) {
+          results.push({ ref: ref || "unknown", success: false, error: "Missing ref" });
+          continue;
+        }
+        const elemRef = elementMap[ref];
+        if (!elemRef) {
+          results.push({ ref, success: false, error: "Element not found (run page.read first)" });
+          continue;
+        }
+        const el = elemRef.element.deref() as HTMLElement | null;
+        if (!el) {
+          delete elementMap[ref];
+          results.push({ ref, success: false, error: "Element no longer exists" });
+          continue;
+        }
+        try {
+          if (el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement) {
+            el.focus();
+            el.value = String(value);
+            el.dispatchEvent(new Event("input", { bubbles: true }));
+            el.dispatchEvent(new Event("change", { bubbles: true }));
+            results.push({ ref, success: true });
+          } else if (el instanceof HTMLSelectElement) {
+            el.value = String(value);
+            el.dispatchEvent(new Event("change", { bubbles: true }));
+            results.push({ ref, success: true });
+          } else if (el.isContentEditable) {
+            el.focus();
+            el.textContent = String(value);
+            el.dispatchEvent(new Event("input", { bubbles: true }));
+            results.push({ ref, success: true });
+          } else {
+            results.push({ ref, success: false, error: "Element is not fillable" });
+          }
+        } catch (e) {
+          results.push({ ref, success: false, error: e instanceof Error ? e.message : String(e) });
+        }
+      }
+      const failed = results.filter(r => !r.success);
+      sendResponse({
+        success: failed.length === 0,
+        filled: results.filter(r => r.success).length,
+        failed: failed.length,
+        results,
+      });
+      return true;
+    }
     case "WAIT_FOR_NETWORK_IDLE": {
       const { timeout = 10000 } = message;
       const maxTimeout = Math.min(timeout, 60000);

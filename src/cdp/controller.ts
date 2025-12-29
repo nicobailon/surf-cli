@@ -356,6 +356,65 @@ export class CDPController {
     return this.pendingDialogs.get(tabId) || null;
   }
 
+  async emulateNetwork(tabId: number, preset: string): Promise<{ success: boolean; error?: string }> {
+    await this.ensureAttached(tabId);
+    const presets: Record<string, { offline: boolean; latency: number; downloadThroughput: number; uploadThroughput: number }> = {
+      "offline": { offline: true, latency: 0, downloadThroughput: 0, uploadThroughput: 0 },
+      "slow-3g": { offline: false, latency: 2000, downloadThroughput: 50000, uploadThroughput: 50000 },
+      "fast-3g": { offline: false, latency: 562.5, downloadThroughput: 180000, uploadThroughput: 84375 },
+      "4g": { offline: false, latency: 100, downloadThroughput: 4000000, uploadThroughput: 3000000 },
+      "reset": { offline: false, latency: 0, downloadThroughput: -1, uploadThroughput: -1 },
+    };
+    const config = presets[preset.toLowerCase().replace(/\s+/g, "-")];
+    if (!config) {
+      return { success: false, error: `Unknown preset: ${preset}. Available: ${Object.keys(presets).join(", ")}` };
+    }
+    try {
+      await this.send(tabId, "Network.enable");
+      await this.send(tabId, "Network.emulateNetworkConditions", config);
+      return { success: true };
+    } catch (e) {
+      return { success: false, error: e instanceof Error ? e.message : String(e) };
+    }
+  }
+
+  async emulateCPU(tabId: number, rate: number): Promise<{ success: boolean; error?: string }> {
+    await this.ensureAttached(tabId);
+    if (rate < 1) {
+      return { success: false, error: "CPU throttling rate must be >= 1 (1 = no throttle, 4 = 4x slower)" };
+    }
+    try {
+      await this.send(tabId, "Emulation.setCPUThrottlingRate", { rate });
+      return { success: true };
+    } catch (e) {
+      return { success: false, error: e instanceof Error ? e.message : String(e) };
+    }
+  }
+
+  async emulateGeolocation(tabId: number, latitude: number, longitude: number, accuracy?: number): Promise<{ success: boolean; error?: string }> {
+    await this.ensureAttached(tabId);
+    try {
+      await this.send(tabId, "Emulation.setGeolocationOverride", {
+        latitude,
+        longitude,
+        accuracy: accuracy || 100,
+      });
+      return { success: true };
+    } catch (e) {
+      return { success: false, error: e instanceof Error ? e.message : String(e) };
+    }
+  }
+
+  async clearGeolocation(tabId: number): Promise<{ success: boolean; error?: string }> {
+    await this.ensureAttached(tabId);
+    try {
+      await this.send(tabId, "Emulation.clearGeolocationOverride");
+      return { success: true };
+    } catch (e) {
+      return { success: false, error: e instanceof Error ? e.message : String(e) };
+    }
+  }
+
   getConsoleMessages(
     tabId: number,
     options?: {

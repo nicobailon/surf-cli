@@ -423,6 +423,21 @@ function mapToolToMessage(tool, args, tabId) {
       return { type: "DIALOG_DISMISS", ...baseMsg };
     case "dialog.info":
       return { type: "DIALOG_INFO", ...baseMsg };
+    case "emulate.network":
+      return { type: "EMULATE_NETWORK", preset: a.preset, ...baseMsg };
+    case "emulate.cpu":
+      return { type: "EMULATE_CPU", rate: parseFloat(a.rate) || 1, ...baseMsg };
+    case "emulate.geo":
+      if (a.clear) {
+        return { type: "EMULATE_GEO", clear: true, ...baseMsg };
+      }
+      return { type: "EMULATE_GEO", latitude: parseFloat(a.lat), longitude: parseFloat(a.lon), accuracy: parseFloat(a.accuracy) || 100, ...baseMsg };
+    case "form.fill":
+      let fillData = a.data;
+      if (typeof fillData === "string") {
+        try { fillData = JSON.parse(fillData); } catch (e) { throw new Error("Invalid JSON for --data"); }
+      }
+      return { type: "FORM_FILL", data: fillData, ...baseMsg };
     case "page.read":
       return { type: "READ_PAGE", options: { filter: a.filter || "interactive", refId: a.ref }, ...baseMsg };
     case "page.text":
