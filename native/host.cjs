@@ -4,10 +4,142 @@ const fs = require("fs");
 const path = require("path");
 const os = require("os");
 const https = require("https");
+const { GoogleGenerativeAI } = require("@google/generative-ai");
 
 const SOCKET_PATH = "/tmp/pi-chrome.sock";
 const LOG_FILE = "/tmp/pi-chrome-host.log";
 const AUTH_FILE = path.join(os.homedir(), ".pi", "agent", "auth.json");
+
+const DEFAULT_RETRY_OPTIONS = {
+  maxRetries: 3,
+  initialDelayMs: 1000,
+  maxDelayMs: 10000,
+  backoffFactor: 2,
+  retryableStatusCodes: [429, 500, 502, 503, 504]
+};
+
+async function withRetry(fn, retryOptions = DEFAULT_RETRY_OPTIONS, retryCount = 0) {
+  try {
+    return await fn();
+  } catch (error) {
+    if (retryCount >= retryOptions.maxRetries) {
+      throw error;
+    }
+    
+    let isRetryable = false;
+    if (error instanceof Error) {
+      const statusCodeMatch = error.message.match(/status code (\d+)/i);
+      if (statusCodeMatch) {
+        const statusCode = parseInt(statusCodeMatch[1], 10);
+        isRetryable = retryOptions.retryableStatusCodes.includes(statusCode);
+      } else {
+        const isNetworkError = error.message.includes('network') || 
+                          error.message.includes('timeout') ||
+                          error.message.includes('connection');
+        const isContentError = error.message.includes('exceeds maximum') ||
+                          error.message.includes('too large') ||
+                          error.message.includes('token limit');
+        isRetryable = isNetworkError && !isContentError;
+      }
+    }
+    
+    if (!isRetryable) {
+      throw error;
+    }
+    
+    const delay = Math.min(
+      retryOptions.initialDelayMs * Math.pow(retryOptions.backoffFactor, retryCount),
+      retryOptions.maxDelayMs
+    );
+    const jitter = 0.8 + Math.random() * 0.4;
+    const delayWithJitter = Math.floor(delay * jitter);
+    
+    await new Promise(resolve => setTimeout(resolve, delayWithJitter));
+    return withRetry(fn, retryOptions, retryCount + 1);
+  }
+}
+
+const AI_PROMPTS = {
+  find: (query, pageContext) => `You are analyzing a web page's accessibility tree. Find the element matching the user's description.
+
+Page Context:
+${pageContext}
+
+User Query: "${query}"
+
+Respond with ONLY the element ref (e.g., "e5") or "NOT_FOUND" if no match.`,
+
+  summary: (query, pageContext) => `Summarize this web page based on its accessibility tree.
+
+Page Context:
+${pageContext}
+
+${query ? `Focus on: ${query}` : ""}
+
+Keep the summary under 300 characters. Focus on the page's purpose and main content.`,
+
+  extract: (query, pageContext) => `Extract structured data from this web page based on the user's request.
+
+Page Context:
+${pageContext}
+
+User Request: "${query}"
+
+Respond with valid JSON only.`
+};
+
+function detectQueryMode(query) {
+  const q = query.toLowerCase();
+  if (q.includes("find") || q.includes("where is") || q.includes("locate") || 
+      q.includes("click") || q.includes("button") || q.includes("link") ||
+      q.includes("input") || q.includes("field")) {
+    return "find";
+  }
+  if (q.includes("summarize") || q.includes("summary") || q.includes("what is this") ||
+      q.includes("about") || q.includes("describe") || q.includes("overview")) {
+    return "summary";
+  }
+  if (q.includes("list") || q.includes("extract") || q.includes("all the") ||
+      q.includes("get all") || q.includes("show all") || q.includes("json")) {
+    return "extract";
+  }
+  return "summary";
+}
+
+let geminiClientCache = null;
+
+function getGeminiClient(apiKey) {
+  if (!geminiClientCache || geminiClientCache.apiKey !== apiKey) {
+    geminiClientCache = { client: new GeminiClient(apiKey), apiKey };
+  }
+  return geminiClientCache.client;
+}
+
+class GeminiClient {
+  constructor(apiKey) {
+    this.genAI = new GoogleGenerativeAI(apiKey);
+    this.model = this.genAI.getGenerativeModel({ model: "gemini-2.0-flash" });
+  }
+
+  async analyze(query, pageContext, options = {}) {
+    const mode = options.mode || detectQueryMode(query);
+    const promptFn = AI_PROMPTS[mode];
+    const prompt = promptFn(query, pageContext);
+    
+    const result = await withRetry(async () => {
+      const response = await this.model.generateContent(prompt);
+      return response.response.text();
+    });
+    
+    let content = result.trim();
+    
+    if (mode === "extract") {
+      content = content.replace(/^```(?:json)?\n?|\n?```$/g, '').trim();
+    }
+    
+    return { mode, content };
+  }
+}
 
 
 
@@ -119,6 +251,13 @@ function formatToolContent(result) {
   const text = (s) => [{ type: "text", text: s }];
   
   if (!result) return text("OK");
+  
+  if (result.aiResult) {
+    if (result.mode === "find") {
+      return text(result.ref || "NOT_FOUND");
+    }
+    return text(result.content);
+  }
   
   if (result.messages && Array.isArray(result.messages)) {
     const formatted = result.messages.map(m => {
@@ -476,6 +615,8 @@ function mapToolToMessage(tool, args, tabId) {
       return { type: "GET_PAGE_TEXT", ...baseMsg };
     case "page.state":
       return { type: "PAGE_STATE", ...baseMsg };
+    case "ai":
+      return { type: "AI_ANALYZE", query: a.query, act: a.act, mode: a.mode, ...baseMsg };
     case "wait":
       return { type: "LOCAL_WAIT", seconds: Math.min(30, a.duration || a.seconds || 1) };
     case "health":
@@ -662,6 +803,61 @@ function handleToolRequest(msg, socket) {
     setTimeout(() => {
       sendToolResponse(socket, originalId, { success: true }, null);
     }, extensionMsg.seconds * 1000);
+    return;
+  }
+  
+  if (extensionMsg.type === "AI_ANALYZE") {
+    if (!extensionMsg.query || !extensionMsg.query.trim()) {
+      sendToolResponse(socket, originalId, null, "Query is required for AI analysis");
+      return;
+    }
+    
+    const apiKey = process.env.GOOGLE_API_KEY;
+    if (!apiKey) {
+      sendToolResponse(socket, originalId, null, "GOOGLE_API_KEY environment variable not set. Export it with: export GOOGLE_API_KEY='your-key'");
+      return;
+    }
+    
+    const pageRequestId = ++requestCounter;
+    pendingToolRequests.set(pageRequestId, {
+      socket: null,
+      originalId: null,
+      tool: "read_page",
+      onComplete: async (pageResult) => {
+        if (pageResult.error) {
+          sendToolResponse(socket, originalId, null, `Failed to read page: ${pageResult.error}`);
+          return;
+        }
+        
+        const pageContent = pageResult.pageContent || "";
+        if (!pageContent) {
+          sendToolResponse(socket, originalId, null, "No page content available");
+          return;
+        }
+        
+        try {
+          const gemini = getGeminiClient(apiKey);
+          const result = await gemini.analyze(extensionMsg.query, pageContent, { mode: extensionMsg.mode });
+          
+          if (result.mode === "find") {
+            sendToolResponse(socket, originalId, { 
+              ref: result.content === "NOT_FOUND" ? null : result.content,
+              mode: result.mode,
+              aiResult: true
+            }, null);
+          } else {
+            sendToolResponse(socket, originalId, { 
+              content: result.content,
+              mode: result.mode,
+              aiResult: true
+            }, null);
+          }
+        } catch (err) {
+          sendToolResponse(socket, originalId, null, `AI analysis failed: ${err.message}`);
+        }
+      }
+    });
+    writeMessage({ type: "READ_PAGE", options: { filter: "interactive" }, tabId: extensionMsg.tabId, id: pageRequestId });
     return;
   }
   

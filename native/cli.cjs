@@ -7,6 +7,12 @@ const SOCKET_PATH = "/tmp/pi-chrome.sock";
 const args = process.argv.slice(2);
 
 const TOOLS = {
+  ai: {
+    desc: "AI-powered page analysis",
+    commands: {
+      "ai": { desc: "Analyze page with AI", args: ["query"], opts: { mode: "Query mode: find|summary|extract (auto-detected)" } },
+    }
+  },
   tab: {
     desc: "Tab management",
     commands: {
@@ -136,7 +142,7 @@ const TOOLS = {
 };
 
 const ALL_SOCKET_TOOLS = [
-  "screenshot", "navigate", "read_page", "get_page_text", "form_input", "find_and_type",
+  "ai", "screenshot", "navigate", "read_page", "get_page_text", "form_input", "find_and_type",
   "autocomplete", "set_value", "smart_type", "scroll_to_position", "get_scroll_info",
   "close_dialogs", "page_state", "tabs_context", "javascript_tool", "wait_for_element",
   "wait_for_url", "wait_for_network_idle", "read_console_messages", "read_network_requests",
@@ -273,6 +279,23 @@ if (args.length === 0 || args[0] === "--help" || args[0] === "-h") {
 if (args[0] === "--list") {
   showAllTools();
   process.exit(0);
+}
+
+if (args[0] === "server") {
+  if (args.includes("--help") || args.includes("-h")) {
+    console.log("Usage: pi-chrome server");
+    console.log("");
+    console.log("Start MCP server for Claude Desktop/Cursor integration.");
+    console.log("Communicates via stdio using the Model Context Protocol.");
+    process.exit(0);
+  }
+  const { PiChromeMcpServer } = require("./mcp-server.cjs");
+  const server = new PiChromeMcpServer();
+  server.start().catch((err) => {
+    console.error("MCP Server error:", err.message);
+    process.exit(1);
+  });
+  return;
 }
 
 if (args.includes("--help") || args.includes("-h")) {
@@ -532,6 +555,7 @@ if (tool === "smoke") {
 }
 
 const PRIMARY_ARG_MAP = {
+  ai: "query",
   navigate: "url",
   js: "code",
   javascript_tool: "code",
@@ -897,6 +921,12 @@ async function handleResponse(response) {
       }
     } else {
       console.log(JSON.stringify(data, null, 2));
+    }
+  } else if (tool === "ai" && data?.aiResult) {
+    if (data.mode === "find") {
+      console.log(data.ref || "NOT_FOUND");
+    } else {
+      console.log(data.content);
     }
   } else if (tool === "read_page" && data?.pageContent) {
     console.log(data.pageContent);
