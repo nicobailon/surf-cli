@@ -419,23 +419,29 @@ if (args.includes("--script")) {
   return;
 }
 
+const BOOLEAN_FLAGS = ["auto-capture", "json", "stream", "dry-run", "stop-on-error", "fail-fast", "clear", "submit", "all"];
+
 const parseArgs = (rawArgs) => {
   const result = { positional: [], options: {} };
   for (let i = 0; i < rawArgs.length; i++) {
     const arg = rawArgs[i];
     if (arg.startsWith("--")) {
       const key = arg.slice(2);
-      const next = rawArgs[i + 1];
-      if (next !== undefined && !next.startsWith("--")) {
-        let val = next;
-        if (val === "true") val = true;
-        else if (val === "false") val = false;
-        else if (/^-?\d+$/.test(val)) val = parseInt(val, 10);
-        else if (/^-?\d+\.\d+$/.test(val)) val = parseFloat(val);
-        result.options[key] = val;
-        i++;
-      } else {
+      if (BOOLEAN_FLAGS.includes(key)) {
         result.options[key] = true;
+      } else {
+        const next = rawArgs[i + 1];
+        if (next !== undefined && !next.startsWith("--")) {
+          let val = next;
+          if (val === "true") val = true;
+          else if (val === "false") val = false;
+          else if (/^-?\d+$/.test(val)) val = parseInt(val, 10);
+          else if (/^-?\d+\.\d+$/.test(val)) val = parseFloat(val);
+          result.options[key] = val;
+          i++;
+        } else {
+          result.options[key] = true;
+        }
       }
     } else {
       result.positional.push(arg);
@@ -528,6 +534,10 @@ const outputPath = toolArgs.output;
 delete toolArgs.output;
 
 if (tool === "screenshot" && outputPath) {
+  if (typeof outputPath !== "string") {
+    console.error("Error: --output requires a file path");
+    process.exit(1);
+  }
   toolArgs.savePath = outputPath;
 }
 

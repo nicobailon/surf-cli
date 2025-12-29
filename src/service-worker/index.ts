@@ -1346,7 +1346,13 @@ chrome.runtime.onInstalled.addListener((details) => {
 
 initNativeMessaging(async (msg) => {
   let tabId = msg.tabId;
-  if (!tabId) {
+  if (tabId) {
+    try {
+      await chrome.tabs.get(tabId);
+    } catch {
+      throw new Error(`Invalid tab ID: ${tabId}`);
+    }
+  } else {
     const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
     tabId = tab?.id;
   }

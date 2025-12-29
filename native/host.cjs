@@ -439,6 +439,18 @@ function mapToolToMessage(tool, args, tabId) {
         failFast: a["fail-fast"] || false,
         ...baseMsg 
       };
+    case "type":
+    case "left_click":
+    case "right_click":
+    case "double_click":
+    case "triple_click":
+    case "key":
+    case "hover":
+    case "drag":
+    case "scroll":
+      return mapComputerAction({ ...a, action: tool }, tabId);
+    case "click":
+      return mapComputerAction({ ...a, action: "left_click" }, tabId);
     default:
       return null;
   }
@@ -446,8 +458,9 @@ function mapToolToMessage(tool, args, tabId) {
 
 function mapComputerAction(args, tabId) {
   const a = args || {};
-  const { action, coordinate, text, scroll_direction, scroll_amount, 
+  const { action, text, scroll_direction, scroll_amount, 
           start_coordinate, ref, duration, modifiers } = a;
+  const coordinate = a.coordinate || (a.x !== undefined && a.y !== undefined ? [a.x, a.y] : undefined);
   const baseMsg = { tabId };
   
   if (!action) {
