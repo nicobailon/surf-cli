@@ -33,7 +33,7 @@ async function processAiQueue() {
     setTimeout(processAiQueue, 2000);
   }
 }
-const LOG_FILE = "/tmp/pi-chrome-host.log";
+const LOG_FILE = "/tmp/surf-host.log";
 const AUTH_FILE = path.join(os.homedir(), ".pi", "agent", "auth.json");
 
 const DEFAULT_RETRY_OPTIONS = {

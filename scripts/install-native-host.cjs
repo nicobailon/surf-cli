@@ -42,7 +42,7 @@ fs.mkdirSync(manifestDir, { recursive: true });
 const hostPath = path.resolve(__dirname, "../native/host-wrapper.py");
 const manifest = {
   name: HOST_NAME,
-  description: "Pi Chrome Extension CLI Bridge",
+  description: "Surf CLI Native Host",
   path: hostPath,
   type: "stdio",
   allowed_origins: [`chrome-extension://${extensionId}/`],

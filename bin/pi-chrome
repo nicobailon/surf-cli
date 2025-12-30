@@ -1,5 +1,0 @@
-#!/usr/bin/env node
-import("../native/cli.cjs").catch((err) => {
-  console.error("Failed to load CLI:", err.message);
-  process.exit(1);
-});

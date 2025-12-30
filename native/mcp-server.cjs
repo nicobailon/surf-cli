@@ -306,7 +306,7 @@ function sendSocketRequest(tool, args = {}) {
     sock.on("error", (e) => {
       clearTimeout(timeout);
       if (e.code === "ENOENT") {
-        reject(new Error("Socket not found. Is Chrome running with the pi-chrome extension?"));
+        reject(new Error("Socket not found. Is Chrome running with the surf extension?"));
       } else {
         reject(e);
       }
@@ -350,7 +350,7 @@ function formatResult(resp) {
 class PiChromeMcpServer {
   constructor() {
     this.server = new McpServer({
-      name: "pi-chrome",
+      name: "surf",
       version: "1.0.0"
     });
     this.registerTools();
