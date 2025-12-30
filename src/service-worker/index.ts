@@ -124,6 +124,22 @@ function base64ToBlob(base64: string, mimeType = "image/png"): Blob {
   return new Blob([bytes], { type: mimeType });
 }
 
+async function executeScriptWithFallback<T>(
+  tabId: number,
+  scriptFn: () => T
+): Promise<T> {
+  try {
+    const result = await cdp.evaluateScript(tabId, `(${scriptFn.toString()})()`);
+    return result.result?.value;
+  } catch (cdpError) {
+    const results = await chrome.scripting.executeScript({
+      target: { tabId },
+      func: scriptFn,
+    });
+    return results[0]?.result as T;
+  }
+}
+
 async function captureFullPage(tabId: number, maxHeight: number): Promise<{ base64: string; width: number; height: number }> {
   const dimensionsResult = await cdp.evaluateScript(tabId, `(() => ({
     viewportHeight: window.innerHeight,
@@ -685,10 +701,25 @@ async function handleMessage(
 
     case "EXECUTE_SCROLL": {
       if (!tabId) throw new Error("No tabId provided");
-      const viewport = await cdp.getViewportSize(tabId);
-      const x = message.x ?? viewport.width / 2;
-      const y = message.y ?? viewport.height / 2;
-      await cdp.scroll(tabId, x, y, message.deltaX, message.deltaY);
+      const deltaX = message.deltaX || 0;
+      const deltaY = message.deltaY || 0;
+      
+      try {
+        const viewport = await cdp.getViewportSize(tabId);
+        const x = message.x ?? viewport.width / 2;
+        const y = message.y ?? viewport.height / 2;
+        await cdp.scroll(tabId, x, y, deltaX, deltaY);
+      } catch {
+        const scrollFallback = (dx: number, dy: number) => {
+          window.scrollBy(dx, dy);
+          return { scrollX: window.scrollX, scrollY: window.scrollY };
+        };
+        await chrome.scripting.executeScript({
+          target: { tabId },
+          func: scrollFallback,
+          args: [deltaX, deltaY],
+        });
+      }
       return { success: true };
     }
 
@@ -823,7 +854,7 @@ async function handleMessage(
       if (position === undefined) throw new Error("position required (\"top\", \"bottom\", or number)");
       const selector = message.selector;
       
-      const script = `(() => {
+      const scrollScript = (pos: string | number, sel: string | null) => {
         const findScrollable = () => {
           const candidates = [...document.querySelectorAll("*")].filter(el => 
             el.scrollHeight > el.clientHeight && el.clientHeight > 200
@@ -831,10 +862,9 @@ async function handleMessage(
           return candidates[0] || document.documentElement;
         };
         
-        const container = ${selector ? `document.querySelector(${JSON.stringify(selector)}) || findScrollable()` : `findScrollable()`};
+        const container = sel ? document.querySelector(sel) || findScrollable() : findScrollable();
         if (!container) return { error: "No scrollable container found" };
         
-        const pos = ${JSON.stringify(position)};
         if (pos === "bottom") {
           container.scrollTop = container.scrollHeight;
         } else if (pos === "top") {
@@ -850,17 +880,27 @@ async function handleMessage(
           atBottom: container.scrollTop + container.clientHeight >= container.scrollHeight - 10,
           atTop: container.scrollTop < 10
         };
-      })()`;
+      };
       
-      const result = await cdp.evaluateScript(tabId, script);
-      return result.result?.value || { error: "Script failed" };
+      try {
+        const script = `(${scrollScript.toString()})(${JSON.stringify(position)}, ${JSON.stringify(selector)})`;
+        const result = await cdp.evaluateScript(tabId, script);
+        return result.result?.value || { error: "Script failed" };
+      } catch {
+        const results = await chrome.scripting.executeScript({
+          target: { tabId },
+          func: scrollScript,
+          args: [position, selector],
+        });
+        return results[0]?.result || { error: "Script failed" };
+      }
     }
 
     case "GET_SCROLL_INFO": {
       if (!tabId) throw new Error("No tabId provided");
       const selector = message.selector;
       
-      const script = `(() => {
+      const scrollInfoScript = (sel: string | null) => {
         const findScrollable = () => {
           const candidates = [...document.querySelectorAll("*")].filter(el => 
             el.scrollHeight > el.clientHeight && el.clientHeight > 200
@@ -868,7 +908,7 @@ async function handleMessage(
           return candidates[0] || document.documentElement;
         };
         
-        const container = ${selector ? `document.querySelector(${JSON.stringify(selector)}) || findScrollable()` : `findScrollable()`};
+        const container = sel ? document.querySelector(sel) || findScrollable() : findScrollable();
         if (!container) return { error: "No scrollable container found" };
         
         const maxScroll = container.scrollHeight - container.clientHeight;
@@ -880,10 +920,20 @@ async function handleMessage(
           atTop: container.scrollTop < 10,
           scrollPercentage: maxScroll > 0 ? Math.round((container.scrollTop / maxScroll) * 100) : 100
         };
-      })()`;
+      };
       
-      const result = await cdp.evaluateScript(tabId, script);
-      return result.result?.value || { error: "Script failed" };
+      try {
+        const script = `(${scrollInfoScript.toString()})(${JSON.stringify(selector)})`;
+        const result = await cdp.evaluateScript(tabId, script);
+        return result.result?.value || { error: "Script failed" };
+      } catch {
+        const results = await chrome.scripting.executeScript({
+          target: { tabId },
+          func: scrollInfoScript,
+          args: [selector],
+        });
+        return results[0]?.result || { error: "Script failed" };
+      }
     }
 
     case "GET_PAGE_TEXT": {
