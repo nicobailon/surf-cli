@@ -53,7 +53,7 @@ function connect(): void {
   }
 
   try {
-    nativePort = chrome.runtime.connectNative("com.pi.chrome.host");
+    nativePort = chrome.runtime.connectNative("surf.browser.host");
     debugLog("Connecting to native host...");
 
     nativePort.onMessage.addListener(async (msg) => {
