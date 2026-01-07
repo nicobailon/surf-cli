@@ -2,6 +2,14 @@
 
 All notable changes to surf CLI will be documented in this file.
 
+## [2.2.0] - 2026-01-07
+
+### Added
+- Network capture: `network`, `network.stats`, `network.origins`, `network.get`, `network.clear`, `network.export`
+- Filtering by method, status, URL, content-type
+- Export formats: curl, raw JSON, URL list
+- Persistence to `/tmp/surf/` (configurable via `SURF_NETWORK_PATH`)
+
 ## [2.1.0] - 2025-12-30
 
 ### Added
