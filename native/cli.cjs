@@ -1866,21 +1866,21 @@ async function handleResponse(response) {
     console.log(`Zoom: ${Math.round(data.zoom * 100)}%`);
   } else if (tool === "back" || tool === "forward") {
     console.log("OK");
-  } else if (tool === "network" && data?.entries) {
-    // Network list with formatting
-    const format = toolArgs.format || 'compact';
-    const verboseLevel = toolArgs.v ? 1 : (toolArgs.vv ? 2 : 0);
+  } else if (tool === "network" && (data?.entries || data?.requests)) {
+    // Network list - handle both new (entries) and old (requests) formats
+    const items = data.entries || data.requests || [];
     
-    if (format === 'urls') {
-      console.log(networkFormatters.formatUrls(data.entries));
-    } else if (format === 'curl') {
-      console.log(networkFormatters.formatCurlBatch(data.entries));
-    } else if (format === 'raw') {
-      console.log(networkFormatters.formatRaw(data.entries));
-    } else if (verboseLevel > 0) {
-      console.log(networkFormatters.formatVerbose(data.entries, verboseLevel));
+    if (items.length === 0) {
+      console.log("No network requests captured");
     } else {
-      console.log(networkFormatters.formatCompact(data.entries, { verbose: verboseLevel }));
+      // Simple compact format for now
+      for (const req of items) {
+        const status = req.status || '-';
+        const method = (req.method || 'GET').padEnd(6);
+        const type = (req.type || '').padEnd(10);
+        const url = req.url || '';
+        console.log(`${status} ${method} ${type} ${url}`);
+      }
     }
   } else if (tool === "network.get" && data?.entry) {
     console.log(networkFormatters.formatEntry(data.entry));

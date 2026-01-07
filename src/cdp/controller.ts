@@ -869,10 +869,29 @@ export class CDPController {
       includeStatic?: boolean;
     }
   ): NetworkEntry[] {
+    // First try the full entries map
     const entriesMap = this.networkEntries.get(tabId);
-    if (!entriesMap) return [];
-
-    let entries = Array.from(entriesMap.values());
+    let entries: NetworkEntry[] = [];
+    
+    if (entriesMap && entriesMap.size > 0) {
+      entries = Array.from(entriesMap.values());
+    } else {
+      // Fallback to basic networkRequests and convert to NetworkEntry format
+      const requests = this.networkRequests.get(tabId) || [];
+      entries = requests.map((req, idx) => ({
+        id: `r_${req.timestamp}_${idx}`,
+        ts: req.timestamp,
+        method: req.method,
+        url: req.url,
+        origin: this.extractOrigin(req.url),
+        requestHeaders: {},
+        tabId: tabId,
+        type: req.type,
+        status: req.status,
+        flags: [],
+        _requestId: req.requestId,
+      } as NetworkEntry));
+    }
 
     // Filter out static assets by default
     if (!options?.includeStatic) {

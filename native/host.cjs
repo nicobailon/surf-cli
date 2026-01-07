@@ -295,10 +295,16 @@ function formatToolContent(result) {
   }
 
   if (result.requests && Array.isArray(result.requests)) {
-    const formatted = result.requests.map(r => 
-      `${r.method} ${r.url} ${r.status || "pending"}`
-    ).join("\n");
-    return text(formatted || "No network requests");
+    if (result.requests.length === 0) {
+      return text("No network requests captured");
+    }
+    const formatted = result.requests.map(r => {
+      const status = String(r.status || '-').padStart(3);
+      const method = (r.method || 'GET').padEnd(7);
+      const type = (r.type || '').padEnd(10);
+      return `${status} ${method} ${type} ${r.url}`;
+    }).join("\n");
+    return text(formatted);
   }
 
   if (result.output !== undefined) {
@@ -614,22 +620,11 @@ function mapToolToMessage(tool, args, tabId) {
       };
     case "network":
     case "get_network_entries":
+      // Use READ_NETWORK_REQUESTS which is proven to work
       return { 
-        type: "GET_NETWORK_ENTRIES", 
-        origin: a.origin,
-        method: a.method,
-        status: a.status,
-        contentType: a.type,
-        since: a.since,
-        last: a.last,
-        hasBody: a["has-body"] || a.hasBody,
-        excludeStatic: a["exclude-static"] || a.excludeStatic,
-        urlPattern: a.filter || a.url_pattern,
-        format: a.format || 'compact',
-        verbose: a.v ? 1 : (a.vv ? 2 : 0),
-        all: a.all,
-        clear: a.clear,
-        limit: a.limit,
+        type: "READ_NETWORK_REQUESTS", 
+        urlPattern: a.filter || a.url_pattern || a.origin,
+        limit: a.limit || a.last,
         ...baseMsg 
       };
 
