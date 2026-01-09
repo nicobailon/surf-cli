@@ -17,11 +17,11 @@ export default defineConfig({
       provider: "v8",
       reporter: ["text", "html", "lcov"],
       reportsDirectory: "./coverage",
-      include: ["src/**/*.ts"],
+      include: ["src/**/*.ts", "native/**/*.cjs"],
       exclude: [
         "node_modules",
         "test",
-        "native/**",
+        "native/cli.cjs",
         "**/*.d.ts",
         "**/*.config.*",
       ],
