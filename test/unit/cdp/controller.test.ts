@@ -1007,4 +1007,70 @@ describe("CDPController", () => {
       expect(entries).toStrictEqual([]);
     });
   });
+
+  describe("waitForLoad", () => {
+    let controller: CDPController;
+    const tabId = 2900;
+
+    beforeEach(() => {
+      controller = new CDPController();
+      mockChrome.debugger.attach.mockResolvedValue(undefined);
+    });
+
+    it("returns success when page is complete", async () => {
+      mockChrome.debugger.sendCommand
+        .mockResolvedValueOnce({}) // Page.enable
+        .mockResolvedValueOnce({ result: { value: "complete" } }); // Runtime.evaluate
+
+      const result = await controller.waitForLoad(tabId, 1000);
+
+      expect(result.success).toBe(true);
+      expect(result.readyState).toBe("complete");
+    });
+
+    it("returns error on timeout", async () => {
+      mockChrome.debugger.sendCommand
+        .mockResolvedValueOnce({}) // Page.enable
+        .mockResolvedValue({ result: { value: "loading" } }); // Always loading
+
+      const result = await controller.waitForLoad(tabId, 200);
+
+      expect(result.success).toBe(false);
+      expect(result.error).toContain("Timeout");
+    });
+  });
+
+  describe("getFrames", () => {
+    let controller: CDPController;
+    const tabId = 3000;
+
+    beforeEach(() => {
+      controller = new CDPController();
+      mockChrome.debugger.attach.mockResolvedValue(undefined);
+    });
+
+    it("returns frame tree", async () => {
+      mockChrome.debugger.sendCommand
+        .mockResolvedValueOnce({}) // Page.enable from attach
+        .mockResolvedValueOnce({}) // Page.enable
+        .mockResolvedValueOnce({
+          frameTree: {
+            frame: { id: "main", url: "https://example.com", name: "" },
+            childFrames: [
+              {
+                frame: { id: "iframe1", url: "https://example.com/iframe", name: "myframe" },
+              },
+            ],
+          },
+        });
+
+      const result = await controller.getFrames(tabId);
+
+      expect(result.success).toBe(true);
+      expect(result.frames).toHaveLength(2);
+      expect(result.frames?.[0].frameId).toBe("main");
+      expect(result.frames?.[1].frameId).toBe("iframe1");
+      expect(result.frames?.[1].parentId).toBe("main");
+    });
+  });
 });
