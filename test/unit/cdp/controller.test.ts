@@ -896,4 +896,44 @@ describe("CDPController", () => {
       expect(true).toBe(true);
     });
   });
+
+  describe("enableConsoleTracking", () => {
+    let controller: CDPController;
+    const tabId = 2500;
+
+    beforeEach(() => {
+      controller = new CDPController();
+      mockChrome.debugger.attach.mockResolvedValue(undefined);
+      mockChrome.debugger.sendCommand.mockResolvedValue({});
+    });
+
+    it("enables Runtime domain", async () => {
+      await controller.enableConsoleTracking(tabId);
+
+      expect(mockChrome.debugger.sendCommand).toHaveBeenCalledWith(
+        { tabId },
+        "Runtime.enable",
+        undefined,
+      );
+    });
+  });
+
+  describe("enableNetworkTracking", () => {
+    let controller: CDPController;
+    const tabId = 2600;
+
+    beforeEach(() => {
+      controller = new CDPController();
+      mockChrome.debugger.attach.mockResolvedValue(undefined);
+      mockChrome.debugger.sendCommand.mockResolvedValue({});
+    });
+
+    it("enables Network domain with maxPostDataSize", async () => {
+      await controller.enableNetworkTracking(tabId);
+
+      expect(mockChrome.debugger.sendCommand).toHaveBeenCalledWith({ tabId }, "Network.enable", {
+        maxPostDataSize: 65536,
+      });
+    });
+  });
 });
