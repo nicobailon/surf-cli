@@ -1073,4 +1073,55 @@ describe("CDPController", () => {
       expect(result.frames?.[1].parentId).toBe("main");
     });
   });
+
+  describe("getPerformanceMetrics", () => {
+    let controller: CDPController;
+    const tabId = 3100;
+
+    beforeEach(() => {
+      controller = new CDPController();
+      mockChrome.debugger.attach.mockResolvedValue(undefined);
+    });
+
+    it("returns performance metrics", async () => {
+      mockChrome.debugger.sendCommand
+        .mockResolvedValueOnce({}) // Page.enable
+        .mockResolvedValueOnce({}) // Performance.enable
+        .mockResolvedValueOnce({
+          metrics: [
+            { name: "Timestamp", value: 1234.5 },
+            { name: "Documents", value: 3 },
+          ],
+        }) // Performance.getMetrics
+        .mockResolvedValueOnce({}); // Performance.disable
+
+      const result = await controller.getPerformanceMetrics(tabId);
+
+      expect(result.success).toBe(true);
+      expect(result.metrics?.Timestamp).toBe(1234.5);
+      expect(result.metrics?.Documents).toBe(3);
+    });
+  });
+
+  describe("tripleClick", () => {
+    let controller: CDPController;
+    const tabId = 3200;
+
+    beforeEach(() => {
+      controller = new CDPController();
+      mockChrome.debugger.attach.mockResolvedValue(undefined);
+      mockChrome.debugger.sendCommand.mockResolvedValue({});
+    });
+
+    it("clicks three times with clickCount 3", async () => {
+      await controller.tripleClick(tabId, 100, 200);
+
+      const pressCalls = mockChrome.debugger.sendCommand.mock.calls.filter(
+        (call) => call[1] === "Input.dispatchMouseEvent" && call[2].type === "mousePressed",
+      );
+
+      expect(pressCalls.length).toBe(3);
+      expect(pressCalls[2]?.[2].clickCount).toBe(3);
+    });
+  });
 });
