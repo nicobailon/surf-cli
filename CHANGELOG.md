@@ -9,6 +9,7 @@
 - **Linux support (experimental)** - Added ImageMagick fallback for screenshot resizing, supports both IM6 (`convert`) and IM7 (`magick`). Install script already handles Linux native messaging paths.
 - **`surf --help-topic windows`** - New help topic explaining window isolation workflow
 - **Extension disconnect detection** - CLI detects when extension disconnects and exits cleanly with a helpful message
+- **Testing infrastructure** - Added vitest with coverage, Chrome API mocks, and network formatter tests
 - **Perplexity AI integration** - Query Perplexity using browser session via `surf perplexity "query"`. Supports `--with-page` for context, `--mode` for search modes, and `--model` for model selection (Pro features).
 - **`surf read` now includes visible text by default** - Reduces agent round-trips by returning both accessibility tree and page text content in one call. Use `--no-text` to get only interactive elements.
 
