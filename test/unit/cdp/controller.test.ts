@@ -936,4 +936,75 @@ describe("CDPController", () => {
       });
     });
   });
+
+  describe("handleDialog", () => {
+    let controller: CDPController;
+    const tabId = 2700;
+
+    beforeEach(() => {
+      controller = new CDPController();
+      mockChrome.debugger.attach.mockResolvedValue(undefined);
+      mockChrome.debugger.sendCommand.mockResolvedValue({});
+    });
+
+    it("accepts dialog", async () => {
+      await controller.attach(tabId);
+      const result = await controller.handleDialog(tabId, true);
+
+      expect(result.success).toBe(true);
+      expect(mockChrome.debugger.sendCommand).toHaveBeenCalledWith(
+        { tabId },
+        "Page.handleJavaScriptDialog",
+        { accept: true, promptText: undefined },
+      );
+    });
+
+    it("dismisses dialog", async () => {
+      await controller.attach(tabId);
+      const result = await controller.handleDialog(tabId, false);
+
+      expect(result.success).toBe(true);
+      expect(mockChrome.debugger.sendCommand).toHaveBeenCalledWith(
+        { tabId },
+        "Page.handleJavaScriptDialog",
+        { accept: false, promptText: undefined },
+      );
+    });
+
+    it("accepts prompt with text", async () => {
+      await controller.attach(tabId);
+      const result = await controller.handleDialog(tabId, true, "user input");
+
+      expect(result.success).toBe(true);
+      expect(mockChrome.debugger.sendCommand).toHaveBeenCalledWith(
+        { tabId },
+        "Page.handleJavaScriptDialog",
+        { accept: true, promptText: "user input" },
+      );
+    });
+
+    it("returns error on failure", async () => {
+      await controller.attach(tabId);
+      mockChrome.debugger.sendCommand.mockRejectedValueOnce(new Error("No dialog"));
+
+      const result = await controller.handleDialog(tabId, true);
+
+      expect(result.success).toBe(false);
+      expect(result.error).toContain("No dialog");
+    });
+  });
+
+  describe("getNetworkEntries", () => {
+    let controller: CDPController;
+    const tabId = 2800;
+
+    beforeEach(() => {
+      controller = new CDPController();
+    });
+
+    it("returns empty array for tab with no entries", () => {
+      const entries = controller.getNetworkEntries(tabId);
+      expect(entries).toStrictEqual([]);
+    });
+  });
 });
