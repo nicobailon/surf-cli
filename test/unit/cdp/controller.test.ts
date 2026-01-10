@@ -550,4 +550,69 @@ describe("CDPController", () => {
       );
     });
   });
+
+  describe("evaluateScript", () => {
+    let controller: CDPController;
+    const tabId = 1300;
+
+    beforeEach(() => {
+      controller = new CDPController();
+      mockChrome.debugger.attach.mockResolvedValue(undefined);
+    });
+
+    it("evaluates expression and returns result", async () => {
+      mockChrome.debugger.sendCommand
+        .mockResolvedValueOnce({}) // Page.enable
+        .mockResolvedValueOnce({}) // Runtime.enable
+        .mockResolvedValueOnce({
+          result: { value: 42, type: "number" },
+        });
+
+      const result = await controller.evaluateScript(tabId, "21 + 21");
+
+      expect(result.result?.value).toBe(42);
+      expect(mockChrome.debugger.sendCommand).toHaveBeenCalledWith(
+        { tabId },
+        "Runtime.evaluate",
+        expect.objectContaining({
+          expression: "21 + 21",
+          returnByValue: true,
+          awaitPromise: true,
+        }),
+      );
+    });
+
+    it("returns exception details on error", async () => {
+      mockChrome.debugger.sendCommand
+        .mockResolvedValueOnce({}) // Page.enable
+        .mockResolvedValueOnce({}) // Runtime.enable
+        .mockResolvedValueOnce({
+          exceptionDetails: { text: "ReferenceError: x is not defined" },
+        });
+
+      const result = await controller.evaluateScript(tabId, "x");
+
+      expect(result.exceptionDetails?.text).toBe("ReferenceError: x is not defined");
+    });
+  });
+
+  describe("sendCommand", () => {
+    let controller: CDPController;
+    const tabId = 1400;
+
+    beforeEach(() => {
+      controller = new CDPController();
+      mockChrome.debugger.attach.mockResolvedValue(undefined);
+      mockChrome.debugger.sendCommand.mockResolvedValue({ result: "test" });
+    });
+
+    it("sends arbitrary CDP command", async () => {
+      const result = await controller.sendCommand(tabId, "DOM.getDocument", { depth: 1 });
+
+      expect(result).toStrictEqual({ result: "test" });
+      expect(mockChrome.debugger.sendCommand).toHaveBeenCalledWith({ tabId }, "DOM.getDocument", {
+        depth: 1,
+      });
+    });
+  });
 });
