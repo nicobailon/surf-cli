@@ -32,18 +32,17 @@ describe("mapToolToMessage", () => {
     });
 
     it("throws on window.focus without id", () => {
-      expect(() => helpers.mapToolToMessage("window.focus", {}))
-        .toThrow("window id required");
+      expect(() => helpers.mapToolToMessage("window.focus", {})).toThrow("window id required");
     });
 
     it("throws on window.close without id", () => {
-      expect(() => helpers.mapToolToMessage("window.close", {}))
-        .toThrow("window id required");
+      expect(() => helpers.mapToolToMessage("window.close", {})).toThrow("window id required");
     });
 
     it("throws on window.resize without --id", () => {
-      expect(() => helpers.mapToolToMessage("window.resize", { width: 800 }))
-        .toThrow("--id required");
+      expect(() => helpers.mapToolToMessage("window.resize", { width: 800 })).toThrow(
+        "--id required",
+      );
     });
 
     it("parses window.focus id as integer", () => {
@@ -75,11 +74,11 @@ describe("mapToolToMessage", () => {
 describe("formatToolContent", () => {
   describe("window responses", () => {
     it("formats window.new success", () => {
-      const result = helpers.formatToolContent({ 
-        success: true, 
-        windowId: 123, 
+      const result = helpers.formatToolContent({
+        success: true,
+        windowId: 123,
         tabId: 456,
-        hint: "Use --window-id 123"
+        hint: "Use --window-id 123",
       });
       expect(result[0].text).toContain("Window 123");
       expect(result[0].text).toContain("tab 456");
@@ -87,8 +86,8 @@ describe("formatToolContent", () => {
     });
 
     it("formats window.list as JSON", () => {
-      const result = helpers.formatToolContent({ 
-        windows: [{ id: 1, tabCount: 2 }] 
+      const result = helpers.formatToolContent({
+        windows: [{ id: 1, tabCount: 2 }],
       });
       const parsed = JSON.parse(result[0].text);
       expect(parsed.windows).toHaveLength(1);
@@ -98,18 +97,18 @@ describe("formatToolContent", () => {
 
   describe("hint handling", () => {
     it("appends _hint to output", () => {
-      const result = helpers.formatToolContent({ 
-        success: true, 
-        _hint: "Try this next" 
+      const result = helpers.formatToolContent({
+        success: true,
+        _hint: "Try this next",
       });
       expect(result[0].text).toContain("[hint] Try this next");
     });
 
     it("strips _resolvedTabId from JSON output", () => {
-      const result = helpers.formatToolContent({ 
+      const result = helpers.formatToolContent({
         someData: "value",
         _resolvedTabId: 123,
-        _hint: "hint"
+        _hint: "hint",
       });
       expect(result[0].text).not.toContain("_resolvedTabId");
     });

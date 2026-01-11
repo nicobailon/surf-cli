@@ -264,8 +264,6 @@ export function createMockTab(overrides: Partial<chrome.tabs.Tab> = {}): chrome.
 /**
  * Helper to create a mock debugger target
  */
-export function createMockDebuggerTarget(
-  tabId: number
-): chrome.debugger.Debuggee {
+export function createMockDebuggerTarget(tabId: number): chrome.debugger.Debuggee {
   return { tabId };
 }

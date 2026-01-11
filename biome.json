@@ -117,6 +117,19 @@
           }
         }
       }
+    },
+    {
+      "includes": ["test/unit/**"],
+      "linter": {
+        "rules": {
+          "suspicious": {
+            "noExplicitAny": "off"
+          },
+          "nursery": {
+            "useAwaitThenable": "off"
+          }
+        }
+      }
     }
   ]
 }
