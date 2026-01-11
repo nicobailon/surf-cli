@@ -250,7 +250,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   return true;
 });
 
-async function handleMessage(
+export async function handleMessage(
   message: any,
   sender: chrome.runtime.MessageSender
 ): Promise<any> {

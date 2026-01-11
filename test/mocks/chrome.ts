@@ -45,6 +45,16 @@ type ChromeMock = {
       removeListener: ReturnType<typeof vi.fn>;
     };
   };
+  webNavigation: {
+    onCompleted: {
+      addListener: ReturnType<typeof vi.fn>;
+      removeListener: ReturnType<typeof vi.fn>;
+    };
+    onErrorOccurred: {
+      addListener: ReturnType<typeof vi.fn>;
+      removeListener: ReturnType<typeof vi.fn>;
+    };
+  };
   runtime: {
     sendMessage: ReturnType<typeof vi.fn>;
     onMessage: {
@@ -52,6 +62,10 @@ type ChromeMock = {
       removeListener: ReturnType<typeof vi.fn>;
     };
     onConnect: {
+      addListener: ReturnType<typeof vi.fn>;
+      removeListener: ReturnType<typeof vi.fn>;
+    };
+    onInstalled: {
       addListener: ReturnType<typeof vi.fn>;
       removeListener: ReturnType<typeof vi.fn>;
     };
@@ -129,6 +143,16 @@ export function createChromeMock(): ChromeMock {
         removeListener: vi.fn(),
       },
     },
+    webNavigation: {
+      onCompleted: {
+        addListener: vi.fn(),
+        removeListener: vi.fn(),
+      },
+      onErrorOccurred: {
+        addListener: vi.fn(),
+        removeListener: vi.fn(),
+      },
+    },
     runtime: {
       sendMessage: vi.fn().mockResolvedValue(undefined),
       onMessage: {
@@ -136,6 +160,10 @@ export function createChromeMock(): ChromeMock {
         removeListener: vi.fn(),
       },
       onConnect: {
+        addListener: vi.fn(),
+        removeListener: vi.fn(),
+      },
+      onInstalled: {
         addListener: vi.fn(),
         removeListener: vi.fn(),
       },
@@ -236,6 +264,8 @@ export function createMockTab(overrides: Partial<chrome.tabs.Tab> = {}): chrome.
 /**
  * Helper to create a mock debugger target
  */
-export function createMockDebuggerTarget(tabId: number): chrome.debugger.Debuggee {
+export function createMockDebuggerTarget(
+  tabId: number
+): chrome.debugger.Debuggee {
   return { tabId };
 }
