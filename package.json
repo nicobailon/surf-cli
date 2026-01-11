@@ -33,7 +33,7 @@
   },
   "devDependencies": {
     "@biomejs/biome": "^2.3.11",
-    "@types/chrome": "^0.0.287",
+    "@types/chrome": "^0.1.33",
     "@vitest/coverage-v8": "^4.0.16",
     "@vitest/ui": "^4.0.16",
     "typescript": "^5.7.2",
