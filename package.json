@@ -22,7 +22,7 @@
     "uninstall:native": "node scripts/uninstall-native-host.cjs"
   },
   "dependencies": {
-    "@google/generative-ai": "^0.21.0",
+    "@google/generative-ai": "^0.24.1",
     "@modelcontextprotocol/sdk": "^1.7.0",
     "buffer": "^6.0.3",
     "crypto-browserify": "^3.12.1",
