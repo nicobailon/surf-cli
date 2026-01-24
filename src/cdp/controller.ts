@@ -1321,6 +1321,9 @@ export class CDPController {
   }
 
   async scroll(tabId: number, x: number, y: number, deltaX: number, deltaY: number): Promise<void> {
+    // Move mouse to position first (required for wheel events to target correctly)
+    await this.dispatchMouseEvent(tabId, "mouseMoved", x, y, { button: "none", buttons: 0 });
+    await new Promise(resolve => setTimeout(resolve, 50));
     await this.dispatchMouseEvent(tabId, "mouseWheel", x, y, { deltaX, deltaY });
   }
 

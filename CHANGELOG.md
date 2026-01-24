@@ -1,5 +1,15 @@
 # Changelog
 
+## [Unreleased]
+
+### Fixed
+- **scroll command** - Fixed three issues with scroll commands:
+  - `scroll down` now works (was silently ignoring positional direction argument)
+  - CDP mouseWheel scrolling now works reliably (added mouseMoved before mouseWheel)
+  - `scroll.info` now correctly reports window scroll position when no selector provided
+- **scroll --amount** - Fixed `--amount` flag not being passed through to scroll handler
+- **scroll docs** - Fixed incorrect SKILL.md examples (`scroll.to --y`, `scroll.by --y` never existed)
+
 ## [2.5.0] - 2026-01-23
 
 ### Added

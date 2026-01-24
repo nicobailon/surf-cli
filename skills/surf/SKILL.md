@@ -163,10 +163,12 @@ surf page.state                # Modals, loading state, scroll info
 ## Scrolling
 
 ```bash
-surf scroll.bottom
-surf scroll.top  
-surf scroll.to --y 500         # Scroll to Y position
-surf scroll.by --y 200         # Scroll by amount
+surf scroll down               # Scroll down (default amount)
+surf scroll up                 # Scroll up
+surf scroll down --amount 5    # Scroll down more (1-10)
+surf scroll.bottom             # Scroll to bottom of page
+surf scroll.top                # Scroll to top of page
+surf scroll.to --ref e5        # Scroll element into view
 surf scroll.info               # Get scroll position
 ```
 

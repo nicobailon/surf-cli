@@ -1078,7 +1078,7 @@ function mapBatchActionToArgs(action) {
     case "wait":
       return { duration: (action.ms || 1000) / 1000 };
     case "scroll":
-      return { scroll_direction: action.direction };
+      return { direction: action.direction, amount: action.amount };
     case "screenshot":
       return { savePath: action.output };
     case "navigate":

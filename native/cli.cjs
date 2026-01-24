@@ -530,9 +530,9 @@ const TOOLS = {
     commands: {
       "scroll": { 
         desc: "Scroll in direction", 
-        args: [], 
-        opts: { direction: "up|down|left|right", amount: "Scroll amount (1-10)" },
-        examples: [{ cmd: "scroll --direction down --amount 3", desc: "Scroll down" }]
+        args: ["direction"], 
+        opts: { amount: "Scroll amount (1-10)" },
+        examples: [{ cmd: "scroll down --amount 3", desc: "Scroll down" }]
       },
       "scroll.top": { desc: "Scroll to top of page", args: [], opts: { selector: "Target specific container" } },
       "scroll.bottom": { desc: "Scroll to bottom of page", args: [], opts: { selector: "Target specific container" } },
@@ -2525,6 +2525,7 @@ const PRIMARY_ARG_MAP = {
   "frame.js": "code",
   "element.styles": "selector",
   "select": "selector",
+  scroll: "direction",
 };
 
 const toolArgs = { ...options };

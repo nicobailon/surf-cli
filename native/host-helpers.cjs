@@ -416,7 +416,7 @@ function formatToolContent(result, log = () => {}) {
  */
 function mapComputerAction(args, tabId) {
   const a = args || {};
-  const { action, text, scroll_direction, scroll_amount, 
+  const { action, text, direction, amount,
           start_coordinate, ref, duration, modifiers } = a;
   const coordinate = a.coordinate || (a.x !== undefined && a.y !== undefined ? [a.x, a.y] : undefined);
   const baseMsg = { tabId };
@@ -474,14 +474,14 @@ function mapComputerAction(args, tabId) {
       return { type: "FIND_AND_TYPE", text, submit: a.submit ?? false, submitKey: a.submitKey || "Enter", ...baseMsg };
     
     case "scroll": {
-      const amount = (scroll_amount || 3) * 100;
+      const scrollAmount = (amount || 3) * 100;
       const deltas = {
-        up: { deltaX: 0, deltaY: -amount },
-        down: { deltaX: 0, deltaY: amount },
-        left: { deltaX: -amount, deltaY: 0 },
-        right: { deltaX: amount, deltaY: 0 },
+        up: { deltaX: 0, deltaY: -scrollAmount },
+        down: { deltaX: 0, deltaY: scrollAmount },
+        left: { deltaX: -scrollAmount, deltaY: 0 },
+        right: { deltaX: scrollAmount, deltaY: 0 },
       };
-      const { deltaX, deltaY } = deltas[scroll_direction] || { deltaX: 0, deltaY: 0 };
+      const { deltaX, deltaY } = deltas[direction] || { deltaX: 0, deltaY: 0 };
       return { type: "EXECUTE_SCROLL", deltaX, deltaY, x: coordinate?.[0], y: coordinate?.[1], ...baseMsg };
     }
     

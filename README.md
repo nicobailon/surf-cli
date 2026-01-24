@@ -173,6 +173,8 @@ surf click 100 200                  # Click by coordinates
 surf type "hello" --submit          # Type and press Enter
 surf type "email@example.com" --ref e12  # Type into specific element
 surf key Escape                     # Press key
+surf scroll down                    # Scroll down
+surf scroll down --amount 5         # Scroll down more
 surf scroll.bottom                  # Scroll to bottom
 ```
 

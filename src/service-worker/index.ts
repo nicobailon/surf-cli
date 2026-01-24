@@ -732,20 +732,22 @@ export async function handleMessage(
       const deltaX = message.deltaX || 0;
       const deltaY = message.deltaY || 0;
       
+      // Try CDP scroll first (now with mouseMoved positioning)
       try {
         const viewport = await cdp.getViewportSize(tabId);
         const x = message.x ?? viewport.width / 2;
         const y = message.y ?? viewport.height / 2;
         await cdp.scroll(tabId, x, y, deltaX, deltaY);
       } catch {
+        // Fallback to JS for restricted pages
         try {
-          const scrollFallback = (dx: number, dy: number) => {
+          const scrollFn = (dx: number, dy: number) => {
             window.scrollBy(dx, dy);
             return { scrollX: window.scrollX, scrollY: window.scrollY };
           };
           await chrome.scripting.executeScript({
             target: { tabId },
-            func: scrollFallback,
+            func: scrollFn,
             args: [deltaX, deltaY],
           });
         } catch {
@@ -950,15 +952,25 @@ export async function handleMessage(
       const selector = message.selector;
       
       const scrollInfoScript = (sel: string | null) => {
-        const findScrollable = (): Element => {
-          const candidates = [...document.querySelectorAll("*")].filter(el => 
-            el.scrollHeight > el.clientHeight && el.clientHeight > 200
-          ).sort((a,b) => b.scrollHeight - a.scrollHeight);
-          return candidates[0] || document.documentElement;
-        };
+        // When no selector provided, measure window scroll (consistent with scroll command)
+        if (!sel) {
+          const scrollTop = window.scrollY || document.documentElement.scrollTop || 0;
+          const scrollHeight = document.documentElement.scrollHeight;
+          const clientHeight = window.innerHeight;
+          const maxScroll = scrollHeight - clientHeight;
+          return {
+            scrollTop,
+            scrollHeight,
+            clientHeight,
+            atBottom: scrollTop + clientHeight >= scrollHeight - 10,
+            atTop: scrollTop < 10,
+            scrollPercentage: maxScroll > 0 ? Math.round((scrollTop / maxScroll) * 100) : 100
+          };
+        }
         
-        const container = sel ? document.querySelector(sel) || findScrollable() : findScrollable();
-        if (!container) return { error: "No scrollable container found" };
+        // For specific selector, find the element
+        const container = document.querySelector(sel);
+        if (!container) return { error: `Element not found: ${sel}` };
         
         const maxScroll = container.scrollHeight - container.clientHeight;
         return { 
