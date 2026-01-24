@@ -192,7 +192,7 @@ function substituteVars(args, vars) {
  * @returns {*} - Extracted value
  */
 function extractStepOutput(resp) {
-  // MCP format: resp.result.content[0].text
+  // Response format: resp.result.content[0].text
   if (resp.result?.content?.[0]?.text) {
     const text = resp.result.content[0].text;
     // Try to parse as JSON, otherwise return raw text

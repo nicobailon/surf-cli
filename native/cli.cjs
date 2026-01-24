@@ -1734,23 +1734,6 @@ if (args[0] === "--about" && args[1]) {
   process.exit(0);
 }
 
-if (args[0] === "server") {
-  if (args.includes("--help") || args.includes("-h")) {
-    console.log("Usage: surf server");
-    console.log("");
-    console.log("Start MCP server for Claude Desktop/Cursor integration.");
-    console.log("Communicates via stdio using the Model Context Protocol.");
-    process.exit(0);
-  }
-  const { PiChromeMcpServer } = require("./mcp-server.cjs");
-  const server = new PiChromeMcpServer();
-  server.start().catch((err) => {
-    console.error("MCP Server error:", err.message);
-    process.exit(1);
-  });
-  return;
-}
-
 if (args[0] === "extension-path" || args[0] === "path") {
   const path = require("path");
   const distPath = path.resolve(__dirname, "../dist");

@@ -1,5 +1,10 @@
 # Changelog
 
+## [Unreleased]
+
+### Removed
+- **MCP server support** - Removed `surf server` command and MCP protocol implementation. Surf is now CLI-only.
+
 ## [2.5.0] - 2026-01-23
 
 ### Added

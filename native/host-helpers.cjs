@@ -3,7 +3,7 @@ const networkFormatters = require("./formatters/network.cjs");
 const networkStore = require("./network-store.cjs");
 
 /**
- * Format tool result content for MCP response
+ * Format tool result content for response
  * @param {*} result - The result object from the extension
  * @param {Function} log - Logging function (defaults to no-op for testing)
  * @returns {Array} Array of content objects with type and text/data
@@ -163,7 +163,7 @@ function formatToolContent(result, log = () => {}) {
     return text(msg);
   }
 
-  // Screenshot with inline base64 (MCP flow or no savePath)
+  // Screenshot with inline base64 (no savePath specified)
   if (result.screenshotId && result.base64) {
     const dims = result.width && result.height 
       ? `${result.width}x${result.height}` 
@@ -569,7 +569,7 @@ function mapToolToMessage(tool, args, tabId) {
     case "screenshot":
       return { 
         type: "EXECUTE_SCREENSHOT", 
-        savePath: a.savePath || a.output,  // Accept both savePath (CLI) and output (MCP)
+        savePath: a.savePath,
         annotate: a.annotate || false,
         fullpage: a.fullpage || false,
         maxHeight: a["max-height"] || 4000,

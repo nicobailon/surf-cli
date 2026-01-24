@@ -50,13 +50,11 @@
   },
   "dependencies": {
     "@google/generative-ai": "^0.24.1",
-    "@modelcontextprotocol/sdk": "^1.7.0",
     "buffer": "^6.0.3",
     "crypto-browserify": "^3.12.1",
     "events": "^3.3.0",
     "stream-browserify": "^3.0.0",
-    "vite-plugin-node-polyfills": "^0.24.0",
-    "zod": "^4.3.5"
+    "vite-plugin-node-polyfills": "^0.24.0"
   },
   "devDependencies": {
     "@biomejs/biome": "^2.3.11",
