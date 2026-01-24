@@ -1274,7 +1274,7 @@ function getPageText(): { text: string; title: string; url: string; error?: stri
     const main = document.querySelector("main");
     const content = article || main || document.body;
 
-    const text = content.textContent
+    const text = (content as HTMLElement).innerText
       ?.replace(/\s+/g, " ")
       .trim()
       .substring(0, 50000) || "";

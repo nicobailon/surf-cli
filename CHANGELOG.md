@@ -1,5 +1,10 @@
 # Changelog
 
+## [Unreleased]
+
+### Fixed
+- **page.text** - Now returns clean text content without JavaScript and CSS. Changed from `textContent` to `innerText` which properly excludes script/style tag content.
+
 ## [2.5.0] - 2026-01-23
 
 ### Added
