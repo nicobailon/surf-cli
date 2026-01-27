@@ -9,6 +9,7 @@ const networkFormatters = require("./formatters/network.cjs");
 const networkStore = require("./network-store.cjs");
 const { parseDoCommands } = require("./do-parser.cjs");
 const { executeDoSteps } = require("./do-executor.cjs");
+const { version: VERSION } = require("../package.json");
 
 const SOCKET_PATH = "/tmp/surf.sock";
 
@@ -290,7 +291,6 @@ function resizeImage(filePath, maxSize) {
   }
 }
 const args = process.argv.slice(2);
-const VERSION = "2.0.0";
 
 const ALIASES = {
   snap: "screenshot",
