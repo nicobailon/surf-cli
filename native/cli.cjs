@@ -10,7 +10,10 @@ const networkStore = require("./network-store.cjs");
 const { parseDoCommands } = require("./do-parser.cjs");
 const { executeDoSteps } = require("./do-executor.cjs");
 
-const SOCKET_PATH = "/tmp/surf.sock";
+const IS_WIN = process.platform === "win32";
+const SURF_TMP = IS_WIN ? path.join(os.tmpdir(), "surf") : "/tmp";
+const SOCKET_PATH = IS_WIN ? "//./pipe/surf" : "/tmp/surf.sock";
+if (IS_WIN) { try { fs.mkdirSync(SURF_TMP, { recursive: true }); } catch {} }
 
 // ============================================================================
 // Workflow Resolution and Management
@@ -268,12 +271,14 @@ function resizeImage(filePath, maxSize) {
       const height = parseInt(sizeInfo.match(/pixelHeight:\s*(\d+)/)?.[1] || "0", 10);
       return { success: true, width, height };
     } else {
-      // Linux/other: use ImageMagick (try IM6 first, then IM7)
+      // Linux/Windows: use ImageMagick (try IM6 first, then IM7)
+      // On Windows, \> is interpreted as redirect by cmd.exe — quote the geometry
+      const resizeArg = IS_WIN ? `"${maxSize}x${maxSize}>"` : `${maxSize}x${maxSize}\\>`;
       try {
-        execSync(`convert "${filePath}" -resize ${maxSize}x${maxSize}\\> "${filePath}"`, { stdio: "pipe" });
+        execSync(`convert "${filePath}" -resize ${resizeArg} "${filePath}"`, { stdio: "pipe" });
       } catch {
         // IM7 uses 'magick' as main command
-        execSync(`magick "${filePath}" -resize ${maxSize}x${maxSize}\\> "${filePath}"`, { stdio: "pipe" });
+        execSync(`magick "${filePath}" -resize ${resizeArg} "${filePath}"`, { stdio: "pipe" });
       }
       // Get dimensions (IM7 may need 'magick identify' instead of just 'identify')
       let sizeInfo;
@@ -2449,7 +2454,7 @@ tool = ALIASES[tool] || tool;
 const config = loadConfig();
 const autoSaveEnabled = config.autoSaveScreenshots !== false && !options["no-save"];
 if (tool === "screenshot" && !options.output && !options.savePath && autoSaveEnabled) {
-  options.savePath = `/tmp/surf-snap-${Date.now()}.png`;
+  options.savePath = path.join(SURF_TMP, `surf-snap-${Date.now()}.png`);
 }
 
 if (tool === "smoke") {
@@ -2813,7 +2818,7 @@ const sendRequest = (toolName, toolArgs = {}) => {
 
 const performAutoCapture = async () => {
   const timestamp = Date.now();
-  const screenshotPath = `/tmp/surf-error-${timestamp}.png`;
+  const screenshotPath = path.join(SURF_TMP, `surf-error-${timestamp}.png`);
 
   try {
     const [screenshotResp, consoleResp] = await Promise.all([

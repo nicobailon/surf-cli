@@ -13,7 +13,9 @@ const crypto = require("crypto");
 const readline = require("readline");
 
 // Configuration
-const DEFAULT_BASE = "/tmp/surf";
+const DEFAULT_BASE = process.platform === "win32"
+  ? path.join(require("os").tmpdir(), "surf")
+  : "/tmp/surf";
 const DEFAULT_TTL = 24 * 60 * 60 * 1000;  // 24 hours
 const DEFAULT_MAX_SIZE = 200 * 1024 * 1024; // 200MB
 const AUTO_CLEANUP_INTERVAL = 60 * 60 * 1000; // 1 hour
