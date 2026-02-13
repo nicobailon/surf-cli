@@ -31,7 +31,7 @@ Surf takes a different approach:
 
 **Smart Defaults** - Screenshots auto-resize to 1200px (saves tokens). Actions auto-capture screenshots (saves round-trips). Errors on restricted pages warn instead of fail.
 
-**AI Without API Keys** - Query ChatGPT, Gemini, Perplexity, and Grok using your existing browser logins. No API keys needed.
+**AI Without API Keys** - Query ChatGPT, Gemini, Perplexity, Grok, and AI Studio using your existing browser logins. No API keys needed.
 
 **Network Capture** - Automatically logs all network requests while active. Filter, search, and replay API calls without manually setting up request interception.
 
@@ -138,7 +138,7 @@ surf locate.role button --name "Submit" --action click  # Find and click
 surf locate.role textbox --action fill --value "hello"  # Find and fill
 surf locate.role link --all                       # List all links
 
-# By text content  
+# By text content
 surf locate.text "Sign In" --action click         # Click element with text
 surf locate.text "Accept" --exact                 # Exact match only
 
@@ -300,6 +300,11 @@ surf gemini "a robot surfing" --generate-image /tmp/robot.png # Generate image
 surf gemini "add sunglasses" --edit-image photo.jpg --output out.jpg
 surf gemini "summarize" --youtube "https://youtube.com/..."   # YouTube analysis
 surf gemini "hello" --model gemini-2.5-flash                  # Model selection
+
+# Gemini via AI Studio (mind the rate limits)
+surf aistudio "hi gemini"                                    # Defaults to gemini-3-pro-preview
+surf aistudio "redteam the arguments here" --with-page       # Include page context
+surf aistudio "quick answer" --model gemini-3-flash-preview  # Use a different model
 
 # Perplexity
 surf perplexity "what is quantum computing"

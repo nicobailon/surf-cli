@@ -2,6 +2,10 @@ const fs = require("fs");
 const networkFormatters = require("./formatters/network.cjs");
 const networkStore = require("./network-store.cjs");
 
+function normalizeModelString(model) {
+  return String(model || "").trim().toLowerCase();
+}
+
 /**
  * Format tool result content for MCP response
  * @param {*} result - The result object from the extension
@@ -1070,6 +1074,18 @@ function mapToolToMessage(tool, args, tabId) {
         timeout: a.timeout ? parseInt(a.timeout, 10) * 1000 : 300000,
         ...baseMsg
       };
+    case "aistudio": {
+      if (!a.query) throw new Error("query required");
+
+      return {
+        type: "AISTUDIO_QUERY",
+        query: a.query,
+        model: a.model ? normalizeModelString(a.model) : "gemini-3-pro-preview",
+        withPage: a["with-page"],
+        timeout: a.timeout ? parseInt(a.timeout, 10) * 1000 : 300000,
+        ...baseMsg
+      };
+    }
     case "window.new":
       return { 
         type: "WINDOW_NEW", 

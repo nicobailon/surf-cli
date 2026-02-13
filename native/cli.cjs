@@ -9,6 +9,7 @@ const networkFormatters = require("./formatters/network.cjs");
 const networkStore = require("./network-store.cjs");
 const { parseDoCommands } = require("./do-parser.cjs");
 const { executeDoSteps } = require("./do-executor.cjs");
+const { formatJsonOutput } = require("./json-output.cjs");
 
 const SOCKET_PATH = "/tmp/surf.sock";
 
@@ -412,6 +413,20 @@ const TOOLS = {
           { cmd: 'grok "quick question" --model fast', desc: "Faster model" },
           { cmd: 'grok --validate', desc: "Check UI and list available models" },
           { cmd: 'grok --validate --save-models', desc: "Save discovered models to settings" },
+        ]
+      },
+      "aistudio": {
+        desc: "Query via Google AI Studio (uses browser session)",
+        args: ["query"],
+        opts: {
+          "with-page": "Include current page context",
+          model: "Model (best-effort): pass an AI Studio model id like gemini-3-pro-preview, gemini-3-flash-preview, gemini-flash-lite-latest. If invalid, AI Studio uses the last-selected UI model",
+          timeout: "Timeout in seconds (default: 300)"
+        },
+        examples: [
+          { cmd: 'aistudio "explain quantum computing"', desc: "Basic query" },
+          { cmd: 'aistudio "redteam this" --with-page', desc: "With page context" },
+          { cmd: 'aistudio "quick answer" --model gemini-3-flash-preview', desc: "Model selection" },
         ]
       },
       "ai": { 
@@ -2485,6 +2500,7 @@ const PRIMARY_ARG_MAP = {
   chatgpt: "query",
   perplexity: "query",
   grok: "query",
+  aistudio: "query",
   navigate: "url",
   go: "url",
   js: "code",
@@ -2851,7 +2867,7 @@ const socket = net.createConnection(SOCKET_PATH, () => {
   socket.write(JSON.stringify(request) + "\n");
 });
 
-const AI_TOOLS = ["smoke", "chatgpt", "gemini", "perplexity", "grok", "ai"];
+const AI_TOOLS = ["smoke", "chatgpt", "gemini", "perplexity", "grok", "aistudio", "ai"];
 const requestTimeout = AI_TOOLS.includes(tool) ? 300000 : 30000;
 const timeout = setTimeout(() => {
   console.error(`Error: Request timed out (${requestTimeout / 1000}s)`);
@@ -2934,8 +2950,12 @@ async function handleResponse(response) {
     data = result || response.result;
   }
 
+  if (tool === 'aistudio' && typeof data === 'string') {
+    data = { response: data };
+  }
+
   if (wantJson) {
-    console.log(JSON.stringify(data, null, 2));
+    console.log(formatJsonOutput(data));
     socket.end();
     process.exit(0);
   }
@@ -3105,6 +3125,16 @@ async function handleResponse(response) {
       console.log(`\nImage saved: ${data.imagePath}`);
     }
     console.error(`\n[${data.model || 'unknown'} | ${((data.tookMs || 0) / 1000).toFixed(1)}s]`);
+  } else if (tool === "aistudio" && data?.response) {
+    console.log(data.response);
+
+    const meta = [];
+    if (data.model) meta.push(data.model);
+    if (data.thinkingTime) meta.push(`thought ${data.thinkingTime}s`);
+    if (Number.isFinite(data.tookMs)) meta.push(`${(data.tookMs / 1000).toFixed(1)}s`);
+    if (meta.length > 0) {
+      console.error(`\n[${meta.join(' | ')}]`);
+    }
   } else if (tool === "perplexity" && data?.response) {
     console.log(data.response);
     const meta = [];

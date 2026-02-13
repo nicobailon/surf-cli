@@ -1843,10 +1843,10 @@ export async function handleMessage(
           cdp.clearNetworkRequests(tabId);
         }
         
-        // Return entries sliced to limit
+        // Return most recent entries sliced to limit
         const limit = message.limit || 100;
         return { 
-          entries: entries.slice(0, limit),
+          entries: entries.slice(-limit),
           format: message.format,
           verbose: message.verbose
         };
@@ -2802,8 +2802,61 @@ export async function handleMessage(
       return result;
     }
 
+    case "AISTUDIO_NEW_TAB": {
+      const url = message.url || "https://aistudio.google.com/prompts/new_chat";
+      const tab = await chrome.tabs.create({
+        url,
+        active: true,
+      });
+      if (!tab.id) throw new Error("Failed to create tab");
+      const currentTab = await chrome.tabs.get(tab.id);
+      if (currentTab.status !== "complete") {
+        await new Promise<void>((resolve) => {
+          const listener = (tabId: number, info: chrome.tabs.TabChangeInfo) => {
+            if (tabId === tab.id && info.status === "complete") {
+              chrome.tabs.onUpdated.removeListener(listener);
+              resolve();
+            }
+          };
+          chrome.tabs.onUpdated.addListener(listener);
+          setTimeout(() => {
+            chrome.tabs.onUpdated.removeListener(listener);
+            resolve();
+          }, 30000);
+        });
+      }
+      await cdp.attach(tab.id);
+      // Wait for JS runtime to be ready after CDP attach
+      await waitForRuntimeReady(tab.id, 10000);
+      return { tabId: tab.id };
+    }
+
+    case "AISTUDIO_CLOSE_TAB": {
+      const studioTabId = message.tabId;
+      if (studioTabId) {
+        try {
+          await cdp.detach(studioTabId);
+        } catch {}
+        try {
+          await chrome.tabs.remove(studioTabId);
+        } catch {}
+      }
+      return { success: true };
+    }
+
+    case "AISTUDIO_CDP_COMMAND": {
+      const { method, params } = message;
+      const result = await cdp.sendCommand(message.tabId, method, params || {});
+      return result;
+    }
+
+    case "AISTUDIO_EVALUATE": {
+      const result = await cdp.evaluateScript(message.tabId, message.expression);
+      return result;
+    }
+
     case "GET_GOOGLE_COOKIES": {
-      // Gemini requires cookies from multiple Google domains
+      // Gemini and AI Studio require cookies from multiple Google domains
       const domains = [".google.com", ".gemini.google.com", "accounts.google.com", "www.google.com"];
       const allCookies: chrome.cookies.Cookie[] = [];
       
@@ -2815,7 +2868,7 @@ export async function handleMessage(
       }
       
       // Also try by URL for better coverage
-      const urls = ["https://gemini.google.com", "https://accounts.google.com", "https://www.google.com"];
+      const urls = ["https://gemini.google.com", "https://aistudio.google.com", "https://accounts.google.com", "https://www.google.com"];
       for (const url of urls) {
         try {
           const cookies = await chrome.cookies.getAll({ url });
@@ -2951,6 +3004,7 @@ const COMMANDS_WITHOUT_TAB = new Set([
   "GET_CHATGPT_COOKIES", "GET_GOOGLE_COOKIES", "GET_TWITTER_COOKIES",
   "PERPLEXITY_NEW_TAB", "PERPLEXITY_CLOSE_TAB", "PERPLEXITY_EVALUATE", "PERPLEXITY_CDP_COMMAND",
   "GROK_NEW_TAB", "GROK_CLOSE_TAB", "GROK_EVALUATE", "GROK_CDP_COMMAND",
+  "AISTUDIO_NEW_TAB", "AISTUDIO_CLOSE_TAB", "AISTUDIO_EVALUATE", "AISTUDIO_CDP_COMMAND",
   "WINDOW_NEW", "WINDOW_LIST", "WINDOW_FOCUS", "WINDOW_CLOSE", "WINDOW_RESIZE",
   "EMULATE_DEVICE_LIST"
 ]);

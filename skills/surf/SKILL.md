@@ -1,6 +1,6 @@
 ---
 name: surf
-description: Control Chrome browser via CLI for testing, automation, and debugging. Use when the user needs browser automation, screenshots, form filling, page inspection, network/CPU emulation, DevTools streaming, or AI queries via ChatGPT/Gemini/Perplexity/Grok.
+description: Control Chrome browser via CLI for testing, automation, and debugging. Use when the user needs browser automation, screenshots, form filling, page inspection, network/CPU emulation, DevTools streaming, or AI queries via ChatGPT/Gemini/AI Studio/Perplexity/Grok.
 ---
 
 # Surf Browser Automation
@@ -61,6 +61,13 @@ surf gemini "hello" --model gemini-2.5-flash      # Models: gemini-3-pro (defaul
 surf gemini "wide banner" --generate-image /tmp/banner.png --aspect-ratio 16:9
 ```
 
+### Gemini via AI Studio (mind the rate limits)
+```bash
+surf aistudio "hi gemini"                                    # Defaults to using gemini-3-pro-preview
+surf aistudio "redteam the arguments here" --with-page       # Include page context
+surf aistudio "quick answer" --model gemini-3-flash-preview  # Use a different model
+```
+
 ### Perplexity
 ```bash
 surf perplexity "what is quantum computing"
@@ -72,7 +79,7 @@ surf perplexity "latest news" --model sonar       # Model selection (Pro)
 ### Grok (via x.com - requires X.com login in Chrome)
 ```bash
 surf grok "what are the latest AI trends on X"    # Search X posts
-surf grok "analyze @username recent activity"     # Profile analysis  
+surf grok "analyze @username recent activity"     # Profile analysis
 surf grok "summarize this page" --with-page       # Include page context
 surf grok "find viral AI posts" --deep-search     # DeepSearch mode
 surf grok "quick question" --model fast           # Models: auto, fast, expert, thinking (default)
@@ -230,7 +237,7 @@ surf element.styles ".card"            # Or by CSS selector
 
 ```bash
 surf scroll.bottom
-surf scroll.top  
+surf scroll.top
 surf scroll.to --y 500         # Scroll to Y position
 surf scroll.to --ref e5        # Scroll element into view
 surf scroll.by --y 200         # Scroll by amount
@@ -264,7 +271,7 @@ surf dialog.dismiss            # Dismiss (Cancel)
 surf emulate.network slow-3g   # Presets: slow-3g, fast-3g, 4g, offline
 surf emulate.network reset     # Disable throttling
 
-# CPU throttling  
+# CPU throttling
 surf emulate.cpu 4             # 4x slower
 surf emulate.cpu 1             # Reset
 
@@ -467,17 +474,17 @@ surf workflow.validate workflow.json
   "steps": [
     // Capture step output for later use
     { "tool": "js", "args": { "code": "return [1,2,3]" }, "as": "items" },
-    
+
     // Fixed iterations
     { "repeat": 5, "steps": [
       { "tool": "click", "args": { "ref": "e5" } }
     ]},
-    
+
     // Iterate over array
     { "each": "%{items}", "as": "item", "steps": [
       { "tool": "js", "args": { "code": "console.log('%{item}')" } }
     ]},
-    
+
     // Repeat until condition
     { "repeat": 20, "until": { "tool": "js", "args": { "code": "return done" } }, "steps": [...] }
   ]
@@ -515,7 +522,7 @@ surf wait.element ".missing" --auto-capture --timeout 2000
 ```bash
 --tab-id <id>         # Target specific tab
 --window-id <id>      # Target specific window
---json                # Raw JSON output  
+--json                # Raw JSON output
 --auto-capture        # Screenshot + console on error
 --timeout <ms>        # Override default timeout
 ```

@@ -64,6 +64,24 @@ describe("mapToolToMessage", () => {
     });
   });
 
+  describe("aistudio commands", () => {
+    it("maps aistudio to AISTUDIO_QUERY with default model", () => {
+      const msg = helpers.mapToolToMessage("aistudio", { query: "hi" });
+      expect(msg.type).toBe("AISTUDIO_QUERY");
+      expect(msg.model).toBe("gemini-3-pro-preview");
+    });
+
+    it("normalizes aistudio model to lowercase", () => {
+      const msg = helpers.mapToolToMessage("aistudio", { query: "hi", model: "GEMINI-3-FLASH-PREVIEW" });
+      expect(msg.model).toBe("gemini-3-flash-preview");
+    });
+
+    it("does not validate aistudio model ids (passes through)", () => {
+      const msg = helpers.mapToolToMessage("aistudio", { query: "hi", model: "gemini-flash-lite-latest" });
+      expect(msg.model).toBe("gemini-flash-lite-latest");
+    });
+  });
+
   describe("error cases", () => {
     it("returns null for unknown tool", () => {
       expect(helpers.mapToolToMessage("unknown.command", {})).toBeNull();

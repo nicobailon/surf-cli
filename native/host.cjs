@@ -10,6 +10,7 @@ const chatgptClient = require("./chatgpt-client.cjs");
 const geminiClient = require("./gemini-client.cjs");
 const perplexityClient = require("./perplexity-client.cjs");
 const grokClient = require("./grok-client.cjs");
+const aistudioClient = require("./aistudio-client.cjs");
 const { mapToolToMessage, mapComputerAction, formatToolContent } = require("./host-helpers.cjs");
 
 const SOCKET_PATH = "/tmp/surf.sock";
@@ -285,6 +286,116 @@ async function handleApiRequest(msg, sendResponse) {
 const log = (msg) => {
   fs.appendFileSync(LOG_FILE, `${new Date().toISOString()} ${msg}\n`);
 };
+
+function redactForLog(value, depth = 0) {
+  if (depth > 6) return "[Truncated]";
+
+  const OMIT_STRING_KEYS = new Set([
+    "base64",
+    "pagecontent",
+    "text",
+    "requestbody",
+    "responsebody",
+  ]);
+
+  const SUMMARIZE_ARRAY_KEYS = new Set(["entries", "requests"]);
+
+  const truncate = (input, max = 200) => {
+    const text = String(input || "");
+    return text.length > max
+      ? `${text.slice(0, max)}…<${text.length - max} more chars>`
+      : text;
+  };
+
+  if (Array.isArray(value)) {
+    return value.map((v) => redactForLog(v, depth + 1));
+  }
+
+  if (value && typeof value === "object") {
+    const out = {};
+
+    for (const [key, child] of Object.entries(value)) {
+      const lower = key.toLowerCase();
+
+      // Avoid logging credentials/secrets
+      if (
+        lower.includes("token") ||
+        lower.includes("authorization") ||
+        lower.includes("password") ||
+        lower.includes("secret") ||
+        lower === "auth"
+      ) {
+        out[key] = "<redacted>";
+        continue;
+      }
+
+      // Cookie payloads from extension contain session cookies; log only safe metadata
+      if (lower === "cookies" && Array.isArray(child)) {
+        out[key] = child.map((c) => {
+          if (!c || typeof c !== "object") return c;
+          return {
+            name: c.name,
+            domain: c.domain,
+            path: c.path,
+            secure: c.secure,
+            httpOnly: c.httpOnly,
+            sameSite: c.sameSite,
+            expirationDate: c.expirationDate,
+          };
+        });
+        continue;
+      }
+
+      // Individual cookie objects sometimes appear inline
+      if (
+        lower === "value" &&
+        typeof value.name === "string" &&
+        typeof value.domain === "string"
+      ) {
+        out[key] = "<redacted>";
+        continue;
+      }
+
+      // Omit or summarize high-volume/sensitive fields (prompts, model output, screenshots, full network dumps)
+      if (typeof child === "string") {
+        if (OMIT_STRING_KEYS.has(lower)) {
+          out[key] = `<omitted ${child.length} chars>`;
+          continue;
+        }
+
+        out[key] = truncate(child);
+        continue;
+      }
+
+      if (SUMMARIZE_ARRAY_KEYS.has(lower) && Array.isArray(child)) {
+        out[key] = {
+          count: child.length,
+          sample: child.slice(0, 3).map((entry) => ({
+            id: entry?.id,
+            method: entry?.method,
+            status: entry?.status,
+            url: entry?.url,
+          })),
+        };
+        continue;
+      }
+
+      out[key] = redactForLog(child, depth + 1);
+    }
+
+    return out;
+  }
+
+  return value;
+}
+
+function safeStringifyForLog(value) {
+  try {
+    return JSON.stringify(redactForLog(value));
+  } catch (e) {
+    return '"[unstringifiable]"';
+  }
+}
 
 log("Host starting...");
 
@@ -911,6 +1022,121 @@ function handleToolRequest(msg, socket) {
     return;
   }
   
+  if (extensionMsg.type === "AISTUDIO_QUERY") {
+    const { query, model, withPage, timeout } = extensionMsg;
+    
+    queueAiRequest(async () => {
+      const EXT_CALL_TIMEOUT_MS = 30000;
+
+      const callExtension = (toolName, msg, timeoutMs = EXT_CALL_TIMEOUT_MS) => new Promise((resolve, reject) => {
+        const id = ++requestCounter;
+
+        if (msg && msg.type === "AISTUDIO_NEW_TAB") {
+          log(`[aistudio] Opening tab: ${(msg.url || "https://aistudio.google.com/prompts/new_chat")}`);
+        }
+
+        const timeoutId = setTimeout(() => {
+          pendingToolRequests.delete(id);
+          reject(new Error(`Timeout waiting for extension: ${toolName}`));
+        }, timeoutMs);
+
+        pendingToolRequests.set(id, {
+          socket: null,
+          originalId: null,
+          tool: toolName,
+          onComplete: (r) => {
+            clearTimeout(timeoutId);
+            resolve(r);
+          }
+        });
+
+        writeMessage({ ...msg, id });
+      });
+
+      // 1. Get page context if requested
+      let pageContext = null;
+      if (withPage) {
+        const pageResult = await callExtension(
+          "get_page_text",
+          { type: "GET_PAGE_TEXT", tabId: extensionMsg.tabId },
+          45000
+        );
+
+        if (pageResult && !pageResult.error) {
+          pageContext = {
+            url: pageResult.url,
+            text: pageResult.text || pageResult.pageContent || ""
+          };
+        }
+      }
+
+      // 2. Build full prompt
+      let fullPrompt = query || "";
+      if (pageContext) {
+        const MAX_PAGE_CONTEXT_CHARS = 20000;
+        const pageText = String(pageContext.text || "");
+        const truncated = pageText.length > MAX_PAGE_CONTEXT_CHARS
+          ? pageText.slice(0, MAX_PAGE_CONTEXT_CHARS) + "\n\n[...truncated...]"
+          : pageText;
+
+        fullPrompt = `Page: ${pageContext.url}\n\n${truncated}\n\n---\n\n${fullPrompt}`;
+      }
+
+      // 3. Call AI Studio client
+      const result = await aistudioClient.query({
+        prompt: fullPrompt,
+        model: model || "gemini-3-pro-preview",
+        timeout: timeout || 300000,
+        getCookies: () => callExtension("get_cookies", { type: "GET_GOOGLE_COOKIES" }, 45000),
+        createTab: (url) => callExtension(
+          "create_tab",
+          { type: "AISTUDIO_NEW_TAB", url },
+          45000
+        ),
+        closeTab: (tabIdToClose) => callExtension(
+          "close_tab",
+          { type: "AISTUDIO_CLOSE_TAB", tabId: tabIdToClose },
+          45000
+        ),
+        cdpEvaluate: (tabId, expression) => callExtension(
+          "cdp_evaluate",
+          { type: "AISTUDIO_EVALUATE", tabId, expression }
+        ),
+        cdpCommand: (tabId, method, params) => callExtension(
+          "cdp_command",
+          { type: "AISTUDIO_CDP_COMMAND", tabId, method, params }
+        ),
+        readNetworkEntries: (tabIdToRead) => callExtension(
+          "read_network_entries",
+          {
+            type: "READ_NETWORK_REQUESTS",
+            tabId: tabIdToRead,
+            full: true,
+            limit: 100,
+            urlPattern: "MakerSuiteService/GenerateContent"
+          },
+          45000
+        ),
+        log: (msg) => log(`[aistudio] ${msg}`)
+      });
+
+      return result;
+    }).then((result) => {
+      const payload = {
+        response: result.response,
+        model: result.model,
+        thinkingTime: result.thinkingTime,
+        tookMs: result.tookMs
+      };
+
+      sendToolResponse(socket, originalId, { output: JSON.stringify(payload) }, null);
+    }).catch((err) => {
+      sendToolResponse(socket, originalId, null, err.message);
+    });
+    
+    return;
+  }
+  
   if (extensionMsg.type === "EXECUTE_KEY_REPEAT") {
     const { key, repeat, tabId: tid } = extensionMsg;
     let completed = 0;
@@ -1109,7 +1335,7 @@ function processInput() {
     
     try {
       const msg = JSON.parse(jsonStr);
-      log(`Received from extension: ${JSON.stringify(msg)}`);
+      log(`Received from extension: ${safeStringifyForLog(msg)}`);
       
       if (msg.type === "GET_AUTH") {
         log("Handling GET_AUTH from extension");
