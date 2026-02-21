@@ -10,7 +10,9 @@ const networkStore = require("./network-store.cjs");
 const { parseDoCommands } = require("./do-parser.cjs");
 const { executeDoSteps } = require("./do-executor.cjs");
 
-const SOCKET_PATH = "/tmp/surf.sock";
+const SOCKET_PATH = process.platform === "win32"
+  ? "\\\\.\\pipe\\surf-sock"
+  : path.join(os.tmpdir(), "surf.sock");
 
 // ============================================================================
 // Workflow Resolution and Management

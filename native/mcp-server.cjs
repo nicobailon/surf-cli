@@ -1,10 +1,14 @@
 #!/usr/bin/env node
 const net = require("net");
+const os = require("os");
+const path = require("path");
 const { McpServer } = require("@modelcontextprotocol/sdk/server/mcp.js");
 const { StdioServerTransport } = require("@modelcontextprotocol/sdk/server/stdio.js");
 const { z } = require("zod");
 
-const SOCKET_PATH = "/tmp/surf.sock";
+const SOCKET_PATH = process.platform === "win32"
+  ? "\\\\.\\pipe\\surf-sock"
+  : path.join(os.tmpdir(), "surf.sock");
 const REQUEST_TIMEOUT = 30000;
 
 const TOOL_SCHEMAS = {

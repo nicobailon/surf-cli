@@ -11,8 +11,12 @@
  */
 
 const net = require("net");
+const os = require("os");
+const path = require("path");
 
-const SOCKET_PATH = "/tmp/surf.sock";
+const SOCKET_PATH = process.platform === "win32"
+  ? "\\\\.\\pipe\\surf-sock"
+  : path.join(os.tmpdir(), "surf.sock");
 
 // Maximum iterations for loops (safety cap)
 const MAX_LOOP_ITERATIONS = 100;

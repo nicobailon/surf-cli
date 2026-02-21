@@ -12,7 +12,9 @@ const perplexityClient = require("./perplexity-client.cjs");
 const grokClient = require("./grok-client.cjs");
 const { mapToolToMessage, mapComputerAction, formatToolContent } = require("./host-helpers.cjs");
 
-const SOCKET_PATH = "/tmp/surf.sock";
+const SOCKET_PATH = process.platform === "win32"
+  ? "\\\\.\\pipe\\surf-sock"
+  : path.join(os.tmpdir(), "surf.sock");
 
 // Cross-platform image resize (macOS: sips, Linux: ImageMagick)
 function resizeImage(filePath, maxSize) {
@@ -73,7 +75,9 @@ async function processAiQueue() {
     setTimeout(processAiQueue, 2000);
   }
 }
-const LOG_FILE = "/tmp/surf-host.log";
+const LOG_FILE = process.platform === "win32"
+  ? path.join(os.tmpdir(), "surf-host.log")
+  : "/tmp/surf-host.log";
 const AUTH_FILE = path.join(os.homedir(), ".pi", "agent", "auth.json");
 
 const DEFAULT_RETRY_OPTIONS = {
