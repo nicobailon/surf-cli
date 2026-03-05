@@ -56,16 +56,19 @@ Surf takes a different approach:
 # 1. Install globally
 npm install -g surf-cli
 
-# 2. Load extension in Chrome
+# 2. Get the extension path
+surf extension-path
+
+# 3. Load extension in Chrome
 #    - Open chrome://extensions
 #    - Enable "Developer mode"
 #    - Click "Load unpacked"
 #    - Paste the path from: surf extension-path
 
-# 3. Install native host (copy extension ID from chrome://extensions)
+# 4. Install native host (copy extension ID from chrome://extensions)
 surf install <extension-id>
 
-# 4. Restart Chrome and test
+# 5. Restart Chrome and test
 surf tab.list
 ```
 
