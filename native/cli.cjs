@@ -2482,6 +2482,16 @@ if (REMOVED_COMMANDS[tool]) {
 
 tool = ALIASES[tool] || tool;
 
+// Join space-separated subcommands: "cookie list" -> "cookie.list"
+if (tool === "cookie" && firstArg && ["list", "get", "set", "clear", "delete"].includes(firstArg)) {
+  if (firstArg === "delete") {
+    tool = "cookie.clear";
+  } else {
+    tool = `cookie.${firstArg}`;
+  }
+  firstArg = undefined;
+}
+
 // Auto-save screenshots to temp file when no --output specified
 // This ensures agents always get a usable file path, not just an in-memory ID
 // Can be disabled with --no-save flag or autoSaveScreenshots: false in surf.json
@@ -2566,6 +2576,8 @@ const PRIMARY_ARG_MAP = {
   "frame.js": "code",
   "element.styles": "selector",
   "select": "selector",
+  "cookie.get": "name",
+  "cookie.clear": "name",
 };
 
 const toolArgs = { ...options };
