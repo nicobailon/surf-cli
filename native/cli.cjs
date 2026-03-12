@@ -1747,6 +1747,74 @@ if (args[0] === "--help-topic" && args[1]) {
   process.exit(0);
 }
 
+if (args[0] === "--llm-context") {
+  console.log(`SURF-CLI QUICK REFERENCE (for AI agents)
+
+NAVIGATION
+  surf navigate "URL"                    Open URL (always sleep 2 after)
+  surf back                              Go back
+  surf forward                           Go forward
+  surf tab.new "URL"                     Open in new tab
+  surf tab.list                          List open tabs
+  surf tab.switch <id>                   Switch to tab
+
+READING
+  surf page.read --depth 2 --compact     Get interactive elements with refs (e0, e1...)
+  surf page.text                         Get page text content
+  surf page.state                        Get URL, title, meta info
+  surf js "expression"                   Evaluate JS and return result
+
+INTERACTION
+  surf click e5                          Click element by ref
+  surf click 100 200                     Click at coordinates
+  surf type "text" --submit              Type text (--submit to press Enter)
+  surf key Enter                         Press key
+  surf scroll down 800                   Scroll by pixels (up/down/left/right)
+  surf scroll bottom                     Scroll to bottom
+  surf scroll top                        Scroll to top
+  surf select "selector" "value"         Select dropdown option
+
+SCREENSHOTS
+  surf screenshot /tmp/name.png          Viewport screenshot
+  surf screenshot --fullpage /tmp/f.png  Full page screenshot
+  surf screenshot --annotate /tmp/a.png  Screenshot with element labels
+
+FORMS & INPUT
+  surf locate.role button --name "Submit" --action click   Find and click by role
+  surf locate.text "Sign in" --action click                Find and click by text
+  surf form.fill --data '{"#email":"a@b.com"}'             Fill form fields
+
+DEVICE EMULATION
+  surf emulate.device "iPhone 14"        Emulate device
+  surf resize 375 812                    Set viewport size
+  surf emulate.network 3g               Throttle network
+
+COOKIES
+  surf cookie list                       List all cookies
+  surf cookie get "name"                 Get cookie value
+  surf cookie set --name "n" --value "v" Set cookie
+  surf cookie clear --all                Clear all cookies
+
+NETWORK
+  surf network                           List captured requests
+  surf network --filter "api"            Filter by URL pattern
+  surf console                           Read console messages
+
+WAIT COMMANDS
+  surf wait 2                            Wait seconds
+  surf wait.element "selector"           Wait for element
+  surf wait.network                      Wait for network idle
+  surf wait.url "pattern"                Wait for URL change
+
+TIPS
+  - Always sleep 2 after navigate before reading/screenshotting
+  - Refs (e0, e1...) come from page.read — run it first before clicking
+  - Use --json flag on any command for raw JSON output
+  - Use --tab-id <id> to target a specific tab
+  - Use --window-id <id> to isolate from user's browsing`);
+  process.exit(0);
+}
+
 if (args[0] === "--version" || args[0] === "-v") {
   console.log(`surf version ${VERSION}`);
   process.exit(0);
