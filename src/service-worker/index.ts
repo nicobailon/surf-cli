@@ -1773,7 +1773,14 @@ export async function handleMessage(
         await cdp.evaluateScript(tabId, piHelpersCode);
         
         const escaped = message.code.replace(/`/g, "\\`").replace(/\$/g, "\\$");
-        const expression = `(async () => { 'use strict'; ${escaped} })()`;
+
+        // Auto-prepend return for single expressions so values are returned
+        const trimmedCode = message.code.trim();
+        const statementKeywords = /^(if|for|while|do|switch|try|const|let|var|function|class|throw|return)\b/;
+        const isExpression = !trimmedCode.includes(';') && !statementKeywords.test(trimmedCode);
+        const wrappedCode = isExpression ? `return ${escaped}` : escaped;
+
+        const expression = `(async () => { 'use strict'; ${wrappedCode} })()`;
         
         const result = await cdp.evaluateScript(tabId, expression);
         
