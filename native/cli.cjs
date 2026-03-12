@@ -13,7 +13,7 @@ const { version: VERSION } = require("../package.json");
 
 const IS_WIN = process.platform === "win32";
 const SURF_TMP = IS_WIN ? path.join(os.tmpdir(), "surf") : "/tmp";
-const SOCKET_PATH = IS_WIN ? "//./pipe/surf" : "/tmp/surf.sock";
+let SOCKET_PATH = process.env.SURF_SOCKET || (IS_WIN ? "//./pipe/surf" : "/tmp/surf.sock");
 if (IS_WIN) { try { fs.mkdirSync(SURF_TMP, { recursive: true }); } catch {} }
 
 // ============================================================================
@@ -1811,7 +1811,12 @@ TIPS
   - Refs (e0, e1...) come from page.read — run it first before clicking
   - Use --json flag on any command for raw JSON output
   - Use --tab-id <id> to target a specific tab
-  - Use --window-id <id> to isolate from user's browsing`);
+  - Use --window-id <id> to isolate from user's browsing
+
+PARALLEL SESSIONS (multiple agents)
+  SURF_SOCKET=/tmp/surf-qa.sock surf navigate "URL"   Run agent on separate socket
+  surf --socket /tmp/surf-qa.sock navigate "URL"       Same via flag
+  NOTE: Each socket needs its own host process. Start host with SURF_SOCKET set.`);
   process.exit(0);
 }
 
@@ -2736,6 +2741,10 @@ if (toolArgs["window-id"] !== undefined) {
   }
   globalOpts.windowId = wid;
   delete toolArgs["window-id"];
+}
+if (toolArgs.socket !== undefined) {
+  SOCKET_PATH = toolArgs.socket;
+  delete toolArgs.socket;
 }
 if (toolArgs["network-path"] !== undefined) {
   networkStore.setBasePath(toolArgs["network-path"]);
