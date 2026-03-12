@@ -2581,6 +2581,18 @@ if (tool === "click" && firstArg) {
   }
 }
 
+if (tool === "scroll" && firstArg) {
+  if (firstArg === "top" || firstArg === "bottom") {
+    tool = `scroll.${firstArg}`;
+    firstArg = undefined;
+  } else if (["up", "down", "left", "right"].includes(firstArg)) {
+    toolArgs.scroll_direction = firstArg;
+    const px = positional[2] ? parseInt(positional[2], 10) : 300;
+    toolArgs.scroll_amount = Math.max(1, Math.round(px / 100));
+    firstArg = undefined;
+  }
+}
+
 if (firstArg !== undefined) {
   const primaryKey = PRIMARY_ARG_MAP[tool];
   if (primaryKey && toolArgs[primaryKey] === undefined) {
