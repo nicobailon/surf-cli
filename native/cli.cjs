@@ -2605,6 +2605,14 @@ if (tool === "scroll" && firstArg) {
   }
 }
 
+if (tool === "resize" && firstArg) {
+  toolArgs.width = parseInt(firstArg, 10);
+  if (positional[2]) {
+    toolArgs.height = parseInt(positional[2], 10);
+  }
+  firstArg = undefined;
+}
+
 if (firstArg !== undefined) {
   const primaryKey = PRIMARY_ARG_MAP[tool];
   if (primaryKey && toolArgs[primaryKey] === undefined) {
