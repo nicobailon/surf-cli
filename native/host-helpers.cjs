@@ -1127,6 +1127,33 @@ function mapToolToMessage(tool, args, tabId) {
         top: a.top !== undefined ? parseInt(a.top, 10) : undefined,
         state: a.state,
       };
+    case "record":
+      return {
+        type: "EXECUTE_RECORD",
+        duration: parseInt(a.duration || "2000", 10),
+        fps: parseInt(a.fps || "10", 10),
+        trigger: a.trigger,
+        rect: a.rect,
+        savePath: a.savePath || a.output,
+        ...baseMsg,
+      };
+    case "animate-audit":
+    case "animate_audit":
+      return {
+        type: "ANIMATE_AUDIT",
+        selector: a.selector,
+        duration: parseInt(a.duration || "2000", 10),
+        trigger: a.trigger,
+        ...baseMsg,
+      };
+    case "perf-audit":
+    case "perf_audit":
+      return {
+        type: "PERF_AUDIT",
+        duration: parseInt(a.duration || "3000", 10),
+        trigger: a.trigger,
+        ...baseMsg,
+      };
     default:
       return null;
   }

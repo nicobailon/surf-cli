@@ -1423,7 +1423,46 @@ function processInput() {
           const { socket, originalId, savePath, autoScreenshot, tabId: storedTabId } = pending;
           const tabId = storedTabId || msg._resolvedTabId;
           
-          if (savePath && msg.base64) {
+          if (savePath && msg.frames && Array.isArray(msg.frames)) {
+            // GIF assembly for surf record
+            try {
+              const dir = path.dirname(savePath);
+              if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+              const tmpDir = path.join(SURF_TMP, `surf-record-${Date.now()}`);
+              fs.mkdirSync(tmpDir, { recursive: true });
+
+              for (let i = 0; i < msg.frames.length; i++) {
+                const framePath = path.join(tmpDir, `frame-${String(i).padStart(4, "0")}.png`);
+                fs.writeFileSync(framePath, Buffer.from(msg.frames[i], "base64"));
+              }
+
+              const fps = msg.fps || 10;
+              const delay = Math.round(100 / fps);
+              const globPattern = path.join(tmpDir, "frame-*.png");
+              try {
+                execSync(`convert -delay ${delay} -loop 0 "${globPattern}" "${savePath}"`, { stdio: "pipe" });
+              } catch {
+                execSync(`magick -delay ${delay} -loop 0 "${globPattern}" "${savePath}"`, { stdio: "pipe" });
+              }
+
+              for (const f of fs.readdirSync(tmpDir)) {
+                try { fs.unlinkSync(path.join(tmpDir, f)); } catch {}
+              }
+              try { fs.rmdirSync(tmpDir); } catch {}
+
+              const stats = fs.statSync(savePath);
+              const sizeKB = Math.round(stats.size / 1024);
+              sendToolResponse(socket, originalId, {
+                message: `Recorded ${msg.frames.length} frames at ${fps}fps → ${savePath} (${sizeKB}KB)`,
+                path: savePath,
+                frameCount: msg.frames.length,
+                fps,
+                duration: msg.duration,
+              }, null);
+            } catch (e) {
+              sendToolResponse(socket, originalId, null, `GIF assembly failed: ${e.message}. Is ImageMagick installed?`);
+            }
+          } else if (savePath && msg.base64) {
             try {
               const dir = path.dirname(savePath);
               if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });

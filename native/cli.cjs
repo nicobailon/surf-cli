@@ -556,6 +556,50 @@ const TOOLS = {
         ]
       },
       "snap": { desc: "Alias for screenshot (auto-saves to /tmp)", args: [], alias: "screenshot" },
+      "record": {
+        desc: "Record screenshot burst → GIF animation",
+        args: [],
+        opts: {
+          duration: "Recording duration in ms (default: 2000)",
+          fps: "Frames per second (default: 10)",
+          output: "Output GIF path (default: /tmp/surf-record-<timestamp>.gif)",
+          trigger: "Action to execute before recording (e.g. click:#btn)",
+          rect: "Clip to viewport region: x,y,width,height",
+        },
+        examples: [
+          { cmd: "record", desc: "Record 2s at 10fps → GIF" },
+          { cmd: "record --duration 3000 --fps 5", desc: "Record 3s at 5fps" },
+          { cmd: "record --trigger \"click:#seasons-btn\"", desc: "Click then record" },
+          { cmd: "record --rect 0,200,1440,800", desc: "Record viewport region" },
+        ]
+      },
+      "animate-audit": {
+        desc: "Capture animation timeline as structured JSON",
+        args: [],
+        opts: {
+          selector: "CSS selector(s) to track (comma-separated)",
+          duration: "Observation duration in ms (default: 2000)",
+          output: "Output JSON path",
+          trigger: "Action to execute before observing (e.g. click:.cta-btn)",
+        },
+        examples: [
+          { cmd: "animate-audit --selector .group-picker --duration 2000", desc: "Track element during animation" },
+          { cmd: "animate-audit --selector \".a,.b\" --trigger \"click:.cta\"", desc: "Track multiple elements after click" },
+        ]
+      },
+      "perf-audit": {
+        desc: "Capture layout shifts, long frames, event timing",
+        args: [],
+        opts: {
+          duration: "Observation duration in ms (default: 3000)",
+          output: "Output JSON path",
+          trigger: "Action to execute before observing (e.g. click:.cta-btn)",
+        },
+        examples: [
+          { cmd: "perf-audit --duration 3000", desc: "Capture perf events for 3s" },
+          { cmd: "perf-audit --trigger \"click:.cta-btn\"", desc: "Click then capture" },
+        ]
+      },
     }
   },
   scroll: {
@@ -2678,6 +2722,11 @@ if (tool === "screenshot" && outputPath) {
   if (options["max-size"]) toolArgs["max-size"] = options["max-size"];
 }
 
+if (tool === "record") {
+  const saveTo = outputPath || path.join(SURF_TMP, `surf-record-${Date.now()}.gif`);
+  toolArgs.savePath = saveTo;
+}
+
 const methodFlag = toolArgs.method;
 // Keep method for network filtering, only delete for other tools
 if (tool !== 'network' && tool !== 'get_network_entries') {
@@ -2906,6 +2955,12 @@ if (tool === "aistudio.build") {
   const userTimeoutSec = parseInt(options.timeout || "600", 10);
   requestTimeout = (userTimeoutSec * 1000) + 60000;
 }
+const TIMED_TOOLS = ["record", "animate-audit", "perf-audit"];
+if (TIMED_TOOLS.includes(tool)) {
+  const duration = parseInt(options.duration || toolArgs.duration || "3000", 10);
+  const buffer = tool === "record" ? 120000 : 30000;
+  requestTimeout = duration + buffer;
+}
 const timeout = setTimeout(() => {
   console.error(`Error: Request timed out (${requestTimeout / 1000}s)`);
   socket.destroy();
@@ -3020,6 +3075,52 @@ async function handleResponse(response) {
     console.log(data.message);
     if (data.screenshotId) {
       console.log(`[Screenshot ID: ${data.screenshotId}]`);
+    }
+  } else if (tool === "record" && data?.message) {
+    console.log(data.message);
+  } else if (tool === "record" && data?.frames) {
+    const saveTo = outputPath || path.join(SURF_TMP, `surf-record-${Date.now()}.gif`);
+    const tmpDir = path.join(SURF_TMP, `surf-record-cli-${Date.now()}`);
+    fs.mkdirSync(tmpDir, { recursive: true });
+    for (let i = 0; i < data.frames.length; i++) {
+      fs.writeFileSync(path.join(tmpDir, `frame-${String(i).padStart(4, "0")}.png`), Buffer.from(data.frames[i], "base64"));
+    }
+    const fps = data.fps || 10;
+    const delay = Math.round(100 / fps);
+    const glob = path.join(tmpDir, "frame-*.png");
+    try {
+      try {
+        execSync(`convert -delay ${delay} -loop 0 "${glob}" "${saveTo}"`, { stdio: "pipe" });
+      } catch {
+        execSync(`magick -delay ${delay} -loop 0 "${glob}" "${saveTo}"`, { stdio: "pipe" });
+      }
+      const sizeKB = Math.round(fs.statSync(saveTo).size / 1024);
+      console.log(`Recorded ${data.frames.length} frames at ${fps}fps → ${saveTo} (${sizeKB}KB)`);
+    } catch (e) {
+      console.error(`GIF assembly failed: ${e.message}. Is ImageMagick installed?`);
+    }
+    for (const f of fs.readdirSync(tmpDir)) { try { fs.unlinkSync(path.join(tmpDir, f)); } catch {} }
+    try { fs.rmdirSync(tmpDir); } catch {}
+  } else if ((tool === "animate-audit" || tool === "animate_audit") && data?.timeline) {
+    const saveTo = outputPath;
+    const output = JSON.stringify(data.timeline, null, 2);
+    if (saveTo) {
+      fs.writeFileSync(saveTo, output);
+      console.log(`Timeline saved to ${saveTo} (${data.timeline.frames?.length || 0} frames)`);
+    } else {
+      console.log(output);
+    }
+  } else if ((tool === "perf-audit" || tool === "perf_audit") && data?.perfData) {
+    const saveTo = outputPath;
+    const output = JSON.stringify(data.perfData, null, 2);
+    if (saveTo) {
+      fs.writeFileSync(saveTo, output);
+      const ls = data.perfData.layoutShifts?.length || 0;
+      const laf = data.perfData.longAnimationFrames?.length || 0;
+      const ev = data.perfData.events?.length || 0;
+      console.log(`Perf audit saved to ${saveTo} (${ls} layout shifts, ${laf} long frames, ${ev} events)`);
+    } else {
+      console.log(output);
     }
   } else if (tool === "tab.list") {
     const tabs = data?.tabs || data || [];

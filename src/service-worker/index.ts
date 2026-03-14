@@ -3114,6 +3114,247 @@ export async function handleMessage(
       };
     }
 
+    case "EXECUTE_RECORD": {
+      if (!tabId) throw new Error("No tabId provided");
+
+      const duration: number = message.duration || 2000;
+      const fps: number = message.fps || 10;
+      const interval = Math.round(1000 / fps);
+      const frameCount = Math.ceil(duration / interval);
+      const rect = message.rect ? String(message.rect).split(",").map(Number) : null;
+
+      try {
+        await chrome.tabs.sendMessage(tabId, { type: "HIDE_FOR_TOOL_USE" });
+      } catch (e) {}
+      await new Promise(resolve => setTimeout(resolve, 50));
+
+      if (message.trigger) {
+        const triggerParts = message.trigger.match(/^(\w+):(.+)$/);
+        if (triggerParts) {
+          const [, action, selector] = triggerParts;
+          if (action === "click") {
+            await cdp.evaluateScript(tabId, `document.querySelector(${JSON.stringify(selector)})?.click()`);
+            await new Promise(resolve => setTimeout(resolve, 50));
+          } else if (action === "scroll") {
+            await cdp.evaluateScript(tabId, `document.querySelector(${JSON.stringify(selector)})?.scrollIntoView({behavior:'smooth'})`);
+            await new Promise(resolve => setTimeout(resolve, 50));
+          }
+        }
+      }
+
+      try {
+        const frames: string[] = [];
+        for (let i = 0; i < frameCount; i++) {
+          let result: { base64: string; width: number; height: number };
+          if (rect && rect.length === 4) {
+            result = await cdp.captureRegion(tabId, rect[0], rect[1], rect[2], rect[3]);
+          } else {
+            result = await cdp.captureScreenshot(tabId);
+          }
+          frames.push(result.base64);
+          if (i < frameCount - 1) {
+            await new Promise(resolve => setTimeout(resolve, interval));
+          }
+        }
+
+        const { width, height } = await cdp.getViewportSize(tabId);
+        return { frames, width, height, fps, duration, frameCount: frames.length };
+      } finally {
+        try {
+          await chrome.tabs.sendMessage(tabId, { type: "SHOW_AFTER_TOOL_USE" });
+        } catch (e) {}
+      }
+    }
+
+    case "ANIMATE_AUDIT": {
+      if (!tabId) throw new Error("No tabId provided");
+      if (!message.selector) throw new Error("--selector required");
+
+      const duration: number = message.duration || 2000;
+      const selectors = String(message.selector).split(",").map((s: string) => s.trim());
+
+      if (message.trigger) {
+        const triggerParts = message.trigger.match(/^(\w+):(.+)$/);
+        if (triggerParts) {
+          const [, action, selector] = triggerParts;
+          if (action === "click") {
+            await cdp.evaluateScript(tabId, `document.querySelector(${JSON.stringify(selector)})?.click()`);
+            await new Promise(resolve => setTimeout(resolve, 50));
+          } else if (action === "scroll") {
+            await cdp.evaluateScript(tabId, `document.querySelector(${JSON.stringify(selector)})?.scrollIntoView({behavior:'smooth'})`);
+            await new Promise(resolve => setTimeout(resolve, 50));
+          }
+        }
+      }
+
+      const auditScript = `
+        (function() {
+          return new Promise((resolve) => {
+            const selectors = ${JSON.stringify(selectors)};
+            const duration = ${duration};
+            const frames = [];
+            const start = performance.now();
+            const interval = 16;
+
+            function captureFrame() {
+              const t = Math.round(performance.now() - start);
+              const frame = { t, scrollY: Math.round(window.scrollY), elements: {} };
+
+              for (const sel of selectors) {
+                const el = document.querySelector(sel);
+                if (!el) continue;
+                const rect = el.getBoundingClientRect();
+                const style = getComputedStyle(el);
+                frame.elements[sel] = {
+                  rect: {
+                    top: Math.round(rect.top),
+                    left: Math.round(rect.left),
+                    width: Math.round(rect.width),
+                    height: Math.round(rect.height),
+                  },
+                  opacity: style.opacity,
+                  transform: style.transform === "none" ? "" : style.transform,
+                  visibility: style.visibility,
+                  display: style.display,
+                };
+              }
+              frames.push(frame);
+
+              if (t < duration) {
+                setTimeout(captureFrame, interval);
+              } else {
+                resolve(JSON.stringify({
+                  meta: {
+                    url: location.href,
+                    viewport: [window.innerWidth, window.innerHeight],
+                    duration,
+                    selectors,
+                  },
+                  frames,
+                }));
+              }
+            }
+            setTimeout(captureFrame, 0);
+          });
+        })()
+      `;
+
+      const result = await cdp.evaluateScript(tabId, auditScript);
+      if (result.exceptionDetails) {
+        throw new Error(result.exceptionDetails.text || result.exceptionDetails.exception?.description || "animate-audit failed");
+      }
+
+      let timeline;
+      try {
+        timeline = JSON.parse(result.result?.value || "{}");
+      } catch {
+        timeline = result.result?.value;
+      }
+      return { timeline };
+    }
+
+    case "PERF_AUDIT": {
+      if (!tabId) throw new Error("No tabId provided");
+
+      const duration: number = message.duration || 3000;
+
+      if (message.trigger) {
+        const triggerParts = message.trigger.match(/^(\w+):(.+)$/);
+        if (triggerParts) {
+          const [, action, selector] = triggerParts;
+          if (action === "click") {
+            await cdp.evaluateScript(tabId, `document.querySelector(${JSON.stringify(selector)})?.click()`);
+            await new Promise(resolve => setTimeout(resolve, 50));
+          } else if (action === "scroll") {
+            await cdp.evaluateScript(tabId, `document.querySelector(${JSON.stringify(selector)})?.scrollIntoView({behavior:'smooth'})`);
+            await new Promise(resolve => setTimeout(resolve, 50));
+          }
+        }
+      }
+
+      const perfScript = `
+        (function() {
+          return new Promise((resolve) => {
+            const duration = ${duration};
+            const layoutShifts = [];
+            const longAnimationFrames = [];
+            const events = [];
+            const start = performance.now();
+
+            const observers = [];
+
+            try {
+              const lsObserver = new PerformanceObserver((list) => {
+                for (const entry of list.getEntries()) {
+                  const sources = [];
+                  if (entry.sources) {
+                    for (const s of entry.sources) {
+                      const node = s.node;
+                      sources.push(node ? (node.id ? '#' + node.id : node.className ? '.' + node.className.split(' ')[0] : node.tagName?.toLowerCase()) : 'unknown');
+                    }
+                  }
+                  layoutShifts.push({
+                    t: Math.round(entry.startTime),
+                    score: parseFloat(entry.value?.toFixed(4) || '0'),
+                    sources,
+                  });
+                }
+              });
+              lsObserver.observe({ type: 'layout-shift', buffered: false });
+              observers.push(lsObserver);
+            } catch (e) {}
+
+            try {
+              const lafObserver = new PerformanceObserver((list) => {
+                for (const entry of list.getEntries()) {
+                  longAnimationFrames.push({
+                    t: Math.round(entry.startTime),
+                    duration: Math.round(entry.duration),
+                    blockingDuration: Math.round(entry.blockingDuration || 0),
+                  });
+                }
+              });
+              lafObserver.observe({ type: 'long-animation-frame', buffered: false });
+              observers.push(lafObserver);
+            } catch (e) {}
+
+            try {
+              const eventObserver = new PerformanceObserver((list) => {
+                for (const entry of list.getEntries()) {
+                  events.push({
+                    t: Math.round(entry.startTime),
+                    name: entry.name,
+                    processingDuration: Math.round((entry.processingEnd || 0) - (entry.processingStart || 0)),
+                    duration: Math.round(entry.duration),
+                  });
+                }
+              });
+              eventObserver.observe({ type: 'event', buffered: false });
+              observers.push(eventObserver);
+            } catch (e) {}
+
+            setTimeout(() => {
+              for (const obs of observers) obs.disconnect();
+              resolve(JSON.stringify({ layoutShifts, longAnimationFrames, events }));
+            }, duration);
+          });
+        })()
+      `;
+
+      const result = await cdp.evaluateScript(tabId, perfScript);
+      if (result.exceptionDetails) {
+        throw new Error(result.exceptionDetails.text || result.exceptionDetails.exception?.description || "perf-audit failed");
+      }
+
+      let perfData;
+      try {
+        perfData = JSON.parse(result.result?.value || "{}");
+      } catch {
+        perfData = result.result?.value;
+      }
+      return { perfData };
+    }
+
     default:
       throw new Error(`Unknown message type: ${message.type}`);
   }
