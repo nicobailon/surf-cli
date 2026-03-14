@@ -17,6 +17,64 @@ let SOCKET_PATH = process.env.SURF_SOCKET || (IS_WIN ? "//./pipe/surf" : "/tmp/s
 if (IS_WIN) { try { fs.mkdirSync(SURF_TMP, { recursive: true }); } catch {} }
 
 // ============================================================================
+// Browser Lock — serialize concurrent agent access to the same socket
+// Inspired by github.com/m13v/browser-lock (atomic mkdir mutex)
+// ============================================================================
+
+const LOCK_EXPIRY_MS = 30000;    // 30s — stale lock expiry
+const LOCK_POLL_MS = 500;        // poll interval while waiting
+const LOCK_MAX_WAIT_MS = 60000;  // give up after 60s
+
+function getLockDir() {
+  const hash = require("crypto").createHash("md5").update(SOCKET_PATH).digest("hex").slice(0, 12);
+  return path.join(SURF_TMP, `surf-lock-${hash}.d`);
+}
+
+function tryAcquireLock(lockDir) {
+  try {
+    fs.mkdirSync(lockDir);
+    fs.writeFileSync(path.join(lockDir, "info"), JSON.stringify({ pid: process.pid, timestamp: Date.now() }));
+    return true;
+  } catch (e) {
+    if (e.code !== "EEXIST") throw e;
+    try {
+      const info = JSON.parse(fs.readFileSync(path.join(lockDir, "info"), "utf8"));
+      if (Date.now() - info.timestamp > LOCK_EXPIRY_MS) {
+        try { fs.unlinkSync(path.join(lockDir, "info")); } catch {}
+        try { fs.rmdirSync(lockDir); } catch {}
+        return tryAcquireLock(lockDir);
+      }
+    } catch {
+      try {
+        const stat = fs.statSync(lockDir);
+        if (Date.now() - stat.mtimeMs > LOCK_EXPIRY_MS) {
+          try { fs.unlinkSync(path.join(lockDir, "info")); } catch {}
+          try { fs.rmdirSync(lockDir); } catch {}
+          return tryAcquireLock(lockDir);
+        }
+      } catch {}
+    }
+    return false;
+  }
+}
+
+function acquireLock() {
+  const lockDir = getLockDir();
+  const deadline = Date.now() + LOCK_MAX_WAIT_MS;
+  while (Date.now() < deadline) {
+    if (tryAcquireLock(lockDir)) return true;
+    try { execSync(`sleep 0.5`, { stdio: "ignore" }); } catch {}
+  }
+  return false;
+}
+
+function releaseLock() {
+  const lockDir = getLockDir();
+  try { fs.unlinkSync(path.join(lockDir, "info")); } catch {}
+  try { fs.rmdirSync(lockDir); } catch {}
+}
+
+// ============================================================================
 // Workflow Resolution and Management
 // ============================================================================
 
@@ -1813,10 +1871,12 @@ TIPS
   - Use --tab-id <id> to target a specific tab
   - Use --window-id <id> to isolate from user's browsing
 
-PARALLEL SESSIONS (multiple agents)
-  SURF_SOCKET=/tmp/surf-qa.sock surf navigate "URL"   Run agent on separate socket
-  surf --socket /tmp/surf-qa.sock navigate "URL"       Same via flag
-  NOTE: Each socket needs its own host process. Start host with SURF_SOCKET set.`);
+MULTI-AGENT WORKFLOWS
+  Built-in lock: surf serializes concurrent requests automatically.
+  Agents wait (up to 60s) if another agent is mid-request.
+  surf navigate "URL" --no-lock            Bypass lock if needed
+  Use --window-id to isolate agents in separate browser windows.
+  SURF_SOCKET=/tmp/surf-qa.sock surf ...   Custom socket path (advanced)`);
   process.exit(0);
 }
 
@@ -2487,7 +2547,7 @@ if (args[0] === "workflow.validate") {
   }
 }
 
-const BOOLEAN_FLAGS = ["auto-capture", "json", "stream", "dry-run", "stop-on-error", "fail-fast", "clear", "submit", "all", "case-sensitive", "hard", "annotate", "fullpage", "full-page", "reset", "no-screenshot", "full", "soft-fail", "has-body", "exclude-static", "v", "vv", "request", "by-tab", "har", "jsonl", "no-save", "no-auto-wait"];
+const BOOLEAN_FLAGS = ["auto-capture", "json", "stream", "dry-run", "stop-on-error", "fail-fast", "clear", "submit", "all", "case-sensitive", "hard", "annotate", "fullpage", "full-page", "reset", "no-screenshot", "full", "soft-fail", "has-body", "exclude-static", "v", "vv", "request", "by-tab", "har", "jsonl", "no-save", "no-auto-wait", "no-lock"];
 
 const AUTO_SCREENSHOT_TOOLS = ["click", "type", "key", "smart_type", "form.fill", "form_input", "drag", "hover", "scroll", "scroll.top", "scroll.bottom", "scroll.to", "dialog.accept", "dialog.dismiss", "js", "eval"];
 
@@ -3011,6 +3071,16 @@ const performAutoCapture = async () => {
     console.error(`Auto-capture failed: ${captureErr.message}`);
   }
 };
+
+// Acquire browser lock unless --no-lock
+const useLock = !options["no-lock"];
+if (useLock) {
+  if (!acquireLock()) {
+    console.error("Error: Timed out waiting for browser lock (another agent may be stuck). Use --no-lock to bypass.");
+    process.exit(1);
+  }
+}
+process.on("exit", () => { if (useLock) releaseLock(); });
 
 const socket = net.createConnection(SOCKET_PATH, () => {
   socket.write(JSON.stringify(request) + "\n");
