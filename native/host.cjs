@@ -371,10 +371,38 @@ if (!IS_WIN) {
   try { fs.writeFileSync(LOCK_PATH, String(process.pid)); } catch {}
 }
 
-const pendingRequests = new Map();
-const pendingToolRequests = new Map();
+// Wrap Maps to auto-stamp _createdAt on every entry (H2)
+function createTimestampedMap() {
+  const map = new Map();
+  const origSet = map.set.bind(map);
+  map.set = (key, value) => {
+    if (value && typeof value === "object") value._createdAt = Date.now();
+    return origSet(key, value);
+  };
+  return map;
+}
+const pendingRequests = createTimestampedMap();
+const pendingToolRequests = createTimestampedMap();
 const activeStreams = new Map();
 let requestCounter = 0;
+
+// H2: Sweep stale pending entries every 10 seconds (30s TTL)
+const PENDING_TTL_MS = 30000;
+setInterval(() => {
+  const now = Date.now();
+  for (const [id, entry] of pendingToolRequests.entries()) {
+    if (entry._createdAt && now - entry._createdAt > PENDING_TTL_MS) {
+      log(`Sweeping stale pendingToolRequest id=${id} (age=${now - entry._createdAt}ms)`);
+      pendingToolRequests.delete(id);
+    }
+  }
+  for (const [id, entry] of pendingRequests.entries()) {
+    if (entry._createdAt && now - entry._createdAt > PENDING_TTL_MS) {
+      log(`Sweeping stale pendingRequest id=${id} (age=${now - entry._createdAt}ms)`);
+      pendingRequests.delete(id);
+    }
+  }
+}, 10000).unref();
 
 function sendToolResponse(socket, id, result, error) {
   const response = { type: "tool_response", id };
