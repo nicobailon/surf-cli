@@ -5,6 +5,7 @@ const fs = require("fs");
 const path = require("path");
 const os = require("os");
 const https = require("https");
+const crypto = require("crypto");
 const { execSync } = require("child_process");
 const { GoogleGenerativeAI } = require("@google/generative-ai");
 const chatgptClient = require("./chatgpt-client.cjs");
@@ -18,7 +19,16 @@ const { mapToolToMessage, mapComputerAction, formatToolContent } = require("./ho
 const IS_WIN = process.platform === "win32";
 const SURF_TMP = IS_WIN ? path.join(os.tmpdir(), "surf") : path.join(os.tmpdir(), "surf");
 const SOCKET_PATH = IS_WIN ? "//./pipe/surf" : path.join(os.tmpdir(), "surf.sock");
+const TOKEN_PATH = SOCKET_PATH + ".token";
 try { fs.mkdirSync(SURF_TMP, { recursive: true }); } catch {}
+
+// H1/C3/C4: Generate socket auth token on startup
+const SOCKET_AUTH_TOKEN = crypto.randomBytes(32).toString("hex");
+try {
+  fs.writeFileSync(TOKEN_PATH, SOCKET_AUTH_TOKEN, { mode: 0o600 });
+} catch (e) {
+  // Token file write failed - log when log() is available (below)
+}
 
 // C2: Validate that save paths are within allowed directories
 const SAFE_SAVE_DIRS = [os.tmpdir(), SURF_TMP];
@@ -1692,6 +1702,7 @@ process.stdin.on("end", () => {
     }
   }
   if (!IS_WIN && LOCK_PATH) { try { fs.unlinkSync(LOCK_PATH); } catch {} }
+  try { fs.unlinkSync(TOKEN_PATH); } catch {}
   process.exit(0);
 });
 
@@ -1705,9 +1716,10 @@ process.stdout.on("error", (err) => {
 
 const server = net.createServer((socket) => {
   log("CLI client connected");
-  connectedSockets.add(socket);
+  let authenticated = false;
+
   socket.on("close", () => connectedSockets.delete(socket));
-  
+
   let dataBuffer = "";
 
   socket.on("data", (data) => {
@@ -1719,7 +1731,23 @@ const server = net.createServer((socket) => {
       if (!line.trim()) continue;
       try {
         const msg = JSON.parse(line);
-        
+
+        // H1/C3/C4: Require auth as first message
+        if (!authenticated) {
+          if (msg.type === "auth" && msg.token === SOCKET_AUTH_TOKEN) {
+            authenticated = true;
+            connectedSockets.add(socket);
+            socket.write(JSON.stringify({ type: "auth_ok" }) + "\n");
+            log("CLI client authenticated");
+            continue;
+          } else {
+            log("CLI client failed auth — disconnecting");
+            socket.write(JSON.stringify({ error: "Authentication required. Send {type:'auth',token:'...'} as first message." }) + "\n");
+            socket.end();
+            return;
+          }
+        }
+
         if (msg.type === "GET_AUTH") {
           log("Handling GET_AUTH locally");
           try {
@@ -1827,6 +1855,7 @@ function cleanupAndExit(signal) {
   server.close();
   if (!IS_WIN) {
     try { fs.unlinkSync(SOCKET_PATH); } catch {}
+    try { fs.unlinkSync(TOKEN_PATH); } catch {}
     if (LOCK_PATH) { try { fs.unlinkSync(LOCK_PATH); } catch {} }
   }
   process.exit(0);

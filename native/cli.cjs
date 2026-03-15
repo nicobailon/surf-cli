@@ -17,6 +17,58 @@ const SURF_TMP = IS_WIN ? path.join(os.tmpdir(), "surf") : path.join(os.tmpdir()
 try { fs.mkdirSync(SURF_TMP, { recursive: true }); } catch {}
 let SOCKET_PATH = process.env.SURF_SOCKET || (IS_WIN ? "//./pipe/surf" : path.join(os.tmpdir(), "surf.sock"));
 
+// H1/C3/C4: Read socket auth token
+function getSocketToken() {
+  const tokenPath = SOCKET_PATH + ".token";
+  try {
+    return fs.readFileSync(tokenPath, "utf8").trim();
+  } catch {
+    return null;
+  }
+}
+
+// Create an authenticated socket connection — sends auth, waits for auth_ok, then calls onReady
+function createAuthenticatedConnection(onReady, onError) {
+  const token = getSocketToken();
+  if (!token) {
+    const err = new Error("No socket auth token found. Is the native host running?");
+    if (onError) return onError(err);
+    throw err;
+  }
+  const sock = net.createConnection(SOCKET_PATH, () => {
+    sock.write(JSON.stringify({ type: "auth", token }) + "\n");
+  });
+  let authBuf = "";
+  const onAuthData = (data) => {
+    authBuf += data.toString();
+    const idx = authBuf.indexOf("\n");
+    if (idx === -1) return;
+    const line = authBuf.slice(0, idx);
+    authBuf = authBuf.slice(idx + 1);
+    sock.removeListener("data", onAuthData);
+    try {
+      const resp = JSON.parse(line);
+      if (resp.type === "auth_ok") {
+        // Re-emit any leftover data
+        if (authBuf) sock.unshift(Buffer.from(authBuf));
+        onReady(sock);
+      } else {
+        sock.end();
+        const err = new Error(resp.error || "Socket authentication failed");
+        if (onError) onError(err);
+      }
+    } catch (e) {
+      sock.end();
+      if (onError) onError(e);
+    }
+  };
+  sock.on("data", onAuthData);
+  sock.on("error", (err) => {
+    if (onError) onError(err);
+  });
+  return sock;
+}
+
 // ============================================================================
 // Workflow Resolution and Management
 // ============================================================================
@@ -1957,7 +2009,7 @@ if (args.includes("--script")) {
 
   const sendScriptRequest = (toolName, toolArgs = {}) => {
     return new Promise((resolve, reject) => {
-      const sock = net.createConnection(SOCKET_PATH, () => {
+      createAuthenticatedConnection((sock) => {
         const req = {
           type: "tool_request",
           method: "execute_tool",
@@ -1966,28 +2018,28 @@ if (args.includes("--script")) {
         };
         if (scriptTabId) req.tabId = parseInt(scriptTabId, 10);
         sock.write(JSON.stringify(req) + "\n");
-      });
-      let buf = "";
-      sock.on("data", (d) => {
-        buf += d.toString();
-        const lines = buf.split("\n");
-        buf = lines.pop();
-        for (const line of lines) {
-          if (!line.trim()) continue;
-          try {
-            const resp = JSON.parse(line);
-            sock.end();
-            resolve(resp);
-          } catch {
-            sock.end();
-            reject(new Error("Invalid JSON"));
+        let buf = "";
+        sock.on("data", (d) => {
+          buf += d.toString();
+          const lines = buf.split("\n");
+          buf = lines.pop();
+          for (const line of lines) {
+            if (!line.trim()) continue;
+            try {
+              const resp = JSON.parse(line);
+              sock.end();
+              resolve(resp);
+            } catch {
+              sock.end();
+              reject(new Error("Invalid JSON"));
+            }
           }
-        }
-      });
-      sock.on("error", (e) => reject(e));
-      let timeoutId;
-      timeoutId = setTimeout(() => { sock.destroy(); reject(new Error("Timeout")); }, 30000);
-      sock.on("close", () => clearTimeout(timeoutId));
+        });
+        sock.on("error", (e) => reject(e));
+        let timeoutId;
+        timeoutId = setTimeout(() => { sock.destroy(); reject(new Error("Timeout")); }, 30000);
+        sock.on("close", () => clearTimeout(timeoutId));
+      }, reject);
     });
   };
 
@@ -2738,7 +2790,7 @@ if (streamMode && (tool === "console" || tool === "network")) {
   let connectionTimeout = null;
   let receivedData = false;
 
-  const sock = net.createConnection(SOCKET_PATH, () => {
+  createAuthenticatedConnection((sock) => {
     const req = {
       type: "stream_request",
       streamType,
@@ -2754,68 +2806,71 @@ if (streamMode && (tool === "console" || tool === "network")) {
         process.exit(1);
       }
     }, 10000);
-  });
 
-  let buf = "";
-  sock.on("data", (d) => {
-    if (!receivedData) {
-      receivedData = true;
-      if (connectionTimeout) {
-        clearTimeout(connectionTimeout);
-        connectionTimeout = null;
+    let buf = "";
+    sock.on("data", (d) => {
+      if (!receivedData) {
+        receivedData = true;
+        if (connectionTimeout) {
+          clearTimeout(connectionTimeout);
+          connectionTimeout = null;
+        }
       }
-    }
-    buf += d.toString();
-    const lines = buf.split("\n");
-    buf = lines.pop();
-    for (const line of lines) {
-      if (!line.trim()) continue;
-      try {
-        const msg = JSON.parse(line);
-        if (msg.error) {
-          console.error("Error:", msg.error);
-          sock.end();
-          process.exit(1);
-        }
-        if (msg.type === "extension_disconnected") {
-          console.error(msg.message);
-          sock.end();
-          process.exit(1);
-        }
-        if (msg.type === "stream_started") {
-          continue;
-        }
-        if (msg.type === "console_event") {
-          const { level, text, timestamp } = msg;
-          if (streamLevel && level !== streamLevel) continue;
-          console.log(`[console] [${level}] ${formatTime(timestamp)} ${text}`);
-        } else if (msg.type === "network_event") {
-          const { method, url, status, duration } = msg;
-          if (streamFilter && !url.includes(streamFilter)) continue;
-          const statusStr = status !== undefined ? status : "...";
-          const durationStr = duration !== undefined ? ` (${duration}ms)` : "";
-          console.log(`[network] ${method} ${url} ${statusStr}${durationStr}`);
-        }
-      } catch {}
-    }
-  });
+      buf += d.toString();
+      const lines = buf.split("\n");
+      buf = lines.pop();
+      for (const line of lines) {
+        if (!line.trim()) continue;
+        try {
+          const msg = JSON.parse(line);
+          if (msg.error) {
+            console.error("Error:", msg.error);
+            sock.end();
+            process.exit(1);
+          }
+          if (msg.type === "extension_disconnected") {
+            console.error(msg.message);
+            sock.end();
+            process.exit(1);
+          }
+          if (msg.type === "stream_started") {
+            continue;
+          }
+          if (msg.type === "console_event") {
+            const { level, text, timestamp } = msg;
+            if (streamLevel && level !== streamLevel) continue;
+            console.log(`[console] [${level}] ${formatTime(timestamp)} ${text}`);
+          } else if (msg.type === "network_event") {
+            const { method, url, status, duration } = msg;
+            if (streamFilter && !url.includes(streamFilter)) continue;
+            const statusStr = status !== undefined ? status : "...";
+            const durationStr = duration !== undefined ? ` (${duration}ms)` : "";
+            console.log(`[network] ${method} ${url} ${statusStr}${durationStr}`);
+          }
+        } catch {}
+      }
+    });
 
-  sock.on("error", (e) => {
-    if (e.code === "ENOENT") {
-      console.error(`Error: Socket not found at ${SOCKET_PATH}. Is Chrome running with the extension?`);
-      console.error("  Tip: Use SURF_SOCKET env var or --socket flag to specify a custom socket path");
-    } else if (e.code === "ECONNREFUSED") {
-      console.error(`Error: Connection refused at ${SOCKET_PATH}. Native host not running.`);
-    } else {
-      console.error("Error:", e.message);
-    }
+    sock.on("error", (e) => {
+      if (e.code === "ENOENT") {
+        console.error(`Error: Socket not found at ${SOCKET_PATH}. Is Chrome running with the extension?`);
+        console.error("  Tip: Use SURF_SOCKET env var or --socket flag to specify a custom socket path");
+      } else if (e.code === "ECONNREFUSED") {
+        console.error(`Error: Connection refused at ${SOCKET_PATH}. Native host not running.`);
+      } else {
+        console.error("Error:", e.message);
+      }
+      process.exit(1);
+    });
+
+    process.on("SIGINT", () => {
+      sock.write(JSON.stringify({ type: "stream_stop" }) + "\n");
+      sock.end();
+      process.exit(0);
+    });
+  }, (err) => {
+    console.error("Error:", err.message);
     process.exit(1);
-  });
-
-  process.on("SIGINT", () => {
-    sock.write(JSON.stringify({ type: "stream_stop" }) + "\n");
-    sock.end();
-    process.exit(0);
   });
 
   return;
@@ -2831,7 +2886,7 @@ const request = {
 
 const sendRequest = (toolName, toolArgs = {}) => {
   return new Promise((resolve, reject) => {
-    const sock = net.createConnection(SOCKET_PATH, () => {
+    createAuthenticatedConnection((sock) => {
       const req = {
         type: "tool_request",
         method: "execute_tool",
@@ -2840,33 +2895,33 @@ const sendRequest = (toolName, toolArgs = {}) => {
         ...globalOpts,
       };
       sock.write(JSON.stringify(req) + "\n");
-    });
-    let buf = "";
-    sock.on("data", (d) => {
-      buf += d.toString();
-      const lines = buf.split("\n");
-      buf = lines.pop();
-      for (const line of lines) {
-        if (!line.trim()) continue;
-        try {
-          const resp = JSON.parse(line);
-          if (resp.type === "extension_disconnected") {
+      let buf = "";
+      sock.on("data", (d) => {
+        buf += d.toString();
+        const lines = buf.split("\n");
+        buf = lines.pop();
+        for (const line of lines) {
+          if (!line.trim()) continue;
+          try {
+            const resp = JSON.parse(line);
+            if (resp.type === "extension_disconnected") {
+              sock.end();
+              reject(new Error(resp.message));
+              return;
+            }
             sock.end();
-            reject(new Error(resp.message));
-            return;
+            resolve(resp);
+          } catch {
+            sock.end();
+            reject(new Error("Invalid JSON"));
           }
-          sock.end();
-          resolve(resp);
-        } catch {
-          sock.end();
-          reject(new Error("Invalid JSON"));
         }
-      }
-    });
-    sock.on("error", (e) => reject(e));
-    let timeoutId;
-    timeoutId = setTimeout(() => { sock.destroy(); reject(new Error("Timeout")); }, 5000);
-    sock.on("close", () => clearTimeout(timeoutId));
+      });
+      sock.on("error", (e) => reject(e));
+      let timeoutId;
+      timeoutId = setTimeout(() => { sock.destroy(); reject(new Error("Timeout")); }, 5000);
+      sock.on("close", () => clearTimeout(timeoutId));
+    }, reject);
   });
 };
 
@@ -2906,67 +2961,79 @@ const performAutoCapture = async () => {
   }
 };
 
-const socket = net.createConnection(SOCKET_PATH, () => {
-  socket.write(JSON.stringify(request) + "\n");
-});
-
 const AI_TOOLS = ["smoke", "chatgpt", "gemini", "perplexity", "grok", "aistudio", "aistudio.build", "ai"];
 let requestTimeout = AI_TOOLS.includes(tool) ? 300000 : 30000;
 if (tool === "aistudio.build") {
   const userTimeoutSec = parseInt(options.timeout || "600", 10);
   requestTimeout = (userTimeoutSec * 1000) + 60000;
 }
-const timeout = setTimeout(() => {
-  console.error(`Error: Request timed out (${requestTimeout / 1000}s)`);
-  socket.destroy();
-  process.exit(1);
-}, requestTimeout);
+let timeout;
+let socket;
 
-let buffer = "";
+createAuthenticatedConnection((sock) => {
+  socket = sock;
+  socket.write(JSON.stringify(request) + "\n");
 
-socket.on("data", (data) => {
-  buffer += data.toString();
-  const lines = buffer.split("\n");
-  buffer = lines.pop();
+  timeout = setTimeout(() => {
+    console.error(`Error: Request timed out (${requestTimeout / 1000}s)`);
+    socket.destroy();
+    process.exit(1);
+  }, requestTimeout);
 
-  for (const line of lines) {
-    if (!line.trim()) continue;
-    try {
-      const msg = JSON.parse(line);
-      
-      if (msg.type === "extension_disconnected") {
-        clearTimeout(timeout);
-        console.error(msg.message);
-        socket.end();
+  let buffer = "";
+
+  socket.on("data", (data) => {
+    buffer += data.toString();
+    const lines = buffer.split("\n");
+    buffer = lines.pop();
+
+    for (const line of lines) {
+      if (!line.trim()) continue;
+      try {
+        const msg = JSON.parse(line);
+
+        if (msg.type === "extension_disconnected") {
+          clearTimeout(timeout);
+          console.error(msg.message);
+          socket.end();
+          process.exit(1);
+        }
+
+        handleResponse(msg).catch((err) => {
+          console.error("Handler error:", err.message);
+          process.exit(1);
+        });
+      } catch (e) {
+        console.error("Invalid JSON response:", line);
         process.exit(1);
       }
-      
-      handleResponse(msg).catch((err) => {
-        console.error("Handler error:", err.message);
-        process.exit(1);
-      });
-    } catch (e) {
-      console.error("Invalid JSON response:", line);
-      process.exit(1);
     }
-  }
-});
+  });
 
-socket.on("error", (err) => {
-  clearTimeout(timeout);
+  socket.on("error", (err) => {
+    clearTimeout(timeout);
+    if (err.code === "ENOENT") {
+      console.error(`Error: Socket not found at ${SOCKET_PATH}. Is Chrome running with the extension?`);
+      console.error("  Tip: Use SURF_SOCKET env var or --socket flag to specify a custom socket path");
+    } else if (err.code === "ECONNREFUSED") {
+      console.error(`Error: Connection refused at ${SOCKET_PATH}. Native host not running.`);
+    } else {
+      console.error("Error:", err.message);
+    }
+    process.exit(1);
+  });
+
+  socket.on("close", () => {
+    clearTimeout(timeout);
+  });
+}, (err) => {
   if (err.code === "ENOENT") {
     console.error(`Error: Socket not found at ${SOCKET_PATH}. Is Chrome running with the extension?`);
     console.error("  Tip: Use SURF_SOCKET env var or --socket flag to specify a custom socket path");
-  } else if (err.code === "ECONNREFUSED") {
-    console.error(`Error: Connection refused at ${SOCKET_PATH}. Native host not running.`);
   } else {
     console.error("Error:", err.message);
   }
   process.exit(1);
-});
-
-socket.on("close", () => {
-  clearTimeout(timeout);
 });
 
 async function handleResponse(response) {

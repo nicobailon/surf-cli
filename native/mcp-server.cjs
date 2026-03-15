@@ -1,11 +1,18 @@
 #!/usr/bin/env node
 "use strict";
 const net = require("net");
+const fs = require("fs");
+const path = require("path");
+const os = require("os");
 const { McpServer } = require("@modelcontextprotocol/sdk/server/mcp.js");
 const { StdioServerTransport } = require("@modelcontextprotocol/sdk/server/stdio.js");
 const { z } = require("zod");
 
-const SOCKET_PATH = process.platform === "win32" ? "//./pipe/surf" : "/tmp/surf.sock";
+const SOCKET_PATH = process.platform === "win32" ? "//./pipe/surf" : path.join(os.tmpdir(), "surf.sock");
+
+function getSocketToken() {
+  try { return fs.readFileSync(SOCKET_PATH + ".token", "utf8").trim(); } catch { return null; }
+}
 const REQUEST_TIMEOUT = 30000;
 
 const TOOL_SCHEMAS = {
@@ -269,16 +276,15 @@ const TOOL_SCHEMAS = {
 
 function sendSocketRequest(tool, args = {}) {
   return new Promise((resolve, reject) => {
+    const token = getSocketToken();
+    if (!token) return reject(new Error("No socket auth token found. Is the native host running?"));
+
     const sock = net.createConnection(SOCKET_PATH, () => {
-      const req = {
-        type: "tool_request",
-        method: "execute_tool",
-        params: { tool, args },
-        id: "mcp-" + Date.now() + "-" + Math.random()
-      };
-      sock.write(JSON.stringify(req) + "\n");
+      // Authenticate first
+      sock.write(JSON.stringify({ type: "auth", token }) + "\n");
     });
 
+    let authenticated = false;
     let buf = "";
     const timeout = setTimeout(() => {
       sock.destroy();
@@ -292,8 +298,27 @@ function sendSocketRequest(tool, args = {}) {
       for (const line of lines) {
         if (!line.trim()) continue;
         try {
-          clearTimeout(timeout);
           const resp = JSON.parse(line);
+          if (!authenticated) {
+            if (resp.type === "auth_ok") {
+              authenticated = true;
+              // Now send the actual request
+              const req = {
+                type: "tool_request",
+                method: "execute_tool",
+                params: { tool, args },
+                id: "mcp-" + Date.now() + "-" + Math.random()
+              };
+              sock.write(JSON.stringify(req) + "\n");
+              continue;
+            } else {
+              clearTimeout(timeout);
+              sock.end();
+              reject(new Error(resp.error || "Socket auth failed"));
+              return;
+            }
+          }
+          clearTimeout(timeout);
           sock.end();
           resolve(resp);
         } catch {
