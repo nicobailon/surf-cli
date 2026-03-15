@@ -305,7 +305,43 @@ const log = (msg) => {
 
 log("Host starting...");
 
-if (!IS_WIN) { try { fs.unlinkSync(SOCKET_PATH); } catch {} }
+// Safe socket cleanup: only remove if no other host is actively listening
+const LOCK_PATH = IS_WIN ? null : SOCKET_PATH + ".pid";
+
+if (!IS_WIN) {
+  if (fs.existsSync(SOCKET_PATH)) {
+    let ownerAlive = false;
+
+    // Check PID lockfile to see if another host owns this socket
+    if (fs.existsSync(LOCK_PATH)) {
+      try {
+        const ownerPid = parseInt(fs.readFileSync(LOCK_PATH, "utf8").trim(), 10);
+        if (ownerPid && ownerPid !== process.pid) {
+          try {
+            process.kill(ownerPid, 0); // signal 0 = just check if alive
+            ownerAlive = true;
+            log(`Another host (PID ${ownerPid}) is alive. Exiting to avoid socket conflict.`);
+            writeMessage({ type: "HOST_DUPLICATE", existingPid: ownerPid });
+            process.exit(0);
+          } catch {
+            log(`Owner PID ${ownerPid} is dead. Taking over stale socket.`);
+          }
+        }
+      } catch {
+        log("Could not read PID lockfile. Cleaning up stale socket.");
+      }
+    } else {
+      log("No PID lockfile found. Cleaning up orphaned socket.");
+    }
+
+    if (!ownerAlive) {
+      try { fs.unlinkSync(SOCKET_PATH); } catch {}
+    }
+  }
+
+  // Write our PID lockfile
+  try { fs.writeFileSync(LOCK_PATH, String(process.pid)); } catch {}
+}
 
 const pendingRequests = new Map();
 const pendingToolRequests = new Map();
@@ -1584,6 +1620,7 @@ process.stdin.on("end", () => {
       // Socket may already be closed
     }
   }
+  if (!IS_WIN && LOCK_PATH) { try { fs.unlinkSync(LOCK_PATH); } catch {} }
   process.exit(0);
 });
 
@@ -1714,19 +1751,18 @@ server.on("error", (err) => {
   log(`Server error: ${err.message}`);
 });
 
-process.on("SIGTERM", () => {
-  log("SIGTERM received");
+function cleanupAndExit(signal) {
+  log(`${signal} received`);
   server.close();
-  if (!IS_WIN) { try { fs.unlinkSync(SOCKET_PATH); } catch {} }
+  if (!IS_WIN) {
+    try { fs.unlinkSync(SOCKET_PATH); } catch {}
+    if (LOCK_PATH) { try { fs.unlinkSync(LOCK_PATH); } catch {} }
+  }
   process.exit(0);
-});
+}
 
-process.on("SIGINT", () => {
-  log("SIGINT received");
-  server.close();
-  if (!IS_WIN) { try { fs.unlinkSync(SOCKET_PATH); } catch {} }
-  process.exit(0);
-});
+process.on("SIGTERM", () => cleanupAndExit("SIGTERM"));
+process.on("SIGINT", () => cleanupAndExit("SIGINT"));
 
 process.on("uncaughtException", (err) => {
   log(`Uncaught exception: ${err.message}\n${err.stack}`);
