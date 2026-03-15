@@ -227,13 +227,31 @@ class GeminiClient {
 
 
 
+const API_ALLOWED_HOSTS = new Set([
+  "generativelanguage.googleapis.com",
+  "api.openai.com",
+  "api.anthropic.com",
+  "api.perplexity.ai",
+  "api.x.ai",
+  "api.groq.com",
+]);
+
 async function handleApiRequest(msg, sendResponse) {
   const { url, method, headers, body, streamId } = msg;
-  
+
   log(`API_REQUEST: ${method} ${url} streamId=${streamId}`);
-  
+
   try {
     const urlObj = new URL(url);
+    if (!API_ALLOWED_HOSTS.has(urlObj.hostname)) {
+      log(`API_REQUEST blocked: hostname ${urlObj.hostname} not in allowlist`);
+      sendResponse({
+        type: "API_RESPONSE_ERROR",
+        streamId,
+        error: `Hostname not allowed: ${urlObj.hostname}. Allowed: ${[...API_ALLOWED_HOSTS].join(", ")}`,
+      });
+      return;
+    }
     const options = {
       hostname: urlObj.hostname,
       port: urlObj.port || 443,
