@@ -16,9 +16,9 @@ const aistudioBuild = require("./aistudio-build.cjs");
 const { mapToolToMessage, mapComputerAction, formatToolContent } = require("./host-helpers.cjs");
 
 const IS_WIN = process.platform === "win32";
-const SURF_TMP = IS_WIN ? path.join(os.tmpdir(), "surf") : "/tmp";
-const SOCKET_PATH = IS_WIN ? "//./pipe/surf" : "/tmp/surf.sock";
-if (IS_WIN) { try { fs.mkdirSync(SURF_TMP, { recursive: true }); } catch {} }
+const SURF_TMP = IS_WIN ? path.join(os.tmpdir(), "surf") : path.join(os.tmpdir(), "surf");
+const SOCKET_PATH = IS_WIN ? "//./pipe/surf" : path.join(os.tmpdir(), "surf.sock");
+try { fs.mkdirSync(SURF_TMP, { recursive: true }); } catch {}
 
 // Cross-platform image resize (macOS: sips, Linux: ImageMagick)
 // Uses execFileSync with argument arrays to prevent command injection (C1 audit fix)

@@ -13,9 +13,9 @@ const { executeDoSteps } = require("./do-executor.cjs");
 const { version: VERSION } = require("../package.json");
 
 const IS_WIN = process.platform === "win32";
-const SURF_TMP = IS_WIN ? path.join(os.tmpdir(), "surf") : "/tmp";
-if (IS_WIN) { try { fs.mkdirSync(SURF_TMP, { recursive: true }); } catch {} }
-let SOCKET_PATH = process.env.SURF_SOCKET || (IS_WIN ? "//./pipe/surf" : "/tmp/surf.sock");
+const SURF_TMP = IS_WIN ? path.join(os.tmpdir(), "surf") : path.join(os.tmpdir(), "surf");
+try { fs.mkdirSync(SURF_TMP, { recursive: true }); } catch {}
+let SOCKET_PATH = process.env.SURF_SOCKET || (IS_WIN ? "//./pipe/surf" : path.join(os.tmpdir(), "surf.sock"));
 
 // ============================================================================
 // Workflow Resolution and Management
