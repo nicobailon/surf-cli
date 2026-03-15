@@ -300,7 +300,16 @@ async function handleApiRequest(msg, sendResponse) {
   }
 }
 
+const LOG_MAX_BYTES = 10 * 1024 * 1024; // 10 MB
 const log = (msg) => {
+  try {
+    const stats = fs.statSync(LOG_FILE);
+    if (stats.size > LOG_MAX_BYTES) {
+      const rotated = LOG_FILE + ".1";
+      try { fs.unlinkSync(rotated); } catch {}
+      fs.renameSync(LOG_FILE, rotated);
+    }
+  } catch {}
   fs.appendFileSync(LOG_FILE, `${new Date().toISOString()} ${msg}\n`);
 };
 
