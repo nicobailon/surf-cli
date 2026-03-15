@@ -169,7 +169,7 @@ function createWrapper(wrapperDir, nodePath, hostPath) {
 
   if (platform === "win32") {
     const batPath = path.join(wrapperDir, "host-wrapper.bat");
-    const content = `@echo off\r\n"${nodePath}" "${hostPath}"\r\n`;
+    const content = `@echo off\r\n"${nodePath}" "${hostPath}" %*\r\n`;
     fs.writeFileSync(batPath, content);
     return batPath;
   } else {
@@ -177,7 +177,7 @@ function createWrapper(wrapperDir, nodePath, hostPath) {
     const hostDir = path.dirname(hostPath);
     const content = `#!/bin/bash
 cd "${hostDir}"
-exec "${nodePath}" "${hostPath}"
+exec "${nodePath}" "${hostPath}" "$@"
 `;
     fs.writeFileSync(shPath, content);
     fs.chmodSync(shPath, "755");

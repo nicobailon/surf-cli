@@ -13,8 +13,8 @@ const { version: VERSION } = require("../package.json");
 
 const IS_WIN = process.platform === "win32";
 const SURF_TMP = IS_WIN ? path.join(os.tmpdir(), "surf") : "/tmp";
-const SOCKET_PATH = IS_WIN ? "//./pipe/surf" : "/tmp/surf.sock";
 if (IS_WIN) { try { fs.mkdirSync(SURF_TMP, { recursive: true }); } catch {} }
+let SOCKET_PATH = process.env.SURF_SOCKET || (IS_WIN ? "//./pipe/surf" : "/tmp/surf.sock");
 
 // ============================================================================
 // Workflow Resolution and Management
@@ -2795,7 +2795,10 @@ if (streamMode && (tool === "console" || tool === "network")) {
 
   sock.on("error", (e) => {
     if (e.code === "ENOENT") {
-      console.error("Error: Socket not found. Is Chrome running with the extension?");
+      console.error(`Error: Socket not found at ${SOCKET_PATH}. Is Chrome running with the extension?`);
+      console.error("  Tip: Use SURF_SOCKET env var or --socket flag to specify a custom socket path");
+    } else if (e.code === "ECONNREFUSED") {
+      console.error(`Error: Connection refused at ${SOCKET_PATH}. Native host not running.`);
     } else {
       console.error("Error:", e.message);
     }
@@ -2945,9 +2948,10 @@ socket.on("data", (data) => {
 socket.on("error", (err) => {
   clearTimeout(timeout);
   if (err.code === "ENOENT") {
-    console.error("Error: Socket not found. Is Chrome running with the extension?");
+    console.error(`Error: Socket not found at ${SOCKET_PATH}. Is Chrome running with the extension?`);
+    console.error("  Tip: Use SURF_SOCKET env var or --socket flag to specify a custom socket path");
   } else if (err.code === "ECONNREFUSED") {
-    console.error("Error: Connection refused. Native host not running.");
+    console.error(`Error: Connection refused at ${SOCKET_PATH}. Native host not running.`);
   } else {
     console.error("Error:", err.message);
   }
