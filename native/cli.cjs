@@ -260,32 +260,38 @@ function formatStep(step, indent = 0) {
 }
 
 // Cross-platform image resize (macOS: sips, Linux: ImageMagick)
+// Uses execFileSync with argument arrays to prevent command injection (C1 audit fix)
 function resizeImage(filePath, maxSize) {
   const platform = process.platform;
-  
+  const safeMaxSize = String(parseInt(maxSize, 10));
+  if (safeMaxSize === "NaN" || parseInt(safeMaxSize, 10) <= 0) {
+    return { success: false, error: "Invalid maxSize" };
+  }
+  if (/[`$]/.test(filePath)) {
+    return { success: false, error: "Invalid file path" };
+  }
+
   try {
     if (platform === "darwin") {
-      // macOS: use sips
-      execSync(`sips --resampleHeightWidthMax ${maxSize} "${filePath}" --out "${filePath}" 2>/dev/null`, { stdio: "pipe" });
-      const sizeInfo = execSync(`sips -g pixelWidth -g pixelHeight "${filePath}" 2>/dev/null`, { encoding: "utf8" });
+      const { execFileSync } = require("child_process");
+      execFileSync("sips", ["--resampleHeightWidthMax", safeMaxSize, filePath, "--out", filePath], { stdio: "pipe" });
+      const sizeInfo = execFileSync("sips", ["-g", "pixelWidth", "-g", "pixelHeight", filePath], { encoding: "utf8" });
       const width = parseInt(sizeInfo.match(/pixelWidth:\s*(\d+)/)?.[1] || "0", 10);
       const height = parseInt(sizeInfo.match(/pixelHeight:\s*(\d+)/)?.[1] || "0", 10);
       return { success: true, width, height };
     } else {
-      // Linux/Windows: use ImageMagick (try IM6 first, then IM7)
-      const resizeArg = IS_WIN ? `"${maxSize}x${maxSize}>"` : `${maxSize}x${maxSize}\\>`;
+      const { execFileSync } = require("child_process");
+      const resizeGeometry = `${safeMaxSize}x${safeMaxSize}>`;
       try {
-        execSync(`convert "${filePath}" -resize ${resizeArg} "${filePath}"`, { stdio: "pipe" });
+        execFileSync("convert", [filePath, "-resize", resizeGeometry, filePath], { stdio: "pipe" });
       } catch {
-        // IM7 uses 'magick' as main command
-        execSync(`magick "${filePath}" -resize ${resizeArg} "${filePath}"`, { stdio: "pipe" });
+        execFileSync("magick", [filePath, "-resize", resizeGeometry, filePath], { stdio: "pipe" });
       }
-      // Get dimensions (IM7 may need 'magick identify' instead of just 'identify')
       let sizeInfo;
       try {
-        sizeInfo = execSync(`identify -format "%w %h" "${filePath}"`, { encoding: "utf8" });
+        sizeInfo = execFileSync("identify", ["-format", "%w %h", filePath], { encoding: "utf8" });
       } catch {
-        sizeInfo = execSync(`magick identify -format "%w %h" "${filePath}"`, { encoding: "utf8" });
+        sizeInfo = execFileSync("magick", ["identify", "-format", "%w %h", filePath], { encoding: "utf8" });
       }
       const [width, height] = sizeInfo.trim().split(" ").map(Number);
       return { success: true, width, height };
