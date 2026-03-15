@@ -20,6 +20,15 @@ const SURF_TMP = IS_WIN ? path.join(os.tmpdir(), "surf") : path.join(os.tmpdir()
 const SOCKET_PATH = IS_WIN ? "//./pipe/surf" : path.join(os.tmpdir(), "surf.sock");
 try { fs.mkdirSync(SURF_TMP, { recursive: true }); } catch {}
 
+// C2: Validate that save paths are within allowed directories
+const SAFE_SAVE_DIRS = [os.tmpdir(), SURF_TMP];
+function isSafeSavePath(filePath) {
+  const resolved = path.resolve(filePath);
+  // Allow paths under tmpdir, SURF_TMP, cwd, or home directory
+  const allowed = [...SAFE_SAVE_DIRS, process.cwd(), os.homedir()];
+  return allowed.some((dir) => resolved.startsWith(path.resolve(dir) + path.sep) || resolved === path.resolve(dir));
+}
+
 // Cross-platform image resize (macOS: sips, Linux: ImageMagick)
 // Uses execFileSync with argument arrays to prevent command injection (C1 audit fix)
 function resizeImage(filePath, maxSize) {
@@ -1534,7 +1543,9 @@ function processInput() {
           const tabId = storedTabId || msg._resolvedTabId;
           
           if (savePath && msg.base64) {
-            try {
+            if (!isSafeSavePath(savePath)) {
+              sendToolResponse(socket, originalId, null, `Unsafe save path rejected: ${savePath}`);
+            } else try {
               const dir = path.dirname(savePath);
               if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
               fs.writeFileSync(savePath, Buffer.from(msg.base64, "base64"));
@@ -1607,13 +1618,17 @@ function processInput() {
             setTimeout(() => writeMessage({ type: "EXECUTE_SCREENSHOT", tabId, id: screenshotId }), 500);
             return;
           } else if (msg.results && msg.savePath) {
-            try {
+            if (!isSafeSavePath(msg.savePath)) {
+              sendToolResponse(socket, originalId, null, `Unsafe save path rejected: ${msg.savePath}`);
+            } else try {
               const dir = msg.savePath;
               if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
-              
+
               for (const result of msg.results) {
                 if (result.screenshotBase64 && result.hostname) {
-                  const ssPath = path.join(dir, `${result.hostname}.png`);
+                  // H7: Sanitize hostname to prevent path traversal
+                  const safeHostname = result.hostname.replace(/[^a-zA-Z0-9._-]/g, "_");
+                  const ssPath = path.join(dir, `${safeHostname}.png`);
                   fs.writeFileSync(ssPath, Buffer.from(result.screenshotBase64, "base64"));
                   result.screenshot = ssPath;
                   delete result.screenshotBase64;
