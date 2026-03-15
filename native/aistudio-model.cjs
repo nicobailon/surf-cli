@@ -1,3 +1,4 @@
+"use strict";
 /**
  * AI Studio model selection for surf-cli
  *

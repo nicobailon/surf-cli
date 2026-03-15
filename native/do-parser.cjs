@@ -1,3 +1,4 @@
+"use strict";
 /**
  * Parser for surf `do` workflow commands
  * 

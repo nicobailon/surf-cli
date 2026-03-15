@@ -1,3 +1,4 @@
+"use strict";
 /**
  * Network Storage Module for surf-cli
  * 

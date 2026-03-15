@@ -1,3 +1,4 @@
+"use strict";
 /**
  * Perplexity Web Client for surf-cli
  * 

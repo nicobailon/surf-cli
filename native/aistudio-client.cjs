@@ -1,3 +1,4 @@
+"use strict";
 /**
  * AI Studio Web Client for surf-cli
  *

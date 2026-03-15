@@ -1,3 +1,4 @@
+"use strict";
 const encodeMessage = (obj) => {
   const json = JSON.stringify(obj);
   const buf = Buffer.alloc(4 + Buffer.byteLength(json));

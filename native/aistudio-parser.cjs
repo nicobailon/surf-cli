@@ -1,3 +1,4 @@
+"use strict";
 const AISTUDIO_URL = "https://aistudio.google.com/prompts/new_chat";
 const GENERATE_CONTENT_URL_FRAGMENT =
   "google.internal.alkali.applications.makersuite.v1.MakerSuiteService/GenerateContent";

@@ -1,3 +1,4 @@
+"use strict";
 /**
  * Device presets for emulation (based on Chrome DevTools)
  */

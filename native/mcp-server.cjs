@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+"use strict";
 const net = require("net");
 const { McpServer } = require("@modelcontextprotocol/sdk/server/mcp.js");
 const { StdioServerTransport } = require("@modelcontextprotocol/sdk/server/stdio.js");

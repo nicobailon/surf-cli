@@ -1,3 +1,4 @@
+"use strict";
 const fs = require("fs");
 const networkFormatters = require("./formatters/network.cjs");
 const networkStore = require("./network-store.cjs");

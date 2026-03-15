@@ -1,3 +1,4 @@
+"use strict";
 /**
  * Grok Web Client for surf-cli
  * 

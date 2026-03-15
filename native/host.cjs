@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+"use strict";
 const net = require("net");
 const fs = require("fs");
 const path = require("path");

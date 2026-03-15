@@ -1,3 +1,4 @@
+"use strict";
 const CHATGPT_URL = "https://chatgpt.com/";
 
 const SELECTORS = {

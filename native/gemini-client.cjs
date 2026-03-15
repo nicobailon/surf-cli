@@ -1,3 +1,4 @@
+"use strict";
 /**
  * Gemini Web Client for surf-cli
  * 

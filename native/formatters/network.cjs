@@ -1,3 +1,4 @@
+"use strict";
 // Network request formatters for surf-cli
 
 /**
