@@ -6,6 +6,52 @@ const { execSync, spawnSync } = require("child_process");
 
 const HOST_NAME = "surf.browser.host";
 
+// --- WSL2 detection ---
+
+let _isWSL = null;
+function isWSL() {
+  if (_isWSL !== null) return _isWSL;
+  if (process.platform !== "linux") return (_isWSL = false);
+  try {
+    const ver = fs.readFileSync("/proc/version", "utf8").toLowerCase();
+    _isWSL = ver.includes("microsoft") || ver.includes("wsl");
+  } catch {
+    _isWSL = false;
+  }
+  return _isWSL;
+}
+
+/**
+ * Detect the Windows-side home directory from WSL.
+ * Tries $WIN_HOME, then probes /mnt/c/Users/ for a real user directory.
+ */
+function getWindowsHome() {
+  if (process.env.WIN_HOME && fs.existsSync(process.env.WIN_HOME)) {
+    return process.env.WIN_HOME;
+  }
+  const usersDir = "/mnt/c/Users";
+  try {
+    const entries = fs.readdirSync(usersDir);
+    const skip = new Set(["public", "default", "default user", "all users"]);
+    for (const entry of entries) {
+      if (skip.has(entry.toLowerCase())) continue;
+      if (entry === "desktop.ini") continue;
+      const full = path.join(usersDir, entry);
+      if (fs.statSync(full).isDirectory()) return full;
+    }
+  } catch {}
+  return null;
+}
+
+/** Convert a WSL /mnt/c/... path to a Windows C:\... path. */
+function wslToWinPath(p) {
+  const m = p.match(/^\/mnt\/([a-z])\/(.*)/);
+  if (!m) return p;
+  return `${m[1].toUpperCase()}:\\${m[2].replace(/\//g, "\\")}`;
+}
+
+// --- Browser configs ---
+
 const BROWSERS = {
   chrome: {
     name: "Google Chrome",
@@ -139,7 +185,27 @@ exec "${nodePath}" "${hostPath}"
   }
 }
 
-function installManifest(browser, extensionId, wrapperPath) {
+/**
+ * Read an existing manifest and merge the new extensionId into allowed_origins.
+ * Returns the merged allowed_origins array (deduped).
+ */
+function mergeAllowedOrigins(manifestPath, extensionId) {
+  const newOrigin = `chrome-extension://${extensionId}/`;
+  let existing = [];
+  try {
+    if (fs.existsSync(manifestPath)) {
+      const data = JSON.parse(fs.readFileSync(manifestPath, "utf8"));
+      if (Array.isArray(data.allowed_origins)) {
+        existing = data.allowed_origins;
+      }
+    }
+  } catch {}
+  const set = new Set(existing);
+  set.add(newOrigin);
+  return [...set];
+}
+
+function installManifest(browser, extensionId, wrapperPath, hostPath) {
   const platform = process.platform;
   const browserConfig = BROWSERS[browser];
 
@@ -154,16 +220,27 @@ function installManifest(browser, extensionId, wrapperPath) {
   const manifestDir = path.join(os.homedir(), browserConfig[platform]);
   fs.mkdirSync(manifestDir, { recursive: true });
 
+  const manifestPath = path.join(manifestDir, `${HOST_NAME}.json`);
+  const allowedOrigins = mergeAllowedOrigins(manifestPath, extensionId);
+
   const manifest = {
     name: HOST_NAME,
     description: "Surf CLI Native Host",
     path: wrapperPath,
     type: "stdio",
-    allowed_origins: [`chrome-extension://${extensionId}/`],
+    allowed_origins: allowedOrigins,
   };
 
-  const manifestPath = path.join(manifestDir, `${HOST_NAME}.json`);
   fs.writeFileSync(manifestPath, JSON.stringify(manifest, null, 2));
+
+  // On WSL, also install to the Windows-side path so Chrome.exe can find it
+  if (isWSL()) {
+    const wslResult = installWSLWindowsManifest(browser, extensionId, hostPath);
+    if (wslResult) {
+      console.log(`  (WSL) Windows-side: ${wslResult}`);
+    }
+  }
+
   return manifestPath;
 }
 
@@ -173,13 +250,14 @@ function installWindowsRegistry(browser, extensionId, wrapperPath) {
 
   const manifestDir = getWrapperDir();
   const manifestPath = path.join(manifestDir, `${HOST_NAME}.json`);
+  const allowedOrigins = mergeAllowedOrigins(manifestPath, extensionId);
 
   const manifest = {
     name: HOST_NAME,
     description: "Surf CLI Native Host",
     path: wrapperPath,
     type: "stdio",
-    allowed_origins: [`chrome-extension://${extensionId}/`],
+    allowed_origins: allowedOrigins,
   };
 
   fs.writeFileSync(manifestPath, JSON.stringify(manifest, null, 2));
@@ -193,6 +271,64 @@ function installWindowsRegistry(browser, extensionId, wrapperPath) {
     console.error(`Failed to add registry entry: ${e.message}`);
     return null;
   }
+}
+
+/**
+ * On WSL2, install the native messaging host manifest to the Windows-side
+ * Chrome NativeMessagingHosts directory so that Chrome.exe can discover it.
+ * Also creates a .bat wrapper that calls into WSL.
+ */
+function installWSLWindowsManifest(browser, extensionId, hostPath) {
+  const winHome = getWindowsHome();
+  if (!winHome) {
+    console.warn("  (WSL) Could not detect Windows home directory — skipping Windows-side install");
+    return null;
+  }
+
+  // Map browser keys to Windows-side NativeMessagingHosts paths
+  const winNativeHostDirs = {
+    chrome: "AppData/Local/Google/Chrome/User Data/NativeMessagingHosts",
+    chromium: "AppData/Local/Chromium/User Data/NativeMessagingHosts",
+    brave: "AppData/Local/BraveSoftware/Brave-Browser/User Data/NativeMessagingHosts",
+    edge: "AppData/Local/Microsoft/Edge/User Data/NativeMessagingHosts",
+  };
+
+  const relDir = winNativeHostDirs[browser];
+  if (!relDir) return null; // arc, helium — no Windows path
+
+  const manifestDir = path.join(winHome, relDir);
+  fs.mkdirSync(manifestDir, { recursive: true });
+
+  const manifestPath = path.join(manifestDir, `${HOST_NAME}.json`);
+  const allowedOrigins = mergeAllowedOrigins(manifestPath, extensionId);
+
+  // Create the .bat wrapper in a surf-native dir on the Windows side
+  const winWrapperDir = path.join(winHome, "surf-native");
+  fs.mkdirSync(winWrapperDir, { recursive: true });
+  const batPath = path.join(winWrapperDir, "host-wrapper.bat");
+
+  // The bat wrapper calls wsl.exe to run the host script in the default distro
+  const batContent = `@echo off\r\nC:\\Windows\\System32\\wsl.exe -e node ${hostPath}\r\n`;
+
+  // Only rewrite if content changed (avoid spurious timestamp changes)
+  let existingBat = "";
+  try { existingBat = fs.readFileSync(batPath, "utf8"); } catch {}
+  if (existingBat !== batContent) {
+    fs.writeFileSync(batPath, batContent);
+  }
+
+  const winBatPath = wslToWinPath(batPath);
+
+  const manifest = {
+    name: HOST_NAME,
+    description: "Surf CLI Native Host",
+    path: winBatPath,
+    type: "stdio",
+    allowed_origins: allowedOrigins,
+  };
+
+  fs.writeFileSync(manifestPath, JSON.stringify(manifest, null, 2));
+  return manifestPath;
 }
 
 function parseArgs() {
@@ -276,10 +412,14 @@ function main() {
     process.exit(1);
   }
 
-  console.log(`Platform: ${process.platform}`);
+  console.log(`Platform: ${process.platform}${isWSL() ? " (WSL2)" : ""}`);
   console.log(`Node: ${nodePath}`);
   console.log(`Host: ${hostPath}`);
   console.log(`Wrapper dir: ${wrapperDir}`);
+  if (isWSL()) {
+    const winHome = getWindowsHome();
+    console.log(`Windows home: ${winHome || "(not detected)"}`);
+  }
   console.log("");
 
   const wrapperPath = createWrapper(wrapperDir, nodePath, hostPath);
@@ -295,7 +435,7 @@ function main() {
       continue;
     }
 
-    const result = installManifest(browser, extensionId, wrapperPath);
+    const result = installManifest(browser, extensionId, wrapperPath, hostPath);
     if (result) {
       installed.push({ browser: BROWSERS[browser].name, path: result });
     } else {
