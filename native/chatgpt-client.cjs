@@ -1,4 +1,4 @@
-const CHATGPT_URL = "https://chatgpt.com/";
+const CHATGPT_URL = "https://chatgpt.com/?model=auto";
 
 const SELECTORS = {
   promptTextarea: '#prompt-textarea, [data-testid="composer-textarea"], textarea[name="prompt-textarea"], .ProseMirror, [contenteditable="true"][data-virtualkeyboard="true"]',
@@ -9,7 +9,7 @@ const SELECTORS = {
   assistantMessage: '[data-message-author-role="assistant"], [data-turn="assistant"]',
   stopButton: '[data-testid="stop-button"]',
   finishedActions: 'button[data-testid="copy-turn-action-button"], button[data-testid="good-response-turn-action-button"]',
-  conversationTurn: 'article[data-testid^="conversation-turn"], div[data-testid^="conversation-turn"]',
+  conversationTurn: 'section[data-testid^="conversation-turn"], article[data-testid^="conversation-turn"], div[data-testid^="conversation-turn"]',
   fileInput: 'input[type="file"]',
   cloudflareScript: 'script[src*="/challenge-platform/"]',
 };
@@ -360,7 +360,7 @@ async function waitForResponse(cdp, timeoutMs = 2700000) {
         return { text, stopVisible, finished, messageId, turnIndex: turns.length - 1 };
       })()`
     );
-    if (!snapshot) {
+    if (!snapshot) { 
       await delay(400);
       continue;
     }
@@ -373,16 +373,14 @@ async function waitForResponse(cdp, timeoutMs = 2700000) {
       stableCycles++;
     }
     const stableMs = Date.now() - lastChangeAt;
-    if (!snapshot.stopVisible) {
-      const stableEnough = stableCycles >= requiredStableCycles && stableMs >= minStableMs;
-      const finishedVisible = snapshot.finished;
-      if ((finishedVisible || stableEnough) && currentLength > 0) {
-        return {
-          text: snapshot.text,
-          messageId: snapshot.messageId,
-          turnIndex: snapshot.turnIndex,
-        };
-      }
+   const stableEnough = stableCycles >= requiredStableCycles && stableMs >= minStableMs;
+    const finishedVisible = snapshot.finished;
+    if (currentLength > 0 && (finishedVisible || (!snapshot.stopVisible && stableEnough))) {
+      return {
+        text: snapshot.text,
+        messageId: snapshot.messageId,
+        turnIndex: snapshot.turnIndex,
+      };
     }
     await delay(400);
   }
@@ -430,6 +428,14 @@ async function query(options) {
       throw new Error("ChatGPT login required");
     }
     log("Login verified");
+    // Ensure we're on a fresh new chat (chatgpt.com/ may load the last conversation)
+    const hasExistingConvo = await evaluate(cdp, `Boolean(document.querySelector('${SELECTORS.assistantMessage}'))`);
+    if (hasExistingConvo) {
+      log("Existing conversation detected, navigating to new chat...");
+      await evaluate(cdp, `window.location.href = 'https://chatgpt.com/?model=auto'`);
+      await delay(2000);
+      await waitForPageLoad(cdp);
+    }
     const promptReady = await waitForPromptReady(cdp);
     if (!promptReady) {
       throw new Error("Prompt textarea not ready");
