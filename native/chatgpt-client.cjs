@@ -38,10 +38,13 @@ function buildClickDispatcher() {
 
 function hasRequiredCookies(cookies) {
   if (!cookies || !Array.isArray(cookies)) return false;
-  const sessionCookie = cookies.find(
-    (c) => c.name === "__Secure-next-auth.session-token" && c.value
+  return cookies.some(
+    (c) =>
+      typeof c?.name === "string" &&
+      Boolean(c.value) &&
+      (c.name === "__Secure-next-auth.session-token" ||
+        /^__Secure-next-auth\.session-token\.\d+$/.test(c.name))
   );
-  return Boolean(sessionCookie);
 }
 
 async function evaluate(cdp, expression) {
