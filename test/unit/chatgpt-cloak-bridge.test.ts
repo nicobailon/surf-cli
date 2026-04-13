@@ -430,10 +430,17 @@ describe("chatgpt-cloak-bridge", () => {
     const bridge = require("../../native/chatgpt-cloak-bridge.cjs");
     bridge.__setBridgeRuntimeForTests({ spawn, existsSync: () => true });
 
-    const promise = bridge.manageChatsWithCloakBrowser({ action: "get", conversationId: "conv-123", timeout: 1 });
+    const promise = bridge.manageChatsWithCloakBrowser({
+      action: "get",
+      conversationId: "conv-123",
+      timeout: 1,
+    });
 
     await vi.advanceTimersByTimeAsync(900);
-    worker.stdout.emit("data", `${JSON.stringify({ type: "keepalive", reason: "wait_for_assistant" })}\n`);
+    worker.stdout.emit(
+      "data",
+      `${JSON.stringify({ type: "keepalive", reason: "wait_for_assistant" })}\n`,
+    );
     await vi.advanceTimersByTimeAsync(900);
 
     expect(worker.kill).not.toHaveBeenCalled();

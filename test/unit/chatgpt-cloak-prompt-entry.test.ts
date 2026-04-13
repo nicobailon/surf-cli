@@ -147,32 +147,53 @@ function createHarness(options: HarnessOptions = {}) {
     fill: vi.fn(async () => undefined),
   };
 
-  const applyEvaluateArgs = (source: string, args: unknown) => {
-    if (isProseMirrorReplaceCall(source)) {
-      const promptArgs = args as { prompt?: string } | undefined;
-      const canApplyPrompt =
-        promptArgs?.prompt !== undefined &&
-        options.composerKind === "prosemirror" &&
-        options.prosemirrorViewAvailable !== false &&
-        !options.prosemirrorFallbackReason;
-      if (canApplyPrompt) {
-        const prompt = promptArgs.prompt;
-        if (prompt === undefined) {
-          return;
-        }
-        const transform = options.prosemirrorReplaceTransform ?? ((t: string) => t);
-        state.composerText = transform(prompt);
-        updateSendEnabled(state, options);
-      }
+  const canApplyProseMirrorPrompt = (source: string, args: unknown) => {
+    const promptArgs = args as { prompt?: string } | undefined;
+    if (!isProseMirrorReplaceCall(source)) {
+      return false;
     }
 
-    if (isFillFallbackCall(source)) {
-      const fillArgs = args as { text?: string } | undefined;
-      if (fillArgs?.text !== undefined) {
-        state.composerText = fillArgs.text;
-        updateSendEnabled(state, options);
-      }
+    return (
+      promptArgs?.prompt !== undefined &&
+      options.composerKind === "prosemirror" &&
+      options.prosemirrorViewAvailable !== false &&
+      !options.prosemirrorFallbackReason
+    );
+  };
+
+  const applyProseMirrorPrompt = (args: unknown) => {
+    const promptArgs = args as { prompt?: string } | undefined;
+    const prompt = promptArgs?.prompt;
+    if (prompt === undefined) {
+      return;
     }
+
+    const transform = options.prosemirrorReplaceTransform ?? ((t: string) => t);
+    state.composerText = transform(prompt);
+    updateSendEnabled(state, options);
+  };
+
+  const applyFillPromptFallback = (source: string, args: unknown) => {
+    if (!isFillFallbackCall(source)) {
+      return;
+    }
+
+    const fillArgs = args as { text?: string } | undefined;
+    if (fillArgs?.text === undefined) {
+      return;
+    }
+
+    state.composerText = fillArgs.text;
+    updateSendEnabled(state, options);
+  };
+
+  const applyEvaluateArgs = (source: string, args: unknown) => {
+    if (canApplyProseMirrorPrompt(source, args)) {
+      applyProseMirrorPrompt(args);
+      return;
+    }
+
+    applyFillPromptFallback(source, args);
   };
 
   const page = {

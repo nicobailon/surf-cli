@@ -4,10 +4,20 @@ const { attemptSendAndConfirm } = require("../../native/chatgpt-cloak-send-confi
   attemptSendAndConfirm: (args: any) => Promise<any>;
 };
 
-function createPage({ evaluateResults = [], clickError = null }: { evaluateResults?: any[]; clickError?: Error | null } = {}) {
+function createPage({
+  evaluateResults = [],
+  clickError = null,
+}: {
+  evaluateResults?: any[];
+  clickError?: Error | null;
+} = {}) {
   const evaluate = vi.fn();
-  for (const result of evaluateResults) evaluate.mockResolvedValueOnce(result);
-  const click = clickError ? vi.fn().mockRejectedValue(clickError) : vi.fn().mockResolvedValue(undefined);
+  for (const result of evaluateResults) {
+    evaluate.mockResolvedValueOnce(result);
+  }
+  const click = clickError
+    ? vi.fn().mockRejectedValue(clickError)
+    : vi.fn().mockResolvedValue(undefined);
   const press = vi.fn().mockResolvedValue(undefined);
   return {
     page: {
@@ -52,13 +62,13 @@ describe("chatgpt-cloak-send-confirmation", () => {
       finalPrompt: "hello world",
       conversationId: null,
       baselineUserNodeId: null,
-      sendButtonSelectors: ["button[data-testid=\"send-button\"]"],
+      sendButtonSelectors: ['button[data-testid="send-button"]'],
       promptSelectors: ["#prompt-textarea"],
-      stopSelector: "button[data-testid=\"stop-button\"]",
-      sleep: async () => {},
+      stopSelector: 'button[data-testid="stop-button"]',
+      sleep: async () => Promise.resolve(),
       waitForPromptPersistenceValidation: vi.fn(),
       extractConversationIdFromUrl: () => null,
-      log: () => {},
+      log: async () => Promise.resolve(),
     });
 
     expect(click).toHaveBeenCalledTimes(1);
@@ -67,7 +77,7 @@ describe("chatgpt-cloak-send-confirmation", () => {
     expect(firstEvaluateCall).toHaveLength(2);
     expect(firstEvaluateCall[1]).toEqual({
       promptSelectors: ["#prompt-textarea"],
-      stopSelector: "button[data-testid=\"stop-button\"]",
+      stopSelector: 'button[data-testid="stop-button"]',
       expected: "hello world",
     });
     expect(press).toHaveBeenCalledWith("Enter");
@@ -98,9 +108,9 @@ describe("chatgpt-cloak-send-confirmation", () => {
         finalPrompt: "hello world",
         conversationId: "conv-123",
         baselineUserNodeId: null,
-        sendButtonSelectors: ["button[data-testid=\"send-button\"]"],
+        sendButtonSelectors: ['button[data-testid="send-button"]'],
         promptSelectors: ["#prompt-textarea"],
-        stopSelector: "button[data-testid=\"stop-button\"]",
+        stopSelector: 'button[data-testid="stop-button"]',
         sleep: async () => {
           now += 6_000;
         },
@@ -109,7 +119,7 @@ describe("chatgpt-cloak-send-confirmation", () => {
           failureReason: "validation_not_started",
         }),
         extractConversationIdFromUrl: () => "conv-123",
-        log: () => {},
+        log: async () => Promise.resolve(),
       }),
     ).rejects.toMatchObject({ code: "send_confirmation_timeout" });
   });

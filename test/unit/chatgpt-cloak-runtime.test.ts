@@ -18,8 +18,11 @@ describe("chatgpt-cloak-runtime", () => {
   const originalHome = process.env.HOME;
 
   afterEach(() => {
-    if (originalHome === undefined) delete process.env.HOME;
-    else process.env.HOME = originalHome;
+    if (originalHome === undefined) {
+      process.env.HOME = undefined;
+    } else {
+      process.env.HOME = originalHome;
+    }
   });
 
   it("cleans a stale SingletonLock symlink when the pid is gone", () => {
@@ -55,7 +58,9 @@ describe("chatgpt-cloak-runtime", () => {
   it("retries once on shared-profile launch lock errors and returns the retried context", async () => {
     const launchPersistentContext = vi
       .fn()
-      .mockRejectedValueOnce(new Error("Failed to create a ProcessSingleton for your profile directory"))
+      .mockRejectedValueOnce(
+        new Error("Failed to create a ProcessSingleton for your profile directory"),
+      )
       .mockResolvedValueOnce({ ok: true });
 
     const result = await runtime.launchPersistentContextWithRecovery({
@@ -71,7 +76,9 @@ describe("chatgpt-cloak-runtime", () => {
   it("does not retry lock errors for non-shared profiles", async () => {
     const launchPersistentContext = vi
       .fn()
-      .mockRejectedValue(new Error("Failed to create a ProcessSingleton for your profile directory"));
+      .mockRejectedValue(
+        new Error("Failed to create a ProcessSingleton for your profile directory"),
+      );
 
     await expect(
       runtime.launchPersistentContextWithRecovery({

@@ -1,5 +1,6 @@
 import { EventEmitter } from "node:events";
-import { describe, it, expect, afterEach, beforeEach, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+
 const {
   isSlackCloakAvailable,
   querySlackMessages,
@@ -27,13 +28,16 @@ describe("slack-cloak-bridge", () => {
   const originalSurfDebug = process.env.SURF_DEBUG;
 
   beforeEach(() => {
-    delete process.env.SURF_DEBUG;
+    process.env.SURF_DEBUG = "";
   });
 
   afterEach(() => {
     __resetSlackRuntimeForTests();
-    if (originalSurfDebug === undefined) delete process.env.SURF_DEBUG;
-    else process.env.SURF_DEBUG = originalSurfDebug;
+    if (originalSurfDebug === undefined) {
+      process.env.SURF_DEBUG = "";
+    } else {
+      process.env.SURF_DEBUG = originalSurfDebug;
+    }
     vi.restoreAllMocks();
   });
 
@@ -60,7 +64,10 @@ describe("slack-cloak-bridge", () => {
 
     expect(worker.stdin.write).toHaveBeenCalledWith(expect.stringContaining('"includeDms":true'));
 
-    worker.stdout.emit("data", `${JSON.stringify({ type: "success", channels: [], channelCount: 0 })}\n`);
+    worker.stdout.emit(
+      "data",
+      `${JSON.stringify({ type: "success", channels: [], channelCount: 0 })}\n`,
+    );
     await expect(promise).resolves.toEqual({ channels: [], channelCount: 0 });
   });
 
@@ -75,7 +82,10 @@ describe("slack-cloak-bridge", () => {
 
     const promise = querySlackMessages({ action: "channels", timeout: 5 });
     worker.stderr.emit("data", "worker stderr line\n");
-    worker.stdout.emit("data", `${JSON.stringify({ type: "success", channels: [], channelCount: 0 })}\n`);
+    worker.stdout.emit(
+      "data",
+      `${JSON.stringify({ type: "success", channels: [], channelCount: 0 })}\n`,
+    );
 
     await promise;
     expect(stderrSpy).toHaveBeenCalledWith("worker stderr line\n");
@@ -90,7 +100,10 @@ describe("slack-cloak-bridge", () => {
 
     const promise = querySlackMessages({ action: "channels", timeout: 5 });
     worker.stderr.emit("data", "plain stderr\n");
-    worker.stdout.emit("data", `${JSON.stringify({ type: "success", channels: [], channelCount: 0 })}\n`);
+    worker.stdout.emit(
+      "data",
+      `${JSON.stringify({ type: "success", channels: [], channelCount: 0 })}\n`,
+    );
 
     await promise;
     expect(stderrSpy).not.toHaveBeenCalledWith("plain stderr\n");

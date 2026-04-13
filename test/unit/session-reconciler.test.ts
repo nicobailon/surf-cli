@@ -689,7 +689,11 @@ describe("reconcileSessions", () => {
       current_node: "u1",
       mapping: {
         u1: {
-          message: { status: "finished_successfully", author: { role: "user" }, content: { parts: ["still waiting"] } },
+          message: {
+            status: "finished_successfully",
+            author: { role: "user" },
+            content: { parts: ["still waiting"] },
+          },
         },
       },
     };

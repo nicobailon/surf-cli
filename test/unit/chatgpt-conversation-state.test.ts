@@ -1,7 +1,10 @@
 import { describe, expect, it } from "vitest";
 
 const { classifyConversationProgress } = require("../../native/chatgpt-conversation-state.cjs") as {
-  classifyConversationProgress: (conversation: any, options?: { baselineAssistantMessageId?: string | null }) => {
+  classifyConversationProgress: (
+    conversation: any,
+    options?: { baselineAssistantMessageId?: string | null },
+  ) => {
     state: string;
     nodeId: string | null;
     role: string | null;
@@ -27,7 +30,9 @@ describe("chatgpt-conversation-state", () => {
       },
     };
 
-    expect(classifyConversationProgress(conversation, { baselineAssistantMessageId: "a1" })).toEqual({
+    expect(
+      classifyConversationProgress(conversation, { baselineAssistantMessageId: "a1" }),
+    ).toEqual({
       state: "assistant_complete",
       nodeId: "a2",
       role: "assistant",
@@ -52,9 +57,9 @@ describe("chatgpt-conversation-state", () => {
       },
     };
 
-    expect(classifyConversationProgress(conversation, { baselineAssistantMessageId: "a1" }).state).toBe(
-      "assistant_complete_baseline",
-    );
+    expect(
+      classifyConversationProgress(conversation, { baselineAssistantMessageId: "a1" }).state,
+    ).toBe("assistant_complete_baseline");
   });
 
   it("classifies a current user node as awaiting_assistant", () => {

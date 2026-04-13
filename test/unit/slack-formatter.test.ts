@@ -1,9 +1,11 @@
-import { describe, it, expect } from "vitest";
-const { formatSlackResult, cleanSlackText, formatTimestamp } = require("../../native/slack-formatter.cjs") as {
-  formatSlackResult: (...args: any[]) => string;
-  cleanSlackText: (text: string | null | undefined, userMap?: Record<string, unknown>) => string;
-  formatTimestamp: (timestamp: string | number | undefined | null) => string;
-};
+import { describe, expect, it } from "vitest";
+
+const { formatSlackResult, cleanSlackText, formatTimestamp } =
+  require("../../native/slack-formatter.cjs") as {
+    formatSlackResult: (...args: any[]) => string;
+    cleanSlackText: (text: string | null | undefined, userMap?: Record<string, unknown>) => string;
+    formatTimestamp: (timestamp: string | number | undefined | null) => string;
+  };
 
 describe("slack-formatter", () => {
   describe("cleanSlackText", () => {
@@ -21,7 +23,9 @@ describe("slack-formatter", () => {
     });
 
     it("replaces URL mentions with markdown links", () => {
-      expect(cleanSlackText("Visit <https://example.com|Example>")).toBe("Visit [Example](https://example.com)");
+      expect(cleanSlackText("Visit <https://example.com|Example>")).toBe(
+        "Visit [Example](https://example.com)",
+      );
     });
 
     it("replaces bare URLs", () => {
@@ -94,8 +98,26 @@ describe("slack-formatter", () => {
     it("formats channels as markdown table", () => {
       const channelResult = {
         channels: [
-          { id: "C1", name: "general", topic: "General chat", purpose: "", memberCount: 50, isPrivate: false, isIm: false, isMpim: false },
-          { id: "C2", name: "random", topic: "", purpose: "", memberCount: 30, isPrivate: true, isIm: false, isMpim: false },
+          {
+            id: "C1",
+            name: "general",
+            topic: "General chat",
+            purpose: "",
+            memberCount: 50,
+            isPrivate: false,
+            isIm: false,
+            isMpim: false,
+          },
+          {
+            id: "C2",
+            name: "random",
+            topic: "",
+            purpose: "",
+            memberCount: 30,
+            isPrivate: true,
+            isIm: false,
+            isMpim: false,
+          },
         ],
         channelCount: 2,
       };
@@ -111,9 +133,7 @@ describe("slack-formatter", () => {
       const withThreads = {
         ...historyResult,
         threads: {
-          "1700000000.000000": [
-            { ts: "1700000120.000000", user: "U2", text: "Thread reply" },
-          ],
+          "1700000000.000000": [{ ts: "1700000120.000000", user: "U2", text: "Thread reply" }],
         },
         threadCount: 1,
       };
@@ -146,7 +166,12 @@ describe("slack-formatter", () => {
     it("formats replies as normalized JSON", () => {
       const repliesResult = {
         messages: [
-          { ts: "1700000000.000000", user: "U1", text: "Original <@U2>", files: [{ name: "a.txt", mimetype: "text/plain", url_private: "https://x" }] },
+          {
+            ts: "1700000000.000000",
+            user: "U1",
+            text: "Original <@U2>",
+            files: [{ name: "a.txt", mimetype: "text/plain", url_private: "https://x" }],
+          },
           { ts: "1700000120.000000", user: "U2", text: "Reply one" },
         ],
         users: {
