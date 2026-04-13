@@ -6,8 +6,8 @@
  */
 
 import { launchPersistentContext } from 'cloakbrowser';
-import { existsSync, mkdirSync, mkdtempSync, readlinkSync, rmSync, unlinkSync, writeFileSync } from 'fs';
-import { homedir, tmpdir } from 'os';
+import { existsSync, mkdirSync, rmSync, writeFileSync } from 'fs';
+import { createRequire } from 'module';
 import { join, dirname, resolve as pathResolve } from 'path';
 import { loadAndInjectChatgptCookies } from './chatgpt-cloak-profile-auth.mjs';
 import {
@@ -16,6 +16,16 @@ import {
   normalizeConversationSearchItems,
 } from './chatgpt-chats-search.mjs';
 
+const require = createRequire(import.meta.url);
+const {
+  classifyConversationProgress,
+} = require('./chatgpt-conversation-state.cjs');
+const {
+  launchPersistentContextWithRecovery,
+  sharedProfileDir,
+  tempProfileDir,
+} = require('./chatgpt-cloak-runtime.cjs');
+
 const emit = (obj) => process.stdout.write(JSON.stringify({ ...obj, t: Date.now() }) + '\n');
 const log = (level, message, data) => emit({ type: 'log', level, message, data });
 const progress = (step, total, message) => emit({ type: 'progress', step, total, message });
@@ -23,48 +33,6 @@ const success = (payload) => emit({ type: 'success', ...payload });
 const fail = (code, message, details) => emit({ type: 'error', code, message, details });
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
-
-function sharedProfileDir() {
-  const dir = join(homedir(), '.surf', 'cloak-profile');
-  if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
-  // Clean stale SingletonLock from crashed sessions
-  const lockPath = join(dir, 'SingletonLock');
-  if (existsSync(lockPath)) {
-    try {
-      const target = readlinkSync(lockPath);
-      // Format: hostname-pid — check if PID is still alive
-      const pidMatch = target.match(/-(\d+)$/);
-      if (pidMatch) {
-        try { process.kill(Number(pidMatch[1]), 0); } catch {
-          // PID not running → stale lock
-          unlinkSync(lockPath);
-          log('info', 'Cleaned stale SingletonLock', { target });
-        }
-      }
-    } catch {
-      // readlink failed (not a symlink) or unlink failed — try removing anyway
-      try { unlinkSync(lockPath); } catch {}
-    }
-  }
-  return dir;
-}
-
-function tempProfileDir() {
-  return mkdtempSync(join(tmpdir(), 'surf-cloak-chats-'));
-}
-
-function buildLaunchOpts(userDataDir) {
-  return {
-    userDataDir,
-    headless: true,
-    humanize: true,
-    humanPreset: 'careful',
-    viewport: { width: 1280, height: 800 },
-    locale: 'en-US',
-    timezoneId: 'America/New_York',
-    args: ['--fingerprint-storage-quota=5000'],
-  };
-}
 
 async function waitForReady(page, timeoutMs = 30_000) {
   const deadline = Date.now() + timeoutMs;
@@ -620,12 +588,62 @@ async function apiSearchConversations(context, accessToken, { query, limit }) {
   };
 }
 
-async function apiGetConversation(context, accessToken, conversationId) {
-  const data = await apiRequest(context, {
-    pathname: `/backend-api/conversation/${encodeURIComponent(conversationId)}`,
-    accessToken,
-  });
-  return { action: 'get', conversationId, conversation: data };
+async function apiGetConversation(context, accessToken, conversationId, options = {}) {
+  const waitForAssistant = options.waitForAssistant === true;
+  const waitForAssistantTimeoutSec = Number.isFinite(Number(options.waitForAssistantTimeoutSec))
+    ? Math.max(1, Math.trunc(Number(options.waitForAssistantTimeoutSec)))
+    : 30;
+  const baselineAssistantMessageId = options.baselineAssistantMessageId || null;
+  const startedAt = Date.now();
+
+  let conversation = null;
+  let conversationState = 'invalid';
+  let stabilized = false;
+  let lastKeepaliveAt = 0;
+
+  while (true) {
+    conversation = await apiRequest(context, {
+      pathname: `/backend-api/conversation/${encodeURIComponent(conversationId)}`,
+      accessToken,
+    });
+    const classified = classifyConversationProgress(conversation, { baselineAssistantMessageId });
+    conversationState = classified.state;
+
+    if (!waitForAssistant) {
+      stabilized = classified.state === 'assistant_complete';
+      break;
+    }
+
+    if (!['awaiting_assistant', 'assistant_in_progress', 'assistant_complete_baseline'].includes(classified.state)) {
+      stabilized = classified.state === 'assistant_complete';
+      break;
+    }
+
+    if ((Date.now() - startedAt) >= waitForAssistantTimeoutSec * 1000) {
+      stabilized = false;
+      break;
+    }
+
+    if ((Date.now() - lastKeepaliveAt) >= 8_000) {
+      emit({
+        type: 'keepalive',
+        reason: 'wait_for_assistant',
+        phase: 'Waiting for assistant',
+      });
+      lastKeepaliveAt = Date.now();
+    }
+
+    await sleep(1000);
+  }
+
+  return {
+    action: 'get',
+    conversationId,
+    conversation,
+    stabilized,
+    conversationState,
+    waitedMs: Date.now() - startedAt,
+  };
 }
 
 async function apiDeleteConversation(context, accessToken, conversationId) {
@@ -723,14 +741,34 @@ async function apiDownloadFile(context, accessToken, fileId, outputPath) {
 // Main action runner (uses API-direct fast path — no page navigation)
 // ---------------------------------------------------------------------------
 
-async function runAction({ action, conversationId, conversationIds, query, limit, all, profile, timeout = 120, title, fileId, outputPath }) {
+async function runAction({
+  action,
+  conversationId,
+  conversationIds,
+  query,
+  limit,
+  all,
+  profile,
+  timeout = 120,
+  title,
+  fileId,
+  outputPath,
+  waitForAssistant = false,
+  waitForAssistantTimeoutSec = 30,
+  baselineAssistantMessageId = null,
+}) {
   let context = null;
   let tempDir = null;
   try {
     progress(1, 4, 'Launching CloakBrowser');
 
-    const userDataDir = profile ? (tempDir = tempProfileDir()) : sharedProfileDir();
-    context = await launchPersistentContext(buildLaunchOpts(userDataDir));
+    const userDataDir = profile ? (tempDir = tempProfileDir('surf-cloak-chats-')) : sharedProfileDir({ log });
+    context = await launchPersistentContextWithRecovery({
+      launchPersistentContext,
+      userDataDir,
+      isSharedProfile: !profile,
+      log,
+    });
 
     if (profile) {
       progress(2, 4, 'Loading ChatGPT cookies from Chrome profile');
@@ -752,7 +790,11 @@ async function runAction({ action, conversationId, conversationIds, query, limit
       case 'search':
         result = await apiSearchConversations(context, accessToken, { query, limit }); break;
       case 'get':
-        result = await apiGetConversation(context, accessToken, conversationId); break;
+        result = await apiGetConversation(context, accessToken, conversationId, {
+          waitForAssistant,
+          waitForAssistantTimeoutSec,
+          baselineAssistantMessageId,
+        }); break;
       case 'delete':
         result = await apiDeleteConversation(context, accessToken, conversationId); break;
       case 'bulk_delete':

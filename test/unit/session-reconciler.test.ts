@@ -99,7 +99,7 @@ describe("inspectConversation", () => {
   it("returns ambiguous when mapping missing", () => {
     expect(inspectConversation({ current_node: "n1" })).toEqual({
       outcome: "ambiguous",
-      nodeId: null,
+      nodeId: "n1",
     });
   });
 
@@ -120,6 +120,7 @@ describe("inspectConversation", () => {
           message: {
             status: "finished_successfully",
             author: { role: "assistant" },
+            content: { parts: ["Older assistant text"] },
             create_time: 1000,
           },
         },
@@ -127,6 +128,7 @@ describe("inspectConversation", () => {
           message: {
             status: "finished_successfully",
             author: { role: "assistant" },
+            content: { parts: ["New assistant text"] },
             create_time: 2000,
           },
         },
@@ -146,6 +148,7 @@ describe("inspectConversation", () => {
           message: {
             status: "finished_successfully",
             author: { role: "assistant" },
+            content: { parts: ["Assistant reply"] },
           },
         },
       },
@@ -163,6 +166,7 @@ describe("inspectConversation", () => {
           message: {
             status: "finished_successfully",
             author: { role: "assistant" },
+            content: { parts: ["Assistant reply"] },
           },
         },
       },
@@ -171,7 +175,7 @@ describe("inspectConversation", () => {
     expect(result.outcome).toBe("no_new_assistant");
   });
 
-  it("returns no_new_assistant when last node is user role", () => {
+  it("returns in_progress when last node is user role", () => {
     const conv = {
       current_node: "n1",
       mapping: {
@@ -180,7 +184,7 @@ describe("inspectConversation", () => {
         },
       },
     };
-    expect(inspectConversation(conv).outcome).toBe("no_new_assistant");
+    expect(inspectConversation(conv).outcome).toBe("in_progress");
   });
 
   it("returns in_progress when status is in_progress", () => {
@@ -358,7 +362,55 @@ describe("reconcileSessions", () => {
     expect(log).toContain("response saved:");
     expect(log).not.toContain("Recovered answer line 1");
     expect(mockManageChats).toHaveBeenCalledWith(
-      expect.objectContaining({ action: "get", conversationId: "conv-abc123" }),
+      expect.objectContaining({
+        action: "get",
+        conversationId: "conv-abc123",
+        waitForAssistant: true,
+        waitForAssistantTimeoutSec: 30,
+        baselineAssistantMessageId: null,
+      }),
+    );
+  });
+
+  it("recovers dead session with send_attempted checkpoint when conversationId is already known", async () => {
+    const r = loadReconciler();
+    writeSessionMeta(tmpDir, {
+      id: "chatgpt-send-attempted",
+      tool: "chatgpt",
+      status: "running",
+      createdAt: new Date(Date.now() - 10_000).toISOString(),
+      pid: 999999999,
+      conversationId: "conv-send-attempted",
+      baselineAssistantMessageId: null,
+      lastCheckpoint: "send_attempted",
+      sentAt: "2026-04-05T12:00:00.000Z",
+    });
+
+    const completedConv = {
+      current_node: "new-node",
+      mapping: {
+        "new-node": {
+          message: {
+            status: "finished_successfully",
+            author: { role: "assistant" },
+            content: { parts: ["Recovered after pre-validation death"] },
+            metadata: {},
+          },
+        },
+      },
+    };
+
+    const mockManageChats = vi.fn().mockResolvedValue({ conversation: completedConv });
+
+    const { sessions } = await r.reconcileSessions({
+      all: true,
+      pollNetwork: true,
+      manageChats: mockManageChats,
+    });
+
+    expect(sessions[0].action).toBe("recovered");
+    expect(mockManageChats).toHaveBeenCalledWith(
+      expect.objectContaining({ action: "get", conversationId: "conv-send-attempted" }),
     );
   });
 
@@ -496,18 +548,13 @@ describe("reconcileSessions", () => {
     await r.reconcileSessions({ all: true, pollNetwork: true, manageChats: mockManageChats });
 
     const meta = readSessionMeta(tmpDir, "chatgpt-recover-empty-current") as any;
-    expect(meta.status).toBe("completed");
-    expect(meta.result.recovered).toBe(true);
-    expect(meta.result.responsePreview).toBe(null);
-    expect(meta.result.responsePath).toBe(null);
-    expect(meta.result.responseChars).toBe(0);
-    expect(meta.result.inlineResponse).toBeUndefined();
-    expect(meta.result.inlineResponseChars).toBeUndefined();
-    expect(meta.result.recoveredResponse).toBeUndefined();
+    expect(meta.status).toBe("running");
+    expect(meta.reconcile.state).toBe("unresolved");
+    expect(meta.reconcile.remote.outcome).toBe("in_progress");
+    expect(meta.result).toBeUndefined();
 
-    const log = readSessionLog(tmpDir, "chatgpt-recover-empty-current");
-    expect(log).toContain("recovered remote reply from conversation conv-empty-current");
-    expect(log).not.toContain("Older assistant reply");
+    const logPath = path.join(tmpDir, "chatgpt-recover-empty-current", "output.log");
+    expect(fs.existsSync(logPath)).toBe(false);
   });
 
   it("recovers legacy dead session with conversationId but no checkpoint metadata", async () => {
@@ -529,6 +576,7 @@ describe("reconcileSessions", () => {
           message: {
             status: "finished_successfully",
             author: { role: "assistant" },
+            content: { parts: ["Legacy recovered reply"] },
           },
         },
       },
@@ -545,7 +593,13 @@ describe("reconcileSessions", () => {
     expect(reconciled).toBe(1);
     expect(sessions[0].action).toBe("recovered");
     expect(mockManageChats).toHaveBeenCalledWith(
-      expect.objectContaining({ action: "get", conversationId: "conv-legacy" }),
+      expect.objectContaining({
+        action: "get",
+        conversationId: "conv-legacy",
+        waitForAssistant: true,
+        waitForAssistantTimeoutSec: 30,
+        baselineAssistantMessageId: null,
+      }),
     );
 
     const meta = readSessionMeta(tmpDir, "chatgpt-legacy-recoverable") as any;
@@ -615,6 +669,54 @@ describe("reconcileSessions", () => {
     const meta = readSessionMeta(tmpDir, "chatgpt-inprogress") as any;
     expect(meta.status).toBe("running"); // not changed
     expect(meta.reconcile.state).toBe("unresolved");
+  });
+
+  it("marks unresolved when the remote current node is still the user turn", async () => {
+    const r = loadReconciler();
+    writeSessionMeta(tmpDir, {
+      id: "chatgpt-awaiting-assistant",
+      tool: "chatgpt",
+      status: "running",
+      createdAt: new Date(Date.now() - 5_000).toISOString(),
+      pid: 999999999,
+      conversationId: "conv-awaiting",
+      baselineAssistantMessageId: "old-assistant",
+      lastCheckpoint: "sent",
+      sentAt: "2026-04-05T12:01:00.000Z",
+    });
+
+    const awaitingAssistantConv = {
+      current_node: "u1",
+      mapping: {
+        u1: {
+          message: { status: "finished_successfully", author: { role: "user" }, content: { parts: ["still waiting"] } },
+        },
+      },
+    };
+
+    const mockManageChats = vi.fn().mockResolvedValue({ conversation: awaitingAssistantConv });
+
+    const { sessions } = await r.reconcileSessions({
+      all: true,
+      pollNetwork: true,
+      manageChats: mockManageChats,
+    });
+
+    expect(sessions[0].action).toBe("unresolved");
+    expect(mockManageChats).toHaveBeenCalledWith(
+      expect.objectContaining({
+        action: "get",
+        conversationId: "conv-awaiting",
+        waitForAssistant: true,
+        waitForAssistantTimeoutSec: 30,
+        baselineAssistantMessageId: "old-assistant",
+      }),
+    );
+
+    const meta = readSessionMeta(tmpDir, "chatgpt-awaiting-assistant") as any;
+    expect(meta.status).toBe("running");
+    expect(meta.reconcile.state).toBe("unresolved");
+    expect(meta.reconcile.remote.outcome).toBe("in_progress");
   });
 
   it("handles poll failure gracefully — marks orphaned", async () => {

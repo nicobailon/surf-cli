@@ -34,6 +34,7 @@ surf session --all
 - ChatGPT uses the bundled CloakBrowser runtime.
 - Gemini requires `bun` on `PATH` for the Bun WebView runtime.
 - `--profile <email>` profile selection is currently macOS-only; without it, ChatGPT uses `~/.surf/cloak-profile`.
+- ChatGPT always runs through CloakBrowser in headless mode. `CLOAK_HEADLESS` cannot enable headed mode, and `SURF_USE_CLOAK_CHATGPT` is obsolete.
 
 ## Installation
 
@@ -70,7 +71,7 @@ Common options:
 - `--profile <email>`: local profile email to use for signed-in auth.
 - `--model <model>`: `instant`, `thinking`, `pro`, or provider model names such as `gpt-5.4-pro`.
 - `--file <path>`: attach a file.
-- `--prompt-file <path>`: read the prompt from a file.
+- `--prompt-file <path>`: read the prompt from a file. Use this for exported RepoPrompt context; `--file` uploads an attachment instead of inlining prompt text.
 - `--generate-image <path>`: generate an image and save it.
 - `--timeout <seconds>`: inactivity timeout. Default: `2700` seconds.
 
@@ -115,11 +116,16 @@ Useful options:
 - `--limit <n>`: list count or last N visible messages when viewing.
 - `--all`: fetch all conversations.
 - `--search <query>`: search conversation titles and content.
-- `--export <path>` and `--format markdown|json`: save a viewed conversation.
+- `--export <path>` and `--format markdown|json`: save a viewed conversation. Export waits briefly for a pending assistant turn before rendering.
 - `--rename <title>`: rename a conversation.
 - `--delete` or `--delete-ids <ids>`: delete conversations.
 - `--download-file <file-id> --output <path>`: download an attachment.
 - `--no-cache`: bypass local chats cache.
+
+RepoPrompt / oracle export note:
+
+- Use `--prompt-file` for exported context, never `--file`.
+- If RepoPrompt export stats show `Files: 0`, rebuild the selection/preset before sending.
 
 ### `surf chatgpt.reply`
 
@@ -230,6 +236,7 @@ Then point your MCP-capable agent at the `surf` binary with the `server` argumen
 - Run `surf session <id>` to inspect a failed or long-running AI request.
 - Use `--timeout <seconds>` for long prompts, file uploads, or image generation.
 - Use `--profile <email>` consistently when multiple local accounts are signed in.
+- If you see `Files: 0` in RepoPrompt export stats, do not send that export to ChatGPT yet.
 
 ## License
 

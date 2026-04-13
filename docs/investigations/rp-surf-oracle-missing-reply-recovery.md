@@ -1,7 +1,9 @@
 # Investigation: rp-surf-oracle missing local reply despite ChatGPT Pro UI response
 
+> Status (2026-04-13): fixed in surf-cli. Query default timeout now matches the documented 2700s, and reconcile persists recovered assistant bodies to session response artifacts when available.
+
 ## Summary
-The ChatGPT Pro run did produce a valid assistant response remotely, and that response is recoverable via the chats retrieval path. The local `rp-surf-oracle` / `surf chatgpt` run failed to return it because the cloak query path uses a 120s default timeout while CLI help advertises 2700s, and this specific GPT-5.4 Pro conversation ran for roughly 46 minutes. Reconcile later marked the session completed, but it only stores recovery metadata, not the final assistant body.
+The ChatGPT Pro run did produce a valid assistant response remotely, and that response was recoverable via the chats retrieval path. The local `rp-surf-oracle` / `surf chatgpt` run failed to return it because the cloak query path used a 120s default timeout while CLI help advertised 2700s, and this specific GPT-5.4 Pro conversation ran for roughly 46 minutes. Reconcile also used to mark the session completed before persisting the recovered assistant body.
 
 ## Symptoms
 - Prompt insertion succeeded for a ~446KB RepoPrompt export.
@@ -54,7 +56,7 @@ The ChatGPT Pro run did produce a valid assistant response remotely, and that re
   - `result.nodeId`
 - `native/session-store.cjs:108-118` `Session.finish()` only persists model/image/`responsePreview`; there is no field for full assistant text.
 
-**Conclusion:** confirmed. Reconcile can close the session state, but it cannot recover the missing answer into session output today.
+**Conclusion:** confirmed at investigation time. This is now fixed: recovered assistant text is persisted into the session response artifact (or inline fallback when artifact persistence fails).
 
 ### Direct recovery path
 **Hypothesis:** the final answer can be recovered outside the query path using the existing chats API worker.
@@ -73,7 +75,7 @@ Primary cause for this run: timeout mismatch.
 
 The user-facing CLI help says ChatGPT queries default to 2700 seconds (`native/cli.cjs:390`), but the cloak query path actually defaults to 120 seconds in both `queryWithCloakBrowser()` and `runCloakWorker()` (`native/chatgpt-cloak-bridge.cjs:49-50`, `native/chatgpt-cloak-bridge.cjs:211`). This run used GPT-5.4 Pro and the recovered conversation spans roughly 46 minutes (`/tmp/chatgpt-69d730dc.md`: `### You · 07:53` to `### ChatGPT · 08:39`), so the local worker would have been killed long before the remote reply finished.
 
-Secondary issue: even after recovery, the session system does not hydrate the full assistant text. `reconcileSessions()` only marks the session completed with metadata (`native/session-reconciler.cjs:237-252`), and `Session.finish()` only persists a preview (`native/session-store.cjs:108-118`).
+Secondary issue at investigation time: even after recovery, the session system did not hydrate the full assistant text. That follow-up has now landed, so recovered sessions persist the assistant body to the response artifact path when possible.
 
 ## Recovered Response
 The full recovered conversation is saved at:
