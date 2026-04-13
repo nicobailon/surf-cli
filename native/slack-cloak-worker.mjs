@@ -206,6 +206,12 @@ async function callSlackApi(page, method, params, retries = 3) {
 // ============================================================================
 // Action handlers
 
+/** Extract <@U123> mention IDs from text and add to a Set */
+function collectMentionIds(text, idSet) {
+  const mentions = (text || '').match(/<@([A-Z0-9]+)>/g)
+  if (mentions) mentions.forEach(m => { const id = m.match(/<@([A-Z0-9]+)>/)?.[1]; if (id) idSet.add(id) })
+}
+
 async function handleHistory(page, request, token) {
   const { channel, limit = 50, days = 7 } = request
   if (!channel) throw Object.assign(new Error('channel is required'), { code: 'missing_channel' })
@@ -249,8 +255,7 @@ async function handleHistory(page, request, token) {
   const userIds = new Set()
   for (const msg of allMessages) {
     if (msg.user) userIds.add(msg.user)
-    const mentions = (msg.text || '').match(/<@([A-Z0-9]+)>/g)
-    if (mentions) mentions.forEach(m => { const id = m.match(/<@([A-Z0-9]+)>/)?.[1]; if (id) userIds.add(id) })
+    collectMentionIds(msg.text, userIds)
   }
 
   // Fetch thread replies for messages that have them
@@ -281,6 +286,7 @@ async function handleHistory(page, request, token) {
         }
         for (const r of replies) {
           if (r.user) userIds.add(r.user)
+          collectMentionIds(r.text, userIds)
         }
         keepalive()
       } catch (err) {
@@ -310,34 +316,60 @@ async function handleHistory(page, request, token) {
 }
 
 async function handleReplies(page, request, token) {
-  const { channel, threadTs } = request
+  const { channel, threadTs, limit = 200, days } = request
   if (!channel) throw Object.assign(new Error('channel is required'), { code: 'missing_channel' })
   if (!threadTs) throw Object.assign(new Error('threadTs is required'), { code: 'missing_thread_ts' })
 
+  const oldest = days ? String(Math.floor((Date.now() - days * 86400 * 1000) / 1000)) : undefined
+  const maxMessages = limit || 200
+
   progress(1, 3, `Fetching thread ${threadTs}...`)
 
-  const data = await callSlackApi(page, 'conversations.replies', {
-    token,
-    channel,
-    ts: threadTs,
-    limit: '200',
-  })
+  let allMessages = []
+  let cursor = ''
+  let hasMore = true
+  let truncated = false
 
-  const messages = data.messages || []
+  while (hasMore && allMessages.length < maxMessages) {
+    const params = {
+      token,
+      channel,
+      ts: threadTs,
+      limit: String(Math.min(200, maxMessages - allMessages.length)),
+    }
+    if (oldest) params.oldest = oldest
+    if (cursor) params.cursor = cursor
+
+    const data = await callSlackApi(page, 'conversations.replies', params)
+    const msgs = data.messages || []
+    allMessages = allMessages.concat(msgs)
+    hasMore = data.has_more || false
+    cursor = data.response_metadata?.next_cursor || ''
+    keepalive()
+
+    if (hasMore && allMessages.length < maxMessages) await sleep(500)
+  }
+
+  if (hasMore && allMessages.length >= maxMessages) {
+    truncated = true
+  }
+
   const userIds = new Set()
-  for (const msg of messages) {
+  for (const msg of allMessages) {
     if (msg.user) userIds.add(msg.user)
+    collectMentionIds(msg.text, userIds)
   }
 
   progress(2, 3, `Resolving ${userIds.size} users...`)
   const userMap = await resolveUsers(page, token, Array.from(userIds))
 
   return {
-    messages,
+    messages: allMessages,
     users: userMap,
     channel,
     threadTs,
-    messageCount: messages.length,
+    messageCount: allMessages.length,
+    truncated,
   }
 }
 

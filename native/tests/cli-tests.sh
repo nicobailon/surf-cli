@@ -118,6 +118,10 @@ test_exit_output "gemini rejects with-page" "node cli.cjs gemini \"x\" --with-pa
 test_exit_output "chatgpt.chats rejects continue" "node cli.cjs chatgpt.chats abc --continue" 1 "headless-only"
 test_exit_output "install removed" "node cli.cjs install abc" 1 "removed"
 test_exit_output "extension-path removed" "node cli.cjs extension-path" 1 "removed"
+test_exit_output "unknown command rejected" "node cli.cjs screenshot" 1 "Unknown or unsupported command"
+test_exit_output "typo command rejected" "node cli.cjs chatgtp" 1 "Unknown or unsupported command"
+test_exit_output "hidden tab.list rejected" "node cli.cjs tab.list" 1 "Unknown or unsupported command"
+test_exit_output "hidden page.read rejected" "node cli.cjs page.read" 1 "Unknown or unsupported command"
 
 echo ""
 echo "-- ChatGPT Chats Validation --"

@@ -164,4 +164,28 @@ describe("slack-formatter", () => {
       expect(parsed[1].isParent).toBe(false);
     });
   });
+
+  describe("mention resolution in replies", () => {
+    it("resolves mentions from reply text, not just author IDs", () => {
+      const users = {
+        U1: { displayName: "Alice", name: "alice" },
+        U2: { displayName: "Bob", name: "bob" },
+        U3: { displayName: "Charlie", name: "charlie" },
+      };
+      // U3 is mentioned but never authored a message
+      const result = {
+        messages: [
+          { ts: "1.0", user: "U1", text: "Hey <@U3> check this" },
+          { ts: "1.1", user: "U2", text: "<@U3> agreed" },
+        ],
+        users,
+        channel: "C1",
+        threadTs: "1.0",
+        messageCount: 2,
+      };
+      const md = formatSlackResult(result, "replies", "markdown");
+      expect(md).toContain("@Charlie");
+      expect(md).not.toContain("<@U3>");
+    });
+  });
 });

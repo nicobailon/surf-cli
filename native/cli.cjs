@@ -617,7 +617,7 @@ const TOOLS = {
           youtube: "YouTube video URL to analyze",
           "aspect-ratio": "Aspect ratio for image generation (e.g., 1:1, 16:9)",
           timeout: "Timeout in seconds (default: 300)",
-          profile: "Chrome profile email for Bun headless auth (macOS, requires SURF_USE_BUN_GEMINI=1)"
+          profile: "Chrome profile email for Bun headless auth (macOS)"
         },
         examples: [
           { cmd: 'gemini "explain quantum computing"', desc: "Basic query" },
@@ -3380,7 +3380,7 @@ const runChatGptCloakQueryDirect = async (sessionTool, queryArgs) => {
   let lastProgress = "";
   let sawSentCheckpoint = false;
   try {
-    const result = await withOptionalHeadedCloak(queryArgs.continueInBrowser === true, () => queryWithCloakBrowser(queryArgs, (progress) => {
+    const result = await withOptionalHeadedCloak(false, () => queryWithCloakBrowser(queryArgs, (progress) => {
       if (progress.type === "meta_update") {
         const patch = {};
         if (progress.conversationId)             patch.conversationId             = progress.conversationId;
@@ -3489,8 +3489,7 @@ const runChatGptChatsDirect = async (chatArgs, renderOpts = {}) => {
   let lastProgress = "";
   try {
     const cacheable = ["list", "search", "get"].includes(chatArgs.action)
-      && chatArgs.useCache !== false
-      && chatArgs.continueInBrowser !== true;
+      && chatArgs.useCache !== false;
     if (cacheable) {
       const cached = chatgptChatsCache.getCachedChats(chatArgs);
       if (cached) {
@@ -3501,7 +3500,7 @@ const runChatGptChatsDirect = async (chatArgs, renderOpts = {}) => {
       }
     }
 
-    const result = await withOptionalHeadedCloak(chatArgs.continueInBrowser === true, () => manageChatsWithCloakBrowser(chatArgs, (progress) => {
+    const result = await withOptionalHeadedCloak(false, () => manageChatsWithCloakBrowser(chatArgs, (progress) => {
       const msg = `[cloak-chatgpt.chats] [${progress.step}/${progress.total}] ${progress.message}`;
       if (msg !== lastProgress) {
         process.stderr.write(msg + "\n");
@@ -3535,7 +3534,7 @@ const runChatGptChatsDirect = async (chatArgs, renderOpts = {}) => {
 };
 
 // ---------------------------------------------------------------------------
-// Bun-native ChatGPT path (opt-in via SURF_USE_BUN_CHATGPT=1)
+// ChatGPT routing
 // ---------------------------------------------------------------------------
 
 // Extract --profile before routing (Bun-only, macOS-only) — shared by both Gemini and ChatGPT
@@ -3671,7 +3670,6 @@ if (tool === "chatgpt.chats") {
   const bulkDeleteIds = typeof toolArgs["delete-ids"] === "string"
     ? toolArgs["delete-ids"].split(",").map(s => s.trim()).filter(Boolean)
     : [];
-  const continueInBrowser = toolArgs.continue === true;
   const useCache = toolArgs["no-cache"] !== true;
 
   if (toolArgs.limit !== undefined && (!Number.isFinite(limit) || limit <= 0)) {
@@ -3752,7 +3750,6 @@ if (tool === "chatgpt.chats") {
       fileId: fileId || undefined,
       includeBytes: !!fileId,
       outputPath: outputPath || undefined,
-      continueInBrowser,
       useCache,
     };
     await runChatGptChatsDirect(chatArgs, {
@@ -3786,7 +3783,6 @@ if (tool === "chatgpt.reply") {
       prompt,
       query: prompt,
       conversationId,
-      continueInBrowser: toolArgs.continue === true,
     };
     await runChatGptCloakQueryDirect("chatgpt.reply", replyArgs);
   })();
@@ -3882,7 +3878,15 @@ if (tool === "gemini") {
     process.exit(1);
   }
 } else if (tool !== "chatgpt") {
-  // Non-Gemini, non-ChatGPT tools → legacy socket path
+  // Headless-only mode: no legacy socket commands
+  const HEADLESS_TOOLS = new Set(["chatgpt", "chatgpt.chats", "chatgpt.reply", "gemini", "slack.read", "smoke", "do", "session"]);
+  if (!HEADLESS_TOOLS.has(tool)) {
+    console.error(`Error: Unknown or unsupported command: ${tool}`);
+    console.error("Available commands: chatgpt, chatgpt.chats, chatgpt.reply, gemini, slack.read");
+    console.error("Run 'surf --help' for usage.");
+    process.exit(1);
+  }
+  // Fallback for any remaining supported tools that still need socket
   startLegacySocketPath();
 }
 
