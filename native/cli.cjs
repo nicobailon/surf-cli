@@ -49,6 +49,8 @@ Repo + local CLI verified against **surf-cli v2.11.1**.
 - Headless-only CLI.
 - ChatGPT uses CloakBrowser headless by default.
 - Gemini uses Bun WebView headless by default.
+- CLOAK_HEADLESS cannot enable headed mode.
+- SURF_USE_CLOAK_CHATGPT is obsolete.
 - Default profile on macOS: ${SURF_SKILL_BT}dsebban883@gmail.com${SURF_SKILL_BT} unless the user asks for another account.
 - Use ${SURF_SKILL_BT}--profile dsebban883@gmail.com${SURF_SKILL_BT} for reliable auth and file/image/chats features.
 
@@ -71,6 +73,7 @@ surf chatgpt "deep analysis" --model gpt-5.4-pro --profile dsebban883@gmail.com
 ${SURF_SKILL_BT}${SURF_SKILL_BT}${SURF_SKILL_BT}
 
 ${SURF_SKILL_BT}--prompt-file${SURF_SKILL_BT} reads the file as prompt text. Use it for large exported contexts. ${SURF_SKILL_BT}--file${SURF_SKILL_BT} uploads as an attachment.
+If RepoPrompt export stats show ${SURF_SKILL_BT}Files: 0${SURF_SKILL_BT}, rebuild selection/preset before sending.
 
 ### ChatGPT model aliases
 
@@ -97,6 +100,7 @@ Notes:
 - ${SURF_SKILL_BT}--delete${SURF_SKILL_BT} is destructive; no CLI undo.
 - Search may use a recent-history fallback; if JSON shows ${SURF_SKILL_BT}partial: true${SURF_SKILL_BT}, misses are not authoritative for older chats.
 - ${SURF_SKILL_BT}--download-file${SURF_SKILL_BT} needs ${SURF_SKILL_BT}--output${SURF_SKILL_BT}.
+- ${SURF_SKILL_BT}--export${SURF_SKILL_BT} waits briefly for a pending assistant turn before rendering.
 
 ## ChatGPT thinking trace
 
@@ -191,6 +195,27 @@ function loadPromptFile(rawPath) {
     console.error(`[prompt-file] ⚠ ~${tokenKStr} tokens — approaching GPT Pro 150K limit`);
   }
   return content;
+}
+
+function normalizeLegacyChatGptEnv() {
+  const debugEnabled = !!process.env.SURF_DEBUG;
+  const rawCloakHeadless = process.env.CLOAK_HEADLESS;
+  const rawLegacyCloakToggle = process.env.SURF_USE_CLOAK_CHATGPT;
+
+  if (rawCloakHeadless !== undefined) {
+    const normalized = String(rawCloakHeadless).trim().toLowerCase();
+    if (["0", "false", "no", "headed"].includes(normalized)) {
+      process.stderr.write("Warning: CLOAK_HEADLESS headed mode is unsupported and will be ignored.\n");
+    }
+    delete process.env.CLOAK_HEADLESS;
+  }
+
+  if (rawLegacyCloakToggle !== undefined) {
+    if (debugEnabled) {
+      process.stderr.write("[debug] Ignoring obsolete SURF_USE_CLOAK_CHATGPT env var.\n");
+    }
+    delete process.env.SURF_USE_CLOAK_CHATGPT;
+  }
 }
 
 // ============================================================================
@@ -3007,6 +3032,8 @@ delete toolArgs["no-screenshot"];
 const softFail = toolArgs["soft-fail"] === true;
 delete toolArgs["soft-fail"];
 
+normalizeLegacyChatGptEnv();
+
 if (!noScreenshot && AUTO_SCREENSHOT_TOOLS.includes(tool)) {
   toolArgs.autoScreenshot = true;
 }
@@ -3275,19 +3302,6 @@ const performAutoCapture = async () => {
 const CHATGPT_CLOAK_ONLY_TOOLS = new Set(["chatgpt.chats", "chatgpt.reply"]);
 const SLACK_CLOAK_TOOLS = new Set(["slack.read"]);
 
-const withOptionalHeadedCloak = async (enabled, fn) => {
-  const previous = process.env.CLOAK_HEADLESS;
-  if (enabled) process.env.CLOAK_HEADLESS = "0";
-  try {
-    return await fn();
-  } finally {
-    if (enabled) {
-      if (previous === undefined) delete process.env.CLOAK_HEADLESS;
-      else process.env.CLOAK_HEADLESS = previous;
-    }
-  }
-};
-
 const printChatGptChatsResult = (result, opts = {}) => {
   if (result.action === "rename") {
     if (wantJson) console.log(JSON.stringify(result ?? null, null, 2));
@@ -3336,6 +3350,9 @@ const printChatGptChatsResult = (result, opts = {}) => {
       } else {
         console.log(`Exported conversation to: ${opts.exportPath}`);
       }
+      if (result.stabilized === false) {
+        process.stderr.write("Warning: export completed before assistant turn stabilized; output may still be incomplete.\n");
+      }
     }
     if (wantJson) {
       console.log(JSON.stringify(result.conversation ?? null, null, 2));
@@ -3380,7 +3397,7 @@ const runChatGptCloakQueryDirect = async (sessionTool, queryArgs) => {
   let lastProgress = "";
   let sawSentCheckpoint = false;
   try {
-    const result = await withOptionalHeadedCloak(false, () => queryWithCloakBrowser(queryArgs, (progress) => {
+    const result = await queryWithCloakBrowser(queryArgs, (progress) => {
       if (progress.type === "meta_update") {
         const patch = {};
         if (progress.conversationId)             patch.conversationId             = progress.conversationId;
@@ -3419,7 +3436,7 @@ const runChatGptCloakQueryDirect = async (sessionTool, queryArgs) => {
         process.stderr.write(msg + "\n");
         lastProgress = msg;
       }
-    }));
+    });
 
     const durationMs = result.tookMs || (Date.now() - startMs);
     if (sessionTool === "chatgpt.reply") chatgptChatsCache.invalidateCachedChats();
@@ -3489,7 +3506,8 @@ const runChatGptChatsDirect = async (chatArgs, renderOpts = {}) => {
   let lastProgress = "";
   try {
     const cacheable = ["list", "search", "get"].includes(chatArgs.action)
-      && chatArgs.useCache !== false;
+      && chatArgs.useCache !== false
+      && !(chatArgs.action === "get" && chatArgs.waitForAssistant === true);
     if (cacheable) {
       const cached = chatgptChatsCache.getCachedChats(chatArgs);
       if (cached) {
@@ -3500,13 +3518,13 @@ const runChatGptChatsDirect = async (chatArgs, renderOpts = {}) => {
       }
     }
 
-    const result = await withOptionalHeadedCloak(false, () => manageChatsWithCloakBrowser(chatArgs, (progress) => {
+    const result = await manageChatsWithCloakBrowser(chatArgs, (progress) => {
       const msg = `[cloak-chatgpt.chats] [${progress.step}/${progress.total}] ${progress.message}`;
       if (msg !== lastProgress) {
         process.stderr.write(msg + "\n");
         lastProgress = msg;
       }
-    }));
+    });
 
     if (cacheable) chatgptChatsCache.setCachedChats(chatArgs, result);
     if (["rename", "delete", "bulk_delete"].includes(chatArgs.action)) chatgptChatsCache.invalidateCachedChats();
@@ -3737,6 +3755,7 @@ if (tool === "chatgpt.chats") {
               ? "search"
               : "list";
   (async () => {
+    const waitForAssistant = action === "get" && !!exportPath;
     const chatArgs = {
       action,
       conversationId: conversationId || undefined,
@@ -3751,6 +3770,8 @@ if (tool === "chatgpt.chats") {
       includeBytes: !!fileId,
       outputPath: outputPath || undefined,
       useCache,
+      waitForAssistant,
+      waitForAssistantTimeoutSec: waitForAssistant ? 30 : undefined,
     };
     await runChatGptChatsDirect(chatArgs, {
       messageLimit: action === "get" ? limit : undefined,

@@ -1,5 +1,9 @@
 import { describe, it, expect } from "vitest";
-import { formatSlackResult, cleanSlackText, formatTimestamp } from "../../native/slack-formatter.cjs";
+const { formatSlackResult, cleanSlackText, formatTimestamp } = require("../../native/slack-formatter.cjs") as {
+  formatSlackResult: (...args: any[]) => string;
+  cleanSlackText: (text: string | null | undefined, userMap?: Record<string, unknown>) => string;
+  formatTimestamp: (timestamp: string | number | undefined | null) => string;
+};
 
 describe("slack-formatter", () => {
   describe("cleanSlackText", () => {

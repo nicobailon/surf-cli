@@ -9,7 +9,6 @@ const { spawn } = require("child_process");
 const { existsSync } = require("fs");
 const { join, dirname } = require("path");
 const {
-  DEFAULT_CHATGPT_CHATS_TIMEOUT_SEC,
   resolveChatsTimeoutSeconds,
   resolveQueryTimeoutSeconds,
 } = require("./chatgpt-cloak-timeout.cjs");
@@ -55,7 +54,15 @@ function ensureAvailability(workerPath) {
   }
 }
 
-function runCloakWorker({ workerPath, request, timeout = DEFAULT_CHATGPT_CHATS_TIMEOUT_SEC, onProgress = () => {}, mapSuccess = (msg) => msg }) {
+function resolveWorkerTimeoutSeconds(timeout, request) {
+  const numeric = Number(timeout);
+  if (Number.isFinite(numeric) && numeric > 0) return numeric;
+  return request?.type === "query"
+    ? resolveQueryTimeoutSeconds(undefined)
+    : resolveChatsTimeoutSeconds(undefined);
+}
+
+function runCloakWorker({ workerPath, request, timeout, onProgress = () => {}, mapSuccess = (msg) => msg }) {
   ensureAvailability(workerPath);
 
   return new Promise((resolve, reject) => {
@@ -80,7 +87,8 @@ function runCloakWorker({ workerPath, request, timeout = DEFAULT_CHATGPT_CHATS_T
       env: { ...process.env },
     });
 
-    const timeoutMs = timeout * 1000;
+    const timeoutSec = resolveWorkerTimeoutSeconds(timeout, request);
+    const timeoutMs = timeoutSec * 1000;
     const armWorkerTimer = () => {
       clearWorkerTimer();
       timer = setTimeout(() => {
@@ -253,6 +261,9 @@ async function manageChatsWithCloakBrowser(opts, onProgress = () => {}) {
       fileId: opts.fileId,
       includeBytes: opts.includeBytes,
       outputPath: opts.outputPath,
+      waitForAssistant: opts.waitForAssistant,
+      waitForAssistantTimeoutSec: opts.waitForAssistantTimeoutSec,
+      baselineAssistantMessageId: opts.baselineAssistantMessageId,
     },
     timeout,
     onProgress,

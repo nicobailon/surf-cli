@@ -17,6 +17,7 @@
 
 const { listSessions, updateSession, appendSessionLog, persistSessionResponse } = require("./session-store.cjs");
 const { extractMessageText, summarizeConversation } = require("./chatgpt-chats-formatter.cjs");
+const { classifyConversationProgress } = require("./chatgpt-conversation-state.cjs");
 
 // ============================================================================
 // Constants
@@ -69,6 +70,7 @@ function hasSentCheckpoint(meta) {
 
   return (
     meta.lastCheckpoint === "sent" ||
+    (meta.lastCheckpoint === "send_attempted" && !!resolveConversationId(meta)) ||
     (typeof meta.sentAt === "string" && meta.sentAt.trim() !== "")
   );
 }
@@ -106,43 +108,20 @@ function extractRecoveredAssistantPayload(conversation, nodeId = null) {
  *   outcome: 'completed' | 'no_new_assistant' | 'in_progress' | 'ambiguous'
  */
 function inspectConversation(conversation, meta = {}) {
-  if (!conversation || typeof conversation !== "object") {
-    return { outcome: "ambiguous", nodeId: null };
+  const classified = classifyConversationProgress(conversation, {
+    baselineAssistantMessageId: meta.baselineAssistantMessageId || null,
+  });
+  switch (classified.state) {
+    case "assistant_complete":
+      return { outcome: "completed", nodeId: classified.nodeId || null };
+    case "assistant_complete_baseline":
+      return { outcome: "no_new_assistant", nodeId: classified.nodeId || null };
+    case "assistant_in_progress":
+    case "awaiting_assistant":
+      return { outcome: "in_progress", nodeId: classified.nodeId || null };
+    default:
+      return { outcome: "ambiguous", nodeId: classified.nodeId || null };
   }
-
-  const mapping       = conversation.mapping;
-  const currentNodeId = conversation.current_node;
-
-  if (!mapping || !currentNodeId || !mapping[currentNodeId]) {
-    return { outcome: "ambiguous", nodeId: null };
-  }
-
-  const node = mapping[currentNodeId];
-  const msg  = node.message;
-  if (!msg) return { outcome: "ambiguous", nodeId: currentNodeId };
-
-  const status = msg.status;
-  const role   = msg.author && msg.author.role;
-
-  // Current node must be an assistant turn for a completed response
-  if (role !== "assistant") {
-    return { outcome: "no_new_assistant", nodeId: currentNodeId };
-  }
-
-  if (status === "finished_successfully") {
-    // Check if this is just the pre-existing baseline (same turn, no new content)
-    const baseline = meta.baselineAssistantMessageId;
-    if (baseline && currentNodeId === baseline) {
-      return { outcome: "no_new_assistant", nodeId: currentNodeId };
-    }
-    return { outcome: "completed", nodeId: currentNodeId };
-  }
-
-  if (status === "in_progress") {
-    return { outcome: "in_progress", nodeId: currentNodeId };
-  }
-
-  return { outcome: "ambiguous", nodeId: currentNodeId };
 }
 
 // ============================================================================
@@ -238,6 +217,9 @@ async function reconcileSessions(opts = {}) {
           conversationId,
           profile:        meta.args && meta.args.profile,
           timeout:        30,
+          waitForAssistant: true,
+          waitForAssistantTimeoutSec: 30,
+          baselineAssistantMessageId: meta.baselineAssistantMessageId || null,
         });
 
         // manageChatsWithCloakBrowser wraps the result — unwrap conversation

@@ -1,11 +1,16 @@
 import { EventEmitter } from "node:events";
 import { describe, it, expect, afterEach, beforeEach, vi } from "vitest";
-import {
+const {
   isSlackCloakAvailable,
   querySlackMessages,
   __setSlackRuntimeForTests,
   __resetSlackRuntimeForTests,
-} from "../../native/slack-cloak-bridge.cjs";
+} = require("../../native/slack-cloak-bridge.cjs") as {
+  isSlackCloakAvailable: () => boolean;
+  querySlackMessages: (opts: any, onProgress?: (progress: any) => void) => Promise<any>;
+  __setSlackRuntimeForTests: (overrides: Record<string, unknown>) => void;
+  __resetSlackRuntimeForTests: () => void;
+};
 
 function createWorker() {
   const worker = new EventEmitter() as any;

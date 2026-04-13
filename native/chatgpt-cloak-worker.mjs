@@ -10,13 +10,20 @@
  */
 
 import { launchPersistentContext } from 'cloakbrowser';
-import { existsSync, mkdirSync, mkdtempSync, writeFileSync, rmSync } from 'fs';
+import { existsSync, mkdirSync, writeFileSync, rmSync } from 'fs';
 import { createRequire } from 'module';
-import { homedir, tmpdir } from 'os';
 import { join, resolve as pathResolve } from 'path';
 import { loadAndInjectChatgptCookies } from './chatgpt-cloak-profile-auth.mjs';
 
 const require = createRequire(import.meta.url);
+const {
+  launchPersistentContextWithRecovery,
+  sharedProfileDir,
+  tempProfileDir,
+} = require('./chatgpt-cloak-runtime.cjs');
+const {
+  attemptSendAndConfirm,
+} = require('./chatgpt-cloak-send-confirmation.cjs');
 const { enterPromptWithVerification } = require('./chatgpt-cloak-prompt-entry.cjs');
 const {
   extractLatestActiveUserMessage,
@@ -89,38 +96,6 @@ function sanitize(raw) {
   return text.trim();
 }
 
-// ============================================================================
-// Profile directory management
-
-/** Shared persistent profile for no-auth sessions */
-function sharedProfileDir() {
-  const dir = join(homedir(), '.surf', 'cloak-profile');
-  if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
-  return dir;
-}
-
-/** Isolated temp profile for --profile sessions (prevents cookie contamination) */
-function tempProfileDir() {
-  return mkdtempSync(join(tmpdir(), 'surf-cloak-session-'));
-}
-
-// ============================================================================
-// Launch options builder
-
-function buildLaunchOpts(userDataDir) {
-  return {
-    userDataDir,
-    headless: true,
-    humanize: true,
-    humanPreset: 'careful',
-    viewport: { width: 1280, height: 800 },
-    locale: 'en-US',
-    timezoneId: 'America/New_York',
-    args: ['--fingerprint-storage-quota=5000'],
-  };
-}
-
-// ============================================================================
 // Readiness checks
 
 async function waitForReady(page, timeoutMs = 30_000) {
@@ -779,6 +754,7 @@ async function runQuery({ prompt, model, file, profile, timeout = DEFAULT_CHATGP
   const resolved = resolveModel(model);
   const useInjectedProfile = !!profile;
   let tempDir = null;
+  let context = null;
 
   // ── Phase 1: Launch ──────────────────────────────────────────────────
   progress(1, 6, `Launching CloakBrowser — ${resolved.mode}`);
@@ -792,15 +768,9 @@ async function runQuery({ prompt, model, file, profile, timeout = DEFAULT_CHATGP
     userDataDir = tempDir;
     log('info', 'Using isolated profile for cookie injection', { tempDir });
   } else {
-    userDataDir = sharedProfileDir();
+    userDataDir = sharedProfileDir({ log });
     log('info', 'Using shared persistent profile');
   }
-
-  const context = await launchPersistentContext(buildLaunchOpts(userDataDir));
-  log('info', 'CloakBrowser launched', {
-    headless: true,
-    humanize: true,
-  });
 
   // Cleanup on forced kill
   const cleanup = async () => {
@@ -811,6 +781,17 @@ async function runQuery({ prompt, model, file, profile, timeout = DEFAULT_CHATGP
   process.on('SIGINT', () => cleanup().then(() => process.exit(1)));
 
   try {
+    context = await launchPersistentContextWithRecovery({
+      launchPersistentContext,
+      userDataDir,
+      isSharedProfile: !useInjectedProfile,
+      log,
+    });
+    log('info', 'CloakBrowser launched', {
+      headless: true,
+      humanize: true,
+    });
+
     const page = context.pages()[0] || await context.newPage();
 
     // ── Phase 2: Cookie injection (if --profile) ─────────────────────
@@ -1001,49 +982,41 @@ async function runQuery({ prompt, model, file, profile, timeout = DEFAULT_CHATGP
     const baselineMessageId = baseline.messageId || null; // For reconcile API comparison
     log('info', 'Baseline captured', { turnId: baselineTurnId, messageId: baselineMessageId });
 
-    // Send — prefer click when enabled, otherwise press Enter directly.
-    let sendTriggered = false;
-    if (promptEntry.sendEnabled) {
-      for (const sel of SEND_BUTTON_SELECTORS) {
-        try {
-          const btn = page.locator(sel).first();
-          await btn.click({ timeout: 5_000 });
-          sendTriggered = true;
-          log('info', `Send button clicked: ${sel}`);
-          break;
-        } catch {
-          log('info', `Send selector miss: ${sel}`);
-        }
-      }
-    }
-    if (!sendTriggered) {
-      log(
-        promptEntry.sendButtonFound ? 'warn' : 'info',
-        promptEntry.sendButtonFound
-          ? 'Send button not usable after inline insert — pressing Enter'
-          : 'No send button found — pressing Enter'
-      );
-      await textarea.press('Enter');
-    }
-
-    const sentAt = new Date().toISOString();
-    emit({
-      type: 'meta_update',
-      source: 'post_send',
-      lastCheckpoint: 'sent',
-      sentAt,
-      conversationId: conversationId || null,
-      baselineAssistantMessageId: baselineMessageId || null,
-      t: Date.now(),
+    const sendAttempt = await attemptSendAndConfirm({
+      page,
+      textarea,
+      promptEntry,
+      finalPrompt,
+      conversationId,
+      baselineUserNodeId,
+      sendButtonSelectors: SEND_BUTTON_SELECTORS,
+      promptSelectors: PROMPT_SELECTOR_LIST,
+      stopSelector: STOP_BUTTON_SELECTOR,
+      sleep,
+      log,
+      waitForPromptPersistenceValidation,
+      extractConversationIdFromUrl,
+    });
+    const sentAt = sendAttempt.sentAt;
+    log('info', 'Send confirmed', {
+      method: sendAttempt.method,
+      selector: sendAttempt.selector || null,
+      confirmationSource: sendAttempt.confirmationSource,
+      conversationId: sendAttempt.conversationId || conversationId || null,
+      attemptError: sendAttempt.attemptError || null,
     });
 
-    const conversationIdBeforeResolve = conversationId || null;
-    conversationId = await resolveConversationIdForValidation(page, conversationId, 30_000);
-    if ((conversationId || null) !== conversationIdBeforeResolve) {
+    conversationId = sendAttempt.conversationId || conversationId;
+
+    if (!conversationId) {
+      conversationId = await resolveConversationIdForValidation(page, conversationId, 30_000);
+    }
+
+    if (conversationId) {
       emit({
         type: 'meta_update',
-        source: 'conversation_resolved',
-        lastCheckpoint: 'sent',
+        source: 'send_attempted',
+        lastCheckpoint: 'send_attempted',
         sentAt,
         conversationId: conversationId || null,
         baselineAssistantMessageId: baselineMessageId || null,
@@ -1053,21 +1026,23 @@ async function runQuery({ prompt, model, file, profile, timeout = DEFAULT_CHATGP
 
     if (!conversationId) {
       fail(
-        'prompt_sent_validation_failed',
-        'Prompt send validation failed: conversationId did not resolve after send',
+        'send_not_confirmed',
+        'Prompt send could not be confirmed: conversationId did not resolve after send',
         { failureReason: 'conversation_id_unresolved' },
       );
       return;
     }
 
-    const sentPromptValidation = await waitForPromptPersistenceValidation({
-      page,
-      conversationId,
-      expectedPrompt: finalPrompt,
-      baselineUserNodeId,
-      timeoutMs: 30_000,
-      pollMs: 1_000,
-    });
+    const sentPromptValidation = sendAttempt.validation?.ok
+      ? sendAttempt.validation
+      : await waitForPromptPersistenceValidation({
+          page,
+          conversationId,
+          expectedPrompt: finalPrompt,
+          baselineUserNodeId,
+          timeoutMs: 30_000,
+          pollMs: 1_000,
+        });
     const validationSummary = summarizePromptValidation(sentPromptValidation);
     log('info', 'Sent prompt validation', validationSummary);
     if (!sentPromptValidation.ok) {
@@ -1083,6 +1058,16 @@ async function runQuery({ prompt, model, file, profile, timeout = DEFAULT_CHATGP
       );
       return;
     }
+
+    emit({
+      type: 'meta_update',
+      source: 'prompt_persisted',
+      lastCheckpoint: 'sent',
+      sentAt,
+      conversationId: conversationId || null,
+      baselineAssistantMessageId: baselineMessageId || null,
+      t: Date.now(),
+    });
 
     // ── Phase 6: Wait for response (hybrid stream + DOM) ────────────
     progress(6, 6, 'Waiting for response');
@@ -1342,7 +1327,9 @@ async function runQuery({ prompt, model, file, profile, timeout = DEFAULT_CHATGP
     log('error', 'Query failed', { error: e.message, stack: e.stack, code: e.code });
     fail(e.code || 'query_failed', e.message, e.details);
   } finally {
-    await context.close();
+    if (context) {
+      try { await context.close(); } catch {}
+    }
     if (tempDir) {
       try { rmSync(tempDir, { recursive: true, force: true }); } catch {}
     }
