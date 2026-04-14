@@ -1,5 +1,6 @@
 const DEFAULT_CHATGPT_QUERY_TIMEOUT_SEC = 2700;
 const DEFAULT_CHATGPT_CHATS_TIMEOUT_SEC = 120;
+const DEFAULT_CHATGPT_ASSISTANT_WAIT_SEC = 180;
 const MIN_KEEPALIVE_INTERVAL_MS = 1000;
 const MAX_KEEPALIVE_INTERVAL_MS = 15000;
 
@@ -14,6 +15,10 @@ function resolveQueryTimeoutSeconds(timeout) {
 
 function resolveChatsTimeoutSeconds(timeout) {
   return resolvePositiveTimeoutSeconds(timeout, DEFAULT_CHATGPT_CHATS_TIMEOUT_SEC);
+}
+
+function resolveAssistantWaitSeconds(timeout) {
+  return resolvePositiveTimeoutSeconds(timeout, DEFAULT_CHATGPT_ASSISTANT_WAIT_SEC);
 }
 
 function resolveKeepaliveIntervalMs(timeout) {
@@ -70,8 +75,10 @@ function detectResponseActivity({
 module.exports = {
   DEFAULT_CHATGPT_QUERY_TIMEOUT_SEC,
   DEFAULT_CHATGPT_CHATS_TIMEOUT_SEC,
+  DEFAULT_CHATGPT_ASSISTANT_WAIT_SEC,
   resolveQueryTimeoutSeconds,
   resolveChatsTimeoutSeconds,
+  resolveAssistantWaitSeconds,
   resolveKeepaliveIntervalMs,
   normalizeActivityPhase,
   detectResponseActivity,

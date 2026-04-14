@@ -1,18 +1,27 @@
 import { describe, expect, it } from "vitest";
 
-const { classifyConversationProgress } = require("../../native/chatgpt-conversation-state.cjs") as {
-  classifyConversationProgress: (
-    conversation: any,
-    options?: { baselineAssistantMessageId?: string | null },
-  ) => {
-    state: string;
-    nodeId: string | null;
-    role: string | null;
-    status: string | null;
-    hasText: boolean;
-    model: string | null;
+const { classifyConversationProgress, extractCompletedAssistantPayload } =
+  require("../../native/chatgpt-conversation-state.cjs") as {
+    classifyConversationProgress: (
+      conversation: any,
+      options?: { baselineAssistantMessageId?: string | null },
+    ) => {
+      state: string;
+      nodeId: string | null;
+      role: string | null;
+      status: string | null;
+      hasText: boolean;
+      model: string | null;
+    };
+    extractCompletedAssistantPayload: (
+      conversation: any,
+      options?: { nodeId?: string | null },
+    ) => {
+      nodeId: string | null;
+      responseText: string;
+      model: string | null;
+    } | null;
   };
-};
 
 describe("chatgpt-conversation-state", () => {
   it("classifies a new completed assistant turn", () => {
@@ -135,5 +144,91 @@ describe("chatgpt-conversation-state", () => {
   it("returns invalid for missing or ill-formed current node state", () => {
     expect(classifyConversationProgress(null).state).toBe("invalid");
     expect(classifyConversationProgress({ current_node: "x", mapping: {} }).state).toBe("invalid");
+  });
+
+  it("extracts payload for a completed assistant node", () => {
+    const conversation = {
+      current_node: "a2",
+      mapping: {
+        a2: {
+          message: {
+            author: { role: "assistant" },
+            status: "finished_successfully",
+            content: { parts: ["done"] },
+            metadata: { model_slug: "gpt-5.4-pro" },
+          },
+        },
+      },
+    };
+
+    expect(extractCompletedAssistantPayload(conversation, { nodeId: "a2" })).toEqual({
+      nodeId: "a2",
+      responseText: "done",
+      model: "gpt-5.4-pro",
+    });
+  });
+
+  it("does not fall back to older assistant text when the requested node is empty", () => {
+    const conversation = {
+      current_node: "a2",
+      mapping: {
+        a1: {
+          id: "a1",
+          message: {
+            author: { role: "assistant" },
+            status: "finished_successfully",
+            content: { parts: ["older"] },
+            metadata: { model_slug: "gpt-5.4-thinking" },
+          },
+        },
+        a2: {
+          id: "a2",
+          parent: "a1",
+          message: {
+            author: { role: "assistant" },
+            status: "finished_successfully",
+            content: { parts: [] },
+            metadata: { model_slug: "gpt-5.4-pro" },
+          },
+        },
+      },
+    };
+
+    expect(extractCompletedAssistantPayload(conversation, { nodeId: "a2" })).toBeNull();
+  });
+
+  it("falls back to the latest visible assistant when no node is specified", () => {
+    const conversation = {
+      current_node: "a2",
+      mapping: {
+        u1: {
+          id: "u1",
+          message: {
+            author: { role: "user" },
+            status: "finished_successfully",
+            content: { parts: ["hello"] },
+          },
+          parent: null,
+          children: ["a2"],
+        },
+        a2: {
+          id: "a2",
+          parent: "u1",
+          children: [],
+          message: {
+            author: { role: "assistant" },
+            status: "finished_successfully",
+            content: { parts: ["latest"] },
+            metadata: { model_slug: "gpt-5.4-pro" },
+          },
+        },
+      },
+    };
+
+    expect(extractCompletedAssistantPayload(conversation)).toEqual({
+      nodeId: "a2",
+      responseText: "latest",
+      model: "gpt-5.4-pro",
+    });
   });
 });

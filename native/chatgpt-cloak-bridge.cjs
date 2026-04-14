@@ -137,6 +137,14 @@ function runCloakWorker({ workerPath, request, timeout, onProgress = () => {}, m
           });
           return false;
         case "keepalive":
+          onProgress({
+            type: "keepalive",
+            reason: msg.reason || null,
+            phase: msg.phase || null,
+            elapsedMs: msg.elapsedMs || null,
+            conversationId: msg.conversationId || null,
+            conversationState: msg.conversationState || null,
+          });
           return false;
         case "log":
           if (process.env.SURF_DEBUG) {

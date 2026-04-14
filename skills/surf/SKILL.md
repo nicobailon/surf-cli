@@ -108,6 +108,10 @@ surf do 'chatgpt "Draft release notes" --profile dsebban883@gmail.com | gemini "
 surf do 'chatgpt "Review this" --file diff.patch --profile dsebban883@gmail.com' --dry-run
 ```
 
+For RepoPrompt → GPT Pro oracle runs, use:
+
+- `docs/workflows/surf-gpt-pro-oracle.md`
+
 ## Sessions & reconciliation
 
 Every surf AI command creates a session in `~/.surf/sessions/`.
@@ -124,6 +128,17 @@ For long runs, use tmux:
 ```bash
 tmux new -d -s surf-chat "bash -lc 'surf chatgpt \"complex analysis\" --model gpt-5.4-pro --profile dsebban883@gmail.com --timeout 3000 2>&1 | tee /tmp/surf-chatgpt.log'"
 tail -f /tmp/surf-chatgpt.log
+```
+
+During long GPT Pro runs, expect keepalive lines such as:
+- `… still waiting — Reasoning`
+- `↻ checking remote completion — assistant_in_progress`
+
+If the local query path exits after send, surf now attempts bounded remote recovery automatically before surfacing failure. Manual fallback remains:
+
+```bash
+node native/cli.cjs session --reconcile --network
+node native/cli.cjs chatgpt.chats <conversation-id> --export /tmp/chat.md --format markdown --profile dsebban883@gmail.com
 ```
 
 ## Troubleshooting

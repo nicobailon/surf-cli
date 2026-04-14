@@ -53,6 +53,10 @@ npm test
 npm run check
 ```
 
+Reusable RepoPrompt/Surf Oracle workflow:
+
+- [`docs/workflows/surf-gpt-pro-oracle.md`](docs/workflows/surf-gpt-pro-oracle.md) — repo copy of the RepoPrompt workflow for detached GPT Pro oracle runs, polling, and recovery.
+
 ## Commands
 
 ### `surf chatgpt`
@@ -74,6 +78,7 @@ Common options:
 - `--prompt-file <path>`: read the prompt from a file. Use this for exported RepoPrompt context; `--file` uploads an attachment instead of inlining prompt text.
 - `--generate-image <path>`: generate an image and save it.
 - `--timeout <seconds>`: inactivity timeout. Default: `2700` seconds.
+- Long GPT Pro runs emit periodic keepalive wait / remote-check lines instead of going silent.
 
 ### `surf gemini`
 
@@ -121,6 +126,7 @@ Useful options:
 - `--delete` or `--delete-ids <ids>`: delete conversations.
 - `--download-file <file-id> --output <path>`: download an attachment.
 - `--no-cache`: bypass local chats cache.
+- Export/reconcile assistant waits use a longer default window for GPT Pro late completions.
 
 RepoPrompt / oracle export note:
 
@@ -151,6 +157,7 @@ surf session --clear --hours 24
 ```
 
 Session records include stderr logs, results, model metadata, conversation IDs, process IDs, and reconciliation status.
+`--reconcile --network` is the fallback lane for late remote completions that landed upstream after the local query path stalled or exited.
 
 ### `surf do`
 
@@ -234,6 +241,7 @@ Then point your MCP-capable agent at the `surf` binary with the `server` argumen
 - Run `surf --help` for the current command summary.
 - Run `surf <command> --help` for command-specific options.
 - Run `surf session <id>` to inspect a failed or long-running AI request.
+- Long GPT Pro waits should show `… still waiting` / `↻ checking remote completion` keepalive lines while Surf monitors the run.
 - Use `--timeout <seconds>` for long prompts, file uploads, or image generation.
 - Use `--profile <email>` consistently when multiple local accounts are signed in.
 - If you see `Files: 0` in RepoPrompt export stats, do not send that export to ChatGPT yet.

@@ -1,6 +1,6 @@
 "use strict";
 
-const { extractMessageText } = require("./chatgpt-chats-formatter.cjs");
+const { extractMessageText, summarizeConversation } = require("./chatgpt-chats-formatter.cjs");
 
 function isAssistantCompleteStatus(status) {
   return typeof status === "string" && /^(finished_successfully|finished)$/i.test(status.trim());
@@ -66,6 +66,40 @@ function classifyConversationProgress(conversation, { baselineAssistantMessageId
   return { state: "invalid", nodeId: currentNodeId, role, status, hasText, model };
 }
 
+function extractCompletedAssistantPayload(conversation, { nodeId = null } = {}) {
+  if (!conversation || typeof conversation !== "object") return null;
+
+  const mapping = conversation.mapping && typeof conversation.mapping === "object" ? conversation.mapping : null;
+  if (nodeId && mapping) {
+    const node = mapping[nodeId];
+    const message = node && typeof node === "object" ? node.message : null;
+    const role = message?.author?.role || null;
+    const responseText = String(extractMessageText(message) || "").trim();
+    if (role === "assistant" && responseText) {
+      return {
+        nodeId,
+        responseText,
+        model: message?.metadata?.model_slug || null,
+      };
+    }
+    return null;
+  }
+
+  const summary = summarizeConversation(conversation);
+  const lastAssistant = Array.isArray(summary.messages)
+    ? [...summary.messages].reverse().find((message) => message && message.role === "assistant")
+    : null;
+  const responseText = String(lastAssistant?.text || "").trim();
+  if (!responseText) return null;
+
+  return {
+    nodeId: lastAssistant?.id || null,
+    responseText,
+    model: lastAssistant?.model || summary.model || null,
+  };
+}
+
 module.exports = {
   classifyConversationProgress,
+  extractCompletedAssistantPayload,
 };

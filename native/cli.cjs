@@ -14,6 +14,8 @@ const { isCloakBrowserAvailable, queryWithCloakBrowser, manageChatsWithCloakBrow
 const { isSlackCloakAvailable, querySlackMessages } = require("./slack-cloak-bridge.cjs");
 const chatgptChatsFormatter = require("./chatgpt-chats-formatter.cjs");
 const chatgptChatsCache = require("./chatgpt-chats-cache.cjs");
+const { classifyConversationProgress, extractCompletedAssistantPayload } = require("./chatgpt-conversation-state.cjs");
+const { resolveAssistantWaitSeconds } = require("./chatgpt-cloak-timeout.cjs");
 const slackFormatter = require("./slack-formatter.cjs");
 const sessionStore     = require("./session-store.cjs");
 const sessionReconciler = require("./session-reconciler.cjs");
@@ -3380,6 +3382,123 @@ const printChatGptChatsResult = (result, opts = {}) => {
   }
 };
 
+const UNRECOVERABLE_CHATGPT_QUERY_ERROR_CODES = new Set([
+  "login_required",
+  "prompt_sent_validation_failed",
+  "prompt_materialized_as_file_map",
+]);
+
+function formatElapsedMsCompact(elapsedMs) {
+  const totalSeconds = Math.max(0, Math.round(Number(elapsedMs || 0) / 1000));
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  return minutes > 0 ? `${minutes}m ${seconds}s` : `${seconds}s`;
+}
+
+function formatCloakKeepaliveMessage(prefix, progress = {}) {
+  const elapsedSuffix = Number.isFinite(Number(progress.elapsedMs))
+    ? ` (${formatElapsedMsCompact(progress.elapsedMs)} elapsed)`
+    : "";
+  const phase = progress.phase || "Waiting for response";
+  const remoteState = progress.conversationState || null;
+  if (progress.reason === "remote_wait" || progress.reason === "wait_for_assistant") {
+    return `[${prefix}] ↻ checking remote completion${remoteState ? ` — ${remoteState}` : ""}${elapsedSuffix}`;
+  }
+  return `[${prefix}] … still waiting — ${phase}${elapsedSuffix}`;
+}
+
+function finalizeChatGptCloakResult(sessionTool, sess, result, startMs) {
+  const durationMs = result.tookMs || (Date.now() - startMs);
+  if (sessionTool === "chatgpt.reply") chatgptChatsCache.invalidateCachedChats();
+  if (sessionTool === "chatgpt" && result.conversationId) chatgptChatsCache.invalidateCachedChats();
+
+  sess.finish({
+    model: result.model || sessionTool,
+    tookMs: durationMs,
+    imagePath: result.imagePath,
+    response: result.response,
+    responsePreview: result.response ? result.response.slice(0, 160) : `${sessionTool} completed`,
+  });
+
+  if (result.imagePath) process.stderr.write(`Image saved: ${result.imagePath}\n`);
+  if (result.thinkingTrace) {
+    const tc = result.thinkingTrace;
+    const tCount = tc.thoughts ? tc.thoughts.length : 0;
+    const dur = tc.durationSec ? `${tc.durationSec}s` : (tc.recapText || "unknown");
+    process.stderr.write(`[cloak-${sessionTool}] 🧠 Thinking trace: ${tCount} step(s), ${dur}\n`);
+  }
+  if (wantJson) {
+    console.log(JSON.stringify({
+      response: result.response,
+      model: result.model,
+      tookMs: durationMs,
+      imagePath: result.imagePath || undefined,
+      partial: result.partial || undefined,
+      backend: "cloak",
+      conversationId: result.conversationId || undefined,
+      thinkingTrace: result.thinkingTrace || undefined,
+      recovered: result.recovered || undefined,
+    }, null, 2));
+  } else {
+    console.log(result.response);
+    const suffixParts = [];
+    if (result.partial) suffixParts.push("partial");
+    if (result.recovered) suffixParts.push("recovered");
+    const suffix = suffixParts.length > 0 ? ` | ${suffixParts.join(" | ")}` : "";
+    console.error(`\n[${result.model || "unknown"} | ${(durationMs / 1000).toFixed(1)}s | cloak${suffix}]`);
+  }
+}
+
+async function attemptChatGptQueryRecovery(sessionTool, queryArgs, recoveryMeta = {}) {
+  const { conversationId, baselineAssistantMessageId, lastCheckpoint, err } = recoveryMeta;
+  if (!conversationId) return null;
+  if (!["sent", "send_attempted"].includes(lastCheckpoint || "")) return null;
+  if (queryArgs.generateImage || queryArgs["generate-image"]) return null;
+  if (UNRECOVERABLE_CHATGPT_QUERY_ERROR_CODES.has(err?.code || "")) return null;
+
+  process.stderr.write(`[cloak-${sessionTool}] ↻ attempting remote recovery from ${conversationId}\n`);
+  const chatResult = await manageChatsWithCloakBrowser({
+    action: "get",
+    conversationId,
+    profile: queryArgs.profile,
+    timeout: resolveAssistantWaitSeconds(undefined),
+    waitForAssistant: true,
+    waitForAssistantTimeoutSec: resolveAssistantWaitSeconds(undefined),
+    baselineAssistantMessageId: baselineAssistantMessageId || null,
+  }, (progress) => {
+    if (progress.type === "keepalive") {
+      process.stderr.write(formatCloakKeepaliveMessage(`cloak-${sessionTool}`, progress) + "\n");
+    }
+  });
+
+  const conversation = chatResult?.conversation || (chatResult?.data && chatResult.data.conversation) || null;
+  const classified = classifyConversationProgress(conversation, {
+    baselineAssistantMessageId: baselineAssistantMessageId || null,
+  });
+  if (classified.state !== "assistant_complete") {
+    process.stderr.write(`[cloak-${sessionTool}] remote recovery incomplete — ${classified.state}\n`);
+    return null;
+  }
+
+  const recoveredPayload = extractCompletedAssistantPayload(conversation, { nodeId: classified.nodeId || null });
+  if (!recoveredPayload?.responseText) {
+    process.stderr.write(`[cloak-${sessionTool}] remote recovery found no assistant text yet\n`);
+    return null;
+  }
+
+  process.stderr.write(`[cloak-${sessionTool}] ✓ recovered remote reply from ${conversationId}\n`);
+  return {
+    response: recoveredPayload.responseText,
+    model: recoveredPayload.model || queryArgs.model || sessionTool,
+    tookMs: 0,
+    imagePath: null,
+    partial: false,
+    backend: "cloak",
+    conversationId,
+    recovered: true,
+  };
+}
+
 const runChatGptCloakQueryDirect = async (sessionTool, queryArgs) => {
   if (!isCloakBrowserAvailable()) {
     console.error("Error: CloakBrowser not installed. Run: npm install -g cloakbrowser");
@@ -3395,19 +3514,37 @@ const runChatGptCloakQueryDirect = async (sessionTool, queryArgs) => {
 
   const startMs = Date.now();
   let lastProgress = "";
-  let sawSentCheckpoint = false;
+  let conversationId = queryArgs.conversationId || null;
+  let baselineAssistantMessageId = null;
+  let lastCheckpoint = null;
   try {
     const result = await queryWithCloakBrowser(queryArgs, (progress) => {
       if (progress.type === "meta_update") {
         const patch = {};
-        if (progress.conversationId)             patch.conversationId             = progress.conversationId;
-        if (progress.baselineAssistantMessageId) patch.baselineAssistantMessageId = progress.baselineAssistantMessageId;
-        if (progress.lastCheckpoint)             patch.lastCheckpoint             = progress.lastCheckpoint;
+        if (progress.conversationId) {
+          patch.conversationId = progress.conversationId;
+          conversationId = progress.conversationId;
+        }
+        if (progress.baselineAssistantMessageId) {
+          patch.baselineAssistantMessageId = progress.baselineAssistantMessageId;
+          baselineAssistantMessageId = progress.baselineAssistantMessageId;
+        }
+        if (progress.lastCheckpoint) {
+          patch.lastCheckpoint = progress.lastCheckpoint;
+          lastCheckpoint = progress.lastCheckpoint;
+        }
         if (progress.sentAt)                     patch.sentAt                     = progress.sentAt;
         if (Object.keys(patch).length > 0)       sess.update(patch);
-        if (!sawSentCheckpoint && progress.lastCheckpoint === "sent") {
-          sawSentCheckpoint = true;
+        if (progress.lastCheckpoint === "sent") {
           sess.step(`[session] checkpoint: sent (${progress.source || "?"}) conv:${progress.conversationId || "?"} baseline:${progress.baselineAssistantMessageId || "?"}`);
+        }
+        return;
+      }
+      if (progress.type === "keepalive") {
+        const msg = formatCloakKeepaliveMessage(`cloak-${sessionTool}`, progress);
+        if (msg !== lastProgress) {
+          process.stderr.write(msg + "\n");
+          lastProgress = msg;
         }
         return;
       }
@@ -3438,43 +3575,24 @@ const runChatGptCloakQueryDirect = async (sessionTool, queryArgs) => {
       }
     });
 
-    const durationMs = result.tookMs || (Date.now() - startMs);
-    if (sessionTool === "chatgpt.reply") chatgptChatsCache.invalidateCachedChats();
-    // Also invalidate after a new chatgpt query — a new conversation was created
-    if (sessionTool === "chatgpt" && result.conversationId) chatgptChatsCache.invalidateCachedChats();
-    sess.finish({
-      model: result.model || sessionTool,
-      tookMs: durationMs,
-      imagePath: result.imagePath,
-      response: result.response,
-      responsePreview: result.response ? result.response.slice(0, 160) : `${sessionTool} completed`,
-    });
-
-    if (result.imagePath) process.stderr.write(`Image saved: ${result.imagePath}\n`);
-    if (result.thinkingTrace) {
-      const tc = result.thinkingTrace;
-      const tCount = tc.thoughts ? tc.thoughts.length : 0;
-      const dur = tc.durationSec ? `${tc.durationSec}s` : (tc.recapText || 'unknown');
-      process.stderr.write(`[cloak-${sessionTool}] 🧠 Thinking trace: ${tCount} step(s), ${dur}\n`);
-    }
-    if (wantJson) {
-      console.log(JSON.stringify({
-        response: result.response,
-        model: result.model,
-        tookMs: durationMs,
-        imagePath: result.imagePath || undefined,
-        partial: result.partial || undefined,
-        backend: "cloak",
-        conversationId: result.conversationId || undefined,
-        thinkingTrace: result.thinkingTrace || undefined,
-      }, null, 2));
-    } else {
-      console.log(result.response);
-      const suffix = result.partial ? " | partial" : "";
-      console.error(`\n[${result.model || "unknown"} | ${(durationMs / 1000).toFixed(1)}s | cloak${suffix}]`);
-    }
+    finalizeChatGptCloakResult(sessionTool, sess, result, startMs);
     process.exit(0);
   } catch (err) {
+    try {
+      const recoveredResult = await attemptChatGptQueryRecovery(sessionTool, queryArgs, {
+        conversationId,
+        baselineAssistantMessageId,
+        lastCheckpoint,
+        err,
+      });
+      if (recoveredResult) {
+        recoveredResult.tookMs = Date.now() - startMs;
+        finalizeChatGptCloakResult(sessionTool, sess, recoveredResult, startMs);
+        process.exit(0);
+      }
+    } catch (recoveryError) {
+      process.stderr.write(`[cloak-${sessionTool}] remote recovery failed: ${recoveryError.message}\n`);
+    }
     sess.fail(err);
     const errMsg = `CloakBrowser failed: ${err.message}`;
     if (softFail) {
@@ -3519,6 +3637,14 @@ const runChatGptChatsDirect = async (chatArgs, renderOpts = {}) => {
     }
 
     const result = await manageChatsWithCloakBrowser(chatArgs, (progress) => {
+      if (progress.type === "keepalive") {
+        const msg = formatCloakKeepaliveMessage("cloak-chatgpt.chats", progress);
+        if (msg !== lastProgress) {
+          process.stderr.write(msg + "\n");
+          lastProgress = msg;
+        }
+        return;
+      }
       const msg = `[cloak-chatgpt.chats] [${progress.step}/${progress.total}] ${progress.message}`;
       if (msg !== lastProgress) {
         process.stderr.write(msg + "\n");
@@ -3771,7 +3897,7 @@ if (tool === "chatgpt.chats") {
       outputPath: outputPath || undefined,
       useCache,
       waitForAssistant,
-      waitForAssistantTimeoutSec: waitForAssistant ? 30 : undefined,
+      waitForAssistantTimeoutSec: waitForAssistant ? resolveAssistantWaitSeconds(toolArgs.timeout) : undefined,
     };
     await runChatGptChatsDirect(chatArgs, {
       messageLimit: action === "get" ? limit : undefined,

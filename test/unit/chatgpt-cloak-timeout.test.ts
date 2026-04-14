@@ -18,6 +18,13 @@ describe("chatgpt-cloak-timeout", () => {
     expect(timeoutHelpers.resolveChatsTimeoutSeconds(30)).toBe(30);
   });
 
+  it("uses 180s as the default assistant wait", () => {
+    expect(timeoutHelpers.resolveAssistantWaitSeconds()).toBe(180);
+    expect(timeoutHelpers.resolveAssistantWaitSeconds(0)).toBe(180);
+    expect(timeoutHelpers.resolveAssistantWaitSeconds(null)).toBe(180);
+    expect(timeoutHelpers.resolveAssistantWaitSeconds(45)).toBe(45);
+  });
+
   it("detects fresh response activity only when content actually advances", () => {
     const idle = timeoutHelpers.detectResponseActivity({
       phase: "Waiting for response",

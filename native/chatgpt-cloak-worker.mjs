@@ -17,6 +17,10 @@ import { loadAndInjectChatgptCookies } from './chatgpt-cloak-profile-auth.mjs';
 
 const require = createRequire(import.meta.url);
 const {
+  classifyConversationProgress,
+  extractCompletedAssistantPayload,
+} = require('./chatgpt-conversation-state.cjs');
+const {
   launchPersistentContextWithRecovery,
   sharedProfileDir,
   tempProfileDir,
@@ -32,6 +36,7 @@ const {
 const {
   DEFAULT_CHATGPT_QUERY_TIMEOUT_SEC,
   detectResponseActivity,
+  resolveAssistantWaitSeconds,
   resolveKeepaliveIntervalMs,
   resolveQueryTimeoutSeconds,
 } = require('./chatgpt-cloak-timeout.cjs');
@@ -1074,7 +1079,9 @@ async function runQuery({ prompt, model, file, profile, timeout = DEFAULT_CHATGP
 
     const timeoutSec = resolveQueryTimeoutSeconds(timeout);
     const timeoutMs = timeoutSec * 1000;
+    const assistantWaitMs = resolveAssistantWaitSeconds(undefined) * 1000;
     const keepaliveIntervalMs = resolveKeepaliveIntervalMs(timeoutSec);
+    const phase6StartedAtMs = Date.now();
     let deadline = Date.now() + timeoutMs;
     let responseText = '';
     let sawActivity = false;
@@ -1090,15 +1097,18 @@ async function runQuery({ prompt, model, file, profile, timeout = DEFAULT_CHATGP
     let lastStreamText = '';
     let lastStreamChangeAtMs = Date.now();
     let lastKeepaliveAtMs = 0;
+    let lastSignalAtMs = phase6StartedAtMs;
+    let lastRemotePollAtMs = 0;
+    let remoteRecoveryStartedAtMs = null;
+    let remoteConversationState = null;
     let timedOut = false;
 
-    const noteActivity = (reason) => {
+    const noteActivity = () => {
       const now = Date.now();
       deadline = now + timeoutMs;
-      if ((now - lastKeepaliveAtMs) >= keepaliveIntervalMs) {
-        emit({ type: 'keepalive', reason, phase: lastPhase || 'Waiting for response' });
-        lastKeepaliveAtMs = now;
-      }
+      lastSignalAtMs = now;
+      remoteRecoveryStartedAtMs = null;
+      remoteConversationState = null;
     };
 
     while (true) {
@@ -1162,7 +1172,7 @@ async function runQuery({ prompt, model, file, profile, timeout = DEFAULT_CHATGP
       });
       if (activity.active) {
         sawActivity = true;
-        noteActivity(activity.reasons[0] || 'response');
+        noteActivity();
       }
       const streamText = stream.text || '';
       if (streamText !== lastStreamText) {
@@ -1187,6 +1197,61 @@ async function runQuery({ prompt, model, file, profile, timeout = DEFAULT_CHATGP
             emit({ type: 'meta_update', conversationId, source: 'url', t: Date.now() });
           }
         } catch {}
+      }
+
+      const nowMs = Date.now();
+      if ((nowMs - lastKeepaliveAtMs) >= keepaliveIntervalMs) {
+        emit({
+          type: 'keepalive',
+          reason: remoteRecoveryStartedAtMs ? 'remote_wait' : 'response_wait',
+          phase: lastPhase || 'Waiting for response',
+          elapsedMs: nowMs - phase6StartedAtMs,
+          conversationId: conversationId || null,
+          conversationState: remoteConversationState,
+        });
+        lastKeepaliveAtMs = nowMs;
+      }
+
+      if (conversationId && (nowMs - lastSignalAtMs) >= 30_000) {
+        if (!remoteRecoveryStartedAtMs) {
+          remoteRecoveryStartedAtMs = nowMs;
+          log('info', 'Starting remote completion recovery', { conversationId });
+        }
+
+        const withinRemoteRecoveryWindow = (nowMs - remoteRecoveryStartedAtMs) < assistantWaitMs;
+        if (withinRemoteRecoveryWindow && (nowMs - lastRemotePollAtMs) >= 5_000) {
+          lastRemotePollAtMs = nowMs;
+          const remoteResult = await fetchConversation(page, conversationId);
+          if (remoteResult?.ok) {
+            const classified = classifyConversationProgress(remoteResult.conversation, {
+              baselineAssistantMessageId: baselineMessageId || null,
+            });
+            remoteConversationState = classified.state;
+            if (classified.state === 'assistant_complete') {
+              const recoveredPayload = extractCompletedAssistantPayload(remoteResult.conversation, {
+                nodeId: classified.nodeId || null,
+              });
+              if (recoveredPayload?.responseText) {
+                responseText = recoveredPayload.responseText;
+                capturedModel = recoveredPayload.model || capturedModel;
+                responseTurnId = classified.nodeId || responseTurnId;
+                log('info', 'Recovered completed remote reply during response wait', {
+                  conversationId,
+                  nodeId: classified.nodeId || null,
+                });
+                break;
+              }
+            }
+          } else {
+            remoteConversationState = remoteResult?.code || 'poll_failed';
+            log('warn', 'Remote completion recovery poll failed', {
+              conversationId,
+              code: remoteResult?.code || null,
+              status: remoteResult?.status || null,
+              message: remoteResult?.message || null,
+            });
+          }
+        }
       }
 
       // 5b. Live thinking trace — emit DOM thinking text as deltas
@@ -1250,7 +1315,6 @@ async function runQuery({ prompt, model, file, profile, timeout = DEFAULT_CHATGP
         break;
       }
 
-      const nowMs = Date.now();
       const phaseLooksFinalizing = /^Finalizing\b/i.test(phase || '');
       const textStableMs = nowMs - lastChangeAtMs;
       const streamStableMs = nowMs - lastStreamChangeAtMs;

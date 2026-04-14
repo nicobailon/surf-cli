@@ -16,8 +16,8 @@
 "use strict";
 
 const { listSessions, updateSession, appendSessionLog, persistSessionResponse } = require("./session-store.cjs");
-const { extractMessageText, summarizeConversation } = require("./chatgpt-chats-formatter.cjs");
-const { classifyConversationProgress } = require("./chatgpt-conversation-state.cjs");
+const { classifyConversationProgress, extractCompletedAssistantPayload } = require("./chatgpt-conversation-state.cjs");
+const { resolveAssistantWaitSeconds } = require("./chatgpt-cloak-timeout.cjs");
 
 // ============================================================================
 // Constants
@@ -73,25 +73,6 @@ function hasSentCheckpoint(meta) {
     (meta.lastCheckpoint === "send_attempted" && !!resolveConversationId(meta)) ||
     (typeof meta.sentAt === "string" && meta.sentAt.trim() !== "")
   );
-}
-
-function extractRecoveredAssistantPayload(conversation, nodeId = null) {
-  if (!conversation || typeof conversation !== "object") return null;
-  const mapping = conversation.mapping && typeof conversation.mapping === "object" ? conversation.mapping : null;
-  const node = mapping && nodeId ? mapping[nodeId] : null;
-  const nodeMessage = node && node.message ? node.message : null;
-  const nodeText = extractMessageText(nodeMessage);
-  const summary = summarizeConversation(conversation);
-  const lastAssistant = Array.isArray(summary.messages)
-    ? [...summary.messages].reverse().find((msg) => msg && msg.role === "assistant")
-    : null;
-  const fallbackText = lastAssistant && (!nodeId || lastAssistant.id === nodeId) ? lastAssistant.text : "";
-  const responseText = String(nodeText || fallbackText || "").trim();
-  if (!responseText) return null;
-  return {
-    responseText,
-    model: nodeMessage?.metadata?.model_slug || lastAssistant?.model || summary.model || null,
-  };
 }
 
 // ============================================================================
@@ -216,9 +197,9 @@ async function reconcileSessions(opts = {}) {
           action:         "get",
           conversationId,
           profile:        meta.args && meta.args.profile,
-          timeout:        30,
+          timeout:        resolveAssistantWaitSeconds(undefined),
           waitForAssistant: true,
-          waitForAssistantTimeoutSec: 30,
+          waitForAssistantTimeoutSec: resolveAssistantWaitSeconds(undefined),
           baselineAssistantMessageId: meta.baselineAssistantMessageId || null,
         });
 
@@ -237,7 +218,7 @@ async function reconcileSessions(opts = {}) {
         };
 
         if (inspection.outcome === "completed") {
-          const recoveredPayload = extractRecoveredAssistantPayload(convo, inspection.nodeId);
+          const recoveredPayload = extractCompletedAssistantPayload(convo, { nodeId: inspection.nodeId });
           const recoveredResponse = recoveredPayload?.responseText || "";
           const responsePreview = recoveredResponse ? recoveredResponse.slice(0, 160) : null;
           const responseArtifact = persistSessionResponse(meta.id, recoveredResponse);

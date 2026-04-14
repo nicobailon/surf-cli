@@ -21,6 +21,9 @@ const {
   classifyConversationProgress,
 } = require('./chatgpt-conversation-state.cjs');
 const {
+  resolveAssistantWaitSeconds,
+} = require('./chatgpt-cloak-timeout.cjs');
+const {
   launchPersistentContextWithRecovery,
   sharedProfileDir,
   tempProfileDir,
@@ -592,7 +595,7 @@ async function apiGetConversation(context, accessToken, conversationId, options 
   const waitForAssistant = options.waitForAssistant === true;
   const waitForAssistantTimeoutSec = Number.isFinite(Number(options.waitForAssistantTimeoutSec))
     ? Math.max(1, Math.trunc(Number(options.waitForAssistantTimeoutSec)))
-    : 30;
+    : resolveAssistantWaitSeconds(undefined);
   const baselineAssistantMessageId = options.baselineAssistantMessageId || null;
   const startedAt = Date.now();
 
@@ -629,6 +632,9 @@ async function apiGetConversation(context, accessToken, conversationId, options 
         type: 'keepalive',
         reason: 'wait_for_assistant',
         phase: 'Waiting for assistant',
+        conversationId,
+        conversationState,
+        elapsedMs: Date.now() - startedAt,
       });
       lastKeepaliveAt = Date.now();
     }
@@ -754,7 +760,7 @@ async function runAction({
   fileId,
   outputPath,
   waitForAssistant = false,
-  waitForAssistantTimeoutSec = 30,
+  waitForAssistantTimeoutSec = undefined,
   baselineAssistantMessageId = null,
 }) {
   let context = null;

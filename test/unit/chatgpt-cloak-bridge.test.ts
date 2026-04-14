@@ -454,6 +454,39 @@ describe("chatgpt-cloak-bridge", () => {
     bridge.__resetBridgeRuntimeForTests();
   });
 
+  it("forwards keepalive messages to progress callbacks", async () => {
+    const worker = createWorker();
+    const spawn = vi.fn().mockReturnValue(worker);
+    const bridge = require("../../native/chatgpt-cloak-bridge.cjs");
+    bridge.__setBridgeRuntimeForTests({ spawn, existsSync: () => true });
+    const progressSpy = vi.fn();
+
+    const promise = bridge.queryWithCloakBrowser({ query: "hello", timeout: 5 }, progressSpy);
+    worker.stdout.emit(
+      "data",
+      `${JSON.stringify({ type: "keepalive", reason: "response_wait", phase: "Reasoning", elapsedMs: 12000, conversationId: "conv-1", conversationState: "assistant_in_progress" })}\n`,
+    );
+    worker.stdout.emit(
+      "data",
+      `${JSON.stringify({ type: "success", response: "done", model: "gpt-5.4-pro", tookMs: 100 })}\n`,
+    );
+
+    await promise;
+
+    expect(progressSpy).toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: "keepalive",
+        reason: "response_wait",
+        phase: "Reasoning",
+        elapsedMs: 12000,
+        conversationId: "conv-1",
+        conversationState: "assistant_in_progress",
+      }),
+    );
+
+    bridge.__resetBridgeRuntimeForTests();
+  });
+
   it("does not let log chatter extend the worker timer", async () => {
     vi.useFakeTimers();
     const worker = createWorker();

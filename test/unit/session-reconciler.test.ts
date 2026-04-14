@@ -366,7 +366,7 @@ describe("reconcileSessions", () => {
         action: "get",
         conversationId: "conv-abc123",
         waitForAssistant: true,
-        waitForAssistantTimeoutSec: 30,
+        waitForAssistantTimeoutSec: 180,
         baselineAssistantMessageId: null,
       }),
     );
@@ -597,7 +597,7 @@ describe("reconcileSessions", () => {
         action: "get",
         conversationId: "conv-legacy",
         waitForAssistant: true,
-        waitForAssistantTimeoutSec: 30,
+        waitForAssistantTimeoutSec: 180,
         baselineAssistantMessageId: null,
       }),
     );
@@ -712,7 +712,7 @@ describe("reconcileSessions", () => {
         action: "get",
         conversationId: "conv-awaiting",
         waitForAssistant: true,
-        waitForAssistantTimeoutSec: 30,
+        waitForAssistantTimeoutSec: 180,
         baselineAssistantMessageId: "old-assistant",
       }),
     );
