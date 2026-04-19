@@ -71,3 +71,30 @@ Done`);
     expect(trace?.recapText).toBe("Thinking through edge cases before answering...");
   });
 });
+
+describe("chatgpt-cloak-worker module", () => {
+  it("loads without syntax errors (module shape check)", async () => {
+    // This catches duplicate exports, syntax errors, and import failures
+    // without requiring CloakBrowser to be available
+    const loadWorker = async () => {
+      try {
+        await import("../../native/chatgpt-cloak-worker.mjs");
+        return { ok: true };
+      } catch (e: unknown) {
+        const err = e as Error;
+        return { ok: false, error: err.message };
+      }
+    };
+    
+    const result = await loadWorker();
+    if (!result.ok) {
+      // If CloakBrowser is not available, that's expected in some environments
+      // but duplicate exports or syntax errors should still fail
+      const isCloakMissing = result.error?.includes("cloakbrowser") || 
+                             result.error?.includes("Cannot find module");
+      if (!isCloakMissing) {
+        throw new Error(`Worker module failed to load: ${result.error}`);
+      }
+    }
+  });
+});

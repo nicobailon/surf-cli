@@ -20,7 +20,6 @@ import {
   parseThinkingTraceDurationSec,
   buildThinkingTraceThoughtsFromText,
   detectBrowserHeadlessState,
-  coerceHeadlessBoolean,
 } from './chatgpt-cloak-trace-helpers.mjs';
 
 const require = createRequire(import.meta.url);
@@ -644,8 +643,7 @@ function makeThinkingTraceDebug(debug = {}) {
   };
 }
 
-// Re-export helpers for tests that import from worker (deprecated - import from helpers module)
-export { parseThinkingTraceFlyoutText, detectBrowserHeadlessState };
+// Helpers are available via import from './chatgpt-cloak-trace-helpers.mjs'
 
 const makeFindThinkingTraceTriggerJS = (rawTurnId, rawMarkerAttr = null) => {
   const turnId = rawTurnId && /^[a-zA-Z0-9_-]+$/.test(rawTurnId) ? rawTurnId : null;
@@ -1894,9 +1892,4 @@ if (IS_MAIN_MODULE) {
   });
 }
 
-export {
-  buildThinkingTraceThoughtsFromText,
-  detectBrowserHeadlessState,
-  parseThinkingTraceDurationSec,
-  parseThinkingTraceFlyoutText,
-};
+// Helper functions available from './chatgpt-cloak-trace-helpers.mjs'

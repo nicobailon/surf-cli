@@ -42,7 +42,8 @@
     "test:coverage": "vitest run --coverage",
     "test:ui": "vitest --ui",
     "test:e2e:cloak:local": "SURF_E2E_CLOAK_CHATGPT_LOCAL=1 vitest run test/e2e/chatgpt-cloak-local.test.ts",
-    "test:e2e:cloak:local:pro": "SURF_E2E_CLOAK_CHATGPT_LOCAL=1 SURF_E2E_CLOAK_CHATGPT_PRO_LOCAL=1 vitest run test/e2e/chatgpt-cloak-local.test.ts"
+    "test:e2e:cloak:local:pro": "SURF_E2E_CLOAK_CHATGPT_LOCAL=1 SURF_E2E_CLOAK_CHATGPT_PRO_LOCAL=1 vitest run test/e2e/chatgpt-cloak-local.test.ts",
+    "test:e2e:cloak:local:pro:headed": "SURF_E2E_CLOAK_CHATGPT_LOCAL=1 SURF_E2E_CLOAK_CHATGPT_PRO_LOCAL=1 SURF_E2E_CLOAK_CHATGPT_PRO_HEADED_LOCAL=1 vitest run test/e2e/chatgpt-cloak-local.test.ts"
   },
   "dependencies": {
     "@google/generative-ai": "^0.24.1",
