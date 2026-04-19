@@ -148,7 +148,8 @@ function runCloakWorker({ workerPath, request, timeout, onProgress = () => {}, m
           return false;
         case "log":
           if (process.env.SURF_DEBUG) {
-            process.stderr.write(`[cloak:${msg.level}] ${msg.message}\n`);
+            const dataStr = msg.data ? ` ${JSON.stringify(msg.data).slice(0, 500)}` : '';
+            process.stderr.write(`[cloak:${msg.level}] ${msg.message}${dataStr}\n`);
           }
           return false;
         default:
@@ -211,7 +212,7 @@ function runCloakWorker({ workerPath, request, timeout, onProgress = () => {}, m
 
 async function queryWithCloakBrowser(opts, onProgress = () => {}) {
   const timeout = resolveQueryTimeoutSeconds(opts.timeout);
-  const { model, file, profile, conversationId } = opts;
+  const { model, file, profile, conversationId, headed } = opts;
   const prompt = opts.prompt || opts.query || "";
   const promptKB = (Buffer.byteLength(prompt, "utf-8") / 1024).toFixed(1);
   const estimatedTokens = Math.ceil(prompt.length / 4);
@@ -232,6 +233,7 @@ async function queryWithCloakBrowser(opts, onProgress = () => {}) {
       model,
       file,
       profile,
+      headed: headed === true,
       timeout,
       generateImage,
       conversationId,

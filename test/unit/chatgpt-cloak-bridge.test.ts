@@ -70,6 +70,25 @@ describe("chatgpt-cloak-bridge", () => {
     bridge.__resetBridgeRuntimeForTests();
   });
 
+  it("forwards headed mode to query workers", async () => {
+    const worker = createWorker();
+    const spawn = vi.fn().mockReturnValue(worker);
+    const bridge = require("../../native/chatgpt-cloak-bridge.cjs");
+    bridge.__setBridgeRuntimeForTests({ spawn, existsSync: () => true });
+
+    const promise = bridge.queryWithCloakBrowser({ query: "hello", headed: true, timeout: 5 });
+
+    expect(worker.stdin.write).toHaveBeenCalledWith(expect.stringContaining('"headed":true'));
+
+    worker.stdout.emit(
+      "data",
+      `${JSON.stringify({ type: "success", response: "hi", model: "gpt-5.4-pro", tookMs: 10, backend: "cloak" })}\n`,
+    );
+
+    await expect(promise).resolves.toMatchObject({ response: "hi", model: "gpt-5.4-pro" });
+    bridge.__resetBridgeRuntimeForTests();
+  });
+
   it("uses 120s default timeout for chats workers", async () => {
     const worker = createWorker();
     const spawn = vi.fn().mockReturnValue(worker);

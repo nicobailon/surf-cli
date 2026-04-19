@@ -2,7 +2,7 @@
 
 ## Summary
 
-Yes — the richer right-side thinking trace **is capturable** from ChatGPT UI, but with an important caveat: in my runtime probes it opened reliably in **headed CloakBrowser**, not in **headless CloakBrowser**. The trace appears to come from a **flyout already present in client state / DOM-driven UI**, not from a dedicated post-click network fetch.
+Right-side reasoning trace still exists in ChatGPT UI, but the old **React fiber extraction path is no longer viable**. Current client-side data no longer exposes reasoning content through `allMessages`; headless can still detect trigger chips, but **cannot extract full reasoning content**. Remaining path: **headed-mode flyout click + DOM read**. Current trigger patterns to watch: `Detail`, `Details`, `Reasoning`, plus legacy `Thought for` / `Thinking for`.
 
 ## Symptoms
 
@@ -179,10 +179,12 @@ Add a new post-response step in `native/chatgpt-cloak-worker.mjs`, after respons
 
 ### Trigger
 - visible button within last assistant turn
-- text pattern: `Thought for <n>s`
+- current text patterns: `Detail`, `Details`, `Reasoning`
+- legacy fallback: `Thought for <n>s`, `Thinking for <n>s`
 
 ### Flyout root
 - `[data-testid="stage-thread-flyout"]`
+- practical only in headed mode
 
 ### Flyout contents
 Observed visible text structure:
@@ -191,92 +193,34 @@ Observed visible text structure:
 - bullet / prose reasoning trace
 - trailing status: `Thought for <elapsed>` + `Done`
 
+## 2026-04 Update: React Fiber Extraction Broken
+
+Key findings:
+- Trigger text changed. Old `Thought for Xs` no longer reliable. Current UI shows `Detail` / `Details` / `Reasoning`. In latest probe, singular `Detail` appeared.
+- React fiber `allMessages` shape changed. It now exposes only `content_type: "text"` in this path.
+- No `content_type: "thoughts"`.
+- No `content_type: "reasoning_recap"`.
+- Net: OpenAI locked down reasoning access in the client-side data model.
+
+Implications:
+- Worker trigger regex updated to match `Detail` / `Details` / `Reasoning`, with legacy fallback to `Thought for` / `Thinking for`.
+- Headless extraction now blocked. Trigger can be found; reasoning body cannot.
+- Old fiber walk can still produce diagnostics, not reasoning content.
+- Only remaining viable path: **headed mode**, click trigger, read `stage-thread-flyout` DOM.
+
+Status:
+- React fiber extraction: historical only; no longer viable for reasoning capture.
+- Headless reasoning capture: blocked.
+- Headed flyout extraction: only remaining path.
+
 ## Eliminated Hypotheses
 
 - **Dedicated post-click network fetch for trace panel** — not supported by observed traffic
 - **Another repo already solved this** — no evidence found in librarian scan
-- **Current worker already nearly captures it** — false; current worker never opens flyout or reads global panel DOM
-
-## Resolution: React Fiber Extraction (Implemented)
-
-### Key Discovery: ChatGPT's New Streaming Architecture
-
-ChatGPT no longer streams conversation data via HTTP SSE. The architecture is:
-
-1. **HTTP POST `/backend-api/f/conversation`** → returns a 973-byte resume/conduit token
-2. **WebSocket `wss://ws.chatgpt.com/p8/ws/user/...`** → actual streaming via conduit frames
-3. **Each frame contains `encoded_item`** with embedded SSE-format data
-
-The thinking trace flows through WebSocket frames at path `/message/content/thoughts` with `"o": "append"` operations. Each thought is an object:
-```json
-{
-  "summary": "Providing short puzzle solution",
-  "content": "Alright, to solve it...",
-  "chunks": ["line 1", "line 2", ...],
-  "finished": true
-}
-```
-
-After response completes, the data persists in **React fiber state** at:
-- "Thought for" button → fiber depth ~8 → `allMessages` prop
-- Message with `content_type: "thoughts"` → `thoughts` array
-- Message with `content_type: "reasoning_recap"` → duration + recap text
-
-### Why Flyout Approach Failed Headless
-
-The "Thought for Xs" button has `disabled: true` and `cursor-default` class in headless mode. The `stage-thread-flyout` DOM element is **never created** in headless (not just hidden). ChatGPT intentionally disables this UI affordance in headless browsers.
-
-### Implementation (Landed)
-
-Files changed:
-- `native/chatgpt-cloak-worker.mjs` — `EXTRACT_THINKING_TRACE_JS` + `extractThinkingTrace()` 
-- `native/chatgpt-cloak-bridge.cjs` — pass through `thinkingTrace` in `mapSuccess`
-- `native/cli.cjs` — include in JSON output + stderr summary
-
-The extraction:
-1. Finds "Thought for" button via text match
-2. Walks React fiber tree upward (~8 levels)
-3. Finds `allMessages` prop with full conversation data
-4. Extracts `thoughts` array (point-by-point reasoning) + duration + recap text
-5. Returns additive `thinkingTrace` field in success payload
-
-JSON output includes:
-```json
-{
-  "thinkingTrace": {
-    "thoughts": [{"summary": "...", "content": "..."}],
-    "durationSec": 12,
-    "recapText": "Thought for 12s"
-  }
-}
-```
-
-Stderr shows: `🧠 Thinking trace: N step(s), Xs`
-
-### Behavior by Thinking Duration
-
-| Duration | thoughts array | Notes |
-|----------|---------------|-------|
-| 2-5s | Empty `[]` | Short thinking, no detailed trace |
-| 12s+ | Populated | 1+ entries with summary + content |
-| 21m+ (Pro) | Many entries | Full sidebar-equivalent trace |
-
-### Validated
-
-- ✅ Headless mode: React fiber extraction works
-- ✅ 3s thinking: captures duration + recap (thoughts empty, expected)
-- ✅ 12s thinking: captures 1 thought with full content (via probe)
-- ✅ JSON output includes thinkingTrace
-- ✅ stderr shows trace summary
-- ⏳ Pro/Extended Pro with 20m+ thinking: not yet validated (expected to work)
-
-## Eliminated Hypotheses
-
-- **Dedicated post-click network fetch for trace panel** — not supported by observed traffic
-- **Another repo already solved this** — no evidence found in librarian scan  
-- **Current worker already nearly captures it** — false; required new React fiber extraction
+- **Current worker already nearly captures it** — false; passive polling is insufficient
 - **SSE/HTTP stream contains thoughts** — false; ChatGPT moved to WebSocket conduit
-- **Flyout approach works headless** — false; button is `disabled: true` in headless
+- **Flyout approach works headless** — false in current probes; headless extraction blocked
+- **React fiber still exposes reasoning** — false in 2026-04 probes; `allMessages` now text-only here
 - **Fetch monkey-patch captures data** — false; HTTP response is just a conduit token
 
 ## Artifacts

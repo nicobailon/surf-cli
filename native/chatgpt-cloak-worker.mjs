@@ -13,6 +13,7 @@ import { launchPersistentContext } from 'cloakbrowser';
 import { existsSync, mkdirSync, writeFileSync, rmSync } from 'fs';
 import { createRequire } from 'module';
 import { join, resolve as pathResolve } from 'path';
+import { fileURLToPath } from 'url';
 import { loadAndInjectChatgptCookies } from './chatgpt-cloak-profile-auth.mjs';
 
 const require = createRequire(import.meta.url);
@@ -21,6 +22,7 @@ const {
   extractCompletedAssistantPayload,
 } = require('./chatgpt-conversation-state.cjs');
 const {
+  buildLaunchOpts,
   launchPersistentContextWithRecovery,
   sharedProfileDir,
   tempProfileDir,
@@ -605,6 +607,206 @@ function advanceTextStability({ text, previousText, isStreaming, finished, stabl
 // Max thoughts to return (cap payload size for very long Pro sessions)
 const MAX_THINKING_TRACE_THOUGHTS = 100;
 const MAX_THOUGHT_CONTENT_CHARS = 2000;
+const MAX_THINKING_TRACE_DEBUG_BUTTONS = 12;
+const THINKING_TRACE_TRIGGER_PATTERNS = [
+  { name: 'reasoning_or_details', source: '\\b(?:Reasoning|Details?)\\b' },
+  { name: 'legacy_thought_timer', source: 'Thought for|Thinking for' },
+];
+const THINKING_TRACE_FLYOUT_SELECTOR = '[data-testid="stage-thread-flyout"]';
+const THINKING_TRACE_TRIGGER_MARKER_ATTR = 'data-surf-thinking-trace-trigger';
+
+function makeThinkingTraceDebug(debug = {}) {
+  return {
+    status: typeof debug.status === 'string' ? debug.status : 'unknown',
+    matchedTriggerText:
+      typeof debug.matchedTriggerText === 'string' && debug.matchedTriggerText
+        ? debug.matchedTriggerText
+        : null,
+    matchedPattern:
+      typeof debug.matchedPattern === 'string' && debug.matchedPattern
+        ? debug.matchedPattern
+        : null,
+    candidateButtonTexts: Array.isArray(debug.candidateButtonTexts)
+      ? debug.candidateButtonTexts
+          .filter((text) => typeof text === 'string' && text.trim())
+          .slice(0, MAX_THINKING_TRACE_DEBUG_BUTTONS)
+      : [],
+    contentTypes: Array.isArray(debug.contentTypes)
+      ? debug.contentTypes.filter((type) => typeof type === 'string' && type.trim())
+      : [],
+  };
+}
+
+function coerceHeadlessBoolean(value) {
+  if (value === true || value === false) return value;
+  if (typeof value !== 'string') return null;
+  const normalized = value.trim().toLowerCase();
+  if (['1', 'true', 'yes', 'headless'].includes(normalized)) return true;
+  if (['0', 'false', 'no', 'headed'].includes(normalized)) return false;
+  return null;
+}
+
+function detectBrowserHeadlessState({ context, launchOptions } = {}) {
+  const candidates = [
+    context?._options?.headless,
+    context?._browser?._options?.headless,
+    context?._browser?._browserType?._defaultLaunchOptions?.headless,
+    launchOptions?.headless,
+    process.env.CLOAK_HEADLESS,
+  ];
+  for (const candidate of candidates) {
+    const resolved = coerceHeadlessBoolean(candidate);
+    if (resolved !== null) return resolved;
+  }
+  return true;
+}
+
+function parseThinkingTraceDurationSec(raw) {
+  const text = typeof raw === 'string' ? raw : '';
+  if (!text) return null;
+  const patterns = [
+    /Activity\s*[·•]\s*(\d+(?:\.\d+)?)\s*s(?:ec(?:onds?)?)?\b/i,
+    /(?:Thought|Thinking)\s+for\s+(\d+(?:\.\d+)?)\s*s(?:ec(?:onds?)?)?\b/i,
+  ];
+  for (const pattern of patterns) {
+    const match = text.match(pattern);
+    if (!match) continue;
+    const numeric = Number.parseFloat(match[1]);
+    if (Number.isFinite(numeric)) return numeric;
+  }
+  return null;
+}
+
+function buildThinkingTraceThoughtsFromText(rawText = '') {
+  const normalized = String(rawText || '').replace(/\u00a0/g, ' ').replace(/\r/g, '').trim();
+  if (!normalized) return { thoughts: [], truncated: false };
+
+  let chunks = normalized
+    .split(/\n{2,}/)
+    .map((chunk) => chunk.trim())
+    .filter(Boolean);
+  if (chunks.length <= 1) {
+    const lines = normalized
+      .split('\n')
+      .map((line) => line.trim())
+      .filter(Boolean);
+    if (lines.length > 1) chunks = lines;
+  }
+  if (chunks.length === 0) chunks = [normalized];
+
+  let truncated = false;
+  const thoughts = [];
+  for (const chunk of chunks) {
+    if (thoughts.length >= MAX_THINKING_TRACE_THOUGHTS) {
+      truncated = true;
+      break;
+    }
+    const content = chunk.slice(0, MAX_THOUGHT_CONTENT_CHARS);
+    if (content.length < chunk.length) truncated = true;
+    thoughts.push({ summary: '', content });
+  }
+  return { thoughts, truncated };
+}
+
+function parseThinkingTraceFlyoutText(raw) {
+  const normalized = String(raw || '').replace(/\u00a0/g, ' ').replace(/\r/g, '').trim();
+  if (!normalized) return null;
+
+  const durationSec = parseThinkingTraceDurationSec(normalized);
+  const recapText = normalized
+    .replace(/^Activity\s*[·•]\s*\d+(?:\.\d+)?\s*s(?:ec(?:onds?)?)?\s*\n?/i, '')
+    .replace(/^(?:Thinking|Reasoning|Details?)\s*\n?/i, '')
+    .replace(/\n?(?:Thought|Thinking)\s+for\s+\d+(?:\.\d+)?\s*s(?:ec(?:onds?)?)?\s*\n?Done\s*$/i, '')
+    .replace(/\n?Done\s*$/i, '')
+    .trim();
+
+  const { thoughts, truncated } = buildThinkingTraceThoughtsFromText(recapText);
+  if (!recapText && durationSec === null) return null;
+
+  return {
+    thoughts,
+    durationSec,
+    recapText: recapText || null,
+    truncated,
+  };
+}
+
+const makeFindThinkingTraceTriggerJS = (rawTurnId, rawMarkerAttr = null) => {
+  const turnId = rawTurnId && /^[a-zA-Z0-9_-]+$/.test(rawTurnId) ? rawTurnId : null;
+  const markerAttr =
+    rawMarkerAttr && /^[a-zA-Z0-9:_-]+$/.test(rawMarkerAttr) ? rawMarkerAttr : null;
+  return `(() => {
+  ${FIND_LAST_ASSISTANT_JS}
+  var targetTurn = null;
+  ${turnId ? `
+  var specificTurn = document.querySelector('[data-testid="${turnId}"]');
+  if (specificTurn) targetTurn = specificTurn;
+  ` : ''}
+  if (!targetTurn) targetTurn = lastAssistant;
+  function makeDebug(status, matchedTriggerText, matchedPattern, candidateButtonTexts) {
+    return {
+      status: status,
+      matchedTriggerText: matchedTriggerText || null,
+      matchedPattern: matchedPattern || null,
+      candidateButtonTexts: Array.isArray(candidateButtonTexts) ? candidateButtonTexts : [],
+      contentTypes: [],
+    };
+  }
+  if (!targetTurn) return { found: false, debug: makeDebug('assistant_turn_not_found', null, null, []) };
+
+  var buttons = Array.from(targetTurn.querySelectorAll('button'));
+  var candidateButtonTexts = [];
+  var seenButtonTexts = Object.create(null);
+  for (var buttonIndex = 0; buttonIndex < buttons.length; buttonIndex++) {
+    var buttonText = String(buttons[buttonIndex].innerText || buttons[buttonIndex].textContent || '')
+      .replace(/\\s+/g, ' ')
+      .trim()
+      .slice(0, 120);
+    if (!buttonText || seenButtonTexts[buttonText]) continue;
+    seenButtonTexts[buttonText] = true;
+    candidateButtonTexts.push(buttonText);
+  }
+
+  var triggerPatterns = ${JSON.stringify(THINKING_TRACE_TRIGGER_PATTERNS)};
+  var thoughtBtn = null;
+  var matchedTriggerText = null;
+  var matchedPattern = null;
+  for (var i = 0; i < buttons.length && !thoughtBtn; i++) {
+    var button = buttons[i];
+    var text = String(button.innerText || button.textContent || '').replace(/\\s+/g, ' ').trim();
+    if (!text) continue;
+    for (var p = 0; p < triggerPatterns.length; p++) {
+      var pattern = triggerPatterns[p];
+      if ((new RegExp(pattern.source, 'i')).test(text)) {
+        thoughtBtn = button;
+        matchedTriggerText = text.slice(0, 120);
+        matchedPattern = pattern.name;
+        break;
+      }
+    }
+  }
+
+  if (!thoughtBtn) {
+    return {
+      found: false,
+      debug: makeDebug('trigger_not_found', null, null, candidateButtonTexts),
+    };
+  }
+
+  if (${markerAttr ? 'true' : 'false'}) {
+    var marked = document.querySelectorAll('[${markerAttr || 'data-surf-thinking-trace-trigger'}]');
+    for (var markedIndex = 0; markedIndex < marked.length; markedIndex++) {
+      marked[markedIndex].removeAttribute('${markerAttr || 'data-surf-thinking-trace-trigger'}');
+    }
+    thoughtBtn.setAttribute('${markerAttr || 'data-surf-thinking-trace-trigger'}', '1');
+  }
+
+  return {
+    found: true,
+    debug: makeDebug('trigger_found', matchedTriggerText, matchedPattern, candidateButtonTexts),
+  };
+})()`;
+};
 
 // Accepts optional turnId to scope extraction to the current response turn.
 // Falls back to last assistant turn if turnId not provided.
@@ -620,18 +822,64 @@ const makeExtractThinkingTraceJS = (rawTurnId) => {
   if (specificTurn) targetTurn = specificTurn;
   ` : ''}
   if (!targetTurn) targetTurn = lastAssistant;
-  if (!targetTurn) return null;
+  function makeDebug(status, matchedTriggerText, matchedPattern, candidateButtonTexts, contentTypes) {
+    return {
+      status: status,
+      matchedTriggerText: matchedTriggerText || null,
+      matchedPattern: matchedPattern || null,
+      candidateButtonTexts: Array.isArray(candidateButtonTexts) ? candidateButtonTexts : [],
+      contentTypes: Array.isArray(contentTypes) ? contentTypes : [],
+    };
+  }
+  if (!targetTurn) return { trace: null, debug: makeDebug('assistant_turn_not_found', null, null, [], []) };
 
-  // Find "Thought for" / "Thinking for" button WITHIN the target turn only
+  // Find current "Reasoning"/"Details" trigger with fallback to legacy timer labels
   var buttons = Array.from(targetTurn.querySelectorAll('button'));
-  var thoughtBtn = buttons.find(function(b) {
-    return /Thought for|Thinking for/i.test(b.innerText || b.textContent);
-  });
-  if (!thoughtBtn) return null;
+  var candidateButtonTexts = [];
+  var seenButtonTexts = Object.create(null);
+  for (var buttonIndex = 0; buttonIndex < buttons.length; buttonIndex++) {
+    var buttonText = String(buttons[buttonIndex].innerText || buttons[buttonIndex].textContent || '')
+      .replace(/\s+/g, ' ')
+      .trim()
+      .slice(0, 120);
+    if (!buttonText || seenButtonTexts[buttonText]) continue;
+    seenButtonTexts[buttonText] = true;
+    candidateButtonTexts.push(buttonText);
+  }
+
+  var triggerPatterns = ${JSON.stringify(THINKING_TRACE_TRIGGER_PATTERNS)};
+  var thoughtBtn = null;
+  var matchedTriggerText = null;
+  var matchedPattern = null;
+  for (var i = 0; i < buttons.length && !thoughtBtn; i++) {
+    var button = buttons[i];
+    var text = String(button.innerText || button.textContent || '').replace(/\s+/g, ' ').trim();
+    if (!text) continue;
+    for (var p = 0; p < triggerPatterns.length; p++) {
+      var pattern = triggerPatterns[p];
+      if ((new RegExp(pattern.source, 'i')).test(text)) {
+        thoughtBtn = button;
+        matchedTriggerText = text.slice(0, 120);
+        matchedPattern = pattern.name;
+        break;
+      }
+    }
+  }
+  if (!thoughtBtn) {
+    return {
+      trace: null,
+      debug: makeDebug('trigger_not_found', null, null, candidateButtonTexts, []),
+    };
+  }
 
   // Walk React fiber tree to find allMessages with thinking data
   var fiberKey = Object.keys(thoughtBtn).find(function(k) { return k.startsWith('__reactFiber$'); });
-  if (!fiberKey) return null;
+  if (!fiberKey) {
+    return {
+      trace: null,
+      debug: makeDebug('react_fiber_missing', matchedTriggerText, matchedPattern, candidateButtonTexts, []),
+    };
+  }
 
   var MAX_THOUGHTS = ${MAX_THINKING_TRACE_THOUGHTS};
   var MAX_CONTENT = ${MAX_THOUGHT_CONTENT_CHARS};
@@ -643,17 +891,23 @@ const makeExtractThinkingTraceJS = (rawTurnId) => {
       var thoughts = [];
       var durationSec = null;
       var recapText = null;
+      var contentTypes = [];
       var _debugContentTypes = [];
 
-      for (var i = 0; i < msgs.length; i++) {
-        var m = msgs[i];
+      for (var msgIndex = 0; msgIndex < msgs.length; msgIndex++) {
+        var m = msgs[msgIndex];
         if (!m || !m.content) continue;
-        if (m.content.content_type) _debugContentTypes.push(m.content.content_type);
+        if (m.content.content_type) {
+          _debugContentTypes.push(m.content.content_type);
+          if (contentTypes.indexOf(m.content.content_type) === -1) {
+            contentTypes.push(m.content.content_type);
+          }
+        }
 
         // Extract thoughts array (point-by-point reasoning trace)
         if (m.content.content_type === 'thoughts' && Array.isArray(m.content.thoughts)) {
-          for (var j = 0; j < m.content.thoughts.length && thoughts.length < MAX_THOUGHTS; j++) {
-            var t = m.content.thoughts[j];
+          for (var thoughtIndex = 0; thoughtIndex < m.content.thoughts.length && thoughts.length < MAX_THOUGHTS; thoughtIndex++) {
+            var t = m.content.thoughts[thoughtIndex];
             if (typeof t === 'string') {
               thoughts.push({ summary: '', content: t.slice(0, MAX_CONTENT) });
             } else if (t && typeof t === 'object') {
@@ -681,19 +935,30 @@ const makeExtractThinkingTraceJS = (rawTurnId) => {
         }
       }
 
-      if (thoughts.length === 0 && !recapText) return null;
+      if (thoughts.length === 0 && !recapText) {
+        return {
+          trace: null,
+          debug: makeDebug('trace_content_missing', matchedTriggerText, matchedPattern, candidateButtonTexts, contentTypes),
+        };
+      }
       return {
-        thoughts: thoughts,
-        durationSec: durationSec,
-        recapText: recapText,
-        truncated: thoughts.length >= MAX_THOUGHTS,
-        _debugContentTypes: _debugContentTypes,
+        trace: {
+          thoughts: thoughts,
+          durationSec: durationSec,
+          recapText: recapText,
+          truncated: thoughts.length >= MAX_THOUGHTS,
+          _debugContentTypes: _debugContentTypes,
+        },
+        debug: makeDebug('trace_found', matchedTriggerText, matchedPattern, candidateButtonTexts, contentTypes),
       };
     }
     fiber = fiber.return;
     depth++;
   }
-  return null;
+  return {
+    trace: null,
+    debug: makeDebug('all_messages_missing', matchedTriggerText, matchedPattern, candidateButtonTexts, []),
+  };
 })()`;
 };
 
@@ -701,10 +966,136 @@ async function extractThinkingTrace(page, turnId) {
   try {
     const js = makeExtractThinkingTraceJS(turnId || null);
     const result = await page.evaluate(js);
-    return result;
+    if (result && typeof result === 'object') {
+      return {
+        trace: result.trace || null,
+        debug: makeThinkingTraceDebug(result.debug),
+      };
+    }
+    return {
+      trace: null,
+      debug: makeThinkingTraceDebug({ status: 'invalid_result' }),
+    };
   } catch (e) {
-    log('warn', 'Thinking trace extraction failed', { error: e.message });
-    return null;
+    return {
+      trace: null,
+      debug: makeThinkingTraceDebug({ status: 'eval_error' }),
+    };
+  }
+}
+
+async function clearThinkingTraceTriggerMarker(page) {
+  try {
+    await page.evaluate((markerAttr) => {
+      const marked = document.querySelectorAll(`[${markerAttr}]`);
+      for (let index = 0; index < marked.length; index++) {
+        marked[index].removeAttribute(markerAttr);
+      }
+    }, THINKING_TRACE_TRIGGER_MARKER_ATTR);
+  } catch {}
+}
+
+async function closeThinkingTraceFlyout(page) {
+  try {
+    const clickedClose = await page.evaluate((flyoutSelector) => {
+      const root = document.querySelector(flyoutSelector);
+      if (!root) return false;
+      const buttons = Array.from(root.querySelectorAll('button'));
+      const closeButton = buttons.find((button) => {
+        const label = String(
+          button.getAttribute('aria-label') || button.innerText || button.textContent || '',
+        )
+          .replace(/\s+/g, ' ')
+          .trim();
+        return /\bclose\b/i.test(label);
+      });
+      if (!closeButton) return false;
+      closeButton.click();
+      return true;
+    }, THINKING_TRACE_FLYOUT_SELECTOR);
+    if (clickedClose) {
+      await sleep(200);
+      return;
+    }
+  } catch {}
+
+  try {
+    await page.keyboard.press('Escape');
+    await sleep(200);
+    return;
+  } catch {}
+
+  try {
+    await page.mouse.click(8, 8);
+    await sleep(200);
+  } catch {}
+}
+
+async function extractThinkingTraceFromFlyout(page, turnId) {
+  const triggerResult = await (async () => {
+    try {
+      const result = await page.evaluate(
+        makeFindThinkingTraceTriggerJS(turnId || null, THINKING_TRACE_TRIGGER_MARKER_ATTR),
+      );
+      if (result && typeof result === 'object') {
+        return {
+          found: result.found === true,
+          debug: makeThinkingTraceDebug(result.debug),
+        };
+      }
+      return {
+        found: false,
+        debug: makeThinkingTraceDebug({ status: 'invalid_result' }),
+      };
+    } catch {
+      return {
+        found: false,
+        debug: makeThinkingTraceDebug({ status: 'eval_error' }),
+      };
+    }
+  })();
+
+  if (!triggerResult.found) return { trace: null, debug: triggerResult.debug };
+
+  const trigger = page.locator(`[${THINKING_TRACE_TRIGGER_MARKER_ATTR}="1"]`).first();
+  const flyout = page.locator(THINKING_TRACE_FLYOUT_SELECTOR).first();
+
+  try {
+    await trigger.scrollIntoViewIfNeeded().catch(() => {});
+    await trigger.hover({ timeout: 1_000 }).catch(() => {});
+    await trigger.click({ timeout: 2_000 });
+    await flyout.waitFor({ state: 'visible', timeout: 3_000 });
+    await sleep(1_000);
+    const rawText = await flyout.innerText();
+    const trace = parseThinkingTraceFlyoutText(rawText);
+    await closeThinkingTraceFlyout(page);
+    if (!trace) {
+      return {
+        trace: null,
+        debug: makeThinkingTraceDebug({
+          ...triggerResult.debug,
+          status: 'flyout_trace_empty',
+        }),
+      };
+    }
+    return {
+      trace,
+      debug: makeThinkingTraceDebug({
+        ...triggerResult.debug,
+        status: 'trace_found',
+      }),
+    };
+  } catch {
+    await closeThinkingTraceFlyout(page);
+    return {
+      trace: null,
+      debug: makeThinkingTraceDebug({
+        ...triggerResult.debug,
+        status: 'flyout_open_failed',
+      }),
+    };
+  } finally {
+    await clearThinkingTraceTriggerMarker(page);
   }
 }
 
@@ -754,12 +1145,13 @@ async function detectAndSaveImage(page, savePath) {
 // ============================================================================
 // Main query handler
 
-async function runQuery({ prompt, model, file, profile, timeout = DEFAULT_CHATGPT_QUERY_TIMEOUT_SEC, generateImage, conversationId }) {
+async function runQuery({ prompt, model, file, profile, timeout = DEFAULT_CHATGPT_QUERY_TIMEOUT_SEC, generateImage, conversationId, headed = false }) {
   const t0 = Date.now();
   const resolved = resolveModel(model);
   const useInjectedProfile = !!profile;
   let tempDir = null;
   let context = null;
+  let isHeadedMode = false;
 
   // ── Phase 1: Launch ──────────────────────────────────────────────────
   progress(1, 6, `Launching CloakBrowser — ${resolved.mode}`);
@@ -776,6 +1168,7 @@ async function runQuery({ prompt, model, file, profile, timeout = DEFAULT_CHATGP
     userDataDir = sharedProfileDir({ log });
     log('info', 'Using shared persistent profile');
   }
+  const launchOptions = buildLaunchOpts(userDataDir, { headed: headed === true });
 
   // Cleanup on forced kill
   const cleanup = async () => {
@@ -791,9 +1184,12 @@ async function runQuery({ prompt, model, file, profile, timeout = DEFAULT_CHATGP
       userDataDir,
       isSharedProfile: !useInjectedProfile,
       log,
+      launchOptions,
     });
+    isHeadedMode = !detectBrowserHeadlessState({ context, launchOptions });
     log('info', 'CloakBrowser launched', {
-      headless: true,
+      headless: !isHeadedMode,
+      headed: isHeadedMode,
       humanize: true,
     });
 
@@ -1094,6 +1490,9 @@ async function runQuery({ prompt, model, file, profile, timeout = DEFAULT_CHATGP
     let responseTurnId = null;
     let liveThinkingTrace = null;
     let lastThinkingText = '';
+    let lastThinkingTraceDebugStatus = null;
+    let didAttemptFlyoutCapture = false;
+    let didCaptureFlyoutTrace = false;
     let lastStreamText = '';
     let lastStreamChangeAtMs = Date.now();
     let lastKeepaliveAtMs = 0;
@@ -1280,8 +1679,65 @@ async function runQuery({ prompt, model, file, profile, timeout = DEFAULT_CHATGP
         }
         // Fiber extraction (independent of DOM text — may populate later in thinking)
         try {
-          const nextTrace = await extractThinkingTrace(page, responseTurnId || null);
-          if (nextTrace) liveThinkingTrace = nextTrace;
+          const nextTraceResult = await extractThinkingTrace(page, responseTurnId || null);
+          const nextTrace = nextTraceResult.trace;
+          const nextTraceDebug = nextTraceResult.debug;
+          if (nextTrace) {
+            liveThinkingTrace = nextTrace;
+          }
+          if (nextTraceDebug?.status && nextTraceDebug.status !== lastThinkingTraceDebugStatus) {
+            const logLevel = nextTraceDebug.status === 'trace_found' ? 'info' : 'warn';
+            log(logLevel, 'Thinking trace live extraction status', {
+              status: nextTraceDebug.status,
+              matchedTriggerText: nextTraceDebug.matchedTriggerText,
+              matchedPattern: nextTraceDebug.matchedPattern,
+              candidateButtonTexts: nextTraceDebug.candidateButtonTexts,
+              contentTypes: nextTraceDebug.contentTypes,
+              thoughtCount: nextTrace?.thoughts?.length || liveThinkingTrace?.thoughts?.length || 0,
+            });
+            lastThinkingTraceDebugStatus = nextTraceDebug.status;
+          }
+
+          if (
+            isHeadedMode &&
+            !didAttemptFlyoutCapture &&
+            nextTraceDebug?.matchedTriggerText
+          ) {
+            didAttemptFlyoutCapture = true;
+            try {
+              const flyoutTraceResult = await extractThinkingTraceFromFlyout(
+                page,
+                responseTurnId || null,
+              );
+              const flyoutTrace = flyoutTraceResult.trace;
+              const flyoutTraceDebug = flyoutTraceResult.debug;
+              if (flyoutTrace) {
+                liveThinkingTrace = flyoutTrace;
+                didCaptureFlyoutTrace = true;
+                log('info', 'Thinking trace captured from headed flyout during thinking', {
+                  thoughtCount: flyoutTrace.thoughts?.length || 0,
+                  durationSec: flyoutTrace.durationSec,
+                  recapTextChars: flyoutTrace.recapText?.length || 0,
+                  status: flyoutTraceDebug?.status || null,
+                  matchedTriggerText: flyoutTraceDebug?.matchedTriggerText || null,
+                  matchedPattern: flyoutTraceDebug?.matchedPattern || null,
+                  candidateButtonTexts: flyoutTraceDebug?.candidateButtonTexts || [],
+                });
+              } else if (flyoutTraceDebug?.status) {
+                const logLevel = flyoutTraceDebug.status === 'trigger_not_found' ? 'info' : 'warn';
+                log(logLevel, 'Headed thinking trace flyout unavailable during thinking', {
+                  status: flyoutTraceDebug.status,
+                  matchedTriggerText: flyoutTraceDebug.matchedTriggerText || null,
+                  matchedPattern: flyoutTraceDebug.matchedPattern || null,
+                  candidateButtonTexts: flyoutTraceDebug.candidateButtonTexts || [],
+                });
+              }
+            } catch (e) {
+              log('warn', 'Headed thinking trace flyout extraction error during thinking', {
+                error: e.message,
+              });
+            }
+          }
         } catch {}
       }
 
@@ -1342,22 +1798,77 @@ async function runQuery({ prompt, model, file, profile, timeout = DEFAULT_CHATGP
     // Fall back to live-captured trace if final extraction fails
     let thinkingTrace = liveThinkingTrace;
     try {
-      const finalTrace = await extractThinkingTrace(page, responseTurnId);
+      const finalTraceResult = await extractThinkingTrace(page, responseTurnId);
+      const finalTrace = finalTraceResult.trace;
+      const finalTraceDebug = finalTraceResult.debug;
       if (finalTrace) {
         thinkingTrace = finalTrace;
         log('info', 'Thinking trace captured', {
           thoughtCount: finalTrace.thoughts?.length || 0,
           durationSec: finalTrace.durationSec,
           recapText: finalTrace.recapText,
+          status: finalTraceDebug?.status || null,
+          matchedTriggerText: finalTraceDebug?.matchedTriggerText || null,
+          matchedPattern: finalTraceDebug?.matchedPattern || null,
+          candidateButtonTexts: finalTraceDebug?.candidateButtonTexts || [],
+          contentTypes: finalTraceDebug?.contentTypes || [],
           _debugContentTypes: finalTrace._debugContentTypes,
         });
       } else if (liveThinkingTrace) {
         log('info', 'Using live-captured thinking trace (final extraction empty)', {
           thoughtCount: liveThinkingTrace.thoughts?.length || 0,
+          status: finalTraceDebug?.status || null,
+          matchedTriggerText: finalTraceDebug?.matchedTriggerText || null,
+          matchedPattern: finalTraceDebug?.matchedPattern || null,
+          candidateButtonTexts: finalTraceDebug?.candidateButtonTexts || [],
+          contentTypes: finalTraceDebug?.contentTypes || [],
+        });
+      } else {
+        log('warn', 'Thinking trace unavailable after final extraction', {
+          status: finalTraceDebug?.status || null,
+          matchedTriggerText: finalTraceDebug?.matchedTriggerText || null,
+          matchedPattern: finalTraceDebug?.matchedPattern || null,
+          candidateButtonTexts: finalTraceDebug?.candidateButtonTexts || [],
+          contentTypes: finalTraceDebug?.contentTypes || [],
         });
       }
     } catch (e) {
       log('warn', 'Thinking trace extraction error', { error: e.message });
+    }
+
+    if (isHeadedMode && !didCaptureFlyoutTrace) {
+      try {
+        const flyoutTraceResult = await extractThinkingTraceFromFlyout(page, responseTurnId);
+        const flyoutTrace = flyoutTraceResult.trace;
+        const flyoutTraceDebug = flyoutTraceResult.debug;
+        if (flyoutTrace) {
+          thinkingTrace = flyoutTrace;
+          didCaptureFlyoutTrace = true;
+          log('info', 'Thinking trace captured from headed flyout', {
+            thoughtCount: flyoutTrace.thoughts?.length || 0,
+            durationSec: flyoutTrace.durationSec,
+            recapTextChars: flyoutTrace.recapText?.length || 0,
+            status: flyoutTraceDebug?.status || null,
+            matchedTriggerText: flyoutTraceDebug?.matchedTriggerText || null,
+            matchedPattern: flyoutTraceDebug?.matchedPattern || null,
+            candidateButtonTexts: flyoutTraceDebug?.candidateButtonTexts || [],
+          });
+        } else if (flyoutTraceDebug?.status === 'trigger_not_found') {
+          log('info', 'Thinking trace flyout trigger not found in headed mode', {
+            status: flyoutTraceDebug?.status || null,
+            candidateButtonTexts: flyoutTraceDebug?.candidateButtonTexts || [],
+          });
+        } else if (flyoutTraceDebug?.status) {
+          log('warn', 'Headed thinking trace flyout unavailable', {
+            status: flyoutTraceDebug.status,
+            matchedTriggerText: flyoutTraceDebug.matchedTriggerText || null,
+            matchedPattern: flyoutTraceDebug.matchedPattern || null,
+            candidateButtonTexts: flyoutTraceDebug.candidateButtonTexts || [],
+          });
+        }
+      } catch (e) {
+        log('warn', 'Headed thinking trace flyout extraction error', { error: e.message });
+      }
     }
 
     // Image detection
@@ -1443,7 +1954,24 @@ async function main() {
   process.exit(0);
 }
 
-main().catch(e => {
-  fail('fatal', e.message, e.details);
-  process.exit(1);
-});
+const IS_MAIN_MODULE = (() => {
+  try {
+    return !!process.argv[1] && pathResolve(process.argv[1]) === fileURLToPath(import.meta.url);
+  } catch {
+    return false;
+  }
+})();
+
+if (IS_MAIN_MODULE) {
+  main().catch(e => {
+    fail('fatal', e.message, e.details);
+    process.exit(1);
+  });
+}
+
+export {
+  buildThinkingTraceThoughtsFromText,
+  detectBrowserHeadlessState,
+  parseThinkingTraceDurationSec,
+  parseThinkingTraceFlyoutText,
+};

@@ -61,10 +61,10 @@ function tempProfileDir(prefix = DEFAULT_TEMP_PREFIX) {
   return mkdtempSync(join(tmpdir(), prefix));
 }
 
-function buildLaunchOpts(userDataDir) {
+function buildLaunchOpts(userDataDir, { headed = false } = {}) {
   return {
     userDataDir,
-    headless: true,
+    headless: !headed,
     humanize: true,
     humanPreset: "careful",
     viewport: { width: 1280, height: 800 },
@@ -105,8 +105,10 @@ async function launchPersistentContextWithRecovery({
   userDataDir,
   isSharedProfile = false,
   log = fallbackLog,
+  launchOptions = null,
 } = {}) {
-  const launchOnce = () => launchPersistentContext(buildLaunchOpts(userDataDir));
+  const launchOnce = () =>
+    launchPersistentContext(launchOptions || buildLaunchOpts(userDataDir));
 
   try {
     return await launchOnce();

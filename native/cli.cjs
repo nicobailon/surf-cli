@@ -205,10 +205,6 @@ function normalizeLegacyChatGptEnv() {
   const rawLegacyCloakToggle = process.env.SURF_USE_CLOAK_CHATGPT;
 
   if (rawCloakHeadless !== undefined) {
-    const normalized = String(rawCloakHeadless).trim().toLowerCase();
-    if (["0", "false", "no", "headed"].includes(normalized)) {
-      process.stderr.write("Warning: CLOAK_HEADLESS headed mode is unsupported and will be ignored.\n");
-    }
     delete process.env.CLOAK_HEADLESS;
   }
 
@@ -560,6 +556,7 @@ const TOOLS = {
           model: "Model: gpt-4o, o3, o4-mini, etc.",
           file: "Attach file",
           "generate-image": "Generate image and save to path",
+          headed: "Run CloakBrowser in headed mode",
           timeout: "Inactivity timeout in seconds (default: 2700 = 45min)",
           profile: "Chrome profile email for headless auth (macOS)"
         },
@@ -568,6 +565,7 @@ const TOOLS = {
           { cmd: 'chatgpt "review" --file code.ts', desc: "With file (headless)" },
           { cmd: 'chatgpt --prompt-file prompt.md --model gpt-5.4-pro', desc: "Prompt from file (large context)" },
           { cmd: 'chatgpt "analyze" --model gpt-4o', desc: "Specify model" },
+          { cmd: 'chatgpt "deep analysis" --model pro --headed', desc: "Headed mode" },
           { cmd: 'chatgpt "robot surfing" --generate-image /tmp/robot.png', desc: "Generate image (headless)" },
           { cmd: 'chatgpt "hello" --profile me@gmail.com', desc: "Use Chrome profile (headless)" },
         ]
@@ -3708,6 +3706,7 @@ if (tool === "chatgpt") {
   (async () => {
     if (requestedProfile) toolArgs.profile = requestedProfile;
     if (toolArgs["generate-image"]) toolArgs.generateImage = toolArgs["generate-image"];
+    toolArgs.headed = toolArgs.headed === true;
     await runChatGptCloakQueryDirect("chatgpt", toolArgs);
   })();
   return; // Prevent falling through to Bun or legacy

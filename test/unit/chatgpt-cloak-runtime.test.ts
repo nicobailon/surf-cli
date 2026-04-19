@@ -4,6 +4,7 @@ import * as path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 const runtime = require("../../native/chatgpt-cloak-runtime.cjs") as {
+  buildLaunchOpts: (userDataDir: string, opts?: { headed?: boolean }) => any;
   cleanupSingletonLock: (dir: string, opts?: { log?: (...args: any[]) => void }) => boolean;
   sharedProfileDir: (opts?: { log?: (...args: any[]) => void }) => string;
   launchPersistentContextWithRecovery: (opts: {
@@ -11,6 +12,7 @@ const runtime = require("../../native/chatgpt-cloak-runtime.cjs") as {
     userDataDir: string;
     isSharedProfile?: boolean;
     log?: (...args: any[]) => void;
+    launchOptions?: any;
   }) => Promise<any>;
 };
 
@@ -71,6 +73,24 @@ describe("chatgpt-cloak-runtime", () => {
 
     expect(result).toEqual({ ok: true });
     expect(launchPersistentContext).toHaveBeenCalledTimes(2);
+  });
+
+  it("builds headless by default and headed when requested", () => {
+    expect(runtime.buildLaunchOpts("/tmp/profile").headless).toBe(true);
+    expect(runtime.buildLaunchOpts("/tmp/profile", { headed: true }).headless).toBe(false);
+  });
+
+  it("uses explicit launchOptions when provided", async () => {
+    const launchPersistentContext = vi.fn().mockResolvedValue({ ok: true });
+    const launchOptions = { userDataDir: "/tmp/custom-profile", headless: false };
+
+    await runtime.launchPersistentContextWithRecovery({
+      launchPersistentContext,
+      userDataDir: "/tmp/ignored-profile",
+      launchOptions,
+    });
+
+    expect(launchPersistentContext).toHaveBeenCalledWith(launchOptions);
   });
 
   it("does not retry lock errors for non-shared profiles", async () => {
