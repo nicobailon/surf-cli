@@ -3422,7 +3422,7 @@ function finalizeChatGptCloakResult(sessionTool, sess, result, startMs) {
   if (result.thinkingTrace) {
     const tc = result.thinkingTrace;
     const tCount = tc.thoughts ? tc.thoughts.length : 0;
-    const dur = tc.durationSec ? `${tc.durationSec}s` : (tc.recapText || "unknown");
+    const dur = typeof tc.durationSec === "number" ? `${tc.durationSec}s` : "duration unknown";
     process.stderr.write(`[cloak-${sessionTool}] 🧠 Thinking trace: ${tCount} step(s), ${dur}\n`);
   }
   if (wantJson) {

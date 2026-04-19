@@ -1,10 +1,15 @@
 import { describe, expect, it } from "vitest";
 
-describe("chatgpt-cloak-worker", () => {
+/**
+ * Tests for thinking trace helpers.
+ * These are imported from the side-effect-free helpers module to avoid
+ * requiring CloakBrowser (optional dependency) for pure function tests.
+ */
+describe("chatgpt-cloak-trace-helpers", () => {
   it("parses headed flyout text into the thinkingTrace contract", async () => {
-    const worker = await import("../../native/chatgpt-cloak-worker.mjs");
+    const helpers = await import("../../native/chatgpt-cloak-trace-helpers.mjs");
 
-    const trace = worker.parseThinkingTraceFlyoutText(`Activity · 17s
+    const trace = helpers.parseThinkingTraceFlyoutText(`Activity · 17s
 Thinking
 
 Plan the answer carefully.
@@ -28,16 +33,41 @@ Done`);
     });
   });
 
-  it("detects headed mode from launch options and context internals", async () => {
-    const worker = await import("../../native/chatgpt-cloak-worker.mjs");
+  it("parses composite duration formats (minutes, hours)", async () => {
+    const helpers = await import("../../native/chatgpt-cloak-trace-helpers.mjs");
 
-    expect(worker.detectBrowserHeadlessState({ launchOptions: { headless: true } })).toBe(true);
-    expect(worker.detectBrowserHeadlessState({ launchOptions: { headless: false } })).toBe(false);
     expect(
-      worker.detectBrowserHeadlessState({
+      helpers.parseThinkingTraceFlyoutText("Activity · 2m 30s\nThinking\nSome thought\nDone")
+        ?.durationSec,
+    ).toBe(150);
+    expect(
+      helpers.parseThinkingTraceFlyoutText("Activity · 1h 5m 10s\nThinking\nSome thought\nDone")
+        ?.durationSec,
+    ).toBe(3910);
+    expect(
+      helpers.parseThinkingTraceFlyoutText("Thought for 3m 45s\nSome thought\nDone")?.durationSec,
+    ).toBe(225);
+  });
+
+  it("detects headed mode from launch options and context internals", async () => {
+    const helpers = await import("../../native/chatgpt-cloak-trace-helpers.mjs");
+
+    expect(helpers.detectBrowserHeadlessState({ launchOptions: { headless: true } })).toBe(true);
+    expect(helpers.detectBrowserHeadlessState({ launchOptions: { headless: false } })).toBe(false);
+    expect(
+      helpers.detectBrowserHeadlessState({
         context: { _options: { headless: false } },
         launchOptions: { headless: true },
       }),
     ).toBe(false);
+  });
+
+  it("does not strip content that starts with Thinking but continues on same line", async () => {
+    const helpers = await import("../../native/chatgpt-cloak-trace-helpers.mjs");
+
+    const trace = helpers.parseThinkingTraceFlyoutText(
+      "Activity · 5s\nThinking through edge cases before answering...\nDone",
+    );
+    expect(trace?.recapText).toBe("Thinking through edge cases before answering...");
   });
 });

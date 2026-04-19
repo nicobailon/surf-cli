@@ -15,6 +15,13 @@ import { createRequire } from 'module';
 import { join, resolve as pathResolve } from 'path';
 import { fileURLToPath } from 'url';
 import { loadAndInjectChatgptCookies } from './chatgpt-cloak-profile-auth.mjs';
+import {
+  parseThinkingTraceFlyoutText,
+  parseThinkingTraceDurationSec,
+  buildThinkingTraceThoughtsFromText,
+  detectBrowserHeadlessState,
+  coerceHeadlessBoolean,
+} from './chatgpt-cloak-trace-helpers.mjs';
 
 const require = createRequire(import.meta.url);
 const {
@@ -637,99 +644,8 @@ function makeThinkingTraceDebug(debug = {}) {
   };
 }
 
-function coerceHeadlessBoolean(value) {
-  if (value === true || value === false) return value;
-  if (typeof value !== 'string') return null;
-  const normalized = value.trim().toLowerCase();
-  if (['1', 'true', 'yes', 'headless'].includes(normalized)) return true;
-  if (['0', 'false', 'no', 'headed'].includes(normalized)) return false;
-  return null;
-}
-
-function detectBrowserHeadlessState({ context, launchOptions } = {}) {
-  const candidates = [
-    context?._options?.headless,
-    context?._browser?._options?.headless,
-    context?._browser?._browserType?._defaultLaunchOptions?.headless,
-    launchOptions?.headless,
-    process.env.CLOAK_HEADLESS,
-  ];
-  for (const candidate of candidates) {
-    const resolved = coerceHeadlessBoolean(candidate);
-    if (resolved !== null) return resolved;
-  }
-  return true;
-}
-
-function parseThinkingTraceDurationSec(raw) {
-  const text = typeof raw === 'string' ? raw : '';
-  if (!text) return null;
-  const patterns = [
-    /Activity\s*[·•]\s*(\d+(?:\.\d+)?)\s*s(?:ec(?:onds?)?)?\b/i,
-    /(?:Thought|Thinking)\s+for\s+(\d+(?:\.\d+)?)\s*s(?:ec(?:onds?)?)?\b/i,
-  ];
-  for (const pattern of patterns) {
-    const match = text.match(pattern);
-    if (!match) continue;
-    const numeric = Number.parseFloat(match[1]);
-    if (Number.isFinite(numeric)) return numeric;
-  }
-  return null;
-}
-
-function buildThinkingTraceThoughtsFromText(rawText = '') {
-  const normalized = String(rawText || '').replace(/\u00a0/g, ' ').replace(/\r/g, '').trim();
-  if (!normalized) return { thoughts: [], truncated: false };
-
-  let chunks = normalized
-    .split(/\n{2,}/)
-    .map((chunk) => chunk.trim())
-    .filter(Boolean);
-  if (chunks.length <= 1) {
-    const lines = normalized
-      .split('\n')
-      .map((line) => line.trim())
-      .filter(Boolean);
-    if (lines.length > 1) chunks = lines;
-  }
-  if (chunks.length === 0) chunks = [normalized];
-
-  let truncated = false;
-  const thoughts = [];
-  for (const chunk of chunks) {
-    if (thoughts.length >= MAX_THINKING_TRACE_THOUGHTS) {
-      truncated = true;
-      break;
-    }
-    const content = chunk.slice(0, MAX_THOUGHT_CONTENT_CHARS);
-    if (content.length < chunk.length) truncated = true;
-    thoughts.push({ summary: '', content });
-  }
-  return { thoughts, truncated };
-}
-
-function parseThinkingTraceFlyoutText(raw) {
-  const normalized = String(raw || '').replace(/\u00a0/g, ' ').replace(/\r/g, '').trim();
-  if (!normalized) return null;
-
-  const durationSec = parseThinkingTraceDurationSec(normalized);
-  const recapText = normalized
-    .replace(/^Activity\s*[·•]\s*\d+(?:\.\d+)?\s*s(?:ec(?:onds?)?)?\s*\n?/i, '')
-    .replace(/^(?:Thinking|Reasoning|Details?)\s*\n?/i, '')
-    .replace(/\n?(?:Thought|Thinking)\s+for\s+\d+(?:\.\d+)?\s*s(?:ec(?:onds?)?)?\s*\n?Done\s*$/i, '')
-    .replace(/\n?Done\s*$/i, '')
-    .trim();
-
-  const { thoughts, truncated } = buildThinkingTraceThoughtsFromText(recapText);
-  if (!recapText && durationSec === null) return null;
-
-  return {
-    thoughts,
-    durationSec,
-    recapText: recapText || null,
-    truncated,
-  };
-}
+// Re-export helpers for tests that import from worker (deprecated - import from helpers module)
+export { parseThinkingTraceFlyoutText, detectBrowserHeadlessState };
 
 const makeFindThinkingTraceTriggerJS = (rawTurnId, rawMarkerAttr = null) => {
   const turnId = rawTurnId && /^[a-zA-Z0-9_-]+$/.test(rawTurnId) ? rawTurnId : null;
@@ -839,7 +755,7 @@ const makeExtractThinkingTraceJS = (rawTurnId) => {
   var seenButtonTexts = Object.create(null);
   for (var buttonIndex = 0; buttonIndex < buttons.length; buttonIndex++) {
     var buttonText = String(buttons[buttonIndex].innerText || buttons[buttonIndex].textContent || '')
-      .replace(/\s+/g, ' ')
+      .replace(/\\s+/g, ' ')
       .trim()
       .slice(0, 120);
     if (!buttonText || seenButtonTexts[buttonText]) continue;
@@ -853,7 +769,7 @@ const makeExtractThinkingTraceJS = (rawTurnId) => {
   var matchedPattern = null;
   for (var i = 0; i < buttons.length && !thoughtBtn; i++) {
     var button = buttons[i];
-    var text = String(button.innerText || button.textContent || '').replace(/\s+/g, ' ').trim();
+    var text = String(button.innerText || button.textContent || '').replace(/\\s+/g, ' ').trim();
     if (!text) continue;
     for (var p = 0; p < triggerPatterns.length; p++) {
       var pattern = triggerPatterns[p];
@@ -1491,8 +1407,8 @@ async function runQuery({ prompt, model, file, profile, timeout = DEFAULT_CHATGP
     let liveThinkingTrace = null;
     let lastThinkingText = '';
     let lastThinkingTraceDebugStatus = null;
-    let didAttemptFlyoutCapture = false;
-    let didCaptureFlyoutTrace = false;
+    let didAttemptLiveFlyoutCapture = false;
+    let didCaptureLiveFlyoutTrace = false;
     let lastStreamText = '';
     let lastStreamChangeAtMs = Date.now();
     let lastKeepaliveAtMs = 0;
@@ -1700,10 +1616,10 @@ async function runQuery({ prompt, model, file, profile, timeout = DEFAULT_CHATGP
 
           if (
             isHeadedMode &&
-            !didAttemptFlyoutCapture &&
+            !didAttemptLiveFlyoutCapture &&
             nextTraceDebug?.matchedTriggerText
           ) {
-            didAttemptFlyoutCapture = true;
+            didAttemptLiveFlyoutCapture = true;
             try {
               const flyoutTraceResult = await extractThinkingTraceFromFlyout(
                 page,
@@ -1713,7 +1629,7 @@ async function runQuery({ prompt, model, file, profile, timeout = DEFAULT_CHATGP
               const flyoutTraceDebug = flyoutTraceResult.debug;
               if (flyoutTrace) {
                 liveThinkingTrace = flyoutTrace;
-                didCaptureFlyoutTrace = true;
+                didCaptureLiveFlyoutTrace = true;
                 log('info', 'Thinking trace captured from headed flyout during thinking', {
                   thoughtCount: flyoutTrace.thoughts?.length || 0,
                   durationSec: flyoutTrace.durationSec,
@@ -1836,15 +1752,15 @@ async function runQuery({ prompt, model, file, profile, timeout = DEFAULT_CHATGP
       log('warn', 'Thinking trace extraction error', { error: e.message });
     }
 
-    if (isHeadedMode && !didCaptureFlyoutTrace) {
+    // Always attempt final flyout capture in headed mode (live capture may be partial)
+    if (isHeadedMode) {
       try {
         const flyoutTraceResult = await extractThinkingTraceFromFlyout(page, responseTurnId);
         const flyoutTrace = flyoutTraceResult.trace;
         const flyoutTraceDebug = flyoutTraceResult.debug;
         if (flyoutTrace) {
           thinkingTrace = flyoutTrace;
-          didCaptureFlyoutTrace = true;
-          log('info', 'Thinking trace captured from headed flyout', {
+          log('info', 'Thinking trace captured from headed flyout (final)', {
             thoughtCount: flyoutTrace.thoughts?.length || 0,
             durationSec: flyoutTrace.durationSec,
             recapTextChars: flyoutTrace.recapText?.length || 0,
@@ -1868,6 +1784,15 @@ async function runQuery({ prompt, model, file, profile, timeout = DEFAULT_CHATGP
         }
       } catch (e) {
         log('warn', 'Headed thinking trace flyout extraction error', { error: e.message });
+      }
+
+      // Fallback to live-captured trace if final extraction failed
+      if (!thinkingTrace && didCaptureLiveFlyoutTrace && liveThinkingTrace) {
+        thinkingTrace = liveThinkingTrace;
+        log('info', 'Using live-captured flyout trace as fallback (final extraction failed)', {
+          thoughtCount: liveThinkingTrace.thoughts?.length || 0,
+          durationSec: liveThinkingTrace.durationSec,
+        });
       }
     }
 
