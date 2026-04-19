@@ -12,12 +12,12 @@ import { Key } from "@mariozechner/pi-tui";
 import path from "node:path";
 import os from "node:os";
 import fs from "node:fs";
-import { SurfChatsClient } from "./surf-client.js";
-import { SurfChatsOverlay, type OverlayAction } from "./overlay.js";
+import { SurfChatsClient } from "./surf-client.ts";
+import { SurfChatsOverlay, type OverlayAction } from "./overlay.ts";
 import type {
   ControllerState, DeleteRequest, DetailRecord, ListCacheEntry,
   StatusBarState, SurfChatsError,
-} from "./types.js";
+} from "./types.ts";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Module-level persistent cache (survives overlay close/reopen within pi session)

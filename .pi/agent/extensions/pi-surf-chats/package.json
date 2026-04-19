@@ -1,0 +1,10 @@
+{
+  "name": "pi-surf-chats",
+  "version": "1.0.0",
+  "description": "Pi extension for browsing ChatGPT conversations via surf-cli",
+  "license": "MIT",
+  "keywords": ["pi-package"],
+  "pi": {
+    "extensions": ["index.ts"]
+  }
+}

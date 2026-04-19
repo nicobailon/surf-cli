@@ -10,7 +10,7 @@
 
 import type { Theme } from "@mariozechner/pi-coding-agent";
 import { matchesKey, truncateToWidth, visibleWidth, type TUI, type Component, type Focusable } from "@mariozechner/pi-tui";
-import type { ControllerState } from "./types.js";
+import type { ControllerState } from "./types.ts";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Helpers

@@ -3,7 +3,7 @@
  */
 
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
-import type { ConversationItem, ConversationSummary, DetailRecord, ListResult, SurfChatsError } from "./types.js";
+import type { ConversationItem, ConversationSummary, DetailRecord, ListResult, SurfChatsError } from "./types.ts";
 
 // Formatter reuse: resolve relative to surf-cli repo root
 import fs from "node:fs";
@@ -21,7 +21,7 @@ let resolvedFormatterPath: string | null = null;
 
 function getRepoRootFromExtension(): string {
   const extensionDir = path.dirname(fileURLToPath(import.meta.url));
-  return path.resolve(extensionDir, "../../..");
+  return path.resolve(extensionDir, "../../../..");
 }
 
 function resolveLocalCliPath(): string | null {
