@@ -64,7 +64,7 @@
     "@types/chrome": "^0.1.37",
     "@vitest/coverage-v8": "^4.1.9",
     "@vitest/ui": "^4.1.9",
-    "typescript": "^5.7.2",
+    "typescript": "^6.0.3",
     "vite": "^7.3.1",
     "vitest": "^4.1.9"
   }
