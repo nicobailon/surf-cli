@@ -184,14 +184,20 @@ surf window.resize --id 123 --width 1920 --height 1080
 surf window.resize --id 123 --state maximized # States: normal, minimized, maximized, fullscreen
 ```
 
-**Window isolation for agents:**
+**Multi-agent isolation:**
 ```bash
-# Create isolated window for agent work
+# Create a separate window for one agent and keep using its ID
 surf window.new "https://example.com"
-# Returns window ID, use with subsequent commands:
 surf --window-id 123 tab.list
 surf --window-id 123 go "https://other.com"
+
+# Pin work to a specific tab, or name it for easier handoff
+surf read --tab-id 456
+surf tab.name agent-a --tab-id 456
+surf tab.switch agent-a
 ```
+
+Use `window.new`, `--window-id`, `--tab-id`, and named tabs to keep parallel agents on separate targets. This is coordination, not a lock: two agents targeting the same tab/window can still interleave. For hard isolation, run separate browser/profile instances with separate native hosts and `SURF_SOCKET` values. Surf does not yet have `session.new`, session IDs, independent per-agent CDP sessions, or a general serialization lock.
 
 ## Input Methods
 
@@ -574,9 +580,11 @@ surf wait.element ".missing" --auto-capture --timeout 2000
 9. **AI Studio for unrestricted Gemini** - `surf aistudio` gives less filtered responses than `surf gemini` for the same models
 10. **Use `surf do` for multi-step tasks** - Reduces token overhead and improves reliability
 11. **Dry-run workflows first** - `surf do '...' --dry-run` validates without executing
-12. **Window isolation** - Use `window.new` + `--window-id` to keep agent work separate from your browsing
-13. **Semantic locators** - `locate.role`, `locate.text`, `locate.label` for more robust element finding
-14. **Frame context** - Use `frame.switch` before interacting with iframe content
+12. **Window isolation** - Use `window.new` + `--window-id` or `--tab-id` to keep agent work separate from your browsing
+13. **Hard isolation** - Use separate browser/profile instances plus separate `SURF_SOCKET` values when agents must not share a host or target
+14. **No built-in session lock yet** - Surf does not currently provide `session.new`, session IDs, or a general serialization lock
+15. **Semantic locators** - `locate.role`, `locate.text`, `locate.label` for more robust element finding
+16. **Frame context** - Use `frame.switch` before interacting with iframe content
 
 ## Socket API
 

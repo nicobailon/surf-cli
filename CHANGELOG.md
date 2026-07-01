@@ -3,6 +3,7 @@
 ## [Unreleased]
 
 ### Added
+- **Concurrency docs** - Documented the current multi-agent isolation contract: window/tab targeting, named tabs, `SURF_SOCKET` for separate browser/profile instances, and the absence of built-in session IDs or a general serialization lock.
 - **LLM context flag** - Added `surf --llm-context` as a compact, deterministic quick reference for AI agents.
 - **CLI/native socket integration coverage** - Added CI-safe integration tests for Surf CLI request framing, fake native-host responses, host errors, and missing-socket diagnostics.
 - **Scroll shorthand** - `surf scroll` now accepts positional forms like `scroll down 800`, `scroll up 400`, `scroll bottom`, and `scroll top` while keeping existing flag and dot-command forms.

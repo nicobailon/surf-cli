@@ -262,14 +262,18 @@ surf tab.group --name "Work" --color blue
 Keep using your browser while the agent works in a separate window:
 
 ```bash
-# Create isolated window for agent
+# Create a separate window for agent work
 surf window.new "https://example.com"
 # Returns: Window 123456 (tab 789)
 
-# All subsequent commands target that window
+# Target that window or its tab from later commands
 surf click e5 --window-id 123456
-surf read --window-id 123456
+surf read --tab-id 789
 surf tab.new "https://other.com" --window-id 123456
+
+# Name tabs when humans or agents need stable aliases
+surf tab.name dashboard --tab-id 789
+surf tab.switch dashboard
 
 # Or manage windows directly
 surf window.list                    # List all windows
@@ -277,6 +281,17 @@ surf window.list --tabs             # Include tab details
 surf window.focus 123456            # Bring window to front
 surf window.close 123456            # Close window
 ```
+
+`window.new`, `--window-id`, `--tab-id`, and named tabs are Surf's supported coordination tools for parallel workflows today. They help agents avoid accidentally driving the same visible tab, but they are not a general concurrency lock. If two processes target the same tab or window at the same time, commands can still interleave.
+
+For hard isolation, run separate browser instances/profiles with separate Surf native hosts and socket paths, then point each shell at the matching socket:
+
+```bash
+SURF_SOCKET=/tmp/surf-agent-a.sock surf tab.list
+SURF_SOCKET=/tmp/surf-agent-b.sock surf tab.list
+```
+
+Surf does not yet provide `session.new`, session IDs, independent per-agent CDP sessions, or a built-in serialization lock for all browser commands. Use an external lock if multiple agents must share one target safely. Issue #55 remains open for the runtime locking/session design.
 
 ### Device Emulation
 
@@ -561,7 +576,7 @@ SURF_EXTENSION_PATH       # Path to extension dist/ directory
 ```
 
 **Use cases:**
-- `SURF_SOCKET`: Advanced socket override. Set it for both the native host and CLI if you need a non-default socket.
+- `SURF_SOCKET`: Advanced socket override. Set it for both the native host and CLI if you need a non-default socket, including separate sockets for separate browser/profile instances in hard-isolated multi-agent workflows.
 - `SURF_NODE_PATH` / `SURF_HOST_PATH`: Package manager installs (e.g., Nix) that store binaries in non-standard locations
 - `SURF_EXTENSION_PATH`: Package managers that create stable symlinks instead of changing paths on reinstall
 
