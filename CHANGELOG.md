@@ -3,6 +3,7 @@
 ## [Unreleased]
 
 ### Added
+- **CLI/native socket integration coverage** - Added CI-safe integration tests for Surf CLI request framing, fake native-host responses, host errors, and missing-socket diagnostics.
 - **Scroll shorthand** - `surf scroll` now accepts positional forms like `scroll down 800`, `scroll up 400`, `scroll bottom`, and `scroll top` while keeping existing flag and dot-command forms.
 - **Cookie subcommands** - Added space-separated cookie commands (`surf cookie list`, `get`, `set`, `clear --all`, and `delete`) while keeping existing `cookie.*` commands working.
 
