@@ -76,9 +76,20 @@ surf install <extension-id>                    # Chrome (default)
 surf install <extension-id> --browser brave    # Brave
 surf install <extension-id> --browser helium   # Helium
 surf install <extension-id> --browser all      # All supported browsers
+surf install <extension-id> --target linux     # WSLg/Linux browser from WSL2
 ```
 
 Supported: `chrome`, `chromium`, `brave`, `edge`, `arc`, `helium`
+
+**WSL2 with Windows Chrome**
+When you run `surf install <extension-id>` inside WSL2, Surf detects WSL2 and installs a Windows-side native messaging manifest for Windows Chrome/Brave/Edge by default. The generated Windows wrapper launches the WSL2 host with `wsl.exe`, so `surf` commands run inside WSL2 still connect to the WSL socket.
+
+If you use a Linux browser inside WSLg instead, install with:
+```bash
+surf install <extension-id> --target linux
+```
+
+Restart Windows Chrome after installing. If the extension reports `Access to the specified native messaging host is forbidden`, rerun `surf install <extension-id>` from the same WSL distro and confirm the extension ID was copied from `chrome://extensions`.
 
 **Package Manager Installs (Nix, Homebrew, etc.)**
 If surf is installed via a package manager that stores binaries in non-standard locations, set these environment variables before running `surf install`:
@@ -94,6 +105,7 @@ See [Environment Variables](#environment-variables) for details.
 ```bash
 surf uninstall                  # Chrome only
 surf uninstall --all            # All browsers + wrapper files
+surf uninstall --target linux   # Remove WSLg/Linux-browser config from WSL2
 ```
 
 ### Development Setup
@@ -538,12 +550,14 @@ surf workflow.validate ./my-workflow.json
 
 ```bash
 SURF_NETWORK_PATH         # Path for network capture logs (default: /tmp/surf)
+SURF_SOCKET               # Socket path or named pipe (default: /tmp/surf.sock, Windows: //./pipe/surf)
 SURF_NODE_PATH            # Path to node binary (for native host wrapper)
 SURF_HOST_PATH            # Path to native/host.cjs (for native host wrapper)
 SURF_EXTENSION_PATH       # Path to extension dist/ directory
 ```
 
 **Use cases:**
+- `SURF_SOCKET`: Advanced socket override. Set it for both the native host and CLI if you need a non-default socket.
 - `SURF_NODE_PATH` / `SURF_HOST_PATH`: Package manager installs (e.g., Nix) that store binaries in non-standard locations
 - `SURF_EXTENSION_PATH`: Package managers that create stable symlinks instead of changing paths on reinstall
 
@@ -554,9 +568,19 @@ export SURF_HOST_PATH=~/.local/share/surf-cli/native/host.cjs
 export SURF_EXTENSION_PATH=~/.local/share/surf-cli/extension
 ```
 
+## Troubleshooting native host connections
+
+If a command fails with `Socket connect failed`, read the `Attempted socket:` line first. The CLI and native host must agree on the same socket path. By default this is `/tmp/surf.sock` on macOS/Linux/WSL2 and `//./pipe/surf` on Windows.
+
+Common fixes:
+- Restart the browser after `surf install <extension-id>`.
+- Confirm the Surf extension is enabled and the extension ID matches the one passed to `surf install`.
+- On WSL2 with Windows Chrome, run `surf install <extension-id>` from WSL2 and restart Windows Chrome. Use `--target linux` only for a Linux browser running inside WSLg.
+- If `SURF_SOCKET` is set, set the same value for both the browser-launched native host and the shell running `surf`.
+
 ## Socket API
 
-For programmatic integration, send JSON to `/tmp/surf.sock`:
+For programmatic integration, send JSON to `/tmp/surf.sock` by default, or to `SURF_SOCKET` when set:
 
 ```bash
 echo '{"type":"tool_request","method":"execute_tool","params":{"tool":"tab.list","args":{}},"id":"1"}' | nc -U /tmp/surf.sock

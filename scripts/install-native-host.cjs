@@ -2,7 +2,7 @@
 const fs = require("fs");
 const path = require("path");
 const os = require("os");
-const { execSync, spawnSync } = require("child_process");
+const { execFileSync, execSync } = require("child_process");
 
 const HOST_NAME = "surf.browser.host";
 
@@ -12,12 +12,14 @@ const BROWSERS = {
     darwin: "Library/Application Support/Google/Chrome/NativeMessagingHosts",
     linux: ".config/google-chrome/NativeMessagingHosts",
     win32: "Google\\Chrome",
+    wsl: "Google/Chrome/User Data/NativeMessagingHosts",
   },
   chromium: {
     name: "Chromium",
     darwin: "Library/Application Support/Chromium/NativeMessagingHosts",
     linux: ".config/chromium/NativeMessagingHosts",
     win32: "Chromium",
+    wsl: "Chromium/User Data/NativeMessagingHosts",
   },
   brave: {
     name: "Brave",
@@ -25,12 +27,14 @@ const BROWSERS = {
       "Library/Application Support/BraveSoftware/Brave-Browser/NativeMessagingHosts",
     linux: ".config/BraveSoftware/Brave-Browser/NativeMessagingHosts",
     win32: "BraveSoftware\\Brave-Browser",
+    wsl: "BraveSoftware/Brave-Browser/User Data/NativeMessagingHosts",
   },
   edge: {
     name: "Microsoft Edge",
     darwin: "Library/Application Support/Microsoft Edge/NativeMessagingHosts",
     linux: ".config/microsoft-edge/NativeMessagingHosts",
     win32: "Microsoft\\Edge",
+    wsl: "Microsoft/Edge/User Data/NativeMessagingHosts",
   },
   arc: {
     name: "Arc",
@@ -38,12 +42,14 @@ const BROWSERS = {
       "Library/Application Support/Arc/User Data/NativeMessagingHosts",
     linux: null,
     win32: null,
+    wsl: null,
   },
   helium: {
     name: "Helium",
     darwin: "Library/Application Support/net.imput.helium/NativeMessagingHosts",
     linux: null,
     win32: null,
+    wsl: null,
   },
 };
 
@@ -62,6 +68,16 @@ const NODE_PATHS = {
     "C:\\Program Files (x86)\\nodejs\\node.exe",
   ],
 };
+
+function isWsl() {
+  if (process.platform !== "linux") return false;
+  if (process.env.WSL_DISTRO_NAME || process.env.WSL_INTEROP) return true;
+  try {
+    return /microsoft|wsl/i.test(fs.readFileSync("/proc/version", "utf8"));
+  } catch {
+    return false;
+  }
+}
 
 function findNode() {
   if (process.env.SURF_NODE_PATH && fs.existsSync(process.env.SURF_NODE_PATH)) {
@@ -88,10 +104,14 @@ function findNpmGlobalRoot() {
   }
 }
 
-function getWrapperDir() {
-  const platform = process.platform;
+function getWrapperDir(target = process.platform) {
   const home = os.homedir();
-  switch (platform) {
+  if (target === "wsl-windows") {
+    const localAppData = getWindowsEnv("LOCALAPPDATA");
+    if (!localAppData) return null;
+    return path.join(windowsPathToWslPath(localAppData), "surf-cli");
+  }
+  switch (process.platform) {
     case "darwin":
       return path.join(home, "Library/Application Support/surf-cli");
     case "linux":
@@ -117,54 +137,114 @@ function getHostPath() {
   return null;
 }
 
-function createWrapper(wrapperDir, nodePath, hostPath) {
-  const platform = process.platform;
-  fs.mkdirSync(wrapperDir, { recursive: true });
-
-  if (platform === "win32") {
-    const batPath = path.join(wrapperDir, "host-wrapper.bat");
-    const content = `@echo off\r\n"${nodePath}" "${hostPath}"\r\n`;
-    fs.writeFileSync(batPath, content);
-    return batPath;
-  } else {
-    const shPath = path.join(wrapperDir, "host-wrapper.sh");
-    const hostDir = path.dirname(hostPath);
-    const content = `#!/usr/bin/env bash
-cd "${hostDir}"
-exec "${nodePath}" "${hostPath}"
-`;
-    fs.writeFileSync(shPath, content);
-    fs.chmodSync(shPath, "755");
-    return shPath;
+function getWindowsEnv(name) {
+  try {
+    return execFileSync("cmd.exe", ["/c", "echo", `%${name}%`], { encoding: "utf8" })
+      .trim()
+      .replace(/\r/g, "");
+  } catch {
+    return null;
   }
 }
 
-function installManifest(browser, extensionId, wrapperPath) {
-  const platform = process.platform;
+function windowsPathToWslPath(winPath) {
+  const normalized = winPath.replace(/\\/g, "/");
+  const match = normalized.match(/^([A-Za-z]):\/(.*)$/);
+  if (!match) return normalized;
+  return `/mnt/${match[1].toLowerCase()}/${match[2]}`;
+}
+
+function wslPathToWindowsPath(wslPath) {
+  try {
+    return execFileSync("wslpath", ["-w", wslPath], { encoding: "utf8" }).trim().replace(/\r/g, "");
+  } catch {
+    const match = wslPath.match(/^\/mnt\/([a-zA-Z])\/(.*)$/);
+    if (match) return `${match[1].toUpperCase()}:\\${match[2].replace(/\//g, "\\")}`;
+    return wslPath;
+  }
+}
+
+function createWrapper(wrapperDir, nodePath, hostPath, target = process.platform) {
+  fs.mkdirSync(wrapperDir, { recursive: true });
+
+  if (target === "wsl-windows") {
+    const cmdPath = path.join(wrapperDir, "host-wrapper-wsl.cmd");
+    const distroArg = process.env.WSL_DISTRO_NAME ? ` -d "${process.env.WSL_DISTRO_NAME}"` : "";
+    const content = `@echo off\r\nwsl.exe${distroArg} --cd "${path.dirname(hostPath)}" --exec "${nodePath}" "${hostPath}" %*\r\n`;
+    fs.writeFileSync(cmdPath, content);
+    return wslPathToWindowsPath(cmdPath);
+  }
+
+  if (process.platform === "win32") {
+    const batPath = path.join(wrapperDir, "host-wrapper.bat");
+    const content = `@echo off\r\n"${nodePath}" "${hostPath}" %*\r\n`;
+    fs.writeFileSync(batPath, content);
+    return batPath;
+  }
+
+  const shPath = path.join(wrapperDir, "host-wrapper.sh");
+  const hostDir = path.dirname(hostPath);
+  const content = `#!/usr/bin/env bash
+cd "${hostDir}"
+exec "${nodePath}" "${hostPath}" "$@"
+`;
+  fs.writeFileSync(shPath, content);
+  fs.chmodSync(shPath, "755");
+  return shPath;
+}
+
+function readExistingManifest(manifestPath) {
+  if (!fs.existsSync(manifestPath)) return {};
+  return JSON.parse(fs.readFileSync(manifestPath, "utf8"));
+}
+
+function writeManifest(manifestPath, extensionId, wrapperPath) {
+  const origin = `chrome-extension://${extensionId}/`;
+  const existing = readExistingManifest(manifestPath);
+  const allowedOrigins = Array.isArray(existing.allowed_origins) ? existing.allowed_origins : [];
+
+  const manifest = {
+    ...existing,
+    name: HOST_NAME,
+    description: existing.description || "Surf CLI Native Host",
+    path: wrapperPath,
+    type: "stdio",
+    allowed_origins: Array.from(new Set([...allowedOrigins, origin])),
+  };
+
+  fs.mkdirSync(path.dirname(manifestPath), { recursive: true });
+  fs.writeFileSync(manifestPath, JSON.stringify(manifest, null, 2));
+  return manifestPath;
+}
+
+function getWslWindowsManifestDir(browserConfig) {
+  const localAppData = getWindowsEnv("LOCALAPPDATA");
+  if (!localAppData || !browserConfig.wsl) return null;
+  return path.join(windowsPathToWslPath(localAppData), browserConfig.wsl);
+}
+
+function installManifest(browser, extensionId, wrapperPath, target) {
   const browserConfig = BROWSERS[browser];
 
-  if (!browserConfig || !browserConfig[platform]) {
-    return null;
+  if (!browserConfig) return null;
+
+  if (target === "wsl-windows") {
+    const manifestDir = getWslWindowsManifestDir(browserConfig);
+    if (!manifestDir) return null;
+    const manifestPath = path.join(manifestDir, `${HOST_NAME}.json`);
+    return writeManifest(manifestPath, extensionId, wrapperPath);
   }
+
+  const platform = process.platform;
+  if (!browserConfig[platform]) return null;
 
   if (platform === "win32") {
     return installWindowsRegistry(browser, extensionId, wrapperPath);
   }
 
   const manifestDir = path.join(os.homedir(), browserConfig[platform]);
-  fs.mkdirSync(manifestDir, { recursive: true });
-
-  const manifest = {
-    name: HOST_NAME,
-    description: "Surf CLI Native Host",
-    path: wrapperPath,
-    type: "stdio",
-    allowed_origins: [`chrome-extension://${extensionId}/`],
-  };
-
   const manifestPath = path.join(manifestDir, `${HOST_NAME}.json`);
-  fs.writeFileSync(manifestPath, JSON.stringify(manifest, null, 2));
-  return manifestPath;
+  return writeManifest(manifestPath, extensionId, wrapperPath);
 }
 
 function installWindowsRegistry(browser, extensionId, wrapperPath) {
@@ -173,16 +253,7 @@ function installWindowsRegistry(browser, extensionId, wrapperPath) {
 
   const manifestDir = getWrapperDir();
   const manifestPath = path.join(manifestDir, `${HOST_NAME}.json`);
-
-  const manifest = {
-    name: HOST_NAME,
-    description: "Surf CLI Native Host",
-    path: wrapperPath,
-    type: "stdio",
-    allowed_origins: [`chrome-extension://${extensionId}/`],
-  };
-
-  fs.writeFileSync(manifestPath, JSON.stringify(manifest, null, 2));
+  writeManifest(manifestPath, extensionId, wrapperPath);
 
   try {
     execSync(`reg add "${regPath}" /ve /t REG_SZ /d "${manifestPath}" /f`, {
@@ -197,7 +268,7 @@ function installWindowsRegistry(browser, extensionId, wrapperPath) {
 
 function parseArgs() {
   const args = process.argv.slice(2);
-  const result = { extensionId: null, browsers: ["chrome"] };
+  const result = { extensionId: null, browsers: ["chrome"], target: "auto" };
 
   for (let i = 0; i < args.length; i++) {
     const arg = args[i];
@@ -208,6 +279,8 @@ function parseArgs() {
       } else {
         result.browsers = browserArg.split(",").map((b) => b.trim().toLowerCase());
       }
+    } else if (arg === "--target") {
+      result.target = args[++i];
     } else if (arg === "--help" || arg === "-h") {
       printHelp();
       process.exit(0);
@@ -232,20 +305,23 @@ Options:
   -b, --browser   Browser(s) to install for (default: chrome)
                   Values: chrome, chromium, brave, edge, arc, helium, all
                   Multiple: --browser chrome,brave
+  --target        Install target: auto, linux, windows
+                  On WSL2, auto installs for Windows Chrome. Use linux for WSLg/Linux browsers.
 
 Examples:
   node install-native-host.cjs abcdefghijklmnopabcdefghijklmnop
   node install-native-host.cjs abcdefghijklmnop --browser brave
   node install-native-host.cjs abcdefghijklmnop --browser all
+  node install-native-host.cjs abcdefghijklmnop --target linux
 `);
 }
 
 function main() {
-  const { extensionId, browsers } = parseArgs();
+  const { extensionId, browsers, target } = parseArgs();
 
   if (!extensionId) {
     console.error("Error: Extension ID required");
-    console.error("Usage: install-native-host.cjs <extension-id> [--browser chrome|chromium|brave|edge|arc|helium|all]");
+    console.error("Usage: install-native-host.cjs <extension-id> [--browser chrome|chromium|brave|edge|arc|helium|all] [--target auto|linux|windows]");
     console.error("\nFind your extension ID at chrome://extensions (enable Developer Mode)");
     process.exit(1);
   }
@@ -255,6 +331,24 @@ function main() {
     console.error("Expected 32 lowercase letters (a-p)");
     process.exit(1);
   }
+
+  if (!["auto", "linux", "windows"].includes(target)) {
+    console.error("Error: Invalid --target value. Expected auto, linux, or windows");
+    process.exit(1);
+  }
+
+  const runningInWsl = isWsl();
+  if (target === "windows" && !runningInWsl && process.platform !== "win32") {
+    console.error("Error: --target windows is only supported on Windows or WSL2");
+    process.exit(1);
+  }
+
+  if (target === "linux" && process.platform !== "linux") {
+    console.error("Error: --target linux is only supported on Linux or WSL2");
+    process.exit(1);
+  }
+
+  const effectiveTarget = runningInWsl && target !== "linux" ? "wsl-windows" : process.platform;
 
   const nodePath = findNode();
   if (!nodePath) {
@@ -270,19 +364,20 @@ function main() {
     process.exit(1);
   }
 
-  const wrapperDir = getWrapperDir();
+  const wrapperDir = getWrapperDir(effectiveTarget);
   if (!wrapperDir) {
-    console.error("Error: Unsupported platform");
+    console.error("Error: Unsupported platform or Windows interop unavailable");
     process.exit(1);
   }
 
-  console.log(`Platform: ${process.platform}`);
+  console.log(`Platform: ${process.platform}${runningInWsl ? " (WSL2 detected)" : ""}`);
+  console.log(`Target: ${effectiveTarget === "wsl-windows" ? "Windows browser from WSL2" : effectiveTarget}`);
   console.log(`Node: ${nodePath}`);
   console.log(`Host: ${hostPath}`);
   console.log(`Wrapper dir: ${wrapperDir}`);
   console.log("");
 
-  const wrapperPath = createWrapper(wrapperDir, nodePath, hostPath);
+  const wrapperPath = createWrapper(wrapperDir, nodePath, hostPath, effectiveTarget);
   console.log(`Created wrapper: ${wrapperPath}`);
   console.log("");
 
@@ -295,7 +390,7 @@ function main() {
       continue;
     }
 
-    const result = installManifest(browser, extensionId, wrapperPath);
+    const result = installManifest(browser, extensionId, wrapperPath, effectiveTarget);
     if (result) {
       installed.push({ browser: BROWSERS[browser].name, path: result });
     } else {
@@ -311,10 +406,17 @@ function main() {
   }
 
   if (skipped.length > 0) {
-    console.log(`\nSkipped (not supported on ${process.platform}): ${skipped.join(", ")}`);
+    console.log(`\nSkipped (not supported for ${effectiveTarget}): ${skipped.join(", ")}`);
   }
 
   console.log("\nDone! Restart your browser for changes to take effect.");
 }
 
-main();
+if (require.main === module) {
+  main();
+}
+
+module.exports = {
+  createWrapper,
+  writeManifest,
+};

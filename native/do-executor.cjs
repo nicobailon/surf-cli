@@ -11,8 +11,7 @@
  */
 
 const net = require("net");
-
-const SOCKET_PATH = process.platform === "win32" ? "//./pipe/surf" : "/tmp/surf.sock";
+const { SOCKET_PATH, formatSocketError } = require("./socket-path.cjs");
 
 // Maximum iterations for loops (safety cap)
 const MAX_LOOP_ITERATIONS = 100;
@@ -104,13 +103,7 @@ function sendDoRequest(toolName, toolArgs, context = {}) {
     });
     
     sock.on("error", (e) => {
-      if (e.code === "ENOENT") {
-        reject(new Error("Socket not found. Is Chrome running with the extension?"));
-      } else if (e.code === "ECONNREFUSED") {
-        reject(new Error("Connection refused. Native host not running."));
-      } else {
-        reject(e);
-      }
+      reject(new Error(formatSocketError(e)));
     });
     
     const timeoutId = setTimeout(() => { 

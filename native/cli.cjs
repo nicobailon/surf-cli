@@ -12,8 +12,7 @@ const { executeDoSteps } = require("./do-executor.cjs");
 const { version: VERSION } = require("../package.json");
 
 const IS_WIN = process.platform === "win32";
-const SURF_TMP = IS_WIN ? path.join(os.tmpdir(), "surf") : "/tmp";
-const SOCKET_PATH = IS_WIN ? "//./pipe/surf" : "/tmp/surf.sock";
+const { SOCKET_PATH, SURF_TMP, formatSocketError } = require("./socket-path.cjs");
 if (IS_WIN) { try { fs.mkdirSync(SURF_TMP, { recursive: true }); } catch {} }
 
 // ============================================================================
@@ -1809,11 +1808,14 @@ Options:
   -b, --browser   Browser(s) to install for (default: chrome)
                   Values: chrome, chromium, brave, edge, arc, helium, all
                   Multiple: --browser chrome,brave
+  --target        Install target: auto, linux, windows
+                  On WSL2, auto installs for Windows Chrome. Use linux for WSLg/Linux browsers.
 
 Examples:
   surf install hnfbepgmaoklhekckbpjnleifhahkcpl
   surf install hnfbepgmaoklhekckbpjnleifhahkcpl --browser brave
   surf install hnfbepgmaoklhekckbpjnleifhahkcpl --browser all
+  surf install hnfbepgmaoklhekckbpjnleifhahkcpl --target linux
 `);
     process.exit(0);
   }
@@ -1839,11 +1841,14 @@ Options:
   -b, --browser   Browser(s) to uninstall from (default: chrome)
                   Values: chrome, chromium, brave, edge, arc, helium, all
   -a, --all       Uninstall from all browsers and remove wrapper
+  --target        Install target to remove: auto, linux, windows
+                  On WSL2, auto removes Windows-browser manifests. Use linux for WSLg/Linux browsers.
 
 Examples:
   surf uninstall
   surf uninstall --browser brave
   surf uninstall --all
+  surf uninstall --target linux
 `);
     process.exit(0);
   }
@@ -1977,7 +1982,7 @@ if (args.includes("--script")) {
           }
         }
       });
-      sock.on("error", (e) => reject(e));
+      sock.on("error", (e) => reject(new Error(formatSocketError(e))));
       let timeoutId;
       timeoutId = setTimeout(() => { sock.destroy(); reject(new Error("Timeout")); }, 30000);
       sock.on("close", () => clearTimeout(timeoutId));
@@ -2794,11 +2799,7 @@ if (streamMode && (tool === "console" || tool === "network")) {
   });
 
   sock.on("error", (e) => {
-    if (e.code === "ENOENT") {
-      console.error("Error: Socket not found. Is Chrome running with the extension?");
-    } else {
-      console.error("Error:", e.message);
-    }
+    console.error("Error:", formatSocketError(e));
     process.exit(1);
   });
 
@@ -2853,7 +2854,7 @@ const sendRequest = (toolName, toolArgs = {}) => {
         }
       }
     });
-    sock.on("error", (e) => reject(e));
+    sock.on("error", (e) => reject(new Error(formatSocketError(e))));
     let timeoutId;
     timeoutId = setTimeout(() => { sock.destroy(); reject(new Error("Timeout")); }, 5000);
     sock.on("close", () => clearTimeout(timeoutId));
@@ -2944,13 +2945,7 @@ socket.on("data", (data) => {
 
 socket.on("error", (err) => {
   clearTimeout(timeout);
-  if (err.code === "ENOENT") {
-    console.error("Error: Socket not found. Is Chrome running with the extension?");
-  } else if (err.code === "ECONNREFUSED") {
-    console.error("Error: Connection refused. Native host not running.");
-  } else {
-    console.error("Error:", err.message);
-  }
+  console.error("Error:", formatSocketError(err));
   process.exit(1);
 });
 
