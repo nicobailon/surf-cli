@@ -1158,9 +1158,12 @@ const TOOLS = {
     commands: {
       "resize": {
         desc: "Resize browser window",
-        args: [],
+        args: ["width", "height"],
         opts: { width: "Window width", height: "Window height" },
-        examples: [{ cmd: "resize --width 1280 --height 720", desc: "Set size" }]
+        examples: [
+          { cmd: "resize 1280 720", desc: "Set size" },
+          { cmd: "resize --width 1280 --height 720", desc: "Set size with flags" },
+        ]
       },
     }
   },
@@ -2614,6 +2617,20 @@ if (tool === "click" && firstArg) {
     toolArgs.y = parseInt(positional[2], 10);
     firstArg = undefined;
   }
+}
+
+if (tool === "resize") {
+  if (firstArg !== undefined && toolArgs.width === undefined) {
+    let val = firstArg;
+    if (/^-?\d+$/.test(val)) val = parseInt(val, 10);
+    toolArgs.width = val;
+  }
+  if (positional[2] !== undefined && toolArgs.height === undefined) {
+    let val = positional[2];
+    if (/^-?\d+$/.test(val)) val = parseInt(val, 10);
+    toolArgs.height = val;
+  }
+  firstArg = undefined;
 }
 
 if (firstArg !== undefined) {

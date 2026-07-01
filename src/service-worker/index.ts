@@ -2063,17 +2063,29 @@ export async function handleMessage(
 
     case "RESIZE_WINDOW": {
       if (!tabId) throw new Error("No tabId provided");
-      if (!message.width || !message.height) throw new Error("width and height required");
+      if (message.width === undefined && message.height === undefined) {
+        throw new Error("width or height required");
+      }
 
       const tab = await chrome.tabs.get(tabId);
       if (!tab.windowId) throw new Error("Tab has no window");
 
+      const currentWindow =
+        message.width === undefined || message.height === undefined
+          ? await chrome.windows.get(tab.windowId)
+          : null;
+      const width = message.width === undefined ? currentWindow?.width : message.width;
+      const height = message.height === undefined ? currentWindow?.height : message.height;
+      if (width === undefined || height === undefined) {
+        throw new Error("current window size unavailable");
+      }
+
       await chrome.windows.update(tab.windowId, {
-        width: Math.floor(message.width),
-        height: Math.floor(message.height),
+        width: Math.floor(width),
+        height: Math.floor(height),
       });
 
-      return { success: true, width: message.width, height: message.height };
+      return { success: true, width, height };
     }
 
     case "TABS_CREATE": {

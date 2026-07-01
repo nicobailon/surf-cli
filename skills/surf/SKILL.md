@@ -171,6 +171,8 @@ surf tab.groups                # List all tab groups
 
 ```bash
 surf window.list                              # List all windows
+surf resize 1280 720                         # Resize current browser window
+surf resize 1280                             # Set current window width only
 surf window.list --tabs                       # Include tab details
 surf window.new                               # New window
 surf window.new --url "https://example.com"   # New window with URL

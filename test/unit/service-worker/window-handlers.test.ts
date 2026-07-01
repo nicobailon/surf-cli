@@ -172,6 +172,41 @@ describe("window command handlers", () => {
     });
   });
 
+  describe("RESIZE_WINDOW", () => {
+    it("keeps current height for width-only resize", async () => {
+      const chrome = (globalThis as any).chrome;
+      chrome.tabs.get.mockResolvedValue({ windowId: 123 });
+      chrome.windows.get.mockResolvedValue({ id: 123, width: 1440, height: 900 });
+      chrome.windows.update.mockResolvedValue({ width: 375, height: 900 });
+
+      const result = await handleMessage(
+        {
+          type: "RESIZE_WINDOW",
+          tabId: 456,
+          width: 375,
+        },
+        {},
+      );
+
+      expect(chrome.tabs.get).toHaveBeenCalledWith(456);
+      expect(chrome.windows.get).toHaveBeenCalledWith(123);
+      expect(chrome.windows.update).toHaveBeenCalledWith(123, { width: 375, height: 900 });
+      expect(result).toMatchObject({ success: true, width: 375, height: 900 });
+    });
+
+    it("requires at least one window dimension", async () => {
+      await expect(
+        handleMessage(
+          {
+            type: "RESIZE_WINDOW",
+            tabId: 456,
+          },
+          {},
+        ),
+      ).rejects.toThrow("width or height required");
+    });
+  });
+
   describe("tab commands with windowId", () => {
     describe("LIST_TABS", () => {
       it("filters by windowId when provided", async () => {
