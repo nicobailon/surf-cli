@@ -161,6 +161,20 @@ screenshot --output /tmp/result.png
     expect(steps[0].args.values).toBe("United States"); // Single value as string
     expect(steps[0].args.by).toBe("label");
   });
+
+  it("parses scroll direction shorthand with pixel amount", () => {
+    const steps = parser.parseDoCommands("scroll down 800");
+    expect(steps[0]).toEqual({
+      cmd: "scroll",
+      args: { direction: "down", scroll_pixels: 800 },
+    });
+  });
+
+  it("parses scroll top and bottom shorthand as dot commands", () => {
+    const steps = parser.parseDoCommands("scroll top\nscroll bottom");
+    expect(steps[0]).toEqual({ cmd: "scroll.top", args: {} });
+    expect(steps[1]).toEqual({ cmd: "scroll.bottom", args: {} });
+  });
 });
 
 describe("tokenize", () => {

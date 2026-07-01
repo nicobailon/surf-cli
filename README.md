@@ -197,7 +197,9 @@ surf click 100 200                  # Click by coordinates
 surf type "hello" --submit          # Type and press Enter
 surf type "email@example.com" --ref e12  # Type into specific element
 surf key Escape                     # Press key
-surf scroll.bottom                  # Scroll to bottom
+surf scroll down 800                # Scroll down 800px
+surf scroll bottom                  # Scroll to bottom
+surf scroll.bottom                  # Dot command form also works
 ```
 
 ### Forms

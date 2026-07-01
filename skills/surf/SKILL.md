@@ -266,11 +266,13 @@ surf element.styles ".card"            # Or by CSS selector
 ## Scrolling
 
 ```bash
-surf scroll.bottom
-surf scroll.top  
-surf scroll.to --y 500         # Scroll to Y position
+surf scroll down 800           # Scroll down 800px
+surf scroll up 400             # Scroll up 400px
+surf scroll bottom             # Scroll to bottom
+surf scroll top                # Scroll to top
+surf scroll.bottom             # Dot command form also works
+surf scroll.top
 surf scroll.to --ref e5        # Scroll element into view
-surf scroll.by --y 200         # Scroll by amount
 surf scroll.info               # Get scroll position
 ```
 

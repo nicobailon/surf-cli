@@ -342,6 +342,19 @@ function formatToolContent(result, log = () => {}) {
     }
     return text(output);
   }
+
+  if (
+    result.scrollTop !== undefined &&
+    result.scrollHeight !== undefined &&
+    result.scrollPercentage === undefined
+  ) {
+    return text(`Scrolled to Y:${result.scrollTop} (page height: ${result.scrollHeight})`);
+  }
+
+  if (result.scrollY !== undefined) {
+    const pageHeight = result.pageHeight !== undefined ? ` (page height: ${result.pageHeight})` : "";
+    return text(`Scrolled to Y:${result.scrollY}${pageHeight}`);
+  }
   
   if (result.success && result.name && result.tabId !== undefined) {
     return text(`Registered tab ${result.tabId} as "${result.name}"`);
@@ -478,14 +491,15 @@ function mapComputerAction(args, tabId) {
       return { type: "FIND_AND_TYPE", text, submit: a.submit ?? false, submitKey: a.submitKey || "Enter", ...baseMsg };
     
     case "scroll": {
-      const amount = (scroll_amount || 3) * 100;
+      const direction = a.direction || scroll_direction;
+      const amount = a.scroll_pixels ?? ((a.amount ?? scroll_amount ?? 3) * 100);
       const deltas = {
         up: { deltaX: 0, deltaY: -amount },
         down: { deltaX: 0, deltaY: amount },
         left: { deltaX: -amount, deltaY: 0 },
         right: { deltaX: amount, deltaY: 0 },
       };
-      const { deltaX, deltaY } = deltas[scroll_direction] || { deltaX: 0, deltaY: 0 };
+      const { deltaX, deltaY } = deltas[direction] || { deltaX: 0, deltaY: 0 };
       return { type: "EXECUTE_SCROLL", deltaX, deltaY, x: coordinate?.[0], y: coordinate?.[1], ...baseMsg };
     }
     

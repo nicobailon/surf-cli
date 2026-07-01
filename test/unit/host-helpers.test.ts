@@ -101,6 +101,44 @@ describe("mapToolToMessage", () => {
     });
   });
 
+  describe("scroll commands", () => {
+    it("maps direction and amount flags to scroll deltas", () => {
+      const msg = helpers.mapToolToMessage("scroll", { direction: "down", amount: 4 }, 123);
+      expect(msg).toMatchObject({ type: "EXECUTE_SCROLL", deltaX: 0, deltaY: 400, tabId: 123 });
+    });
+
+    it("preserves legacy scroll_direction and scroll_amount mapping", () => {
+      const msg = helpers.mapToolToMessage(
+        "scroll",
+        { scroll_direction: "up", scroll_amount: 2 },
+        123,
+      );
+      expect(msg).toMatchObject({ type: "EXECUTE_SCROLL", deltaX: 0, deltaY: -200, tabId: 123 });
+    });
+
+    it("uses shorthand pixel amounts without multiplying by 100", () => {
+      const msg = helpers.mapToolToMessage(
+        "scroll",
+        { direction: "down", scroll_pixels: 800 },
+        123,
+      );
+      expect(msg).toMatchObject({ type: "EXECUTE_SCROLL", deltaX: 0, deltaY: 800, tabId: 123 });
+    });
+
+    it("maps scroll.top and scroll.bottom dot commands", () => {
+      expect(helpers.mapToolToMessage("scroll.top", {}, 123)).toMatchObject({
+        type: "SCROLL_TO_POSITION",
+        position: "top",
+        tabId: 123,
+      });
+      expect(helpers.mapToolToMessage("scroll.bottom", {}, 123)).toMatchObject({
+        type: "SCROLL_TO_POSITION",
+        position: "bottom",
+        tabId: 123,
+      });
+    });
+  });
+
   describe("error cases", () => {
     it("returns null for unknown tool", () => {
       expect(helpers.mapToolToMessage("unknown.command", {})).toBeNull();
@@ -148,6 +186,38 @@ describe("formatToolContent", () => {
         _hint: "hint",
       });
       expect(result[0].text).not.toContain("_resolvedTabId");
+    });
+  });
+
+  describe("scroll responses", () => {
+    it("formats scrollBy position output", () => {
+      const result = helpers.formatToolContent({ scrollY: 800, pageHeight: 3200, scrolled: true });
+      expect(result[0].text).toBe("Scrolled to Y:800 (page height: 3200)");
+    });
+
+    it("formats scroll position output", () => {
+      const result = helpers.formatToolContent({ scrollTop: 0, scrollHeight: 3200, atTop: true });
+      expect(result[0].text).toBe("Scrolled to Y:0 (page height: 3200)");
+    });
+
+    it("preserves detailed scroll info output", () => {
+      const result = helpers.formatToolContent({
+        scrollTop: 800,
+        scrollHeight: 3200,
+        clientHeight: 900,
+        atTop: false,
+        atBottom: false,
+        scrollPercentage: 35,
+      });
+
+      expect(JSON.parse(result[0].text)).toEqual({
+        scrollTop: 800,
+        scrollHeight: 3200,
+        clientHeight: 900,
+        atTop: false,
+        atBottom: false,
+        scrollPercentage: 35,
+      });
     });
   });
 

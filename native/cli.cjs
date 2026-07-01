@@ -563,9 +563,12 @@ const TOOLS = {
     commands: {
       "scroll": {
         desc: "Scroll in direction",
-        args: [],
+        args: ["direction", "pixels"],
         opts: { direction: "up|down|left|right", amount: "Scroll amount (1-10)" },
-        examples: [{ cmd: "scroll --direction down --amount 3", desc: "Scroll down" }]
+        examples: [
+          { cmd: "scroll down 800", desc: "Scroll down 800px" },
+          { cmd: "scroll --direction down --amount 3", desc: "Scroll down" },
+        ]
       },
       "scroll.top": { desc: "Scroll to top of page", args: [], opts: { selector: "Target specific container" } },
       "scroll.bottom": { desc: "Scroll to bottom of page", args: [], opts: { selector: "Target specific container" } },
@@ -2615,6 +2618,19 @@ const PRIMARY_ARG_MAP = {
 };
 
 const toolArgs = { ...options };
+
+if (tool === "scroll" && firstArg) {
+  if (firstArg === "top" || firstArg === "bottom") {
+    tool = `scroll.${firstArg}`;
+    firstArg = undefined;
+  } else if (["up", "down", "left", "right"].includes(firstArg)) {
+    if (toolArgs.direction === undefined) toolArgs.direction = firstArg;
+    if (positional[2] !== undefined && /^-?\d+$/.test(positional[2]) && toolArgs.amount === undefined && toolArgs.scroll_amount === undefined) {
+      toolArgs.scroll_pixels = parseInt(positional[2], 10);
+    }
+    firstArg = undefined;
+  }
+}
 
 if (tool === "click" && firstArg) {
   if (/^e\d+$/.test(firstArg)) {

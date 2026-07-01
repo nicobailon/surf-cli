@@ -752,6 +752,8 @@ export async function handleMessage(
         return { 
           scrollX: after.x, 
           scrollY: after.y,
+          pageHeight: document.documentElement.scrollHeight,
+          viewportHeight: window.innerHeight,
           scrolled: before.x !== after.x || before.y !== after.y
         };
       };

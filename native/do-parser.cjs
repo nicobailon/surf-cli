@@ -165,6 +165,18 @@ function parseCommandLine(line) {
       } else if (values.length > 1) {
         args.values = values;     // Multiple values as array
       }
+    } else if (cmd === 'scroll') {
+      if (firstArg === 'top' || firstArg === 'bottom') {
+        cmd = `scroll.${firstArg}`;
+        i++;
+      } else if (['up', 'down', 'left', 'right'].includes(firstArg)) {
+        args.direction = firstArg;
+        i++;
+        if (i < tokens.length && /^-?\d+$/.test(tokens[i])) {
+          args.scroll_pixels = parseInt(tokens[i], 10);
+          i++;
+        }
+      }
     } else {
       // Use PRIMARY_ARG_MAP for other commands
       const primaryKey = PRIMARY_ARG_MAP[cmd];
