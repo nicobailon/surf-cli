@@ -138,15 +138,15 @@ function getImplicitRole(element: Element): string {
 
 function getResolvedRole(element: Element): string {
   const explicitRole = getExplicitRole(element);
-
+  
   if (!explicitRole) {
     return getImplicitRole(element);
   }
-
+  
   if ((explicitRole === "none" || explicitRole === "presentation") && isFocusable(element)) {
     return getImplicitRole(element);
   }
-
+  
   return explicitRole;
 }
 
@@ -159,7 +159,7 @@ function getOrAssignRef(element: Element, role: string, name: string): string {
   if (existing && existing.role === role && existing.name === name) {
     return existing.ref;
   }
-
+  
   const ref = `e${++globalRefCounter}`;
   (element as any)._piRef = { role, name, ref };
   return ref;
@@ -167,19 +167,19 @@ function getOrAssignRef(element: Element, role: string, name: string): string {
 
 function detectModalStates(): ModalState[] {
   const modals: ModalState[] = [];
-
+  
   const dialogs = document.querySelectorAll('[role="dialog"], [role="alertdialog"], dialog[open]');
   dialogs.forEach(dialog => {
     const style = window.getComputedStyle(dialog);
-    const isVisible = style.display !== 'none' &&
-                      style.visibility !== 'hidden' &&
+    const isVisible = style.display !== 'none' && 
+                      style.visibility !== 'hidden' && 
                       style.opacity !== '0' &&
                       (dialog as HTMLElement).offsetWidth > 0 &&
                       (dialog as HTMLElement).offsetHeight > 0;
     if (!isVisible) return;
-
+    
     const role = dialog.getAttribute('role') || 'dialog';
-    let title = dialog.getAttribute('aria-label') ||
+    let title = dialog.getAttribute('aria-label') || 
                 dialog.querySelector('[role="heading"], h1, h2, h3')?.textContent?.trim() ||
                 'Dialog';
     if (title.length > 100) title = title.substring(0, 100) + '...';
@@ -189,7 +189,7 @@ function detectModalStates(): ModalState[] {
       clearedBy: 'computer(action=key, text=Escape)',
     });
   });
-
+  
   return modals;
 }
 
@@ -207,8 +207,8 @@ const piHelpersImpl = {
       const isElementVisible = (el: Element | null): boolean => {
         if (!el) return false;
         const style = window.getComputedStyle(el);
-        return style.display !== 'none' &&
-               style.visibility !== 'hidden' &&
+        return style.display !== 'none' && 
+               style.visibility !== 'hidden' && 
                style.opacity !== '0' &&
                (el as HTMLElement).offsetWidth > 0 &&
                (el as HTMLElement).offsetHeight > 0;
@@ -269,7 +269,7 @@ const piHelpersImpl = {
       const checkText = (): Element | null => {
         const root = selector ? document.querySelector(selector) : document.body;
         if (!root) return null;
-
+        
         const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
         while (walker.nextNode()) {
           if (walker.currentNode.textContent?.includes(text)) {
@@ -314,7 +314,7 @@ const piHelpersImpl = {
 
     getByRole(role: string, options: { name?: string } = {}): Element | null {
       const { name } = options;
-
+      
       const implicitRoles: Record<string, string[]> = {
         button: ['button', 'input[type="button"]', 'input[type="submit"]', 'input[type="reset"]'],
         link: ['a[href]'],
@@ -336,7 +336,7 @@ const piHelpersImpl = {
 
       const candidates: Element[] = [];
       candidates.push(...document.querySelectorAll(`[role="${role}"]`));
-
+      
       const implicitSelectors = implicitRoles[role];
       if (implicitSelectors) {
         for (const sel of implicitSelectors) {
@@ -353,7 +353,7 @@ const piHelpersImpl = {
         const title = el.getAttribute('title')?.toLowerCase().trim();
         const placeholder = el.getAttribute('placeholder')?.toLowerCase().trim();
 
-        if (ariaLabel === normalizedName || textContent === normalizedName ||
+        if (ariaLabel === normalizedName || textContent === normalizedName || 
             title === normalizedName || placeholder === normalizedName) {
           return el;
         }
@@ -381,10 +381,10 @@ function generateAccessibilityTree(
   refId?: string,
   forceFullSnapshot = false,
   compact = false
-): {
+): { 
   pageContent: string;
   diff?: string;
-  viewport: { width: number; height: number };
+  viewport: { width: number; height: number }; 
   error?: string;
   modalStates?: ModalState[];
   modalLimitations?: string;
@@ -414,7 +414,7 @@ function generateAccessibilityTree(
 
       if (tag === "select") {
         const select = element as HTMLSelectElement;
-        const selected = select.querySelector("option[selected]") ||
+        const selected = select.querySelector("option[selected]") || 
           (select.selectedIndex >= 0 ? select.options[select.selectedIndex] : null);
         if (selected?.textContent?.trim()) return selected.textContent.trim();
       }
@@ -445,18 +445,7 @@ function generateAccessibilityTree(
       }
 
       if (["button", "a", "summary"].includes(tag)) {
-        let textContent = "";
-
-        if (filter === 'interactive') {
-          textContent = element.textContent;
-        } else {
-          for (const node of element.childNodes) {
-            if (node.nodeType === Node.TEXT_NODE) {
-              textContent += node.textContent;
-            }
-          }
-        }
-
+        const textContent = element.textContent || "";
         if (textContent.trim()) return textContent.trim();
       }
 
@@ -496,7 +485,7 @@ function generateAccessibilityTree(
 
     function getAriaProps(element: Element): AriaProps {
       const props: AriaProps = {};
-
+      
       const checkedAttr = element.getAttribute('aria-checked');
       if (checkedAttr === 'true') props.checked = true;
       else if (checkedAttr === 'false') props.checked = false;
@@ -508,35 +497,35 @@ function generateAccessibilityTree(
           props.checked = element.checked;
         }
       }
-
-      const isDisableable = element instanceof HTMLButtonElement ||
-                            element instanceof HTMLInputElement ||
-                            element instanceof HTMLSelectElement ||
+      
+      const isDisableable = element instanceof HTMLButtonElement || 
+                            element instanceof HTMLInputElement || 
+                            element instanceof HTMLSelectElement || 
                             element instanceof HTMLTextAreaElement;
-      if (element.getAttribute('aria-disabled') === 'true' ||
+      if (element.getAttribute('aria-disabled') === 'true' || 
           (isDisableable && (element as HTMLButtonElement).disabled) ||
           element.closest('fieldset:disabled')) {
         props.disabled = true;
       }
-
+      
       const expandedAttr = element.getAttribute('aria-expanded');
       if (expandedAttr === 'true') props.expanded = true;
       else if (expandedAttr === 'false') props.expanded = false;
-
+      
       const pressedAttr = element.getAttribute('aria-pressed');
       if (pressedAttr === 'true') props.pressed = true;
       else if (pressedAttr === 'false') props.pressed = false;
       else if (pressedAttr === 'mixed') props.pressed = 'mixed';
-
+      
       const selectedAttr = element.getAttribute('aria-selected');
       if (selectedAttr === 'true') props.selected = true;
       else if (selectedAttr === 'false') props.selected = false;
-
+      
       const activeAttr = element.getAttribute('aria-current');
       if (activeAttr && activeAttr !== 'false') {
         props.active = true;
       }
-
+      
       const tag = element.tagName.toLowerCase();
       if (/^h[1-6]$/.test(tag)) {
         props.level = parseInt(tag[1], 10);
@@ -544,13 +533,13 @@ function generateAccessibilityTree(
         const levelAttr = element.getAttribute('aria-level');
         if (levelAttr) props.level = parseInt(levelAttr, 10);
       }
-
+      
       return props;
     }
 
     function formatAriaProps(props: AriaProps): string {
       const parts: string[] = [];
-
+      
       if (props.checked !== undefined) {
         parts.push(props.checked === 'mixed' ? '[checked=mixed]' : props.checked ? '[checked]' : '[unchecked]');
       }
@@ -568,7 +557,7 @@ function generateAccessibilityTree(
       if (props.level !== undefined) {
         parts.push(`[level=${props.level}]`);
       }
-
+      
       return parts.join(' ');
     }
 
@@ -627,7 +616,7 @@ function generateAccessibilityTree(
       if (getName(element).length > 0) return true;
 
       const role = getRole(element);
-
+      
       // In compact mode, skip empty structural elements
       if (options.compact) {
         const emptyStructuralRoles = new Set(["generic", "group", "region", "article", "section", "complementary"]);
@@ -635,7 +624,7 @@ function generateAccessibilityTree(
           return false;
         }
       }
-
+      
       return role !== "generic" && role !== "img";
     }
 
@@ -712,13 +701,13 @@ function generateAccessibilityTree(
     function computeSimpleDiff(oldContent: string, newContent: string): { diff: string; hasChanges: boolean } {
       const oldLines = oldContent.split('\n');
       const newLines = newContent.split('\n');
-
+      
       const oldCounts = countOccurrences(oldLines);
       const newCounts = countOccurrences(newLines);
-
+      
       const added: string[] = [];
       const removed: string[] = [];
-
+      
       for (const line of newLines) {
         if (!line.trim()) continue;
         const norm = normalizeLineForDiff(line);
@@ -729,7 +718,7 @@ function generateAccessibilityTree(
           oldCounts.set(norm, oldCount + 1);
         }
       }
-
+      
       const oldCountsReset = countOccurrences(oldLines);
       for (const line of oldLines) {
         if (!line.trim()) continue;
@@ -741,11 +730,11 @@ function generateAccessibilityTree(
           oldCountsReset.set(norm, oldCount - 1);
         }
       }
-
+      
       if (added.length === 0 && removed.length === 0) {
         return { diff: '[NO CHANGES]', hasChanges: false };
       }
-
+      
       const diffLines: string[] = [];
       if (removed.length > 0) {
         diffLines.push(...removed.map(l => `- ${l}`));
@@ -753,7 +742,7 @@ function generateAccessibilityTree(
       if (added.length > 0) {
         diffLines.push(...added.map(l => `+ ${l}`));
       }
-
+      
       return { diff: diffLines.join('\n'), hasChanges: true };
     }
 
@@ -807,7 +796,7 @@ function generateAccessibilityTree(
     let isIncremental = false;
     const lastSnapshot = window.__piLastSnapshot;
 
-    if (!forceFullSnapshot && !refId && lastSnapshot &&
+    if (!forceFullSnapshot && !refId && lastSnapshot && 
         Date.now() - lastSnapshot.timestamp < 5000) {
       const diffResult = computeSimpleDiff(lastSnapshot.content, content);
       diff = diffResult.diff;
@@ -847,7 +836,7 @@ function generateYamlTree(
 ): { yaml: string; viewport: { width: number; height: number }; error?: string } {
   try {
     window.__piRefs = {};
-
+    
     const lines: string[] = [];
 
     function getRole(element: Element): string {
@@ -871,7 +860,7 @@ function generateYamlTree(
 
       if (tag === "select") {
         const select = element as HTMLSelectElement;
-        const selected = select.querySelector("option[selected]") ||
+        const selected = select.querySelector("option[selected]") || 
           (select.selectedIndex >= 0 ? select.options[select.selectedIndex] : null);
         if (selected?.textContent?.trim()) return selected.textContent.trim();
       }
@@ -902,18 +891,7 @@ function generateYamlTree(
       }
 
       if (["button", "a", "summary"].includes(tag)) {
-        let textContent = "";
-
-        if (filter === 'interactive') {
-          textContent = element.textContent;
-        } else {
-          for (const node of element.childNodes) {
-            if (node.nodeType === Node.TEXT_NODE) {
-              textContent += node.textContent;
-            }
-          }
-        }
-
+        const textContent = element.textContent || "";
         if (textContent.trim()) return textContent.trim();
       }
 
@@ -953,7 +931,7 @@ function generateYamlTree(
 
     function getAriaProps(element: Element): AriaProps {
       const props: AriaProps = {};
-
+      
       const checkedAttr = element.getAttribute('aria-checked');
       if (checkedAttr === 'true') props.checked = true;
       else if (checkedAttr === 'false') props.checked = false;
@@ -965,35 +943,35 @@ function generateYamlTree(
           props.checked = element.checked;
         }
       }
-
-      const isDisableable = element instanceof HTMLButtonElement ||
-                            element instanceof HTMLInputElement ||
-                            element instanceof HTMLSelectElement ||
+      
+      const isDisableable = element instanceof HTMLButtonElement || 
+                            element instanceof HTMLInputElement || 
+                            element instanceof HTMLSelectElement || 
                             element instanceof HTMLTextAreaElement;
-      if (element.getAttribute('aria-disabled') === 'true' ||
+      if (element.getAttribute('aria-disabled') === 'true' || 
           (isDisableable && (element as HTMLButtonElement).disabled) ||
           element.closest('fieldset:disabled')) {
         props.disabled = true;
       }
-
+      
       const expandedAttr = element.getAttribute('aria-expanded');
       if (expandedAttr === 'true') props.expanded = true;
       else if (expandedAttr === 'false') props.expanded = false;
-
+      
       const pressedAttr = element.getAttribute('aria-pressed');
       if (pressedAttr === 'true') props.pressed = true;
       else if (pressedAttr === 'false') props.pressed = false;
       else if (pressedAttr === 'mixed') props.pressed = 'mixed';
-
+      
       const selectedAttr = element.getAttribute('aria-selected');
       if (selectedAttr === 'true') props.selected = true;
       else if (selectedAttr === 'false') props.selected = false;
-
+      
       const activeAttr = element.getAttribute('aria-current');
       if (activeAttr && activeAttr !== 'false') {
         props.active = true;
       }
-
+      
       const tag = element.tagName.toLowerCase();
       if (/^h[1-6]$/.test(tag)) {
         props.level = parseInt(tag[1], 10);
@@ -1001,13 +979,13 @@ function generateYamlTree(
         const levelAttr = element.getAttribute('aria-level');
         if (levelAttr) props.level = parseInt(levelAttr, 10);
       }
-
+      
       return props;
     }
 
     function formatAriaProps(props: AriaProps): string {
       const parts: string[] = [];
-
+      
       if (props.checked !== undefined) {
         parts.push(props.checked === 'mixed' ? '[checked=mixed]' : props.checked ? '[checked]' : '[unchecked]');
       }
@@ -1025,7 +1003,7 @@ function generateYamlTree(
       if (props.level !== undefined) {
         parts.push(`[level=${props.level}]`);
       }
-
+      
       return parts.join(' ');
     }
 
@@ -1070,18 +1048,18 @@ function generateYamlTree(
       if (name) {
         key += ' ' + yamlEscapeValue(name);
       }
-
+      
       const ref = getOrAssignRef(element, role, name);
       window.__piRefs![ref] = element;
       key += ` [ref=${ref}]`;
-
+      
       const propsStr = formatAriaProps(ariaProps);
       if (propsStr) key += ` ${propsStr}`;
-
+      
       if (hasCursorPointer(element)) {
         key += ' [cursor=pointer]';
       }
-
+      
       return key;
     }
 
@@ -1096,27 +1074,27 @@ function generateYamlTree(
 
     function traverse(element: Element, depth: number, parentIncluded: boolean): void {
       if (depth > maxDepth) return;
-
+      
       const tag = element.tagName.toLowerCase();
       if (["script", "style", "meta", "link", "title", "noscript"].includes(tag)) return;
       if (filter !== "all" && element.getAttribute("aria-hidden") === "true") return;
       if (filter !== "all" && !isVisible(element)) return;
-
+      
       if (filter !== "all") {
         const rect = element.getBoundingClientRect();
         if (!(rect.top < window.innerHeight && rect.bottom > 0 && rect.left < window.innerWidth && rect.right > 0)) {
           return;
         }
       }
-
+      
       const role = getRole(element);
       const name = getName(element);
       const ariaProps = getAriaProps(element);
-
+      
       const isInteractiveEl = isInteractive(element);
       const isLandmarkEl = isLandmark(element);
       const hasName = name.length > 0;
-
+      
       let include: boolean;
       if (filter === "interactive") {
         include = isInteractiveEl;
@@ -1125,20 +1103,20 @@ function generateYamlTree(
       } else {
         include = isInteractiveEl || isLandmarkEl || hasName || (role !== "generic" && role !== "img");
       }
-
+      
       if (include) {
         const indent = "  ".repeat(depth);
         const key = buildKey(role, name, element, ariaProps);
         const props = getElementProps(element);
-
+        
         const children: Element[] = [];
         for (const child of element.children) {
           children.push(child);
         }
-
+        
         const hasChildren = children.length > 0;
         const hasProps = Object.keys(props).length > 0;
-
+        
         if (!hasChildren && !hasProps) {
           lines.push(`${indent}- ${key}`);
         } else {
@@ -1160,7 +1138,7 @@ function generateYamlTree(
     traverse(document.body, 0, false);
 
     const yaml = lines.join('\n');
-
+    
     if (yaml.length > 50000) {
       return {
         error: `Output exceeds 50000 character limit (${yaml.length} characters). Try using filter="interactive".`,
@@ -1186,18 +1164,18 @@ function getElementCoordinates(ref: string): { x: number; y: number; error?: str
   const elementMap = getElementMap();
   const elemRef = elementMap[ref];
   let element: Element | undefined;
-
+  
   if (elemRef) {
     element = elemRef.element.deref();
     if (!element) {
       delete elementMap[ref];
     }
   }
-
+  
   if (!element && window.__piRefs) {
     element = window.__piRefs[ref];
   }
-
+  
   if (!element) {
     return { x: 0, y: 0, error: `Element ${ref} not found. Use read_page to get current elements.` };
   }
@@ -1213,18 +1191,18 @@ function setFormValue(ref: string, value: string | boolean | number): { success:
   const elementMap = getElementMap();
   const elemRef = elementMap[ref];
   let element: Element | undefined;
-
+  
   if (elemRef) {
     element = elemRef.element.deref();
     if (!element) {
       delete elementMap[ref];
     }
   }
-
+  
   if (!element && window.__piRefs) {
     element = window.__piRefs[ref];
   }
-
+  
   if (!element) {
     return { success: false, error: `Element ${ref} not found. Use read_page to get current elements.` };
   }
@@ -1310,18 +1288,18 @@ function scrollToElement(ref: string): { success: boolean; error?: string } {
   const elementMap = getElementMap();
   const elemRef = elementMap[ref];
   let element: Element | undefined;
-
+  
   if (elemRef) {
     element = elemRef.element.deref();
     if (!element) {
       delete elementMap[ref];
     }
   }
-
+  
   if (!element && window.__piRefs) {
     element = window.__piRefs[ref];
   }
-
+  
   if (!element) {
     return { success: false, error: `Element ${ref} not found. Run read_page to get current element refs.` };
   }
@@ -1351,18 +1329,18 @@ function uploadImage(
     if (ref) {
       const elementMap = getElementMap();
       const elemRef = elementMap[ref];
-
+      
       if (elemRef) {
         targetElement = elemRef.element.deref() as HTMLElement | null;
         if (!targetElement) {
           delete elementMap[ref];
         }
       }
-
+      
       if (!targetElement && window.__piRefs) {
         targetElement = window.__piRefs[ref] as HTMLElement | null;
       }
-
+      
       if (!targetElement) {
         return { success: false, error: `Element ${ref} not found. Run read_page to get current element refs.` };
       }
@@ -1409,7 +1387,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   switch (message.type) {
     case "GENERATE_ACCESSIBILITY_TREE": {
       const options = message.options || {};
-
+      
       if (options.format === "yaml") {
         const result = generateYamlTree(
           options.filter || "interactive",
@@ -1419,8 +1397,8 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         if (result.error) {
           sendResponse({ error: result.error, pageContent: "", viewport: result.viewport });
         } else {
-          sendResponse({
-            pageContent: result.yaml,
+          sendResponse({ 
+            pageContent: result.yaml, 
             viewport: result.viewport,
             modalStates: modalStates.length > 0 ? modalStates : undefined,
             modalLimitations: 'Only custom modals ([role=dialog]) detected. Native alert/confirm/prompt dialogs and system file choosers cannot be detected from content scripts.',
@@ -1501,7 +1479,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           break;
         }
         // Return what info we can - the service worker will match by URL or name
-        sendResponse({
+        sendResponse({ 
           url: iframe.src,
           name: iframe.name || undefined,
         });
@@ -1523,7 +1501,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       try {
         const { role, name, all } = message;
         const elementMap = getElementMap();
-
+        
         // Mapping of role to possible selectors
         const implicitRoles: Record<string, string[]> = {
           button: ['button', 'input[type="button"]', 'input[type="submit"]', 'input[type="reset"]', '[role="button"]'],
@@ -1544,26 +1522,26 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           menu: ['[role="menu"]'],
           menuitem: ['[role="menuitem"]'],
         };
-
+        
         // Build selectors for the role
         const selectors = implicitRoles[role] || [`[role="${role}"]`];
         const candidates: Element[] = [];
-
+        
         for (const sel of selectors) {
           try {
             candidates.push(...document.querySelectorAll(sel));
           } catch {}
         }
-
+        
         // Filter by visibility
         const visible = candidates.filter(el => {
           const style = window.getComputedStyle(el);
-          return style.display !== 'none' &&
-                 style.visibility !== 'hidden' &&
+          return style.display !== 'none' && 
+                 style.visibility !== 'hidden' && 
                  (el as HTMLElement).offsetWidth > 0 &&
                  (el as HTMLElement).offsetHeight > 0;
         });
-
+        
         // Filter by name if provided
         let matches = visible;
         if (name) {
@@ -1574,20 +1552,20 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
             const title = el.getAttribute('title')?.toLowerCase();
             const placeholder = (el as HTMLInputElement).placeholder?.toLowerCase();
             const value = (el as HTMLInputElement).value?.toLowerCase();
-
-            return ariaLabel?.includes(lowerName) ||
-                   text?.includes(lowerName) ||
+            
+            return ariaLabel?.includes(lowerName) || 
+                   text?.includes(lowerName) || 
                    title?.includes(lowerName) ||
                    placeholder?.includes(lowerName) ||
                    value?.includes(lowerName);
           });
         }
-
+        
         if (matches.length === 0) {
           sendResponse({ error: `No element found with role "${role}"${name ? ` and name "${name}"` : ''}` });
           break;
         }
-
+        
         // Generate refs for matches
         const results = matches.map(el => {
           const ref = getOrAssignRef(el, role, name || '');
@@ -1596,7 +1574,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           elementMap[ref] = { element: new WeakRef(el), role, name: name || '' };
           return { ref, text: el.textContent?.trim().slice(0, 50) };
         });
-
+        
         if (all) {
           sendResponse({ matches: results });
         } else {
@@ -1611,17 +1589,17 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       try {
         const { text, exact } = message;
         const elementMap = getElementMap();
-
+        
         // Find elements containing the text
         const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
         const matches: Element[] = [];
-
+        
         while (walker.nextNode()) {
           const nodeText = walker.currentNode.textContent || '';
-          const hasMatch = exact
-            ? nodeText.trim() === text
+          const hasMatch = exact 
+            ? nodeText.trim() === text 
             : nodeText.toLowerCase().includes(text.toLowerCase());
-
+          
           if (hasMatch) {
             const parent = walker.currentNode.parentElement;
             if (parent && !matches.includes(parent)) {
@@ -1633,23 +1611,23 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
             }
           }
         }
-
+        
         if (matches.length === 0) {
           sendResponse({ error: `No element found with text "${text}"` });
           break;
         }
-
+        
         // Pick the most specific (smallest) element
-        const el = matches.sort((a, b) =>
+        const el = matches.sort((a, b) => 
           (a.textContent?.length || 0) - (b.textContent?.length || 0)
         )[0];
-
+        
         const role = getResolvedRole(el);
         const ref = getOrAssignRef(el, role, text);
         window.__piRefs = window.__piRefs || {};
         window.__piRefs[ref] = el;
         elementMap[ref] = { element: new WeakRef(el), role, name: text };
-
+        
         sendResponse({ ref, text: el.textContent?.trim().slice(0, 50) });
       } catch (err) {
         sendResponse({ error: err instanceof Error ? err.message : String(err) });
@@ -1660,11 +1638,11 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       try {
         const { label } = message;
         const elementMap = getElementMap();
-
+        
         // Find label element
         const labels = document.querySelectorAll('label');
         let input: Element | null = null;
-
+        
         for (const lbl of labels) {
           const lblText = lbl.textContent?.trim().toLowerCase();
           if (lblText?.includes(label.toLowerCase())) {
@@ -1680,7 +1658,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
             if (input) break;
           }
         }
-
+        
         // Also check aria-label and placeholder
         if (!input) {
           const lowerLabel = label.toLowerCase();
@@ -1690,18 +1668,18 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
             `select[aria-label*="${label}" i]`
           );
         }
-
+        
         if (!input) {
           sendResponse({ error: `No form field found with label "${label}"` });
           break;
         }
-
+        
         const role = getResolvedRole(input);
         const ref = getOrAssignRef(input, role, label);
         window.__piRefs = window.__piRefs || {};
         window.__piRefs[ref] = input;
         elementMap[ref] = { element: new WeakRef(input), role, name: label };
-
+        
         sendResponse({ ref, label });
       } catch (err) {
         sendResponse({ error: err instanceof Error ? err.message : String(err) });
@@ -1712,7 +1690,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       try {
         const { selector } = message;
         const elementMap = getElementMap();
-
+        
         // Helper to extract styles from an element
         const extractStyles = (el: Element) => {
           const s = getComputedStyle(el);
@@ -1739,7 +1717,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
             },
           };
         };
-
+        
         // Check if selector is a ref (e.g., "e5")
         if (/^e\d+$/.test(selector)) {
           const elemRef = elementMap[selector];
@@ -1751,12 +1729,12 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           if (!element && window.__piRefs) {
             element = window.__piRefs[selector];
           }
-
+          
           if (!element) {
             sendResponse({ error: `Element ${selector} not found` });
             break;
           }
-
+          
           sendResponse({ styles: [extractStyles(element)] });
         } else {
           // CSS selector - can match multiple elements
@@ -1765,7 +1743,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
             sendResponse({ error: `No elements found matching "${selector}"` });
             break;
           }
-
+          
           const styles = Array.from(elements).map(extractStyles);
           sendResponse({ styles });
         }
@@ -1778,10 +1756,10 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       try {
         const { selector, values, by } = message;
         const elementMap = getElementMap();
-
+        
         // Find the select element
         let selectEl: HTMLSelectElement | null = null;
-
+        
         if (/^e\d+$/.test(selector)) {
           const elemRef = elementMap[selector];
           let element: Element | undefined;
@@ -1792,7 +1770,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           if (!element && window.__piRefs) {
             element = window.__piRefs[selector];
           }
-
+          
           if (!element) {
             sendResponse({ error: `Element ${selector} not found` });
             break;
@@ -1813,26 +1791,26 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
             break;
           }
         }
-
+        
         // Clear current selection for multi-select
         if (selectEl.multiple) {
           for (const opt of selectEl.options) {
             opt.selected = false;
           }
         }
-
+        
         const selected: string[] = [];
         const notFound: string[] = [];
-
+        
         // For single-select, only use the first value
         const valuesToSelect = selectEl.multiple ? values : [values[0]];
-
+        
         for (const val of valuesToSelect) {
           let found = false;
-
+          
           for (const opt of selectEl.options) {
             let matches = false;
-
+            
             if (by === 'index') {
               matches = opt.index === parseInt(val, 10);
             } else if (by === 'label') {
@@ -1841,7 +1819,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
               // Default: match by value
               matches = opt.value === val;
             }
-
+            
             if (matches) {
               opt.selected = true;
               selected.push(opt.value);
@@ -1849,17 +1827,17 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
               break;  // Found match for this value, move to next
             }
           }
-
+          
           if (!found) notFound.push(val);
         }
-
+        
         // Dispatch change event
         selectEl.dispatchEvent(new Event('change', { bubbles: true }));
-
+        
         if (notFound.length > 0) {
-          sendResponse({
-            selected,
-            warning: `Values not found: ${notFound.join(', ')}`
+          sendResponse({ 
+            selected, 
+            warning: `Values not found: ${notFound.join(', ')}` 
           });
         } else {
           sendResponse({ selected });
@@ -1874,7 +1852,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         const { ref } = message;
         const elementMap = getElementMap();
         const elemRef = elementMap[ref];
-
+        
         let element: Element | undefined;
         if (elemRef) {
           element = elemRef.element.deref();
@@ -1883,12 +1861,12 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         if (!element && window.__piRefs) {
           element = window.__piRefs[ref];
         }
-
+        
         if (!element) {
           sendResponse({ error: `Element ${ref} not found` });
           break;
         }
-
+        
         sendResponse({ text: element.textContent?.trim() || '' });
       } catch (err) {
         sendResponse({ error: err instanceof Error ? err.message : String(err) });
@@ -1912,8 +1890,8 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       const isElementVisible = (el: Element | null): boolean => {
         if (!el) return false;
         const style = window.getComputedStyle(el);
-        return style.display !== 'none' &&
-               style.visibility !== 'hidden' &&
+        return style.display !== 'none' && 
+               style.visibility !== 'hidden' && 
                style.opacity !== '0' &&
                (el as HTMLElement).offsetWidth > 0 &&
                (el as HTMLElement).offsetHeight > 0;
@@ -1931,7 +1909,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       };
 
       const startTime = Date.now();
-
+      
       const waitForCondition = (): Promise<{ success: boolean; waited: number; error?: string }> => {
         return new Promise((resolve) => {
           if (checkElement()) {
@@ -1949,10 +1927,10 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
           const timeoutId = setTimeout(() => {
             observer.disconnect();
-            resolve({
-              success: false,
+            resolve({ 
+              success: false, 
               waited: Date.now() - startTime,
-              error: `Timeout waiting for "${selector}" to be ${state}`
+              error: `Timeout waiting for "${selector}" to be ${state}` 
             });
           }, maxTimeout);
 
@@ -1967,11 +1945,11 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
       waitForCondition().then((waitResult) => {
         if (!waitResult.success) {
-          sendResponse({
-            error: waitResult.error,
+          sendResponse({ 
+            error: waitResult.error, 
             waited: waitResult.waited,
-            pageContent: "",
-            viewport: { width: window.innerWidth, height: window.innerHeight }
+            pageContent: "", 
+            viewport: { width: window.innerWidth, height: window.innerHeight } 
           });
           return;
         }
@@ -2025,10 +2003,10 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
             clearInterval(intervalId);
             window.removeEventListener('popstate', checkUrl);
             window.removeEventListener('hashchange', checkUrl);
-            resolve({
-              success: false,
+            resolve({ 
+              success: false, 
               waited: Date.now() - startTime,
-              error: `Timeout waiting for URL to match "${pattern}". Current: ${window.location.href}`
+              error: `Timeout waiting for URL to match "${pattern}". Current: ${window.location.href}` 
             });
           }, maxTimeout);
 
@@ -2039,11 +2017,11 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
       waitForUrl().then((waitResult) => {
         if (!waitResult.success) {
-          sendResponse({
-            error: waitResult.error,
+          sendResponse({ 
+            error: waitResult.error, 
             waited: waitResult.waited,
-            pageContent: "",
-            viewport: { width: window.innerWidth, height: window.innerHeight }
+            pageContent: "", 
+            viewport: { width: window.innerWidth, height: window.innerHeight } 
           });
           return;
         }
@@ -2263,17 +2241,17 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           const check = () => {
             const pending = getPendingRequests();
             const elapsed = Date.now() - startTime;
-
+            
             if (pending.length === 0) {
               resolve({ success: true, waited: elapsed });
               return;
             }
-
+            
             if (elapsed >= maxTimeout) {
               resolve({ success: false, waited: elapsed, pendingCount: pending.length });
               return;
             }
-
+            
             setTimeout(check, 100);
           };
           check();
@@ -2282,11 +2260,11 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
       waitForIdle().then((waitResult) => {
         if (!waitResult.success) {
-          sendResponse({
+          sendResponse({ 
             error: `Network not idle after ${waitResult.waited}ms (${waitResult.pendingCount} requests pending)`,
             waited: waitResult.waited,
-            pageContent: "",
-            viewport: { width: window.innerWidth, height: window.innerHeight }
+            pageContent: "", 
+            viewport: { width: window.innerWidth, height: window.innerHeight } 
           });
           return;
         }
@@ -2304,16 +2282,16 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     case "GET_ELEMENT_BOUNDS_FOR_ANNOTATION": {
       const elementMap = getElementMap();
       const elements: Array<{ ref: string; tag: string; bounds: { x: number; y: number; width: number; height: number } }> = [];
-
+      
       for (const [ref, entry] of Object.entries(elementMap)) {
         const el = entry.element.deref();
         if (!el) continue;
-
+        
         const rect = el.getBoundingClientRect();
         if (rect.width <= 0 || rect.height <= 0) continue;
         if (rect.bottom < 0 || rect.top > window.innerHeight) continue;
         if (rect.right < 0 || rect.left > window.innerWidth) continue;
-
+        
         elements.push({
           ref,
           tag: el.tagName.toLowerCase(),
@@ -2325,7 +2303,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           },
         });
       }
-
+      
       sendResponse({ elements });
       break;
     }
@@ -2343,34 +2321,34 @@ function searchPageText(term: string, caseSensitive: boolean, limit: number) {
     bounds: { x: number; y: number; width: number; height: number };
     elementRef: string | null;
   }> = [];
-
+  
   const searchTerm = caseSensitive ? term : term.toLowerCase();
   const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
   const elementMap = getElementMap();
   let matchIndex = 0;
-
+  
   while (walker.nextNode() && matches.length < limit) {
     const node = walker.currentNode;
     const textContent = node.textContent || "";
     const searchIn = caseSensitive ? textContent : textContent.toLowerCase();
-
+    
     let pos = 0;
     while ((pos = searchIn.indexOf(searchTerm, pos)) !== -1 && matches.length < limit) {
       const parent = node.parentElement;
       if (!parent) { pos++; continue; }
-
+      
       const range = document.createRange();
       range.setStart(node, pos);
       range.setEnd(node, Math.min(pos + term.length, textContent.length));
       const rect = range.getBoundingClientRect();
-
+      
       if (rect.width === 0 || rect.height === 0) { pos++; continue; }
-
+      
       const fullText = node.textContent || "";
       const contextStart = Math.max(0, pos - 30);
       const contextEnd = Math.min(fullText.length, pos + term.length + 30);
       const context = fullText.slice(contextStart, contextEnd).trim();
-
+      
       let elementRef: string | null = null;
       for (const [ref, entry] of Object.entries(elementMap)) {
         const el = entry.element.deref();
@@ -2379,7 +2357,7 @@ function searchPageText(term: string, caseSensitive: boolean, limit: number) {
           break;
         }
       }
-
+      
       matches.push({
         ref: `m${++matchIndex}`,
         text: fullText.slice(pos, pos + term.length),
@@ -2392,10 +2370,10 @@ function searchPageText(term: string, caseSensitive: boolean, limit: number) {
         },
         elementRef,
       });
-
+      
       pos++;
     }
   }
-
+  
   return matches;
 }

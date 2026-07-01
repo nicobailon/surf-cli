@@ -1,5 +1,18 @@
 # Changelog
 
+## [Unreleased]
+
+### Fixed
+- **Accessibility tree nested labels** - Include nested text content when naming interactive links, buttons, and summaries so child spans contribute accessible names. (@skyeryg)
+
+## [2.7.2] - 2026-04-10
+
+### Fixed
+- **ChatGPT login detection** - Accept chunked NextAuth session cookies such as `__Secure-next-auth.session-token.0` during login checks, matching ChatGPT's current cookie layout.
+- **ChatGPT response extraction** - Improved assistant turn detection and completion polling so responses are still captured when ChatGPT's DOM structure shifts or thinking output renders through newer turn containers.
+- **ChatGPT model selection** - Updated `surf chatgpt --model` to match the current ChatGPT model menu and select `Instant`, `Thinking`, and `Pro` reliably.
+- **ChatGPT error reporting** - Preserve `/backend-api/me` login check failures instead of downgrading them to a generic `ChatGPT login required` error.
+
 ## [2.7.1] - 2026-02-28
 
 ### Fixed
