@@ -5,6 +5,7 @@
 ### Added
 - **LLM context flag** - Added `surf --llm-context` as a compact, deterministic quick reference for AI agents.
 - **CLI/native socket integration coverage** - Added CI-safe integration tests for Surf CLI request framing, fake native-host responses, host errors, and missing-socket diagnostics.
+- **Native host protocol integration coverage** - Added CI-safe tests for `native/host.cjs` native-messaging framing, CLI request forwarding, extension responses, and extension error propagation without real Chrome.
 - **Scroll shorthand** - `surf scroll` now accepts positional forms like `scroll down 800`, `scroll up 400`, `scroll bottom`, and `scroll top` while keeping existing flag and dot-command forms.
 - **Cookie subcommands** - Added space-separated cookie commands (`surf cookie list`, `get`, `set`, `clear --all`, and `delete`) while keeping existing `cookie.*` commands working.
 
