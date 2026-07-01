@@ -415,11 +415,12 @@ surf zoom 1                    # Reset to 100%
 ## Cookies & Storage
 
 ```bash
-surf cookie.list               # List cookies for current page
-surf cookie.list --domain .google.com
-surf cookie.set --name "token" --value "abc123"
-surf cookie.get --name "token"
-surf cookie.clear              # Clear all cookies
+surf cookie list               # List cookies for current page
+surf cookie list --domain .google.com
+surf cookie set --name "token" --value "abc123"
+surf cookie get "token"
+surf cookie clear --all        # Clear all cookies
+surf cookie delete "token"     # Clear one cookie
 ```
 
 ## History & Bookmarks

@@ -2,6 +2,9 @@
 
 ## [Unreleased]
 
+### Added
+- **Cookie subcommands** - Added space-separated cookie commands (`surf cookie list`, `get`, `set`, `clear --all`, and `delete`) while keeping existing `cookie.*` commands working.
+
 ### Fixed
 - **Grok UI drift** - Updated default model selection for the current Grok menu, broadened send-button validation, and trimmed trailing suggested follow-up chips from extracted responses.
 - **WSL2 native messaging host install** - Install/uninstall now target Windows browser manifests from WSL2 by default, preserve manifest origins, forward wrapper arguments, and include clearer socket diagnostics.

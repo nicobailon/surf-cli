@@ -40,7 +40,7 @@ function resolveWorkflow(nameOrPath) {
   if (nameOrPath.includes('|')) {
     return { type: 'inline', content: nameOrPath };
   }
-  
+
   // Check if it's a direct file path (with extension or path separator)
   if (nameOrPath.includes('/') || nameOrPath.includes('\\') || nameOrPath.endsWith('.json')) {
     if (fs.existsSync(nameOrPath)) {
@@ -48,17 +48,17 @@ function resolveWorkflow(nameOrPath) {
     }
     return { type: 'not_found', name: nameOrPath };
   }
-  
+
   // Look up by name in workflow directories
   const searchDirs = getWorkflowDirs();
-  
+
   for (const { path: dir } of searchDirs) {
     const filePath = path.join(dir, `${nameOrPath}.json`);
     if (fs.existsSync(filePath)) {
       return { type: 'file', path: filePath };
     }
   }
-  
+
   return { type: 'not_found', name: nameOrPath };
 }
 
@@ -69,7 +69,7 @@ function resolveWorkflow(nameOrPath) {
 function listWorkflows() {
   const workflows = [];
   const searchDirs = getWorkflowDirs();
-  
+
   for (const { path: dir, scope } of searchDirs) {
     if (fs.existsSync(dir)) {
       try {
@@ -95,7 +95,7 @@ function listWorkflows() {
       }
     }
   }
-  
+
   return workflows;
 }
 
@@ -106,15 +106,15 @@ function listWorkflows() {
  */
 function getWorkflowInfo(name) {
   const resolved = resolveWorkflow(name);
-  
+
   if (resolved.type === 'not_found') {
     return { error: `Workflow not found: ${name}` };
   }
-  
+
   if (resolved.type === 'inline') {
     return { error: 'Cannot get info for inline workflows' };
   }
-  
+
   try {
     const content = JSON.parse(fs.readFileSync(resolved.path, 'utf8'));
     return {
@@ -174,24 +174,24 @@ function validateWorkflowFile(filePath) {
   if (!fs.existsSync(filePath)) {
     return { valid: false, error: `File not found: ${filePath}` };
   }
-  
+
   try {
     const content = fs.readFileSync(filePath, 'utf8');
     const workflow = JSON.parse(content);
-    
+
     // Basic structure validation
     if (!workflow.steps || !Array.isArray(workflow.steps)) {
       return { valid: false, error: "Workflow must have a 'steps' array" };
     }
-    
+
     if (workflow.steps.length === 0) {
       return { valid: false, error: "Workflow has no steps" };
     }
-    
+
     // Validate each step
     for (let i = 0; i < workflow.steps.length; i++) {
       const step = workflow.steps[i];
-      
+
       // Check for loops
       if (step.repeat !== undefined || step.each !== undefined) {
         if (!step.steps || !Array.isArray(step.steps)) {
@@ -199,18 +199,18 @@ function validateWorkflowFile(filePath) {
         }
         continue;
       }
-      
+
       // Regular step must have tool/cmd
       if (!step.tool && !step.cmd) {
         return { valid: false, error: `Step ${i + 1}: must have 'tool' field` };
       }
     }
-    
+
     // Validate args schema if present
     if (workflow.args && typeof workflow.args !== 'object') {
       return { valid: false, error: "'args' must be an object" };
     }
-    
+
     return { valid: true, workflow };
   } catch (e) {
     return { valid: false, error: `Invalid JSON: ${e.message}` };
@@ -225,7 +225,7 @@ function validateWorkflowFile(filePath) {
  */
 function formatStep(step, indent = 0) {
   const pad = '  '.repeat(indent);
-  
+
   if (step.repeat !== undefined) {
     const lines = [`${pad}repeat ${step.repeat} times:`];
     for (const s of step.steps || []) {
@@ -236,7 +236,7 @@ function formatStep(step, indent = 0) {
     }
     return lines.join('\n');
   }
-  
+
   if (step.each !== undefined) {
     const lines = [`${pad}each ${step.each} as ${step.as || 'item'}:`];
     for (const s of step.steps || []) {
@@ -244,24 +244,24 @@ function formatStep(step, indent = 0) {
     }
     return lines.join('\n');
   }
-  
+
   const tool = step.tool || step.cmd;
   const args = step.args || {};
   const argStr = Object.entries(args)
     .map(([k, v]) => `${k}=${JSON.stringify(v)}`)
     .join(' ');
-  
+
   let line = `${pad}${tool}`;
   if (argStr) line += ` ${argStr}`;
   if (step.as) line += ` → ${step.as}`;
-  
+
   return line;
 }
 
 // Cross-platform image resize (macOS: sips, Linux: ImageMagick)
 function resizeImage(filePath, maxSize) {
   const platform = process.platform;
-  
+
   try {
     if (platform === "darwin") {
       // macOS: use sips
@@ -341,10 +341,10 @@ const TOOLS = {
   ai: {
     desc: "AI assistants (ChatGPT, Gemini)",
     commands: {
-      "chatgpt": { 
-        desc: "Send prompt to ChatGPT (uses browser cookies)", 
-        args: ["query"], 
-        opts: { 
+      "chatgpt": {
+        desc: "Send prompt to ChatGPT (uses browser cookies)",
+        args: ["query"],
+        opts: {
           "with-page": "Include current page context",
           model: "Model: gpt-4o, o1, etc.",
           file: "Attach file",
@@ -357,10 +357,10 @@ const TOOLS = {
           { cmd: 'chatgpt "analyze" --model gpt-4o', desc: "Specify model" },
         ]
       },
-      "gemini": { 
-        desc: "Send prompt to Gemini (uses browser cookies)", 
-        args: ["query"], 
-        opts: { 
+      "gemini": {
+        desc: "Send prompt to Gemini (uses browser cookies)",
+        args: ["query"],
+        opts: {
           "with-page": "Include current page context",
           model: "Model: gemini-3-pro (default), gemini-2.5-pro, gemini-2.5-flash",
           file: "Attach file to analyze",
@@ -446,9 +446,9 @@ const TOOLS = {
           { cmd: 'aistudio.build "crm dashboard" --output ./out', desc: "Build and extract to directory" },
         ]
       },
-      "ai": { 
-        desc: "Analyze page with AI (requires GOOGLE_API_KEY)", 
-        args: ["query"], 
+      "ai": {
+        desc: "Analyze page with AI (requires GOOGLE_API_KEY)",
+        args: ["query"],
         opts: { mode: "Query mode: find|summary|extract (auto-detected)" },
         examples: [
           { cmd: 'ai "find the login button"', desc: "Find element" },
@@ -462,39 +462,39 @@ const TOOLS = {
     desc: "Tab management",
     commands: {
       "tab.list": { desc: "List all open tabs", args: [], examples: [{ cmd: "tab.list", desc: "Show all tabs" }] },
-      "tab.new": { 
-        desc: "Open new tab", 
-        args: ["url"], 
+      "tab.new": {
+        desc: "Open new tab",
+        args: ["url"],
         opts: { urls: "Open multiple URLs" },
         examples: [
           { cmd: 'tab.new "https://google.com"', desc: "Open single tab" },
           { cmd: 'tab.new --urls "https://a.com" "https://b.com"', desc: "Open multiple" },
         ]
       },
-      "tab.switch": { 
-        desc: "Switch to tab by ID or name", 
+      "tab.switch": {
+        desc: "Switch to tab by ID or name",
         args: ["id"],
         examples: [
           { cmd: "tab.switch 123", desc: "Switch by ID" },
           { cmd: 'tab.switch "myTab"', desc: "Switch by name" },
         ]
       },
-      "tab.close": { 
-        desc: "Close tab by ID or name", 
-        args: ["id"], 
+      "tab.close": {
+        desc: "Close tab by ID or name",
+        args: ["id"],
         opts: { ids: "Close multiple tabs" },
         examples: [{ cmd: "tab.close 123", desc: "Close tab" }]
       },
-      "tab.name": { 
-        desc: "Register current tab with a name", 
+      "tab.name": {
+        desc: "Register current tab with a name",
         args: ["name"],
         examples: [{ cmd: 'tab.name "dashboard"', desc: "Name current tab" }]
       },
       "tab.unname": { desc: "Unregister a named tab", args: ["name"] },
       "tab.named": { desc: "List all named tabs", args: [] },
-      "tab.group": { 
-        desc: "Create/add to tab group", 
-        args: [], 
+      "tab.group": {
+        desc: "Create/add to tab group",
+        args: [],
         opts: { name: "Group name", tabs: "Tab IDs (comma-separated)", color: "Group color" },
         examples: [
           { cmd: 'tab.group --name "Work" --color blue', desc: "Group current tab" },
@@ -503,9 +503,9 @@ const TOOLS = {
       },
       "tab.ungroup": { desc: "Remove tabs from group", args: [], opts: { tabs: "Tab IDs (comma-separated)" } },
       "tab.groups": { desc: "List all tab groups", args: [] },
-      "tab.reload": { 
-        desc: "Reload current tab", 
-        args: [], 
+      "tab.reload": {
+        desc: "Reload current tab",
+        args: [],
         opts: { hard: "Bypass cache" },
         examples: [
           { cmd: "tab.reload", desc: "Soft reload" },
@@ -517,30 +517,30 @@ const TOOLS = {
   nav: {
     desc: "Navigation",
     commands: {
-      "navigate": { 
-        desc: "Go to URL", 
+      "navigate": {
+        desc: "Go to URL",
         args: ["url"],
         examples: [{ cmd: 'navigate "https://example.com"', desc: "Go to URL" }]
       },
       "go": { desc: "Alias for navigate", args: ["url"], alias: "navigate" },
-      "back": { 
-        desc: "Go back in history", 
+      "back": {
+        desc: "Go back in history",
         args: [],
         examples: [{ cmd: "back", desc: "Browser back" }]
       },
-      "forward": { 
-        desc: "Go forward in history", 
+      "forward": {
+        desc: "Go forward in history",
         args: [],
         examples: [{ cmd: "forward", desc: "Browser forward" }]
       },
-      "screenshot": { 
-        desc: "Capture screenshot (auto-saves to /tmp by default)", 
-        args: [], 
-        opts: { 
-          output: "Save to file", 
-          selector: "Capture specific element", 
-          annotate: "Draw element labels", 
-          fullpage: "Capture full page", 
+      "screenshot": {
+        desc: "Capture screenshot (auto-saves to /tmp by default)",
+        args: [],
+        opts: {
+          output: "Save to file",
+          selector: "Capture specific element",
+          annotate: "Draw element labels",
+          fullpage: "Capture full page",
           "max-height": "Max height for fullpage (default: 4000)",
           full: "Skip resize, save at full resolution",
           "max-size": "Max dimension in px (default: 1200)",
@@ -560,17 +560,17 @@ const TOOLS = {
   scroll: {
     desc: "Scrolling",
     commands: {
-      "scroll": { 
-        desc: "Scroll in direction", 
-        args: [], 
+      "scroll": {
+        desc: "Scroll in direction",
+        args: [],
         opts: { direction: "up|down|left|right", amount: "Scroll amount (1-10)" },
         examples: [{ cmd: "scroll --direction down --amount 3", desc: "Scroll down" }]
       },
       "scroll.top": { desc: "Scroll to top of page", args: [], opts: { selector: "Target specific container" } },
       "scroll.bottom": { desc: "Scroll to bottom of page", args: [], opts: { selector: "Target specific container" } },
-      "scroll.to": { 
-        desc: "Scroll element into view", 
-        args: [], 
+      "scroll.to": {
+        desc: "Scroll element into view",
+        args: [],
         opts: { ref: "Element ref" },
         examples: [{ cmd: "scroll.to --ref e5", desc: "Scroll to element" }]
       },
@@ -580,12 +580,12 @@ const TOOLS = {
   page: {
     desc: "Page inspection",
     commands: {
-      "page.read": { 
-        desc: "Get accessibility tree + visible text", 
-        args: [], 
-        opts: { 
-          all: "Include all elements", 
-          ref: "Get specific element", 
+      "page.read": {
+        desc: "Get accessibility tree + visible text",
+        args: [],
+        opts: {
+          all: "Include all elements",
+          ref: "Get specific element",
           "no-text": "Exclude visible text content",
           depth: "Maximum tree depth (default: unlimited)",
           compact: "Remove empty structural elements",
@@ -611,7 +611,7 @@ const TOOLS = {
       "locate.role": {
         desc: "Find element by ARIA role",
         args: ["role"],
-        opts: { 
+        opts: {
           name: "Element name/text",
           action: "Action to perform (click|fill|hover|text)",
           value: "Value for fill action",
@@ -683,14 +683,14 @@ const TOOLS = {
   wait: {
     desc: "Waiting",
     commands: {
-      "wait": { 
-        desc: "Wait N seconds", 
+      "wait": {
+        desc: "Wait N seconds",
         args: ["duration"],
         examples: [{ cmd: "wait 2", desc: "Wait 2 seconds" }]
       },
-      "wait.element": { 
-        desc: "Wait for element to appear", 
-        args: ["selector"], 
+      "wait.element": {
+        desc: "Wait for element to appear",
+        args: ["selector"],
         opts: { timeout: "Timeout in ms" },
         examples: [
           { cmd: 'wait.element ".loading"', desc: "Wait for element" },
@@ -698,9 +698,9 @@ const TOOLS = {
         ]
       },
       "wait.network": { desc: "Wait for network idle", args: [], opts: { timeout: "Timeout in ms" } },
-      "wait.url": { 
-        desc: "Wait for URL to match", 
-        args: ["pattern"], 
+      "wait.url": {
+        desc: "Wait for URL to match",
+        args: ["pattern"],
         opts: { timeout: "Timeout in ms" },
         examples: [{ cmd: 'wait.url "/dashboard"', desc: "Wait for URL pattern" }]
       },
@@ -711,15 +711,15 @@ const TOOLS = {
   input: {
     desc: "Input actions",
     commands: {
-      "click": { 
-        desc: "Click element or coordinates", 
-        args: ["ref"], 
-        opts: { 
-          ref: "Element ref", 
-          x: "X coordinate", 
-          y: "Y coordinate", 
-          button: "left|right|double|triple", 
-          selector: "CSS selector", 
+      "click": {
+        desc: "Click element or coordinates",
+        args: ["ref"],
+        opts: {
+          ref: "Element ref",
+          x: "X coordinate",
+          y: "Y coordinate",
+          button: "left|right|double|triple",
+          selector: "CSS selector",
           index: "Which match (0-indexed) for selector",
         },
         examples: [
@@ -729,15 +729,15 @@ const TOOLS = {
           { cmd: "click --x 100 --y 200", desc: "Click coordinates" },
         ]
       },
-      "type": { 
-        desc: "Type text (uses form.fill when --ref provided for better modal/form support)", 
-        args: ["text"], 
-        opts: { 
+      "type": {
+        desc: "Type text (uses form.fill when --ref provided for better modal/form support)",
+        args: ["text"],
+        opts: {
           into: "Target selector",
-          ref: "Element ref (uses JS DOM method, more reliable for modals)", 
-          submit: "Press enter after", 
-          clear: "Clear first", 
-          method: "cdp|js (default: cdp, but ref uses JS automatically)" 
+          ref: "Element ref (uses JS DOM method, more reliable for modals)",
+          submit: "Press enter after",
+          clear: "Clear first",
+          method: "cdp|js (default: cdp, but ref uses JS automatically)"
         },
         examples: [
           { cmd: 'type "hello world"', desc: "Type at cursor (CDP events)" },
@@ -746,9 +746,9 @@ const TOOLS = {
         ]
       },
       "smart_type": { desc: "Type into specific element (js method)", args: [], opts: { selector: "CSS selector", text: "Text to type", clear: "Clear first (default: true)", submit: "Submit after" } },
-      "key": { 
-        desc: "Press key", 
-        args: ["key"], 
+      "key": {
+        desc: "Press key",
+        args: ["key"],
         examples: [
           { cmd: "key Enter", desc: "Press Enter" },
           { cmd: "key Escape", desc: "Press Escape" },
@@ -763,9 +763,9 @@ const TOOLS = {
   js: {
     desc: "JavaScript execution",
     commands: {
-      "js": { 
-        desc: "Execute JavaScript (use 'return' for values)", 
-        args: ["code"], 
+      "js": {
+        desc: "Execute JavaScript (use 'return' for values)",
+        args: ["code"],
         opts: { file: "Run JS from file" },
         examples: [
           { cmd: 'js "return document.title"', desc: "Get title" },
@@ -778,9 +778,9 @@ const TOOLS = {
   dev: {
     desc: "Dev tools",
     commands: {
-      "console": { 
-        desc: "Read console messages", 
-        args: [], 
+      "console": {
+        desc: "Read console messages",
+        args: [],
         opts: { clear: "Clear after reading", stream: "Continuous output", level: "Filter by level (log,warn,error)", limit: "Max messages" },
         examples: [
           { cmd: "console", desc: "Get recent messages" },
@@ -793,10 +793,10 @@ const TOOLS = {
   network: {
     desc: "Network capture",
     commands: {
-      "network": { 
-        desc: "List captured network requests", 
-        args: [], 
-        opts: { 
+      "network": {
+        desc: "List captured network requests",
+        args: [],
+        opts: {
           origin: "Filter by origin (domain)",
           method: "Filter by method (GET,POST,...)",
           status: "Filter by status (200, 4xx, 5xx)",
@@ -821,16 +821,16 @@ const TOOLS = {
           { cmd: "network -v", desc: "Verbose with headers" },
         ]
       },
-      "network.get": { 
-        desc: "Get full details for a request", 
+      "network.get": {
+        desc: "Get full details for a request",
         args: ["id"],
         opts: {},
         examples: [
           { cmd: "network.get r_001", desc: "Get request details" }
         ]
       },
-      "network.body": { 
-        desc: "Get response body (for piping)", 
+      "network.body": {
+        desc: "Get response body (for piping)",
         args: ["id"],
         opts: { request: "Get request body instead" },
         examples: [
@@ -838,24 +838,24 @@ const TOOLS = {
           { cmd: "network.body r_001 | jq .", desc: "Pipe JSON to jq" }
         ]
       },
-      "network.curl": { 
-        desc: "Generate curl command for request", 
+      "network.curl": {
+        desc: "Generate curl command for request",
         args: ["id"],
         opts: {},
         examples: [
           { cmd: "network.curl r_001", desc: "Generate curl" }
         ]
       },
-      "network.origins": { 
-        desc: "List captured origins with stats", 
+      "network.origins": {
+        desc: "List captured origins with stats",
         args: [],
         opts: { "by-tab": "Group by tab" },
         examples: [
           { cmd: "network.origins", desc: "List origins" }
         ]
       },
-      "network.clear": { 
-        desc: "Clear captured requests", 
+      "network.clear": {
+        desc: "Clear captured requests",
         args: [],
         opts: { before: "Clear before timestamp/duration", origin: "Clear specific origin" },
         examples: [
@@ -863,24 +863,24 @@ const TOOLS = {
           { cmd: "network.clear --before 1h", desc: "Clear older than 1 hour" }
         ]
       },
-      "network.stats": { 
-        desc: "Show capture statistics", 
+      "network.stats": {
+        desc: "Show capture statistics",
         args: [],
         opts: {},
         examples: [
           { cmd: "network.stats", desc: "Show stats" }
         ]
       },
-      "network.export": { 
-        desc: "Export captured requests", 
+      "network.export": {
+        desc: "Export captured requests",
         args: [],
         opts: { jsonl: "Export as JSONL", output: "Output file path" },
         examples: [
           { cmd: "network.export --jsonl --output /tmp/requests.jsonl", desc: "Export as JSONL" }
         ]
       },
-      "network.path": { 
-        desc: "Get file paths for request data", 
+      "network.path": {
+        desc: "Get file paths for request data",
         args: ["id"],
         opts: {},
         examples: [
@@ -892,9 +892,9 @@ const TOOLS = {
   health: {
     desc: "Health checks",
     commands: {
-      "health": { 
-        desc: "Wait for URL or element", 
-        args: [], 
+      "health": {
+        desc: "Wait for URL or element",
+        args: [],
         opts: { url: "URL to check (expects 200)", selector: "CSS selector to wait for", expect: "Expected status code (default: 200)", timeout: "Timeout in ms" },
         examples: [
           { cmd: 'health --url "https://api.example.com"', desc: "Check URL" },
@@ -913,9 +913,9 @@ const TOOLS = {
     desc: "Browser dialog handling",
     commands: {
       "dialog.accept": { desc: "Accept current dialog", args: [], opts: { text: "Text for prompt input" } },
-      "dialog.dismiss": { 
-        desc: "Dismiss current dialog", 
-        args: [], 
+      "dialog.dismiss": {
+        desc: "Dismiss current dialog",
+        args: [],
         opts: { all: "Dismiss all dialogs repeatedly" },
         examples: [
           { cmd: "dialog.dismiss", desc: "Dismiss once" },
@@ -979,9 +979,9 @@ const TOOLS = {
   upload: {
     desc: "File upload",
     commands: {
-      "upload": { 
-        desc: "Upload file(s) to input", 
-        args: [], 
+      "upload": {
+        desc: "Upload file(s) to input",
+        args: [],
         opts: { ref: "Element ref", files: "File path(s) comma-separated" },
         examples: [{ cmd: 'upload --ref e5 --files "/path/to/file.pdf"', desc: "Upload file" }]
       },
@@ -990,8 +990,8 @@ const TOOLS = {
   frame: {
     desc: "Iframe handling",
     commands: {
-      "frame.list": { 
-        desc: "List all frames in page", 
+      "frame.list": {
+        desc: "List all frames in page",
         args: [],
         examples: [{ cmd: "frame.list", desc: "Show frame tree" }]
       },
@@ -1014,9 +1014,9 @@ const TOOLS = {
         args: [],
         examples: [{ cmd: "frame.main", desc: "Exit iframe context" }]
       },
-      "frame.js": { 
-        desc: "Execute JS in specific frame", 
-        args: ["code"], 
+      "frame.js": {
+        desc: "Execute JS in specific frame",
+        args: ["code"],
         opts: { id: "Frame ID from frame.list", file: "Run JS from file" },
         examples: [
           { cmd: 'frame.js "return document.title" --id frame1', desc: "JS in specific frame" },
@@ -1027,25 +1027,37 @@ const TOOLS = {
   cookie: {
     desc: "Cookie management",
     commands: {
-      "cookie.list": { 
-        desc: "List all cookies for current tab's domain", 
+      "cookie.list": {
+        desc: "List all cookies for current tab's domain",
         args: [],
-        examples: [{ cmd: "cookie.list", desc: "Show all cookies" }]
+        examples: [
+          { cmd: "cookie list", desc: "Show all cookies" },
+          { cmd: "cookie.list", desc: "Dot command form" },
+        ]
       },
-      "cookie.get": { desc: "Get specific cookie", args: [], opts: { name: "Cookie name" } },
-      "cookie.set": { 
-        desc: "Set a cookie", 
-        args: [], 
+      "cookie.get": {
+        desc: "Get specific cookie",
+        args: [],
+        opts: { name: "Cookie name" },
+        examples: [{ cmd: "cookie get session", desc: "Get cookie" }]
+      },
+      "cookie.set": {
+        desc: "Set a cookie",
+        args: [],
         opts: { name: "Cookie name", value: "Cookie value", expires: "Expiry date (optional)" },
-        examples: [{ cmd: 'cookie.set --name "session" --value "abc123"', desc: "Set cookie" }]
+        examples: [
+          { cmd: 'cookie set --name "session" --value "abc123"', desc: "Set cookie" },
+          { cmd: 'cookie.set --name "session" --value "abc123"', desc: "Dot command form" },
+        ]
       },
-      "cookie.clear": { 
-        desc: "Clear cookies", 
-        args: [], 
+      "cookie.clear": {
+        desc: "Clear cookies",
+        args: [],
         opts: { name: "Specific cookie (optional)", all: "Clear all for domain" },
         examples: [
-          { cmd: 'cookie.clear --name "session"', desc: "Clear one" },
-          { cmd: "cookie.clear --all", desc: "Clear all" },
+          { cmd: 'cookie delete "session"', desc: "Clear one" },
+          { cmd: "cookie clear --all", desc: "Clear all" },
+          { cmd: 'cookie.clear --name "session"', desc: "Dot command form" },
         ]
       },
     }
@@ -1053,9 +1065,9 @@ const TOOLS = {
   search: {
     desc: "Text search",
     commands: {
-      "search": { 
-        desc: "Search for text in page", 
-        args: ["term"], 
+      "search": {
+        desc: "Search for text in page",
+        args: ["term"],
         opts: { "case-sensitive": "Case-sensitive match", limit: "Max results" },
         examples: [
           { cmd: 'search "login"', desc: "Find text" },
@@ -1069,9 +1081,9 @@ const TOOLS = {
   batch: {
     desc: "Batch execution",
     commands: {
-      "batch": { 
-        desc: "Execute multiple actions", 
-        args: [], 
+      "batch": {
+        desc: "Execute multiple actions",
+        args: [],
         opts: { actions: "JSON array of actions", file: "Path to actions JSON file" },
         examples: [
           { cmd: 'batch --actions \'[{"type":"click","ref":"e1"},{"type":"wait","ms":500}]\'', desc: "Inline actions" },
@@ -1129,9 +1141,9 @@ const TOOLS = {
   zoom: {
     desc: "Zoom control",
     commands: {
-      "zoom": { 
-        desc: "Get or set zoom level", 
-        args: [], 
+      "zoom": {
+        desc: "Get or set zoom level",
+        args: [],
         opts: { level: "Zoom level (e.g., 1.5 for 150%)", reset: "Reset to default zoom" },
         examples: [
           { cmd: "zoom", desc: "Get current zoom" },
@@ -1144,9 +1156,9 @@ const TOOLS = {
   resize: {
     desc: "Window management",
     commands: {
-      "resize": { 
-        desc: "Resize browser window", 
-        args: [], 
+      "resize": {
+        desc: "Resize browser window",
+        args: [],
         opts: { width: "Window width", height: "Window height" },
         examples: [{ cmd: "resize --width 1280 --height 720", desc: "Set size" }]
       },
@@ -1163,14 +1175,14 @@ const TOOLS = {
   history: {
     desc: "Browser history",
     commands: {
-      "history.list": { 
-        desc: "Recent history", 
-        args: [], 
+      "history.list": {
+        desc: "Recent history",
+        args: [],
         opts: { limit: "Max results" },
         examples: [{ cmd: "history.list --limit 20", desc: "Last 20 items" }]
       },
-      "history.search": { 
-        desc: "Search history", 
+      "history.search": {
+        desc: "Search history",
         args: ["query"],
         examples: [{ cmd: 'history.search "github"', desc: "Search history" }]
       },
@@ -1179,10 +1191,10 @@ const TOOLS = {
   window: {
     desc: "Window management (isolate agent from your browsing)",
     commands: {
-      "window.new": { 
-        desc: "Create new browser window", 
-        args: ["url"], 
-        opts: { 
+      "window.new": {
+        desc: "Create new browser window",
+        args: ["url"],
+        opts: {
           width: "Window width",
           height: "Window height",
           incognito: "Open incognito window",
@@ -1194,28 +1206,28 @@ const TOOLS = {
           { cmd: 'window.new --incognito', desc: "Incognito window" },
         ]
       },
-      "window.list": { 
-        desc: "List all browser windows", 
+      "window.list": {
+        desc: "List all browser windows",
         args: [],
         opts: { tabs: "Include tab details" },
         examples: [{ cmd: "window.list", desc: "Show all windows" }]
       },
-      "window.focus": { 
-        desc: "Focus a window by ID", 
+      "window.focus": {
+        desc: "Focus a window by ID",
         args: ["id"],
         examples: [{ cmd: "window.focus 123", desc: "Focus window" }]
       },
-      "window.close": { 
-        desc: "Close a window by ID", 
+      "window.close": {
+        desc: "Close a window by ID",
         args: ["id"],
         examples: [{ cmd: "window.close 123", desc: "Close window" }]
       },
-      "window.resize": { 
-        desc: "Resize or reposition a window", 
-        args: [], 
-        opts: { 
-          id: "Window ID (required)", 
-          width: "Window width", 
+      "window.resize": {
+        desc: "Resize or reposition a window",
+        args: [],
+        opts: {
+          id: "Window ID (required)",
+          width: "Window width",
           height: "Window height",
           left: "Window X position",
           top: "Window Y position",
@@ -1262,10 +1274,17 @@ Use --index to select from multiple matches:
     content: `Cookies are scoped to the current tab's domain.
 
 Commands:
-  cookie.list           List all cookies
-  cookie.get --name X   Get specific cookie
-  cookie.set            Set a cookie
-  cookie.clear          Clear cookies
+  cookie list           List all cookies
+  cookie get X          Get specific cookie
+  cookie set            Set a cookie
+  cookie clear --all    Clear all cookies
+  cookie delete X       Clear one cookie
+
+Dot commands remain supported:
+  cookie.list
+  cookie.get --name X
+  cookie.set
+  cookie.clear
 
 Notes:
   - HttpOnly cookies are accessible
@@ -1345,7 +1364,7 @@ All commands in that window:
 
 Manage windows:
   surf window.list              # List all windows
-  surf window.list --tabs       # Include tab details  
+  surf window.list --tabs       # Include tab details
   surf window.focus 123         # Bring window to front
   surf window.close 123         # Close when done
 
@@ -1452,8 +1471,8 @@ const ALL_SOCKET_TOOLS = [
   "scroll.top", "scroll.bottom", "scroll.to", "scroll.info",
   "wait.element", "wait.network", "wait.url", "wait.dom", "wait.load",
   "click", "hover", "drag",
-  "js", "console", "network", 
-  "network.get", "network.body", "network.curl", "network.origins", 
+  "js", "console", "network",
+  "network.get", "network.body", "network.curl", "network.origins",
   "network.clear", "network.stats", "network.export", "network.path",
   "dialog.accept", "dialog.dismiss", "dialog.info",
   "emulate.network", "emulate.cpu", "emulate.geo", "emulate.device", "emulate.viewport", "emulate.touch",
@@ -1672,7 +1691,7 @@ const showToolHelp = (toolName) => {
 const fuzzyFind = (query) => {
   const terms = query.toLowerCase().split(/\s+/);
   const results = [];
-  
+
   for (const [groupName, group] of Object.entries(TOOLS)) {
     for (const [cmd, info] of Object.entries(group.commands)) {
       if (info.alias) continue;
@@ -1683,7 +1702,7 @@ const fuzzyFind = (query) => {
       }
     }
   }
-  
+
   return results.sort((a, b) => b.score - a.score);
 };
 
@@ -1793,7 +1812,7 @@ if (args[0] === "install") {
   const { spawnSync } = require("child_process");
   const scriptPath = require("path").resolve(__dirname, "../scripts/install-native-host.cjs");
   const installArgs = args.slice(1);
-  
+
   if (installArgs.length === 0 || installArgs[0] === "--help" || installArgs[0] === "-h") {
     console.log(`
 Usage: surf install <extension-id> [options]
@@ -1830,7 +1849,7 @@ if (args[0] === "uninstall") {
   const { spawnSync } = require("child_process");
   const scriptPath = require("path").resolve(__dirname, "../scripts/uninstall-native-host.cjs");
   const uninstallArgs = args.slice(1);
-  
+
   if (uninstallArgs.includes("--help") || uninstallArgs.includes("-h")) {
     console.log(`
 Usage: surf uninstall [options]
@@ -2068,13 +2087,13 @@ if (args[0] === "do") {
   let wantJson = false;
   let tabId = undefined;
   let windowId = undefined;
-  
+
   // Reserved flags that aren't workflow args
   const reservedFlags = ['file', 'f', 'dry-run', 'on-error', 'no-auto-wait', 'step-delay', 'json', 'tab-id', 'window-id'];
-  
+
   // Workflow-specific args (collected for variable substitution)
   const workflowArgs = {};
-  
+
   // Parse do-specific arguments
   for (let i = 0; i < doArgs.length; i++) {
     const arg = doArgs[i];
@@ -2122,7 +2141,7 @@ if (args[0] === "do") {
       commandsInput = arg;
     }
   }
-  
+
   if (!commandsInput && !fileInput) {
     console.error("Error: commands string, workflow name, or --file required");
     console.error('Usage: surf do \'go "url" | click e5\'');
@@ -2130,11 +2149,11 @@ if (args[0] === "do") {
     console.error("       surf do my-workflow --arg1 value1 --arg2 value2");
     process.exit(1);
   }
-  
+
   let steps;
   let workflow = null; // Full workflow object (for arg validation)
   let workflowName = null;
-  
+
   try {
     if (fileInput) {
       // Explicit file path via --file
@@ -2148,7 +2167,7 @@ if (args[0] === "do") {
     } else {
       // Resolve: inline | file path | named workflow
       const resolved = resolveWorkflow(commandsInput);
-      
+
       if (resolved.type === 'inline') {
         // Inline pipe syntax
         steps = parseDoCommands(resolved.content);
@@ -2171,13 +2190,13 @@ if (args[0] === "do") {
         }
       }
     }
-    
+
     // Process workflow file if loaded
     if (workflow) {
       if (!workflow.steps || !Array.isArray(workflow.steps)) {
         throw new Error("Workflow must have a 'steps' array");
       }
-      
+
       // Validate required args
       const argErrors = validateWorkflowArgs(workflow, workflowArgs);
       if (argErrors.length > 0) {
@@ -2195,7 +2214,7 @@ if (args[0] === "do") {
         console.error(`\nRun 'surf workflow.info ${workflowName}' for details.`);
         process.exit(1);
       }
-      
+
       // Convert steps: support both { tool, args } and { cmd, args } formats
       // Also preserve loop steps as-is
       steps = workflow.steps.map(s => {
@@ -2204,16 +2223,16 @@ if (args[0] === "do") {
           const convertSteps = (stepsArr) => stepsArr.map(ns => {
             if (ns.repeat !== undefined || ns.each !== undefined) {
               // Recursively convert nested loop steps and until condition
-              return { 
-                ...ns, 
+              return {
+                ...ns,
                 steps: convertSteps(ns.steps || []),
                 until: ns.until ? { cmd: ns.until.tool || ns.until.cmd, args: ns.until.args || {} } : undefined
               };
             }
             return { cmd: ns.tool || ns.cmd, args: ns.args || {}, as: ns.as };
           });
-          return { 
-            ...s, 
+          return {
+            ...s,
             steps: convertSteps(s.steps || []),
             until: s.until ? { cmd: s.until.tool || s.until.cmd, args: s.until.args || {} } : undefined
           };
@@ -2225,15 +2244,15 @@ if (args[0] === "do") {
     console.error(`Error: Failed to parse workflow: ${e.message}`);
     process.exit(1);
   }
-  
+
   if (!steps || steps.length === 0) {
     console.error("Error: No commands found in workflow");
     process.exit(1);
   }
-  
+
   // Apply arg defaults
   const vars = workflow ? applyArgDefaults(workflow, workflowArgs) : workflowArgs;
-  
+
   // Validate with --dry-run
   if (dryRun) {
     if (workflowName) {
@@ -2252,7 +2271,7 @@ if (args[0] === "do") {
     }
     process.exit(0);
   }
-  
+
   if (!wantJson) {
     if (workflowName) {
       console.log(`Running workflow: ${workflowName} (${steps.length} steps)...\n`);
@@ -2260,7 +2279,7 @@ if (args[0] === "do") {
       console.log(`Running workflow (${steps.length} steps)...\n`);
     }
   }
-  
+
   const runWorkflow = async () => {
     const result = await executeDoSteps(steps, {
       onError,
@@ -2273,13 +2292,13 @@ if (args[0] === "do") {
         windowId,
       },
     });
-    
+
     // Print summary
     if (wantJson) {
       console.log(JSON.stringify(result, null, 2));
       process.exit(result.status === "completed" ? 0 : 1);
     }
-    
+
     console.log("");
     if (result.status === "completed") {
       console.log(`Completed: ${result.completedSteps}/${result.totalSteps} steps (${result.totalMs}ms)`);
@@ -2293,7 +2312,7 @@ if (args[0] === "do") {
       process.exit(1);
     }
   };
-  
+
   runWorkflow();
   return;
 }
@@ -2301,7 +2320,7 @@ if (args[0] === "do") {
 // Handle workflow management commands
 if (args[0] === "workflow.list") {
   const workflows = listWorkflows();
-  
+
   if (workflows.length === 0) {
     console.log("No workflows found.");
     console.log(`\nWorkflow directories:`);
@@ -2311,13 +2330,13 @@ if (args[0] === "workflow.list") {
     console.log(`\nCreate a workflow JSON file in one of these directories.`);
     process.exit(0);
   }
-  
+
   // Group by scope
   const byScope = { project: [], user: [] };
   for (const w of workflows) {
     byScope[w.scope].push(w);
   }
-  
+
   if (byScope.user.length > 0) {
     console.log(`User Workflows (~/.surf/workflows/):`);
     for (const w of byScope.user) {
@@ -2326,7 +2345,7 @@ if (args[0] === "workflow.list") {
     }
     console.log("");
   }
-  
+
   if (byScope.project.length > 0) {
     console.log(`Project Workflows (./.surf/workflows/):`);
     for (const w of byScope.project) {
@@ -2335,7 +2354,7 @@ if (args[0] === "workflow.list") {
     }
     console.log("");
   }
-  
+
   console.log(`Run 'surf workflow.info <name>' for details.`);
   process.exit(0);
 }
@@ -2347,16 +2366,16 @@ if (args[0] === "workflow.info") {
     console.error("Usage: surf workflow.info <name>");
     process.exit(1);
   }
-  
+
   const info = getWorkflowInfo(name);
   if (info.error) {
     console.error(`Error: ${info.error}`);
     process.exit(1);
   }
-  
+
   console.log(`${info.name}${info.description ? ` - ${info.description}` : ''}`);
   console.log("");
-  
+
   // Arguments
   if (info.args && Object.keys(info.args).length > 0) {
     console.log("Arguments:");
@@ -2369,18 +2388,18 @@ if (args[0] === "workflow.info") {
     }
     console.log("");
   }
-  
+
   // Steps
   console.log(`Steps (${info.steps.length}):`);
   info.steps.forEach((step, i) => {
     console.log(`  ${i + 1}. ${formatStep(step)}`);
   });
   console.log("");
-  
+
   // Location
   console.log(`Location: ${info.path}`);
   console.log("");
-  
+
   // Example run command
   const argExample = Object.entries(info.args || {})
     .filter(([_, spec]) => spec.required)
@@ -2388,7 +2407,7 @@ if (args[0] === "workflow.info") {
     .join(' ');
   console.log(`Run:`);
   console.log(`  surf do ${name}${argExample ? ' ' + argExample : ''}`);
-  
+
   process.exit(0);
 }
 
@@ -2399,9 +2418,9 @@ if (args[0] === "workflow.validate") {
     console.error("Usage: surf workflow.validate <file>");
     process.exit(1);
   }
-  
+
   const result = validateWorkflowFile(filePath);
-  
+
   if (result.valid) {
     console.log(`✓ Valid workflow: ${filePath}`);
     console.log(`  Name: ${result.workflow.name || '(unnamed)'}`);
@@ -2466,6 +2485,22 @@ const parseArgs = (rawArgs) => {
 let { positional, options } = parseArgs(args);
 let tool = positional[0];
 let firstArg = positional[1];
+
+if (tool === "cookie" && firstArg) {
+  const cookieSubcommands = {
+    list: "cookie.list",
+    get: "cookie.get",
+    set: "cookie.set",
+    clear: "cookie.clear",
+    delete: "cookie.clear",
+  };
+  const cookieTool = cookieSubcommands[firstArg];
+  if (cookieTool) {
+    tool = cookieTool;
+    positional = [tool, ...positional.slice(2)];
+    firstArg = positional[1];
+  }
+}
 
 if (!tool) {
   console.error("Error: No command specified");
@@ -2546,6 +2581,8 @@ const PRIMARY_ARG_MAP = {
   "emulate.cpu": "rate",
   search: "term",
   find: "term",
+  "cookie.get": "name",
+  "cookie.clear": "name",
   "wait.element": "selector",
   "wait.url": "pattern",
   zoom: "level",
@@ -2924,14 +2961,14 @@ socket.on("data", (data) => {
     if (!line.trim()) continue;
     try {
       const msg = JSON.parse(line);
-      
+
       if (msg.type === "extension_disconnected") {
         clearTimeout(timeout);
         console.error(msg.message);
         socket.end();
         process.exit(1);
       }
-      
+
       handleResponse(msg).catch((err) => {
         console.error("Handler error:", err.message);
         process.exit(1);
@@ -2974,7 +3011,7 @@ async function handleResponse(response) {
   }
 
   const result = response.result?.content?.[0]?.text;
-  
+
   let data;
   try {
     data = result ? JSON.parse(result) : response.result;
@@ -2995,12 +3032,12 @@ async function handleResponse(response) {
   if (tool === "screenshot" && data?.base64 && (outputPath || toolArgs.savePath)) {
     const saveTo = outputPath || toolArgs.savePath;
     fs.writeFileSync(saveTo, Buffer.from(data.base64, "base64"));
-    
+
     const skipResize = options.full || toolArgs.full;
     const maxSize = parseInt(options["max-size"] || toolArgs["max-size"] || "1200", 10);
     const origWidth = data.width || 0;
     const origHeight = data.height || 0;
-    
+
     if (!skipResize && (origWidth > maxSize || origHeight > maxSize)) {
       const result = resizeImage(saveTo, maxSize);
       if (result.success) {
@@ -3087,7 +3124,7 @@ async function handleResponse(response) {
   } else if (tool === "smoke" && data?.results) {
     const results = data.results;
     const summary = data.summary || { pass: 0, fail: 0, total: results.length };
-    
+
     for (const r of results) {
       const status = r.status === "pass" ? "PASS" : "FAIL";
       const timeStr = r.time ? ` (${r.time}ms)` : "";
@@ -3099,10 +3136,10 @@ async function handleResponse(response) {
         }
       }
     }
-    
+
     console.log("");
     console.log(`Summary: ${summary.pass} passed, ${summary.fail} failed, ${summary.total} total`);
-    
+
     if (summary.fail > 0) {
       socket.end();
       process.exit(1);
@@ -3114,7 +3151,7 @@ async function handleResponse(response) {
   } else if (tool === "network" && (data?.entries || data?.requests)) {
     // Network list - handle both new (entries) and old (requests) formats
     const items = data.entries || data.requests || [];
-    
+
     if (items.length === 0) {
       console.log("No network requests captured");
     } else if (data._format === 'raw') {

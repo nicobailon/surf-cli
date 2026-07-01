@@ -370,7 +370,7 @@ surf wait.url "/dashboard"          # Wait for URL pattern
 ```bash
 surf js "return document.title"     # Execute JavaScript
 surf search "login"                 # Find text in page
-surf cookie.list                    # List cookies
+surf cookie list                    # List cookies
 surf zoom 1.5                       # Set zoom to 150%
 surf console                        # Read console messages
 surf network                        # Read network requests
@@ -638,7 +638,7 @@ echo '{"type":"tool_request","method":"execute_tool","params":{"tool":"tab.list"
 | `element.*` | `styles` |
 | `frame.*` | `list`, `switch`, `main`, `js` |
 | `wait.*` | `element`, `network`, `url`, `dom`, `load` |
-| `cookie.*` | `list`, `get`, `set`, `clear` |
+| `cookie` / `cookie.*` | `list`, `get`, `set`, `clear`, `delete` |
 | `bookmark.*` | `add`, `remove`, `list` |
 | `history.*` | `list`, `search` |
 | `dialog.*` | `accept`, `dismiss`, `info` |
