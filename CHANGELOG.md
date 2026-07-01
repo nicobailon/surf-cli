@@ -3,6 +3,7 @@
 ## [Unreleased]
 
 ### Fixed
+- **JavaScript expression evaluation** - `surf js` now returns single-expression values while preserving statement-script fallback behavior.
 - **Baseline CI validation** - Restored lint, typecheck, tests, and critical audit checks on current dependencies.
 - **Native messaging host portability** - Generated Unix wrappers now use `#!/usr/bin/env bash` so Chrome can launch the host on NixOS, Guix, and other non-FHS Linux systems. (@ppetru)
 - **Gemini blob-backed generated images** - Detect and extract Gemini-generated `blob:` images from the page while preserving existing `gg-dl` URL downloads. (@goneflyin)
