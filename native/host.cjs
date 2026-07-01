@@ -940,19 +940,25 @@ function handleToolRequest(msg, socket) {
     }).then((result) => {
       // If --save-models flag was passed and we found models, save them
       if (saveModels && result.models && result.models.length > 0) {
-        // Convert scraped model names to our format
+        // Convert scraped model names to selectable IDs.
         const modelMap = {};
+        const defaultModels = Object.values(grokClient.DEFAULT_GROK_MODELS || {});
         result.models.forEach(name => {
           const nameLower = name.toLowerCase();
+          const normalizedName = grokClient.normalizeGrokModelLabel(name);
+          const knownModel = defaultModels.find(model => {
+            const normalizedDefaultName = grokClient.normalizeGrokModelLabel(model.name);
+            return normalizedName.includes(normalizedDefaultName) || normalizedDefaultName.includes(normalizedName);
+          });
           // Match known model keywords to generate consistent short IDs
           let shortId;
-          if (nameLower.includes('thinking')) shortId = 'thinking';
+          if (knownModel) shortId = knownModel.id;
           else if (nameLower.includes('expert')) shortId = 'expert';
           else if (nameLower.includes('fast')) shortId = 'fast';
           else if (nameLower.includes('auto')) shortId = 'auto';
           else shortId = nameLower.replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
           
-          modelMap[shortId] = { id: shortId, name: name, desc: "" };
+          modelMap[shortId] = { id: shortId, name: name, desc: knownModel?.desc || "" };
         });
         const saveResult = grokClient.saveModels(modelMap);
         result.savedModels = saveResult;

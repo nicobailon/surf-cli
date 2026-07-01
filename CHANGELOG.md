@@ -3,6 +3,7 @@
 ## [Unreleased]
 
 ### Fixed
+- **Grok UI drift** - Updated default model selection for the current Grok menu, broadened send-button validation, and trimmed trailing suggested follow-up chips from extracted responses.
 - **WSL2 native messaging host install** - Install/uninstall now target Windows browser manifests from WSL2 by default, preserve manifest origins, forward wrapper arguments, and include clearer socket diagnostics.
 - **JavaScript expression evaluation** - `surf js` now returns single-expression values while preserving statement-script fallback behavior.
 - **Baseline CI validation** - Restored lint, typecheck, tests, and critical audit checks on current dependencies.
@@ -98,7 +99,7 @@
   - Using DOM-based response extraction (articles, conversation containers) instead of relying on body text parsing
   - Tracking response text stability rather than noisy full-page body text
   - Recognizing "Thought for Xs" as a definitive completion signal for thinking models
-  - Fixing false positive "isThinking" detection that matched "Grok 4.1 Thinking" model name
+  - Fixing false positive "isThinking" detection that matched Grok model names
 - **Grok thinking model support** - Long-running thinking queries (1+ minutes) now reliably return complete responses
 
 ## [2.4.1] - 2026-01-22
@@ -133,7 +134,7 @@
 ## [2.3.0] - 2026-01-20
 
 ### Added
-- **Grok AI integration** - Query X.com's Grok AI via `surf grok "query"`. Supports `--with-page` for context, `--deep-search` for DeepSearch mode, and `--model` for model selection (auto, fast, expert, thinking). Requires X.com login in Chrome.
+- **Grok AI integration** - Query X.com's Grok AI via `surf grok "query"`. Supports `--with-page` for context, `--deep-search` for DeepSearch mode, and `--model` for model selection. Requires X.com login in Chrome.
 - **Grok validation command** - `surf grok --validate` checks UI structure and lists available models. Use `--save-models` to persist discovered models to `surf.json` config for when X updates their UI.
 - **Grok response warnings** - Agents receive warnings when model selection fails or differs from requested, with actionable suggestions to run `--validate`.
 - **Grok unit tests** - 17 new tests covering response extraction, cookie validation, and model loading.

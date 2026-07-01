@@ -81,7 +81,7 @@ surf grok "what are the latest AI trends on X"    # Search X posts
 surf grok "analyze @username recent activity"     # Profile analysis  
 surf grok "summarize this page" --with-page       # Include page context
 surf grok "find viral AI posts" --deep-search     # DeepSearch mode
-surf grok "quick question" --model fast           # Models: auto, fast, expert, thinking (default)
+surf grok "quick question" --model fast           # Models: auto, fast, expert, grok-4.20-beta
 ```
 
 **Grok Validation & Troubleshooting:**
@@ -128,7 +128,7 @@ When AI queries fail, check these common issues:
 
 1. **Not logged in**: The error "login required" means you need to log into the service in Chrome (chatgpt.com, gemini.google.com, perplexity.ai, x.com, or aistudio.google.com)
 2. **Model selection failed**: The UI may have changed. Run `surf grok --validate` to check
-3. **Response timeout**: Thinking models (ChatGPT o1, Grok thinking) can take 45+ seconds. AI Studio builds can take several minutes.
+3. **Response timeout**: Reasoning-heavy models (ChatGPT o1, Grok Expert) can take 45+ seconds. AI Studio builds can take several minutes.
 4. **Element not found**: The service's UI changed. Check for surf-cli updates
 
 **Debugging workflow for agents:**
@@ -564,7 +564,7 @@ surf wait.element ".missing" --auto-capture --timeout 2000
 5. **Auto-capture for debugging** - `--auto-capture` saves diagnostics on failure
 6. **AI tools use browser session** - Must be logged into the service (ChatGPT, Gemini, Perplexity, Grok, AI Studio), no API keys needed
 7. **Grok validation** - Run `surf grok --validate` if queries fail to check UI changes
-8. **Long timeouts for thinking models** - ChatGPT o1, Grok thinking can take 60+ seconds. AI Studio builds default to 600s.
+8. **Long timeouts for reasoning-heavy models** - ChatGPT o1 and Grok Expert can take 60+ seconds. AI Studio builds default to 600s.
 9. **AI Studio for unrestricted Gemini** - `surf aistudio` gives less filtered responses than `surf gemini` for the same models
 10. **Use `surf do` for multi-step tasks** - Reduces token overhead and improves reliability
 11. **Dry-run workflows first** - `surf do '...' --dry-run` validates without executing

@@ -401,9 +401,9 @@ const TOOLS = {
         args: ["query"],
         opts: {
           "with-page": "Include current page context",
-          model: "Model: auto, fast, expert, thinking (default)",
+          model: "Model: auto, fast (default), expert, grok-4.20-beta",
           "deep-search": "Enable DeepSearch for X post searching",
-          timeout: "Timeout in seconds (default: 300 for thinking models)",
+          timeout: "Timeout in seconds (default: 300)",
           validate: "Check Grok UI and scrape available models (no query sent)",
           "save-models": "Save discovered models to surf.json config"
         },

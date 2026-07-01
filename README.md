@@ -336,7 +336,7 @@ surf grok "what are the latest AI agent trends on X"          # Search X posts
 surf grok "analyze @username recent activity"                 # Profile analysis
 surf grok "summarize this page" --with-page                   # Include page context
 surf grok "find viral AI posts" --deep-search                 # DeepSearch mode
-surf grok "quick question" --model fast                       # Models: auto, fast, expert, thinking
+surf grok "quick question" --model fast                       # Models: auto, fast, expert, grok-4.20-beta
 surf grok --validate                                          # Check UI and available models
 surf grok --validate --save-models                            # Save discovered models to settings
 
@@ -354,7 +354,7 @@ surf aistudio.build "game" --keep-open --timeout 600          # Keep tab open, 1
 
 Each AI tool uses your existing browser login - no API keys needed. Just be logged into the respective service in Chrome (chatgpt.com, gemini.google.com, perplexity.ai, x.com, or aistudio.google.com).
 
-**Grok troubleshooting:** If queries fail, run `surf grok --validate` to check if the UI structure changed. Use `--save-models` to update the model cache in `surf.json`. Default model is "thinking" (Grok 4.1 Thinking).
+**Grok troubleshooting:** If queries fail, run `surf grok --validate` to check if the UI structure changed. Use `--save-models` to update the model cache in `surf.json`. Default model is `fast`.
 
 ### Waiting
 
