@@ -72,12 +72,18 @@ describe("mapToolToMessage", () => {
     });
 
     it("normalizes aistudio model to lowercase", () => {
-      const msg = helpers.mapToolToMessage("aistudio", { query: "hi", model: "GEMINI-3-FLASH-PREVIEW" });
+      const msg = helpers.mapToolToMessage("aistudio", {
+        query: "hi",
+        model: "GEMINI-3-FLASH-PREVIEW",
+      });
       expect(msg.model).toBe("gemini-3-flash-preview");
     });
 
     it("does not validate aistudio model ids (passes through)", () => {
-      const msg = helpers.mapToolToMessage("aistudio", { query: "hi", model: "gemini-flash-lite-latest" });
+      const msg = helpers.mapToolToMessage("aistudio", {
+        query: "hi",
+        model: "gemini-flash-lite-latest",
+      });
       expect(msg.model).toBe("gemini-flash-lite-latest");
     });
   });

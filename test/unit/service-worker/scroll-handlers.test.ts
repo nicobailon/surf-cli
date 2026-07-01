@@ -27,29 +27,24 @@ describe("EXECUTE_SCROLL handler", () => {
   it("uses Runtime.evaluate with scrollBy, not CDP mouseWheel", async () => {
     const chrome = (globalThis as any).chrome;
     const sendCommandCalls: { method: string; params: any }[] = [];
-    chrome.debugger.sendCommand.mockImplementation(
-      (_target: any, method: string, params: any) => {
-        sendCommandCalls.push({ method, params });
-        if (method === "Runtime.evaluate") {
-          return Promise.resolve({
-            result: { value: { scrollX: 0, scrollY: 300, scrolled: true } },
-          });
-        }
-        return Promise.resolve({});
+    chrome.debugger.sendCommand.mockImplementation((_target: any, method: string, params: any) => {
+      sendCommandCalls.push({ method, params });
+      if (method === "Runtime.evaluate") {
+        return Promise.resolve({
+          result: { value: { scrollX: 0, scrollY: 300, scrolled: true } },
+        });
       }
-    );
+      return Promise.resolve({});
+    });
 
-    await handleMessage(
-      { type: "EXECUTE_SCROLL", deltaX: 0, deltaY: 300, tabId: 123 },
-      {}
-    );
+    await handleMessage({ type: "EXECUTE_SCROLL", deltaX: 0, deltaY: 300, tabId: 123 }, {});
 
-    const runtimeEvalCalls = sendCommandCalls.filter(c => c.method === "Runtime.evaluate");
+    const runtimeEvalCalls = sendCommandCalls.filter((c) => c.method === "Runtime.evaluate");
     expect(runtimeEvalCalls.length).toBeGreaterThan(0);
     expect(runtimeEvalCalls[0].params.expression).toContain("scrollBy");
 
     const mouseWheelCalls = sendCommandCalls.filter(
-      c => c.method === "Input.dispatchMouseEvent" && c.params?.type === "mouseWheel"
+      (c) => c.method === "Input.dispatchMouseEvent" && c.params?.type === "mouseWheel",
     );
     expect(mouseWheelCalls).toHaveLength(0);
   });
@@ -57,22 +52,17 @@ describe("EXECUTE_SCROLL handler", () => {
   it("passes correct delta values to the scrollBy script", async () => {
     const chrome = (globalThis as any).chrome;
     let capturedExpression = "";
-    chrome.debugger.sendCommand.mockImplementation(
-      (_target: any, method: string, params: any) => {
-        if (method === "Runtime.evaluate") {
-          capturedExpression = params.expression;
-          return Promise.resolve({
-            result: { value: { scrollX: 100, scrollY: 500, scrolled: true } },
-          });
-        }
-        return Promise.resolve({});
+    chrome.debugger.sendCommand.mockImplementation((_target: any, method: string, params: any) => {
+      if (method === "Runtime.evaluate") {
+        capturedExpression = params.expression;
+        return Promise.resolve({
+          result: { value: { scrollX: 100, scrollY: 500, scrolled: true } },
+        });
       }
-    );
+      return Promise.resolve({});
+    });
 
-    await handleMessage(
-      { type: "EXECUTE_SCROLL", deltaX: 100, deltaY: 500, tabId: 123 },
-      {}
-    );
+    await handleMessage({ type: "EXECUTE_SCROLL", deltaX: 100, deltaY: 500, tabId: 123 }, {});
 
     expect(capturedExpression).toContain("100");
     expect(capturedExpression).toContain("500");
@@ -85,10 +75,7 @@ describe("EXECUTE_SCROLL handler", () => {
       { result: { scrollX: 0, scrollY: 300, scrolled: true } },
     ]);
 
-    await handleMessage(
-      { type: "EXECUTE_SCROLL", deltaX: 0, deltaY: 300, tabId: 123 },
-      {}
-    );
+    await handleMessage({ type: "EXECUTE_SCROLL", deltaX: 0, deltaY: 300, tabId: 123 }, {});
 
     expect(chrome.scripting.executeScript).toHaveBeenCalled();
     const scriptCall = chrome.scripting.executeScript.mock.calls[0][0];
@@ -97,20 +84,18 @@ describe("EXECUTE_SCROLL handler", () => {
 
   it("returns scroll result from the script", async () => {
     const chrome = (globalThis as any).chrome;
-    chrome.debugger.sendCommand.mockImplementation(
-      (_target: any, method: string) => {
-        if (method === "Runtime.evaluate") {
-          return Promise.resolve({
-            result: { value: { scrollX: 0, scrollY: 500, scrolled: true } },
-          });
-        }
-        return Promise.resolve({});
+    chrome.debugger.sendCommand.mockImplementation((_target: any, method: string) => {
+      if (method === "Runtime.evaluate") {
+        return Promise.resolve({
+          result: { value: { scrollX: 0, scrollY: 500, scrolled: true } },
+        });
       }
-    );
+      return Promise.resolve({});
+    });
 
     const result = await handleMessage(
       { type: "EXECUTE_SCROLL", deltaX: 0, deltaY: 300, tabId: 123 },
-      {}
+      {},
     );
 
     expect(result.scrollY).toBe(500);
@@ -118,30 +103,25 @@ describe("EXECUTE_SCROLL handler", () => {
   });
 
   it("requires tabId", async () => {
-    await expect(
-      handleMessage({ type: "EXECUTE_SCROLL", deltaY: 300 }, {})
-    ).rejects.toThrow("No tabId provided");
+    await expect(handleMessage({ type: "EXECUTE_SCROLL", deltaY: 300 }, {})).rejects.toThrow(
+      "No tabId provided",
+    );
   });
 
   it("handles missing deltas by defaulting to 0", async () => {
     const chrome = (globalThis as any).chrome;
     let capturedExpression = "";
-    chrome.debugger.sendCommand.mockImplementation(
-      (_target: any, method: string, params: any) => {
-        if (method === "Runtime.evaluate") {
-          capturedExpression = params.expression;
-          return Promise.resolve({
-            result: { value: { scrolled: false } },
-          });
-        }
-        return Promise.resolve({});
+    chrome.debugger.sendCommand.mockImplementation((_target: any, method: string, params: any) => {
+      if (method === "Runtime.evaluate") {
+        capturedExpression = params.expression;
+        return Promise.resolve({
+          result: { value: { scrolled: false } },
+        });
       }
-    );
+      return Promise.resolve({});
+    });
 
-    await handleMessage(
-      { type: "EXECUTE_SCROLL", tabId: 123 },
-      {}
-    );
+    await handleMessage({ type: "EXECUTE_SCROLL", tabId: 123 }, {});
 
     expect(capturedExpression).toContain("scrollBy");
     expect(capturedExpression).toContain("0");

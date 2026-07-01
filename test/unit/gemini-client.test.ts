@@ -51,25 +51,31 @@ describe("gemini-client", () => {
             expect(code).toContain("canvas.toDataURL");
             expect(code).not.toContain("alt");
             expect(code).not.toContain("className");
-            return asChromeOutput(JSON.stringify({
-              images: [{
-                url: "blob:https://gemini.google.com/generated-image",
-                blobIndex: 0,
-                type: "image/png",
-              }],
-              loading: false,
-              text: "",
-              turns: 1,
-            }));
+            return asChromeOutput(
+              JSON.stringify({
+                images: [
+                  {
+                    url: "blob:https://gemini.google.com/generated-image",
+                    blobIndex: 0,
+                    type: "image/png",
+                  },
+                ],
+                loading: false,
+                text: "",
+                turns: 1,
+              }),
+            );
           }
 
           if (code.includes("window.__surfGeminiBlobImages?.[0]")) {
-            return asChromeOutput(JSON.stringify({
-              chunk: "ZmFrZS1wbmc=",
-              done: true,
-              type: "image/png",
-              url: "blob:https://gemini.google.com/generated-image",
-            }));
+            return asChromeOutput(
+              JSON.stringify({
+                chunk: "ZmFrZS1wbmc=",
+                done: true,
+                type: "image/png",
+                url: "blob:https://gemini.google.com/generated-image",
+              }),
+            );
           }
 
           throw new Error(`Unexpected script: ${code}`);
@@ -116,13 +122,17 @@ describe("gemini-client", () => {
           if (imagesPolled(code)) {
             expect(code).toContain(`const baselineKeys = new Set(["${baselineKey}"])`);
             expect(code).toContain(".filter((img) => !baselineKeys.has(imageKey(img)))");
-            expect(code.indexOf("!baselineKeys.has(imageKey(img))")).toBeLessThan(code.indexOf("canvas.toDataURL"));
-            return asChromeOutput(JSON.stringify({
-              images: [],
-              loading: false,
-              text: "No new image was generated.",
-              turns: 1,
-            }));
+            expect(code.indexOf("!baselineKeys.has(imageKey(img))")).toBeLessThan(
+              code.indexOf("canvas.toDataURL"),
+            );
+            return asChromeOutput(
+              JSON.stringify({
+                images: [],
+                loading: false,
+                text: "No new image was generated.",
+                turns: 1,
+              }),
+            );
           }
 
           throw new Error(`Unexpected script: ${code}`);
@@ -164,12 +174,14 @@ describe("gemini-client", () => {
           }
 
           if (imagesPolled(code)) {
-            return asChromeOutput(JSON.stringify({
-              images: [{ url: "https://lh3.googleusercontent.com/gg-dl/generated" }],
-              loading: false,
-              text: "",
-              turns: 1,
-            }));
+            return asChromeOutput(
+              JSON.stringify({
+                images: [{ url: "https://lh3.googleusercontent.com/gg-dl/generated" }],
+                loading: false,
+                text: "",
+                turns: 1,
+              }),
+            );
           }
 
           throw new Error(`Unexpected script: ${code}`);

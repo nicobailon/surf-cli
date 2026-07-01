@@ -1,3 +1,5 @@
+import { vi } from "vitest";
+
 class FakeNode {
   static TEXT_NODE = 3;
 }
@@ -42,7 +44,7 @@ class FakeElement extends FakeNode {
   }
 
   get textContent(): string {
-    return this.childNodes.map(child => child.textContent || "").join("");
+    return this.childNodes.map((child) => child.textContent || "").join("");
   }
 
   set textContent(value: string) {
@@ -51,7 +53,9 @@ class FakeElement extends FakeNode {
 
   append(...children: Array<FakeElement | FakeText>): void {
     for (const child of children) {
-      if (child instanceof FakeElement) child.parentElement = this;
+      if (child instanceof FakeElement) {
+        child.parentElement = this;
+      }
       this.childNodes.push(child);
     }
   }
@@ -92,12 +96,16 @@ function text(value: string): FakeText {
 
 function element(tagName: string, attrs: Record<string, string> = {}): FakeElement {
   const node = tagName === "button" ? new FakeButtonElement(tagName) : new FakeElement(tagName);
-  for (const [name, value] of Object.entries(attrs)) node.setAttribute(name, value);
+  for (const [name, value] of Object.entries(attrs)) {
+    node.setAttribute(name, value);
+  }
   return node;
 }
 
 describe("accessibility tree", () => {
-  let messageHandler: ((message: any, sender: any, sendResponse: (response: any) => void) => boolean) | undefined;
+  let messageHandler:
+    | ((message: any, sender: any, sendResponse: (response: any) => void) => boolean)
+    | undefined;
 
   beforeEach(async () => {
     vi.resetModules();
@@ -159,7 +167,7 @@ describe("accessibility tree", () => {
     messageHandler?.(
       { type: "GENERATE_ACCESSIBILITY_TREE", options: { filter: "interactive" } },
       {},
-      result => {
+      (result) => {
         response = result;
       },
     );

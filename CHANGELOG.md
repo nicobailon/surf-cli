@@ -3,9 +3,13 @@
 ## [Unreleased]
 
 ### Fixed
+- **Baseline CI validation** - Restored lint, typecheck, tests, and critical audit checks on current dependencies.
 - **Native messaging host portability** - Generated Unix wrappers now use `#!/usr/bin/env bash` so Chrome can launch the host on NixOS, Guix, and other non-FHS Linux systems. (@ppetru)
 - **Gemini blob-backed generated images** - Detect and extract Gemini-generated `blob:` images from the page while preserving existing `gg-dl` URL downloads. (@goneflyin)
 - **Accessibility tree nested labels** - Include nested text content when naming interactive links, buttons, and summaries so child spans contribute accessible names. (@skyeryg)
+
+### Dependencies
+- Bump Vitest package group from 4.0.18 to 4.1.9 to clear the critical audit advisory.
 
 ## [2.7.2] - 2026-04-10
 

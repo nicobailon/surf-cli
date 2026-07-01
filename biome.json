@@ -1,5 +1,5 @@
 {
-  "$schema": "https://biomejs.dev/schemas/2.3.11/schema.json",
+  "$schema": "https://biomejs.dev/schemas/2.4.4/schema.json",
   "files": {
     "includes": ["test/**/*.ts"]
   },
@@ -12,7 +12,6 @@
         "noFloatingPromises": "error",
         "noMisusedPromises": "error",
         "noShadow": "error",
-        "noUnusedExpressions": "error",
         "useAwaitThenable": "error",
         "noUnnecessaryConditions": "warn"
       },
@@ -38,7 +37,8 @@
         "noEmptyBlockStatements": "error",
         "noAssignInExpressions": "error",
         "noAsyncPromiseExecutor": "error",
-        "noTsIgnore": "error"
+        "noTsIgnore": "error",
+        "noUnusedExpressions": "error"
       },
       "style": {
         "noNonNullAssertion": "error",

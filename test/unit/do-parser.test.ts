@@ -1,11 +1,11 @@
-import { describe, it, expect } from "vitest";
+import { describe, expect, it } from "vitest";
 
 // @ts-expect-error - CommonJS module without type definitions
 import * as parser from "../../native/do-parser.cjs";
 
 describe("parseDoCommands", () => {
   it("parses single command", () => {
-    const input = 'screenshot';
+    const input = "screenshot";
     const steps = parser.parseDoCommands(input);
     expect(steps).toHaveLength(1);
     expect(steps[0].cmd).toBe("screenshot");
@@ -34,7 +34,7 @@ describe("parseDoCommands", () => {
   });
 
   it("parses click with coordinates", () => {
-    const input = 'click 100 200';
+    const input = "click 100 200";
     const steps = parser.parseDoCommands(input);
     expect(steps).toHaveLength(1);
     expect(steps[0].cmd).toBe("click");
@@ -92,13 +92,13 @@ describe("parseDoCommands", () => {
   });
 
   it("parses numeric option values", () => {
-    const input = 'wait --duration 500';
+    const input = "wait --duration 500";
     const steps = parser.parseDoCommands(input);
     expect(steps[0].args.duration).toBe(500);
   });
 
   it("parses boolean option values", () => {
-    const input = 'screenshot --fullpage true';
+    const input = "screenshot --fullpage true";
     const steps = parser.parseDoCommands(input);
     expect(steps[0].args.fullpage).toBe(true);
   });
@@ -142,7 +142,7 @@ screenshot --output /tmp/result.png
     const steps = parser.parseDoCommands(input);
     expect(steps[0].cmd).toBe("select");
     expect(steps[0].args.selector).toBe("e5");
-    expect(steps[0].args.values).toBe("US");  // Single value as string (host wraps in array)
+    expect(steps[0].args.values).toBe("US"); // Single value as string (host wraps in array)
   });
 
   it("parses select with multiple values", () => {
@@ -158,7 +158,7 @@ screenshot --output /tmp/result.png
     const steps = parser.parseDoCommands(input);
     expect(steps[0].cmd).toBe("select");
     expect(steps[0].args.selector).toBe("e5");
-    expect(steps[0].args.values).toBe("United States");  // Single value as string
+    expect(steps[0].args.values).toBe("United States"); // Single value as string
     expect(steps[0].args.by).toBe("label");
   });
 });
@@ -177,7 +177,7 @@ describe("tokenize", () => {
   });
 
   it("handles mixed quotes", () => {
-    expect(parser.tokenize('type "hello" --ref \'e5\'')).toEqual(["type", "hello", "--ref", "e5"]);
+    expect(parser.tokenize("type \"hello\" --ref 'e5'")).toEqual(["type", "hello", "--ref", "e5"]);
   });
 
   it("handles empty input", () => {

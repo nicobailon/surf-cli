@@ -2152,7 +2152,7 @@ export async function handleMessage(
     case "SWITCH_TAB": {
       const targetTabId = message.tabId;
       if (!targetTabId) throw new Error("No tabId provided");
-      const tab = await chrome.tabs.update(targetTabId, { active: true });
+      const tab = (await chrome.tabs.update(targetTabId, { active: true })) as chrome.tabs.Tab;
       if (tab.windowId) {
         await chrome.windows.update(tab.windowId, { focused: true });
       }
@@ -2341,28 +2341,29 @@ export async function handleMessage(
     }
 
     case "TAB_GROUP_CREATE": {
-      const tabIds = [...(message.tabIds || [])];
+      const tabIds: number[] = [...(message.tabIds || [])];
       const name = message.name || "Surf";
-      const validColors = ['grey', 'blue', 'red', 'yellow', 'green', 'pink', 'purple', 'cyan', 'orange'];
-      const color = validColors.includes(message.color) ? message.color : 'blue';
+      const validColors = ["grey", "blue", "red", "yellow", "green", "pink", "purple", "cyan", "orange"];
+      const color = validColors.includes(message.color) ? message.color : "blue";
       
       if (tabIds.length === 0 && tabId) {
         tabIds.push(tabId);
       }
       
       if (tabIds.length === 0) throw new Error("No tabs specified");
+      const groupTabIds = tabIds.length === 1 ? tabIds[0] : (tabIds as [number, ...number[]]);
       
       const existingGroups = await chrome.tabGroups.query({ title: name });
       let groupId: number;
       
       if (existingGroups.length > 0) {
         groupId = existingGroups[0].id;
-        await chrome.tabs.group({ tabIds, groupId });
+        await chrome.tabs.group({ tabIds: groupTabIds, groupId });
       } else {
-        groupId = await chrome.tabs.group({ tabIds });
+        groupId = await chrome.tabs.group({ tabIds: groupTabIds });
         await chrome.tabGroups.update(groupId, {
           title: name,
-          color: color as chrome.tabGroups.ColorEnum,
+          color: color as `${chrome.tabGroups.Color}`,
           collapsed: false,
         });
       }
@@ -2371,14 +2372,15 @@ export async function handleMessage(
     }
 
     case "TAB_GROUP_REMOVE": {
-      const tabIds = [...(message.tabIds || [])];
+      const tabIds: number[] = [...(message.tabIds || [])];
       if (tabIds.length === 0 && tabId) {
         tabIds.push(tabId);
       }
       
       if (tabIds.length === 0) throw new Error("No tabs specified");
+      const ungroupTabIds = tabIds.length === 1 ? tabIds[0] : (tabIds as [number, ...number[]]);
       
-      await chrome.tabs.ungroup(tabIds);
+      await chrome.tabs.ungroup(ungroupTabIds);
       return { success: true, ungrouped: tabIds };
     }
 
@@ -2629,7 +2631,7 @@ export async function handleMessage(
       const currentTab = await chrome.tabs.get(tab.id);
       if (currentTab.status !== "complete") {
         await new Promise<void>((resolve) => {
-          const listener = (tabId: number, info: chrome.tabs.TabChangeInfo) => {
+          const listener = (tabId: number, info: chrome.tabs.OnUpdatedInfo) => {
             if (tabId === tab.id && info.status === "complete") {
               chrome.tabs.onUpdated.removeListener(listener);
               resolve();
@@ -2681,7 +2683,7 @@ export async function handleMessage(
       const currentTab = await chrome.tabs.get(tab.id);
       if (currentTab.status !== "complete") {
         await new Promise<void>((resolve) => {
-          const listener = (tabId: number, info: chrome.tabs.TabChangeInfo) => {
+          const listener = (tabId: number, info: chrome.tabs.OnUpdatedInfo) => {
             if (tabId === tab.id && info.status === "complete") {
               chrome.tabs.onUpdated.removeListener(listener);
               resolve();
@@ -2766,7 +2768,7 @@ export async function handleMessage(
       const currentTab = await chrome.tabs.get(tab.id);
       if (currentTab.status !== "complete") {
         await new Promise<void>((resolve) => {
-          const listener = (tabId: number, info: chrome.tabs.TabChangeInfo) => {
+          const listener = (tabId: number, info: chrome.tabs.OnUpdatedInfo) => {
             if (tabId === tab.id && info.status === "complete") {
               chrome.tabs.onUpdated.removeListener(listener);
               resolve();
@@ -2936,7 +2938,7 @@ export async function handleMessage(
       const currentTab = await chrome.tabs.get(tab.id);
       if (currentTab.status !== "complete") {
         await new Promise<void>((resolve) => {
-          const listener = (tabId: number, info: chrome.tabs.TabChangeInfo) => {
+          const listener = (tabId: number, info: chrome.tabs.OnUpdatedInfo) => {
             if (tabId === tab.id && info.status === "complete") {
               chrome.tabs.onUpdated.removeListener(listener);
               resolve();
@@ -3038,7 +3040,7 @@ export async function handleMessage(
         createOptions.incognito = true;
       }
       
-      const window = await chrome.windows.create(createOptions);
+      const window = (await chrome.windows.create(createOptions)) as chrome.windows.Window;
       
       if (!window.id) throw new Error("Failed to create window");
       
@@ -3103,9 +3105,9 @@ export async function handleMessage(
       if (message.height) updateInfo.height = message.height;
       if (message.left !== undefined) updateInfo.left = message.left;
       if (message.top !== undefined) updateInfo.top = message.top;
-      if (message.state) updateInfo.state = message.state as chrome.windows.windowStateEnum;
+      if (message.state) updateInfo.state = message.state as `${chrome.windows.WindowState}`;
       
-      const window = await chrome.windows.update(message.windowId, updateInfo);
+      const window = (await chrome.windows.update(message.windowId, updateInfo)) as chrome.windows.Window;
       return { 
         success: true, 
         windowId: message.windowId,
