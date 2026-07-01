@@ -3,6 +3,7 @@
 ## [Unreleased]
 
 ### Fixed
+- **Native messaging host portability** - Generated Unix wrappers now use `#!/usr/bin/env bash` so Chrome can launch the host on NixOS, Guix, and other non-FHS Linux systems. (@ppetru)
 - **Gemini blob-backed generated images** - Detect and extract Gemini-generated `blob:` images from the page while preserving existing `gg-dl` URL downloads. (@goneflyin)
 - **Accessibility tree nested labels** - Include nested text content when naming interactive links, buttons, and summaries so child spans contribute accessible names. (@skyeryg)
 
