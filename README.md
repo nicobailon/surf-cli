@@ -123,6 +123,7 @@ npm run build
 ```bash
 surf <command> [args] [options]
 surf --help                    # Basic help
+surf --llm-context             # Compact reference for AI agents
 surf --help-full               # All 50+ commands
 surf <command> --help          # Command details
 surf --find <query>            # Search commands

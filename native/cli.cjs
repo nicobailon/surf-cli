@@ -1561,11 +1561,35 @@ Quick Examples:
 
 More Help:
   surf --help-full           All commands
+  surf --llm-context         Compact reference for AI agents
   surf --help-topic <topic>  Topic guide (refs, semantic, frames, devices...)
   surf <command> --help      Command details
   surf --find <query>        Search for commands
   surf --about <topic>       Learn about a topic
 `);
+};
+
+const showLlmContext = () => {
+  console.log(`SURF CLI LLM CONTEXT
+Purpose: control Chrome from shell. Commands are \`surf <command> [args] [options]\`.
+Core loop: navigate -> wait/read -> act -> screenshot/read.
+Navigate: surf navigate "https://example.com"    # alias: surf go "..."
+Wait after navigation: surf wait 2                # or wait.load for load complete
+Read DOM/refs: surf page.read --depth 3 --compact # alias: surf read
+Refs: use e1/e2 refs from page.read; prefer refs over CSS when available.
+Click ref: surf click e5
+Click selector/coords: surf click --selector ".btn" | surf click 100 200
+Type: surf type "text" --submit                  # use --ref e5 to target a field
+Screenshot: surf screenshot /tmp/shot.png         # auto-saves to /tmp if no path
+Full page screenshot: surf screenshot --full-page /tmp/full.png
+JavaScript: surf js "return document.title"
+Scroll: surf scroll down 800 | surf scroll up 400 | surf scroll bottom | surf scroll top
+Find by semantics: surf locate.role button --name "Submit" --action click
+Device/viewport: surf emulate.device "iPhone 14" | surf resize 375 812
+Cookies: surf cookie list | surf cookie get "name" | surf cookie delete "name"
+Window isolation: surf window.new "https://example.com" then pass --window-id <id>
+Workflow: surf do 'go "https://example.com" | wait 2 | read | click e5 | screenshot'
+More help: surf --help-full | surf <command> --help | surf --help-topic refs | surf --find <query>`);
 };
 
 const showFullHelp = () => {
@@ -1758,6 +1782,11 @@ const showAllTools = () => {
   }
   console.log(`\n  Total: ${ALL_SOCKET_TOOLS.length} commands\n`);
 };
+
+if (args[0] === "--llm-context") {
+  showLlmContext();
+  process.exit(0);
+}
 
 if (args.length === 0 || args[0] === "--help" || args[0] === "-h") {
   showBasicHelp();

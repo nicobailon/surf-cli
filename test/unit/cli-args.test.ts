@@ -33,6 +33,32 @@ function cleanupSocket(socketPath: string) {
   }
 }
 
+function runCliWithoutSocket(
+  args: string[],
+): Promise<{ code: number | null; stdout: string; stderr: string }> {
+  return new Promise((resolve, reject) => {
+    let stdout = "";
+    let stderr = "";
+
+    const child = spawn(process.execPath, ["native/cli.cjs", ...args], {
+      cwd: process.cwd(),
+      env: { ...process.env, SURF_SOCKET: undefined, SURF_SOCKET_PATH: undefined },
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+
+    child.stdout.on("data", (chunk: { toString(): string }) => {
+      stdout += chunk.toString();
+    });
+    child.stderr.on("data", (chunk: { toString(): string }) => {
+      stderr += chunk.toString();
+    });
+    child.on("error", reject);
+    child.on("close", (code: number | null) => {
+      resolve({ code, stdout, stderr });
+    });
+  });
+}
+
 function runCli(args: string[]): Promise<{ request: any; stdout: string; stderr: string }> {
   return new Promise((resolve, reject) => {
     const socketPath = createSocketPath();
@@ -94,6 +120,28 @@ function runCli(args: string[]): Promise<{ request: any; stdout: string; stderr:
 }
 
 describe("CLI argument parsing", () => {
+  it("prints LLM context without requiring a socket", async () => {
+    const { code, stdout, stderr } = await runCliWithoutSocket(["--llm-context"]);
+
+    expect(code).toBe(0);
+    expect(stderr).toBe("");
+    expect(stdout).toContain("SURF CLI LLM CONTEXT");
+    expect(stdout).toContain("surf page.read --depth 3 --compact");
+    expect(stdout).toContain("surf click e5");
+    expect(stdout).toContain("surf screenshot --full-page /tmp/full.png");
+    expect(stdout).toContain("surf scroll down 800");
+    expect(stdout).toContain("surf cookie list");
+    expect(stdout).toContain("surf resize 375 812");
+  });
+
+  it("mentions LLM context in top-level help", async () => {
+    const { code, stdout, stderr } = await runCliWithoutSocket(["--help"]);
+
+    expect(code).toBe(0);
+    expect(stderr).toBe("");
+    expect(stdout).toContain("surf --llm-context");
+  });
+
   it("maps resize positional width and height", async () => {
     const { request } = await runCli(["resize", "375", "812"]);
 
