@@ -1,5 +1,10 @@
 # Changelog
 
+## [Unreleased]
+
+### Fixed
+- **Native messaging host portability** - Generated Unix wrappers now use `#!/usr/bin/env bash` so Chrome can launch the host on NixOS, Guix, and other non-FHS Linux systems. (@ppetru)
+
 ## [2.6.0] - 2026-02-21
 
 ### Added
