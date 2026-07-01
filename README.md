@@ -582,6 +582,15 @@ Common fixes:
 - On WSL2 with Windows Chrome, run `surf install <extension-id>` from WSL2 and restart Windows Chrome. Use `--target linux` only for a Linux browser running inside WSLg.
 - If `SURF_SOCKET` is set, set the same value for both the browser-launched native host and the shell running `surf`.
 
+macOS checklist:
+- Confirm Chrome has a native messaging manifest at `~/Library/Application Support/Google/Chrome/NativeMessagingHosts/surf.browser.host.json`.
+- Confirm the manifest `allowed_origins` entry uses the same extension ID shown on `chrome://extensions` for the Surf extension.
+- Reinstall the manifest with `surf install <extension-id>` after copying a fresh extension build or if the extension ID changed.
+- Fully restart Chrome, then reload the Surf extension on `chrome://extensions`.
+- Open the extension service worker from `chrome://extensions` and check its console for native messaging or socket errors.
+- If `SURF_SOCKET` is set in your shell, make sure Chrome launches the native host with the same value; otherwise both sides should use `/tmp/surf.sock`.
+- Run a simple CLI command such as `surf tab.list`; if it fails, compare its `Attempted socket:` line with the socket expected by the native host.
+
 ## Socket API
 
 For programmatic integration, send JSON to `/tmp/surf.sock` by default, or to `SURF_SOCKET` when set:

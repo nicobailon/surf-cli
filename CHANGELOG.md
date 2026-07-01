@@ -21,6 +21,9 @@
 - **Gemini blob-backed generated images** - Detect and extract Gemini-generated `blob:` images from the page while preserving existing `gg-dl` URL downloads. (@goneflyin)
 - **Accessibility tree nested labels** - Include nested text content when naming interactive links, buttons, and summaries so child spans contribute accessible names. (@skyeryg)
 
+### Docs
+- **macOS native host troubleshooting** - Added a focused checklist for Chrome native messaging manifests, extension IDs, service-worker logs, and matching `SURF_SOCKET` values.
+
 ### Dependencies
 - Bump Vitest package group from 4.0.18 to 4.1.9 to clear the critical audit advisory.
 
