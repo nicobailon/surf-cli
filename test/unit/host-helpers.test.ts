@@ -88,6 +88,19 @@ describe("mapToolToMessage", () => {
     });
   });
 
+  describe("screenshot commands", () => {
+    it("maps full-page to fullpage", () => {
+      const msg = helpers.mapToolToMessage("screenshot", { "full-page": true });
+      expect(msg.type).toBe("EXECUTE_SCREENSHOT");
+      expect(msg.fullpage).toBe(true);
+    });
+
+    it("preserves fullpage mapping", () => {
+      const msg = helpers.mapToolToMessage("screenshot", { fullpage: true });
+      expect(msg.fullpage).toBe(true);
+    });
+  });
+
   describe("error cases", () => {
     it("returns null for unknown tool", () => {
       expect(helpers.mapToolToMessage("unknown.command", {})).toBeNull();

@@ -403,6 +403,7 @@ surf screenshot                           # Auto-saves to /tmp/surf-snap-*.png
 surf screenshot --output /tmp/shot.png    # Save to specific file
 surf screenshot --selector ".card"        # Element only
 surf screenshot --full-page               # Full page scroll capture
+surf screenshot --full-page /tmp/full.png # Full page saved to path
 surf screenshot --no-save                 # Return base64 only, don't save file
 ```
 

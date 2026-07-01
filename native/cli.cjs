@@ -541,6 +541,7 @@ const TOOLS = {
           selector: "Capture specific element",
           annotate: "Draw element labels",
           fullpage: "Capture full page",
+          "full-page": "Capture full page (alias for --fullpage)",
           "max-height": "Max height for fullpage (default: 4000)",
           full: "Skip resize, save at full resolution",
           "max-size": "Max dimension in px (default: 1200)",
@@ -1319,6 +1320,7 @@ Commands:
   screenshot --output file.png                          Basic screenshot
   screenshot --annotate --output file.png               With element labels
   screenshot --fullpage --output file.png               Full page capture
+  screenshot --full-page --output file.png              Full page capture (alias)
   screenshot --annotate --fullpage --output file.png    Full page with labels
   snap                                                  Auto-save to /tmp
 
@@ -1326,6 +1328,7 @@ Options:
   --output      Save path
   --annotate    Draw element refs
   --fullpage    Capture entire page
+  --full-page   Capture entire page (alias)
   --max-height  Max height for fullpage (default: 4000)`
   },
   automation: {
@@ -1348,7 +1351,7 @@ Wait for dynamic content:
 
 Scroll and capture:
   scroll.bottom
-  screenshot --fullpage --output full.png`
+  screenshot --full-page --output full.png`
   },
   windows: {
     title: "Window Isolation",
@@ -2441,7 +2444,7 @@ if (args[0] === "workflow.validate") {
   }
 }
 
-const BOOLEAN_FLAGS = ["auto-capture", "json", "stream", "dry-run", "stop-on-error", "fail-fast", "clear", "submit", "all", "case-sensitive", "hard", "annotate", "fullpage", "reset", "no-screenshot", "full", "soft-fail", "has-body", "exclude-static", "v", "vv", "request", "by-tab", "har", "jsonl", "no-save", "no-auto-wait"];
+const BOOLEAN_FLAGS = ["auto-capture", "json", "stream", "dry-run", "stop-on-error", "fail-fast", "clear", "submit", "all", "case-sensitive", "hard", "annotate", "fullpage", "full-page", "reset", "no-screenshot", "full", "soft-fail", "has-body", "exclude-static", "v", "vv", "request", "by-tab", "har", "jsonl", "no-save", "no-auto-wait"];
 
 const AUTO_SCREENSHOT_TOOLS = ["click", "type", "key", "smart_type", "form.fill", "form_input", "drag", "hover", "scroll", "scroll.top", "scroll.bottom", "scroll.to", "dialog.accept", "dialog.dismiss", "js", "eval"];
 
@@ -2521,9 +2524,14 @@ tool = ALIASES[tool] || tool;
 // Auto-save screenshots to temp file when no --output specified
 // This ensures agents always get a usable file path, not just an in-memory ID
 // Can be disabled with --no-save flag or autoSaveScreenshots: false in surf.json
+if (options["full-page"] === true) {
+  options.fullpage = true;
+  delete options["full-page"];
+}
+
 const config = loadConfig();
 const autoSaveEnabled = config.autoSaveScreenshots !== false && !options["no-save"];
-if (tool === "screenshot" && !options.output && !options.savePath && autoSaveEnabled) {
+if (tool === "screenshot" && !options.output && !options.savePath && firstArg === undefined && autoSaveEnabled) {
   options.savePath = path.join(SURF_TMP, `surf-snap-${Date.now()}.png`);
 }
 
@@ -2630,6 +2638,11 @@ if (tool === "resize") {
     if (/^-?\d+$/.test(val)) val = parseInt(val, 10);
     toolArgs.height = val;
   }
+  firstArg = undefined;
+}
+
+if (tool === "screenshot" && firstArg !== undefined && toolArgs.output === undefined && toolArgs.savePath === undefined) {
+  toolArgs.savePath = firstArg;
   firstArg = undefined;
 }
 

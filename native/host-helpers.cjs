@@ -575,7 +575,7 @@ function mapToolToMessage(tool, args, tabId) {
         type: "EXECUTE_SCREENSHOT", 
         savePath: a.savePath || a.output,  // Accept both savePath (CLI) and output (MCP)
         annotate: a.annotate || false,
-        fullpage: a.fullpage || false,
+        fullpage: a.fullpage || a["full-page"] || false,
         maxHeight: a["max-height"] || 4000,
         fullRes: a.full || false,
         maxSize: a["max-size"] || 1200,

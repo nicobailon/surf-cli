@@ -233,6 +233,7 @@ surf screenshot --output /tmp/shot.png      # Save to specific path
 surf screenshot --full --output /tmp/hd.png # Full resolution (skip resize)
 surf screenshot --annotate                  # With element labels
 surf screenshot --fullpage                  # Entire page
+surf screenshot --full-page /tmp/full.png   # Entire page, save to path
 surf screenshot --no-save                   # Return base64 + ID only (no file)
 surf snap                                   # Alias for screenshot
 ```
