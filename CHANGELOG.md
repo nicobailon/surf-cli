@@ -1,5 +1,10 @@
 # Changelog
 
+## [Unreleased]
+
+### Fixed
+- **Gemini blob-backed generated images** - Detect and extract Gemini-generated `blob:` images from the page while preserving existing `gg-dl` URL downloads. (@goneflyin)
+
 ## [2.7.2] - 2026-04-10
 
 ### Fixed

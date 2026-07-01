@@ -652,17 +652,21 @@ async function runGeminiWebViaPage(input) {
     if (typed.error) throw new Error(typed.error);
 
     const beforeResult = await jsEval(tabId, `
-      const generatedImgs = Array.from(document.images).filter((img) => {
-        const src = img.currentSrc || img.src || "";
-        const alt = img.alt || "";
-        const className = String(img.className || "");
-        if (img.naturalWidth < 512 || img.naturalHeight < 512) return false;
-        if (src.includes("gg-dl")) return true;
-        return src.startsWith("blob:") && (alt.includes("AI generated") || className.includes("image"));
-      });
-      return String(generatedImgs.length);
+      const imageKey = (img) => {
+        const url = img.currentSrc || img.src || "";
+        return url + "|" + img.naturalWidth + "x" + img.naturalHeight;
+      };
+      const baselineKeys = Array.from(document.images)
+        .filter((img) => {
+          const url = img.currentSrc || img.src || "";
+          return img.naturalWidth >= 512
+            && img.naturalHeight >= 512
+            && (url.includes("gg-dl") || url.startsWith("blob:"));
+        })
+        .map(imageKey);
+      return JSON.stringify(baselineKeys);
     `);
-    const imgCountBefore = parseInt(JSON.parse(checkJsResult(beforeResult, "Count images")) || "0", 10);
+    const baselineImageKeys = JSON.parse(JSON.parse(checkJsResult(beforeResult, "Count images")) || "[]");
 
     if (log) log("Submitting...");
     const sendResult = await jsEval(tabId, `
@@ -683,18 +687,28 @@ async function runGeminiWebViaPage(input) {
     while (Date.now() < deadline) {
       await new Promise(r => setTimeout(r, 2000));
       const pollResult = await jsEval(tabId, `
-        const generatedImgs = Array.from(document.images).filter((img) => {
-          const src = img.currentSrc || img.src || "";
-          const alt = img.alt || "";
-          const className = String(img.className || "");
-          if (img.naturalWidth < 512 || img.naturalHeight < 512) return false;
-          if (src.includes("gg-dl")) return true;
-          return src.startsWith("blob:") && (alt.includes("AI generated") || className.includes("image"));
-        });
+        const baselineKeys = new Set(${JSON.stringify(baselineImageKeys)});
+        const imageKey = (img) => {
+          const url = img.currentSrc || img.src || "";
+          return url + "|" + img.naturalWidth + "x" + img.naturalHeight;
+        };
+        const generatedImgs = Array.from(document.images)
+          .filter((img) => {
+            const url = img.currentSrc || img.src || "";
+            return img.naturalWidth >= 512
+              && img.naturalHeight >= 512
+              && (url.includes("gg-dl") || url.startsWith("blob:"));
+          })
+          .filter((img) => !baselineKeys.has(imageKey(img)));
         window.__surfGeminiBlobImages = window.__surfGeminiBlobImages || [];
+        window.__surfGeminiBlobImageIndexes = window.__surfGeminiBlobImageIndexes || Object.create(null);
         const images = await Promise.all(generatedImgs.map(async (img) => {
           const url = img.currentSrc || img.src || "";
           if (!url.startsWith("blob:")) return { url };
+          const key = imageKey(img);
+          if (Number.isInteger(window.__surfGeminiBlobImageIndexes[key])) {
+            return { url, blobIndex: window.__surfGeminiBlobImageIndexes[key], type: "image/png" };
+          }
           const canvas = document.createElement("canvas");
           canvas.width = img.naturalWidth;
           canvas.height = img.naturalHeight;
@@ -707,6 +721,7 @@ async function runGeminiWebViaPage(input) {
             b64: dataUrl.split(",")[1],
             type: "image/png",
           }) - 1;
+          window.__surfGeminiBlobImageIndexes[key] = blobIndex;
           return { url, blobIndex, type: "image/png" };
         }));
         const loading = !!document.querySelector('mat-progress-bar, .loading-indicator, message-loading');
@@ -716,7 +731,7 @@ async function runGeminiWebViaPage(input) {
         return JSON.stringify({ images, loading, text, turns: turns.length });
       `);
       const poll = JSON.parse(JSON.parse(checkJsResult(pollResult, "Poll response")));
-      const newImgs = (poll.images || []).slice(imgCountBefore);
+      const newImgs = poll.images || [];
 
       if (newImgs.length > 0) {
         imageEntries = newImgs;
