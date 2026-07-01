@@ -3,8 +3,8 @@ const net = require("net");
 const { McpServer } = require("@modelcontextprotocol/sdk/server/mcp.js");
 const { StdioServerTransport } = require("@modelcontextprotocol/sdk/server/stdio.js");
 const { z } = require("zod");
+const { SOCKET_PATH, formatSocketError } = require("./socket-path.cjs");
 
-const SOCKET_PATH = process.platform === "win32" ? "//./pipe/surf" : "/tmp/surf.sock";
 const REQUEST_TIMEOUT = 30000;
 
 const TOOL_SCHEMAS = {
@@ -279,7 +279,9 @@ function sendSocketRequest(tool, args = {}) {
     });
 
     let buf = "";
+    let settled = false;
     const timeout = setTimeout(() => {
+      settled = true;
       sock.destroy();
       reject(new Error("Request timeout"));
     }, REQUEST_TIMEOUT);
@@ -291,11 +293,13 @@ function sendSocketRequest(tool, args = {}) {
       for (const line of lines) {
         if (!line.trim()) continue;
         try {
+          settled = true;
           clearTimeout(timeout);
           const resp = JSON.parse(line);
           sock.end();
           resolve(resp);
         } catch {
+          settled = true;
           clearTimeout(timeout);
           sock.end();
           reject(new Error("Invalid JSON response"));
@@ -304,17 +308,16 @@ function sendSocketRequest(tool, args = {}) {
     });
 
     sock.on("error", (e) => {
+      settled = true;
       clearTimeout(timeout);
-      if (e.code === "ENOENT") {
-        reject(new Error("Socket not found. Is Chrome running with the surf extension?"));
-      } else {
-        reject(e);
-      }
+      reject(new Error(formatSocketError(e)));
     });
 
     sock.on("close", () => {
       clearTimeout(timeout);
-      reject(new Error("Socket closed unexpectedly"));
+      if (!settled) {
+        reject(new Error(`Socket closed unexpectedly\nAttempted socket: ${SOCKET_PATH}`));
+      }
     });
   });
 }

@@ -256,6 +256,7 @@ export function createMockTab(overrides: Partial<chrome.tabs.Tab> = {}): chrome.
     status: "complete",
     discarded: false,
     autoDiscardable: true,
+    frozen: false,
     groupId: -1,
     ...overrides,
   };

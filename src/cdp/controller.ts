@@ -1155,13 +1155,21 @@ export class CDPController {
     });
   }
 
-  private async send(tabId: number, method: string, params?: object): Promise<any> {
+  private async send(
+    tabId: number,
+    method: string,
+    params?: { [key: string]: unknown },
+  ): Promise<any> {
     await this.ensureAttached(tabId);
     const target = this.targets.get(tabId)!;
     return chrome.debugger.sendCommand(target, method, params);
   }
 
-  async sendCommand(tabId: number, method: string, params?: object): Promise<any> {
+  async sendCommand(
+    tabId: number,
+    method: string,
+    params?: { [key: string]: unknown },
+  ): Promise<any> {
     return this.send(tabId, method, params);
   }
 

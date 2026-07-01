@@ -1,7 +1,7 @@
 // @ts-expect-error - CommonJS module without type definitions
 import * as grokClient from "../../native/grok-client.cjs";
 
-const { extractGrokResponse } = grokClient;
+const { extractGrokResponse, normalizeGrokModelLabel } = grokClient;
 
 describe("grok-client", () => {
   describe("extractGrokResponse", () => {
@@ -74,7 +74,7 @@ Communities
 Profile
 More
 Post
-Grok 4.1 Thinking
+Grok 4.20 Beta
 History
 Private
 What is 10/2?
@@ -85,18 +85,49 @@ Think Harder`;
       expect(result).toBe("5");
     });
 
-    it("stops at follow-up suggestions", () => {
+    it("trims trailing follow-up suggestion chips", () => {
+      const bodyText = `Grok
+say hello in 3 words
+Hello there, friend!
+Share greetings in other languages
+Fun icebreaker questions
+Make it more playful`;
+
+      const result = extractGrokResponse(bodyText, "say hello in 3 words");
+      expect(result).toBe("Hello there, friend!");
+    });
+
+    it("trims suggested follow-ups without depending on fixed prefixes", () => {
       const bodyText = `Grok
 What is pi?
 Pi is approximately 3.14159
 It's the ratio of a circle's circumference to its diameter
-Explain more about pi
-Tell me about circles`;
+Compare circle constants
+Derive it geometrically`;
 
       const result = extractGrokResponse(bodyText, "What is pi?");
       expect(result).toBe(
         "Pi is approximately 3.14159\nIt's the ratio of a circle's circumference to its diameter",
       );
+    });
+
+    it("keeps a short punctuation-free one-line answer", () => {
+      const bodyText = `Grok
+say hello in 2 words
+Hello there`;
+
+      const result = extractGrokResponse(bodyText, "say hello in 2 words");
+      expect(result).toBe("Hello there");
+    });
+
+    it("keeps a short punctuation-free prose ending after prior response content", () => {
+      const bodyText = `Grok
+Give a two-line casual answer
+Sure thing.
+Hello there`;
+
+      const result = extractGrokResponse(bodyText, "Give a two-line casual answer");
+      expect(result).toBe("Sure thing.\nHello there");
     });
 
     it("returns null for empty body", () => {
@@ -176,7 +207,30 @@ Think Harder`;
       expect(models).toHaveProperty("auto");
       expect(models).toHaveProperty("fast");
       expect(models).toHaveProperty("expert");
-      expect(models).toHaveProperty("thinking");
+      expect(models).toHaveProperty("grok-4.20-beta");
+      expect(models).not.toHaveProperty("thinking");
+      expect(grokClient.DEFAULT_MODEL).toBe("fast");
+    });
+  });
+
+  describe("normalizeGrokModelLabel", () => {
+    it("matches compact Grok model labels scraped from the UI", () => {
+      expect(normalizeGrokModelLabel("Grok 4.20Beta4 Agents")).toContain(
+        normalizeGrokModelLabel("Grok 4.20 Beta"),
+      );
+    });
+
+    it("matches saved hyphenated IDs with dotted scraped labels", () => {
+      expect(normalizeGrokModelLabel("grok-4-20beta4-agents")).toBe(
+        normalizeGrokModelLabel("Grok 4.20Beta4 Agents"),
+      );
+    });
+  });
+
+  describe("grokModelLabelsMatch", () => {
+    it("selects configured grok-4.20-beta from compact scraped UI labels", () => {
+      const requestedLabels = grokClient.getGrokModelMatchLabels("grok-4.20-beta");
+      expect(grokClient.grokModelLabelsMatch("Grok 4.20Beta4 Agents", requestedLabels)).toBe(true);
     });
   });
 

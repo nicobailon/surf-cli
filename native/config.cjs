@@ -25,10 +25,10 @@ const STARTER_CONFIG = {
 // {
 //   "grok": {
 //     "models": {
-//       "thinking": { "id": "thinking", "name": "Grok 4.1 Thinking" },
 //       "auto": { "id": "auto", "name": "Auto" },
 //       "fast": { "id": "fast", "name": "Fast" },
-//       "expert": { "id": "expert", "name": "Expert" }
+//       "expert": { "id": "expert", "name": "Expert" },
+//       "grok-4.20-beta": { "id": "grok-4.20-beta", "name": "Grok 4.20 Beta" }
 //     }
 //   }
 // }

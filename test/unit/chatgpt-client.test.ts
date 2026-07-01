@@ -20,15 +20,9 @@ describe("chatgpt-client", () => {
           "```",
           "Retry",
         ].join("\r\n"),
-        [
-          "Good response",
-          "Here is code:",
-          "```js",
-          "Copy",
-          "const x = 1;",
-          "```",
-          "Retry",
-        ].join("\n"),
+        ["Good response", "Here is code:", "```js", "Copy", "const x = 1;", "```", "Retry"].join(
+          "\n",
+        ),
       ],
       ["preserves legitimate standalone single-word response: Copy", "Copy", "Copy"],
       ["preserves legitimate standalone single-word response: Edit", "Edit", "Edit"],
@@ -110,7 +104,13 @@ describe("chatgpt-client", () => {
     it("falls back to empty assistant when all are empty", () => {
       const snapshot = chatgptClient.extractLatestAssistantSnapshot([
         { role: "assistant", turn: "assistant", isAssistant: true, text: "", messageId: "msg-1" },
-        { role: "assistant", turn: "assistant", isAssistant: true, text: "\n\n", messageId: "msg-2" },
+        {
+          role: "assistant",
+          turn: "assistant",
+          isAssistant: true,
+          text: "\n\n",
+          messageId: "msg-2",
+        },
       ]);
 
       expect(snapshot).toEqual({
@@ -125,7 +125,9 @@ describe("chatgpt-client", () => {
 
     it("returns null for non-assistant candidates only", () => {
       expect(
-        chatgptClient.extractLatestAssistantSnapshot([{ role: "user", turn: "user", text: "hello" }]),
+        chatgptClient.extractLatestAssistantSnapshot([
+          { role: "user", turn: "user", text: "hello" },
+        ]),
       ).toBeNull();
     });
 
@@ -249,19 +251,16 @@ describe("chatgpt-client", () => {
         2,
         true,
       ],
-    ])(
-      "%s",
-      (_, latestAssistant, baselineAssistant, assistantCount, baselineAssistantCount, expected) => {
-        expect(
-          chatgptClient.isNewAssistantContent(
-            latestAssistant,
-            baselineAssistant,
-            assistantCount,
-            baselineAssistantCount,
-          ),
-        ).toBe(expected);
-      },
-    );
+    ])("%s", (_, latestAssistant, baselineAssistant, assistantCount, baselineAssistantCount, expected) => {
+      expect(
+        chatgptClient.isNewAssistantContent(
+          latestAssistant,
+          baselineAssistant,
+          assistantCount,
+          baselineAssistantCount,
+        ),
+      ).toBe(expected);
+    });
   });
 
   describe("isChatGPTResponseComplete", () => {
@@ -390,9 +389,7 @@ describe("chatgpt-client", () => {
 
     it("rejects exact cookie with empty value", () => {
       expect(
-        chatgptClient.hasRequiredCookies([
-          { name: "__Secure-next-auth.session-token", value: "" },
-        ]),
+        chatgptClient.hasRequiredCookies([{ name: "__Secure-next-auth.session-token", value: "" }]),
       ).toBe(false);
     });
 

@@ -133,6 +133,19 @@ function base64ToBlob(base64: string, mimeType = "image/png"): Blob {
   return new Blob([bytes], { type: mimeType });
 }
 
+function codeWithExpressionReturn(code: string): string {
+  return `return (\n${code}\n);`;
+}
+
+function scriptParses(code: string): boolean {
+  try {
+    new Function(code);
+    return true;
+  } catch (err) {
+    return !(err instanceof SyntaxError);
+  }
+}
+
 async function captureFullPage(tabId: number, maxHeight: number): Promise<{ base64: string; width: number; height: number }> {
   const dimensionsResult = await cdp.evaluateScript(tabId, `(() => ({
     viewportHeight: window.innerHeight,
@@ -1772,11 +1785,15 @@ export async function handleMessage(
         const piHelpersCode = `if(!window.piHelpers){const piHelpers={wait(ms){return new Promise(r=>setTimeout(r,ms))},async waitForSelector(sel,opts={}){const{state='visible',timeout=20000}=opts;const isVis=el=>el&&getComputedStyle(el).display!=='none'&&getComputedStyle(el).visibility!=='hidden'&&getComputedStyle(el).opacity!=='0'&&el.offsetWidth>0&&el.offsetHeight>0;const chk=()=>{const el=document.querySelector(sel);switch(state){case'attached':return el;case'detached':return el?null:document.body;case'hidden':return(!el||!isVis(el))?(el||document.body):null;default:return isVis(el)?el:null}};return new Promise((res,rej)=>{const r=chk();if(r){res(state==='detached'||state==='hidden'?null:r);return}const obs=new MutationObserver(()=>{const r=chk();if(r){obs.disconnect();clearTimeout(tid);res(state==='detached'||state==='hidden'?null:r)}});const tid=setTimeout(()=>{obs.disconnect();rej(new Error('Timeout'))},timeout);obs.observe(document.documentElement,{childList:true,subtree:true,attributes:true,attributeFilter:['style','class','hidden']})})},async waitForText(text,opts={}){const{selector,timeout=20000}=opts;const chk=()=>{const root=selector?document.querySelector(selector):document.body;if(!root)return null;const w=document.createTreeWalker(root,NodeFilter.SHOW_TEXT);while(w.nextNode())if(w.currentNode.textContent?.includes(text))return w.currentNode.parentElement;return null};return new Promise((res,rej)=>{const r=chk();if(r){res(r);return}const obs=new MutationObserver(()=>{const r=chk();if(r){obs.disconnect();clearTimeout(tid);res(r)}});const tid=setTimeout(()=>{obs.disconnect();rej(new Error('Timeout'))},timeout);obs.observe(document.documentElement,{childList:true,subtree:true,characterData:true})})},async waitForHidden(sel,t=20000){await piHelpers.waitForSelector(sel,{state:'hidden',timeout:t})},getByRole(role,opts={}){const{name}=opts;const roles={button:['button','input[type=button]','input[type=submit]','input[type=reset]'],link:['a[href]'],textbox:['input:not([type])','input[type=text]','input[type=email]','input[type=password]','textarea'],checkbox:['input[type=checkbox]'],radio:['input[type=radio]'],combobox:['select'],heading:['h1','h2','h3','h4','h5','h6']};const cands=[...document.querySelectorAll('[role='+role+']')];if(roles[role])roles[role].forEach(s=>cands.push(...document.querySelectorAll(s+':not([role])')));if(!name)return cands[0]||null;const n=name.toLowerCase().trim();for(const el of cands){const l=el.getAttribute('aria-label')?.toLowerCase().trim();const t=el.textContent?.toLowerCase().trim();if(l===n||t===n||l?.includes(n)||t?.includes(n))return el}return null}};window.__piHelpers=piHelpers;window.piHelpers=piHelpers}`;
         await cdp.evaluateScript(tabId, piHelpersCode);
         
-        const escaped = message.code.replace(/`/g, "\\`").replace(/\$/g, "\\$");
-        const expression = `(async () => { 'use strict'; ${escaped} })()`;
+        const body = codeWithExpressionReturn(message.code);
+        const expression = `(async () => { 'use strict'; ${body} })()`;
         
-        const result = await cdp.evaluateScript(tabId, expression);
+        let result = await cdp.evaluateScript(tabId, expression);
         
+        if (result.exceptionDetails && !scriptParses(body)) {
+          result = await cdp.evaluateScript(tabId, `(async () => { 'use strict'; ${message.code} })()`);
+        }
+
         if (result.exceptionDetails) {
           const err = result.exceptionDetails.exception?.description || 
                       result.exceptionDetails.text || 
@@ -2152,7 +2169,7 @@ export async function handleMessage(
     case "SWITCH_TAB": {
       const targetTabId = message.tabId;
       if (!targetTabId) throw new Error("No tabId provided");
-      const tab = await chrome.tabs.update(targetTabId, { active: true });
+      const tab = (await chrome.tabs.update(targetTabId, { active: true })) as chrome.tabs.Tab;
       if (tab.windowId) {
         await chrome.windows.update(tab.windowId, { focused: true });
       }
@@ -2341,28 +2358,29 @@ export async function handleMessage(
     }
 
     case "TAB_GROUP_CREATE": {
-      const tabIds = [...(message.tabIds || [])];
+      const tabIds: number[] = [...(message.tabIds || [])];
       const name = message.name || "Surf";
-      const validColors = ['grey', 'blue', 'red', 'yellow', 'green', 'pink', 'purple', 'cyan', 'orange'];
-      const color = validColors.includes(message.color) ? message.color : 'blue';
+      const validColors = ["grey", "blue", "red", "yellow", "green", "pink", "purple", "cyan", "orange"];
+      const color = validColors.includes(message.color) ? message.color : "blue";
       
       if (tabIds.length === 0 && tabId) {
         tabIds.push(tabId);
       }
       
       if (tabIds.length === 0) throw new Error("No tabs specified");
+      const groupTabIds = tabIds.length === 1 ? tabIds[0] : (tabIds as [number, ...number[]]);
       
       const existingGroups = await chrome.tabGroups.query({ title: name });
       let groupId: number;
       
       if (existingGroups.length > 0) {
         groupId = existingGroups[0].id;
-        await chrome.tabs.group({ tabIds, groupId });
+        await chrome.tabs.group({ tabIds: groupTabIds, groupId });
       } else {
-        groupId = await chrome.tabs.group({ tabIds });
+        groupId = await chrome.tabs.group({ tabIds: groupTabIds });
         await chrome.tabGroups.update(groupId, {
           title: name,
-          color: color as chrome.tabGroups.ColorEnum,
+          color: color as `${chrome.tabGroups.Color}`,
           collapsed: false,
         });
       }
@@ -2371,14 +2389,15 @@ export async function handleMessage(
     }
 
     case "TAB_GROUP_REMOVE": {
-      const tabIds = [...(message.tabIds || [])];
+      const tabIds: number[] = [...(message.tabIds || [])];
       if (tabIds.length === 0 && tabId) {
         tabIds.push(tabId);
       }
       
       if (tabIds.length === 0) throw new Error("No tabs specified");
+      const ungroupTabIds = tabIds.length === 1 ? tabIds[0] : (tabIds as [number, ...number[]]);
       
-      await chrome.tabs.ungroup(tabIds);
+      await chrome.tabs.ungroup(ungroupTabIds);
       return { success: true, ungrouped: tabIds };
     }
 
@@ -2629,7 +2648,7 @@ export async function handleMessage(
       const currentTab = await chrome.tabs.get(tab.id);
       if (currentTab.status !== "complete") {
         await new Promise<void>((resolve) => {
-          const listener = (tabId: number, info: chrome.tabs.TabChangeInfo) => {
+          const listener = (tabId: number, info: chrome.tabs.OnUpdatedInfo) => {
             if (tabId === tab.id && info.status === "complete") {
               chrome.tabs.onUpdated.removeListener(listener);
               resolve();
@@ -2681,7 +2700,7 @@ export async function handleMessage(
       const currentTab = await chrome.tabs.get(tab.id);
       if (currentTab.status !== "complete") {
         await new Promise<void>((resolve) => {
-          const listener = (tabId: number, info: chrome.tabs.TabChangeInfo) => {
+          const listener = (tabId: number, info: chrome.tabs.OnUpdatedInfo) => {
             if (tabId === tab.id && info.status === "complete") {
               chrome.tabs.onUpdated.removeListener(listener);
               resolve();
@@ -2766,7 +2785,7 @@ export async function handleMessage(
       const currentTab = await chrome.tabs.get(tab.id);
       if (currentTab.status !== "complete") {
         await new Promise<void>((resolve) => {
-          const listener = (tabId: number, info: chrome.tabs.TabChangeInfo) => {
+          const listener = (tabId: number, info: chrome.tabs.OnUpdatedInfo) => {
             if (tabId === tab.id && info.status === "complete") {
               chrome.tabs.onUpdated.removeListener(listener);
               resolve();
@@ -2936,7 +2955,7 @@ export async function handleMessage(
       const currentTab = await chrome.tabs.get(tab.id);
       if (currentTab.status !== "complete") {
         await new Promise<void>((resolve) => {
-          const listener = (tabId: number, info: chrome.tabs.TabChangeInfo) => {
+          const listener = (tabId: number, info: chrome.tabs.OnUpdatedInfo) => {
             if (tabId === tab.id && info.status === "complete") {
               chrome.tabs.onUpdated.removeListener(listener);
               resolve();
@@ -3038,7 +3057,7 @@ export async function handleMessage(
         createOptions.incognito = true;
       }
       
-      const window = await chrome.windows.create(createOptions);
+      const window = (await chrome.windows.create(createOptions)) as chrome.windows.Window;
       
       if (!window.id) throw new Error("Failed to create window");
       
@@ -3103,9 +3122,9 @@ export async function handleMessage(
       if (message.height) updateInfo.height = message.height;
       if (message.left !== undefined) updateInfo.left = message.left;
       if (message.top !== undefined) updateInfo.top = message.top;
-      if (message.state) updateInfo.state = message.state as chrome.windows.windowStateEnum;
+      if (message.state) updateInfo.state = message.state as `${chrome.windows.WindowState}`;
       
-      const window = await chrome.windows.update(message.windowId, updateInfo);
+      const window = (await chrome.windows.update(message.windowId, updateInfo)) as chrome.windows.Window;
       return { 
         success: true, 
         windowId: message.windowId,

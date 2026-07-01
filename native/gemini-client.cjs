@@ -652,9 +652,21 @@ async function runGeminiWebViaPage(input) {
     if (typed.error) throw new Error(typed.error);
 
     const beforeResult = await jsEval(tabId, `
-      return String(Array.from(document.querySelectorAll('img[src*="gg-dl"]')).filter(i => i.naturalWidth >= 512).length);
+      const imageKey = (img) => {
+        const url = img.currentSrc || img.src || "";
+        return url + "|" + img.naturalWidth + "x" + img.naturalHeight;
+      };
+      const baselineKeys = Array.from(document.images)
+        .filter((img) => {
+          const url = img.currentSrc || img.src || "";
+          return img.naturalWidth >= 512
+            && img.naturalHeight >= 512
+            && (url.includes("gg-dl") || url.startsWith("blob:"));
+        })
+        .map(imageKey);
+      return JSON.stringify(baselineKeys);
     `);
-    const imgCountBefore = parseInt(JSON.parse(checkJsResult(beforeResult, "Count images")) || "0", 10);
+    const baselineImageKeys = JSON.parse(JSON.parse(checkJsResult(beforeResult, "Count images")) || "[]");
 
     if (log) log("Submitting...");
     const sendResult = await jsEval(tabId, `
@@ -669,26 +681,60 @@ async function runGeminiWebViaPage(input) {
     // Poll for response
     if (log) log("Waiting for response...");
     const deadline = Date.now() + timeoutMs;
-    let imageUrls = [];
+    let imageEntries = [];
     let responseText = "";
 
     while (Date.now() < deadline) {
       await new Promise(r => setTimeout(r, 2000));
       const pollResult = await jsEval(tabId, `
-        const ggImgs = Array.from(document.querySelectorAll('img[src*="gg-dl"]'))
-          .filter(i => i.naturalWidth >= 512)
-          .map(i => i.src);
+        const baselineKeys = new Set(${JSON.stringify(baselineImageKeys)});
+        const imageKey = (img) => {
+          const url = img.currentSrc || img.src || "";
+          return url + "|" + img.naturalWidth + "x" + img.naturalHeight;
+        };
+        const generatedImgs = Array.from(document.images)
+          .filter((img) => {
+            const url = img.currentSrc || img.src || "";
+            return img.naturalWidth >= 512
+              && img.naturalHeight >= 512
+              && (url.includes("gg-dl") || url.startsWith("blob:"));
+          })
+          .filter((img) => !baselineKeys.has(imageKey(img)));
+        window.__surfGeminiBlobImages = window.__surfGeminiBlobImages || [];
+        window.__surfGeminiBlobImageIndexes = window.__surfGeminiBlobImageIndexes || Object.create(null);
+        const images = await Promise.all(generatedImgs.map(async (img) => {
+          const url = img.currentSrc || img.src || "";
+          if (!url.startsWith("blob:")) return { url };
+          const key = imageKey(img);
+          if (Number.isInteger(window.__surfGeminiBlobImageIndexes[key])) {
+            return { url, blobIndex: window.__surfGeminiBlobImageIndexes[key], type: "image/png" };
+          }
+          const canvas = document.createElement("canvas");
+          canvas.width = img.naturalWidth;
+          canvas.height = img.naturalHeight;
+          const ctx = canvas.getContext("2d");
+          if (!ctx) throw new Error("Canvas context unavailable");
+          ctx.drawImage(img, 0, 0);
+          const dataUrl = canvas.toDataURL("image/png");
+          const blobIndex = window.__surfGeminiBlobImages.push({
+            url,
+            b64: dataUrl.split(",")[1],
+            type: "image/png",
+          }) - 1;
+          window.__surfGeminiBlobImageIndexes[key] = blobIndex;
+          return { url, blobIndex, type: "image/png" };
+        }));
         const loading = !!document.querySelector('mat-progress-bar, .loading-indicator, message-loading');
         const turns = document.querySelectorAll('message-content');
         const lastTurn = turns.length ? turns[turns.length - 1] : null;
         const text = lastTurn ? lastTurn.textContent?.trim() : "";
-        return JSON.stringify({ ggImgs, loading, text, turns: turns.length });
+        return JSON.stringify({ images, loading, text, turns: turns.length });
       `);
       const poll = JSON.parse(JSON.parse(checkJsResult(pollResult, "Poll response")));
-      const newImgs = poll.ggImgs.slice(imgCountBefore);
+      const newImgs = poll.images || [];
 
       if (newImgs.length > 0) {
-        imageUrls = newImgs;
+        imageEntries = newImgs;
         responseText = poll.text || "";
         if (log) log(`Found ${newImgs.length} generated image(s)`);
         break;
@@ -699,23 +745,47 @@ async function runGeminiWebViaPage(input) {
       }
     }
 
-    if (!imageUrls.length && !responseText) {
+    if (!imageEntries.length && !responseText) {
       throw new Error("Gemini response timed out");
     }
 
-    // Download images via extension
+    // Download URL-backed images via extension; read blob images from the page in chunks.
     const images = [];
-    if (fetchUrl) {
-      for (const url of imageUrls) {
-        if (log) log(`Downloading image (${url.slice(0, 60)}...)...`);
-        const dlResult = await fetchUrl(url);
-        if (dlResult?.b64) {
-          images.push({ url, b64: dlResult.b64, type: dlResult.type || "image/png" });
+    for (const img of imageEntries) {
+      if (Number.isInteger(img?.blobIndex)) {
+        let b64 = "";
+        let offset = 0;
+        const chunkSize = 40000;
+        let type = img.type || "image/png";
+        while (true) {
+          const chunkResult = await jsEval(tabId, `
+            const item = window.__surfGeminiBlobImages?.[${img.blobIndex}];
+            if (!item) return JSON.stringify({ error: "Blob image not found" });
+            return JSON.stringify({
+              chunk: item.b64.slice(${offset}, ${offset + chunkSize}),
+              done: ${offset + chunkSize} >= item.b64.length,
+              type: item.type || "image/png",
+              url: item.url,
+            });
+          `);
+          const chunk = JSON.parse(JSON.parse(checkJsResult(chunkResult, "Read blob image chunk")));
+          if (chunk.error) throw new Error(chunk.error);
+          b64 += chunk.chunk || "";
+          type = chunk.type || type;
+          if (chunk.done) break;
+          offset += chunkSize;
         }
+        images.push({ url: img.url, b64, type });
+        continue;
       }
-    } else {
-      for (const url of imageUrls) {
-        images.push({ url });
+      if (img?.url && fetchUrl) {
+        if (log) log(`Downloading image (${img.url.slice(0, 60)}...)...`);
+        const dlResult = await fetchUrl(img.url);
+        if (dlResult?.b64) {
+          images.push({ url: img.url, b64: dlResult.b64, type: dlResult.type || "image/png" });
+        }
+      } else if (img?.url) {
+        images.push({ url: img.url });
       }
     }
 
@@ -917,6 +987,7 @@ module.exports = {
   hasRequiredCookies,
   buildCookieMap,
   parseGeminiStreamGenerateResponse,
+  runGeminiWebViaPage,
   REQUIRED_COOKIES,
   ALL_COOKIE_NAMES,
   GEMINI_APP_URL,

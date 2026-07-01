@@ -1,4 +1,4 @@
-import { describe, it, expect } from "vitest";
+import { describe, expect, it } from "vitest";
 
 // @ts-expect-error - CommonJS module without type definitions
 import * as executor from "../../native/do-executor.cjs";

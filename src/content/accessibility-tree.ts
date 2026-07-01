@@ -445,12 +445,7 @@ function generateAccessibilityTree(
       }
 
       if (["button", "a", "summary"].includes(tag)) {
-        let textContent = "";
-        for (const node of element.childNodes) {
-          if (node.nodeType === Node.TEXT_NODE) {
-            textContent += node.textContent;
-          }
-        }
+        const textContent = element.textContent || "";
         if (textContent.trim()) return textContent.trim();
       }
 
@@ -896,12 +891,7 @@ function generateYamlTree(
       }
 
       if (["button", "a", "summary"].includes(tag)) {
-        let textContent = "";
-        for (const node of element.childNodes) {
-          if (node.nodeType === Node.TEXT_NODE) {
-            textContent += node.textContent;
-          }
-        }
+        const textContent = element.textContent || "";
         if (textContent.trim()) return textContent.trim();
       }
 
