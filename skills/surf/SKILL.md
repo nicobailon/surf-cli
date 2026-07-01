@@ -43,6 +43,9 @@ surf type --text "hello"
 
 # 5. Screenshot
 surf screenshot --output /tmp/shot.png
+
+# Inspect animation/style changes as JSON
+surf animate-audit --selector ".thing" --duration 2000 --fps 10
 ```
 
 ## AI Assistants (No API Keys)
@@ -226,6 +229,7 @@ surf drag --from-x 100 --from-y 100 --to-x 200 --to-y 200
 ```bash
 surf page.read                 # Accessibility tree with refs + page text
 surf page.read --no-text       # Interactive elements only (no text content)
+surf animate-audit --selector ".thing" --duration 2000 --fps 10  # JSON animation timeline
 surf page.read --ref e5        # Get specific element details
 surf page.read --depth 3       # Limit tree depth
 surf page.read --compact       # Minimal output for LLM efficiency

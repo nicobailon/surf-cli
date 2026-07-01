@@ -555,6 +555,18 @@ const TOOLS = {
           { cmd: "snap", desc: "Alias for screenshot" },
         ]
       },
+      "animate-audit": {
+        desc: "Sample matching elements over time and return a JSON animation timeline",
+        args: [],
+        opts: {
+          selector: "CSS selector to sample (required)",
+          duration: "Capture duration in ms (default: 2000, max: 10000)",
+          fps: "Samples per second (default: 10, max: 30)"
+        },
+        examples: [
+          { cmd: 'animate-audit --selector ".thing" --duration 2000 --fps 10', desc: "Capture a bounded JSON timeline" },
+        ]
+      },
       "snap": { desc: "Alias for screenshot (auto-saves to /tmp)", args: [], alias: "screenshot" },
     }
   },
@@ -1466,7 +1478,7 @@ Exclude text content:
 };
 
 const ALL_SOCKET_TOOLS = [
-  "ai", "screenshot", "navigate",
+  "ai", "screenshot", "animate-audit", "navigate",
   "form_input", "find_and_type", "autocomplete", "set_value", "smart_type",
   "scroll_to_position", "get_scroll_info", "close_dialogs", "page_state",
   "javascript_tool", "health", "smoke",
@@ -1524,6 +1536,7 @@ const SEE_ALSO = {
   "perf.metrics": ["perf.start", "console", "network"],
   "navigate": ["wait.load", "page.read"],
   "screenshot": ["page.read", "scroll.bottom for fullpage"],
+  "animate-audit": ["screenshot", "js", "perf.metrics"],
   "search": ["locate.text", "page.read"],
   "wait.element": ["wait.load", "wait.network"],
   "wait.load": ["wait.element", "wait.network"],
@@ -1543,6 +1556,7 @@ Common Commands:
   click <ref>        Click element by ref or selector
   type <text>        Type text at cursor or into element
   screenshot         Capture screenshot (alias: snap)
+  animate-audit      JSON timeline of element animation/style samples
   page.read          Get page accessibility tree (alias: read)
   locate.role <role> Find element by ARIA role
   search <term>      Search for text in page (alias: find)
@@ -1582,6 +1596,7 @@ Click selector/coords: surf click --selector ".btn" | surf click 100 200
 Type: surf type "text" --submit                  # use --ref e5 to target a field
 Screenshot: surf screenshot /tmp/shot.png         # auto-saves to /tmp if no path
 Full page screenshot: surf screenshot --full-page /tmp/full.png
+Animation audit: surf animate-audit --selector ".thing" --duration 2000 --fps 10
 JavaScript: surf js "return document.title"
 Scroll: surf scroll down 800 | surf scroll up 400 | surf scroll bottom | surf scroll top
 Find by semantics: surf locate.role button --name "Submit" --action click

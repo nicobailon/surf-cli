@@ -1953,6 +1953,99 @@ export async function handleMessage(
       }
     }
 
+    case "ANIMATE_AUDIT": {
+      if (!tabId) throw new Error("No tabId provided");
+      if (!message.selector || typeof message.selector !== "string") throw new Error("selector required");
+
+      if (typeof message.durationMs === "boolean") throw new Error("duration must be a number");
+      if (typeof message.fps === "boolean") throw new Error("fps must be a number");
+      const durationMs = message.durationMs !== undefined ? Number(message.durationMs) : 2000;
+      const fps = message.fps !== undefined ? Number(message.fps) : 10;
+      if (!Number.isFinite(durationMs) || durationMs < 100 || durationMs > 10000) {
+        throw new Error("duration must be between 100 and 10000 ms");
+      }
+      if (!Number.isFinite(fps) || fps < 1 || fps > 30) {
+        throw new Error("fps must be between 1 and 30");
+      }
+
+      try {
+        const expression = `(async () => {
+          const selector = ${JSON.stringify(message.selector)};
+          const durationMs = ${Math.round(durationMs)};
+          const fps = ${Math.round(fps)};
+          const intervalMs = Math.max(1, Math.round(1000 / fps));
+          const maxElements = 25;
+          const maxSamples = Math.min(Math.floor(durationMs / intervalMs) + 1, 301);
+          const startedAt = Date.now();
+          const start = performance.now();
+          const samples = [];
+          const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+          const sample = () => {
+            const now = performance.now();
+            const elements = Array.from(document.querySelectorAll(selector)).slice(0, maxElements).map((el, index) => {
+              const rect = el.getBoundingClientRect();
+              const style = getComputedStyle(el);
+              const text = (el.textContent || "").replace(/\\s+/g, " ").trim().slice(0, 120);
+              return {
+                selector,
+                index,
+                rect: {
+                  x: Math.round(rect.x * 100) / 100,
+                  y: Math.round(rect.y * 100) / 100,
+                  width: Math.round(rect.width * 100) / 100,
+                  height: Math.round(rect.height * 100) / 100,
+                  top: Math.round(rect.top * 100) / 100,
+                  right: Math.round(rect.right * 100) / 100,
+                  bottom: Math.round(rect.bottom * 100) / 100,
+                  left: Math.round(rect.left * 100) / 100,
+                },
+                opacity: style.opacity,
+                transform: style.transform,
+                visibility: style.visibility,
+                display: style.display,
+                text,
+              };
+            });
+            samples.push({ t: Math.round((now - start) * 100) / 100, timestamp: Date.now(), elements });
+          };
+
+          for (let i = 0; i < maxSamples; i++) {
+            sample();
+            const elapsed = performance.now() - start;
+            if (elapsed >= durationMs || i === maxSamples - 1) break;
+            await wait(Math.max(0, Math.min(intervalMs, durationMs - elapsed)));
+          }
+
+          return {
+            selector,
+            durationMs,
+            fps,
+            intervalMs,
+            maxElementsPerSample: maxElements,
+            startedAt,
+            endedAt: Date.now(),
+            sampleCount: samples.length,
+            samples,
+          };
+        })()`;
+
+        const result = await cdp.evaluateScript(tabId, expression);
+        if (result.exceptionDetails) {
+          const err = result.exceptionDetails.exception?.description ||
+            result.exceptionDetails.text ||
+            "Animation audit failed";
+          return { error: err };
+        }
+        return result.result?.value ?? { error: "Animation audit returned no data" };
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : "Animation audit failed";
+        if (msg.includes("Cannot access") || msg.includes("Cannot attach")) {
+          return { error: "Cannot execute animation audit on this page (restricted URL)" };
+        }
+        return { error: msg };
+      }
+    }
+
     case "READ_CONSOLE_MESSAGES": {
       if (!tabId) throw new Error("No tabId provided");
 

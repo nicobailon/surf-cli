@@ -129,6 +129,48 @@ describe("mapToolToMessage", () => {
     });
   });
 
+  describe("animate-audit command", () => {
+    it("maps animate-audit with bounded defaults", () => {
+      const msg = helpers.mapToolToMessage("animate-audit", { selector: ".thing" }, 123);
+      expect(msg).toMatchObject({
+        type: "ANIMATE_AUDIT",
+        selector: ".thing",
+        durationMs: 2000,
+        fps: 10,
+        tabId: 123,
+      });
+    });
+
+    it("parses animate-audit duration and fps", () => {
+      const msg = helpers.mapToolToMessage(
+        "animate-audit",
+        { selector: ".thing", duration: "1500", fps: "12" },
+        123,
+      );
+      expect(msg.durationMs).toBe(1500);
+      expect(msg.fps).toBe(12);
+    });
+
+    it("requires animate-audit selector", () => {
+      expect(() => helpers.mapToolToMessage("animate-audit", {})).toThrow("selector required");
+    });
+
+    it("rejects malformed animate-audit duration and fps", () => {
+      expect(() =>
+        helpers.mapToolToMessage("animate-audit", { selector: ".thing", duration: true }),
+      ).toThrow("duration must be a number");
+      expect(() =>
+        helpers.mapToolToMessage("animate-audit", { selector: ".thing", fps: true }),
+      ).toThrow("fps must be a number");
+      expect(() =>
+        helpers.mapToolToMessage("animate-audit", { selector: ".thing", duration: "10001" }),
+      ).toThrow("duration must be between 100 and 10000 ms");
+      expect(() =>
+        helpers.mapToolToMessage("animate-audit", { selector: ".thing", fps: "31" }),
+      ).toThrow("fps must be between 1 and 30");
+    });
+  });
+
   describe("scroll commands", () => {
     it("maps direction and amount flags to scroll deltas", () => {
       const msg = helpers.mapToolToMessage("scroll", { direction: "down", amount: 4 }, 123);

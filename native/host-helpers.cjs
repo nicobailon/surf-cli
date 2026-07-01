@@ -605,6 +605,20 @@ function mapToolToMessage(tool, args, tabId) {
       };
     case "javascript_tool":
       return { type: "EXECUTE_JAVASCRIPT", code: a.code, ...baseMsg };
+    case "animate-audit": {
+      if (!a.selector || typeof a.selector !== "string") throw new Error("selector required");
+      if (typeof a.duration === "boolean") throw new Error("duration must be a number");
+      if (typeof a.fps === "boolean") throw new Error("fps must be a number");
+      const durationMs = a.duration !== undefined ? Number(a.duration) : 2000;
+      const fps = a.fps !== undefined ? Number(a.fps) : 10;
+      if (!Number.isFinite(durationMs) || durationMs < 100 || durationMs > 10000) {
+        throw new Error("duration must be between 100 and 10000 ms");
+      }
+      if (!Number.isFinite(fps) || fps < 1 || fps > 30) {
+        throw new Error("fps must be between 1 and 30");
+      }
+      return { type: "ANIMATE_AUDIT", selector: a.selector, durationMs, fps, ...baseMsg };
+    }
     case "wait_for_element":
       return { 
         type: "WAIT_FOR_ELEMENT", 

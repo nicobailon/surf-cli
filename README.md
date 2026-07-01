@@ -314,6 +314,16 @@ surf emulate.touch --enabled false            # Disable touch
 
 Available devices: iPhone 12-14 (Pro/Max), iPhone SE, iPad (Pro/Mini), Pixel 5-7 (Pro), Galaxy S21-S23, Galaxy Tab S7, Nest Hub (Max).
 
+### Animation Audit
+
+Sample matching elements over time and return a bounded JSON timeline for agent inspection:
+
+```bash
+surf animate-audit --selector ".thing" --duration 2000 --fps 10
+```
+
+The command captures rect, opacity, transform, visibility, display, and a short text snippet for up to 25 matching elements per sample. `--selector` is required. `--duration` defaults to 2000ms and is capped at 10000ms; `--fps` defaults to 10 and is capped at 30. This command returns JSON only and does not record GIF/video output.
+
 ### Performance Tracing
 
 Capture performance metrics and traces:
@@ -388,6 +398,7 @@ surf wait.url "/dashboard"          # Wait for URL pattern
 
 ```bash
 surf js "return document.title"     # Execute JavaScript
+surf animate-audit --selector ".thing" --duration 2000 --fps 10  # JSON animation timeline
 surf search "login"                 # Find text in page
 surf cookie list                    # List cookies
 surf zoom 1.5                       # Set zoom to 150%

@@ -238,3 +238,111 @@ describe("JavaScript command handlers", () => {
     });
   });
 });
+
+describe("Animation audit handler", () => {
+  beforeEach(() => {
+    resetChromeMock();
+  });
+
+  it("runs a bounded in-page sampler and returns the timeline", async () => {
+    const handleMessage = await loadHandleMessage();
+    const chrome = (globalThis as any).chrome;
+    chrome.debugger.sendCommand.mockImplementation(
+      async (_target: any, method: string, params?: any) => {
+        if (method !== "Runtime.evaluate") {
+          return {};
+        }
+        expect(params.returnByValue).toBe(true);
+        expect(params.awaitPromise).toBe(true);
+        expect(params.expression).toContain('const selector = ".thing"');
+        expect(params.expression).toContain("const durationMs = 500");
+        expect(params.expression).toContain("const fps = 5");
+        expect(params.expression).toContain("const maxElements = 25");
+        return {
+          result: {
+            value: {
+              selector: ".thing",
+              durationMs: 500,
+              fps: 5,
+              sampleCount: 1,
+              samples: [
+                {
+                  t: 0,
+                  timestamp: 123,
+                  elements: [
+                    {
+                      selector: ".thing",
+                      index: 0,
+                      rect: { x: 1, y: 2, width: 3, height: 4 },
+                      opacity: "1",
+                      transform: "none",
+                      visibility: "visible",
+                      display: "block",
+                      text: "Hello",
+                    },
+                  ],
+                },
+              ],
+            },
+            type: "object",
+          },
+        };
+      },
+    );
+
+    const result = await handleMessage(
+      { type: "ANIMATE_AUDIT", tabId: 1, selector: ".thing", durationMs: 500, fps: 5 },
+      {},
+    );
+
+    expect(result).toMatchObject({
+      selector: ".thing",
+      durationMs: 500,
+      fps: 5,
+      sampleCount: 1,
+    });
+    expect(result.samples[0].elements[0]).toMatchObject({
+      rect: { x: 1, y: 2, width: 3, height: 4 },
+      opacity: "1",
+      transform: "none",
+      visibility: "visible",
+      display: "block",
+      text: "Hello",
+    });
+  });
+
+  it("validates animate-audit numeric inputs in the service worker", async () => {
+    const handleMessage = await loadHandleMessage();
+
+    await expect(
+      handleMessage({ type: "ANIMATE_AUDIT", tabId: 1, selector: ".thing", durationMs: true }, {}),
+    ).rejects.toThrow("duration must be a number");
+    await expect(
+      handleMessage({ type: "ANIMATE_AUDIT", tabId: 1, selector: ".thing", fps: true }, {}),
+    ).rejects.toThrow("fps must be a number");
+    await expect(
+      handleMessage({ type: "ANIMATE_AUDIT", tabId: 1, selector: ".thing", durationMs: 10001 }, {}),
+    ).rejects.toThrow("duration must be between 100 and 10000 ms");
+    await expect(
+      handleMessage({ type: "ANIMATE_AUDIT", tabId: 1, selector: ".thing", fps: 31 }, {}),
+    ).rejects.toThrow("fps must be between 1 and 30");
+  });
+
+  it("returns runtime evaluation errors", async () => {
+    const handleMessage = await loadHandleMessage();
+    const chrome = (globalThis as any).chrome;
+    chrome.debugger.sendCommand.mockResolvedValue({
+      exceptionDetails: {
+        text: "SyntaxError",
+        exception: { description: "DOMException: invalid selector" },
+      },
+    });
+
+    const result = await handleMessage(
+      { type: "ANIMATE_AUDIT", tabId: 1, selector: "[", durationMs: 500, fps: 5 },
+      {},
+    );
+
+    expect(result).toEqual({ error: "DOMException: invalid selector" });
+  });
+});
