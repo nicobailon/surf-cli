@@ -4,6 +4,7 @@
 
 ### Fixed
 - **Gemini blob-backed generated images** - Detect and extract Gemini-generated `blob:` images from the page while preserving existing `gg-dl` URL downloads. (@goneflyin)
+- **Accessibility tree nested labels** - Include nested text content when naming interactive links, buttons, and summaries so child spans contribute accessible names. (@skyeryg)
 
 ## [2.7.2] - 2026-04-10
 
