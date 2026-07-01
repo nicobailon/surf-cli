@@ -1,5 +1,29 @@
+import { vi } from "vitest";
 // @ts-expect-error - CommonJS module without type definitions
 import * as chatgptClient from "../../native/chatgpt-client.cjs";
+
+function createReadyChatGptEvaluate(
+  loginStatus: Record<string, unknown> = { status: 200, hasLoginCta: false },
+) {
+  return async (_tabId: number, expression: string) => {
+    if (expression === "document.readyState") {
+      return { result: { value: "complete" } };
+    }
+    if (expression === "document.title.toLowerCase()") {
+      return { result: { value: "chatgpt" } };
+    }
+    if (expression.includes("challenge-platform")) {
+      return { result: { value: false } };
+    }
+    if (expression.includes("fetch('/backend-api/me'")) {
+      return { result: { value: loginStatus } };
+    }
+    if (expression.includes("const selectors") && expression.includes("prompt-textarea")) {
+      return { result: { value: true } };
+    }
+    throw new Error(`Unexpected expression: ${expression}`);
+  };
+}
 
 describe("chatgpt-client", () => {
   describe("cleanChatGPTResponseText", () => {
@@ -316,6 +340,55 @@ describe("chatgpt-client", () => {
   });
 
   describe("query", () => {
+    it("invokes the upload callback for ChatGPT files and propagates upload errors", async () => {
+      const uploadFile = vi.fn(async () => ({ error: "composer file input not found" }));
+      const closeCalls: number[] = [];
+
+      await expect(
+        chatgptClient.query({
+          prompt: "summarize this",
+          file: "fixtures/report.txt",
+          getCookies: async () => ({
+            cookies: [{ name: "__Secure-next-auth.session-token.0", value: "abc" }],
+          }),
+          createTab: async () => ({ tabId: 123 }),
+          closeTab: async (tabId: number) => {
+            closeCalls.push(tabId);
+          },
+          uploadFile,
+          cdpCommand: async () => {
+            throw new Error("cdpCommand should not be called before upload succeeds");
+          },
+          cdpEvaluate: createReadyChatGptEvaluate(),
+        }),
+      ).rejects.toThrow("ChatGPT file upload failed: composer file input not found");
+
+      expect(uploadFile).toHaveBeenCalledWith(123, [
+        expect.stringContaining("fixtures/report.txt"),
+      ]);
+      expect(closeCalls).toEqual([123]);
+    });
+
+    it("throws a clear error when ChatGPT file upload is requested without a host callback", async () => {
+      await expect(
+        chatgptClient.query({
+          prompt: "summarize this",
+          file: "report.txt",
+          getCookies: async () => ({
+            cookies: [{ name: "__Secure-next-auth.session-token.0", value: "abc" }],
+          }),
+          createTab: async () => ({ tabId: 123 }),
+          closeTab: async () => undefined,
+          cdpCommand: async () => {
+            throw new Error("cdpCommand should not be called");
+          },
+          cdpEvaluate: createReadyChatGptEvaluate(),
+        }),
+      ).rejects.toThrow(
+        "ChatGPT file upload unavailable: native host did not provide upload callback",
+      );
+    });
+
     it("preserves login check failures instead of downgrading them to login required", async () => {
       const closeCalls: number[] = [];
 
@@ -332,29 +405,11 @@ describe("chatgpt-client", () => {
           cdpCommand: async () => {
             throw new Error("cdpCommand should not be called");
           },
-          cdpEvaluate: async (_tabId: number, expression: string) => {
-            if (expression === "document.readyState") {
-              return { result: { value: "complete" } };
-            }
-            if (expression === "document.title.toLowerCase()") {
-              return { result: { value: "chatgpt" } };
-            }
-            if (expression.includes("challenge-platform")) {
-              return { result: { value: false } };
-            }
-            if (expression.includes("fetch('/backend-api/me'")) {
-              return {
-                result: {
-                  value: {
-                    status: 0,
-                    error: "TypeError: Failed to fetch",
-                    url: "https://chatgpt.com/",
-                  },
-                },
-              };
-            }
-            throw new Error(`Unexpected expression: ${expression}`);
-          },
+          cdpEvaluate: createReadyChatGptEvaluate({
+            status: 0,
+            error: "TypeError: Failed to fetch",
+            url: "https://chatgpt.com/",
+          }),
         }),
       ).rejects.toThrow("ChatGPT login check failed: TypeError: Failed to fetch");
 

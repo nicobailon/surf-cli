@@ -7,6 +7,8 @@
 - **Cookie subcommands** - Added space-separated cookie commands (`surf cookie list`, `get`, `set`, `clear --all`, and `delete`) while keeping existing `cookie.*` commands working.
 
 ### Fixed
+- **ChatGPT file upload** - `surf chatgpt --file <path>` now uploads the file through the ChatGPT composer before sending the prompt, with provider-specific upload errors.
+- **Gemini upload menu selector** - Accept Gemini's current `Upload & tools` opener while preserving the legacy upload menu selector.
 - **Screenshot full-page alias** - Treat `surf screenshot --full-page` the same as `--fullpage`, including explicit output paths.
 - **Resize shorthand parsing** - `surf resize 375 812` now maps positional width and height, while `surf resize 375` sets width only.
 - **Grok UI drift** - Updated default model selection for the current Grok menu, broadened send-button validation, and trimmed trailing suggested follow-up chips from extracted responses.

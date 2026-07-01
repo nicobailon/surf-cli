@@ -1,3 +1,5 @@
+const path = require("path");
+
 const CHATGPT_URL = "https://chatgpt.com/";
 
 const SELECTORS = {
@@ -645,6 +647,7 @@ async function query(options) {
     closeTab,
     cdpEvaluate,
     cdpCommand,
+    uploadFile,
     log = () => {},
   } = options;
   const startTime = Date.now();
@@ -692,7 +695,21 @@ async function query(options) {
       log(`Selected model: ${selectedLabel}`);
     }
     if (file) {
-      throw new Error("File upload not yet implemented");
+      if (!uploadFile) {
+        throw new Error("ChatGPT file upload unavailable: native host did not provide upload callback");
+      }
+      const files = Array.isArray(file) ? file : [file];
+      const absFiles = files.map((filePath) => path.resolve(process.cwd(), filePath));
+      log(`Uploading ${absFiles.length} file(s) to ChatGPT...`);
+      const uploadResult = await uploadFile(tabId, absFiles);
+      if (uploadResult?.error) {
+        throw new Error(`ChatGPT file upload failed: ${uploadResult.error}`);
+      }
+      if (!uploadResult?.success) {
+        throw new Error("ChatGPT file upload failed: upload did not report success");
+      }
+      log("File uploaded, waiting for ChatGPT attachment processing...");
+      await delay(1500);
     }
     await typePrompt(cdp, inputCdp, prompt);
     log("Prompt typed");

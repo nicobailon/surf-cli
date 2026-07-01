@@ -12,7 +12,7 @@ const perplexityClient = require("./perplexity-client.cjs");
 const grokClient = require("./grok-client.cjs");
 const aistudioClient = require("./aistudio-client.cjs");
 const aistudioBuild = require("./aistudio-build.cjs");
-const { mapToolToMessage, mapComputerAction, formatToolContent } = require("./host-helpers.cjs");
+const { mapToolToMessage, mapComputerAction, formatToolContent, buildProviderUploadMessage } = require("./host-helpers.cjs");
 
 const IS_WIN = process.platform === "win32";
 const { SOCKET_PATH, SURF_TMP } = require("./socket-path.cjs");
@@ -533,6 +533,16 @@ function handleToolRequest(msg, socket) {
           });
           writeMessage({ type: "CHATGPT_CDP_COMMAND", tabId, method, params, id: cmdId });
         }),
+        uploadFile: (tabId, filePaths) => new Promise((resolve) => {
+          const uploadId = ++requestCounter;
+          pendingToolRequests.set(uploadId, {
+            socket: null,
+            originalId: null,
+            tool: "upload_file",
+            onComplete: (r) => resolve(r)
+          });
+          writeMessage(buildProviderUploadMessage("chatgpt", tabId, filePaths, uploadId));
+        }),
         log: (msg) => log(`[chatgpt] ${msg}`)
       });
       
@@ -735,7 +745,7 @@ function handleToolRequest(msg, socket) {
             tool: "upload_file",
             onComplete: (r) => resolve(r)
           });
-          writeMessage({ type: "UPLOAD_FILE_TO_TAB", tabId, filePaths, id: uploadId });
+          writeMessage(buildProviderUploadMessage("gemini", tabId, filePaths, uploadId));
         }),
         fetchUrl: (url) => new Promise((resolve) => {
           const fetchId = ++requestCounter;

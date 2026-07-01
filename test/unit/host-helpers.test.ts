@@ -1,6 +1,34 @@
 // @ts-expect-error - CommonJS module without type definitions
 import * as helpers from "../../native/host-helpers.cjs";
 
+describe("buildProviderUploadMessage", () => {
+  it("builds provider-aware ChatGPT upload messages", () => {
+    expect(helpers.buildProviderUploadMessage("chatgpt", 123, ["/tmp/file.txt"], 7)).toEqual({
+      type: "AI_UPLOAD_FILE_TO_TAB",
+      provider: "chatgpt",
+      tabId: 123,
+      filePaths: ["/tmp/file.txt"],
+      id: 7,
+    });
+  });
+
+  it("builds provider-aware Gemini upload messages", () => {
+    expect(helpers.buildProviderUploadMessage("gemini", 456, ["/tmp/image.png"], 8)).toEqual({
+      type: "AI_UPLOAD_FILE_TO_TAB",
+      provider: "gemini",
+      tabId: 456,
+      filePaths: ["/tmp/image.png"],
+      id: 8,
+    });
+  });
+
+  it("rejects unsupported upload providers", () => {
+    expect(() => helpers.buildProviderUploadMessage("perplexity", 1, ["/tmp/file.txt"], 2)).toThrow(
+      "Unsupported upload provider: perplexity",
+    );
+  });
+});
+
 describe("mapToolToMessage", () => {
   describe("window commands", () => {
     it("maps window.new to WINDOW_NEW with url", () => {

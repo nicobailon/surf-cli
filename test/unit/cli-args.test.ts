@@ -123,4 +123,11 @@ describe("CLI argument parsing", () => {
     expect(request.params.args).not.toHaveProperty("width");
     expect(request.params.args).not.toHaveProperty("height");
   });
+
+  it("resolves ChatGPT file paths before sending to the native host", async () => {
+    const { request } = await runCli(["chatgpt", "summarize", "--file", "fixtures/report.txt"]);
+
+    expect(request.params.tool).toBe("chatgpt");
+    expect(request.params.args.file).toBe(path.resolve("fixtures/report.txt"));
+  });
 });

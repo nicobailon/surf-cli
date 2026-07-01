@@ -2755,6 +2755,13 @@ if (tool === "gemini") {
     toolArgs.file = path.resolve(toolArgs.file);
   }
 }
+if (tool === "chatgpt" && toolArgs.file) {
+  if (Array.isArray(toolArgs.file)) {
+    toolArgs.file = toolArgs.file.map((filePath) => path.resolve(filePath));
+  } else if (typeof toolArgs.file === "string") {
+    toolArgs.file = path.resolve(toolArgs.file);
+  }
+}
 
 if (tool === "screenshot" && outputPath) {
   if (typeof outputPath !== "string") {

@@ -35,6 +35,144 @@ function getScreenshot(id: string): { base64: string; width: number; height: num
   return screenshotCache.get(id) || null;
 }
 
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+const providerUploadStrategies = {
+  gemini: {
+    openerSelector: 'button[aria-label="Upload & tools"], button[aria-label="Open upload file menu"]',
+    closeSelector: 'button[aria-label="Close upload file menu"]',
+    uploadItemSelector: '[data-test-id="local-images-files-uploader-button"], [data-testid="local-images-files-uploader-button"], button[aria-label^="Upload files"]',
+  },
+  chatgpt: {
+    directInputSelector: 'form input[type="file"]:not([accept*="image"]), input[type="file"]:not([accept*="image"]), input[type="file"]',
+    openerSelector: 'button[data-testid="composer-plus-btn"], button[aria-label="Add files and more"]',
+  },
+};
+
+async function setFileInputFilesBySelector(
+  tabId: number,
+  filePaths: string[],
+  selector: string,
+): Promise<boolean> {
+  const result = await cdp.sendCommand(tabId, "Runtime.evaluate", {
+    expression: `(() => {
+      const input = document.querySelector(${JSON.stringify(selector)});
+      if (!input || input.tagName !== 'INPUT' || input.type !== 'file') return null;
+      return input;
+    })()`,
+    userGesture: true,
+  });
+  const objectId = result?.result?.objectId;
+  if (!objectId) return false;
+  await cdp.sendCommand(tabId, "DOM.setFileInputFiles", { files: filePaths, objectId });
+  return true;
+}
+
+async function uploadFilesWithChooser(
+  tabId: number,
+  filePaths: string[],
+  provider: "gemini" | "chatgpt",
+): Promise<void> {
+  await cdp.sendCommand(tabId, "Page.setInterceptFileChooserDialog", { enabled: true });
+
+  let timeoutId: ReturnType<typeof setTimeout> | null = null;
+  let handler: ((source: chrome.debugger.Debuggee, method: string, params: any) => void) | null = null;
+  const cleanup = () => {
+    if (timeoutId) { clearTimeout(timeoutId); timeoutId = null; }
+    if (handler) { chrome.debugger.onEvent.removeListener(handler); handler = null; }
+  };
+
+  const attemptFileChooser = (attemptNum: number, timeoutMs: number): Promise<void> => {
+    return new Promise<void>((resolve, reject) => {
+      timeoutId = setTimeout(() => {
+        cleanup();
+        reject(new Error(`${provider} file chooser did not open within ${timeoutMs / 1000}s (attempt ${attemptNum})`));
+      }, timeoutMs);
+      handler = (source: chrome.debugger.Debuggee, method: string, params: any) => {
+        if (source.tabId === tabId && method === "Page.fileChooserOpened") {
+          cleanup();
+          cdp.sendCommand(tabId, "DOM.setFileInputFiles", {
+            files: filePaths,
+            backendNodeId: params.backendNodeId,
+          }).then(() => resolve()).catch(reject);
+        }
+      };
+      chrome.debugger.onEvent.addListener(handler);
+    });
+  };
+
+  const clickUploadSequence = async () => {
+    if (provider === "gemini") {
+      await cdp.sendCommand(tabId, "Runtime.evaluate", {
+        expression: `document.querySelector(${JSON.stringify(providerUploadStrategies.gemini.closeSelector)})?.click()`,
+        userGesture: true,
+      });
+      await sleep(300);
+      await cdp.sendCommand(tabId, "Runtime.evaluate", {
+        expression: `document.querySelector(${JSON.stringify(providerUploadStrategies.gemini.openerSelector)})?.click()`,
+        userGesture: true,
+      });
+      await sleep(500);
+      await cdp.sendCommand(tabId, "Runtime.evaluate", {
+        expression: `document.querySelector(${JSON.stringify(providerUploadStrategies.gemini.uploadItemSelector)})?.click()`,
+        userGesture: true,
+      });
+      return;
+    }
+
+    await cdp.sendCommand(tabId, "Runtime.evaluate", {
+      expression: `document.querySelector(${JSON.stringify(providerUploadStrategies.chatgpt.openerSelector)})?.click()`,
+      userGesture: true,
+    });
+  };
+
+  const maxAttempts = 3;
+  const timeouts = [10000, 15000, 20000];
+  let lastError: Error | null = null;
+
+  try {
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+      try {
+        const fileSetPromise = attemptFileChooser(attempt, timeouts[attempt - 1]);
+        await clickUploadSequence();
+        await fileSetPromise;
+        return;
+      } catch (err) {
+        lastError = err as Error;
+        cleanup();
+        if (attempt < maxAttempts) await sleep(1000);
+      }
+    }
+    throw new Error(`${provider} file upload failed after ${maxAttempts} attempts: ${lastError?.message}`);
+  } finally {
+    cleanup();
+    try { await cdp.sendCommand(tabId, "Page.setInterceptFileChooserDialog", { enabled: false }); } catch {}
+  }
+}
+
+async function uploadFilesToProviderTab(
+  provider: "gemini" | "chatgpt",
+  tabId: number,
+  filePaths: string[],
+): Promise<{ success: true }> {
+  await cdp.attach(tabId);
+  await cdp.sendCommand(tabId, "DOM.enable", {});
+
+  if (provider === "chatgpt") {
+    const directUpload = await setFileInputFilesBySelector(
+      tabId,
+      filePaths,
+      providerUploadStrategies.chatgpt.directInputSelector,
+    );
+    if (directUpload) return { success: true };
+  }
+
+  await uploadFilesWithChooser(tabId, filePaths, provider);
+  return { success: true };
+}
+
 const ELEMENT_COLORS: Record<string, string> = {
   button: '#FF6B6B',
   input: '#4ECDC4',
@@ -2864,87 +3002,17 @@ export async function handleMessage(
       return { success: true };
     }
 
+    case "AI_UPLOAD_FILE_TO_TAB":
     case "UPLOAD_FILE_TO_TAB": {
       const { tabId: uploadTabId, filePaths } = message;
+      const provider = message.type === "UPLOAD_FILE_TO_TAB" ? "gemini" : message.provider;
       if (!uploadTabId || !filePaths?.length) {
-        throw new Error("UPLOAD_FILE_TO_TAB requires tabId and filePaths");
+        throw new Error(`${message.type} requires tabId and filePaths`);
       }
-      await cdp.attach(uploadTabId);
-      await cdp.sendCommand(uploadTabId, "DOM.enable", {});
-      await cdp.sendCommand(uploadTabId, "Page.setInterceptFileChooserDialog", { enabled: true });
-
-      let timeoutId: ReturnType<typeof setTimeout> | null = null;
-      let handler: ((source: chrome.debugger.Debuggee, method: string, params: any) => void) | null = null;
-      const cleanup = () => {
-        if (timeoutId) { clearTimeout(timeoutId); timeoutId = null; }
-        if (handler) { chrome.debugger.onEvent.removeListener(handler); handler = null; }
-      };
-
-      const attemptFileChooser = (attemptNum: number, timeoutMs: number): Promise<void> => {
-        return new Promise<void>((resolve, reject) => {
-          timeoutId = setTimeout(() => {
-            cleanup();
-            reject(new Error(`File chooser did not open within ${timeoutMs / 1000}s (attempt ${attemptNum})`));
-          }, timeoutMs);
-          handler = (source: chrome.debugger.Debuggee, method: string, params: any) => {
-            if (source.tabId === uploadTabId && method === "Page.fileChooserOpened") {
-              cleanup();
-              cdp.sendCommand(uploadTabId, "DOM.setFileInputFiles", {
-                files: filePaths,
-                backendNodeId: params.backendNodeId,
-              }).then(() => resolve()).catch(reject);
-            }
-          };
-          chrome.debugger.onEvent.addListener(handler);
-        });
-      };
-
-      const clickUploadSequence = async () => {
-        // Close menu if already open
-        await cdp.sendCommand(uploadTabId, "Runtime.evaluate", {
-          expression: `document.querySelector('button[aria-label="Close upload file menu"]')?.click()`,
-          userGesture: true,
-        });
-        await new Promise(r => setTimeout(r, 300));
-
-        // Open upload menu
-        await cdp.sendCommand(uploadTabId, "Runtime.evaluate", {
-          expression: `document.querySelector('button[aria-label="Open upload file menu"]')?.click()`,
-          userGesture: true,
-        });
-        await new Promise(r => setTimeout(r, 500));
-
-        // Click "Upload files" button
-        await cdp.sendCommand(uploadTabId, "Runtime.evaluate", {
-          expression: `document.querySelector('[data-test-id="local-images-files-uploader-button"]')?.click()`,
-          userGesture: true,
-        });
-      };
-
-      const maxAttempts = 3;
-      const timeouts = [10000, 15000, 20000];
-      let lastError: Error | null = null;
-
-      try {
-        for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-          try {
-            const fileSetPromise = attemptFileChooser(attempt, timeouts[attempt - 1]);
-            await clickUploadSequence();
-            await fileSetPromise;
-            return { success: true };
-          } catch (err) {
-            lastError = err as Error;
-            cleanup();
-            if (attempt < maxAttempts) {
-              await new Promise(r => setTimeout(r, 1000));
-            }
-          }
-        }
-        throw new Error(`File upload failed after ${maxAttempts} attempts: ${lastError?.message}`);
-      } finally {
-        cleanup();
-        try { await cdp.sendCommand(uploadTabId, "Page.setInterceptFileChooserDialog", { enabled: false }); } catch {}
+      if (provider !== "gemini" && provider !== "chatgpt") {
+        throw new Error(`Unsupported upload provider: ${provider}`);
       }
+      return uploadFilesToProviderTab(provider, uploadTabId, filePaths);
     }
 
     case "GEMINI_FETCH_URL": {
@@ -3166,7 +3234,7 @@ const COMMANDS_WITHOUT_TAB = new Set([
   "GET_CHATGPT_COOKIES", "GET_GOOGLE_COOKIES", "GET_TWITTER_COOKIES",
   "PERPLEXITY_NEW_TAB", "PERPLEXITY_CLOSE_TAB", "PERPLEXITY_EVALUATE", "PERPLEXITY_CDP_COMMAND",
   "GROK_NEW_TAB", "GROK_CLOSE_TAB", "GROK_EVALUATE", "GROK_CDP_COMMAND",
-  "GEMINI_NEW_TAB", "GEMINI_CLOSE_TAB", "GEMINI_FETCH_URL", "UPLOAD_FILE_TO_TAB",
+  "GEMINI_NEW_TAB", "GEMINI_CLOSE_TAB", "GEMINI_FETCH_URL", "AI_UPLOAD_FILE_TO_TAB", "UPLOAD_FILE_TO_TAB",
   "AISTUDIO_NEW_TAB", "AISTUDIO_CLOSE_TAB", "AISTUDIO_EVALUATE", "AISTUDIO_CDP_COMMAND",
   "DOWNLOADS_SEARCH",
   "WINDOW_NEW", "WINDOW_LIST", "WINDOW_FOCUS", "WINDOW_CLOSE", "WINDOW_RESIZE",

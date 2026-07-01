@@ -2,6 +2,14 @@ const fs = require("fs");
 const networkFormatters = require("./formatters/network.cjs");
 const networkStore = require("./network-store.cjs");
 
+function buildProviderUploadMessage(provider, tabId, filePaths, id) {
+  const normalizedProvider = String(provider || "").toLowerCase();
+  if (!["chatgpt", "gemini"].includes(normalizedProvider)) {
+    throw new Error(`Unsupported upload provider: ${provider}`);
+  }
+  return { type: "AI_UPLOAD_FILE_TO_TAB", provider: normalizedProvider, tabId, filePaths, id };
+}
+
 function normalizeModelString(model) {
   return String(model || "").trim().toLowerCase();
 }
@@ -1146,4 +1154,4 @@ function mapToolToMessage(tool, args, tabId) {
   }
 }
 
-module.exports = { mapToolToMessage, mapComputerAction, formatToolContent };
+module.exports = { mapToolToMessage, mapComputerAction, formatToolContent, buildProviderUploadMessage };
