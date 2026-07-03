@@ -3,6 +3,7 @@
 ## [Unreleased]
 
 ### Added
+- **Performance audit** - Added `surf perf-audit --duration ... --trigger ... --output ...` for bounded PerformanceObserver snapshots of layout shifts, events, long tasks, paints, and long animation frames.
 - **Animation recording** - Added `surf record --duration ... --fps ... --output ...` to capture screenshot bursts and assemble animated GIFs with ImageMagick.
 - **Browser request lock** - Added per-socket CLI request serialization for multi-agent workflows, with `--no-lock` for intentional bypasses.
 - **Animation audit** - Added `surf animate-audit --selector ... --duration ... --fps ...` for bounded JSON timelines of element rect/style samples.

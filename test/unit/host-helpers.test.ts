@@ -171,6 +171,43 @@ describe("mapToolToMessage", () => {
     });
   });
 
+  describe("perf-audit command", () => {
+    it("maps perf-audit with bounded defaults", () => {
+      const msg = helpers.mapToolToMessage("perf-audit", {}, 123);
+      expect(msg).toMatchObject({
+        type: "PERF_AUDIT",
+        durationMs: 3000,
+        tabId: 123,
+      });
+    });
+
+    it("parses perf-audit duration and trigger", () => {
+      const msg = helpers.mapToolToMessage(
+        "perf-audit",
+        { duration: "1500", trigger: "click:.cta" },
+        123,
+      );
+      expect(msg).toMatchObject({
+        type: "PERF_AUDIT",
+        durationMs: 1500,
+        trigger: "click:.cta",
+        tabId: 123,
+      });
+    });
+
+    it("rejects malformed perf-audit options", () => {
+      expect(() => helpers.mapToolToMessage("perf-audit", { duration: true })).toThrow(
+        "duration must be a number",
+      );
+      expect(() => helpers.mapToolToMessage("perf-audit", { duration: "10001" })).toThrow(
+        "duration must be between 100 and 10000 ms",
+      );
+      expect(() => helpers.mapToolToMessage("perf-audit", { trigger: true })).toThrow(
+        "trigger must be action:target",
+      );
+    });
+  });
+
   describe("scroll commands", () => {
     it("maps direction and amount flags to scroll deltas", () => {
       const msg = helpers.mapToolToMessage("scroll", { direction: "down", amount: 4 }, 123);

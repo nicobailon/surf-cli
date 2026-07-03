@@ -187,6 +187,9 @@ describe("CLI argument parsing", () => {
     expect(stdout).toContain("surf click e5");
     expect(stdout).toContain("surf screenshot --full-page /tmp/full.png");
     expect(stdout).toContain("surf record --duration 2000 --fps 10 --output /tmp/anim.gif");
+    expect(stdout).toContain(
+      'surf perf-audit --duration 3000 --trigger "click:.cta" --output /tmp/perf.json',
+    );
     expect(stdout).toContain("surf scroll down 800");
     expect(stdout).toContain("surf cookie list");
     expect(stdout).toContain("surf resize 375 812");
@@ -451,6 +454,72 @@ describe("CLI argument parsing", () => {
       server.close();
       cleanupSocket(socketPath);
       fs.rmSync(magickDir, { recursive: true, force: true });
+      fs.rmSync(outputPath, { force: true });
+    }
+  });
+
+  it("saves perf-audit JSON output", async () => {
+    const socketPath = createSocketPath();
+    cleanupSocket(socketPath);
+    const outputPath = path.join(os.tmpdir(), `surf-perf-${process.pid}-${Date.now()}.json`);
+    let request: any;
+
+    const server = net.createServer((socket: any) => {
+      let buffer = "";
+      socket.on("data", (chunk: { toString(): string }) => {
+        buffer += chunk.toString();
+        const lineEnd = buffer.indexOf("\n");
+        if (lineEnd === -1) {
+          return;
+        }
+
+        request = JSON.parse(buffer.slice(0, lineEnd));
+        socket.write(
+          `${JSON.stringify({
+            result: {
+              content: [
+                {
+                  type: "text",
+                  text: JSON.stringify({
+                    durationMs: 300,
+                    summary: { cumulativeLayoutShift: 0.1 },
+                    entries: { layoutShifts: [] },
+                  }),
+                },
+              ],
+            },
+          })}\n`,
+        );
+        socket.end();
+      });
+    });
+
+    await new Promise<void>((resolve, reject) => {
+      server.on("error", reject);
+      server.listen(socketPath, resolve);
+    });
+
+    try {
+      const child = spawnCliWithSocket(
+        ["perf-audit", "--duration", "300", "--trigger", "click:.cta", "--output", outputPath],
+        socketPath,
+      );
+      const done = await waitFor(child.done, 3000, "perf-audit command");
+
+      expect(done.code).toBe(0);
+      expect(done.stderr).toBe("");
+      expect(done.stdout).toContain(`Saved perf audit to ${outputPath}`);
+      expect(request.params).toMatchObject({
+        tool: "perf-audit",
+        args: { duration: 300, trigger: "click:.cta" },
+      });
+      expect(JSON.parse(fs.readFileSync(outputPath, "utf8"))).toMatchObject({
+        durationMs: 300,
+        summary: { cumulativeLayoutShift: 0.1 },
+      });
+    } finally {
+      server.close();
+      cleanupSocket(socketPath);
       fs.rmSync(outputPath, { force: true });
     }
   });

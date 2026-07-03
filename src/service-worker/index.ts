@@ -2046,6 +2046,218 @@ export async function handleMessage(
       }
     }
 
+    case "PERF_AUDIT": {
+      if (!tabId) throw new Error("No tabId provided");
+      if (typeof message.durationMs === "boolean") throw new Error("duration must be a number");
+      if (message.trigger !== undefined && typeof message.trigger !== "string") {
+        throw new Error("trigger must be action:target");
+      }
+      const durationMs = message.durationMs !== undefined ? Number(message.durationMs) : 3000;
+      if (!Number.isFinite(durationMs) || durationMs < 100 || durationMs > 10000) {
+        throw new Error("duration must be between 100 and 10000 ms");
+      }
+
+      try {
+        const expression = `(async () => {
+          const durationMs = ${Math.round(durationMs)};
+          const trigger = ${JSON.stringify(message.trigger || null)};
+          const startedAt = Date.now();
+          const startedAtPerformance = performance.now();
+          const supportedEntryTypes = typeof PerformanceObserver !== "undefined" && Array.isArray(PerformanceObserver.supportedEntryTypes) ? PerformanceObserver.supportedEntryTypes : [];
+          const requestedTypes = ["layout-shift", "long-animation-frame", "event", "longtask", "paint"];
+          const observedEntryTypes = [];
+          const entries = {
+            layoutShifts: [],
+            longAnimationFrames: [],
+            events: [],
+            longTasks: [],
+            paints: [],
+          };
+          const round = (value) => Math.round(value * 100) / 100;
+          const auditEndsAtPerformance = startedAtPerformance + durationMs;
+          const inAuditWindow = (entry) => entry.startTime >= startedAtPerformance && entry.startTime <= auditEndsAtPerformance;
+          const nodeSummary = (node) => {
+            if (!node || node.nodeType !== Node.ELEMENT_NODE) return null;
+            const el = node;
+            return {
+              tag: el.tagName?.toLowerCase(),
+              id: el.id || undefined,
+              className: typeof el.className === "string" ? el.className.slice(0, 120) : undefined,
+            };
+          };
+          const rectSummary = (rect) => rect ? {
+            x: round(rect.x),
+            y: round(rect.y),
+            width: round(rect.width),
+            height: round(rect.height),
+            top: round(rect.top),
+            right: round(rect.right),
+            bottom: round(rect.bottom),
+            left: round(rect.left),
+          } : null;
+          const pushEntry = (entry) => {
+            if (!inAuditWindow(entry)) return;
+            if (entry.entryType === "layout-shift") {
+              entries.layoutShifts.push({
+                name: entry.name,
+                startTime: round(entry.startTime),
+                duration: round(entry.duration || 0),
+                value: round(entry.value || 0),
+                hadRecentInput: Boolean(entry.hadRecentInput),
+                sources: Array.from(entry.sources || []).slice(0, 10).map((source) => ({
+                  node: nodeSummary(source.node),
+                  previousRect: rectSummary(source.previousRect),
+                  currentRect: rectSummary(source.currentRect),
+                })),
+              });
+              return;
+            }
+            if (entry.entryType === "long-animation-frame") {
+              entries.longAnimationFrames.push({
+                name: entry.name,
+                startTime: round(entry.startTime),
+                duration: round(entry.duration || 0),
+                renderStart: round(entry.renderStart || 0),
+                styleAndLayoutStart: round(entry.styleAndLayoutStart || 0),
+                blockingDuration: round(entry.blockingDuration || 0),
+                firstUIEventTimestamp: round(entry.firstUIEventTimestamp || 0),
+                scripts: Array.from(entry.scripts || []).slice(0, 10).map((script) => ({
+                  name: script.name,
+                  sourceURL: script.sourceURL,
+                  sourceFunctionName: script.sourceFunctionName,
+                  duration: round(script.duration || 0),
+                  invoker: script.invoker,
+                  invokerType: script.invokerType,
+                })),
+              });
+              return;
+            }
+            if (entry.entryType === "event") {
+              entries.events.push({
+                name: entry.name,
+                startTime: round(entry.startTime),
+                duration: round(entry.duration || 0),
+                processingStart: round(entry.processingStart || 0),
+                processingEnd: round(entry.processingEnd || 0),
+                interactionId: entry.interactionId || 0,
+                cancelable: Boolean(entry.cancelable),
+              });
+              return;
+            }
+            if (entry.entryType === "longtask") {
+              entries.longTasks.push({
+                name: entry.name,
+                startTime: round(entry.startTime),
+                duration: round(entry.duration || 0),
+              });
+              return;
+            }
+            if (entry.entryType === "paint") {
+              entries.paints.push({
+                name: entry.name,
+                startTime: round(entry.startTime),
+                duration: round(entry.duration || 0),
+              });
+            }
+          };
+          const observers = [];
+          for (const type of requestedTypes) {
+            if (!supportedEntryTypes.includes(type)) continue;
+            try {
+              const observer = new PerformanceObserver((list) => {
+                for (const entry of list.getEntries()) pushEntry(entry);
+              });
+              const options = type === "event"
+                ? { type, buffered: true, durationThreshold: 16 }
+                : { type, buffered: true };
+              observer.observe(options);
+              observers.push(observer);
+              observedEntryTypes.push(type);
+            } catch {}
+          }
+          const fireTrigger = () => {
+            if (!trigger) return null;
+            const separator = trigger.indexOf(":");
+            if (separator === -1) throw new Error("trigger must be action:target");
+            const action = trigger.slice(0, separator).trim();
+            const target = trigger.slice(separator + 1).trim();
+            if (!action || !target) throw new Error("trigger must be action:target");
+            if (action === "click") {
+              const el = document.querySelector(target);
+              if (!el) return { action, selector: target, fired: false };
+              el.click();
+              return { action, selector: target, fired: true };
+            }
+            if (action === "scroll") {
+              if (["up", "down", "left", "right"].includes(target)) {
+                const deltas = { up: [0, -500], down: [0, 500], left: [-500, 0], right: [500, 0] };
+                const [left, top] = deltas[target];
+                window.scrollBy({ left, top, behavior: "instant" });
+                return { action, target, fired: true };
+              }
+              if (target === "top" || target === "bottom") {
+                window.scrollTo({ top: target === "top" ? 0 : document.documentElement.scrollHeight, behavior: "instant" });
+                return { action, target, fired: true };
+              }
+              const el = document.querySelector(target);
+              if (!el) return { action, selector: target, fired: false };
+              el.scrollTop = el.scrollHeight;
+              el.dispatchEvent(new Event("scroll", { bubbles: true }));
+              return { action, selector: target, fired: true };
+            }
+            throw new Error("trigger action must be click or scroll");
+          };
+          const triggerResult = fireTrigger();
+          await new Promise((resolve) => setTimeout(resolve, durationMs));
+          for (const observer of observers) observer.disconnect();
+          const cls = entries.layoutShifts
+            .filter((entry) => !entry.hadRecentInput)
+            .reduce((sum, entry) => sum + entry.value, 0);
+          const maxDuration = (items) => items.reduce((max, entry) => Math.max(max, entry.duration || 0), 0);
+          const longTaskTotalDuration = entries.longTasks.reduce((sum, entry) => sum + (entry.duration || 0), 0);
+
+          return {
+            durationMs,
+            startedAt,
+            endedAt: Date.now(),
+            elapsedMs: round(performance.now() - startedAtPerformance),
+            supportedEntryTypes,
+            observedEntryTypes,
+            trigger: triggerResult,
+            summary: {
+              cumulativeLayoutShift: round(cls),
+              maxEventDuration: round(maxDuration(entries.events)),
+              maxLongAnimationFrame: round(maxDuration(entries.longAnimationFrames)),
+              longTaskTotalDuration: round(longTaskTotalDuration),
+              counts: {
+                layoutShifts: entries.layoutShifts.length,
+                longAnimationFrames: entries.longAnimationFrames.length,
+                events: entries.events.length,
+                longTasks: entries.longTasks.length,
+                paints: entries.paints.length,
+              },
+            },
+            entries,
+          };
+        })()`;
+
+        const result = await cdp.evaluateScript(tabId, expression);
+        if (result.exceptionDetails) {
+          const err = result.exceptionDetails.exception?.description ||
+            result.exceptionDetails.text ||
+            "Performance audit failed";
+          return { error: err };
+        }
+        return result.result?.value ?? { error: "Performance audit returned no data" };
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : "Performance audit failed";
+        if (msg.includes("Cannot access") || msg.includes("Cannot attach")) {
+          return { error: "Cannot execute performance audit on this page (restricted URL)" };
+        }
+        return { error: msg };
+      }
+    }
+
     case "READ_CONSOLE_MESSAGES": {
       if (!tabId) throw new Error("No tabId provided");
 

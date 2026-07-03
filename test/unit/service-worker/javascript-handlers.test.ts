@@ -328,6 +328,129 @@ describe("Animation audit handler", () => {
     ).rejects.toThrow("fps must be between 1 and 30");
   });
 
+  it("captures perf-audit snapshots", async () => {
+    const handleMessage = await loadHandleMessage();
+    const chrome = (globalThis as any).chrome;
+    chrome.debugger.sendCommand.mockResolvedValue({
+      result: {
+        value: {
+          durationMs: 500,
+          observedEntryTypes: ["layout-shift", "event"],
+          trigger: { action: "click", selector: ".cta", fired: true },
+          summary: {
+            cumulativeLayoutShift: 0.12,
+            maxEventDuration: 40,
+            counts: { layoutShifts: 1, events: 1 },
+          },
+          entries: {
+            layoutShifts: [{ value: 0.12, hadRecentInput: false }],
+            events: [{ name: "click", duration: 40 }],
+          },
+        },
+        type: "object",
+      },
+    });
+
+    const result = await handleMessage(
+      { type: "PERF_AUDIT", tabId: 1, durationMs: 500, trigger: "click:.cta" },
+      {},
+    );
+
+    expect(result).toMatchObject({
+      durationMs: 500,
+      observedEntryTypes: ["layout-shift", "event"],
+      trigger: { action: "click", selector: ".cta", fired: true },
+      summary: { cumulativeLayoutShift: 0.12, maxEventDuration: 40 },
+    });
+  });
+
+  it("filters buffered perf-audit entries outside the audit window", async () => {
+    const handleMessage = await loadHandleMessage();
+    const chrome = (globalThis as any).chrome;
+    const originalPerformanceObserver = (globalThis as any).PerformanceObserver;
+
+    class FakePerformanceObserver {
+      static supportedEntryTypes = ["layout-shift"];
+      callback: (list: { getEntries(): any[] }) => void;
+
+      constructor(callback: (list: { getEntries(): any[] }) => void) {
+        this.callback = callback;
+      }
+
+      observe() {
+        const now = performance.now();
+        this.callback({
+          getEntries: () => [
+            {
+              entryType: "layout-shift",
+              name: "",
+              startTime: now - 1000,
+              duration: 0,
+              value: 1,
+              hadRecentInput: false,
+              sources: [],
+            },
+            {
+              entryType: "layout-shift",
+              name: "",
+              startTime: now + 1,
+              duration: 0,
+              value: 0.2,
+              hadRecentInput: false,
+              sources: [],
+            },
+          ],
+        });
+      }
+
+      disconnect() {
+        return undefined;
+      }
+    }
+
+    (globalThis as any).PerformanceObserver = FakePerformanceObserver;
+    mockRuntimeEvaluate(chrome);
+
+    try {
+      const result = await handleMessage({ type: "PERF_AUDIT", tabId: 1, durationMs: 100 }, {});
+
+      expect(result.summary.cumulativeLayoutShift).toBe(0.2);
+      expect(result.summary.counts.layoutShifts).toBe(1);
+      expect(result.entries.layoutShifts).toHaveLength(1);
+    } finally {
+      (globalThis as any).PerformanceObserver = originalPerformanceObserver;
+    }
+  });
+
+  it("validates perf-audit numeric and trigger inputs in the service worker", async () => {
+    const handleMessage = await loadHandleMessage();
+
+    await expect(
+      handleMessage({ type: "PERF_AUDIT", tabId: 1, durationMs: true }, {}),
+    ).rejects.toThrow("duration must be a number");
+    await expect(
+      handleMessage({ type: "PERF_AUDIT", tabId: 1, durationMs: 10001 }, {}),
+    ).rejects.toThrow("duration must be between 100 and 10000 ms");
+    await expect(
+      handleMessage({ type: "PERF_AUDIT", tabId: 1, trigger: true }, {}),
+    ).rejects.toThrow("trigger must be action:target");
+  });
+
+  it("returns perf-audit runtime evaluation errors", async () => {
+    const handleMessage = await loadHandleMessage();
+    const chrome = (globalThis as any).chrome;
+    chrome.debugger.sendCommand.mockResolvedValue({
+      exceptionDetails: {
+        text: "PerformanceObserver failed",
+        exception: { description: "Error: PerformanceObserver failed" },
+      },
+    });
+
+    const result = await handleMessage({ type: "PERF_AUDIT", tabId: 1, durationMs: 500 }, {});
+
+    expect(result).toEqual({ error: "Error: PerformanceObserver failed" });
+  });
+
   it("returns runtime evaluation errors", async () => {
     const handleMessage = await loadHandleMessage();
     const chrome = (globalThis as any).chrome;

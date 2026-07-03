@@ -338,6 +338,17 @@ surf animate-audit --selector ".thing" --duration 2000 --fps 10
 
 The command captures rect, opacity, transform, visibility, display, and a short text snippet for up to 25 matching elements per sample. `--selector` is required. `--duration` defaults to 2000ms and is capped at 10000ms; `--fps` defaults to 10 and is capped at 30. This command returns JSON only and does not record GIF/video output.
 
+### Performance Audit
+
+Capture layout shift, long animation frame, event timing, long task, and paint entries during a short window:
+
+```bash
+surf perf-audit --duration 3000 --trigger "click:.cta" --output /tmp/perf.json
+surf perf-audit --duration 1000 --json
+```
+
+`perf-audit` defaults to 3000ms and is capped at 10000ms. `--trigger` supports the same `click:<selector>` and `scroll:<target>` forms as `record`. `--output` writes the JSON snapshot to disk.
+
 ### Performance Tracing
 
 Capture performance metrics and traces:
@@ -414,6 +425,7 @@ surf wait.url "/dashboard"          # Wait for URL pattern
 surf js "return document.title"     # Execute JavaScript
 surf record --duration 2000 --fps 10 --output /tmp/anim.gif      # Animated GIF capture
 surf animate-audit --selector ".thing" --duration 2000 --fps 10  # JSON animation timeline
+surf perf-audit --duration 3000 --output /tmp/perf.json           # PerformanceObserver snapshot
 surf search "login"                 # Find text in page
 surf cookie list                    # List cookies
 surf zoom 1.5                       # Set zoom to 150%

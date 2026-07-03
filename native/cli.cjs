@@ -625,6 +625,18 @@ const TOOLS = {
           { cmd: 'animate-audit --selector ".thing" --duration 2000 --fps 10', desc: "Capture a bounded JSON timeline" },
         ]
       },
+      "perf-audit": {
+        desc: "Capture layout shift, event, long task, and animation-frame performance entries",
+        args: [],
+        opts: {
+          duration: "Capture duration in ms (default: 3000, max: 10000)",
+          trigger: "Optional action before capture: click:<selector> or scroll:<target>",
+          output: "Save JSON to file"
+        },
+        examples: [
+          { cmd: 'perf-audit --duration 3000 --trigger "click:.cta" --output /tmp/perf.json', desc: "Capture a performance snapshot" },
+        ]
+      },
       "snap": { desc: "Alias for screenshot (auto-saves to /tmp)", args: [], alias: "screenshot" },
     }
   },
@@ -1536,7 +1548,7 @@ Exclude text content:
 };
 
 const ALL_SOCKET_TOOLS = [
-  "ai", "screenshot", "record", "animate-audit", "navigate",
+  "ai", "screenshot", "record", "animate-audit", "perf-audit", "navigate",
   "form_input", "find_and_type", "autocomplete", "set_value", "smart_type",
   "scroll_to_position", "get_scroll_info", "close_dialogs", "page_state",
   "javascript_tool", "health", "smoke",
@@ -1594,8 +1606,9 @@ const SEE_ALSO = {
   "perf.metrics": ["perf.start", "console", "network"],
   "navigate": ["wait.load", "page.read"],
   "screenshot": ["page.read", "scroll.bottom for fullpage"],
-  "record": ["screenshot", "animate-audit", "perf.metrics"],
-  "animate-audit": ["screenshot", "record", "js", "perf.metrics"],
+  "record": ["screenshot", "animate-audit", "perf-audit"],
+  "animate-audit": ["screenshot", "record", "perf-audit", "js"],
+  "perf-audit": ["record", "animate-audit", "perf.metrics", "console"],
   "search": ["locate.text", "page.read"],
   "wait.element": ["wait.load", "wait.network"],
   "wait.load": ["wait.element", "wait.network"],
@@ -1617,6 +1630,7 @@ Common Commands:
   screenshot         Capture screenshot (alias: snap)
   record             Capture screenshot frames into an animated GIF
   animate-audit      JSON timeline of element animation/style samples
+  perf-audit         PerformanceObserver snapshot for motion/jank debugging
   page.read          Get page accessibility tree (alias: read)
   locate.role <role> Find element by ARIA role
   search <term>      Search for text in page (alias: find)
@@ -1658,6 +1672,7 @@ Screenshot: surf screenshot /tmp/shot.png         # auto-saves to /tmp if no pat
 Full page screenshot: surf screenshot --full-page /tmp/full.png
 Record animation: surf record --duration 2000 --fps 10 --output /tmp/anim.gif
 Animation audit: surf animate-audit --selector ".thing" --duration 2000 --fps 10
+Performance audit: surf perf-audit --duration 3000 --trigger "click:.cta" --output /tmp/perf.json
 JavaScript: surf js "return document.title"
 Scroll: surf scroll down 800 | surf scroll up 400 | surf scroll bottom | surf scroll top
 Find by semantics: surf locate.role button --name "Submit" --action click
@@ -2884,7 +2899,7 @@ if (tool === "chatgpt" && toolArgs.file) {
   }
 }
 
-if ((tool === "screenshot" || tool === "record") && outputPath && typeof outputPath !== "string") {
+if ((tool === "screenshot" || tool === "record" || tool === "perf-audit") && outputPath && typeof outputPath !== "string") {
   console.error("Error: --output requires a file path");
   process.exit(1);
 }
@@ -3336,6 +3351,17 @@ async function handleResponse(response) {
 
   if (tool === 'aistudio' && typeof data === 'string') {
     data = { response: data };
+  }
+
+  if (tool === "perf-audit" && outputPath) {
+    const saveTo = path.resolve(outputPath);
+    fs.mkdirSync(path.dirname(saveTo), { recursive: true });
+    fs.writeFileSync(saveTo, JSON.stringify(data ?? null, null, 2));
+    if (!wantJson) {
+      console.log(`Saved perf audit to ${saveTo}`);
+      socket.end();
+      process.exit(0);
+    }
   }
 
   if (wantJson) {

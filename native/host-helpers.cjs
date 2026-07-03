@@ -619,6 +619,17 @@ function mapToolToMessage(tool, args, tabId) {
       }
       return { type: "ANIMATE_AUDIT", selector: a.selector, durationMs, fps, ...baseMsg };
     }
+    case "perf-audit": {
+      if (typeof a.duration === "boolean") throw new Error("duration must be a number");
+      if (a.trigger !== undefined && typeof a.trigger !== "string") {
+        throw new Error("trigger must be action:target");
+      }
+      const durationMs = a.duration !== undefined ? Number(a.duration) : 3000;
+      if (!Number.isFinite(durationMs) || durationMs < 100 || durationMs > 10000) {
+        throw new Error("duration must be between 100 and 10000 ms");
+      }
+      return { type: "PERF_AUDIT", durationMs, trigger: a.trigger, ...baseMsg };
+    }
     case "wait_for_element":
       return { 
         type: "WAIT_FOR_ELEMENT", 
