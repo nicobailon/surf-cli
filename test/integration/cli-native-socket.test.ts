@@ -292,6 +292,9 @@ describe("CLI native socket integration", () => {
     expect(result.stderr).toContain("Socket connect failed: Socket not found.");
     expect(result.stderr).toContain("Attempted socket:");
     expect(result.stderr).toContain(
+      "Run `surf doctor --browser all` for detailed native host diagnostics.",
+    );
+    expect(result.stderr).toContain(
       "SURF_SOCKET is set; make sure the native host and CLI use the same value.",
     );
     expect(result.stderr).not.toContain("/tmp/surf.sock");

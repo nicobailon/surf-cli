@@ -10,6 +10,7 @@ function getSocketTroubleshootingHint() {
   const lines = [
     `Attempted socket: ${SOCKET_PATH}`,
     "Make sure the browser is running with the Surf extension enabled, then restart the browser after native host install changes.",
+    "Run `surf doctor --browser all` for detailed native host diagnostics.",
   ];
 
   if (process.env.SURF_SOCKET) {
