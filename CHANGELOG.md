@@ -3,6 +3,7 @@
 ## [Unreleased]
 
 ### Added
+- **Animation recording** - Added `surf record --duration ... --fps ... --output ...` to capture screenshot bursts and assemble animated GIFs with ImageMagick.
 - **Browser request lock** - Added per-socket CLI request serialization for multi-agent workflows, with `--no-lock` for intentional bypasses.
 - **Animation audit** - Added `surf animate-audit --selector ... --duration ... --fps ...` for bounded JSON timelines of element rect/style samples.
 - **Concurrency docs** - Documented the current multi-agent isolation contract: window/tab targeting, named tabs, `SURF_SOCKET` for separate browser/profile instances, and the absence of built-in session IDs or independent per-agent CDP sessions.

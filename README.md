@@ -316,6 +316,18 @@ surf emulate.touch --enabled false            # Disable touch
 
 Available devices: iPhone 12-14 (Pro/Max), iPhone SE, iPad (Pro/Mini), Pixel 5-7 (Pro), Galaxy S21-S23, Galaxy Tab S7, Nest Hub (Max).
 
+### Animation Recording
+
+Capture a screenshot burst and assemble it into an animated GIF with ImageMagick:
+
+```bash
+surf record --duration 2000 --fps 10 --output /tmp/anim.gif
+surf record --trigger "click:#btn" --output /tmp/click.gif
+surf record --rect 0,200,1440,800 --output /tmp/region.gif
+```
+
+`record` defaults to 2000ms at 10fps and writes to `/tmp/surf-record-*.gif` when no output is provided. `--duration` is capped at 10000ms and `--fps` is capped at 30. `--trigger` supports `click:<selector>`, `scroll:up|down|left|right|top|bottom`, and `scroll:<selector>` to scroll a container to the bottom before capture. `--rect` crops the GIF using `x,y,width,height`. ImageMagick must be available as `magick` or `convert`.
+
 ### Animation Audit
 
 Sample matching elements over time and return a bounded JSON timeline for agent inspection:
@@ -400,6 +412,7 @@ surf wait.url "/dashboard"          # Wait for URL pattern
 
 ```bash
 surf js "return document.title"     # Execute JavaScript
+surf record --duration 2000 --fps 10 --output /tmp/anim.gif      # Animated GIF capture
 surf animate-audit --selector ".thing" --duration 2000 --fps 10  # JSON animation timeline
 surf search "login"                 # Find text in page
 surf cookie list                    # List cookies

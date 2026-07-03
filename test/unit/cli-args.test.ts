@@ -137,12 +137,16 @@ function runCli(args: string[]): Promise<{ request: any; stdout: string; stderr:
   });
 }
 
-function spawnCliWithSocket(args: string[], socketPath: string) {
+function spawnCliWithSocket(
+  args: string[],
+  socketPath: string,
+  extraEnv: Record<string, string | undefined> = {},
+) {
   let stdout = "";
   let stderr = "";
   const child = spawn(process.execPath, ["native/cli.cjs", ...args], {
     cwd: process.cwd(),
-    env: createCliEnv(socketPath),
+    env: { ...createCliEnv(socketPath), ...extraEnv },
     stdio: ["ignore", "pipe", "pipe"],
   });
 
@@ -182,6 +186,7 @@ describe("CLI argument parsing", () => {
     expect(stdout).toContain("surf page.read --depth 3 --compact");
     expect(stdout).toContain("surf click e5");
     expect(stdout).toContain("surf screenshot --full-page /tmp/full.png");
+    expect(stdout).toContain("surf record --duration 2000 --fps 10 --output /tmp/anim.gif");
     expect(stdout).toContain("surf scroll down 800");
     expect(stdout).toContain("surf cookie list");
     expect(stdout).toContain("surf resize 375 812");
@@ -372,6 +377,83 @@ describe("CLI argument parsing", () => {
       }
     });
   }
+
+  it("records screenshot frames into a GIF", async () => {
+    const socketPath = createSocketPath();
+    cleanupSocket(socketPath);
+    const outputPath = path.join(os.tmpdir(), `surf-record-${process.pid}-${Date.now()}.gif`);
+    const magickDir = fs.mkdtempSync(path.join(os.tmpdir(), "surf-magick-"));
+    const magickPath = path.join(magickDir, "magick");
+    fs.writeFileSync(magickPath, '#!/bin/sh\nfor last do :; done\nprintf "GIF89a" > "$last"\n');
+    fs.chmodSync(magickPath, 0o755);
+
+    const requests: any[] = [];
+    const server = net.createServer((socket: any) => {
+      let buffer = "";
+      socket.on("data", (chunk: { toString(): string }) => {
+        buffer += chunk.toString();
+        const lineEnd = buffer.indexOf("\n");
+        if (lineEnd === -1) {
+          return;
+        }
+
+        const request = JSON.parse(buffer.slice(0, lineEnd));
+        requests.push(request);
+        socket.write(
+          `${JSON.stringify({ result: { content: [{ type: "text", text: JSON.stringify({ ok: true }) }] } })}\n`,
+        );
+        socket.end();
+      });
+    });
+
+    await new Promise<void>((resolve, reject) => {
+      server.on("error", reject);
+      server.listen(socketPath, resolve);
+    });
+
+    try {
+      const child = spawnCliWithSocket(
+        [
+          "record",
+          "--duration",
+          "200",
+          "--fps",
+          "10",
+          "--trigger",
+          "click:#go",
+          "--rect",
+          "0,10,200,100",
+          "--output",
+          outputPath,
+          "--json",
+        ],
+        socketPath,
+        { PATH: `${magickDir}${path.delimiter}${process.env.PATH || ""}` },
+      );
+      const done = await waitFor(child.done, 3000, "record command");
+
+      expect(done.code).toBe(0);
+      expect(done.stderr).toBe("");
+      expect(fs.readFileSync(outputPath, "utf8")).toBe("GIF89a");
+      const summary = JSON.parse(done.stdout);
+      expect(summary).toMatchObject({ output: outputPath, frames: 2, durationMs: 200, fps: 10 });
+      expect(summary.trigger).toEqual({ action: "click", selector: "#go" });
+      expect(summary.rect).toEqual({ x: 0, y: 10, width: 200, height: 100 });
+      expect(requests.map((request) => request.params.tool)).toEqual([
+        "click",
+        "screenshot",
+        "screenshot",
+      ]);
+      expect(requests[0].params.args.selector).toBe("#go");
+      expect(requests[1].params.args.savePath).toContain("frame-0000.png");
+      expect(requests[2].params.args.savePath).toContain("frame-0001.png");
+    } finally {
+      server.close();
+      cleanupSocket(socketPath);
+      fs.rmSync(magickDir, { recursive: true, force: true });
+      fs.rmSync(outputPath, { force: true });
+    }
+  });
 
   it("allows --no-lock to bypass a held browser lock", async () => {
     const socketPath = createSocketPath();

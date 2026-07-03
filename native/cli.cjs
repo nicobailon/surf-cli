@@ -3,7 +3,7 @@ const net = require("net");
 const fs = require("fs");
 const path = require("path");
 const os = require("os");
-const { execSync } = require("child_process");
+const { execFileSync, execSync } = require("child_process");
 const { loadConfig, getConfigPath, createStarterConfig } = require("./config.cjs");
 const networkFormatters = require("./formatters/network.cjs");
 const networkStore = require("./network-store.cjs");
@@ -596,6 +596,21 @@ const TOOLS = {
           { cmd: "screenshot --no-save", desc: "Return base64 without saving" },
           { cmd: "screenshot --annotate", desc: "With element labels" },
           { cmd: "snap", desc: "Alias for screenshot" },
+        ]
+      },
+      "record": {
+        desc: "Capture screenshot frames over time and assemble an animated GIF",
+        args: [],
+        opts: {
+          output: "GIF output path (default: /tmp/surf-record-*.gif)",
+          duration: "Capture duration in ms (default: 2000, max: 10000)",
+          fps: "Frames per second (default: 10, max: 30)",
+          trigger: "Optional action before capture: click:<selector> or scroll:<target>",
+          rect: "Crop rectangle x,y,width,height"
+        },
+        examples: [
+          { cmd: "record --duration 2000 --fps 10 --output /tmp/anim.gif", desc: "Record a 2s GIF" },
+          { cmd: 'record --trigger "click:#btn" --output /tmp/click.gif', desc: "Click, then record" },
         ]
       },
       "animate-audit": {
@@ -1521,7 +1536,7 @@ Exclude text content:
 };
 
 const ALL_SOCKET_TOOLS = [
-  "ai", "screenshot", "animate-audit", "navigate",
+  "ai", "screenshot", "record", "animate-audit", "navigate",
   "form_input", "find_and_type", "autocomplete", "set_value", "smart_type",
   "scroll_to_position", "get_scroll_info", "close_dialogs", "page_state",
   "javascript_tool", "health", "smoke",
@@ -1579,7 +1594,8 @@ const SEE_ALSO = {
   "perf.metrics": ["perf.start", "console", "network"],
   "navigate": ["wait.load", "page.read"],
   "screenshot": ["page.read", "scroll.bottom for fullpage"],
-  "animate-audit": ["screenshot", "js", "perf.metrics"],
+  "record": ["screenshot", "animate-audit", "perf.metrics"],
+  "animate-audit": ["screenshot", "record", "js", "perf.metrics"],
   "search": ["locate.text", "page.read"],
   "wait.element": ["wait.load", "wait.network"],
   "wait.load": ["wait.element", "wait.network"],
@@ -1599,6 +1615,7 @@ Common Commands:
   click <ref>        Click element by ref or selector
   type <text>        Type text at cursor or into element
   screenshot         Capture screenshot (alias: snap)
+  record             Capture screenshot frames into an animated GIF
   animate-audit      JSON timeline of element animation/style samples
   page.read          Get page accessibility tree (alias: read)
   locate.role <role> Find element by ARIA role
@@ -1639,6 +1656,7 @@ Click selector/coords: surf click --selector ".btn" | surf click 100 200
 Type: surf type "text" --submit                  # use --ref e5 to target a field
 Screenshot: surf screenshot /tmp/shot.png         # auto-saves to /tmp if no path
 Full page screenshot: surf screenshot --full-page /tmp/full.png
+Record animation: surf record --duration 2000 --fps 10 --output /tmp/anim.gif
 Animation audit: surf animate-audit --selector ".thing" --duration 2000 --fps 10
 JavaScript: surf js "return document.title"
 Scroll: surf scroll down 800 | surf scroll up 400 | surf scroll bottom | surf scroll top
@@ -2757,6 +2775,11 @@ if (tool === "screenshot" && firstArg !== undefined && toolArgs.output === undef
   firstArg = undefined;
 }
 
+if (tool === "record" && firstArg !== undefined && toolArgs.output === undefined) {
+  toolArgs.output = firstArg;
+  firstArg = undefined;
+}
+
 if (firstArg !== undefined) {
   const primaryKey = PRIMARY_ARG_MAP[tool];
   if (primaryKey && toolArgs[primaryKey] === undefined) {
@@ -2861,11 +2884,12 @@ if (tool === "chatgpt" && toolArgs.file) {
   }
 }
 
+if ((tool === "screenshot" || tool === "record") && outputPath && typeof outputPath !== "string") {
+  console.error("Error: --output requires a file path");
+  process.exit(1);
+}
+
 if (tool === "screenshot" && outputPath) {
-  if (typeof outputPath !== "string") {
-    console.error("Error: --output requires a file path");
-    process.exit(1);
-  }
   toolArgs.savePath = outputPath;
   if (options.full) toolArgs.full = true;
   if (options["max-size"]) toolArgs["max-size"] = options["max-size"];
@@ -3008,7 +3032,7 @@ const request = {
   ...globalOpts,
 };
 
-const sendRequest = (toolName, toolArgs = {}) => {
+const sendRequest = (toolName, toolArgs = {}, timeoutMs = 5000) => {
   return new Promise((resolve, reject) => {
     const sock = net.createConnection(SOCKET_PATH, () => {
       const req = {
@@ -3044,10 +3068,137 @@ const sendRequest = (toolName, toolArgs = {}) => {
     });
     sock.on("error", (e) => reject(new Error(formatSocketError(e))));
     let timeoutId;
-    timeoutId = setTimeout(() => { sock.destroy(); reject(new Error("Timeout")); }, 5000);
+    timeoutId = setTimeout(() => { sock.destroy(); reject(new Error("Timeout")); }, timeoutMs);
     sock.on("close", () => clearTimeout(timeoutId));
   });
 };
+
+function parseRecordNumber(value, fallback, name, min, max) {
+  if (value === undefined) return fallback;
+  if (typeof value === "boolean") throw new Error(`${name} must be a number`);
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed) || parsed < min || parsed > max) {
+    throw new Error(`${name} must be between ${min} and ${max}`);
+  }
+  return parsed;
+}
+
+function parseRecordRect(value) {
+  if (value === undefined) return null;
+  if (typeof value !== "string") throw new Error("rect must be x,y,width,height");
+  const parts = value.split(",").map((part) => Number(part.trim()));
+  if (parts.length !== 4 || parts.some((part) => !Number.isFinite(part))) {
+    throw new Error("rect must be x,y,width,height");
+  }
+  const [x, y, width, height] = parts;
+  if (x < 0 || y < 0 || width <= 0 || height <= 0) {
+    throw new Error("rect must use non-negative x/y and positive width/height");
+  }
+  return { x, y, width, height, crop: `${width}x${height}+${x}+${y}` };
+}
+
+function assertToolOk(response, context) {
+  if (!response?.error) return;
+  const message = response.error.content?.[0]?.text || response.error.message || JSON.stringify(response.error);
+  throw new Error(`${context}: ${message}`);
+}
+
+function assembleRecordGif(framePaths, output, fps, rect) {
+  const delay = Math.max(1, Math.round(100 / fps));
+  const args = ["-delay", String(delay), "-loop", "0", ...framePaths];
+  if (rect) args.push("-crop", rect.crop, "+repage");
+  args.push(output);
+
+  try {
+    execFileSync("magick", args, { stdio: "pipe" });
+    return "magick";
+  } catch (magickError) {
+    try {
+      execFileSync("convert", args, { stdio: "pipe" });
+      return "convert";
+    } catch (convertError) {
+      const detail = convertError && convertError.message ? convertError.message : String(convertError);
+      throw new Error(`Failed to assemble GIF with ImageMagick. Install ImageMagick (magick or convert). Last error: ${detail}`);
+    }
+  }
+}
+
+async function runRecord() {
+  const durationMs = parseRecordNumber(toolArgs.duration, 2000, "duration", 100, 10000);
+  const fps = parseRecordNumber(toolArgs.fps, 10, "fps", 1, 30);
+  const rect = parseRecordRect(toolArgs.rect);
+  const output = path.resolve(outputPath || path.join(SURF_TMP, `surf-record-${Date.now()}.gif`));
+  const frameCount = Math.max(1, Math.ceil((durationMs / 1000) * fps));
+  const frameDir = fs.mkdtempSync(path.join(SURF_TMP, "surf-record-"));
+  const framePaths = [];
+  let trigger = null;
+
+  try {
+    if (toolArgs.trigger !== undefined) {
+      trigger = await runRecordTrigger(toolArgs.trigger);
+    }
+
+    const startedAt = Date.now();
+    for (let i = 0; i < frameCount; i++) {
+      const framePath = path.join(frameDir, `frame-${String(i).padStart(4, "0")}.png`);
+      const response = await sendRequest("screenshot", {
+        savePath: framePath,
+        full: toolArgs.full,
+        "max-size": toolArgs["max-size"],
+      }, 30000);
+      assertToolOk(response, `record frame ${i + 1}`);
+      framePaths.push(framePath);
+
+      if (i < frameCount - 1) {
+        const nextFrameAt = startedAt + Math.round(((i + 1) * durationMs) / frameCount);
+        const waitMs = nextFrameAt - Date.now();
+        if (waitMs > 0) await new Promise((resolve) => setTimeout(resolve, waitMs));
+      }
+    }
+
+    fs.mkdirSync(path.dirname(output), { recursive: true });
+    const imageMagick = assembleRecordGif(framePaths, output, fps, rect);
+    const result = { output, frames: framePaths.length, durationMs, fps, imageMagick, ...(trigger && { trigger }), ...(rect && { rect: { x: rect.x, y: rect.y, width: rect.width, height: rect.height } }) };
+
+    if (wantJson) {
+      console.log(JSON.stringify(result, null, 2));
+    } else {
+      console.log(`Saved recording to ${output} (${result.frames} frames, ${durationMs}ms @ ${fps}fps)`);
+    }
+  } finally {
+    fs.rmSync(frameDir, { recursive: true, force: true });
+  }
+}
+
+async function runRecordTrigger(trigger) {
+  if (typeof trigger !== "string") throw new Error("trigger must be action:target");
+  const separator = trigger.indexOf(":");
+  if (separator === -1) throw new Error("trigger must be action:target");
+  const action = trigger.slice(0, separator).trim();
+  const target = trigger.slice(separator + 1).trim();
+  if (!action || !target) throw new Error("trigger must be action:target");
+
+  if (action === "click") {
+    const response = await sendRequest("click", { selector: target }, 30000);
+    assertToolOk(response, "record trigger");
+    return { action, selector: target };
+  }
+
+  if (action === "scroll") {
+    let response;
+    if (["up", "down", "left", "right"].includes(target)) {
+      response = await sendRequest("scroll", { direction: target }, 30000);
+    } else if (target === "top" || target === "bottom") {
+      response = await sendRequest(`scroll.${target}`, {}, 30000);
+    } else {
+      response = await sendRequest("scroll.bottom", { selector: target }, 30000);
+    }
+    assertToolOk(response, "record trigger");
+    return { action, target };
+  }
+
+  throw new Error("trigger action must be click or scroll");
+}
 
 const performAutoCapture = async () => {
   const timestamp = Date.now();
@@ -3084,6 +3235,17 @@ const performAutoCapture = async () => {
     console.error(`Auto-capture failed: ${captureErr.message}`);
   }
 };
+
+if (finalTool === "record") {
+  installBrowserLock(lockOptions);
+  runRecord()
+    .then(() => process.exit(0))
+    .catch((error) => {
+      console.error("Error:", error && error.message ? error.message : String(error));
+      process.exit(1);
+    });
+  return;
+}
 
 installBrowserLock(lockOptions);
 
