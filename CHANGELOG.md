@@ -3,6 +3,7 @@
 ## [Unreleased]
 
 ### Added
+- **Native host diagnostics** - Added `surf doctor` to diagnose socket connectivity, native messaging manifests, allowed origins, and wrapper paths without requiring a working browser connection.
 - **Performance audit** - Added `surf perf-audit --duration ... --trigger ... --output ...` for bounded PerformanceObserver snapshots of layout shifts, events, long tasks, paints, and long animation frames.
 - **Animation recording** - Added `surf record --duration ... --fps ... --output ...` to capture screenshot bursts and assemble animated GIFs with ImageMagick.
 - **Browser request lock** - Added per-socket CLI request serialization for multi-agent workflows, with `--no-lock` for intentional bypasses.

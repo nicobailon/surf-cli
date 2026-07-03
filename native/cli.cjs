@@ -978,6 +978,16 @@ const TOOLS = {
   health: {
     desc: "Health checks",
     commands: {
+      "doctor": {
+        desc: "Diagnose native host manifests and socket connectivity",
+        args: [],
+        opts: { browser: "Browser to inspect (default: chrome)", target: "auto|linux|windows", socket: "Socket path to check", json: "Raw diagnostic JSON" },
+        examples: [
+          { cmd: "doctor", desc: "Check default Chrome setup" },
+          { cmd: "doctor --browser all", desc: "Check all supported browsers" },
+          { cmd: "doctor --json", desc: "Machine-readable diagnostics" },
+        ]
+      },
       "health": {
         desc: "Wait for URL or element",
         args: [],
@@ -1635,6 +1645,7 @@ Common Commands:
   locate.role <role> Find element by ARIA role
   search <term>      Search for text in page (alias: find)
   window.new <url>   Create isolated browser window
+  doctor             Diagnose native host/socket setup
   wait <seconds>     Wait N seconds
 
 Quick Examples:
@@ -1680,6 +1691,7 @@ Device/viewport: surf emulate.device "iPhone 14" | surf resize 375 812
 Cookies: surf cookie list | surf cookie get "name" | surf cookie delete "name"
 Window isolation: surf window.new "https://example.com" then pass --window-id <id>
 Concurrency: surf serializes commands per socket; use --no-lock only for intentional bypass
+Doctor: surf doctor --browser all              # native host/socket diagnostics
 Workflow: surf do 'go "https://example.com" | wait 2 | read | click e5 | screenshot'
 More help: surf --help-full | surf <command> --help | surf --help-topic refs | surf --find <query>`);
 };
@@ -1937,6 +1949,12 @@ if (args[0] === "extension-path" || args[0] === "path") {
   const distPath = process.env.SURF_EXTENSION_PATH || path.resolve(__dirname, "../dist");
   console.log(distPath);
   process.exit(0);
+}
+
+if (args[0] === "doctor") {
+  const { runDoctorCli } = require("./doctor.cjs");
+  runDoctorCli(args.slice(1)).then((code) => process.exit(code));
+  return;
 }
 
 if (args[0] === "install") {

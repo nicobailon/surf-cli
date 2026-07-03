@@ -628,7 +628,17 @@ export SURF_EXTENSION_PATH=~/.local/share/surf-cli/extension
 
 ## Troubleshooting native host connections
 
-If a command fails with `Socket connect failed`, read the `Attempted socket:` line first. The CLI and native host must agree on the same socket path. By default this is `/tmp/surf.sock` on macOS/Linux/WSL2 and `//./pipe/surf` on Windows.
+If a command fails with `Socket connect failed`, start with:
+
+```bash
+surf doctor
+surf doctor --browser all
+surf doctor --json
+```
+
+`doctor` does not require a working browser connection. It checks the socket path, native messaging manifest, manifest `allowed_origins`, and wrapper path, then prints targeted next steps.
+
+Read the `Attempted socket:` line first. The CLI and native host must agree on the same socket path. By default this is `/tmp/surf.sock` on macOS/Linux/WSL2 and `//./pipe/surf` on Windows.
 
 Common fixes:
 - Restart the browser after `surf install <extension-id>`.

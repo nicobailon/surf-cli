@@ -13,7 +13,7 @@ For WSL2 with Windows Chrome, run `surf install <extension-id>` inside WSL2. Sur
 
 On macOS, Chrome reads the native messaging manifest at `~/Library/Application Support/Google/Chrome/NativeMessagingHosts/surf.browser.host.json`. If native messaging fails, confirm that file exists, its `allowed_origins` extension ID matches `chrome://extensions`, then rerun `surf install <extension-id>`, restart Chrome, reload the extension, and inspect the extension service-worker console.
 
-If a command reports `Socket connect failed`, check the `Attempted socket:` line. Default sockets are `/tmp/surf.sock` on macOS/Linux/WSL2 and `//./pipe/surf` on Windows. If `SURF_SOCKET` is set, the browser-launched host and the shell running `surf` must use the same value.
+If a command reports `Socket connect failed`, run `surf doctor` first, then check the `Attempted socket:` line. Default sockets are `/tmp/surf.sock` on macOS/Linux/WSL2 and `//./pipe/surf` on Windows. If `SURF_SOCKET` is set, the browser-launched host and the shell running `surf` must use the same value.
 
 ## CLI Quick Reference
 
@@ -588,10 +588,11 @@ surf wait.element ".missing" --auto-capture --timeout 2000
 11. **Dry-run workflows first** - `surf do '...' --dry-run` validates without executing
 12. **Window isolation** - Use `window.new` + `--window-id` or `--tab-id` to keep agent work separate from your browsing
 13. **Request lock** - Non-streaming browser CLI requests serialize per socket; use `--no-lock` only when you intentionally want to bypass it
-14. **Animation capture** - Use `surf record --duration 2000 --fps 10 --output /tmp/anim.gif` when the agent needs to see motion; use `animate-audit` for numeric timelines and `perf-audit` for jank/layout-shift snapshots
-15. **Hard isolation** - Use separate browser/profile instances plus separate `SURF_SOCKET` values when agents must not share a host or target
-16. **Semantic locators** - `locate.role`, `locate.text`, `locate.label` for more robust element finding
-17. **Frame context** - Use `frame.switch` before interacting with iframe content
+14. **Native host diagnostics** - If commands fail with socket/native-host errors, run `surf doctor` or `surf doctor --browser all` before guessing at reinstall steps
+15. **Animation capture** - Use `surf record --duration 2000 --fps 10 --output /tmp/anim.gif` when the agent needs to see motion; use `animate-audit` for numeric timelines and `perf-audit` for jank/layout-shift snapshots
+16. **Hard isolation** - Use separate browser/profile instances plus separate `SURF_SOCKET` values when agents must not share a host or target
+17. **Semantic locators** - `locate.role`, `locate.text`, `locate.label` for more robust element finding
+18. **Frame context** - Use `frame.switch` before interacting with iframe content
 
 ## Socket API
 
