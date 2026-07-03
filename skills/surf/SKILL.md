@@ -202,7 +202,7 @@ surf tab.name agent-a --tab-id 456
 surf tab.switch agent-a
 ```
 
-Use `window.new`, `--window-id`, `--tab-id`, and named tabs to keep parallel agents on separate targets. This is coordination, not a lock: two agents targeting the same tab/window can still interleave. For hard isolation, run separate browser/profile instances with separate native hosts and `SURF_SOCKET` values. Surf does not yet have `session.new`, session IDs, independent per-agent CDP sessions, or a general serialization lock.
+Use `window.new`, `--window-id`, `--tab-id`, and named tabs to keep parallel agents on separate targets. Surf serializes non-streaming browser CLI requests per socket with a file-based lock, so agents sharing one native host wait instead of interleaving commands. Use `--no-lock` only for intentional bypasses. For hard isolation, run separate browser/profile instances with separate native hosts and `SURF_SOCKET` values; each socket gets its own lock. Surf does not yet have `session.new`, session IDs, or independent per-agent CDP sessions.
 
 ## Input Methods
 
@@ -587,8 +587,8 @@ surf wait.element ".missing" --auto-capture --timeout 2000
 10. **Use `surf do` for multi-step tasks** - Reduces token overhead and improves reliability
 11. **Dry-run workflows first** - `surf do '...' --dry-run` validates without executing
 12. **Window isolation** - Use `window.new` + `--window-id` or `--tab-id` to keep agent work separate from your browsing
-13. **Hard isolation** - Use separate browser/profile instances plus separate `SURF_SOCKET` values when agents must not share a host or target
-14. **No built-in session lock yet** - Surf does not currently provide `session.new`, session IDs, or a general serialization lock
+13. **Request lock** - Non-streaming browser CLI requests serialize per socket; use `--no-lock` only when you intentionally want to bypass it
+14. **Hard isolation** - Use separate browser/profile instances plus separate `SURF_SOCKET` values when agents must not share a host or target
 15. **Semantic locators** - `locate.role`, `locate.text`, `locate.label` for more robust element finding
 16. **Frame context** - Use `frame.switch` before interacting with iframe content
 

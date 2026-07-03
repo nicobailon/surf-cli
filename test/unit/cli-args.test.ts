@@ -13,12 +13,15 @@ const net = require("node:net");
 const os = require("node:os");
 const path = require("node:path");
 
+let socketCounter = 0;
+
 function createSocketPath() {
+  socketCounter++;
   if (process.platform === "win32") {
-    return `\\\\.\\pipe\\surf-test-${process.pid}-${Date.now()}-${Math.random()}`;
+    return `\\\\.\\pipe\\surf-test-${process.pid}-${socketCounter}`;
   }
 
-  return path.join(os.tmpdir(), `surf-test-${process.pid}-${Date.now()}-${Math.random()}.sock`);
+  return path.join(os.tmpdir(), `surf-${process.pid}-${socketCounter}.sock`);
 }
 
 function cleanupSocket(socketPath: string) {
@@ -33,6 +36,21 @@ function cleanupSocket(socketPath: string) {
   }
 }
 
+function createCliEnv(socketPath?: string) {
+  const env = { ...process.env };
+  env.SURF_NO_LOCK = undefined;
+  env.SURF_LOCK_TIMEOUT_MS = undefined;
+
+  if (socketPath) {
+    env.SURF_SOCKET = socketPath;
+  } else {
+    env.SURF_SOCKET = undefined;
+    env.SURF_SOCKET_PATH = undefined;
+  }
+
+  return env;
+}
+
 function runCliWithoutSocket(
   args: string[],
 ): Promise<{ code: number | null; stdout: string; stderr: string }> {
@@ -42,7 +60,7 @@ function runCliWithoutSocket(
 
     const child = spawn(process.execPath, ["native/cli.cjs", ...args], {
       cwd: process.cwd(),
-      env: { ...process.env, SURF_SOCKET: undefined, SURF_SOCKET_PATH: undefined },
+      env: createCliEnv(),
       stdio: ["ignore", "pipe", "pipe"],
     });
 
@@ -89,7 +107,7 @@ function runCli(args: string[]): Promise<{ request: any; stdout: string; stderr:
     server.listen(socketPath, () => {
       const child = spawn(process.execPath, ["native/cli.cjs", ...args], {
         cwd: process.cwd(),
-        env: { ...process.env, SURF_SOCKET: socketPath },
+        env: createCliEnv(socketPath),
         stdio: ["ignore", "pipe", "pipe"],
       });
 
@@ -117,6 +135,41 @@ function runCli(args: string[]): Promise<{ request: any; stdout: string; stderr:
       });
     });
   });
+}
+
+function spawnCliWithSocket(args: string[], socketPath: string) {
+  let stdout = "";
+  let stderr = "";
+  const child = spawn(process.execPath, ["native/cli.cjs", ...args], {
+    cwd: process.cwd(),
+    env: createCliEnv(socketPath),
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+
+  child.stdout.on("data", (chunk: { toString(): string }) => {
+    stdout += chunk.toString();
+  });
+  child.stderr.on("data", (chunk: { toString(): string }) => {
+    stderr += chunk.toString();
+  });
+
+  return {
+    done: new Promise<{ code: number | null; stdout: string; stderr: string }>(
+      (resolve, reject) => {
+        child.on("error", reject);
+        child.on("close", (code: number | null) => resolve({ code, stdout, stderr }));
+      },
+    ),
+  };
+}
+
+function waitFor<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
+  return Promise.race([
+    promise,
+    new Promise<T>((_, reject) =>
+      setTimeout(() => reject(new Error(`Timed out waiting for ${label}`)), ms),
+    ),
+  ]);
 }
 
 describe("CLI argument parsing", () => {
@@ -177,5 +230,209 @@ describe("CLI argument parsing", () => {
 
     expect(request.params.tool).toBe("chatgpt");
     expect(request.params.args.file).toBe(path.resolve("fixtures/report.txt"));
+  });
+
+  it("serializes concurrent CLI requests by socket", async () => {
+    const socketPath = createSocketPath();
+    cleanupSocket(socketPath);
+    let requestCount = 0;
+    let firstRequestAt = 0;
+    let secondRequestAt = 0;
+    let resolveFirstRequest!: () => void;
+    const firstRequest = new Promise<void>((resolve) => {
+      resolveFirstRequest = resolve;
+    });
+
+    const server = net.createServer((socket: any) => {
+      let buffer = "";
+      socket.on("data", (chunk: { toString(): string }) => {
+        buffer += chunk.toString();
+        const lineEnd = buffer.indexOf("\n");
+        if (lineEnd === -1) {
+          return;
+        }
+
+        requestCount++;
+        if (requestCount === 1) {
+          firstRequestAt = Date.now();
+          resolveFirstRequest();
+          setTimeout(() => {
+            socket.write(
+              `${JSON.stringify({ result: { content: [{ type: "text", text: "first" }] } })}\n`,
+            );
+            socket.end();
+          }, 250);
+          return;
+        }
+
+        secondRequestAt = Date.now();
+        socket.write(
+          `${JSON.stringify({ result: { content: [{ type: "text", text: "second" }] } })}\n`,
+        );
+        socket.end();
+      });
+    });
+
+    await new Promise<void>((resolve, reject) => {
+      server.on("error", reject);
+      server.listen(socketPath, resolve);
+    });
+
+    try {
+      const first = spawnCliWithSocket(["page.text"], socketPath);
+      await waitFor(firstRequest, 1000, "first request");
+      const second = spawnCliWithSocket(["page.state"], socketPath);
+      const [firstDone, secondDone] = await Promise.all([first.done, second.done]);
+
+      expect(firstDone.code).toBe(0);
+      expect(secondDone.code).toBe(0);
+      expect(requestCount).toBe(2);
+      expect(secondRequestAt - firstRequestAt).toBeGreaterThanOrEqual(200);
+    } finally {
+      server.close();
+      cleanupSocket(socketPath);
+    }
+  });
+
+  for (const workflowCase of [
+    {
+      name: "--script",
+      args: () => {
+        const scriptPath = path.join(os.tmpdir(), `surf-script-${process.pid}-${Date.now()}.json`);
+        fs.writeFileSync(scriptPath, JSON.stringify({ steps: [{ tool: "page.state" }] }));
+        return { args: ["--script", scriptPath], cleanup: () => fs.unlinkSync(scriptPath) };
+      },
+    },
+    {
+      name: "surf do",
+      args: () => ({ args: ["do", "page.state"], cleanup: () => undefined }),
+    },
+  ]) {
+    it(`serializes ${workflowCase.name} requests by socket`, async () => {
+      const socketPath = createSocketPath();
+      cleanupSocket(socketPath);
+      const workflow = workflowCase.args();
+      let requestCount = 0;
+      let firstRequestAt = 0;
+      let secondRequestAt = 0;
+      let resolveFirstRequest!: () => void;
+      const firstRequest = new Promise<void>((resolve) => {
+        resolveFirstRequest = resolve;
+      });
+
+      const server = net.createServer((socket: any) => {
+        let buffer = "";
+        socket.on("data", (chunk: { toString(): string }) => {
+          buffer += chunk.toString();
+          const lineEnd = buffer.indexOf("\n");
+          if (lineEnd === -1) {
+            return;
+          }
+
+          requestCount++;
+          if (requestCount === 1) {
+            firstRequestAt = Date.now();
+            resolveFirstRequest();
+            setTimeout(() => {
+              socket.write(
+                `${JSON.stringify({ result: { content: [{ type: "text", text: "first" }] } })}\n`,
+              );
+              socket.end();
+            }, 250);
+            return;
+          }
+
+          secondRequestAt = Date.now();
+          socket.write(
+            `${JSON.stringify({ result: { content: [{ type: "text", text: "second" }] } })}\n`,
+          );
+          socket.end();
+        });
+      });
+
+      await new Promise<void>((resolve, reject) => {
+        server.on("error", reject);
+        server.listen(socketPath, resolve);
+      });
+
+      try {
+        const first = spawnCliWithSocket(["page.text"], socketPath);
+        await waitFor(firstRequest, 1000, "first request");
+        const second = spawnCliWithSocket(workflow.args, socketPath);
+        const [firstDone, secondDone] = await Promise.all([first.done, second.done]);
+
+        expect(firstDone.code).toBe(0);
+        expect(secondDone.code).toBe(0);
+        expect(requestCount).toBe(2);
+        expect(secondRequestAt - firstRequestAt).toBeGreaterThanOrEqual(200);
+      } finally {
+        server.close();
+        cleanupSocket(socketPath);
+        workflow.cleanup();
+      }
+    });
+  }
+
+  it("allows --no-lock to bypass a held browser lock", async () => {
+    const socketPath = createSocketPath();
+    cleanupSocket(socketPath);
+    let requestCount = 0;
+    let resolveFirstRequest!: () => void;
+    let resolveSecondRequest!: () => void;
+    const firstRequest = new Promise<void>((resolve) => {
+      resolveFirstRequest = resolve;
+    });
+    const secondRequest = new Promise<void>((resolve) => {
+      resolveSecondRequest = resolve;
+    });
+
+    const server = net.createServer((socket: any) => {
+      let buffer = "";
+      socket.on("data", (chunk: { toString(): string }) => {
+        buffer += chunk.toString();
+        const lineEnd = buffer.indexOf("\n");
+        if (lineEnd === -1) {
+          return;
+        }
+
+        requestCount++;
+        if (requestCount === 1) {
+          resolveFirstRequest();
+          setTimeout(() => {
+            socket.write(
+              `${JSON.stringify({ result: { content: [{ type: "text", text: "first" }] } })}\n`,
+            );
+            socket.end();
+          }, 300);
+          return;
+        }
+
+        resolveSecondRequest();
+        socket.write(
+          `${JSON.stringify({ result: { content: [{ type: "text", text: "second" }] } })}\n`,
+        );
+        socket.end();
+      });
+    });
+
+    await new Promise<void>((resolve, reject) => {
+      server.on("error", reject);
+      server.listen(socketPath, resolve);
+    });
+
+    try {
+      const first = spawnCliWithSocket(["page.text"], socketPath);
+      await waitFor(firstRequest, 1000, "first request");
+      const second = spawnCliWithSocket(["page.state", "--no-lock"], socketPath);
+      await waitFor(secondRequest, 200, "second no-lock request");
+      const [firstDone, secondDone] = await Promise.all([first.done, second.done]);
+
+      expect(firstDone.code).toBe(0);
+      expect(secondDone.code).toBe(0);
+      expect(requestCount).toBe(2);
+    } finally {
+      server.close();
+      cleanupSocket(socketPath);
+    }
   });
 });

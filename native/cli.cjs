@@ -13,7 +13,50 @@ const { version: VERSION } = require("../package.json");
 
 const IS_WIN = process.platform === "win32";
 const { SOCKET_PATH, SURF_TMP, formatSocketError } = require("./socket-path.cjs");
+const { acquireBrowserLock } = require("./browser-lock.cjs");
 if (IS_WIN) { try { fs.mkdirSync(SURF_TMP, { recursive: true }); } catch {} }
+
+function parseBrowserLockOptions(noLockFlag) {
+  const noLock = noLockFlag || process.env.SURF_NO_LOCK === "1" || process.env.SURF_NO_LOCK === "true";
+  let timeoutMs;
+  if (process.env.SURF_LOCK_TIMEOUT_MS !== undefined) {
+    timeoutMs = Number(process.env.SURF_LOCK_TIMEOUT_MS);
+    if (!Number.isFinite(timeoutMs) || timeoutMs < 0) {
+      console.error("Error: SURF_LOCK_TIMEOUT_MS must be a non-negative number");
+      process.exit(1);
+    }
+  }
+  return { noLock, timeoutMs };
+}
+
+function installBrowserLock({ noLock, timeoutMs }) {
+  let releaseBrowserLock = () => {};
+  if (!noLock) {
+    try {
+      const lock = acquireBrowserLock(SOCKET_PATH, SURF_TMP, { timeoutMs });
+      releaseBrowserLock = lock.release;
+    } catch (error) {
+      console.error("Error:", error && error.message ? error.message : String(error));
+      process.exit(1);
+    }
+  }
+
+  const release = () => {
+    const releaseCurrent = releaseBrowserLock;
+    releaseBrowserLock = () => {};
+    releaseCurrent();
+  };
+
+  process.once("exit", release);
+  process.once("SIGINT", () => {
+    release();
+    process.exit(130);
+  });
+  process.once("SIGTERM", () => {
+    release();
+    process.exit(143);
+  });
+}
 
 // ============================================================================
 // Workflow Resolution and Management
@@ -1603,6 +1646,7 @@ Find by semantics: surf locate.role button --name "Submit" --action click
 Device/viewport: surf emulate.device "iPhone 14" | surf resize 375 812
 Cookies: surf cookie list | surf cookie get "name" | surf cookie delete "name"
 Window isolation: surf window.new "https://example.com" then pass --window-id <id>
+Concurrency: surf serializes commands per socket; use --no-lock only for intentional bypass
 Workflow: surf do 'go "https://example.com" | wait 2 | read | click e5 | screenshot'
 More help: surf --help-full | surf <command> --help | surf --help-topic refs | surf --find <query>`);
 };
@@ -1631,6 +1675,7 @@ Options:
   --json            Output raw JSON
   --auto-capture    On error: capture screenshot + console to /tmp
   --soft-fail       On error: warn and exit 0 (for non-critical commands)
+  --no-lock         Bypass the per-socket browser request lock
 
 Script Mode:
   surf --script <file>     Run workflow from JSON
@@ -2123,6 +2168,10 @@ if (args.includes("--script")) {
     process.exit(failed > 0 ? 1 : 0);
   };
 
+  if (!dryRun) {
+    installBrowserLock(parseBrowserLockOptions(args.includes("--no-lock")));
+  }
+
   runScript();
   return;
 }
@@ -2142,7 +2191,7 @@ if (args[0] === "do") {
   let windowId = undefined;
 
   // Reserved flags that aren't workflow args
-  const reservedFlags = ['file', 'f', 'dry-run', 'on-error', 'no-auto-wait', 'step-delay', 'json', 'tab-id', 'window-id'];
+  const reservedFlags = ['file', 'f', 'dry-run', 'on-error', 'no-auto-wait', 'step-delay', 'json', 'tab-id', 'window-id', 'no-lock'];
 
   // Workflow-specific args (collected for variable substitution)
   const workflowArgs = {};
@@ -2325,6 +2374,8 @@ if (args[0] === "do") {
     process.exit(0);
   }
 
+  installBrowserLock(parseBrowserLockOptions(doArgs.includes("--no-lock")));
+
   if (!wantJson) {
     if (workflowName) {
       console.log(`Running workflow: ${workflowName} (${steps.length} steps)...\n`);
@@ -2491,7 +2542,7 @@ if (args[0] === "workflow.validate") {
   }
 }
 
-const BOOLEAN_FLAGS = ["auto-capture", "json", "stream", "dry-run", "stop-on-error", "fail-fast", "clear", "submit", "all", "case-sensitive", "hard", "annotate", "fullpage", "full-page", "reset", "no-screenshot", "full", "soft-fail", "has-body", "exclude-static", "v", "vv", "request", "by-tab", "har", "jsonl", "no-save", "no-auto-wait"];
+const BOOLEAN_FLAGS = ["auto-capture", "json", "stream", "dry-run", "stop-on-error", "fail-fast", "clear", "submit", "all", "case-sensitive", "hard", "annotate", "fullpage", "full-page", "reset", "no-screenshot", "full", "soft-fail", "has-body", "exclude-static", "v", "vv", "request", "by-tab", "har", "jsonl", "no-save", "no-auto-wait", "no-lock"];
 
 const AUTO_SCREENSHOT_TOOLS = ["click", "type", "key", "smart_type", "form.fill", "form_input", "drag", "hover", "scroll", "scroll.top", "scroll.bottom", "scroll.to", "dialog.accept", "dialog.dismiss", "js", "eval"];
 
@@ -2778,6 +2829,9 @@ delete toolArgs["no-screenshot"];
 const softFail = toolArgs["soft-fail"] === true;
 delete toolArgs["soft-fail"];
 
+const lockOptions = parseBrowserLockOptions(toolArgs["no-lock"] === true);
+delete toolArgs["no-lock"];
+
 if (!noScreenshot && AUTO_SCREENSHOT_TOOLS.includes(tool)) {
   toolArgs.autoScreenshot = true;
 }
@@ -3030,6 +3084,8 @@ const performAutoCapture = async () => {
     console.error(`Auto-capture failed: ${captureErr.message}`);
   }
 };
+
+installBrowserLock(lockOptions);
 
 const socket = net.createConnection(SOCKET_PATH, () => {
   socket.write(JSON.stringify(request) + "\n");

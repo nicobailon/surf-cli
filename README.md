@@ -282,16 +282,18 @@ surf window.focus 123456            # Bring window to front
 surf window.close 123456            # Close window
 ```
 
-`window.new`, `--window-id`, `--tab-id`, and named tabs are Surf's supported coordination tools for parallel workflows today. They help agents avoid accidentally driving the same visible tab, but they are not a general concurrency lock. If two processes target the same tab or window at the same time, commands can still interleave.
+`window.new`, `--window-id`, `--tab-id`, and named tabs are Surf's supported coordination tools for parallel workflows. They help agents avoid accidentally driving the same visible tab.
 
-For hard isolation, run separate browser instances/profiles with separate Surf native hosts and socket paths, then point each shell at the matching socket:
+Surf also serializes non-streaming browser CLI requests per socket with a file-based lock, so two agents sharing the same native host wait instead of interleaving browser commands. Use `--no-lock` only when you intentionally want to bypass the guard for a command.
+
+For hard isolation, run separate browser instances/profiles with separate Surf native hosts and socket paths, then point each shell at the matching socket. Each socket has its own independent lock:
 
 ```bash
 SURF_SOCKET=/tmp/surf-agent-a.sock surf tab.list
 SURF_SOCKET=/tmp/surf-agent-b.sock surf tab.list
 ```
 
-Surf does not yet provide `session.new`, session IDs, independent per-agent CDP sessions, or a built-in serialization lock for all browser commands. Use an external lock if multiple agents must share one target safely. Issue #55 remains open for the runtime locking/session design.
+Surf does not yet provide `session.new`, session IDs, or independent per-agent CDP sessions.
 
 ### Device Emulation
 
@@ -571,6 +573,7 @@ surf workflow.validate ./my-workflow.json
 --window-id <id>   # Target specific window (isolate agent from your browsing)
 --json             # Output raw JSON
 --soft-fail        # Warn instead of error (exit 0) on restricted pages
+--no-lock          # Bypass the per-socket browser request lock
 --no-screenshot    # Skip auto-screenshot after actions
 --full             # Full resolution screenshots (skip resize)
 --network-path <path>  # Custom path for network logs (default: /tmp/surf, or SURF_NETWORK_PATH env)
@@ -587,7 +590,7 @@ SURF_EXTENSION_PATH       # Path to extension dist/ directory
 ```
 
 **Use cases:**
-- `SURF_SOCKET`: Advanced socket override. Set it for both the native host and CLI if you need a non-default socket, including separate sockets for separate browser/profile instances in hard-isolated multi-agent workflows.
+- `SURF_SOCKET`: Advanced socket override. Set it for both the native host and CLI if you need a non-default socket, including separate sockets for separate browser/profile instances in hard-isolated multi-agent workflows. Each socket gets an independent request lock.
 - `SURF_NODE_PATH` / `SURF_HOST_PATH`: Package manager installs (e.g., Nix) that store binaries in non-standard locations
 - `SURF_EXTENSION_PATH`: Package managers that create stable symlinks instead of changing paths on reinstall
 
