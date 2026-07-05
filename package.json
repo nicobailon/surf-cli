@@ -56,7 +56,7 @@
     "crypto-browserify": "^3.12.1",
     "events": "^3.3.0",
     "stream-browserify": "^3.0.0",
-    "vite-plugin-node-polyfills": "^0.25.0",
+    "vite-plugin-node-polyfills": "^0.28.0",
     "zod": "^4.3.6"
   },
   "devDependencies": {
