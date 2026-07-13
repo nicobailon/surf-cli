@@ -43,7 +43,7 @@ Surf takes a different approach:
 |---------|------|-------|------------------|--------------|-------------|
 | Agent-agnostic | Yes | No (Manus only) | No (Claude only) | Partial | No (Claude skill) |
 | Zero config | Yes | No (subscription) | No (subscription) | No (MCP setup) | No (relay server) |
-| Local-only | Yes | No (cloud) | Partial | Yes | Partial |
+| Self-hosted (local or Tailnet) | Yes | No (cloud) | Partial | Yes | Partial |
 | CLI interface | Yes | No | No | No | No |
 | Free | Yes | No | No | Yes | Yes |
 | AI via browser cookies | Yes | No | No | No | No |
@@ -107,6 +107,58 @@ surf uninstall                  # Chrome only
 surf uninstall --all            # All browsers + wrapper files
 surf uninstall --target linux   # Remove WSLg/Linux-browser config from WSL2
 ```
+
+### Remote Surf over Tailscale
+
+Run the browser and native host on a Mac in your Tailnet, then point a client at it. The native host is still launched by—and lives only while—the browser extension's native-messaging connection is alive.
+
+On the browser Mac, install with its explicit Tailnet IP and the TCP port to bind:
+
+```bash
+surf install <extension-id> --listen 100.101.102.103:4321
+```
+
+This persists `SURF_LISTEN=100.101.102.103:4321` in the installed native-host wrapper. Re-run `surf install` without `--listen` to remove that persisted setting. `SURF_LISTEN` must be a host-and-port Tailnet address; Surf binds that explicit Tailnet IP only, not every interface. `tailscale serve` is not required.
+
+From an authorized Tailnet client:
+
+```bash
+surf --remote 100.101.102.103:4321 tab.list
+# or
+SURF_REMOTE=100.101.102.103:4321 surf tab.list
+```
+
+`--remote <host>:<port>` takes precedence over `SURF_REMOTE`, which takes precedence over `SURF_SOCKET` and the default local socket. Existing local Unix-socket/named-pipe transport remains available when no remote endpoint is selected.
+
+Restrict access in your Tailscale policy to the intended source and TCP port. For example, an ACL policy can allow only an agent tag to reach a Mac tag on Surf's port:
+
+```json
+{
+  "acls": [
+    {
+      "action": "accept",
+      "src": ["tag:surf-agent"],
+      "dst": ["tag:surf-browser:4321"]
+    }
+  ]
+}
+```
+
+Adapt tags and port to your Tailnet. Do not assume the default Tailnet policy is restrictive: it may allow much broader device-to-device access. This is raw TCP protected by Tailnet policy—Surf adds no SSH tunnel, TLS, or Surf authentication.
+
+**Operations and troubleshooting**
+
+```bash
+tailscale status
+tailscale ping 100.101.102.103
+surf doctor --remote 100.101.102.103:4321
+```
+
+Use `tailscale status` and `tailscale ping` to confirm Tailnet reachability, then run remote `doctor` to diagnose the selected remote endpoint.
+
+**Remote filesystem semantics**
+
+There is no file transfer. `surf js --file script.js` is read by the client CLI, so `script.js` stays local. Paths acted on by the browser host are paths on the remote Mac: screenshot `--output` (including its default `/tmp` location), `upload --files`, AI attachment `--file` options, and output paths for `network.export`, Gemini image operations, and AI Studio build extraction. `perf-audit --output` is written by the client. `record` is intentionally rejected for remote endpoints and produces no remote output. Ensure host-side input/output paths exist on the remote Mac.
 
 ### Development Setup
 
@@ -613,6 +665,8 @@ surf workflow.validate ./my-workflow.json
 ```bash
 SURF_NETWORK_PATH         # Path for network capture logs (default: /tmp/surf)
 SURF_SOCKET               # Socket path or named pipe (default: /tmp/surf.sock, Windows: //./pipe/surf)
+SURF_REMOTE               # Remote Surf endpoint as host:port (overrides SURF_SOCKET)
+SURF_LISTEN               # Native-host Tailnet bind address as <tailscale-ip>:<port>
 SURF_NODE_PATH            # Path to node binary (for native host wrapper)
 SURF_HOST_PATH            # Path to native/host.cjs (for native host wrapper)
 SURF_EXTENSION_PATH       # Path to extension dist/ directory
@@ -620,6 +674,8 @@ SURF_EXTENSION_PATH       # Path to extension dist/ directory
 
 **Use cases:**
 - `SURF_SOCKET`: Advanced socket override. Set it for both the native host and CLI if you need a non-default socket, including separate sockets for separate browser/profile instances in hard-isolated multi-agent workflows. Each socket gets an independent request lock.
+- `SURF_REMOTE`: Remote client endpoint. `--remote <host>:<port>` overrides it; both override `SURF_SOCKET`.
+- `SURF_LISTEN`: Native-host listener address on the browser machine. Use `surf install ... --listen <tailscale-ip>:<port>` to persist it in that host's wrapper.
 - `SURF_NODE_PATH` / `SURF_HOST_PATH`: Package manager installs (e.g., Nix) that store binaries in non-standard locations
 - `SURF_EXTENSION_PATH`: Package managers that create stable symlinks instead of changing paths on reinstall
 

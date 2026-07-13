@@ -1,9 +1,9 @@
 #!/usr/bin/env node
-const net = require("net");
 const { McpServer } = require("@modelcontextprotocol/sdk/server/mcp.js");
 const { StdioServerTransport } = require("@modelcontextprotocol/sdk/server/stdio.js");
 const { z } = require("zod");
-const { SOCKET_PATH, formatSocketError } = require("./socket-path.cjs");
+const { formatSocketError } = require("./socket-path.cjs");
+const { connectEndpoint, selectEndpoint, formatEndpointError } = require("./endpoint.cjs");
 
 const REQUEST_TIMEOUT = 30000;
 
@@ -266,9 +266,9 @@ const TOOL_SCHEMAS = {
   }
 };
 
-function sendSocketRequest(tool, args = {}) {
+function sendSocketRequest(tool, args = {}, endpoint = selectEndpoint([]).endpoint) {
   return new Promise((resolve, reject) => {
-    const sock = net.createConnection(SOCKET_PATH, () => {
+    const sock = connectEndpoint(endpoint, () => {
       const req = {
         type: "tool_request",
         method: "execute_tool",
@@ -310,13 +310,13 @@ function sendSocketRequest(tool, args = {}) {
     sock.on("error", (e) => {
       settled = true;
       clearTimeout(timeout);
-      reject(new Error(formatSocketError(e)));
+      reject(new Error(formatEndpointError(e, endpoint, formatSocketError)));
     });
 
     sock.on("close", () => {
       clearTimeout(timeout);
       if (!settled) {
-        reject(new Error(`Socket closed unexpectedly\nAttempted socket: ${SOCKET_PATH}`));
+        reject(new Error(`Connection closed unexpectedly\nAttempted endpoint: ${endpoint.display}`));
       }
     });
   });
@@ -351,7 +351,8 @@ function formatResult(resp) {
 }
 
 class PiChromeMcpServer {
-  constructor() {
+  constructor(endpoint = selectEndpoint([]).endpoint) {
+    this.endpoint = endpoint;
     this.server = new McpServer({
       name: "surf",
       version: "1.0.0"
@@ -373,7 +374,7 @@ class PiChromeMcpServer {
         schemaObj,
         async (args) => {
           try {
-            const resp = await sendSocketRequest(name, args);
+            const resp = await sendSocketRequest(name, args, this.endpoint);
             return formatResult(resp);
           } catch (err) {
             return {
@@ -392,7 +393,7 @@ class PiChromeMcpServer {
       "page://current",
       async (uri) => {
         try {
-          const resp = await sendSocketRequest("page.read", {});
+          const resp = await sendSocketRequest("page.read", {}, this.endpoint);
           const text = resp.result?.content?.[0]?.text || "No content";
           return {
             contents: [{
@@ -418,7 +419,7 @@ class PiChromeMcpServer {
       "tabs://list",
       async (uri) => {
         try {
-          const resp = await sendSocketRequest("tab.list", {});
+          const resp = await sendSocketRequest("tab.list", {}, this.endpoint);
           const text = resp.result?.content?.[0]?.text || "[]";
           return {
             contents: [{
@@ -444,7 +445,7 @@ class PiChromeMcpServer {
       "console://messages",
       async (uri) => {
         try {
-          const resp = await sendSocketRequest("console", {});
+          const resp = await sendSocketRequest("console", {}, this.endpoint);
           const text = resp.result?.content?.[0]?.text || "No messages";
           return {
             contents: [{
@@ -470,7 +471,7 @@ class PiChromeMcpServer {
       "network://requests",
       async (uri) => {
         try {
-          const resp = await sendSocketRequest("network", {});
+          const resp = await sendSocketRequest("network", {}, this.endpoint);
           const text = resp.result?.content?.[0]?.text || "No requests";
           return {
             contents: [{

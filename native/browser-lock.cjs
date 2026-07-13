@@ -11,8 +11,8 @@ function sleepSync(ms) {
   Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
 }
 
-function getBrowserLockDir(socketPath, tempDir) {
-  const hash = crypto.createHash("sha256").update(socketPath).digest("hex").slice(0, 16);
+function getBrowserLockDir(endpointKey, tempDir) {
+  const hash = crypto.createHash("sha256").update(endpointKey).digest("hex").slice(0, 16);
   return path.join(tempDir, `surf-lock-${hash}`);
 }
 

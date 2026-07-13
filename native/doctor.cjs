@@ -3,6 +3,7 @@ const net = require("net");
 const os = require("os");
 const path = require("path");
 const { execFileSync } = require("child_process");
+const { connectEndpoint, selectEndpoint } = require("./endpoint.cjs");
 
 const HOST_NAME = "surf.browser.host";
 
@@ -402,6 +403,15 @@ function buildRecommendations(report) {
   return Array.from(new Set(recommendations));
 }
 
+function remoteRecommendations(endpoint, code) {
+  const base = [`Confirm Surf is listening on ${endpoint.display}; the remote host listener must allow this Tailnet connection.`];
+  if (code === "ENOTFOUND") return [...base, "Check the Tailnet DNS name, then run `tailscale status` and `tailscale ping <host>`."].map((item) => item.replace("<host>", endpoint.host));
+  if (code === "ETIMEDOUT") return [...base, `Run \`tailscale ping ${endpoint.host}\`; check restrictive Tailnet ACLs/grants and host firewall rules.`];
+  if (code === "ECONNREFUSED") return [...base, "Verify the host process is running and bound to the requested TCP port; check restrictive Tailnet ACLs/grants."];
+  if (code === "ENETUNREACH" || code === "EHOSTUNREACH") return [...base, `Run \`tailscale status\` and \`tailscale ping ${endpoint.host}\`; check Tailnet routing plus restrictive ACLs/grants.`];
+  return base;
+}
+
 async function runDoctor(rawOptions = {}, deps = {}) {
   const env = deps.env || process.env;
   const platform = deps.platform || process.platform;
@@ -413,6 +423,33 @@ async function runDoctor(rawOptions = {}, deps = {}) {
     socket: rawOptions.socket || env.SURF_SOCKET || defaultSocketPath(platform),
     connectTimeoutMs: rawOptions.connectTimeoutMs ?? 750,
   };
+  const selectedEndpoint = rawOptions.endpoint || selectEndpoint([], env).endpoint;
+  if (selectedEndpoint.kind === "remote") {
+    const endpoint = selectedEndpoint;
+    const connection = await (deps.connectEndpoint || ((target, timeoutMs) => new Promise((resolve) => {
+      let settled = false;
+      const socket = connectEndpoint(target);
+      const finish = (result) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timeout);
+        socket.destroy();
+        resolve(result);
+      };
+      const timeout = setTimeout(() => finish({ ok: false, code: "ETIMEDOUT", message: `timed out after ${timeoutMs}ms` }), timeoutMs);
+      socket.once("connect", () => finish({ ok: true, message: "connected" }));
+      socket.once("error", (error) => finish({ ok: false, code: error.code, message: error.message || String(error) }));
+    })))(endpoint, options.connectTimeoutMs);
+    const checks = [{ id: "remote-endpoint", status: "info", message: `Remote endpoint: ${endpoint.display}`, endpoint: endpoint.display }, {
+      id: "remote-connect", status: connection.ok ? "pass" : "fail",
+      message: connection.ok ? `Connected to remote endpoint ${endpoint.display}` : `Could not connect to remote endpoint ${endpoint.display}: ${connection.message}`,
+      code: connection.code,
+    }];
+    const summary = summarize(checks);
+    const report = { ok: connection.ok, summary, environment: { platform, remoteEndpoint: endpoint.display, endpointKind: "remote", browsers: [] }, manifests: [], checks };
+    report.recommendations = connection.ok ? [] : remoteRecommendations(endpoint, connection.code);
+    return report;
+  }
   const effectiveTarget = resolveEffectiveTarget(options, { platform, runningInWsl });
   const browsers = resolveBrowsers(options.browser);
   const context = {
@@ -502,9 +539,13 @@ function formatCheck(check) {
 function formatDoctorReport(report) {
   const lines = ["Surf doctor", ""];
   lines.push(`Platform: ${report.environment.platform}${report.environment.runningInWsl ? " (WSL2 detected)" : ""}`);
-  lines.push(`Target: ${report.environment.effectiveTarget === "wsl-windows" ? "Windows browser from WSL2" : report.environment.effectiveTarget}`);
-  lines.push(`Socket: ${report.environment.socketPath}`);
-  lines.push(`Browsers: ${report.environment.browsers.join(", ")}`);
+  if (report.environment.endpointKind === "remote") {
+    lines.push(`Remote endpoint: ${report.environment.remoteEndpoint}`);
+  } else {
+    lines.push(`Target: ${report.environment.effectiveTarget === "wsl-windows" ? "Windows browser from WSL2" : report.environment.effectiveTarget}`);
+  }
+  if (report.environment.socketPath) lines.push(`Socket: ${report.environment.socketPath}`);
+  if (report.environment.browsers.length) lines.push(`Browsers: ${report.environment.browsers.join(", ")}`);
   lines.push("");
 
   for (const check of report.checks.filter((item) => item.status !== "info")) {
@@ -542,7 +583,7 @@ Examples:
 `;
 }
 
-async function runDoctorCli(rawArgs) {
+async function runDoctorCli(rawArgs, endpoint) {
   let options;
   try {
     options = parseDoctorArgs(rawArgs);
@@ -558,7 +599,7 @@ async function runDoctorCli(rawArgs) {
   }
 
   try {
-    const report = await runDoctor(options);
+    const report = await runDoctor({ ...options, endpoint });
     if (options.json) {
       console.log(JSON.stringify(report, null, 2));
     } else {

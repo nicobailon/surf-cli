@@ -318,4 +318,18 @@ describe("surf doctor", () => {
     expect(result.stdout).toContain("Usage: surf doctor");
     expect(result.stderr).toBe("");
   });
+
+  it("runs remote-only diagnostics with Tailnet-specific connection guidance", async () => {
+    const report = await runDoctor(
+      { endpoint: { kind: "remote", host: "browser.tailnet", port: 4321, display: "browser.tailnet:4321" } },
+      { platform: "linux", env: {}, connectEndpoint: async () => ({ ok: false, code: "ETIMEDOUT", message: "timed out" }) },
+    );
+
+    expect(report.manifests).toEqual([]);
+    expect(report.checks).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: "remote-connect", code: "ETIMEDOUT" }),
+    ]));
+    expect(report.recommendations.join("\n")).toContain("tailscale ping browser.tailnet");
+    expect(report.recommendations.join("\n")).toContain("ACLs/grants");
+  });
 });

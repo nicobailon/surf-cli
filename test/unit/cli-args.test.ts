@@ -40,6 +40,7 @@ function createCliEnv(socketPath?: string) {
   const env = { ...process.env };
   env.SURF_NO_LOCK = undefined;
   env.SURF_LOCK_TIMEOUT_MS = undefined;
+  env.SURF_REMOTE = undefined;
 
   if (socketPath) {
     env.SURF_SOCKET = socketPath;
@@ -201,6 +202,127 @@ describe("CLI argument parsing", () => {
     expect(code).toBe(0);
     expect(stderr).toBe("");
     expect(stdout).toContain("surf --llm-context");
+    expect(stdout).toContain("--remote <host>:<port>");
+  });
+
+  it("rejects remote record before attempting a connection", async () => {
+    const { code, stdout, stderr } = await runCliWithoutSocket([
+      "record",
+      "--remote",
+      "browser.tailnet:4321",
+    ]);
+
+    expect(code).toBe(1);
+    expect(stdout).toBe("");
+    expect(stderr).toContain("record is not supported with remote endpoint browser.tailnet:4321");
+    expect(stderr).not.toContain("/tmp/surf.sock");
+  });
+
+  it("routes normal, script, and workflow requests to TCP remote without forwarding --remote", async () => {
+    const requests: any[] = [];
+    const server = net.createServer((socket: any) => {
+      let buffer = "";
+      socket.on("data", (chunk: { toString(): string }) => {
+        buffer += chunk.toString();
+        const line = buffer.split("\n")[0];
+        if (!line) return;
+        requests.push(JSON.parse(line));
+        socket.end(`${JSON.stringify({ result: { content: [{ type: "text", text: "OK" }] } })}\n`);
+      });
+    });
+    await new Promise<void>((resolve, reject) => {
+      server.on("error", reject);
+      server.listen(0, "127.0.0.1", resolve);
+    });
+    const port = (server.address() as any).port;
+    const remote = `127.0.0.1:${port}`;
+    const scriptPath = path.join(os.tmpdir(), `surf-remote-script-${process.pid}-${Date.now()}.json`);
+    fs.writeFileSync(scriptPath, JSON.stringify({ steps: [{ tool: "page.state" }] }));
+    const invoke = (args: string[]) => new Promise<number | null>((resolve, reject) => {
+      const child = spawn(process.execPath, ["native/cli.cjs", ...args, "--remote", remote, "--no-lock"], {
+        cwd: process.cwd(), env: createCliEnv(), stdio: ["ignore", "ignore", "pipe"],
+      });
+      child.on("error", reject);
+      child.on("close", resolve);
+    });
+    try {
+      expect(await invoke(["page.read"])).toBe(0);
+      expect(await invoke(["--script", scriptPath])).toBe(0);
+      expect(await invoke(["do", "page.text"])).toBe(0);
+      expect(requests.map((request) => request.params.tool)).toEqual(["page.read", "page.state", "page.text"]);
+      expect(requests.every((request) => request.params.args.remote === undefined)).toBe(true);
+    } finally {
+      fs.rmSync(scriptPath, { force: true });
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+  });
+
+  it("sends stream requests over the selected TCP endpoint without forwarding remote", async () => {
+    let request: any;
+    let receivedRequest!: () => void;
+    const requestReceived = new Promise<void>((resolve) => { receivedRequest = resolve; });
+    const server = net.createServer((socket: any) => socket.once("data", (chunk: { toString(): string }) => {
+      request = JSON.parse(chunk.toString().trim());
+      receivedRequest();
+      socket.write('{"type":"stream_started"}\n');
+    }));
+    await new Promise<void>((resolve, reject) => { server.on("error", reject); server.listen(0, "127.0.0.1", resolve); });
+    const remote = `127.0.0.1:${(server.address() as any).port}`;
+    const child = spawn(process.execPath, ["native/cli.cjs", "console", "--stream", "--remote", remote, "--no-lock"], {
+      cwd: process.cwd(), env: createCliEnv(), stdio: ["ignore", "ignore", "pipe"],
+    });
+    try {
+      await waitFor(requestReceived, 1000, "stream request");
+      expect(request).toMatchObject({ type: "stream_request", streamType: "STREAM_CONSOLE" });
+      expect(JSON.stringify(request)).not.toContain("remote");
+    } finally {
+      child.kill("SIGINT");
+      await new Promise<void>((resolve) => child.once("close", () => resolve()));
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+  });
+
+  it("routes MCP tool calls over the selected TCP endpoint", async () => {
+    let request: any;
+    let receivedRequest!: () => void;
+    const requestReceived = new Promise<void>((resolve) => { receivedRequest = resolve; });
+    const server = net.createServer((socket: any) => {
+      socket.on("error", () => {});
+      socket.once("data", (chunk: { toString(): string }) => {
+        request = JSON.parse(chunk.toString().trim());
+        receivedRequest();
+        socket.end('{"result":{"content":[{"type":"text","text":"OK"}]}}\n');
+      });
+    });
+    await new Promise<void>((resolve, reject) => { server.on("error", reject); server.listen(0, "127.0.0.1", resolve); });
+    const remote = `127.0.0.1:${(server.address() as any).port}`;
+    const child = spawn(process.execPath, ["native/cli.cjs", "server", "--remote", remote], {
+      cwd: process.cwd(), env: createCliEnv(), stdio: ["pipe", "pipe", "pipe"],
+    });
+    let initialized!: () => void;
+    const initializationComplete = new Promise<void>((resolve) => { initialized = resolve; });
+    let completed!: () => void;
+    const toolCallComplete = new Promise<void>((resolve) => { completed = resolve; });
+    child.stdout.on("data", (chunk: { toString(): string }) => {
+      const output = chunk.toString();
+      if (output.includes('"id":1')) initialized();
+      if (output.includes('"id":2')) completed();
+    });
+    const send = (message: object) => child.stdin.write(`${JSON.stringify(message)}\n`);
+    try {
+      send({ jsonrpc: "2.0", id: 1, method: "initialize", params: { protocolVersion: "2024-11-05", capabilities: {}, clientInfo: { name: "test", version: "1" } } });
+      await waitFor(initializationComplete, 1000, "MCP initialization");
+      send({ jsonrpc: "2.0", id: 2, method: "tools/call", params: { name: "page.text", arguments: {} } });
+      await waitFor(requestReceived, 1000, "MCP TCP request");
+      expect(request.params.tool).toBe("page.text");
+      expect(JSON.stringify(request)).not.toContain("remote");
+      await waitFor(toolCallComplete, 1000, "MCP tool response");
+    } finally {
+      child.stdin.end();
+      child.kill("SIGTERM");
+      await new Promise<void>((resolve) => child.once("close", () => resolve()));
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
   });
 
   it("maps resize positional width and height", async () => {

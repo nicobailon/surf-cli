@@ -10,8 +10,8 @@
  * Follows the same socket communication pattern as --script mode in cli.cjs.
  */
 
-const net = require("net");
-const { SOCKET_PATH, formatSocketError } = require("./socket-path.cjs");
+const { formatSocketError } = require("./socket-path.cjs");
+const { connectEndpoint, selectEndpoint, formatEndpointError } = require("./endpoint.cjs");
 
 // Maximum iterations for loops (safety cap)
 const MAX_LOOP_ITERATIONS = 100;
@@ -72,7 +72,8 @@ function getAutoWaitCommand(cmd) {
  */
 function sendDoRequest(toolName, toolArgs, context = {}) {
   return new Promise((resolve, reject) => {
-    const sock = net.createConnection(SOCKET_PATH, () => {
+    const endpoint = context.endpoint || selectEndpoint([]).endpoint;
+    const sock = connectEndpoint(endpoint, () => {
       const req = {
         type: "tool_request",
         method: "execute_tool",
@@ -103,7 +104,7 @@ function sendDoRequest(toolName, toolArgs, context = {}) {
     });
     
     sock.on("error", (e) => {
-      reject(new Error(formatSocketError(e)));
+      reject(new Error(formatEndpointError(e, endpoint, formatSocketError)));
     });
     
     const timeoutId = setTimeout(() => { 

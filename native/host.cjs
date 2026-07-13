@@ -16,7 +16,68 @@ const { mapToolToMessage, mapComputerAction, formatToolContent, buildProviderUpl
 
 const IS_WIN = process.platform === "win32";
 const { SOCKET_PATH, SURF_TMP } = require("./socket-path.cjs");
+const { parseListenEndpoint } = require("./listener.cjs");
+const MAX_CLIENT_FRAME_BYTES = 1024 * 1024;
 if (IS_WIN) { try { fs.mkdirSync(SURF_TMP, { recursive: true }); } catch {} }
+
+// The endpoint passed here is already validated by the caller. Keeping this
+// lifecycle separate lets tests use an ephemeral loopback port without adding
+// a localhost escape hatch to SURF_LISTEN parsing.
+function createListenerLifecycle({ localPath, tcpEndpoint, handler, onReady, onFatal }) {
+  const localServer = net.createServer(handler);
+  const tcpServer = tcpEndpoint ? net.createServer(handler) : null;
+  let shuttingDown = false;
+  let startPromise = null;
+  const close = (server) => {
+    if (!server) return;
+    try { server.close(); } catch (error) {
+      if (error.code !== "ERR_SERVER_NOT_RUNNING") throw error;
+    }
+  };
+  const unlink = () => { if (!IS_WIN) { try { fs.unlinkSync(localPath); } catch {} } };
+  const listen = (server, options) => new Promise((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(options, () => {
+      server.removeListener("error", reject);
+      if (shuttingDown) { close(server); unlink(); }
+      resolve();
+    });
+  });
+  const start = () => {
+    if (startPromise) return startPromise;
+    startPromise = (async () => {
+      try {
+        await listen(localServer, localPath);
+        if (shuttingDown) return false;
+        if (!IS_WIN) { try { fs.chmodSync(localPath, 0o600); } catch {} }
+        if (tcpServer) {
+          await listen(tcpServer, tcpEndpoint);
+          if (shuttingDown) return false;
+        }
+        onReady();
+        return true;
+      } catch (error) {
+        if (!shuttingDown) onFatal(error);
+        close(localServer); close(tcpServer); unlink();
+        return false;
+      } finally {
+        if (shuttingDown) { close(localServer); close(tcpServer); unlink(); }
+      }
+    })();
+    return startPromise;
+  };
+  return {
+    localServer,
+    tcpServer,
+    start,
+    async shutdown() {
+      shuttingDown = true;
+      close(localServer); close(tcpServer); unlink();
+      if (startPromise) await startPromise;
+      unlink();
+    },
+  };
+}
 
 // Cross-platform image resize (macOS: sips, Linux: ImageMagick)
 function resizeImage(filePath, maxSize) {
@@ -291,6 +352,7 @@ const log = (msg) => {
   fs.appendFileSync(LOG_FILE, `${new Date().toISOString()} ${msg}\n`);
 };
 
+if (require.main === module) {
 log("Host starting...");
 
 if (!IS_WIN) { try { fs.unlinkSync(SOCKET_PATH); } catch {} }
@@ -1581,7 +1643,7 @@ process.stdin.on("end", () => {
       // Socket may already be closed
     }
   }
-  process.exit(0);
+  shutdown(0);
 });
 
 process.stdin.on("error", (err) => {
@@ -1592,50 +1654,33 @@ process.stdout.on("error", (err) => {
   log(`stdout error: ${err.message}`);
 });
 
-const server = net.createServer((socket) => {
+const handleClient = (socket) => {
   log("CLI client connected");
   connectedSockets.add(socket);
   socket.on("close", () => connectedSockets.delete(socket));
   
-  let dataBuffer = "";
+  let dataBuffer = Buffer.alloc(0);
 
   socket.on("data", (data) => {
-    dataBuffer += data.toString();
-    const lines = dataBuffer.split("\n");
-    dataBuffer = lines.pop() || "";
-
-    for (const line of lines) {
+    dataBuffer = Buffer.concat([dataBuffer, data]);
+    let newline;
+    while ((newline = dataBuffer.indexOf(0x0a)) !== -1) {
+      const frame = dataBuffer.subarray(0, newline);
+      dataBuffer = dataBuffer.subarray(newline + 1);
+      if (frame.length > MAX_CLIENT_FRAME_BYTES) { log("CLI frame exceeds byte limit"); socket.destroy(); return; }
+      let line;
+      try {
+        // Frames are independently encoded values.  Do not carry UTF-8 state
+        // from one newline-delimited frame into the next.
+        line = new TextDecoder("utf-8", { fatal: true }).decode(frame);
+      } catch {
+        log("CLI frame contains invalid UTF-8");
+        socket.destroy();
+        return;
+      }
       if (!line.trim()) continue;
       try {
         const msg = JSON.parse(line);
-        
-        if (msg.type === "GET_AUTH") {
-          log("Handling GET_AUTH locally");
-          try {
-            if (fs.existsSync(AUTH_FILE)) {
-              const authData = JSON.parse(fs.readFileSync(AUTH_FILE, "utf8"));
-              socket.write(JSON.stringify({ 
-                id: msg.id || 0,
-                auth: authData,
-                hint: null
-              }) + "\n");
-            } else {
-              socket.write(JSON.stringify({ 
-                id: msg.id || 0,
-                auth: null,
-                hint: "No OAuth credentials found. Run 'pi --login anthropic' in terminal to authenticate with Claude Max."
-              }) + "\n");
-            }
-          } catch (e) {
-            log(`Error reading auth file: ${e.message}`);
-            socket.write(JSON.stringify({ 
-              id: msg.id || 0,
-              auth: null,
-              hint: "Failed to read auth credentials. Run 'pi --login anthropic' in terminal to authenticate."
-            }) + "\n");
-          }
-          continue;
-        }
         
         if (msg.type === "tool_request") {
           log("Handling tool_request: " + msg.method + " " + (msg.params?.tool || ""));
@@ -1648,6 +1693,11 @@ const server = net.createServer((socket) => {
         }
         
         if (msg.type === "stream_request") {
+          if (msg.streamType !== "STREAM_CONSOLE" && msg.streamType !== "STREAM_NETWORK") {
+            log(`Rejecting unsupported stream type: ${msg.streamType}`);
+            socket.write(JSON.stringify({ error: `Unsupported stream type: ${msg.streamType}` }) + "\n");
+            continue;
+          }
           log("Handling stream_request: " + msg.streamType);
           handleStreamRequest(msg, socket);
           continue;
@@ -1664,15 +1714,14 @@ const server = net.createServer((socket) => {
           continue;
         }
         
-        const id = ++requestCounter;
-        log(`Forwarding to extension: id=${id} type=${msg.type}`);
-        pendingRequests.set(id, { socket });
-        writeMessage({ ...msg, id });
+        log(`Rejecting unsupported socket request type: ${msg.type}`);
+        socket.write(JSON.stringify({ error: `Unsupported request type: ${msg.type}` }) + "\n");
       } catch (e) {
         log(`Error parsing CLI request: ${e.message}`);
         socket.write(JSON.stringify({ error: "Invalid request" }) + "\n");
       }
     }
+    if (dataBuffer.length > MAX_CLIENT_FRAME_BYTES) { log("CLI frame exceeds byte limit"); socket.destroy(); }
   });
 
   socket.on("error", (err) => {
@@ -1698,36 +1747,66 @@ const server = net.createServer((socket) => {
       }
     }
   });
-});
+};
 
-server.listen(SOCKET_PATH, () => {
-  log("Socket server listening on " + SOCKET_PATH);
-  if (!IS_WIN) { try { fs.chmodSync(SOCKET_PATH, 0o600); } catch {} }
-  writeMessage({ type: "HOST_READY" });
-  log("Sent HOST_READY to extension");
-});
-
-server.on("error", (err) => {
-  log(`Server error: ${err.message}`);
-});
+let listenerLifecycle = null;
+let shuttingDown = false;
+let exitCode = 0;
+let exitScheduled = false;
+function scheduleExit() {
+  if (exitScheduled) return;
+  exitScheduled = true;
+  setTimeout(() => process.exit(exitCode), 50);
+}
+function shutdown(code = 0) {
+  exitCode = Math.max(exitCode, code);
+  if (shuttingDown) return;
+  shuttingDown = true;
+  for (const socket of connectedSockets) socket.destroy();
+  pendingRequests.clear(); pendingToolRequests.clear(); activeStreams.clear();
+  Promise.resolve(listenerLifecycle?.shutdown()).finally(scheduleExit);
+}
+function failStartup(error, endpoint) {
+  log(`Listener startup failed (${endpoint}): ${error.message}`);
+  shutdown(1);
+}
+async function startListeners() {
+  let endpoint;
+  try {
+    endpoint = process.env.SURF_LISTEN ? parseListenEndpoint(process.env.SURF_LISTEN) : null;
+    listenerLifecycle = createListenerLifecycle({
+      localPath: SOCKET_PATH,
+      tcpEndpoint: endpoint && { host: endpoint.host, port: endpoint.port },
+      handler: handleClient,
+      onReady: () => {
+        if (endpoint) log(`TCP listener listening on ${endpoint.display}`);
+        writeMessage({ type: "HOST_READY" });
+        log("Sent HOST_READY to extension");
+      },
+      onFatal: (error) => failStartup(error, endpoint?.display || process.env.SURF_LISTEN || SOCKET_PATH),
+    });
+    if (shuttingDown) await listenerLifecycle.shutdown();
+    await listenerLifecycle.start();
+  } catch (error) { failStartup(error, endpoint?.display || process.env.SURF_LISTEN || SOCKET_PATH); }
+}
+startListeners();
 
 process.on("SIGTERM", () => {
   log("SIGTERM received");
-  server.close();
-  if (!IS_WIN) { try { fs.unlinkSync(SOCKET_PATH); } catch {} }
-  process.exit(0);
+  shutdown();
 });
 
 process.on("SIGINT", () => {
   log("SIGINT received");
-  server.close();
-  if (!IS_WIN) { try { fs.unlinkSync(SOCKET_PATH); } catch {} }
-  process.exit(0);
+  shutdown();
 });
 
 process.on("uncaughtException", (err) => {
   log(`Uncaught exception: ${err.message}\n${err.stack}`);
-  process.exit(1);
+  shutdown(1);
 });
 
 log("Host initialization complete, waiting for connections...");
+} else {
+  module.exports = { createListenerLifecycle, MAX_CLIENT_FRAME_BYTES };
+}

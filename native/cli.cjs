@@ -1,5 +1,4 @@
 #!/usr/bin/env node
-const net = require("net");
 const fs = require("fs");
 const path = require("path");
 const os = require("os");
@@ -12,8 +11,9 @@ const { executeDoSteps } = require("./do-executor.cjs");
 const { version: VERSION } = require("../package.json");
 
 const IS_WIN = process.platform === "win32";
-const { SOCKET_PATH, SURF_TMP, formatSocketError } = require("./socket-path.cjs");
+const { SURF_TMP, formatSocketError } = require("./socket-path.cjs");
 const { acquireBrowserLock } = require("./browser-lock.cjs");
+const { selectEndpoint, connectEndpoint, formatEndpointError } = require("./endpoint.cjs");
 if (IS_WIN) { try { fs.mkdirSync(SURF_TMP, { recursive: true }); } catch {} }
 
 function parseBrowserLockOptions(noLockFlag) {
@@ -29,11 +29,11 @@ function parseBrowserLockOptions(noLockFlag) {
   return { noLock, timeoutMs };
 }
 
-function installBrowserLock({ noLock, timeoutMs }) {
+function installBrowserLock({ noLock, timeoutMs }, endpoint) {
   let releaseBrowserLock = () => {};
   if (!noLock) {
     try {
-      const lock = acquireBrowserLock(SOCKET_PATH, SURF_TMP, { timeoutMs });
+      const lock = acquireBrowserLock(endpoint.key, SURF_TMP, { timeoutMs });
       releaseBrowserLock = lock.release;
     } catch (error) {
       console.error("Error:", error && error.message ? error.message : String(error));
@@ -336,7 +336,14 @@ function resizeImage(filePath, maxSize) {
     return { success: false, error: e.message };
   }
 }
-const args = process.argv.slice(2);
+let args = process.argv.slice(2);
+let endpoint;
+try {
+  ({ args, endpoint } = selectEndpoint(args));
+} catch (error) {
+  console.error(`Error: ${error.message}`);
+  process.exit(1);
+}
 
 const ALIASES = {
   snap: "screenshot",
@@ -1666,6 +1673,7 @@ Quick Examples:
   surf window.new "https://example.com" && surf --window-id 123 go "https://other.com"
 
 More Help:
+  --remote <host>:<port>    Route requests to a remote native host
   surf --help-full           All commands
   surf --llm-context         Compact reference for AI agents
   surf --help-topic <topic>  Topic guide (refs, semantic, frames, devices...)
@@ -1722,6 +1730,7 @@ Usage: surf <command> [args] [options]
   console.log(`Aliases: snap -> screenshot, read -> page.read, find -> search, go -> navigate
 
 Options:
+  --remote <host>:<port>  Route requests to a remote native host
   --tab-id <id>     Target specific tab
   --window-id <id>  Target specific window (isolate from your browsing)
   --json            Output raw JSON
@@ -1944,7 +1953,7 @@ if (args[0] === "server") {
     process.exit(0);
   }
   const { PiChromeMcpServer } = require("./mcp-server.cjs");
-  const server = new PiChromeMcpServer();
+  const server = new PiChromeMcpServer(endpoint);
   server.start().catch((err) => {
     console.error("MCP Server error:", err.message);
     process.exit(1);
@@ -1960,7 +1969,7 @@ if (args[0] === "extension-path" || args[0] === "path") {
 
 if (args[0] === "doctor") {
   const { runDoctorCli } = require("./doctor.cjs");
-  runDoctorCli(args.slice(1)).then((code) => process.exit(code));
+  runDoctorCli(args.slice(1), endpoint).then((code) => process.exit(code));
   return;
 }
 
@@ -2130,7 +2139,7 @@ if (args.includes("--script")) {
 
   const sendScriptRequest = (toolName, toolArgs = {}) => {
     return new Promise((resolve, reject) => {
-      const sock = net.createConnection(SOCKET_PATH, () => {
+      const sock = connectEndpoint(endpoint, () => {
         const req = {
           type: "tool_request",
           method: "execute_tool",
@@ -2157,7 +2166,7 @@ if (args.includes("--script")) {
           }
         }
       });
-      sock.on("error", (e) => reject(new Error(formatSocketError(e))));
+      sock.on("error", (e) => reject(new Error(formatEndpointError(e, endpoint, formatSocketError))));
       let timeoutId;
       timeoutId = setTimeout(() => { sock.destroy(); reject(new Error("Timeout")); }, 30000);
       sock.on("close", () => clearTimeout(timeoutId));
@@ -2227,7 +2236,7 @@ if (args.includes("--script")) {
   };
 
   if (!dryRun) {
-    installBrowserLock(parseBrowserLockOptions(args.includes("--no-lock")));
+    installBrowserLock(parseBrowserLockOptions(args.includes("--no-lock")), endpoint);
   }
 
   runScript();
@@ -2432,7 +2441,7 @@ if (args[0] === "do") {
     process.exit(0);
   }
 
-  installBrowserLock(parseBrowserLockOptions(doArgs.includes("--no-lock")));
+  installBrowserLock(parseBrowserLockOptions(doArgs.includes("--no-lock")), endpoint);
 
   if (!wantJson) {
     if (workflowName) {
@@ -2452,6 +2461,7 @@ if (args[0] === "do") {
       context: {
         tabId,
         windowId,
+        endpoint,
       },
     });
 
@@ -3008,7 +3018,7 @@ if (streamMode && (tool === "console" || tool === "network")) {
   let connectionTimeout = null;
   let receivedData = false;
 
-  const sock = net.createConnection(SOCKET_PATH, () => {
+  const sock = connectEndpoint(endpoint, () => {
     const req = {
       type: "stream_request",
       streamType,
@@ -3017,6 +3027,10 @@ if (streamMode && (tool === "console" || tool === "network")) {
       ...globalOpts,
     };
     sock.write(JSON.stringify(req) + "\n");
+    if (connectionTimeout) {
+      clearTimeout(connectionTimeout);
+      connectionTimeout = null;
+    }
     connectionTimeout = setTimeout(() => {
       if (!receivedData) {
         console.error("Error: Stream connection timeout (10s) - no data received");
@@ -3025,6 +3039,12 @@ if (streamMode && (tool === "console" || tool === "network")) {
       }
     }, 10000);
   });
+
+  connectionTimeout = setTimeout(() => {
+    console.error(`Error: Stream connection timeout (10s) - could not connect to ${endpoint.display}`);
+    sock.destroy();
+    process.exit(1);
+  }, 10000);
 
   let buf = "";
   sock.on("data", (d) => {
@@ -3071,11 +3091,13 @@ if (streamMode && (tool === "console" || tool === "network")) {
   });
 
   sock.on("error", (e) => {
-    console.error("Error:", formatSocketError(e));
+    if (connectionTimeout) clearTimeout(connectionTimeout);
+    console.error("Error:", formatEndpointError(e, endpoint, formatSocketError));
     process.exit(1);
   });
 
   process.on("SIGINT", () => {
+    if (connectionTimeout) clearTimeout(connectionTimeout);
     sock.write(JSON.stringify({ type: "stream_stop" }) + "\n");
     sock.end();
     process.exit(0);
@@ -3094,7 +3116,7 @@ const request = {
 
 const sendRequest = (toolName, toolArgs = {}, timeoutMs = 5000) => {
   return new Promise((resolve, reject) => {
-    const sock = net.createConnection(SOCKET_PATH, () => {
+    const sock = connectEndpoint(endpoint, () => {
       const req = {
         type: "tool_request",
         method: "execute_tool",
@@ -3126,7 +3148,7 @@ const sendRequest = (toolName, toolArgs = {}, timeoutMs = 5000) => {
         }
       }
     });
-    sock.on("error", (e) => reject(new Error(formatSocketError(e))));
+    sock.on("error", (e) => reject(new Error(formatEndpointError(e, endpoint, formatSocketError))));
     let timeoutId;
     timeoutId = setTimeout(() => { sock.destroy(); reject(new Error("Timeout")); }, timeoutMs);
     sock.on("close", () => clearTimeout(timeoutId));
@@ -3297,7 +3319,11 @@ const performAutoCapture = async () => {
 };
 
 if (finalTool === "record") {
-  installBrowserLock(lockOptions);
+  if (endpoint.kind === "remote") {
+    console.error(`Error: record is not supported with remote endpoint ${endpoint.display}`);
+    process.exit(1);
+  }
+  installBrowserLock(lockOptions, endpoint);
   runRecord()
     .then(() => process.exit(0))
     .catch((error) => {
@@ -3307,9 +3333,9 @@ if (finalTool === "record") {
   return;
 }
 
-installBrowserLock(lockOptions);
+installBrowserLock(lockOptions, endpoint);
 
-const socket = net.createConnection(SOCKET_PATH, () => {
+const socket = connectEndpoint(endpoint, () => {
   socket.write(JSON.stringify(request) + "\n");
 });
 
@@ -3357,7 +3383,7 @@ socket.on("data", (data) => {
 
 socket.on("error", (err) => {
   clearTimeout(timeout);
-  console.error("Error:", formatSocketError(err));
+  console.error("Error:", formatEndpointError(err, endpoint, formatSocketError));
   process.exit(1);
 });
 
