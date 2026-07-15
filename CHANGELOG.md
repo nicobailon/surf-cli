@@ -16,6 +16,7 @@
 
 ### Dependencies
 - **Routine toolchain refresh** - Updated Gitleaks Action to v3, checkout Action to v7, Zod to 4.4.3, Chrome types to 0.2.2, the Vite Node polyfills plugin to 0.28.0, and the resolved Vitest package group to 4.1.10.
+- **TypeScript 7** - Updated the TypeScript compiler from 6.0.3 to 7.0.2.
 
 ## [2.8.0] - 2026-07-03
 
