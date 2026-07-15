@@ -16,10 +16,7 @@ export default defineConfig({
     outDir: "dist",
     emptyOutDir: true,
     sourcemap: true,
-    commonjsOptions: {
-      transformMixedEsModules: true,
-    },
-    rollupOptions: {
+    rolldownOptions: {
       input: {
         "service-worker/index": resolve(__dirname, "src/service-worker/index.ts"),
         "content/accessibility-tree": resolve(__dirname, "src/content/accessibility-tree.ts"),
