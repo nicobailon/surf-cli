@@ -33,6 +33,7 @@ const {
   waitForGenerateResponseFromNetwork,
   waitForResponse,
 } = require("./aistudio-response.cjs");
+const { raceAbort, throwIfAborted } = require("./abort.cjs");
 
 const DEFAULT_MODEL = "gemini-3.1-pro-preview";
 
@@ -310,22 +311,27 @@ async function query(options) {
     cdpCommand,
     readNetworkEntries,
     log = () => {},
+    signal,
   } = options;
+  throwIfAborted(signal);
 
+  const guardedReadNetworkEntries = readNetworkEntries
+    ? (...args) => raceAbort(() => readNetworkEntries(...args), signal)
+    : readNetworkEntries;
   const startTime = Date.now();
   log("Starting AI Studio query");
 
   const resolvedModel = normalizeModelString(model) || DEFAULT_MODEL;
   log(`Requested model: ${resolvedModel}`);
 
-  const { cookies } = await getCookies();
+  const { cookies } = await raceAbort(getCookies, signal);
   if (!hasRequiredCookies(cookies)) {
     throw new Error("Google login required - sign into Google in Chrome first");
   }
   log(`Got ${cookies.length} cookies`);
 
   const createdUrl = buildAiStudioUrl(resolvedModel);
-  const tabInfo = await createTab(createdUrl);
+  const tabInfo = await raceAbort(() => createTab(createdUrl), signal);
   const { tabId } = tabInfo || {};
 
   if (!tabId) {
@@ -333,21 +339,21 @@ async function query(options) {
   }
   log(`Created tab ${tabId}`);
 
-  const cdp = (expr) => cdpEvaluate(tabId, expr);
-  const inputCdp = (method, params) => cdpCommand(tabId, method, params);
+  const cdp = (expr) => raceAbort(() => cdpEvaluate(tabId, expr), signal);
+  const inputCdp = (method, params) => raceAbort(() => cdpCommand(tabId, method, params), signal);
 
   let baselineGenerateEntryIds = new Set();
 
   try {
-    await waitForPageLoad(cdp);
+    await raceAbort(waitForPageLoad(cdp), signal);
     log("Page loaded");
 
-    await waitForStudioReady(cdp);
+    await raceAbort(waitForStudioReady(cdp), signal);
     log("AI Studio ready");
 
     if (typeof readNetworkEntries === 'function') {
       try {
-        const baselineNetwork = await readNetworkEntries(tabId);
+        const baselineNetwork = await guardedReadNetworkEntries(tabId);
         const baselineEntries = Array.isArray(baselineNetwork?.entries)
           ? baselineNetwork.entries
           : Array.isArray(baselineNetwork?.requests)
@@ -362,6 +368,7 @@ async function query(options) {
 
         log(`Network baseline ready (${baselineGenerateEntryIds.size} GenerateContent entries)`);
       } catch (e) {
+        if (signal?.aborted) throw e;
         log(`Network baseline failed: ${e.message || e}`);
       }
     }
@@ -369,6 +376,7 @@ async function query(options) {
     try {
       await enableUnformattedMarkdownView(cdp, log);
     } catch (e) {
+      if (signal?.aborted) throw e;
       log(`Markdown toggle failed: ${e.message}`);
     }
 
@@ -387,8 +395,8 @@ async function query(options) {
       try {
         log(`Runtime model param missing; retrying direct navigation: ${createdUrl}`);
         await inputCdp('Page.navigate', { url: createdUrl });
-        await waitForPageLoad(cdp);
-        await waitForStudioReady(cdp);
+        await raceAbort(waitForPageLoad(cdp), signal);
+        await raceAbort(waitForStudioReady(cdp), signal);
         runtimeUrl = await evaluate(cdp, 'location.href');
         runtimeModelParam = await evaluate(cdp, `(() => {
           try {
@@ -398,6 +406,7 @@ async function query(options) {
           }
         })()`);
       } catch (e) {
+        if (signal?.aborted) throw e;
         log(`Direct model URL navigation retry failed: ${e.message || e}`);
       }
     }
@@ -408,7 +417,10 @@ async function query(options) {
       log(`Model via UI (no URL param): requested="${resolvedModel}"`);
     }
 
-    const currentModelInfo = await readCurrentModelInfo(cdp).catch(() => ({ found: false, label: '', modelId: '' }));
+    const currentModelInfo = await readCurrentModelInfo(cdp).catch((error) => {
+      if (signal?.aborted) throw error;
+      return { found: false, label: '', modelId: '' };
+    });
 
     log(`AI Studio URL: ${runtimeUrl}`);
     if (currentModelInfo?.label) {
@@ -427,8 +439,9 @@ async function query(options) {
 
     if (!modelApplied && usedUrlParam) {
       try {
-        modelApplied = await waitForModelToApply(cdp, resolvedModel, log);
+        modelApplied = await raceAbort(waitForModelToApply(cdp, resolvedModel, log), signal);
       } catch (e) {
+        if (signal?.aborted) throw e;
         log(`Model apply wait failed: ${e.message}`);
       }
     }
@@ -436,19 +449,20 @@ async function query(options) {
     if (!modelApplied) {
       try {
         log(`Attempting UI model selection fallback: ${resolvedModel}`);
-        await selectModel(cdp, resolvedModel, log);
-        modelApplied = await waitForModelToApply(cdp, resolvedModel, log, 10000);
+        await raceAbort(selectModel(cdp, resolvedModel, log), signal);
+        modelApplied = await raceAbort(waitForModelToApply(cdp, resolvedModel, log, 10000), signal);
       } catch (e) {
+        if (signal?.aborted) throw e;
         log(`UI model selection fallback failed: ${e.message}`);
       }
     }
 
-    await closeModelSelectorIfOpen(cdp, log);
+    await raceAbort(closeModelSelectorIfOpen(cdp, log), signal);
 
-    await typePrompt(cdp, inputCdp, prompt);
+    await raceAbort(typePrompt(cdp, inputCdp, prompt), signal);
     log("Prompt typed");
 
-    await submitPrompt(cdp, inputCdp);
+    await raceAbort(submitPrompt(cdp, inputCdp), signal);
     log("Submitted, waiting for response...");
 
     let response;
@@ -457,10 +471,11 @@ async function query(options) {
       try {
         const networkResult = await waitForGenerateResponseFromNetwork({
           tabId,
-          readNetworkEntries,
+          readNetworkEntries: guardedReadNetworkEntries,
           timeoutMs: timeout,
           baselineEntryIds: baselineGenerateEntryIds,
           prompt,
+          signal,
           log,
         });
 
@@ -474,13 +489,14 @@ async function query(options) {
           `${networkResult.requestId ? ` (request ${networkResult.requestId})` : ''}`
         );
       } catch (networkErr) {
+        if (signal?.aborted) throw networkErr;
         log(`Network extraction failed, falling back to DOM: ${networkErr.message || networkErr}`);
 
         const remainingTimeoutMs = Math.max(timeout - (Date.now() - startTime), 10000);
-        response = await waitForResponse(cdp, remainingTimeoutMs, prompt, log);
+        response = await raceAbort(waitForResponse(cdp, remainingTimeoutMs, prompt, log), signal);
       }
     } else {
-      response = await waitForResponse(cdp, timeout, prompt, log);
+      response = await raceAbort(waitForResponse(cdp, timeout, prompt, log), signal);
     }
 
     const thinkingInfo = response.thinkingTime ? ` (thought for ${response.thinkingTime}s)` : '';
@@ -493,7 +509,11 @@ async function query(options) {
       tookMs: Date.now() - startTime,
     };
   } finally {
-    await closeTab(tabId).catch(() => {});
+    try {
+      await closeTab(tabId);
+    } catch (error) {
+      log(`Failed to close AI Studio tab ${tabId}: ${error?.message || error}`);
+    }
   }
 }
 

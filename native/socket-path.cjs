@@ -4,7 +4,7 @@ const os = require("os");
 const IS_WIN = process.platform === "win32";
 const DEFAULT_SOCKET_PATH = IS_WIN ? "//./pipe/surf" : "/tmp/surf.sock";
 const SOCKET_PATH = process.env.SURF_SOCKET || DEFAULT_SOCKET_PATH;
-const SURF_TMP = IS_WIN ? path.join(os.tmpdir(), "surf") : "/tmp";
+const SURF_TMP = process.env.SURF_TMP || (IS_WIN ? path.join(os.tmpdir(), "surf") : "/tmp");
 
 function getSocketTroubleshootingHint() {
   const lines = [

@@ -20,7 +20,7 @@ function normalizeModelString(model) {
  * @param {Function} log - Logging function (defaults to no-op for testing)
  * @returns {Array} Array of content objects with type and text/data
  */
-function formatToolContent(result, log = () => {}) {
+function formatToolContent(result, log = () => {}, options = {}) {
   const text = (s) => [{ type: "text", text: s }];
   
   if (!result) return text("OK");
@@ -390,6 +390,7 @@ function formatToolContent(result, log = () => {}) {
 
   if (result.autoScreenshot) {
     const { path: ssPath, width, height } = result.autoScreenshot;
+    if (options.suppressImages) return text(`OK\nScreenshot saved: ${ssPath}`);
     try {
       const imgData = fs.readFileSync(ssPath);
       const base64 = imgData.toString("base64");
@@ -731,7 +732,6 @@ function mapToolToMessage(tool, args, tabId) {
         type: "EXPORT_NETWORK_REQUESTS",
         har: a.har,
         jsonl: a.jsonl,
-        output: a.output,
         ...baseMsg 
       };
 

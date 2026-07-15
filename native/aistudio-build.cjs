@@ -1,4 +1,5 @@
 const fs = require("fs");
+const { raceAbort, throwIfAborted } = require("./abort.cjs");
 const { execFileSync } = require("child_process");
 const {
   delay,
@@ -483,26 +484,29 @@ async function build({
   cdpCommand,
   searchDownloads,
   log = () => {},
+  signal,
 }) {
+  throwIfAborted(signal);
+  const guardedSearchDownloads = (...args) => raceAbort(() => searchDownloads(...args), signal);
   const startedAt = Date.now();
   const timeoutMs = Number.isFinite(timeout) ? timeout : 600000;
   const requestedModel = normalizeModelString(model || "");
   const resolvedModel = requestedModel || DEFAULT_MODEL;
 
-  const cookieResult = await getCookies();
+  const cookieResult = await raceAbort(getCookies, signal);
   const cookies = cookieResult?.cookies || [];
   if (!hasRequiredCookies(cookies)) {
     throw new Error("Sign into Google in Chrome first.");
   }
 
-  const tabInfo = await createTab(AISTUDIO_APPS_URL);
+  const tabInfo = await raceAbort(() => createTab(AISTUDIO_APPS_URL), signal);
   const tabId = tabInfo?.tabId;
   if (!tabId) {
     throw new Error(`Failed to create AI Studio tab: ${JSON.stringify(tabInfo)}`);
   }
 
-  const cdp = (expression) => cdpEvaluate(tabId, expression);
-  const inputCdp = (method, params) => cdpCommand(tabId, method, params);
+  const cdp = (expression) => raceAbort(() => cdpEvaluate(tabId, expression), signal);
+  const inputCdp = (method, params) => raceAbort(() => cdpCommand(tabId, method, params), signal);
 
   let buildDuration = null;
   let zipPath = null;
@@ -510,7 +514,7 @@ async function build({
   let modelUsed = resolvedModel;
 
   try {
-    await waitForBuildPageReady(cdp, 30000);
+    await raceAbort(waitForBuildPageReady(cdp, 30000), signal);
 
     if (requestedModel) {
       const applied = await selectModelInAdvancedSettings(cdp, inputCdp, requestedModel, log);
@@ -518,20 +522,20 @@ async function build({
     }
 
     await typePromptAndBuild(cdp, inputCdp, prompt);
-    const completion = await waitForBuildCompletion(cdp, timeoutMs, log);
+    const completion = await raceAbort(waitForBuildCompletion(cdp, timeoutMs, log), signal);
     buildDuration = completion.buildDuration;
 
-    await activateCodeTab(cdp, inputCdp);
-    await waitForDownloadButton(cdp, 5000);
+    await raceAbort(activateCodeTab(cdp, inputCdp), signal);
+    await raceAbort(waitForDownloadButton(cdp, 5000), signal);
 
-    const beforeDownloads = await searchDownloads({
+    const beforeDownloads = await guardedSearchDownloads({
       limit: 1,
       orderBy: ["-startTime"],
     });
     const latestIdBefore = beforeDownloads?.[0]?.id || 0;
 
-    await clickDownloadButton(cdp);
-    zipPath = await waitForDownloadComplete(searchDownloads, latestIdBefore, 30000);
+    await raceAbort(clickDownloadButton(cdp), signal);
+    zipPath = await waitForDownloadComplete(guardedSearchDownloads, latestIdBefore, 30000);
 
     if (output) {
       const outputDir = String(output);
@@ -553,8 +557,12 @@ async function build({
       tookMs: Date.now() - startedAt,
     };
   } finally {
-    if (!keepOpen) {
-      await closeTab(tabId).catch(() => {});
+    if (!keepOpen || signal?.aborted) {
+      try {
+        await closeTab(tabId);
+      } catch (error) {
+        log(`Failed to close AI Studio Build tab ${tabId}: ${error?.message || error}`);
+      }
     }
   }
 }

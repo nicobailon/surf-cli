@@ -6,6 +6,7 @@
  */
 
 const { loadConfig, getConfigPath, clearCache } = require("./config.cjs");
+const { abortableDelay, raceAbort, throwIfAborted } = require("./abort.cjs");
 
 const GROK_URL = "https://x.com/i/grok";
 const DEFAULT_MODEL = "fast";
@@ -38,8 +39,8 @@ const GROK_MODELS = DEFAULT_GROK_MODELS;
 // Helpers
 // ============================================================================
 
-function delay(ms) {
-  return new Promise(resolve => setTimeout(resolve, ms));
+function delay(ms, signal) {
+  return abortableDelay(ms, signal);
 }
 
 function buildClickDispatcher() {
@@ -132,8 +133,10 @@ function hasRequiredCookies(cookies) {
   return Boolean(authToken);
 }
 
-async function evaluate(cdp, expression) {
+async function evaluate(cdp, expression, signal) {
+  throwIfAborted(signal);
   const result = await cdp(expression);
+  throwIfAborted(signal);
   if (result.exceptionDetails) {
     const desc = result.exceptionDetails.exception?.description ||
                  result.exceptionDetails.text ||
@@ -533,7 +536,8 @@ function extractGrokResponse(bodyText, userPrompt = '', chipTexts = []) {
   return null;
 }
 
-async function waitForResponse(cdp, timeoutMs = 300000, userPrompt = '') {
+async function waitForResponse(cdp, timeoutMs = 300000, userPrompt = '', signal) {
+  throwIfAborted(signal);
   // Grok can take a long time:
   // - Thinking models: 40-60+ seconds to think, then streams
   // - Fast/Auto models: No thinking phase, just streams directly
@@ -619,7 +623,7 @@ async function waitForResponse(cdp, timeoutMs = 300000, userPrompt = '') {
     })()`);
 
     if (!snapshot || !snapshot.bodyText) {
-      await delay(300);
+      await delay(300, signal);
       continue;
     }
 
@@ -638,7 +642,7 @@ async function waitForResponse(cdp, timeoutMs = 300000, userPrompt = '') {
     if (snapshot.thinkingDone && !thinkingComplete) {
       thinkingComplete = true;
       // Give a brief moment for final render, then we're done
-      await delay(500);
+      await delay(500, signal);
     }
 
     // Extract the actual response text - try DOM-extracted first, fall back to body parsing
@@ -696,7 +700,7 @@ async function waitForResponse(cdp, timeoutMs = 300000, userPrompt = '') {
       };
     }
 
-    await delay(300);
+    await delay(300, signal);
   }
 
   // Timeout - return whatever we have (partial response is better than nothing)
@@ -728,20 +732,22 @@ async function query(options) {
     cdpEvaluate,
     cdpCommand,
     log = () => {},
+    signal,
   } = options;
+  throwIfAborted(signal);
 
   const startTime = Date.now();
   log("Starting Grok query");
 
   // Check cookies for X.com authentication
-  const { cookies } = await getCookies();
+  const { cookies } = await raceAbort(getCookies, signal);
   if (!hasRequiredCookies(cookies)) {
     throw new Error("X.com login required - log in to x.com in Chrome first");
   }
   log(`Got ${cookies.length} cookies`);
 
   // Create tab
-  const tabInfo = await createTab();
+  const tabInfo = await raceAbort(createTab, signal);
   const { tabId } = tabInfo || {};
 
   if (!tabId) {
@@ -749,8 +755,8 @@ async function query(options) {
   }
   log(`Created tab ${tabId}`);
 
-  const cdp = (expr) => cdpEvaluate(tabId, expr);
-  const inputCdp = (method, params) => cdpCommand(tabId, method, params);
+  const cdp = (expr) => raceAbort(() => cdpEvaluate(tabId, expr), signal);
+  const inputCdp = (method, params) => raceAbort(() => cdpCommand(tabId, method, params), signal);
 
   try {
     // Wait for page load
@@ -788,6 +794,7 @@ async function query(options) {
         warnings.push(`Requested model "${targetModel}" but got "${selectedModel}" - model may not be available`);
       }
     } catch (e) {
+      if (signal?.aborted) throw e;
       modelSelectionFailed = true;
       warnings.push(`Model selection failed: ${e.message}. Run 'surf grok --validate' to check available models.`);
       log(`Model selection failed: ${e.message}`);
@@ -805,6 +812,7 @@ async function query(options) {
           warnings.push(`DeepSearch toggle not found - feature may require X Premium or UI changed`);
         }
       } catch (e) {
+        if (signal?.aborted) throw e;
         warnings.push(`DeepSearch toggle failed: ${e.message}`);
         log(`DeepSearch toggle failed: ${e.message}`);
       }
@@ -819,7 +827,7 @@ async function query(options) {
     log("Submitted, waiting for response...");
 
     // Wait for response
-    const response = await waitForResponse(cdp, timeout, prompt);
+    const response = await waitForResponse(cdp, timeout, prompt, signal);
     const thinkingInfo = response.thinkingTime ? ` (thought for ${response.thinkingTime}s)` : '';
     log(`Response: ${response.text.length} chars${thinkingInfo}${response.partial ? ' (partial)' : ''}`);
 
@@ -837,7 +845,11 @@ async function query(options) {
       tookMs: Date.now() - startTime,
     };
   } finally {
-    await closeTab(tabId).catch(() => {});
+    try {
+      await closeTab(tabId);
+    } catch (error) {
+      log(`Failed to close Grok tab ${tabId}: ${error?.message || error}`);
+    }
   }
 }
 
@@ -852,7 +864,9 @@ async function validate(options) {
     closeTab,
     cdpEvaluate,
     log = () => {},
+    signal,
   } = options;
+  throwIfAborted(signal);
 
   const startTime = Date.now();
   log("Starting Grok validation");
@@ -871,7 +885,7 @@ async function validate(options) {
 
   // Check cookies
   try {
-    const { cookies } = await getCookies();
+    const { cookies } = await raceAbort(getCookies, signal);
     result.authenticated = hasRequiredCookies(cookies);
     if (!result.authenticated) {
       result.errors.push("Not authenticated - log in to x.com in Chrome first");
@@ -879,6 +893,7 @@ async function validate(options) {
     }
     log("Cookies OK");
   } catch (e) {
+    if (signal?.aborted) throw e;
     result.errors.push(`Cookie check failed: ${e.message}`);
     return { ...result, tookMs: Date.now() - startTime };
   }
@@ -886,7 +901,7 @@ async function validate(options) {
   // Create tab
   let tabId;
   try {
-    const tabInfo = await createTab();
+    const tabInfo = await raceAbort(createTab, signal);
     tabId = tabInfo?.tabId;
     if (!tabId) {
       result.errors.push("Failed to create tab");
@@ -894,15 +909,16 @@ async function validate(options) {
     }
     log(`Created tab ${tabId}`);
   } catch (e) {
+    if (signal?.aborted) throw e;
     result.errors.push(`Tab creation failed: ${e.message}`);
     return { ...result, tookMs: Date.now() - startTime };
   }
 
-  const cdp = (expr) => cdpEvaluate(tabId, expr);
+  const cdp = (expr) => raceAbort(() => cdpEvaluate(tabId, expr), signal);
 
   try {
     // Wait for page load
-    await waitForPageLoad(cdp);
+    await raceAbort(waitForPageLoad(cdp), signal);
     log("Page loaded");
 
     // Check login status
@@ -917,7 +933,7 @@ async function validate(options) {
     log(`Login: yes${result.premium ? ' (Premium)' : ''}`);
 
     // Wait for Grok UI
-    await waitForGrokReady(cdp);
+    await raceAbort(waitForGrokReady(cdp), signal);
     log("Grok ready");
 
     // Check for input field
@@ -954,7 +970,7 @@ async function validate(options) {
     })()`);
 
     if (modelButtonClicked?.success) {
-      await delay(500);
+      await abortableDelay(500, signal);
 
       // Scrape model options
       const modelScrape = await evaluate(cdp, `(() => {
@@ -1000,9 +1016,14 @@ async function validate(options) {
     }
 
   } catch (e) {
+    if (signal?.aborted) throw e;
     result.errors.push(`Validation error: ${e.message}`);
   } finally {
-    await closeTab(tabId).catch(() => {});
+    try {
+      await closeTab(tabId);
+    } catch (error) {
+      log(`Failed to close Grok validation tab ${tabId}: ${error?.message || error}`);
+    }
   }
 
   result.tookMs = Date.now() - startTime;

@@ -1,5 +1,6 @@
 const net = require("net");
 const { DEFAULT_SOCKET_PATH } = require("./socket-path.cjs");
+const { authenticateClient } = require("./remote-transport.cjs");
 
 function parseRemoteEndpoint(value) {
   if (typeof value !== "string" || !value) throw new Error("--remote requires host:port");
@@ -32,9 +33,15 @@ function parseRemoteEndpoint(value) {
 function selectEndpoint(args, env) {
   const selectedEnv = env === undefined ? process.env : env;
   const remoteIndexes = [];
-  for (let i = 0; i < args.length; i++) if (args[i] === "--remote") remoteIndexes.push(i);
+  const credentialIndexes = [];
+  for (let i = 0; i < args.length; i++) {
+    if (args[i] === "--remote") remoteIndexes.push(i);
+    if (args[i] === "--remote-credential") credentialIndexes.push(i);
+  }
   if (remoteIndexes.length > 1) throw new Error("--remote may only be specified once");
+  if (credentialIndexes.length > 1) throw new Error("--remote-credential may only be specified once");
   let cliRemote;
+  let cliCredential;
   const strippedArgs = [...args];
   if (remoteIndexes.length) {
     const index = remoteIndexes[0];
@@ -42,13 +49,120 @@ function selectEndpoint(args, env) {
     if (!cliRemote || cliRemote.startsWith("--")) throw new Error("--remote requires host:port");
     strippedArgs.splice(index, 2);
   }
-  if (cliRemote || selectedEnv.SURF_REMOTE) return { args: strippedArgs, endpoint: parseRemoteEndpoint(cliRemote || selectedEnv.SURF_REMOTE) };
+  if (credentialIndexes.length) {
+    const index = credentialIndexes[0];
+    cliCredential = args[index + 1];
+    if (!cliCredential || cliCredential.startsWith("--")) throw new Error("--remote-credential requires a file path");
+    const adjustedIndex = index - (remoteIndexes.length && index > remoteIndexes[0] ? 2 : 0);
+    strippedArgs.splice(adjustedIndex, 2);
+  }
+  const remoteValue = cliRemote || selectedEnv.SURF_REMOTE;
+  if (remoteValue) {
+    const credentialPath = cliCredential || selectedEnv.SURF_REMOTE_CREDENTIAL;
+    if (!credentialPath) throw new Error("remote endpoint requires --remote-credential <path> or SURF_REMOTE_CREDENTIAL");
+    return { args: strippedArgs, endpoint: { ...parseRemoteEndpoint(remoteValue), credentialPath } };
+  }
+  if (cliCredential) throw new Error("--remote-credential requires a remote endpoint");
   const socketPath = selectedEnv.SURF_SOCKET || DEFAULT_SOCKET_PATH;
   return { args: strippedArgs, endpoint: { kind: "local", path: socketPath, display: socketPath, key: `unix:${socketPath}`, connectionOptions: socketPath } };
 }
 
+function createRemoteSocket(endpoint) {
+  const rawSocket = net.createConnection(endpoint.connectionOptions, () => {});
+  let ready = false;
+  let connected = false;
+  let destroyed = false;
+  const pending = new Map();
+  const queue = (event, listener, once) => {
+    if (ready) {
+      once ? rawSocket.once(event, listener) : rawSocket.on(event, listener);
+      return;
+    }
+    const listeners = pending.get(event) || [];
+    listeners.push({ listener, once });
+    pending.set(event, listeners);
+  };
+  const flush = () => {
+    ready = true;
+    for (const [event, listeners] of pending) {
+      for (const { listener, once } of listeners) {
+        once ? rawSocket.once(event, listener) : rawSocket.on(event, listener);
+      }
+    }
+    pending.clear();
+  };
+  const proxy = {
+    on(event, listener) { queue(event, listener, false); return proxy; },
+    once(event, listener) { queue(event, listener, true); return proxy; },
+    removeListener(event, listener) {
+      if (ready) rawSocket.removeListener(event, listener);
+      else pending.set(event, (pending.get(event) || []).filter((entry) => entry.listener !== listener));
+      return proxy;
+    },
+    write(...args) { return rawSocket.write(...args); },
+    end(...args) { return rawSocket.end(...args); },
+    destroy(...args) { destroyed = true; return rawSocket.destroy(...args); },
+    setTimeout(...args) { rawSocket.setTimeout(...args); return proxy; },
+    get authenticated() { return ready; },
+    get connected() { return connected; },
+  };
+  rawSocket.once("connect", () => { connected = true; });
+  rawSocket.on("error", (error) => {
+    if (ready || destroyed) return;
+    ready = true;
+    const listeners = pending.get("error") || [];
+    pending.delete("error");
+    for (const { listener } of listeners) listener(error);
+    if (proxy.__pendingErrors) proxy.__pendingErrors.length = 0;
+    flush();
+  });
+  rawSocket.on("close", () => {
+    if (ready) return;
+    ready = true;
+    const error = new Error("remote authentication connection closed");
+    for (const { listener } of pending.get("error") || []) listener(error);
+    for (const { listener } of pending.get("close") || []) listener();
+    pending.clear();
+    if (proxy.__pendingErrors) proxy.__pendingErrors.length = 0;
+  });
+  return { rawSocket, proxy, flush };
+}
+
 function connectEndpoint(endpoint, onConnect) {
-  return net.createConnection(endpoint.connectionOptions, onConnect);
+  if (endpoint.kind === "local") {
+    return net.createConnection(endpoint.connectionOptions, onConnect || (() => {}));
+  }
+  const { rawSocket, proxy, flush } = createRemoteSocket(endpoint);
+  rawSocket.once("connect", () => {
+    authenticateClient(rawSocket, endpoint.credentialPath)
+      .then(() => {
+        flush();
+        if (onConnect) onConnect(proxy);
+      })
+      .catch((error) => {
+        error.code = error.code || "EAUTH";
+        const listeners = proxy.__pendingErrors || [];
+        for (const listener of listeners) {
+          proxy.removeListener("error", listener);
+          listener(error);
+        }
+        proxy.__pendingErrors.length = 0;
+        flush();
+        proxy.destroy();
+      });
+  });
+  proxy.__pendingErrors = [];
+  const originalOn = proxy.on;
+  const originalOnce = proxy.once;
+  proxy.on = (event, listener) => {
+    if (event === "error" && !proxy.authenticated) proxy.__pendingErrors.push(listener);
+    return originalOn(event, listener);
+  };
+  proxy.once = (event, listener) => {
+    if (event === "error" && !proxy.authenticated) proxy.__pendingErrors.push(listener);
+    return originalOnce(event, listener);
+  };
+  return proxy;
 }
 
 function formatEndpointError(error, endpoint, formatSocketError) {

@@ -409,6 +409,7 @@ function remoteRecommendations(endpoint, code) {
   if (code === "ETIMEDOUT") return [...base, `Run \`tailscale ping ${endpoint.host}\`; check restrictive Tailnet ACLs/grants and host firewall rules.`];
   if (code === "ECONNREFUSED") return [...base, "Verify the host process is running and bound to the requested TCP port; check restrictive Tailnet ACLs/grants."];
   if (code === "ENETUNREACH" || code === "EHOSTUNREACH") return [...base, `Run \`tailscale status\` and \`tailscale ping ${endpoint.host}\`; check Tailnet routing plus restrictive ACLs/grants.`];
+  if (code === "EAUTH") return [...base, "Verify the client credential path, pinned host identity, and that the labeled client has not been revoked."].map((item) => item.replace("<host>", endpoint.host));
   return base;
 }
 
@@ -428,21 +429,29 @@ async function runDoctor(rawOptions = {}, deps = {}) {
     const endpoint = selectedEndpoint;
     const connection = await (deps.connectEndpoint || ((target, timeoutMs) => new Promise((resolve) => {
       let settled = false;
-      const socket = connectEndpoint(target);
+      let socket;
       const finish = (result) => {
         if (settled) return;
         settled = true;
         clearTimeout(timeout);
-        socket.destroy();
+        socket?.destroy();
         resolve(result);
       };
-      const timeout = setTimeout(() => finish({ ok: false, code: "ETIMEDOUT", message: `timed out after ${timeoutMs}ms` }), timeoutMs);
-      socket.once("connect", () => finish({ ok: true, message: "connected" }));
+      const timeout = setTimeout(() => finish({
+        ok: false,
+        code: socket?.connected ? "EAUTH" : "ETIMEDOUT",
+        message: socket?.connected ? "remote authentication timed out" : `timed out after ${timeoutMs}ms`,
+      }), timeoutMs);
+      socket = connectEndpoint(target, () => finish({ ok: true, message: "authenticated" }));
       socket.once("error", (error) => finish({ ok: false, code: error.code, message: error.message || String(error) }));
     })))(endpoint, options.connectTimeoutMs);
     const checks = [{ id: "remote-endpoint", status: "info", message: `Remote endpoint: ${endpoint.display}`, endpoint: endpoint.display }, {
       id: "remote-connect", status: connection.ok ? "pass" : "fail",
       message: connection.ok ? `Connected to remote endpoint ${endpoint.display}` : `Could not connect to remote endpoint ${endpoint.display}: ${connection.message}`,
+      code: connection.code,
+    }, {
+      id: "remote-auth", status: connection.ok ? "pass" : connection.code === "EAUTH" ? "fail" : "info",
+      message: connection.ok ? "Remote credential authenticated and server identity verified" : connection.code === "EAUTH" ? "Remote credential rejected, revoked, or server identity mismatch" : "Remote authentication was not reached",
       code: connection.code,
     }];
     const summary = summarize(checks);

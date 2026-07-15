@@ -8,12 +8,17 @@ const networkFormatters = require("./formatters/network.cjs");
 const networkStore = require("./network-store.cjs");
 const { parseDoCommands } = require("./do-parser.cjs");
 const { executeDoSteps } = require("./do-executor.cjs");
+const { openClientTransport } = require("./client-transport.cjs");
 const { version: VERSION } = require("../package.json");
 
 const IS_WIN = process.platform === "win32";
 const { SURF_TMP, formatSocketError } = require("./socket-path.cjs");
 const { acquireBrowserLock } = require("./browser-lock.cjs");
 const { selectEndpoint, connectEndpoint, formatEndpointError } = require("./endpoint.cjs");
+const { createFrameParser, createSocketWriter, writeFrame } = require("./remote-transport.cjs");
+const { resolveRequestDeadlineMs } = require("./host-sessions.cjs");
+const { AUTO_SCREENSHOT_TOOLS, prepareRemoteTool, validateLocalToolPaths } = require("./file-transfer.cjs");
+const { authorizeClient, listClients, revokeClient, getStateDir } = require("./remote-auth.cjs");
 if (IS_WIN) { try { fs.mkdirSync(SURF_TMP, { recursive: true }); } catch {} }
 
 function parseBrowserLockOptions(noLockFlag) {
@@ -337,6 +342,42 @@ function resizeImage(filePath, maxSize) {
   }
 }
 let args = process.argv.slice(2);
+if (args[0] === "remote") {
+  const remoteArgs = args.slice(1);
+  const subcommand = remoteArgs[0];
+  const stateDir = getStateDir();
+  try {
+    if (subcommand === "authorize") {
+      const label = remoteArgs[1];
+      const outputIndex = remoteArgs.indexOf("--output");
+      const output = outputIndex === -1 ? undefined : remoteArgs[outputIndex + 1];
+      if (!label || !output || output.startsWith("--")) throw new Error("Usage: surf remote authorize <label> --output <credential-file>");
+      const client = authorizeClient(label, output, stateDir);
+      console.log(`Authorized remote client: ${client.label}`);
+      console.log(`Credential: ${client.output}`);
+      process.exit(0);
+    }
+    if (subcommand === "list") {
+      const clients = listClients(stateDir);
+      if (clients.length === 0) console.log("No authorized remote clients.");
+      else for (const client of clients) console.log(`${client.label}\t${client.id}\t${client.createdAt}`);
+      process.exit(0);
+    }
+    if (subcommand === "revoke") {
+      const label = remoteArgs[1];
+      if (!label || label.startsWith("--")) throw new Error("Usage: surf remote revoke <label>");
+      revokeClient(label, stateDir);
+      console.log(`Revoked remote client: ${label}`);
+      process.exit(0);
+    }
+    console.error("Usage: surf remote authorize <label> --output <credential-file> | list | revoke <label>");
+    process.exit(1);
+  } catch (error) {
+    console.error(`Error: ${error.message}`);
+    process.exit(1);
+  }
+}
+
 let endpoint;
 try {
   ({ args, endpoint } = selectEndpoint(args));
@@ -1674,6 +1715,9 @@ Quick Examples:
 
 More Help:
   --remote <host>:<port>    Route requests to a remote native host
+  --remote-credential <path>  Use a mode-0600 Ed25519 remote credential file
+  surf remote authorize <label> --output <path>
+  surf remote list | surf remote revoke <label>
   surf --help-full           All commands
   surf --llm-context         Compact reference for AI agents
   surf --help-topic <topic>  Topic guide (refs, semantic, frames, devices...)
@@ -1730,13 +1774,19 @@ Usage: surf <command> [args] [options]
   console.log(`Aliases: snap -> screenshot, read -> page.read, find -> search, go -> navigate
 
 Options:
-  --remote <host>:<port>  Route requests to a remote native host
+  --remote <host>:<port>       Route requests to a remote native host
+  --remote-credential <path>   Use a mode-0600 Ed25519 remote credential file
   --tab-id <id>     Target specific tab
   --window-id <id>  Target specific window (isolate from your browsing)
   --json            Output raw JSON
   --auto-capture    On error: capture screenshot + console to /tmp
   --soft-fail       On error: warn and exit 0 (for non-critical commands)
   --no-lock         Bypass the per-socket browser request lock
+
+Remote Credentials (run on the browser host):
+  surf remote authorize <label> --output <credential-file>
+  surf remote list
+  surf remote revoke <label>
 
 Script Mode:
   surf --script <file>     Run workflow from JSON
@@ -1994,6 +2044,8 @@ Options:
                   Multiple: --browser chrome,brave
   --target        Install target: auto, linux, windows
                   On WSL2, auto installs for Windows Chrome. Use linux for WSLg/Linux browsers.
+  --listen <tailscale-ip>:<port>
+                  Requires surf remote authorize <label> --output <path> first.
 
 Examples:
   surf install hnfbepgmaoklhekckbpjnleifhahkcpl
@@ -2137,44 +2189,24 @@ if (args.includes("--script")) {
     process.exit(1);
   }
 
+  let scriptTransport;
   const sendScriptRequest = (toolName, toolArgs = {}) => {
-    return new Promise((resolve, reject) => {
-      const sock = connectEndpoint(endpoint, () => {
-        const req = {
-          type: "tool_request",
-          method: "execute_tool",
-          params: { tool: toolName, args: toolArgs },
-          id: "cli-" + Date.now() + "-" + Math.random(),
-        };
-        if (scriptTabId) req.tabId = parseInt(scriptTabId, 10);
-        sock.write(JSON.stringify(req) + "\n");
-      });
-      let buf = "";
-      sock.on("data", (d) => {
-        buf += d.toString();
-        const lines = buf.split("\n");
-        buf = lines.pop();
-        for (const line of lines) {
-          if (!line.trim()) continue;
-          try {
-            const resp = JSON.parse(line);
-            sock.end();
-            resolve(resp);
-          } catch {
-            sock.end();
-            reject(new Error("Invalid JSON"));
-          }
-        }
-      });
-      sock.on("error", (e) => reject(new Error(formatEndpointError(e, endpoint, formatSocketError))));
-      let timeoutId;
-      timeoutId = setTimeout(() => { sock.destroy(); reject(new Error("Timeout")); }, 30000);
-      sock.on("close", () => clearTimeout(timeoutId));
-    });
+    const req = {
+      type: "tool_request",
+      method: "execute_tool",
+      params: { tool: toolName, args: toolArgs },
+      id: "cli-" + Date.now() + "-" + Math.random(),
+    };
+    if (scriptTabId) req.tabId = parseInt(scriptTabId, 10);
+    const prepared = endpoint.kind === "remote" ? prepareRemoteTool(toolName, toolArgs) : (() => { const args = validateLocalToolPaths(toolName, toolArgs); return { args, uploads: [], downloads: [] }; })();
+    req.params.args = prepared.args;
+    return scriptTransport.request(req, resolveRequestDeadlineMs(toolName, prepared.args), prepared);
   };
 
   const runScript = async () => {
-    const total = script.steps.length;
+    try {
+      if (!dryRun) scriptTransport = await openClientTransport(endpoint);
+      const total = script.steps.length;
     const results = [];
     let failed = 0;
 
@@ -2232,14 +2264,22 @@ if (args.includes("--script")) {
       console.log(`Summary: ${passed} passed, ${failed} failed, ${total} total`);
     }
 
-    process.exit(failed > 0 ? 1 : 0);
+      return failed > 0 ? 1 : 0;
+    } finally {
+      await scriptTransport?.close();
+    }
   };
 
   if (!dryRun) {
     installBrowserLock(parseBrowserLockOptions(args.includes("--no-lock")), endpoint);
   }
 
-  runScript();
+  runScript()
+    .then((code) => process.exit(code))
+    .catch((error) => {
+      console.error(`Error: ${error.message}`);
+      process.exit(1);
+    });
   return;
 }
 
@@ -2452,7 +2492,10 @@ if (args[0] === "do") {
   }
 
   const runWorkflow = async () => {
-    const result = await executeDoSteps(steps, {
+    let transport;
+    try {
+      transport = await openClientTransport(endpoint);
+      const result = await executeDoSteps(steps, {
       onError,
       autoWait: !noAutoWait,
       stepDelay,
@@ -2462,30 +2505,39 @@ if (args[0] === "do") {
         tabId,
         windowId,
         endpoint,
+        transport,
       },
-    });
+      });
 
     // Print summary
     if (wantJson) {
       console.log(JSON.stringify(result, null, 2));
-      process.exit(result.status === "completed" ? 0 : 1);
+      return result.status === "completed" ? 0 : 1;
     }
 
     console.log("");
     if (result.status === "completed") {
       console.log(`Completed: ${result.completedSteps}/${result.totalSteps} steps (${result.totalMs}ms)`);
-      process.exit(0);
+      return 0;
     } else if (result.status === "partial") {
       console.log(`Partial: ${result.completedSteps}/${result.totalSteps} steps completed, ${result.failed} failed`);
-      process.exit(1);
+      return 1;
     } else {
       console.error(`Failed: ${result.completedSteps}/${result.totalSteps} steps completed`);
       if (result.error) console.error(`Error: ${result.error}`);
-      process.exit(1);
+      return 1;
+      }
+    } finally {
+      transport?.close();
     }
   };
 
-  runWorkflow();
+  runWorkflow()
+    .then((code) => process.exit(code))
+    .catch((error) => {
+      console.error(`Error: ${error.message}`);
+      process.exit(1);
+    });
   return;
 }
 
@@ -2611,8 +2663,6 @@ if (args[0] === "workflow.validate") {
 }
 
 const BOOLEAN_FLAGS = ["auto-capture", "json", "stream", "dry-run", "stop-on-error", "fail-fast", "clear", "submit", "all", "case-sensitive", "hard", "annotate", "fullpage", "full-page", "reset", "no-screenshot", "full", "soft-fail", "has-body", "exclude-static", "v", "vv", "request", "by-tab", "har", "jsonl", "no-save", "no-auto-wait", "no-lock"];
-
-const AUTO_SCREENSHOT_TOOLS = ["click", "type", "key", "smart_type", "form.fill", "form_input", "drag", "hover", "scroll", "scroll.top", "scroll.bottom", "scroll.to", "dialog.accept", "dialog.dismiss", "js", "eval"];
 
 const parseArgs = (rawArgs) => {
   const result = { positional: [], options: {} };
@@ -2781,7 +2831,7 @@ const PRIMARY_ARG_MAP = {
   "select": "selector",
 };
 
-const toolArgs = { ...options };
+let toolArgs = { ...options };
 
 if (tool === "scroll" && firstArg) {
   if (firstArg === "top" || firstArg === "bottom") {
@@ -2842,12 +2892,23 @@ if (firstArg !== undefined) {
   }
 }
 
-if (tool === "js" && toolArgs.file) {
+if ((tool === "js" || tool === "frame.js") && toolArgs.file) {
   try {
     toolArgs.code = fs.readFileSync(toolArgs.file, "utf8");
     delete toolArgs.file;
   } catch (e) {
     console.error(`Error: Failed to read file: ${e.message}`);
+    process.exit(1);
+  }
+}
+
+if (tool === "batch" && toolArgs.file) {
+  try {
+    const parsed = JSON.parse(fs.readFileSync(toolArgs.file, "utf8"));
+    toolArgs.actions = parsed;
+    delete toolArgs.file;
+  } catch (e) {
+    console.error(`Error: Failed to read batch file: ${e.message}`);
     process.exit(1);
   }
 }
@@ -2916,16 +2977,7 @@ if (tool === "aistudio.build" && outputPath) {
   toolArgs.output = path.resolve(outputPath);
 }
 if (tool === "gemini") {
-  if (outputPath) toolArgs.output = path.resolve(outputPath);
-  if (toolArgs["generate-image"] && typeof toolArgs["generate-image"] === "string") {
-    toolArgs["generate-image"] = path.resolve(toolArgs["generate-image"]);
-  }
-  if (toolArgs["edit-image"] && typeof toolArgs["edit-image"] === "string") {
-    toolArgs["edit-image"] = path.resolve(toolArgs["edit-image"]);
-  }
-  if (toolArgs.file && typeof toolArgs.file === "string") {
-    toolArgs.file = path.resolve(toolArgs.file);
-  }
+  if (outputPath !== undefined) toolArgs.output = outputPath;
   if (toolArgs.model) {
     const known = ["gemini-3.1-pro", "gemini-3.5-flash", "gemini-3.1-flash-lite"];
     if (!known.includes(toolArgs.model)) {
@@ -2935,12 +2987,8 @@ if (tool === "gemini") {
     }
   }
 }
-if (tool === "chatgpt" && toolArgs.file) {
-  if (Array.isArray(toolArgs.file)) {
-    toolArgs.file = toolArgs.file.map((filePath) => path.resolve(filePath));
-  } else if (typeof toolArgs.file === "string") {
-    toolArgs.file = path.resolve(toolArgs.file);
-  }
+if (tool === "network.export" && outputPath !== undefined) {
+  toolArgs.output = outputPath;
 }
 
 if ((tool === "screenshot" || tool === "record" || tool === "perf-audit") && outputPath && typeof outputPath !== "string") {
@@ -3017,8 +3065,10 @@ if (streamMode && (tool === "console" || tool === "network")) {
 
   let connectionTimeout = null;
   let receivedData = false;
+  let streamWriter;
 
   const sock = connectEndpoint(endpoint, () => {
+    streamWriter = createSocketWriter(sock, { onOverflow: ({ error }) => sock.destroy(error) });
     const req = {
       type: "stream_request",
       streamType,
@@ -3026,7 +3076,7 @@ if (streamMode && (tool === "console" || tool === "network")) {
       id: "cli-stream-" + Date.now(),
       ...globalOpts,
     };
-    sock.write(JSON.stringify(req) + "\n");
+    streamWriter.send(req).catch((error) => sock.destroy(error));
     if (connectionTimeout) {
       clearTimeout(connectionTimeout);
       connectionTimeout = null;
@@ -3046,49 +3096,46 @@ if (streamMode && (tool === "console" || tool === "network")) {
     process.exit(1);
   }, 10000);
 
-  let buf = "";
-  sock.on("data", (d) => {
-    if (!receivedData) {
-      receivedData = true;
-      if (connectionTimeout) {
-        clearTimeout(connectionTimeout);
-        connectionTimeout = null;
+  const parser = createFrameParser({
+    onFrame(msg) {
+      if (!receivedData) {
+        receivedData = true;
+        if (connectionTimeout) {
+          clearTimeout(connectionTimeout);
+          connectionTimeout = null;
+        }
       }
-    }
-    buf += d.toString();
-    const lines = buf.split("\n");
-    buf = lines.pop();
-    for (const line of lines) {
-      if (!line.trim()) continue;
-      try {
-        const msg = JSON.parse(line);
-        if (msg.error) {
-          console.error("Error:", msg.error);
-          sock.end();
-          process.exit(1);
-        }
-        if (msg.type === "extension_disconnected") {
-          console.error(msg.message);
-          sock.end();
-          process.exit(1);
-        }
-        if (msg.type === "stream_started") {
-          continue;
-        }
-        if (msg.type === "console_event") {
-          const { level, text, timestamp } = msg;
-          if (streamLevel && level !== streamLevel) continue;
-          console.log(`[console] [${level}] ${formatTime(timestamp)} ${text}`);
-        } else if (msg.type === "network_event") {
-          const { method, url, status, duration } = msg;
-          if (streamFilter && !url.includes(streamFilter)) continue;
-          const statusStr = status !== undefined ? status : "...";
-          const durationStr = duration !== undefined ? ` (${duration}ms)` : "";
-          console.log(`[network] ${method} ${url} ${statusStr}${durationStr}`);
-        }
-      } catch {}
-    }
+      if (msg.error) {
+        console.error("Error:", msg.error);
+        sock.end();
+        process.exit(1);
+      }
+      if (msg.type === "extension_disconnected") {
+        console.error(msg.message);
+        sock.end();
+        process.exit(1);
+      }
+      if (msg.type === "stream_started") return;
+      if (msg.type === "console_event") {
+        const { level, text, timestamp } = msg;
+        if (streamLevel && level !== streamLevel) return;
+        console.log(`[console] [${level}] ${formatTime(timestamp)} ${text}`);
+      } else if (msg.type === "network_event") {
+        const { method, url, status, duration } = msg;
+        if (streamFilter && !url.includes(streamFilter)) return;
+        const statusStr = status !== undefined ? status : "...";
+        const durationStr = duration !== undefined ? ` (${duration}ms)` : "";
+        console.log(`[network] ${method} ${url} ${statusStr}${durationStr}`);
+      }
+    },
+    onError(error) {
+      if (connectionTimeout) clearTimeout(connectionTimeout);
+      console.error("Error:", error.message);
+      sock.destroy();
+      process.exit(1);
+    },
   });
+  sock.on("data", (data) => parser.push(data));
 
   sock.on("error", (e) => {
     if (connectionTimeout) clearTimeout(connectionTimeout);
@@ -3098,7 +3145,7 @@ if (streamMode && (tool === "console" || tool === "network")) {
 
   process.on("SIGINT", () => {
     if (connectionTimeout) clearTimeout(connectionTimeout);
-    sock.write(JSON.stringify({ type: "stream_stop" }) + "\n");
+    streamWriter?.send({ type: "stream_stop" }).catch(() => {});
     sock.end();
     process.exit(0);
   });
@@ -3106,6 +3153,17 @@ if (streamMode && (tool === "console" || tool === "network")) {
   return;
 }
 
+let transferPlan;
+try {
+  transferPlan = endpoint.kind === "remote" ? prepareRemoteTool(finalTool, toolArgs) : (() => { const args = validateLocalToolPaths(finalTool, toolArgs); return { args, uploads: [], downloads: [] }; })();
+} catch (error) {
+  const message = finalTool === "record" && endpoint.kind === "remote"
+    ? `record is not supported with remote endpoint ${endpoint.display}`
+    : error.message;
+  console.error(`Error: ${message}`);
+  process.exit(1);
+}
+toolArgs = transferPlan.args;
 const request = {
   type: "tool_request",
   method: "execute_tool",
@@ -3114,45 +3172,20 @@ const request = {
   ...globalOpts,
 };
 
-const sendRequest = (toolName, toolArgs = {}, timeoutMs = 5000) => {
-  return new Promise((resolve, reject) => {
-    const sock = connectEndpoint(endpoint, () => {
-      const req = {
-        type: "tool_request",
-        method: "execute_tool",
-        params: { tool: toolName, args: toolArgs },
-        id: "cli-" + Date.now() + "-" + Math.random(),
-        ...globalOpts,
-      };
-      sock.write(JSON.stringify(req) + "\n");
-    });
-    let buf = "";
-    sock.on("data", (d) => {
-      buf += d.toString();
-      const lines = buf.split("\n");
-      buf = lines.pop();
-      for (const line of lines) {
-        if (!line.trim()) continue;
-        try {
-          const resp = JSON.parse(line);
-          if (resp.type === "extension_disconnected") {
-            sock.end();
-            reject(new Error(resp.message));
-            return;
-          }
-          sock.end();
-          resolve(resp);
-        } catch {
-          sock.end();
-          reject(new Error("Invalid JSON"));
-        }
-      }
-    });
-    sock.on("error", (e) => reject(new Error(formatEndpointError(e, endpoint, formatSocketError))));
-    let timeoutId;
-    timeoutId = setTimeout(() => { sock.destroy(); reject(new Error("Timeout")); }, timeoutMs);
-    sock.on("close", () => clearTimeout(timeoutId));
-  });
+const sendRequest = async (toolName, toolArgs = {}, timeoutMs = 5000) => {
+  const transport = await openClientTransport(endpoint, { requestTimeoutMs: timeoutMs });
+  try {
+    const prepared = endpoint.kind === "remote" ? prepareRemoteTool(toolName, toolArgs) : (() => { const args = validateLocalToolPaths(toolName, toolArgs); return { args, uploads: [], downloads: [] }; })();
+    return await transport.request({
+      type: "tool_request",
+      method: "execute_tool",
+      params: { tool: toolName, args: prepared.args },
+      id: "cli-" + Date.now() + "-" + Math.random(),
+      ...globalOpts,
+    }, timeoutMs, prepared);
+  } finally {
+    await transport.close();
+  }
 };
 
 function parseRecordNumber(value, fallback, name, min, max) {
@@ -3334,52 +3367,62 @@ if (finalTool === "record") {
 }
 
 installBrowserLock(lockOptions, endpoint);
+let socket;
+let timeout;
 
-const socket = connectEndpoint(endpoint, () => {
-  socket.write(JSON.stringify(request) + "\n");
+if (endpoint.kind === "remote") {
+  socket = { end() {}, destroy() {} };
+  const requestTimeout = resolveRequestDeadlineMs(tool, toolArgs);
+  openClientTransport(endpoint, { requestTimeoutMs: requestTimeout })
+    .then(async (transport) => {
+      try {
+        const response = await transport.request(request, requestTimeout, transferPlan);
+        await handleResponse(response);
+      } finally {
+        await transport.close();
+      }
+    })
+    .catch((error) => {
+      console.error(`Error: ${error.message}`);
+      process.exit(1);
+    });
+  return;
+}
+
+socket = connectEndpoint(endpoint, () => {
+  writeFrame(socket, request).catch((error) => socket.destroy(error));
 });
 
-const AI_TOOLS = ["smoke", "chatgpt", "gemini", "perplexity", "grok", "aistudio", "aistudio.build", "ai"];
-let requestTimeout = AI_TOOLS.includes(tool) ? 300000 : 30000;
-if (tool === "aistudio.build") {
-  const userTimeoutSec = parseInt(options.timeout || "600", 10);
-  requestTimeout = (userTimeoutSec * 1000) + 60000;
-}
-const timeout = setTimeout(() => {
+const requestTimeout = resolveRequestDeadlineMs(tool, options);
+timeout = setTimeout(() => {
   console.error(`Error: Request timed out (${requestTimeout / 1000}s)`);
   socket.destroy();
   process.exit(1);
 }, requestTimeout);
 
-let buffer = "";
-
-socket.on("data", (data) => {
-  buffer += data.toString();
-  const lines = buffer.split("\n");
-  buffer = lines.pop();
-
-  for (const line of lines) {
-    if (!line.trim()) continue;
-    try {
-      const msg = JSON.parse(line);
-
-      if (msg.type === "extension_disconnected") {
-        clearTimeout(timeout);
-        console.error(msg.message);
-        socket.end();
-        process.exit(1);
-      }
-
-      handleResponse(msg).catch((err) => {
-        console.error("Handler error:", err.message);
-        process.exit(1);
-      });
-    } catch (e) {
-      console.error("Invalid JSON response:", line);
+const responseParser = createFrameParser({
+  onFrame(msg) {
+    if (msg.type === "extension_disconnected") {
+      clearTimeout(timeout);
+      console.error(msg.message);
+      socket.end();
       process.exit(1);
     }
-  }
+    if (msg.id !== request.id) return;
+    handleResponse(msg).catch((err) => {
+      console.error("Handler error:", err.message);
+      process.exit(1);
+    });
+  },
+  onError(error) {
+    clearTimeout(timeout);
+    console.error("Invalid response frame:", error.message);
+    socket.destroy();
+    process.exit(1);
+  },
 });
+
+socket.on("data", (data) => responseParser.push(data));
 
 socket.on("error", (err) => {
   clearTimeout(timeout);
@@ -3442,7 +3485,7 @@ async function handleResponse(response) {
   }
 
   if (tool === "screenshot" && data?.base64 && (outputPath || toolArgs.savePath)) {
-    const saveTo = outputPath || toolArgs.savePath;
+    const saveTo = transferPlan.downloads?.[0]?.destination || toolArgs.savePath || outputPath;
     fs.writeFileSync(saveTo, Buffer.from(data.base64, "base64"));
 
     const skipResize = options.full || toolArgs.full;

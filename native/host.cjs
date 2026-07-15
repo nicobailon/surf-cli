@@ -3,6 +3,8 @@ const net = require("net");
 const fs = require("fs");
 const path = require("path");
 const os = require("os");
+const { AsyncLocalStorage } = require("async_hooks");
+const requestStorage = new AsyncLocalStorage();
 const https = require("https");
 const { execSync } = require("child_process");
 const { GoogleGenerativeAI } = require("@google/generative-ai");
@@ -17,7 +19,18 @@ const { mapToolToMessage, mapComputerAction, formatToolContent, buildProviderUpl
 const IS_WIN = process.platform === "win32";
 const { SOCKET_PATH, SURF_TMP } = require("./socket-path.cjs");
 const { parseListenEndpoint } = require("./listener.cjs");
-const MAX_CLIENT_FRAME_BYTES = 1024 * 1024;
+const { getStateDir } = require("./remote-auth.cjs");
+const { createFrameParser, createServerAuthSession, createSocketWriter, isClientAuthorized, writeFrame, MAX_FRAME_BYTES } = require("./remote-transport.cjs");
+const { HostSessionManager, resolveRequestDeadlineMs } = require("./host-sessions.cjs");
+const { abortError, throwIfAborted } = require("./abort.cjs");
+const { BoundedAiQueue } = require("./ai-queue.cjs");
+const { RequestPendingMap } = require("./request-pending.cjs");
+const { cleanupFilePaths, createStagingDirectory, createTransferState, materializeRemoteTool, rewriteTransferPaths, streamFileDownload, transferError } = require("./file-transfer.cjs");
+const { writeNetworkExport } = require("./network-export.cjs");
+const MAX_CLIENT_FRAME_BYTES = MAX_FRAME_BYTES;
+const TEST_REQUEST_DEADLINE_MS = process.env.SURF_TEST_MODE === "1" && Number.isFinite(Number(process.env.SURF_TEST_REQUEST_DEADLINE_MS))
+  ? Number(process.env.SURF_TEST_REQUEST_DEADLINE_MS)
+  : null;
 if (IS_WIN) { try { fs.mkdirSync(SURF_TMP, { recursive: true }); } catch {} }
 
 // The endpoint passed here is already validated by the caller. Keeping this
@@ -115,29 +128,9 @@ function resizeImage(filePath, maxSize) {
   }
 }
 
-const aiRequestQueue = [];
-let aiRequestInProgress = false;
-
-function queueAiRequest(handler) {
-  return new Promise((resolve, reject) => {
-    aiRequestQueue.push({ handler, resolve, reject });
-    processAiQueue();
-  });
-}
-
-async function processAiQueue() {
-  if (aiRequestInProgress || aiRequestQueue.length === 0) return;
-  aiRequestInProgress = true;
-  const { handler, resolve, reject } = aiRequestQueue.shift();
-  try {
-    const result = await handler();
-    resolve(result);
-  } catch (err) {
-    reject(err);
-  } finally {
-    aiRequestInProgress = false;
-    setTimeout(processAiQueue, 2000);
-  }
+let aiQueue;
+function queueAiRequest(handler, request = requestStorage.getStore()) {
+  return aiQueue.enqueue(handler, request);
 }
 const LOG_FILE = path.join(SURF_TMP, "surf-host.log");
 const AUTH_FILE = path.join(os.homedir(), ".pi", "agent", "auth.json");
@@ -150,7 +143,8 @@ const DEFAULT_RETRY_OPTIONS = {
   retryableStatusCodes: [429, 500, 502, 503, 504]
 };
 
-async function withRetry(fn, retryOptions = DEFAULT_RETRY_OPTIONS, retryCount = 0) {
+async function withRetry(fn, retryOptions = DEFAULT_RETRY_OPTIONS, retryCount = 0, signal) {
+  throwIfAborted(signal);
   try {
     return await fn();
   } catch (error) {
@@ -186,8 +180,8 @@ async function withRetry(fn, retryOptions = DEFAULT_RETRY_OPTIONS, retryCount = 
     const jitter = 0.8 + Math.random() * 0.4;
     const delayWithJitter = Math.floor(delay * jitter);
     
-    await new Promise(resolve => setTimeout(resolve, delayWithJitter));
-    return withRetry(fn, retryOptions, retryCount + 1);
+    await require("./abort.cjs").abortableDelay(delayWithJitter, signal);
+    return withRetry(fn, retryOptions, retryCount + 1, signal);
   }
 }
 
@@ -255,13 +249,14 @@ class GeminiClient {
 
   async analyze(query, pageContext, options = {}) {
     const mode = options.mode || detectQueryMode(query);
+    throwIfAborted(options.signal);
     const promptFn = AI_PROMPTS[mode];
     const prompt = promptFn(query, pageContext);
     
     const result = await withRetry(async () => {
       const response = await this.model.generateContent(prompt);
       return response.response.text();
-    });
+    }, DEFAULT_RETRY_OPTIONS, 0, options.signal);
     
     let content = result.trim();
     
@@ -358,52 +353,232 @@ log("Host starting...");
 if (!IS_WIN) { try { fs.unlinkSync(SOCKET_PATH); } catch {} }
 
 const pendingRequests = new Map();
-const pendingToolRequests = new Map();
+const pendingToolRequests = new RequestPendingMap({ getRequest: () => requestStorage.getStore() });
 const activeStreams = new Map();
+const socketContexts = new WeakMap();
+const socketWriters = new WeakMap();
 let requestCounter = 0;
 
+function auditSession(event) {
+  const context = event.context;
+  const principal = context?.principal;
+  const request = event.request;
+  log(`SESSION ${JSON.stringify({
+    event: event.event,
+    outcome: event.outcome,
+    principalId: principal?.clientId || "local",
+    principalLabel: principal?.label || "local",
+    peer: context?.socket?.remoteAddress || "local",
+    requestId: request?.id,
+    tool: request?.tool,
+    elapsedMs: event.elapsedMs,
+  })}`);
+}
+
+aiQueue = new BoundedAiQueue({
+  maxQueued: 8,
+  audit: (event) => auditSession(event),
+  run: (handler, request) => request
+    ? requestStorage.run(request, () => handler())
+    : handler(),
+});
+
+function sendSocket(socket, value, options = {}) {
+  const writer = socketWriters.get(socket);
+  return writer ? writer.send(value, options) : writeFrame(socket, value);
+}
+
+function sendOwnedExtensionMessage(request, message) {
+  const cleanupMessage = typeof message?.type === "string" && /(?:CLOSE_TAB|TAB_CLOSE)$/.test(message.type);
+  if (request?.hardBoundary) throwIfAborted(request.signal, "Request timed out");
+  if (!cleanupMessage) throwIfAborted(request?.signal, "Request cancelled");
+  writeMessage(message);
+}
+
+function requestCallExtension(request, tool, message, timeoutMs = 30000, cleanup = false) {
+  cleanup = cleanup || tool === "close_tab";
+  if (request?.hardBoundary) throwIfAborted(request.signal, "Request timed out");
+  if (!cleanup) throwIfAborted(request?.signal, "Request cancelled");
+  return new Promise((resolve, reject) => {
+    const id = ++requestCounter;
+    const timer = setTimeout(() => {
+      pendingToolRequests.expire(id, new Error(`Timeout waiting for extension: ${tool}`));
+    }, timeoutMs);
+    const pending = {
+      request,
+      cleanup,
+      tool,
+      resolve: (result) => {
+        clearTimeout(timer);
+        resolve(result);
+      },
+      reject: (error) => {
+        clearTimeout(timer);
+        reject(error);
+      },
+    };
+    pendingToolRequests.set(id, pending);
+    try {
+      if (cleanup) writeMessage({ ...message, id });
+      else sendOwnedExtensionMessage(request, { ...message, id });
+    } catch (error) {
+      pendingToolRequests.delete(id);
+      reject(error);
+    }
+  });
+}
+
+const sessionManager = new HostSessionManager({
+  audit: auditSession,
+  onTimeout(context, request) {
+    pendingToolRequests.hardDeadline(request);
+    const response = {
+      type: "tool_response",
+      id: request.id,
+      error: { content: [{ type: "text", text: "Request timed out" }] },
+    };
+    cleanupRequestTransfers(request)
+      .then(() => {
+        sessionManager.complete(context, request.id, "hard-timeout");
+        if (!context.closed) return sendSocket(context.socket, response);
+      })
+      .catch((error) => log(`Error settling timed-out request: ${error.message}`));
+  },
+});
+
+async function discardRequestTransfers(message, state) {
+  if (!state) return;
+  const ids = [];
+  for (const entry of message?._surfTransfers?.uploads || []) if (typeof entry?.transferId === "string") ids.push(entry.transferId);
+  for (const entry of message?._surfTransfers?.downloads || []) if (typeof entry?.transferId === "string") ids.push(entry.transferId);
+  await Promise.all([...new Set(ids)].map((id) => state.discardCompleted(id)));
+}
+
+async function applyRequestTransfers(msg, request, transferState, getTransferState) {
+  if (!request.context?.isRemote) return;
+  const materialized = await materializeRemoteTool({
+    tool: request.tool,
+    args: msg.params?.args || {},
+    metadata: msg._surfTransfers,
+    pathRefs: msg._surfPaths || [],
+    transferState,
+    getTransferState,
+  });
+  request.transferState = materialized.transferState;
+  request.outputTransfers = materialized.outputTransfers;
+  request.pathRewrites = materialized.pathRewrites;
+  request.transferCleanup = materialized.transferCleanup;
+  msg.params = { ...msg.params, args: materialized.args };
+}
+
+async function cleanupRequestTransfers(request) {
+  if (!request || request.transferCleanupStarted) return request?.transferCleanupPromise;
+  request.transferCleanupStarted = true;
+  const paths = request.transferCleanup || [];
+  request.transferCleanup = [];
+  request.transferCleanupPromise = cleanupFilePaths(paths);
+  await request.transferCleanupPromise;
+  return request.transferCleanupPromise;
+}
+
+function completeOwnedRequest(context, id, outcome) {
+  const request = context?.activeRequest;
+  if (!request || request.id !== id) return Promise.resolve();
+  if (request.pendingEntries?.size && !request.hardBoundary) {
+    if (request.completionRequested) return request.completionPromise;
+    request.completionRequested = true;
+    request.completionOutcome = outcome;
+    request.completionPromise = new Promise((resolve) => {
+      pendingToolRequests.onDrain(request, () => {
+        sessionManager.complete(context, id, request.completionOutcome);
+        resolve();
+      });
+    });
+    return request.completionPromise;
+  }
+  sessionManager.complete(context, id, outcome);
+  return Promise.resolve();
+}
+
+async function sendRequestDownloads(context, request, result) {
+  if (!request) return result;
+  let rewritten = result;
+  for (const output of request.outputTransfers || []) {
+    await streamFileDownload({
+      writer: { send: (frame) => sendSocket(context.socket, frame) },
+      state: request.transferState,
+      filePath: output.path,
+      transferId: output.transferId,
+      original: output.original,
+    });
+  }
+  rewritten = rewriteTransferPaths(rewritten, request.pathRewrites || []);
+  return rewritten;
+}
+
 function sendToolResponse(socket, id, result, error) {
-  const response = { type: "tool_response", id };
-  
-  if (error) {
-    response.error = { content: [{ type: "text", text: error }] };
-  } else {
-    response.result = { content: formatToolContent(result, log) };
-  }
-  
-  try {
-    socket.write(JSON.stringify(response) + "\n");
-  } catch (e) {
-    log(`Error sending tool_response: ${e.message}`);
-  }
+  const context = socketContexts.get(socket);
+  if (context && !sessionManager.canRespond(context, id)) return;
+  const request = context?.activeRequest;
+  let finalError = error;
+  (async () => {
+    let output = result;
+    try {
+      if (!error) output = await sendRequestDownloads(context, request, result);
+    } catch (transferFailure) {
+      finalError = transferFailure.message;
+    }
+    if (finalError && request) {
+      finalError = rewriteTransferPaths(finalError, request.pathRewrites || []);
+    }
+    await cleanupRequestTransfers(request);
+    if (request?.settled) return;
+    const outcome = request?.signal.aborted
+      ? (request.tombstoned ? "cleanup-settled" : "cancelled")
+      : finalError ? "error" : "completed";
+    await completeOwnedRequest(context, id, outcome);
+    const response = { type: "tool_response", id };
+    if (finalError) response.error = { content: [{ type: "text", text: finalError }] };
+    else response.result = { content: formatToolContent(output, log, { suppressImages: Boolean(context?.isRemote) }) };
+    if (!context?.closed) await sendSocket(socket, response);
+  })().catch((sendError) => log(`Error sending tool_response: ${sendError.message}`));
+}
+
+function stopActiveStream(streamId, { notifyExtension = true } = {}) {
+  const stream = activeStreams.get(streamId);
+  if (!stream) return;
+  activeStreams.delete(streamId);
+  sessionManager.stopStream(socketContexts.get(stream.socket));
+  if (notifyExtension) writeMessage({ type: "STREAM_STOP", streamId });
 }
 
 function handleStreamRequest(msg, socket) {
   const { streamType, options, id: originalId } = msg;
   const tabId = msg.tabId;
   const streamId = ++requestCounter;
-  
+
   activeStreams.set(streamId, {
     socket,
     originalId,
     streamType,
   });
-  
+
   writeMessage({
     type: streamType,
     streamId,
     options: options || {},
     tabId,
   });
-  
-  try {
-    socket.write(JSON.stringify({ type: "stream_started", streamId }) + "\n");
-  } catch (e) {
-    log(`Error sending stream_started: ${e.message}`);
-  }
+
+  sendSocket(socket, { type: "stream_started", streamId }, { stream: true }).catch((error) => {
+    log(`Error sending stream_started: ${error.message}`);
+    stopActiveStream(streamId);
+    socket.destroy(error);
+  });
 }
 
-function handleToolRequest(msg, socket) {
+function handleToolRequest(msg, socket, requestContext = requestStorage.getStore()) {
+  const writeMessage = (message) => sendOwnedExtensionMessage(requestContext, message);
   const { method, params } = msg;
   const originalId = msg.id || null;
   
@@ -445,14 +620,14 @@ function handleToolRequest(msg, socket) {
   }
   
   if (extensionMsg.type === "LOCAL_WAIT") {
-    setTimeout(() => {
-      sendToolResponse(socket, originalId, { success: true }, null);
-    }, extensionMsg.seconds * 1000);
+    require("./abort.cjs").abortableDelay(extensionMsg.seconds * 1000, requestContext.signal)
+      .then(() => sendToolResponse(socket, originalId, { success: true }, null))
+      .catch((error) => sendToolResponse(socket, originalId, null, error.message));
     return;
   }
   
   if (extensionMsg.type === "BATCH_EXECUTE") {
-    executeBatch(extensionMsg.actions, extensionMsg.tabId, socket, originalId);
+    executeBatch(extensionMsg.actions, extensionMsg.tabId, socket, originalId, requestContext);
     return;
   }
   
@@ -468,46 +643,23 @@ function handleToolRequest(msg, socket) {
       return;
     }
     
-    const pageRequestId = ++requestCounter;
-    pendingToolRequests.set(pageRequestId, {
-      socket: null,
-      originalId: null,
-      tool: "read_page",
-      onComplete: async (pageResult) => {
-        if (pageResult.error) {
-          sendToolResponse(socket, originalId, null, `Failed to read page: ${pageResult.error}`);
-          return;
-        }
-        
-        const pageContent = pageResult.pageContent || "";
-        if (!pageContent) {
-          sendToolResponse(socket, originalId, null, "No page content available");
-          return;
-        }
-        
-        try {
-          const gemini = getGeminiClient(apiKey);
-          const result = await gemini.analyze(extensionMsg.query, pageContent, { mode: extensionMsg.mode });
-          
-          if (result.mode === "find") {
-            sendToolResponse(socket, originalId, { 
-              ref: result.content === "NOT_FOUND" ? null : result.content,
-              mode: result.mode,
-              aiResult: true
-            }, null);
-          } else {
-            sendToolResponse(socket, originalId, { 
-              content: result.content,
-              mode: result.mode,
-              aiResult: true
-            }, null);
-          }
-        } catch (err) {
-          sendToolResponse(socket, originalId, null, `AI analysis failed: ${err.message}`);
-        }
-      }
+    requestCallExtension(
+      requestContext,
+      "read_page",
+      { type: "READ_PAGE", options: { filter: "interactive" }, tabId: extensionMsg.tabId },
+      45000,
+    ).then(async (pageResult) => {
+      if (pageResult.error) throw new Error(`Failed to read page: ${pageResult.error}`);
+      const pageContent = pageResult.pageContent || "";
+      if (!pageContent) throw new Error("No page content available");
+      const gemini = getGeminiClient(apiKey);
+      const result = await gemini.analyze(extensionMsg.query, pageContent, { mode: extensionMsg.mode, signal: requestContext.signal });
+      return result.mode === "find"
+        ? { ref: result.content === "NOT_FOUND" ? null : result.content, mode: result.mode, aiResult: true }
+        : { content: result.content, mode: result.mode, aiResult: true };
+    }).then((result) => sendToolResponse(socket, originalId, result, null)).catch((err) => {
+      sendToolResponse(socket, originalId, null, err.message);
     });
-    writeMessage({ type: "READ_PAGE", options: { filter: "interactive" }, tabId: extensionMsg.tabId, id: pageRequestId });
     return;
   }
   
@@ -517,16 +669,12 @@ function handleToolRequest(msg, socket) {
     queueAiRequest(async () => {
       let pageContext = null;
       if (withPage) {
-        const pageResult = await new Promise((resolve) => {
-          const pageId = ++requestCounter;
-          pendingToolRequests.set(pageId, {
-            socket: null,
-            originalId: null,
-            tool: "read_page",
-            onComplete: resolve
-          });
-          writeMessage({ type: "GET_PAGE_TEXT", tabId: extensionMsg.tabId, id: pageId });
-        });
+        const pageResult = await requestCallExtension(
+          requestContext,
+          "read_page",
+          { type: "GET_PAGE_TEXT", tabId: extensionMsg.tabId },
+          45000,
+        );
         if (pageResult && !pageResult.error) {
           pageContext = {
             url: pageResult.url,
@@ -542,69 +690,36 @@ function handleToolRequest(msg, socket) {
       
       const result = await chatgptClient.query({
         prompt: fullPrompt,
+        signal: requestContext.signal,
         model,
         file,
         timeout,
-        getCookies: () => new Promise((resolve) => {
-          const cookieId = ++requestCounter;
-          pendingToolRequests.set(cookieId, {
-            socket: null,
-            originalId: null,
-            tool: "get_cookies",
-            onComplete: (r) => resolve(r)
-          });
-          writeMessage({ type: "GET_CHATGPT_COOKIES", id: cookieId });
-        }),
-        createTab: () => new Promise((resolve) => {
-          const tabCreateId = ++requestCounter;
-          pendingToolRequests.set(tabCreateId, {
-            socket: null,
-            originalId: null,
-            tool: "create_tab",
-            onComplete: (r) => resolve(r)
-          });
-          writeMessage({ type: "CHATGPT_NEW_TAB", id: tabCreateId });
-        }),
-        closeTab: (tabIdToClose) => new Promise((resolve) => {
-          const tabCloseId = ++requestCounter;
-          pendingToolRequests.set(tabCloseId, {
-            socket: null,
-            originalId: null,
-            tool: "close_tab",
-            onComplete: (r) => resolve(r)
-          });
-          writeMessage({ type: "CHATGPT_CLOSE_TAB", tabId: tabIdToClose, id: tabCloseId });
-        }),
-        cdpEvaluate: (tabId, expression) => new Promise((resolve) => {
-          const evalId = ++requestCounter;
-          pendingToolRequests.set(evalId, {
-            socket: null,
-            originalId: null,
-            tool: "cdp_evaluate",
-            onComplete: (r) => resolve(r)
-          });
-          writeMessage({ type: "CHATGPT_EVALUATE", tabId, expression, id: evalId });
-        }),
-        cdpCommand: (tabId, method, params) => new Promise((resolve) => {
-          const cmdId = ++requestCounter;
-          pendingToolRequests.set(cmdId, {
-            socket: null,
-            originalId: null,
-            tool: "cdp_command",
-            onComplete: (r) => resolve(r)
-          });
-          writeMessage({ type: "CHATGPT_CDP_COMMAND", tabId, method, params, id: cmdId });
-        }),
-        uploadFile: (tabId, filePaths) => new Promise((resolve) => {
-          const uploadId = ++requestCounter;
-          pendingToolRequests.set(uploadId, {
-            socket: null,
-            originalId: null,
-            tool: "upload_file",
-            onComplete: (r) => resolve(r)
-          });
-          writeMessage(buildProviderUploadMessage("chatgpt", tabId, filePaths, uploadId));
-        }),
+        getCookies: () => requestCallExtension(
+          requestContext,
+          "get_cookies",
+          { type: "GET_CHATGPT_COOKIES" },
+        ),
+        createTab: () => requestCallExtension(
+          requestContext,
+          "create_tab",
+          { type: "CHATGPT_NEW_TAB" },
+        ),
+        closeTab: (tabIdToClose) => requestCallExtension(requestContext, "close_tab", { type: "CHATGPT_CLOSE_TAB", tabId: tabIdToClose }, 45000, true),
+        cdpEvaluate: (tabId, expression) => requestCallExtension(
+          requestContext,
+          "cdp_evaluate",
+          { type: "CHATGPT_EVALUATE", tabId, expression },
+        ),
+        cdpCommand: (tabId, method, params) => requestCallExtension(
+          requestContext,
+          "cdp_command",
+          { type: "CHATGPT_CDP_COMMAND", tabId, method, params },
+        ),
+        uploadFile: (tabId, filePaths) => requestCallExtension(
+          requestContext,
+          "upload_file",
+          buildProviderUploadMessage("chatgpt", tabId, filePaths),
+        ),
         log: (msg) => log(`[chatgpt] ${msg}`)
       });
       
@@ -628,16 +743,12 @@ function handleToolRequest(msg, socket) {
     queueAiRequest(async () => {
       let pageContext = null;
       if (withPage) {
-        const pageResult = await new Promise((resolve) => {
-          const pageId = ++requestCounter;
-          pendingToolRequests.set(pageId, {
-            socket: null,
-            originalId: null,
-            tool: "read_page",
-            onComplete: resolve
-          });
-          writeMessage({ type: "GET_PAGE_TEXT", tabId: extensionMsg.tabId, id: pageId });
-        });
+        const pageResult = await requestCallExtension(
+          requestContext,
+          "read_page",
+          { type: "GET_PAGE_TEXT", tabId: extensionMsg.tabId },
+          45000,
+        );
         if (pageResult && !pageResult.error) {
           pageContext = {
             url: pageResult.url,
@@ -653,49 +764,26 @@ function handleToolRequest(msg, socket) {
       
       const result = await perplexityClient.query({
         prompt: fullPrompt,
+        signal: requestContext.signal,
         mode: mode || 'search',
         model,
         timeout: timeout || 120000,
-        createTab: () => new Promise((resolve) => {
-          const tabCreateId = ++requestCounter;
-          pendingToolRequests.set(tabCreateId, {
-            socket: null,
-            originalId: null,
-            tool: "create_tab",
-            onComplete: (r) => resolve(r)
-          });
-          writeMessage({ type: "PERPLEXITY_NEW_TAB", id: tabCreateId });
-        }),
-        closeTab: (tabIdToClose) => new Promise((resolve) => {
-          const tabCloseId = ++requestCounter;
-          pendingToolRequests.set(tabCloseId, {
-            socket: null,
-            originalId: null,
-            tool: "close_tab",
-            onComplete: (r) => resolve(r)
-          });
-          writeMessage({ type: "PERPLEXITY_CLOSE_TAB", tabId: tabIdToClose, id: tabCloseId });
-        }),
-        cdpEvaluate: (tabId, expression) => new Promise((resolve) => {
-          const evalId = ++requestCounter;
-          pendingToolRequests.set(evalId, {
-            socket: null,
-            originalId: null,
-            tool: "cdp_evaluate",
-            onComplete: (r) => resolve(r)
-          });
-          writeMessage({ type: "PERPLEXITY_EVALUATE", tabId, expression, id: evalId });
-        }),
-        cdpCommand: (tabId, method, params) => new Promise((resolve) => {
-          const cmdId = ++requestCounter;
-          pendingToolRequests.set(cmdId, {
-            socket: null,
-            originalId: null,
-            tool: "cdp_command",
-            onComplete: (r) => resolve(r)
-          });
-          writeMessage({ type: "PERPLEXITY_CDP_COMMAND", tabId, method, params, id: cmdId });
-        }),
+        createTab: () => requestCallExtension(
+          requestContext,
+          "create_tab",
+          { type: "PERPLEXITY_NEW_TAB" },
+        ),
+        closeTab: (tabIdToClose) => requestCallExtension(requestContext, "close_tab", { type: "PERPLEXITY_CLOSE_TAB", tabId: tabIdToClose }, 45000, true),
+        cdpEvaluate: (tabId, expression) => requestCallExtension(
+          requestContext,
+          "cdp_evaluate",
+          { type: "PERPLEXITY_EVALUATE", tabId, expression },
+        ),
+        cdpCommand: (tabId, method, params) => requestCallExtension(
+          requestContext,
+          "cdp_command",
+          { type: "PERPLEXITY_CDP_COMMAND", tabId, method, params },
+        ),
         log: (msg) => log(`[perplexity] ${msg}`)
       });
       
@@ -723,16 +811,12 @@ function handleToolRequest(msg, socket) {
       // 1. Get page context if requested
       let pageContext = null;
       if (withPage) {
-        const pageResult = await new Promise((resolve) => {
-          const pageId = ++requestCounter;
-          pendingToolRequests.set(pageId, {
-            socket: null,
-            originalId: null,
-            tool: "get_page_text",
-            onComplete: resolve
-          });
-          writeMessage({ type: "GET_PAGE_TEXT", tabId: extensionMsg.tabId, id: pageId });
-        });
+        const pageResult = await requestCallExtension(
+          requestContext,
+          "get_page_text",
+          { type: "GET_PAGE_TEXT", tabId: extensionMsg.tabId },
+          45000,
+        );
         if (pageResult && !pageResult.error) {
           pageContext = {
             url: pageResult.url,
@@ -750,6 +834,7 @@ function handleToolRequest(msg, socket) {
       // 3. Call Gemini client
       const result = await geminiClient.query({
         prompt: fullPrompt,
+        signal: requestContext.signal,
         model: model || "gemini-3.1-pro",
         file,
         generateImage,
@@ -758,67 +843,32 @@ function handleToolRequest(msg, socket) {
         youtube,
         aspectRatio,
         timeout: timeout || 300000,
-        getCookies: () => new Promise((resolve) => {
-          const cookieId = ++requestCounter;
-          pendingToolRequests.set(cookieId, {
-            socket: null,
-            originalId: null,
-            tool: "get_cookies",
-            onComplete: (r) => resolve(r)
-          });
-          writeMessage({ type: "GET_GOOGLE_COOKIES", id: cookieId });
-        }),
-        createTab: () => new Promise((resolve) => {
-          const tabCreateId = ++requestCounter;
-          pendingToolRequests.set(tabCreateId, {
-            socket: null,
-            originalId: null,
-            tool: "create_tab",
-            onComplete: (r) => resolve(r)
-          });
-          writeMessage({ type: "GEMINI_NEW_TAB", id: tabCreateId });
-        }),
-        closeTab: (tabIdToClose) => new Promise((resolve) => {
-          const tabCloseId = ++requestCounter;
-          pendingToolRequests.set(tabCloseId, {
-            socket: null,
-            originalId: null,
-            tool: "close_tab",
-            onComplete: (r) => resolve(r)
-          });
-          writeMessage({ type: "GEMINI_CLOSE_TAB", tabId: tabIdToClose, id: tabCloseId });
-        }),
-        jsEval: (tabId, code) => new Promise((resolve) => {
-          const jsId = ++requestCounter;
-          pendingToolRequests.set(jsId, {
-            socket: null,
-            originalId: null,
-            tool: "js_eval",
-            onComplete: (r) => resolve(r)
-          });
-          log(`[gemini] Sending EXECUTE_JAVASCRIPT id=${jsId} tabId=${tabId} code=${code.length} chars`);
-          writeMessage({ type: "EXECUTE_JAVASCRIPT", tabId, code, id: jsId });
-        }),
-        uploadFile: (tabId, filePaths) => new Promise((resolve) => {
-          const uploadId = ++requestCounter;
-          pendingToolRequests.set(uploadId, {
-            socket: null,
-            originalId: null,
-            tool: "upload_file",
-            onComplete: (r) => resolve(r)
-          });
-          writeMessage(buildProviderUploadMessage("gemini", tabId, filePaths, uploadId));
-        }),
-        fetchUrl: (url) => new Promise((resolve) => {
-          const fetchId = ++requestCounter;
-          pendingToolRequests.set(fetchId, {
-            socket: null,
-            originalId: null,
-            tool: "fetch_url",
-            onComplete: (r) => resolve(r)
-          });
-          writeMessage({ type: "GEMINI_FETCH_URL", url, id: fetchId });
-        }),
+        getCookies: () => requestCallExtension(
+          requestContext,
+          "get_cookies",
+          { type: "GET_GOOGLE_COOKIES" },
+        ),
+        createTab: () => requestCallExtension(
+          requestContext,
+          "create_tab",
+          { type: "GEMINI_NEW_TAB" },
+        ),
+        closeTab: (tabIdToClose) => requestCallExtension(requestContext, "close_tab", { type: "GEMINI_CLOSE_TAB", tabId: tabIdToClose }, 45000, true),
+        jsEval: (tabId, code) => requestCallExtension(
+          requestContext,
+          "js_eval",
+          { type: "EXECUTE_JAVASCRIPT", tabId, code },
+        ),
+        uploadFile: (tabId, filePaths) => requestCallExtension(
+          requestContext,
+          "upload_file",
+          buildProviderUploadMessage("gemini", tabId, filePaths),
+        ),
+        fetchUrl: (url) => requestCallExtension(
+          requestContext,
+          "fetch_url",
+          { type: "GEMINI_FETCH_URL", url },
+        ),
         log: (msg) => log(`[gemini] ${msg}`)
       });
       
@@ -847,16 +897,12 @@ function handleToolRequest(msg, socket) {
       // 1. Get page context if requested
       let pageContext = null;
       if (withPage) {
-        const pageResult = await new Promise((resolve) => {
-          const pageId = ++requestCounter;
-          pendingToolRequests.set(pageId, {
-            socket: null,
-            originalId: null,
-            tool: "get_page_text",
-            onComplete: resolve
-          });
-          writeMessage({ type: "GET_PAGE_TEXT", tabId: extensionMsg.tabId, id: pageId });
-        });
+        const pageResult = await requestCallExtension(
+          requestContext,
+          "get_page_text",
+          { type: "GET_PAGE_TEXT", tabId: extensionMsg.tabId },
+          45000,
+        );
         if (pageResult && !pageResult.error) {
           pageContext = {
             url: pageResult.url,
@@ -874,59 +920,31 @@ function handleToolRequest(msg, socket) {
       // 3. Call Grok client
       const result = await grokClient.query({
         prompt: fullPrompt,
+        signal: requestContext.signal,
         model: model,
         deepSearch: deepSearch || false,
         timeout: timeout || 300000,
-        getCookies: () => new Promise((resolve) => {
-          const cookieId = ++requestCounter;
-          pendingToolRequests.set(cookieId, {
-            socket: null,
-            originalId: null,
-            tool: "get_cookies",
-            onComplete: (r) => resolve(r)
-          });
-          writeMessage({ type: "GET_TWITTER_COOKIES", id: cookieId });
-        }),
-        createTab: () => new Promise((resolve) => {
-          const tabCreateId = ++requestCounter;
-          pendingToolRequests.set(tabCreateId, {
-            socket: null,
-            originalId: null,
-            tool: "create_tab",
-            onComplete: (r) => resolve(r)
-          });
-          writeMessage({ type: "GROK_NEW_TAB", id: tabCreateId });
-        }),
-        closeTab: (tabIdToClose) => new Promise((resolve) => {
-          const tabCloseId = ++requestCounter;
-          pendingToolRequests.set(tabCloseId, {
-            socket: null,
-            originalId: null,
-            tool: "close_tab",
-            onComplete: (r) => resolve(r)
-          });
-          writeMessage({ type: "GROK_CLOSE_TAB", tabId: tabIdToClose, id: tabCloseId });
-        }),
-        cdpEvaluate: (tabId, expression) => new Promise((resolve) => {
-          const evalId = ++requestCounter;
-          pendingToolRequests.set(evalId, {
-            socket: null,
-            originalId: null,
-            tool: "cdp_evaluate",
-            onComplete: (r) => resolve(r)
-          });
-          writeMessage({ type: "GROK_EVALUATE", tabId, expression, id: evalId });
-        }),
-        cdpCommand: (tabId, method, params) => new Promise((resolve) => {
-          const cmdId = ++requestCounter;
-          pendingToolRequests.set(cmdId, {
-            socket: null,
-            originalId: null,
-            tool: "cdp_command",
-            onComplete: (r) => resolve(r)
-          });
-          writeMessage({ type: "GROK_CDP_COMMAND", tabId, method, params, id: cmdId });
-        }),
+        getCookies: () => requestCallExtension(
+          requestContext,
+          "get_cookies",
+          { type: "GET_TWITTER_COOKIES" },
+        ),
+        createTab: () => requestCallExtension(
+          requestContext,
+          "create_tab",
+          { type: "GROK_NEW_TAB" },
+        ),
+        closeTab: (tabIdToClose) => requestCallExtension(requestContext, "close_tab", { type: "GROK_CLOSE_TAB", tabId: tabIdToClose }, 45000, true),
+        cdpEvaluate: (tabId, expression) => requestCallExtension(
+          requestContext,
+          "cdp_evaluate",
+          { type: "GROK_EVALUATE", tabId, expression },
+        ),
+        cdpCommand: (tabId, method, params) => requestCallExtension(
+          requestContext,
+          "cdp_command",
+          { type: "GROK_CDP_COMMAND", tabId, method, params },
+        ),
         log: (msg) => log(`[grok] ${msg}`)
       });
       
@@ -965,46 +983,29 @@ function handleToolRequest(msg, socket) {
     
     queueAiRequest(async () => {
       const result = await grokClient.validate({
-        getCookies: () => new Promise((resolve) => {
-          const cookieId = ++requestCounter;
-          pendingToolRequests.set(cookieId, {
-            socket: null,
-            originalId: null,
-            tool: "get_cookies",
-            onComplete: (r) => resolve(r)
-          });
-          writeMessage({ type: "GET_TWITTER_COOKIES", id: cookieId });
-        }),
-        createTab: () => new Promise((resolve) => {
-          const tabCreateId = ++requestCounter;
-          pendingToolRequests.set(tabCreateId, {
-            socket: null,
-            originalId: null,
-            tool: "create_tab",
-            onComplete: (r) => resolve(r)
-          });
-          writeMessage({ type: "GROK_NEW_TAB", id: tabCreateId });
-        }),
-        closeTab: (tabIdToClose) => new Promise((resolve) => {
-          const tabCloseId = ++requestCounter;
-          pendingToolRequests.set(tabCloseId, {
-            socket: null,
-            originalId: null,
-            tool: "close_tab",
-            onComplete: (r) => resolve(r)
-          });
-          writeMessage({ type: "GROK_CLOSE_TAB", tabId: tabIdToClose, id: tabCloseId });
-        }),
-        cdpEvaluate: (tabId, expression) => new Promise((resolve) => {
-          const evalId = ++requestCounter;
-          pendingToolRequests.set(evalId, {
-            socket: null,
-            originalId: null,
-            tool: "cdp_evaluate",
-            onComplete: (r) => resolve(r)
-          });
-          writeMessage({ type: "GROK_EVALUATE", tabId, expression, id: evalId });
-        }),
+        signal: requestContext.signal,
+        getCookies: () => requestCallExtension(
+          requestContext,
+          "get_cookies",
+          { type: "GET_TWITTER_COOKIES" },
+        ),
+        createTab: () => requestCallExtension(
+          requestContext,
+          "create_tab",
+          { type: "GROK_NEW_TAB" },
+        ),
+        closeTab: (tabIdToClose) => requestCallExtension(
+          requestContext,
+          "close_tab",
+          { type: "GROK_CLOSE_TAB", tabId: tabIdToClose },
+          45000,
+          true,
+        ),
+        cdpEvaluate: (tabId, expression) => requestCallExtension(
+          requestContext,
+          "cdp_evaluate",
+          { type: "GROK_EVALUATE", tabId, expression },
+        ),
         log: (msg) => log(`[grok:validate] ${msg}`)
       });
       
@@ -1049,30 +1050,12 @@ function handleToolRequest(msg, socket) {
     queueAiRequest(async () => {
       const EXT_CALL_TIMEOUT_MS = 30000;
 
-      const callExtension = (toolName, msg, timeoutMs = EXT_CALL_TIMEOUT_MS) => new Promise((resolve, reject) => {
-        const id = ++requestCounter;
-
-        if (msg && msg.type === "AISTUDIO_NEW_TAB") {
+      const callExtension = (toolName, msg, timeoutMs = EXT_CALL_TIMEOUT_MS) => {
+        if (msg?.type === "AISTUDIO_NEW_TAB") {
           log(`[aistudio] Opening tab: ${(msg.url || "https://aistudio.google.com/prompts/new_chat")}`);
         }
-
-        const timeoutId = setTimeout(() => {
-          pendingToolRequests.delete(id);
-          reject(new Error(`Timeout waiting for extension: ${toolName}`));
-        }, timeoutMs);
-
-        pendingToolRequests.set(id, {
-          socket: null,
-          originalId: null,
-          tool: toolName,
-          onComplete: (r) => {
-            clearTimeout(timeoutId);
-            resolve(r);
-          }
-        });
-
-        writeMessage({ ...msg, id });
-      });
+        return requestCallExtension(requestContext, toolName, msg, timeoutMs);
+      };
 
       // 1. Get page context if requested
       let pageContext = null;
@@ -1106,6 +1089,7 @@ function handleToolRequest(msg, socket) {
       // 3. Call AI Studio client
       const result = await aistudioClient.query({
         prompt: fullPrompt,
+        signal: requestContext.signal,
         model: model || undefined,
         timeout: timeout || 300000,
         getCookies: () => callExtension("get_cookies", { type: "GET_GOOGLE_COOKIES" }, 45000),
@@ -1164,33 +1148,16 @@ function handleToolRequest(msg, socket) {
     queueAiRequest(async () => {
       const EXT_CALL_TIMEOUT_MS = 30000;
 
-      const callExtension = (toolName, msg, timeoutMs = EXT_CALL_TIMEOUT_MS) => new Promise((resolve, reject) => {
-        const id = ++requestCounter;
-
-        if (msg && msg.type === "AISTUDIO_NEW_TAB") {
+      const callExtension = (toolName, msg, timeoutMs = EXT_CALL_TIMEOUT_MS) => {
+        if (msg?.type === "AISTUDIO_NEW_TAB") {
           log(`[aistudio] Opening tab: ${(msg.url || "https://aistudio.google.com/apps")}`);
         }
-
-        const timeoutId = setTimeout(() => {
-          pendingToolRequests.delete(id);
-          reject(new Error(`Timeout waiting for extension: ${toolName}`));
-        }, timeoutMs);
-
-        pendingToolRequests.set(id, {
-          socket: null,
-          originalId: null,
-          tool: toolName,
-          onComplete: (r) => {
-            clearTimeout(timeoutId);
-            resolve(r);
-          }
-        });
-
-        writeMessage({ ...msg, id });
-      });
+        return requestCallExtension(requestContext, toolName, msg, timeoutMs);
+      };
 
       const result = await aistudioBuild.build({
         prompt: query,
+        signal: requestContext.signal,
         model: model || undefined,
         output,
         keepOpen,
@@ -1241,6 +1208,7 @@ function handleToolRequest(msg, socket) {
     let lastError = null;
     
     const sendNextKey = () => {
+      if (requestContext.signal.aborted) return;
       if (completed >= repeat) {
         if (lastError) {
           sendToolResponse(socket, originalId, null, `Key repeat failed: ${lastError}`);
@@ -1249,18 +1217,15 @@ function handleToolRequest(msg, socket) {
         }
         return;
       }
-      const id = ++requestCounter;
-      pendingToolRequests.set(id, { 
-        socket: null,
-        originalId: null,
+      requestCallExtension(
+        requestContext,
         tool,
-        onComplete: (result) => {
-          if (result.error) lastError = result.error;
-          completed++;
-          setTimeout(sendNextKey, 50);
-        }
-      });
-      writeMessage({ type: "EXECUTE_KEY", key, tabId: tid, id });
+        { type: "EXECUTE_KEY", key, tabId: tid },
+      ).then((result) => {
+        if (result.error) lastError = result.error;
+        completed++;
+        return require("./abort.cjs").abortableDelay(50, requestContext.signal);
+      }).then(sendNextKey).catch((error) => sendToolResponse(socket, originalId, null, error.message));
     };
     sendNextKey();
     return;
@@ -1268,23 +1233,25 @@ function handleToolRequest(msg, socket) {
   
   if (extensionMsg.type === "NAMED_TAB_SWITCH" || extensionMsg.type === "NAMED_TAB_CLOSE") {
     const { name, type: opType } = extensionMsg;
-    const lookupId = ++requestCounter;
-    pendingToolRequests.set(lookupId, {
-      socket: null,
-      originalId: null,
-      tool: "tabs_get_by_name",
-      onComplete: (result) => {
-        if (result.error || !result.tabId) {
-          sendToolResponse(socket, originalId, null, result.error || `No tab found with name "${name}"`);
-          return;
-        }
-        const actionId = ++requestCounter;
-        const actionType = opType === "NAMED_TAB_SWITCH" ? "SWITCH_TAB" : "CLOSE_TAB";
-        pendingToolRequests.set(actionId, { socket, originalId, tool, tabId: result.tabId });
-        writeMessage({ type: actionType, tabId: result.tabId, id: actionId });
+    requestCallExtension(
+      requestContext,
+      "tabs_get_by_name",
+      { type: "TABS_GET_BY_NAME", name },
+    ).then((result) => {
+      if (result.error || !result.tabId) {
+        throw new Error(result.error || `No tab found with name "${name}"`);
       }
-    });
-    writeMessage({ type: "TABS_GET_BY_NAME", name, id: lookupId });
+      const actionType = opType === "NAMED_TAB_SWITCH" ? "SWITCH_TAB" : "CLOSE_TAB";
+      const actionTool = opType === "NAMED_TAB_SWITCH" ? "switch_tab" : "close_tab";
+      return requestCallExtension(
+        requestContext,
+        actionTool,
+        { type: actionType, tabId: result.tabId },
+        30000,
+        actionTool === "close_tab",
+      );
+    }).then((result) => sendToolResponse(socket, originalId, result, result?.error || null))
+      .catch((error) => sendToolResponse(socket, originalId, null, error.message));
     return;
   }
   
@@ -1294,7 +1261,11 @@ function handleToolRequest(msg, socket) {
     originalId, 
     tool, 
     savePath: extensionMsg.savePath || args?.savePath,
-    autoScreenshot: args?.autoScreenshot,
+    autoScreenshot: args?.autoScreenshot === true,
+    autoScreenshotOutput: args?.autoScreenshotOutput,
+    networkExport: extensionMsg.type === "EXPORT_NETWORK_REQUESTS",
+    networkExportPath: args?.output,
+    networkExportFormat: extensionMsg.har ? "har" : extensionMsg.jsonl ? "jsonl" : "json",
     fullRes: extensionMsg.fullRes || args?.fullRes,
     maxSize: extensionMsg.maxSize || args?.maxSize,
     tabId: extensionMsg.tabId || tabId
@@ -1307,12 +1278,14 @@ function handleToolRequest(msg, socket) {
   writeMessage(finalMsg);
 }
 
-function executeBatch(actions, tabId, socket, originalId) {
+function executeBatch(actions, tabId, socket, originalId, requestContext = requestStorage.getStore()) {
+  const writeMessage = (message) => sendOwnedExtensionMessage(requestContext, message);
   const results = [];
   const DELAY_MS = 100;
   let currentIndex = 0;
   
   function executeNextAction() {
+    if (requestContext.signal.aborted) return;
     if (currentIndex >= actions.length) {
       sendToolResponse(socket, originalId, {
         success: true,
@@ -1343,16 +1316,14 @@ function executeBatch(actions, tabId, socket, originalId) {
     if (extensionMsg.type === "LOCAL_WAIT") {
       results.push({ index: currentIndex, type: action.type, success: true });
       currentIndex++;
-      setTimeout(executeNextAction, extensionMsg.seconds * 1000);
+      require("./abort.cjs").abortableDelay(extensionMsg.seconds * 1000, requestContext.signal)
+        .then(executeNextAction)
+        .catch((error) => sendToolResponse(socket, originalId, null, error.message));
       return;
     }
     
-    const id = ++requestCounter;
-    pendingToolRequests.set(id, {
-      socket: null,
-      originalId: null,
-      tool: toolName,
-      onComplete: (result) => {
+    requestCallExtension(requestContext, toolName, extensionMsg, 30000)
+      .then((result) => {
         if (result.error) {
           results.push({ index: currentIndex, type: action.type, success: false, error: result.error });
           sendToolResponse(socket, originalId, {
@@ -1364,15 +1335,12 @@ function executeBatch(actions, tabId, socket, originalId) {
           }, null);
           return;
         }
-        
         results.push({ index: currentIndex, type: action.type, success: true });
         currentIndex++;
-        
-        setTimeout(executeNextAction, DELAY_MS);
-      }
-    });
-    
-    writeMessage({ ...extensionMsg, id });
+        return require("./abort.cjs").abortableDelay(DELAY_MS, requestContext.signal)
+          .then(executeNextAction);
+      })
+      .catch((error) => sendToolResponse(socket, originalId, null, error.message));
   }
   
   executeNextAction();
@@ -1433,7 +1401,7 @@ function processInput() {
     
     try {
       const msg = JSON.parse(jsonStr);
-      log(`Received from extension: ${JSON.stringify(msg)}`);
+      log(`Received from extension: ${msg.type || "unknown"}${msg.id !== undefined ? ` id=${msg.id}` : ""}`);
       
       if (msg.type === "GET_AUTH") {
         log("Handling GET_AUTH from extension");
@@ -1467,24 +1435,24 @@ function processInput() {
       if (msg.type === "STREAM_EVENT") {
         const stream = activeStreams.get(msg.streamId);
         if (stream) {
-          try {
-            stream.socket.write(JSON.stringify(msg.event) + "\n");
-          } catch (e) {
-            log(`Error forwarding stream event: ${e.message}`);
-            activeStreams.delete(msg.streamId);
-            writeMessage({ type: "STREAM_STOP", streamId: msg.streamId });
-          }
+          sendSocket(stream.socket, msg.event, { stream: true }).catch((error) => {
+            log(`Error forwarding stream event: ${error.message}`);
+            stopActiveStream(msg.streamId);
+            stream.socket.destroy(error);
+          });
         }
         return;
       }
-      
+
       if (msg.type === "STREAM_ERROR") {
         const stream = activeStreams.get(msg.streamId);
         if (stream) {
-          try {
-            stream.socket.write(JSON.stringify({ error: msg.error }) + "\n");
-          } catch (e) {}
-          activeStreams.delete(msg.streamId);
+          sendSocket(stream.socket, { error: msg.error }, { stream: true })
+            .catch((error) => {
+              log(`Error forwarding stream error: ${error.message}`);
+              stream.socket.destroy(error);
+            })
+            .finally(() => stopActiveStream(msg.streamId));
         }
         return;
       }
@@ -1492,19 +1460,41 @@ function processInput() {
       
       if (msg.id && pendingToolRequests.has(msg.id)) {
         const pending = pendingToolRequests.get(msg.id);
+        if (pending.request?.signal.aborted || pending.request?.tombstoned) {
+          const request = pending.request;
+          const topLevelResponse = !pending.resolve && !pending.onComplete;
+          pendingToolRequests.resolve(msg.id, msg);
+          if (topLevelResponse && request?.context) {
+            completeOwnedRequest(request.context, request.id, "cleanup-settled");
+          }
+          return;
+        }
+        if (pending.resolve || pending.onComplete) {
+          pendingToolRequests.resolve(msg.id, msg);
+          return;
+        }
         pendingToolRequests.delete(msg.id);
-        
-        if (pending.onComplete) {
-          pending.onComplete(msg);
-        } else {
+        {
+
           const { socket, originalId, savePath, autoScreenshot, tabId: storedTabId } = pending;
           const tabId = storedTabId || msg._resolvedTabId;
+          const failAutoScreenshot = (message) => pending.autoScreenshotOutput
+            ? sendToolResponse(socket, originalId, null, `Auto-screenshot failed: ${message}`)
+            : sendToolResponse(socket, originalId, { ...msg, autoScreenshotError: message }, null);
           
-          if (savePath && msg.base64) {
+          if (pending.networkExport && Array.isArray(msg.entries)) {
+            try {
+              const exportResult = writeNetworkExport(pending.networkExportPath, msg.entries, pending.networkExportFormat);
+              sendToolResponse(socket, originalId, exportResult, null);
+            } catch (error) {
+              sendToolResponse(socket, originalId, null, `Failed to export network requests: ${error.message}`);
+            }
+          } else if (savePath && msg.base64) {
             try {
               const dir = path.dirname(savePath);
               if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
-              fs.writeFileSync(savePath, Buffer.from(msg.base64, "base64"));
+              fs.writeFileSync(savePath, Buffer.from(msg.base64, "base64"), { mode: 0o600 });
+              try { fs.chmodSync(savePath, 0o600); } catch {}
               const origWidth = msg.width || 0;
               const origHeight = msg.height || 0;
               const maxSize = pending.maxSize || 1200;
@@ -1527,8 +1517,7 @@ function processInput() {
             }
           } else if (autoScreenshot && tabId && !msg.error && !msg.base64) {
             
-            const screenshotId = ++requestCounter;
-            const screenshotPath = path.join(SURF_TMP, `pi-auto-${Date.now()}.png`);
+            const screenshotPath = pending.autoScreenshotOutput || path.join(SURF_TMP, `pi-auto-${Date.now()}.png`);
             
             const autoFiles = fs.readdirSync(SURF_TMP)
               .filter(f => f.startsWith("pi-auto-") && f.endsWith(".png"))
@@ -1539,14 +1528,17 @@ function processInput() {
                 try { fs.unlinkSync(path.join(SURF_TMP, f.name)); } catch (e) {}
               });
             }
-            pendingToolRequests.set(screenshotId, {
-              socket: null,
-              originalId: null,
-              tool: "screenshot",
-              onComplete: (screenshotMsg) => {
+            require("./abort.cjs").abortableDelay(500, pending.request?.signal)
+              .then(() => requestCallExtension(
+                pending.request,
+                "screenshot",
+                { type: "EXECUTE_SCREENSHOT", tabId },
+              ))
+              .then((screenshotMsg) => {
                 if (screenshotMsg.base64) {
                   try {
-                    fs.writeFileSync(screenshotPath, Buffer.from(screenshotMsg.base64, "base64"));
+                    fs.writeFileSync(screenshotPath, Buffer.from(screenshotMsg.base64, "base64"), { mode: 0o600 });
+                    try { fs.chmodSync(screenshotPath, 0o600); } catch {}
                     const origW = screenshotMsg.width || 0;
                     const origH = screenshotMsg.height || 0;
                     let finalW = origW, finalH = origH;
@@ -1563,16 +1555,17 @@ function processInput() {
                       autoScreenshot: { path: screenshotPath, width: finalW, height: finalH, originalWidth: origW, originalHeight: origH }
                     }, null);
                   } catch (e) {
-                    sendToolResponse(socket, originalId, { ...msg, autoScreenshotError: e.message }, null);
+                    failAutoScreenshot(e.message);
                   }
                 } else {
                   const errMsg = screenshotMsg.error || "Failed to capture";
-                  sendToolResponse(socket, originalId, { ...msg, autoScreenshotError: errMsg }, null);
+                  failAutoScreenshot(errMsg);
                 }
-              }
-            });
-            setTimeout(() => writeMessage({ type: "EXECUTE_SCREENSHOT", tabId, id: screenshotId }), 500);
+              })
+              .catch((error) => failAutoScreenshot(error.message));
             return;
+          } else if (autoScreenshot && pending.autoScreenshotOutput && !msg.error) {
+            failAutoScreenshot(tabId ? "screenshot response was invalid" : "no tab available");
           } else if (msg.results && msg.savePath) {
             try {
               const dir = msg.savePath;
@@ -1606,11 +1599,7 @@ function processInput() {
         }
       } else if (msg.id && pendingRequests.has(msg.id)) {
         const { socket } = pendingRequests.get(msg.id);
-        try {
-          socket.write(JSON.stringify(msg) + "\n");
-        } catch (e) {
-          log(`Error writing to CLI socket: ${e.message}`);
-        }
+        sendSocket(socket, msg).catch((error) => log(`Error writing to CLI socket: ${error.message}`));
         pendingRequests.delete(msg.id);
       }
     } catch (e) {
@@ -1633,15 +1622,10 @@ const connectedSockets = new Set();
 process.stdin.on("end", () => {
   log("stdin ended (extension disconnected), notifying clients");
   for (const socket of Array.from(connectedSockets)) {
-    try {
-      socket.write(JSON.stringify({ 
-        type: "extension_disconnected",
-        message: "Surf extension was reloaded. Restart your command."
-      }) + "\n");
-      socket.end();
-    } catch (e) {
-      // Socket may already be closed
-    }
+    sendSocket(socket, {
+      type: "extension_disconnected",
+      message: "Surf extension was reloaded. Restart your command."
+    }).finally(() => socket.end()).catch(() => socket.end());
   }
   shutdown(0);
 });
@@ -1655,96 +1639,212 @@ process.stdout.on("error", (err) => {
 });
 
 const handleClient = (socket) => {
+  const isRemote = Boolean(socket.remoteAddress && socket.remotePort);
+  let transferState;
+  let transferReady;
+  let transferCleanupPromise;
+  const cleanupTransfers = () => {
+    if (!transferCleanupPromise) {
+      transferCleanupPromise = transferReady
+        ? transferReady.then((state) => state?.cleanup())
+        : Promise.resolve();
+    }
+    return transferCleanupPromise;
+  };
+  socket.transferCleanup = cleanupTransfers;
+  const ensureTransferState = () => {
+    if (context?.closed || socket.destroyed) throw transferError("transfer connection is closed", "SURF_TRANSFER_CLOSED");
+    if (!transferReady) {
+      transferCleanupPromise = undefined;
+      transferReady = createStagingDirectory(SURF_TMP)
+        .then(async (directory) => {
+          if (context?.closed || socket.destroyed) {
+            await fs.promises.rm(directory, { recursive: true, force: true }).catch(() => {});
+            throw transferError("transfer connection is closed", "SURF_TRANSFER_CLOSED");
+          }
+          try {
+            return createTransferState({ directory, writer: { send: (frame) => sendSocket(socket, frame) }, onActivity: () => sessionManager.touch(socketContexts.get(socket)) });
+          } catch (error) {
+            return fs.promises.rm(directory, { recursive: true, force: true }).catch(() => {}).then(() => { throw error; });
+          }
+        })
+        .catch((error) => { transferReady = undefined; throw error; });
+    }
+    return transferReady;
+  };
+  let context;
+  try {
+    context = sessionManager.admit(socket, isRemote);
+  } catch (error) {
+    sendSocket(socket, { error: error.message }).finally(() => socket.destroy()).catch(() => socket.destroy());
+    return;
+  }
+  const writer = createSocketWriter(socket, {
+    maxPendingBytes: 4 * 1024 * 1024,
+    onOverflow: ({ stream, error }) => {
+      auditSession({ event: stream ? "stream" : "writer", context, outcome: "overflow", request: context.activeRequest });
+      sessionManager.stopStream(context);
+      socket.destroy(error);
+    },
+  });
+  socketContexts.set(socket, context);
+  socketWriters.set(socket, writer);
   log("CLI client connected");
   connectedSockets.add(socket);
   socket.on("close", () => connectedSockets.delete(socket));
   
-  let dataBuffer = Buffer.alloc(0);
-
-  socket.on("data", (data) => {
-    dataBuffer = Buffer.concat([dataBuffer, data]);
-    let newline;
-    while ((newline = dataBuffer.indexOf(0x0a)) !== -1) {
-      const frame = dataBuffer.subarray(0, newline);
-      dataBuffer = dataBuffer.subarray(newline + 1);
-      if (frame.length > MAX_CLIENT_FRAME_BYTES) { log("CLI frame exceeds byte limit"); socket.destroy(); return; }
-      let line;
+  const stateDir = getStateDir();
+  let principal = null;
+  const authSession = isRemote ? createServerAuthSession({
+    socket,
+    stateDir,
+    send: (value) => sendSocket(socket, value),
+    async onAuthenticated(authenticatedPrincipal) {
+      sessionManager.authenticate(context, authenticatedPrincipal);
+      principal = authenticatedPrincipal;
+      log(`Remote client authenticated: ${authenticatedPrincipal.label} (${authenticatedPrincipal.clientId})`);
+    },
+    onError(error) {
+      log(`Remote authentication rejected: ${error.message}`);
+      sendSocket(socket, { type: "auth_error", message: error.message }).finally(() => socket.destroy()).catch(() => socket.destroy());
+    },
+  }) : null;
+  let messageChain = Promise.resolve();
+  const processMessage = async (msg) => {
+    if (context.closed) return;
+    if (isRemote && !authSession.authenticated) {
+      await authSession.handle(msg);
+      return;
+    }
+    if (isRemote) {
+      let authorized = false;
       try {
-        // Frames are independently encoded values.  Do not carry UTF-8 state
-        // from one newline-delimited frame into the next.
-        line = new TextDecoder("utf-8", { fatal: true }).decode(frame);
-      } catch {
-        log("CLI frame contains invalid UTF-8");
+        authorized = Boolean(principal && isClientAuthorized(stateDir, principal.clientId));
+      } catch (error) {
+        log(`Remote authorization registry check failed: ${error.message}`);
+      }
+      if (!authorized) {
+        await sendSocket(socket, { error: "remote client authorization is unavailable or revoked" }).catch(() => {});
         socket.destroy();
         return;
       }
-      if (!line.trim()) continue;
-      try {
-        const msg = JSON.parse(line);
-        
-        if (msg.type === "tool_request") {
-          log("Handling tool_request: " + msg.method + " " + (msg.params?.tool || ""));
-          try {
-            handleToolRequest(msg, socket);
-          } catch (e) {
-            socket.write(JSON.stringify({ error: e.message || "Request failed" }) + "\n");
-          }
-          continue;
-        }
-        
-        if (msg.type === "stream_request") {
-          if (msg.streamType !== "STREAM_CONSOLE" && msg.streamType !== "STREAM_NETWORK") {
-            log(`Rejecting unsupported stream type: ${msg.streamType}`);
-            socket.write(JSON.stringify({ error: `Unsupported stream type: ${msg.streamType}` }) + "\n");
-            continue;
-          }
-          log("Handling stream_request: " + msg.streamType);
-          handleStreamRequest(msg, socket);
-          continue;
-        }
-        
-        if (msg.type === "stream_stop") {
-          log("Handling stream_stop");
-          for (const [streamId, stream] of activeStreams.entries()) {
-            if (stream.socket === socket) {
-              writeMessage({ type: "STREAM_STOP", streamId });
-              activeStreams.delete(streamId);
-            }
-          }
-          continue;
-        }
-        
-        log(`Rejecting unsupported socket request type: ${msg.type}`);
-        socket.write(JSON.stringify({ error: `Unsupported request type: ${msg.type}` }) + "\n");
-      } catch (e) {
-        log(`Error parsing CLI request: ${e.message}`);
-        socket.write(JSON.stringify({ error: "Invalid request" }) + "\n");
-      }
     }
-    if (dataBuffer.length > MAX_CLIENT_FRAME_BYTES) { log("CLI frame exceeds byte limit"); socket.destroy(); }
+
+    if (isRemote && msg.type && msg.type.startsWith("transfer_")) {
+      transferState ||= await ensureTransferState();
+      await transferState.handle(msg);
+      return;
+    }
+
+    if (msg.type === "tool_request") {
+      const tool = msg.params?.tool || "unknown";
+      let request;
+      try {
+        const deadlineMs = TEST_REQUEST_DEADLINE_MS || resolveRequestDeadlineMs(tool, msg.params?.args);
+        request = await sessionManager.beginRequest(context, { id: msg.id, tool, deadlineMs });
+        request.context = context;
+      } catch (error) {
+        if (transferState) await discardRequestTransfers(msg, transferState);
+        await sendSocket(socket, { type: "tool_response", id: msg.id || null, error: { content: [{ type: "text", text: error.message }] } }).catch(() => {});
+        return;
+      }
+      log(`Handling tool_request: ${msg.method} ${tool}${principal ? ` for ${principal.label}` : ""}`);
+      try {
+        if (isRemote) {
+          await applyRequestTransfers(msg, request, transferState, ensureTransferState);
+        }
+        throwIfAborted(request.signal, "Request cancelled");
+        requestStorage.run(request, () => handleToolRequest(msg, socket, request));
+      } catch (e) {
+        await discardRequestTransfers(msg, transferState);
+        sendToolResponse(socket, msg.id || null, null, e.message || "Request failed");
+      }
+      return;
+    }
+
+    if (msg.type === "stream_request") {
+      if (msg.streamType !== "STREAM_CONSOLE" && msg.streamType !== "STREAM_NETWORK") {
+        log(`Rejecting unsupported stream type: ${msg.streamType}`);
+        await sendSocket(socket, { error: `Unsupported stream type: ${msg.streamType}` }).catch(() => {});
+        return;
+      }
+      if (!sessionManager.canStartStream(context)) {
+        await sendSocket(socket, { error: "stream limit reached or connection is not stream-only" }).catch(() => {});
+        socket.destroy();
+        return;
+      }
+      log(`Handling stream_request: ${msg.streamType}`);
+      handleStreamRequest(msg, socket);
+      return;
+    }
+
+    if (msg.type === "stream_stop") {
+      log("Handling stream_stop");
+      for (const [streamId, stream] of activeStreams.entries()) {
+        if (stream.socket === socket) stopActiveStream(streamId);
+      }
+      return;
+    }
+
+    log(`Rejecting unsupported socket request type: ${msg.type}`);
+    await sendSocket(socket, { error: `Unsupported request type: ${msg.type}` }).catch(() => {});
+  };
+
+  const parser = createFrameParser({
+    onFrame(msg) {
+      messageChain = messageChain.then(() => processMessage(msg)).catch((error) => {
+        log(`Error handling CLI request: ${error.message}`);
+        if (isRemote && msg.type && msg.type.startsWith("transfer_")) {
+          sendSocket(socket, { type: "transfer_error", version: 1, transferId: msg.transferId, error: error.message || "Transfer failed" })
+            .finally(() => socket.destroy()).catch(() => socket.destroy());
+        } else {
+          sendSocket(socket, { error: error.message || "Request failed" }).catch(() => {});
+        }
+      });
+    },
+    onError(error) {
+      log(`CLI frame rejected: ${error.message}`);
+      if (isRemote && !authSession.authenticated) {
+        sendSocket(socket, { type: "auth_error", message: error.message }).finally(() => socket.destroy()).catch(() => socket.destroy());
+      } else {
+        socket.destroy();
+      }
+    },
+    maxFrameBytes: MAX_CLIENT_FRAME_BYTES,
   });
+
+  socket.on("data", (data) => parser.push(data));
 
   socket.on("error", (err) => {
     log(`CLI socket error: ${err.message}`);
   });
   
   socket.on("close", () => {
+    parser.close();
+    authSession?.close();
+    const activeRequest = context.activeRequest;
+    let cleanupPendingId;
+    if (activeRequest && !activeRequest.queued) {
+      cleanupPendingId = `transfer-cleanup-${++requestCounter}`;
+      pendingToolRequests.set(cleanupPendingId, {
+        request: activeRequest,
+        cleanup: true,
+        tool: "transfer_cleanup",
+        resolve: () => {},
+        reject: () => {},
+      });
+      completeOwnedRequest(context, activeRequest.id, "cleanup-settled");
+    }
+    const cleanupPromise = cleanupTransfers();
+    cleanupPromise.finally(() => {
+      if (cleanupPendingId) pendingToolRequests.delete(cleanupPendingId);
+    }).catch(() => {});
+    writer.close();
+    sessionManager.close(context);
+    if (activeRequest) pendingToolRequests.tombstoneAfterAbort(activeRequest);
     log("CLI client disconnected");
-    for (const [id, pending] of pendingRequests.entries()) {
-      if (pending.socket === socket) {
-        pendingRequests.delete(id);
-      }
-    }
-    for (const [id, pending] of pendingToolRequests.entries()) {
-      if (pending.socket === socket && !pending.autoScreenshot) {
-        pendingToolRequests.delete(id);
-      }
-    }
     for (const [streamId, stream] of activeStreams.entries()) {
-      if (stream.socket === socket) {
-        writeMessage({ type: "STREAM_STOP", streamId });
-        activeStreams.delete(streamId);
-      }
+      if (stream.socket === socket) stopActiveStream(streamId);
     }
   });
 };
@@ -1762,9 +1862,10 @@ function shutdown(code = 0) {
   exitCode = Math.max(exitCode, code);
   if (shuttingDown) return;
   shuttingDown = true;
+  const cleanupPromises = [...connectedSockets].map((socket) => socket.transferCleanup?.() || Promise.resolve());
   for (const socket of connectedSockets) socket.destroy();
   pendingRequests.clear(); pendingToolRequests.clear(); activeStreams.clear();
-  Promise.resolve(listenerLifecycle?.shutdown()).finally(scheduleExit);
+  Promise.allSettled([...cleanupPromises, Promise.resolve(listenerLifecycle?.shutdown())]).finally(scheduleExit);
 }
 function failStartup(error, endpoint) {
   log(`Listener startup failed (${endpoint}): ${error.message}`);

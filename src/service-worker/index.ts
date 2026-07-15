@@ -2323,6 +2323,20 @@ export async function handleMessage(
       };
     }
 
+    case "EXPORT_NETWORK_REQUESTS": {
+      if (!tabId) throw new Error("No tabId provided");
+      if (message.har && message.jsonl) throw new Error("network export cannot combine HAR and JSONL");
+      try {
+        await cdp.enableNetworkTracking(tabId);
+      } catch (e) {}
+      const entries = cdp.getNetworkEntries(tabId, {});
+      const serializedSize = new TextEncoder().encode(JSON.stringify(entries)).byteLength;
+      if (serializedSize > 16 * 1024 * 1024) {
+        throw new Error("network export source exceeds the 16 MiB native-message limit");
+      }
+      return { entries, har: Boolean(message.har), jsonl: Boolean(message.jsonl) };
+    }
+
     case "CLEAR_NETWORK_REQUESTS": {
       if (!tabId) throw new Error("No tabId provided");
       cdp.clearNetworkRequests(tabId);

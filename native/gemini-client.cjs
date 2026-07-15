@@ -6,6 +6,7 @@
  */
 
 const https = require("https");
+const { abortError, abortableDelay, raceAbort, throwIfAborted } = require("./abort.cjs");
 const fs = require("fs");
 const path = require("path");
 
@@ -96,7 +97,8 @@ function hasRequiredCookies(cookieMap) {
 // ============================================================================
 
 function httpsGet(url, headers, opts = {}) {
-  const { binary = false, timeoutMs = 30000, log = null, label = "httpsGet" } = opts;
+  const { binary = false, timeoutMs = 30000, log = null, label = "httpsGet", signal } = opts;
+  throwIfAborted(signal);
   return new Promise((resolve, reject) => {
     const urlObj = new URL(url);
     const options = {
@@ -131,13 +133,17 @@ function httpsGet(url, headers, opts = {}) {
       });
     });
 
+    const onAbort = () => req.destroy(abortError(signal, "Request cancelled"));
+    signal?.addEventListener("abort", onAbort, { once: true });
     req.on("timeout", () => {
       req.destroy(new Error(`${label}: request timeout after ${timeoutMs}ms`));
     });
     req.on("error", (err) => {
+      signal?.removeEventListener("abort", onAbort);
       if (log) log(`${label}: request error ${err.message}`);
       reject(err);
     });
+    req.on("close", () => signal?.removeEventListener("abort", onAbort));
     req.end();
   });
 }
@@ -151,7 +157,8 @@ function httpsPut(url, headers, body, opts = {}) {
 }
 
 function httpsSend(method, url, headers, body, opts = {}) {
-  const { timeoutMs = 30000, log = null, label = "httpsSend" } = opts;
+  const { timeoutMs = 30000, log = null, label = "httpsSend", signal } = opts;
+  throwIfAborted(signal);
   return new Promise((resolve, reject) => {
     const urlObj = new URL(url);
     const bodyBuffer = body == null
@@ -185,13 +192,17 @@ function httpsSend(method, url, headers, body, opts = {}) {
       });
     });
 
+    const onAbort = () => req.destroy(abortError(signal, "Request cancelled"));
+    signal?.addEventListener("abort", onAbort, { once: true });
     req.on("timeout", () => {
       req.destroy(new Error(`${label}: request timeout after ${timeoutMs}ms`));
     });
     req.on("error", (err) => {
+      signal?.removeEventListener("abort", onAbort);
       if (log) log(`${label}: request error ${err.message}`);
       reject(err);
     });
+    req.on("close", () => signal?.removeEventListener("abort", onAbort));
     if (bodyBuffer) req.write(bodyBuffer);
     req.end();
   });
@@ -549,16 +560,17 @@ function buildGeminiFReqPayload(prompt, uploaded, chatMetadata) {
 }
 
 async function runGeminiWebOnce(input) {
-  const { prompt, files, model, cookieMap, chatMetadata, timeoutMs = 30000, log = null } = input;
+  const { prompt, files, model, cookieMap, chatMetadata, timeoutMs = 30000, log = null, signal } = input;
+  throwIfAborted(signal);
   const cookieHeader = buildCookieHeader(cookieMap);
   
   // 1. Get access token
-  const at = await fetchGeminiAccessToken(cookieMap, { timeoutMs, log, label: "geminiAccessToken" });
+  const at = await fetchGeminiAccessToken(cookieMap, { timeoutMs, log, label: "geminiAccessToken", signal });
 
   // 2. Upload files
   const uploaded = [];
   for (const file of files ?? []) {
-    uploaded.push(await uploadGeminiFile(file, cookieMap, { timeoutMs, log, label: "geminiUpload" }));
+    uploaded.push(await uploadGeminiFile(file, cookieMap, { timeoutMs, log, label: "geminiUpload", signal }));
   }
 
   // 3. Build request
@@ -576,7 +588,7 @@ async function runGeminiWebOnce(input) {
     "x-same-domain": "1",
     "cookie": cookieHeader,
     [MODEL_HEADER_NAME]: MODEL_HEADERS[model] || MODEL_HEADERS["gemini-3.1-pro"],
-  }, params.toString(), { timeoutMs, log, label: "geminiStreamGenerate" });
+  }, params.toString(), { timeoutMs, log, label: "geminiStreamGenerate", signal });
 
   const rawResponseText = res.text;
   
@@ -623,6 +635,7 @@ async function runGeminiWebOnce(input) {
 }
 
 async function runGeminiWebWithFallback(input) {
+  throwIfAborted(input.signal);
   const attempt = await runGeminiWebOnce(input);
   
   // Auto-fallback to flash if model unavailable
@@ -639,7 +652,14 @@ async function runGeminiWebWithFallback(input) {
 // ============================================================================
 
 async function runGeminiWebViaPage(input) {
-  const { prompt, files, model, timeoutMs = 120000, log = null, createTab, closeTab, jsEval, fetchUrl, uploadFile } = input;
+  const { prompt, files, model, timeoutMs = 120000, log = null, createTab, closeTab, jsEval, fetchUrl, uploadFile, signal } = input;
+  throwIfAborted(signal);
+  const guardedUploadFile = uploadFile
+    ? (...args) => raceAbort(() => uploadFile(...args), signal)
+    : uploadFile;
+  const guardedFetchUrl = fetchUrl
+    ? (...args) => raceAbort(() => fetchUrl(...args), signal)
+    : fetchUrl;
 
   if (!createTab || !closeTab || !jsEval) {
     throw new Error("In-page execution requires createTab, closeTab, and jsEval callbacks");
@@ -648,19 +668,19 @@ async function runGeminiWebViaPage(input) {
   let tabId = null;
   try {
     if (log) log("Creating Gemini tab...");
-    const tabResult = await createTab();
+    const tabResult = await raceAbort(createTab, signal);
     tabId = tabResult?.tabId;
     if (!tabId) throw new Error("Failed to create Gemini tab");
     if (log) log(`Gemini tab created: ${tabId}`);
-    await new Promise(r => setTimeout(r, 12000));
+    await abortableDelay(12000, signal);
 
     if (files?.length && uploadFile) {
       const absFiles = files.map(f => path.resolve(process.cwd(), f));
       if (log) log(`Uploading ${absFiles.length} file(s) via file chooser...`);
-      const result = await uploadFile(tabId, absFiles);
+      const result = await guardedUploadFile(tabId, absFiles);
       if (result?.error) throw new Error(`File upload failed: ${result.error}`);
       if (log) log("File uploaded, waiting for processing...");
-      await new Promise(r => setTimeout(r, 3000));
+      await abortableDelay(3000, signal);
     }
 
     const checkJsResult = (result, context) => {
@@ -717,7 +737,7 @@ async function runGeminiWebViaPage(input) {
     let responseText = "";
 
     while (Date.now() < deadline) {
-      await new Promise(r => setTimeout(r, 2000));
+      await abortableDelay(2000, signal);
       const pollResult = await jsEval(tabId, `(async () => {
         const baselineKeys = new Set(${JSON.stringify(baselineImageKeys)});
         const imageKey = (img) => {
@@ -812,7 +832,7 @@ async function runGeminiWebViaPage(input) {
       }
       if (img?.url && fetchUrl) {
         if (log) log(`Downloading image (${img.url.slice(0, 60)}...)...`);
-        const dlResult = await fetchUrl(img.url);
+        const dlResult = await guardedFetchUrl(img.url);
         if (dlResult?.b64) {
           images.push({ url: img.url, b64: dlResult.b64, type: dlResult.type || "image/png" });
         }
@@ -830,7 +850,13 @@ async function runGeminiWebViaPage(input) {
       _pageTabId: tabId,
     };
   } catch (err) {
-    if (tabId) { try { await closeTab(tabId); } catch {} }
+    if (tabId) {
+      try {
+        await closeTab(tabId);
+      } catch (closeError) {
+        log?.(`Failed to close Gemini tab ${tabId}: ${closeError?.message || closeError}`);
+      }
+    }
     throw err;
   }
 }
@@ -857,14 +883,17 @@ async function query(options) {
     uploadFile,
     timeout = 300000,
     log = () => {},
+    signal,
   } = options;
+  throwIfAborted(signal);
   const hasPageCallbacks = !!(createTab && closeTab && jsEval);
+  const guardedJsEval = (...args) => raceAbort(() => jsEval(...args), signal);
 
   const startTime = Date.now();
   log("Starting Gemini query");
 
   // 1. Get cookies from Chrome
-  const cookieResponse = await getCookies();
+  const cookieResponse = await raceAbort(getCookies, signal);
   const cookies = cookieResponse?.cookies;
   if (!Array.isArray(cookies)) {
     throw new Error("Failed to get cookies from Chrome. Make sure the extension is loaded and Chrome is running.");
@@ -921,16 +950,17 @@ async function query(options) {
         log,
         createTab,
         closeTab,
-        jsEval,
+        jsEval: guardedJsEval,
         fetchUrl,
         uploadFile,
+        signal,
       });
 
       response = out;
       
       // Save output image
       const outputPath = output || generateImage || "edited.png";
-      const saveOpts = { timeoutMs: timeout, log };
+      const saveOpts = { timeoutMs: timeout, log, signal };
       if (fetchUrl) saveOpts.fetchUrl = fetchUrl;
       try {
         const imageSave = await saveFirstGeminiImage(out, cookieMap, outputPath, saveOpts);
@@ -938,7 +968,13 @@ async function query(options) {
           throw new Error(`No images generated. Response: ${out.text?.slice(0, 200) || "(empty)"}`);
         }
       } finally {
-        if (out._pageTabId && closeTab) { try { await closeTab(out._pageTabId); } catch {} }
+        if (out._pageTabId && closeTab) {
+          try {
+            await closeTab(out._pageTabId);
+          } catch (closeError) {
+            log(`Failed to close Gemini tab ${out._pageTabId}: ${closeError?.message || closeError}`);
+          }
+        }
       }
       imagePath = outputPath;
       
@@ -954,8 +990,9 @@ async function query(options) {
           log,
           createTab,
           closeTab,
-          jsEval,
+          jsEval: guardedJsEval,
           fetchUrl,
+          signal,
         });
       } else {
         out = await runGeminiWebWithFallback({
@@ -966,13 +1003,14 @@ async function query(options) {
           chatMetadata: null,
           timeoutMs: timeout,
           log,
+          signal,
         });
       }
 
       response = out;
       
       // Save output image
-      const saveOpts = { timeoutMs: timeout, log };
+      const saveOpts = { timeoutMs: timeout, log, signal };
       if (fetchUrl) saveOpts.fetchUrl = fetchUrl;
       try {
         const imageSave = await saveFirstGeminiImage(out, cookieMap, generateImage, saveOpts);
@@ -980,7 +1018,13 @@ async function query(options) {
           throw new Error(`No images generated. Response: ${out.text?.slice(0, 200) || "(empty)"}`);
         }
       } finally {
-        if (out._pageTabId && closeTab) { try { await closeTab(out._pageTabId); } catch {} }
+        if (out._pageTabId && closeTab) {
+          try {
+            await closeTab(out._pageTabId);
+          } catch (closeError) {
+            log(`Failed to close Gemini tab ${out._pageTabId}: ${closeError?.message || closeError}`);
+          }
+        }
       }
       imagePath = generateImage;
       
@@ -995,11 +1039,13 @@ async function query(options) {
         chatMetadata: null,
         timeoutMs: timeout,
         log,
+        signal,
       });
 
       response = out;
     }
   } catch (error) {
+    if (error?.code === "SURF_REQUEST_ABORTED") throw error;
     throw new Error(`Gemini request failed: ${error.message}`);
   }
 
@@ -1021,6 +1067,7 @@ async function query(options) {
 // ============================================================================
 
 module.exports = {
+  httpsGet,
   query,
   hasRequiredCookies,
   buildCookieMap,

@@ -4,6 +4,7 @@ const path = require("path");
 const os = require("os");
 const { execFileSync, execSync } = require("child_process");
 const { parseListenEndpoint } = require("../native/listener.cjs");
+const { getStateDir, loadHostIdentity, loadRegistry } = require("../native/remote-auth.cjs");
 
 const HOST_NAME = "surf.browser.host";
 
@@ -318,7 +319,8 @@ Options:
   --target        Install target: auto, linux, windows
                   On WSL2, auto installs for Windows Chrome. Use linux for WSLg/Linux browsers.
   --listen <tailscale-ip>:<port>
-                  Persist a Tailnet-only listener endpoint for the native host.
+                  Persist an authenticated Tailnet-only listener endpoint.
+                  Requires at least one surf remote authorize client first.
                   Supports Tailscale IPv4 or IPv6 addresses; POSIX wrappers only.
 
 Examples:
@@ -348,7 +350,16 @@ function main() {
     process.exit(1);
   }
   let listener;
-  try { listener = listen ? parseListenEndpoint(listen).display : undefined; } catch (error) { console.error(`Error: ${error.message}`); process.exit(1); }
+  try {
+    listener = listen ? parseListenEndpoint(listen).display : undefined;
+    if (listener) {
+      const stateDir = getStateDir();
+      loadHostIdentity(stateDir);
+      if (loadRegistry(stateDir).clients.length === 0) {
+        throw new Error("--listen requires at least one authorized remote client; run `surf remote authorize <label> --output <path>` first");
+      }
+    }
+  } catch (error) { console.error(`Error: ${error.message}`); process.exit(1); }
 
   if (!["auto", "linux", "windows"].includes(target)) {
     console.error("Error: Invalid --target value. Expected auto, linux, or windows");

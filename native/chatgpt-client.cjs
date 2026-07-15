@@ -1,4 +1,5 @@
 const path = require("path");
+const { abortableDelay, raceAbort, throwIfAborted } = require("./abort.cjs");
 
 const CHATGPT_URL = "https://chatgpt.com/";
 
@@ -14,8 +15,8 @@ const SELECTORS = {
   cloudflareScript: 'script[src*="/challenge-platform/"]',
 };
 
-function delay(ms) {
-  return new Promise((resolve) => setTimeout(resolve, ms));
+function delay(ms, signal) {
+  return abortableDelay(ms, signal);
 }
 
 function buildClickDispatcher() {
@@ -189,8 +190,10 @@ function isChatGPTResponseComplete(snapshot, stableCycles, stableMs) {
   return stableCycles >= 6 && stableMs >= 1200;
 }
 
-async function evaluate(cdp, expression) {
+async function evaluate(cdp, expression, signal) {
+  throwIfAborted(signal);
   const result = await cdp(expression);
+  throwIfAborted(signal);
   if (result.exceptionDetails) {
     const desc = result.exceptionDetails.exception?.description || 
                  result.exceptionDetails.text || 
@@ -203,14 +206,15 @@ async function evaluate(cdp, expression) {
   return result.result?.value;
 }
 
-async function waitForPageLoad(cdp, timeoutMs = 45000) {
+async function waitForPageLoad(cdp, timeoutMs = 45000, signal) {
+  throwIfAborted(signal);
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     const ready = await evaluate(cdp, "document.readyState");
     if (ready === "complete" || ready === "interactive") {
       return;
     }
-    await delay(100);
+    await delay(100, signal);
   }
   throw new Error("Page did not load in time");
 }
@@ -252,7 +256,8 @@ async function checkLoginStatus(cdp) {
   return result || { status: 0 };
 }
 
-async function waitForPromptReady(cdp, timeoutMs = 30000) {
+async function waitForPromptReady(cdp, timeoutMs = 30000, signal) {
+  throwIfAborted(signal);
   const deadline = Date.now() + timeoutMs;
   const selectors = JSON.stringify(SELECTORS.promptTextarea.split(", "));
   while (Date.now() < deadline) {
@@ -270,7 +275,7 @@ async function waitForPromptReady(cdp, timeoutMs = 30000) {
       })()`
     );
     if (found) return true;
-    await delay(200);
+    await delay(200, signal);
   }
   return false;
 }
@@ -302,7 +307,8 @@ function resolveChatGPTModelMenuOption(items, desiredModel) {
   }) || null;
 }
 
-async function selectModel(cdp, desiredModel, timeoutMs = 8000) {
+async function selectModel(cdp, desiredModel, timeoutMs = 8000, signal) {
+  throwIfAborted(signal);
   const modelButton = await evaluate(
     cdp,
     `(() => {
@@ -321,7 +327,7 @@ async function selectModel(cdp, desiredModel, timeoutMs = 8000) {
       if (btn) dispatchClickSequence(btn);
     })()`
   );
-  await delay(300);
+  await delay(300, signal);
 
   const normalizedModel = normalizeChatGPTModelChoice(desiredModel);
   const deadline = Date.now() + timeoutMs;
@@ -361,7 +367,7 @@ async function selectModel(cdp, desiredModel, timeoutMs = 8000) {
             if (item) dispatchClickSequence(item);
           })()`
         );
-        await delay(200);
+        await delay(200, signal);
         return match.label;
       }
 
@@ -379,13 +385,14 @@ async function selectModel(cdp, desiredModel, timeoutMs = 8000) {
       );
     }
 
-    await delay(100);
+    await delay(100, signal);
   }
 
   throw new Error(`Model not found: ${desiredModel} (timeout)`);
 }
 
-async function typePrompt(cdp, inputCdp, prompt) {
+async function typePrompt(cdp, inputCdp, prompt, signal) {
+  throwIfAborted(signal);
   const selectors = JSON.stringify(SELECTORS.promptTextarea.split(", "));
   const encodedPrompt = JSON.stringify(prompt);
   const focused = await evaluate(
@@ -416,7 +423,7 @@ async function typePrompt(cdp, inputCdp, prompt) {
     throw new Error("Failed to focus prompt textarea");
   }
   await inputCdp("Input.insertText", { text: prompt });
-  await delay(300);
+  await delay(300, signal);
   const verified = await evaluate(
     cdp,
     `(() => {
@@ -449,7 +456,8 @@ async function typePrompt(cdp, inputCdp, prompt) {
   }
 }
 
-async function clickSend(cdp, inputCdp) {
+async function clickSend(cdp, inputCdp, signal) {
+  throwIfAborted(signal);
   const selectors = SELECTORS.sendButton.split(", ");
   const selectorsJson = JSON.stringify(selectors);
   const deadline = Date.now() + 8000;
@@ -475,7 +483,7 @@ async function clickSend(cdp, inputCdp) {
     );
     if (result === "clicked") return true;
     if (result === "missing") break;
-    await delay(100);
+    await delay(100, signal);
   }
   await inputCdp("Input.dispatchKeyEvent", {
     type: "keyDown",
@@ -574,8 +582,10 @@ async function waitForResponse(
   cdp,
   timeoutMs = 2700000,
   baselineAssistant,
-  baselineAssistantCount
+  baselineAssistantCount,
+  signal
 ) {
+  throwIfAborted(signal);
   const deadline = Date.now() + timeoutMs;
   let previousText = "";
   let stableCycles = 0;
@@ -588,7 +598,7 @@ async function waitForResponse(
     const snapshot = await readChatGPTResponseSnapshot(cdp);
 
     if (!snapshot) {
-      await delay(400);
+      await delay(400, signal);
       continue;
     }
 
@@ -602,7 +612,7 @@ async function waitForResponse(
     );
 
     if (!hasNewAssistantContent) {
-      await delay(400);
+      await delay(400, signal);
       continue;
     }
 
@@ -630,7 +640,7 @@ async function waitForResponse(
       };
     }
 
-    await delay(400);
+    await delay(400, signal);
   }
 
   throw new Error("Response timeout");
@@ -649,26 +659,31 @@ async function query(options) {
     cdpCommand,
     uploadFile,
     log = () => {},
+    signal,
   } = options;
+  throwIfAborted(signal);
+  const guardedUploadFile = uploadFile
+    ? (...args) => raceAbort(() => uploadFile(...args), signal)
+    : uploadFile;
   const startTime = Date.now();
   log("Starting ChatGPT query");
-  const { cookies } = await getCookies();
+  const { cookies } = await raceAbort(getCookies, signal);
   if (!hasRequiredCookies(cookies)) {
     throw new Error("ChatGPT login required");
   }
   log(`Got ${cookies.length} cookies`);
-  const tabInfo = await createTab();
+  const tabInfo = await raceAbort(createTab, signal);
   const { tabId } = tabInfo;
   if (!tabId) {
     throw new Error("Failed to create ChatGPT tab");
   }
   log(`Created tab ${tabId}`);
   
-  const cdp = (expr) => cdpEvaluate(tabId, expr);
-  const inputCdp = (method, params) => cdpCommand(tabId, method, params);
+  const cdp = (expr) => raceAbort(() => cdpEvaluate(tabId, expr), signal);
+  const inputCdp = (method, params) => raceAbort(() => cdpCommand(tabId, method, params), signal);
   
   try {
-    await waitForPageLoad(cdp);
+    await waitForPageLoad(cdp, 45000, signal);
     log("Page loaded");
     if (await isCloudflareBlocked(cdp)) {
       throw new Error("Cloudflare challenge detected - complete in browser");
@@ -685,13 +700,13 @@ async function query(options) {
       throw new Error("ChatGPT login required");
     }
     log("Login verified");
-    const promptReady = await waitForPromptReady(cdp);
+    const promptReady = await waitForPromptReady(cdp, 30000, signal);
     if (!promptReady) {
       throw new Error("Prompt textarea not ready");
     }
     log("Prompt ready");
     if (model) {
-      const selectedLabel = await selectModel(cdp, model);
+      const selectedLabel = await selectModel(cdp, model, 8000, signal);
       log(`Selected model: ${selectedLabel}`);
     }
     if (file) {
@@ -701,7 +716,7 @@ async function query(options) {
       const files = Array.isArray(file) ? file : [file];
       const absFiles = files.map((filePath) => path.resolve(process.cwd(), filePath));
       log(`Uploading ${absFiles.length} file(s) to ChatGPT...`);
-      const uploadResult = await uploadFile(tabId, absFiles);
+      const uploadResult = await guardedUploadFile(tabId, absFiles);
       if (uploadResult?.error) {
         throw new Error(`ChatGPT file upload failed: ${uploadResult.error}`);
       }
@@ -709,18 +724,19 @@ async function query(options) {
         throw new Error("ChatGPT file upload failed: upload did not report success");
       }
       log("File uploaded, waiting for ChatGPT attachment processing...");
-      await delay(1500);
+      await delay(1500, signal);
     }
-    await typePrompt(cdp, inputCdp, prompt);
+    await typePrompt(cdp, inputCdp, prompt, signal);
     log("Prompt typed");
     const baseline = normalizeResponseSnapshot(await readChatGPTResponseSnapshot(cdp));
-    await clickSend(cdp, inputCdp);
+    await clickSend(cdp, inputCdp, signal);
     log("Prompt sent, waiting for response...");
     const response = await waitForResponse(
       cdp,
       timeout,
       baseline.latestAssistant,
-      baseline.assistantCount
+      baseline.assistantCount,
+      signal
     );
     log(`Response received (${response.text.length} chars)`);
     return {

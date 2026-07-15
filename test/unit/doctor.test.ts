@@ -11,8 +11,10 @@ declare const require: (moduleName: string) => any;
 const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
+const net = require("node:net");
 const { spawnSync } = require("node:child_process");
 const { parseDoctorArgs, runDoctor, windowsPathToWslPath } = require("../../native/doctor.cjs");
+const remoteAuth = require("../../native/remote-auth.cjs");
 
 function makeTempDir() {
   return fs.mkdtempSync(path.join(os.tmpdir(), "surf-doctor-test-"));
@@ -319,16 +321,67 @@ describe("surf doctor", () => {
     expect(result.stderr).toBe("");
   });
 
+  it("does not treat a TCP acceptor that never authenticates as a doctor success", async () => {
+    const stateDir = makeTempDir();
+    const credentialPath = path.join(stateDir, "client.json");
+    remoteAuth.authorizeClient("doctor-client", credentialPath, stateDir);
+    let acceptedSocket: { destroy(): void } | undefined;
+    const server = net.createServer((socket: any) => {
+      acceptedSocket = socket;
+      socket.on("error", () => undefined);
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const port = server.address().port;
+    const report = await runDoctor(
+      {
+        connectTimeoutMs: 25,
+        endpoint: {
+          kind: "remote",
+          host: "127.0.0.1",
+          port,
+          display: `127.0.0.1:${port}`,
+          credentialPath,
+          connectionOptions: { host: "127.0.0.1", port },
+        },
+      },
+      { platform: "linux", env: {} },
+    );
+    acceptedSocket?.destroy();
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+    fs.rmSync(stateDir, { recursive: true, force: true });
+
+    expect(report.ok).toBe(false);
+    expect(report.checks).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ id: "remote-connect", status: "fail", code: "EAUTH" }),
+        expect.objectContaining({ id: "remote-auth", status: "fail" }),
+      ]),
+    );
+  });
+
   it("runs remote-only diagnostics with Tailnet-specific connection guidance", async () => {
     const report = await runDoctor(
-      { endpoint: { kind: "remote", host: "browser.tailnet", port: 4321, display: "browser.tailnet:4321" } },
-      { platform: "linux", env: {}, connectEndpoint: async () => ({ ok: false, code: "ETIMEDOUT", message: "timed out" }) },
+      {
+        endpoint: {
+          kind: "remote",
+          host: "browser.tailnet",
+          port: 4321,
+          display: "browser.tailnet:4321",
+        },
+      },
+      {
+        platform: "linux",
+        env: {},
+        connectEndpoint: async () => ({ ok: false, code: "ETIMEDOUT", message: "timed out" }),
+      },
     );
 
     expect(report.manifests).toEqual([]);
-    expect(report.checks).toEqual(expect.arrayContaining([
-      expect.objectContaining({ id: "remote-connect", code: "ETIMEDOUT" }),
-    ]));
+    expect(report.checks).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ id: "remote-connect", code: "ETIMEDOUT" }),
+      ]),
+    );
     expect(report.recommendations.join("\n")).toContain("tailscale ping browser.tailnet");
     expect(report.recommendations.join("\n")).toContain("ACLs/grants");
   });

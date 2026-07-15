@@ -10,8 +10,10 @@
  * Follows the same socket communication pattern as --script mode in cli.cjs.
  */
 
-const { formatSocketError } = require("./socket-path.cjs");
-const { connectEndpoint, selectEndpoint, formatEndpointError } = require("./endpoint.cjs");
+const { selectEndpoint } = require("./endpoint.cjs");
+const { openClientTransport } = require("./client-transport.cjs");
+const { resolveRequestDeadlineMs } = require("./host-sessions.cjs");
+const { prepareRemoteTool, validateLocalToolPaths } = require("./file-transfer.cjs");
 
 // Maximum iterations for loops (safety cap)
 const MAX_LOOP_ITERATIONS = 100;
@@ -71,49 +73,27 @@ function getAutoWaitCommand(cmd) {
  * @returns {Promise<object>} - Response from host
  */
 function sendDoRequest(toolName, toolArgs, context = {}) {
-  return new Promise((resolve, reject) => {
-    const endpoint = context.endpoint || selectEndpoint([]).endpoint;
-    const sock = connectEndpoint(endpoint, () => {
-      const req = {
-        type: "tool_request",
-        method: "execute_tool",
-        params: { tool: toolName, args: toolArgs },
-        id: "do-" + Date.now() + "-" + Math.random(),
-      };
-      if (context.tabId) req.tabId = context.tabId;
-      if (context.windowId) req.windowId = context.windowId;
-      sock.write(JSON.stringify(req) + "\n");
-    });
-    
-    let buf = "";
-    sock.on("data", (d) => {
-      buf += d.toString();
-      const lines = buf.split("\n");
-      buf = lines.pop();
-      for (const line of lines) {
-        if (!line.trim()) continue;
-        try {
-          const resp = JSON.parse(line);
-          sock.end();
-          resolve(resp);
-        } catch {
-          sock.end();
-          reject(new Error("Invalid JSON response"));
-        }
-      }
-    });
-    
-    sock.on("error", (e) => {
-      reject(new Error(formatEndpointError(e, endpoint, formatSocketError)));
-    });
-    
-    const timeoutId = setTimeout(() => { 
-      sock.destroy(); 
-      reject(new Error("Request timeout")); 
-    }, 30000);
-    
-    sock.on("close", () => clearTimeout(timeoutId));
-  });
+  const request = {
+    type: "tool_request",
+    method: "execute_tool",
+    params: { tool: toolName, args: toolArgs },
+    id: "do-" + Date.now() + "-" + Math.random(),
+  };
+  if (context.tabId) request.tabId = context.tabId;
+  if (context.windowId) request.windowId = context.windowId;
+  const requestTimeoutMs = context.timeoutMs || resolveRequestDeadlineMs(toolName, toolArgs);
+  const endpoint = context.endpoint || selectEndpoint([]).endpoint;
+  const prepared = endpoint.kind === "remote" ? prepareRemoteTool(toolName, toolArgs) : (() => { const args = validateLocalToolPaths(toolName, toolArgs); return { args, uploads: [], downloads: [] }; })();
+  request.params.args = prepared.args;
+  if (context.transport) return context.transport.request(request, requestTimeoutMs, prepared);
+  return (async () => {
+    const transport = await openClientTransport(endpoint);
+    try {
+      return await transport.request(request, requestTimeoutMs, prepared);
+    } finally {
+      await transport.close();
+    }
+  })();
 }
 
 /**
