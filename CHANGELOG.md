@@ -14,6 +14,9 @@
 ### Docs
 - **Skills README** - Documented the two-skill layout (`surf/` reference, `deep-x-research/` procedure) with install steps for Pi, Claude Code, and Codex, and pointed the surf skill's Grok section at `deep-x-research` for exhaustive research tasks.
 
+### Dependencies
+- **Routine toolchain refresh** - Updated Gitleaks Action to v3, checkout Action to v7, Zod to 4.4.3, Chrome types to 0.2.2, the Vite Node polyfills plugin to 0.28.0, and the resolved Vitest package group to 4.1.10.
+
 ## [2.8.0] - 2026-07-03
 
 ### Added
