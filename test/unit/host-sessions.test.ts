@@ -217,7 +217,7 @@ describe("host session manager", () => {
       events.some(
         (event) =>
           event.outcome === "abandoned" &&
-          (event.request as Record<string, unknown>)?.id === "queued",
+          (event.request as Record<string, unknown>).id === "queued",
       ),
     ).toBe(false);
     sessions.complete(first, "held");

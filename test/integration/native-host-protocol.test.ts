@@ -613,7 +613,7 @@ describe("native host protocol integration", () => {
       onError: () => undefined,
     });
     socket.on("data", (chunk: any) => parser.push(chunk));
-    const waitRemote = async (predicate: (message: NativeMessage) => boolean) => {
+    const waitRemote = (predicate: (message: NativeMessage) => boolean) => {
       const queued = messages.findIndex(predicate);
       if (queued !== -1) {
         return Promise.resolve(messages.splice(queued, 1)[0]);
@@ -849,7 +849,7 @@ describe("native host protocol integration", () => {
       });
       const response = await responsePromise;
       expect(response.error).toBeUndefined();
-      expect(await fs.readFileSync(destination, "utf8")).toBe("fake-png");
+      expect(fs.readFileSync(destination, "utf8")).toBe("fake-png");
       const text = response.result.content[0].text;
       expect(text).toContain(destination);
       expect(text).not.toContain("surf-transfer-");

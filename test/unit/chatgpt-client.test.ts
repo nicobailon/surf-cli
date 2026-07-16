@@ -275,16 +275,19 @@ describe("chatgpt-client", () => {
         2,
         true,
       ],
-    ])("%s", (_, latestAssistant, baselineAssistant, assistantCount, baselineAssistantCount, expected) => {
-      expect(
-        chatgptClient.isNewAssistantContent(
-          latestAssistant,
-          baselineAssistant,
-          assistantCount,
-          baselineAssistantCount,
-        ),
-      ).toBe(expected);
-    });
+    ])(
+      "%s",
+      (_, latestAssistant, baselineAssistant, assistantCount, baselineAssistantCount, expected) => {
+        expect(
+          chatgptClient.isNewAssistantContent(
+            latestAssistant,
+            baselineAssistant,
+            assistantCount,
+            baselineAssistantCount,
+          ),
+        ).toBe(expected);
+      },
+    );
   });
 
   describe("isChatGPTResponseComplete", () => {

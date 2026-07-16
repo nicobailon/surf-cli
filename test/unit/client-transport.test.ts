@@ -297,7 +297,9 @@ describe("client transport framing", () => {
         resolveClosed();
       });
       socket.on("data", () => {
-        writeFrame(socket, { type: "auth_error", message: "rejected" });
+        writeFrame(socket, { type: "auth_error", message: "rejected" }).catch(() =>
+          socket.destroy(),
+        );
       });
     });
     const remoteEndpoint = {
@@ -315,7 +317,10 @@ describe("client transport framing", () => {
   it("rejects pending requests on the extension terminal frame", async () => {
     const endpoint = await startServer((socket) => {
       socket.on("data", () => {
-        writeFrame(socket, { type: "extension_disconnected", message: "extension stopped" });
+        writeFrame(socket, {
+          type: "extension_disconnected",
+          message: "extension stopped",
+        }).catch(() => socket.destroy());
       });
     });
     const transport = await openClientTransport(endpoint);

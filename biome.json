@@ -1,19 +1,17 @@
 {
-  "$schema": "https://biomejs.dev/schemas/2.4.4/schema.json",
+  "$schema": "https://biomejs.dev/schemas/2.5.4/schema.json",
   "files": {
     "includes": ["test/**/*.ts"]
   },
   "linter": {
     "enabled": true,
     "rules": {
-      "recommended": true,
+      "preset": "recommended",
       "nursery": {
-        "recommended": true,
+        "preset": "recommended",
         "noFloatingPromises": "error",
         "noMisusedPromises": "error",
-        "noShadow": "error",
-        "useAwaitThenable": "error",
-        "noUnnecessaryConditions": "warn"
+        "useAwaitThenable": "error"
       },
       "correctness": {
         "noUnusedVariables": "error",
@@ -38,7 +36,9 @@
         "noAssignInExpressions": "error",
         "noAsyncPromiseExecutor": "error",
         "noTsIgnore": "error",
-        "noUnusedExpressions": "error"
+        "noUnusedExpressions": "error",
+        "noShadow": "error",
+        "noUnnecessaryConditions": "warn"
       },
       "style": {
         "noNonNullAssertion": "error",

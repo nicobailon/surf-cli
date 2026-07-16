@@ -192,31 +192,33 @@ describe("native host installer", () => {
     );
   });
 
-  it.runIf(process.platform !== "linux")(
-    "rejects install --target linux on non-Linux platforms",
-    () => {
-      const result = spawnSync(
-        process.execPath,
-        ["scripts/install-native-host.cjs", extensionA, "--target", "linux"],
-        { encoding: "utf8" },
-      );
+  it("rejects install --target linux on non-Linux platforms", ({ skip }) => {
+    if (process.platform === "linux") {
+      skip();
+    }
 
-      expect(result.status).toBe(1);
-      expect(result.stderr).toContain("--target linux is only supported on Linux or WSL2");
-    },
-  );
+    const result = spawnSync(
+      process.execPath,
+      ["scripts/install-native-host.cjs", extensionA, "--target", "linux"],
+      { encoding: "utf8" },
+    );
 
-  it.runIf(process.platform !== "linux")(
-    "rejects uninstall --target linux on non-Linux platforms",
-    () => {
-      const result = spawnSync(
-        process.execPath,
-        ["scripts/uninstall-native-host.cjs", "--target", "linux"],
-        { encoding: "utf8" },
-      );
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain("--target linux is only supported on Linux or WSL2");
+  });
 
-      expect(result.status).toBe(1);
-      expect(result.stderr).toContain("--target linux is only supported on Linux or WSL2");
-    },
-  );
+  it("rejects uninstall --target linux on non-Linux platforms", ({ skip }) => {
+    if (process.platform === "linux") {
+      skip();
+    }
+
+    const result = spawnSync(
+      process.execPath,
+      ["scripts/uninstall-native-host.cjs", "--target", "linux"],
+      { encoding: "utf8" },
+    );
+
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain("--target linux is only supported on Linux or WSL2");
+  });
 });
