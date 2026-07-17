@@ -1,3 +1,17 @@
+export type VisualIndicatorMessageType =
+  | "SHOW_AGENT_INDICATORS"
+  | "HIDE_AGENT_INDICATORS"
+  | "HIDE_FOR_TOOL_USE"
+  | "SHOW_AFTER_TOOL_USE"
+  | "SHOW_STATIC_INDICATOR"
+  | "HIDE_STATIC_INDICATOR";
+
+declare global {
+  interface Window {
+    __piVisualIndicatorMessageHandler?: (type: VisualIndicatorMessageType) => void;
+  }
+}
+
 const PI_COLOR = "59, 178, 191";
 const DEFAULT_HEARTBEAT_INTERVAL = 10000;
 
@@ -10,25 +24,30 @@ let wasActiveBeforeToolUse = false;
 let wasStaticActiveBeforeToolUse = false;
 let heartbeatIntervalId: number | null = null;
 let heartbeatIntervalMs = DEFAULT_HEARTBEAT_INTERVAL;
+let showIndicatorsWhenReady = false;
+let showStaticIndicatorWhenReady = false;
+const isTopFrame = window === window.top;
 
-chrome.storage.local.get("heartbeatInterval").then(({ heartbeatInterval }) => {
-  if (heartbeatInterval && typeof heartbeatInterval === "number") {
-    heartbeatIntervalMs = heartbeatInterval * 1000;
-  }
-});
+if (isTopFrame) {
+  chrome.storage.local.get("heartbeatInterval").then(({ heartbeatInterval }) => {
+    if (heartbeatInterval && typeof heartbeatInterval === "number") {
+      heartbeatIntervalMs = heartbeatInterval * 1000;
+    }
+  });
 
-chrome.storage.onChanged.addListener((changes, areaName) => {
-  if (areaName === "local" && changes.heartbeatInterval) {
-    const newValue = changes.heartbeatInterval.newValue;
-    if (newValue && typeof newValue === "number") {
-      heartbeatIntervalMs = newValue * 1000;
-      if (isStaticActive && heartbeatIntervalId) {
-        clearInterval(heartbeatIntervalId);
-        startHeartbeat();
+  chrome.storage.onChanged.addListener((changes, areaName) => {
+    if (areaName === "local" && changes.heartbeatInterval) {
+      const newValue = changes.heartbeatInterval.newValue;
+      if (newValue && typeof newValue === "number") {
+        heartbeatIntervalMs = newValue * 1000;
+        if (isStaticActive && heartbeatIntervalId) {
+          clearInterval(heartbeatIntervalId);
+          startHeartbeat();
+        }
       }
     }
-  }
-});
+  });
+}
 
 function startHeartbeat() {
   heartbeatIntervalId = window.setInterval(async () => {
@@ -224,6 +243,22 @@ function createStaticIndicator(): HTMLDivElement {
 }
 
 function showIndicators() {
+  if (!document.body) {
+    if (!showIndicatorsWhenReady) {
+      showIndicatorsWhenReady = true;
+      window.addEventListener(
+        "DOMContentLoaded",
+        () => {
+          if (!showIndicatorsWhenReady) return;
+          showIndicatorsWhenReady = false;
+          showIndicators();
+        },
+        { once: true },
+      );
+    }
+    return;
+  }
+  showIndicatorsWhenReady = false;
   if (isActive) return;
   isActive = true;
 
@@ -256,6 +291,7 @@ function showIndicators() {
 }
 
 function hideIndicators() {
+  showIndicatorsWhenReady = false;
   if (!isActive) return;
   isActive = false;
 
@@ -283,6 +319,22 @@ function hideIndicators() {
 }
 
 function showStaticIndicator() {
+  if (!document.body) {
+    if (!showStaticIndicatorWhenReady) {
+      showStaticIndicatorWhenReady = true;
+      window.addEventListener(
+        "DOMContentLoaded",
+        () => {
+          if (!showStaticIndicatorWhenReady) return;
+          showStaticIndicatorWhenReady = false;
+          showStaticIndicator();
+        },
+        { once: true },
+      );
+    }
+    return;
+  }
+  showStaticIndicatorWhenReady = false;
   if (isStaticActive) return;
   isStaticActive = true;
 
@@ -298,6 +350,7 @@ function showStaticIndicator() {
 }
 
 function hideStaticIndicator() {
+  showStaticIndicatorWhenReady = false;
   if (!isStaticActive) return;
   isStaticActive = false;
 
@@ -312,50 +365,54 @@ function hideStaticIndicator() {
   }
 }
 
-chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
-  switch (message.type) {
-    case "SHOW_AGENT_INDICATORS":
-      showIndicators();
-      sendResponse({ success: true });
-      return false;
-    case "HIDE_AGENT_INDICATORS":
-      hideIndicators();
-      sendResponse({ success: true });
-      return false;
-    case "HIDE_FOR_TOOL_USE":
-      wasActiveBeforeToolUse = isActive;
-      wasStaticActiveBeforeToolUse = isStaticActive;
-      if (glowBorder) glowBorder.style.display = "none";
-      if (stopButton) stopButton.style.display = "none";
-      if (staticIndicator && isStaticActive) staticIndicator.style.display = "none";
-      sendResponse({ success: true });
-      return false;
-    case "SHOW_AFTER_TOOL_USE":
-      if (wasActiveBeforeToolUse) {
-        if (glowBorder) glowBorder.style.display = "";
-        if (stopButton) stopButton.style.display = "";
-      }
-      if (wasStaticActiveBeforeToolUse && staticIndicator) {
-        staticIndicator.style.display = "";
-      }
-      wasActiveBeforeToolUse = false;
-      wasStaticActiveBeforeToolUse = false;
-      sendResponse({ success: true });
-      return false;
-    case "SHOW_STATIC_INDICATOR":
-      showStaticIndicator();
-      sendResponse({ success: true });
-      return false;
-    case "HIDE_STATIC_INDICATOR":
-      hideStaticIndicator();
-      sendResponse({ success: true });
-      return false;
-    default:
-      return false;
-  }
-});
+if (isTopFrame) {
+  window.__piVisualIndicatorMessageHandler = (type) => {
+    switch (type) {
+      case "SHOW_AGENT_INDICATORS":
+        showIndicators();
+        break;
+      case "HIDE_AGENT_INDICATORS":
+        hideIndicators();
+        break;
+      case "HIDE_FOR_TOOL_USE":
+        wasActiveBeforeToolUse = isActive || showIndicatorsWhenReady;
+        wasStaticActiveBeforeToolUse = isStaticActive || showStaticIndicatorWhenReady;
+        showIndicatorsWhenReady = false;
+        showStaticIndicatorWhenReady = false;
+        if (glowBorder) glowBorder.style.display = "none";
+        if (stopButton) stopButton.style.display = "none";
+        if (staticIndicator && isStaticActive) staticIndicator.style.display = "none";
+        break;
+      case "SHOW_AFTER_TOOL_USE":
+        if (wasActiveBeforeToolUse) {
+          if (isActive) {
+            if (glowBorder) glowBorder.style.display = "";
+            if (stopButton) stopButton.style.display = "";
+          } else {
+            showIndicators();
+          }
+        }
+        if (wasStaticActiveBeforeToolUse) {
+          if (isStaticActive && staticIndicator) {
+            staticIndicator.style.display = "";
+          } else {
+            showStaticIndicator();
+          }
+        }
+        wasActiveBeforeToolUse = false;
+        wasStaticActiveBeforeToolUse = false;
+        break;
+      case "SHOW_STATIC_INDICATOR":
+        showStaticIndicator();
+        break;
+      case "HIDE_STATIC_INDICATOR":
+        hideStaticIndicator();
+        break;
+    }
+  };
 
-window.addEventListener("beforeunload", () => {
-  hideIndicators();
-  hideStaticIndicator();
-});
+  window.addEventListener("beforeunload", () => {
+    hideIndicators();
+    hideStaticIndicator();
+  });
+}

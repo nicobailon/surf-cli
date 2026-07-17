@@ -19,8 +19,7 @@ export default defineConfig({
     rolldownOptions: {
       input: {
         "service-worker/index": resolve(__dirname, "src/service-worker/index.ts"),
-        "content/accessibility-tree": resolve(__dirname, "src/content/accessibility-tree.ts"),
-        "content/visual-indicator": resolve(__dirname, "src/content/visual-indicator.ts"),
+        "content/index": resolve(__dirname, "src/content/index.ts"),
         "options/options": resolve(__dirname, "src/options/options.html"),
       },
       output: {

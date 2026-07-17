@@ -43,6 +43,7 @@
     "lint:test": "biome check test/",
     "format": "biome format --write .",
     "test": "vitest run",
+    "test:e2e:chrome": "node test/e2e/real-chrome.mjs",
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage",
     "test:ui": "vitest --ui",
@@ -64,6 +65,7 @@
     "@types/chrome": "^0.2.2",
     "@vitest/coverage-v8": "^4.1.9",
     "@vitest/ui": "^4.1.9",
+    "puppeteer": "25.3.0",
     "typescript": "^7.0.2",
     "vite": "^8.1.4",
     "vitest": "^4.1.9"

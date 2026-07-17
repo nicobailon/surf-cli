@@ -1,3 +1,5 @@
+import type { VisualIndicatorMessageType } from "./visual-indicator.ts";
+
 export {};
 
 declare global {
@@ -1432,6 +1434,20 @@ function uploadImage(
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   switch (message.type) {
+    case "SHOW_AGENT_INDICATORS":
+    case "HIDE_AGENT_INDICATORS":
+    case "HIDE_FOR_TOOL_USE":
+    case "SHOW_AFTER_TOOL_USE":
+    case "SHOW_STATIC_INDICATOR":
+    case "HIDE_STATIC_INDICATOR": {
+      if (!window.__piVisualIndicatorMessageHandler) {
+        sendResponse({ error: "Visual indicator content script not loaded." });
+        break;
+      }
+      window.__piVisualIndicatorMessageHandler(message.type as VisualIndicatorMessageType);
+      sendResponse({ success: true });
+      break;
+    }
     case "GENERATE_ACCESSIBILITY_TREE": {
       const options = message.options || {};
       

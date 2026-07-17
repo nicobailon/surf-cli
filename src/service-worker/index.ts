@@ -482,7 +482,7 @@ export async function handleMessage(
       if (!tabId) throw new Error("No tabId provided");
       
       try {
-        await chrome.tabs.sendMessage(tabId, { type: "HIDE_FOR_TOOL_USE" });
+        await chrome.tabs.sendMessage(tabId, { type: "HIDE_FOR_TOOL_USE" }, { frameId: 0 });
       } catch (e) {}
       await new Promise(resolve => setTimeout(resolve, 50));
       
@@ -544,7 +544,7 @@ export async function handleMessage(
         return { ...result, screenshotId };
       } finally {
         try {
-          await chrome.tabs.sendMessage(tabId, { type: "SHOW_AFTER_TOOL_USE" });
+          await chrome.tabs.sendMessage(tabId, { type: "SHOW_AFTER_TOOL_USE" }, { frameId: 0 });
         } catch (e) {}
       }
     }
@@ -945,7 +945,7 @@ export async function handleMessage(
         };
       } finally {
         try {
-          await chrome.tabs.sendMessage(tabId, { type: "SHOW_AFTER_TOOL_USE" });
+          await chrome.tabs.sendMessage(tabId, { type: "SHOW_AFTER_TOOL_USE" }, { frameId: 0 });
         } catch (e) {}
       }
       
@@ -1251,7 +1251,7 @@ export async function handleMessage(
     case "HIDE_STATIC_INDICATOR": {
       if (!tabId) throw new Error("No tabId provided");
       try {
-        return await chrome.tabs.sendMessage(tabId, { type: message.type });
+        return await chrome.tabs.sendMessage(tabId, { type: message.type }, { frameId: 0 });
       } catch (err) {
         return { error: "Content script not loaded. Try refreshing the page." };
       }
@@ -1479,7 +1479,7 @@ export async function handleMessage(
         };
       } finally {
         try {
-          await chrome.tabs.sendMessage(tabId, { type: "SHOW_AFTER_TOOL_USE" });
+          await chrome.tabs.sendMessage(tabId, { type: "SHOW_AFTER_TOOL_USE" }, { frameId: 0 });
         } catch (e) {}
       }
     }
@@ -1508,7 +1508,7 @@ export async function handleMessage(
         };
       } finally {
         try {
-          await chrome.tabs.sendMessage(tabId, { type: "SHOW_AFTER_TOOL_USE" });
+          await chrome.tabs.sendMessage(tabId, { type: "SHOW_AFTER_TOOL_USE" }, { frameId: 0 });
         } catch (e) {}
       }
     }
@@ -1535,7 +1535,7 @@ export async function handleMessage(
         };
       } finally {
         try {
-          await chrome.tabs.sendMessage(tabId, { type: "SHOW_AFTER_TOOL_USE" });
+          await chrome.tabs.sendMessage(tabId, { type: "SHOW_AFTER_TOOL_USE" }, { frameId: 0 });
         } catch (e) {}
       }
     }

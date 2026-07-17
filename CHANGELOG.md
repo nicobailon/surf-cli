@@ -3,12 +3,14 @@
 ## [Unreleased]
 
 ### Added
+- **Real Chrome E2E coverage** - Added a pinned Chrome for Testing CI lane that exercises the production MV3 extension, native messaging, core CLI navigation and page commands, interaction, visual indicators, screenshot bytes, and process cleanup against local fixtures. Thanks to Carlos Villela (@cv) for #7.
 - **Authenticated Tailnet remote control** - Added mutually authenticated per-client remote access with Ed25519 host pinning, authorize/list/revoke lifecycle, shared local/remote FIFO serialization, disconnect cancellation, bounded single-file transfer, explicit `local:`/`remote:` path semantics, remote AI attachments and image outputs, network export, and transferred action/error screenshots. Thanks to @alvinunreal for the original remote-browser contribution in #155.
 - **Deep X Research skill** - Added `skills/deep-x-research/`, an agent skill that layers an exhaustive X (Twitter) research procedure on top of `surf grok`: a quota-budgeted multi-angle Grok sweep (keyword + semantic, with DeepSearch), Grok-native video analysis, quota-free URL verification via direct post opens, categorized findings, and a References section where every cited post carries its full post URL. Falls back to the x.com search UI when the Grok quota is exhausted.
 - **Tab movement** - Added `surf tab.move <id> --to-window <id>` with multi-tab and insertion-index support. (@zm2231, #148)
 - **Page text byte limit** - Added `page.read --max-bytes <n>` for UTF-8-safe visible-text truncation without changing the existing default limit. (@zm2231, #148)
 
 ### Fixed
+- **Content-script message routing** - Routed accessibility and visual-indicator commands through one authoritative Chrome message listener so unrelated listeners cannot win the response race and return empty results.
 - **Provider response extraction** - Fixed truncated Perplexity answers, trailing Grok suggestion chips, and incomplete Gemini stream/image extraction; refreshed Gemini's selectable web models and unknown-model fallback guidance. (@zm2231, #148)
 - **Browser command edge cases** - Fixed `tab.name` on restricted active pages, `zoom --level` argument loss, and selector-targeted `type --into`; selector typing now follows the active iframe context. (@zm2231, #148)
 

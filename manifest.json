@@ -24,15 +24,9 @@
   "content_scripts": [
     {
       "matches": ["<all_urls>"],
-      "js": ["content/accessibility-tree.js"],
+      "js": ["content/index.js"],
       "run_at": "document_start",
       "all_frames": true
-    },
-    {
-      "matches": ["<all_urls>"],
-      "js": ["content/visual-indicator.js"],
-      "run_at": "document_idle",
-      "all_frames": false
     }
   ],
   "permissions": [
@@ -60,10 +54,7 @@
   "web_accessible_resources": [
     {
       "matches": ["<all_urls>"],
-      "resources": [
-        "content/accessibility-tree.js",
-        "content/visual-indicator.js"
-      ],
+      "resources": ["content/index.js"],
       "use_dynamic_url": false
     }
   ]

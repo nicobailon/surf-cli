@@ -121,10 +121,12 @@ describe("accessibility tree", () => {
   let messageHandler:
     | ((message: any, sender: any, sendResponse: (response: any) => void) => boolean)
     | undefined;
+  let visualIndicatorHandler: ReturnType<typeof vi.fn>;
 
   beforeEach(async () => {
     vi.resetModules();
     messageHandler = undefined;
+    visualIndicatorHandler = vi.fn();
 
     (globalThis as any).Element = FakeElement;
     (globalThis as any).HTMLElement = FakeElement;
@@ -144,6 +146,7 @@ describe("accessibility tree", () => {
         opacity: "1",
         cursor: "default",
       }),
+      __piVisualIndicatorMessageHandler: visualIndicatorHandler,
     };
 
     (globalThis as any).document = {
@@ -165,6 +168,27 @@ describe("accessibility tree", () => {
     };
 
     await import("../../src/content/accessibility-tree");
+  });
+
+  it("routes visual indicator commands through the sole content-message listener", () => {
+    let response: any;
+    const listenerResult = messageHandler?.({ type: "SHOW_AGENT_INDICATORS" }, {}, (result) => {
+      response = result;
+    });
+
+    expect(listenerResult).toBe(false);
+    expect(visualIndicatorHandler).toHaveBeenCalledWith("SHOW_AGENT_INDICATORS");
+    expect(response).toEqual({ success: true });
+  });
+
+  it("reports when the visual indicator content script is not loaded", () => {
+    window.__piVisualIndicatorMessageHandler = undefined;
+    let response: any;
+    messageHandler?.({ type: "HIDE_AGENT_INDICATORS" }, {}, (result) => {
+      response = result;
+    });
+
+    expect(response).toEqual({ error: "Visual indicator content script not loaded." });
   });
 
   it("uses nested text for interactive link and button names", () => {
