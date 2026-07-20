@@ -2,10 +2,9 @@ const fs = require("fs");
 const http = require("http");
 const path = require("path");
 const { execFile } = require("child_process");
-const { atomicWriteFile, atomicWriteJson, ensurePrivateDir } = require("./private-state.cjs");
+const { atomicWriteFile, atomicWriteJson, ensurePrivateDir, getPrivateStateRoot, readPrivateJson } = require("./private-state.cjs");
 const { resolveOp } = require("./playbooks.cjs");
 const { readRecord, recordsRoot } = require("./playbook-records.cjs");
-const { getPrivateStateRoot, readPrivateJson } = require("./private-state.cjs");
 const { assertNoEmbeddedSecrets, assertUrlHasNoEmbeddedSecrets, safeHeaders } = require("./redaction.cjs");
 const { version: PACKAGE_VERSION } = require("../package.json");
 
@@ -238,4 +237,4 @@ async function verifyClient(directory, { live } = {}) {
   return { valid: true, playbook: manifest.playbook, op: manifest.op, endpoint: manifest.endpoint, execution };
 }
 
-module.exports = { absoluteEndpointUrl, deriveClient, exportClient, generateClient, safeHeaders, verifyClient };
+module.exports = { absoluteEndpointUrl, deriveClient, exportClient, generateClient, verifyClient };

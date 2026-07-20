@@ -194,16 +194,14 @@ function savePlaybook({ manifest, op, scope = "user", cwd = process.cwd(), home 
   const directory = path.join(base, validatedManifest.id);
   fs.mkdirSync(path.join(directory, "ops"), { recursive: true });
   atomicWriteJson(path.join(directory, "playbook.json"), validatedManifest);
-  atomicWriteJson(path.join(directory, "ops", `${validatedOp.id}.json`), op);
+  atomicWriteJson(path.join(directory, "ops", `${validatedOp.id}.json`), validatedOp);
   return { directory, playbook: validatedManifest.id, op: validatedOp.id, scope };
 }
 
 function writePlaybookDirectory(directory, playbook) {
   if (fs.existsSync(directory)) throw new Error(`playbook output already exists: ${directory}`);
   fs.mkdirSync(path.join(directory, "ops"), { recursive: true });
-  const { ops, ...manifest } = playbook;
-  delete manifest.directory;
-  delete manifest.provenance;
+  const { directory: _directory, provenance: _provenance, ops, ...manifest } = playbook;
   atomicWriteJson(path.join(directory, "playbook.json"), manifest);
   for (const op of ops.values()) atomicWriteJson(path.join(directory, "ops", `${op.id}.json`), op);
 }

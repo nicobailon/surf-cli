@@ -954,26 +954,30 @@ describe("CDPController", () => {
             handleCDPEvent: (tab: number, event: string, value: unknown) => Promise<void> | void;
           }
         ).handleCDPEvent(tabId, method, params);
-      await dispatch("Network.requestWillBeSent", {
-        requestId: "req-1",
-        timestamp: 1,
-        request: { url: "https://example.test/api", method: "GET", headers: {} },
-      });
-      await dispatch("Network.responseReceived", {
-        requestId: "req-1",
-        timestamp: 1.01,
-        response: {
-          status: 200,
-          statusText: "OK",
-          mimeType: "application/json",
-          headers: { "content-type": "application/json" },
-        },
-      });
-      await dispatch("Network.loadingFinished", {
-        requestId: "req-1",
-        timestamp: 1.02,
-        encodedDataLength: 13,
-      });
+      const emitRequest = async (requestId: string, encodedDataLength: number) => {
+        await dispatch("Network.requestWillBeSent", {
+          requestId,
+          timestamp: 1,
+          request: { url: `https://example.test/${requestId}`, method: "GET", headers: {} },
+        });
+        await dispatch("Network.responseReceived", {
+          requestId,
+          timestamp: 1.01,
+          response: {
+            status: 200,
+            statusText: "OK",
+            mimeType: "application/json",
+            headers: { "content-type": "application/json" },
+          },
+        });
+        await dispatch("Network.loadingFinished", {
+          requestId,
+          timestamp: 1.02,
+          encodedDataLength,
+        });
+      };
+
+      await emitRequest("req-1", 13);
       expect(controller.getNetworkEntries(tabId)[0]).toMatchObject({
         responseBody: '{"items":[1]}',
         bodyCapture: { mode: "text", complete: true, capturedBytes: 13 },
@@ -981,21 +985,7 @@ describe("CDPController", () => {
 
       controller.clearNetworkRequests(tabId);
       await controller.enableNetworkTracking(tabId, { bodyMode: "none" });
-      await dispatch("Network.requestWillBeSent", {
-        requestId: "req-2",
-        timestamp: 2,
-        request: { url: "https://example.test/private", method: "GET", headers: {} },
-      });
-      await dispatch("Network.responseReceived", {
-        requestId: "req-2",
-        timestamp: 2.01,
-        response: { status: 200, statusText: "OK", mimeType: "application/json", headers: {} },
-      });
-      await dispatch("Network.loadingFinished", {
-        requestId: "req-2",
-        timestamp: 2.02,
-        encodedDataLength: 10,
-      });
+      await emitRequest("req-2", 10);
       expect(controller.getNetworkEntries(tabId)[0].bodyCapture).toEqual({
         mode: "none",
         complete: false,

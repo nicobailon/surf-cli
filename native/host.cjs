@@ -22,7 +22,7 @@ const { parseListenEndpoint } = require("./listener.cjs");
 const { getStateDir } = require("./remote-auth.cjs");
 const { createFrameParser, createServerAuthSession, createSocketWriter, isClientAuthorized, writeFrame, MAX_FRAME_BYTES } = require("./remote-transport.cjs");
 const { HostSessionManager, resolveRequestDeadlineMs } = require("./host-sessions.cjs");
-const { abortError, throwIfAborted } = require("./abort.cjs");
+const { abortError, abortableDelay, throwIfAborted } = require("./abort.cjs");
 const { BoundedAiQueue } = require("./ai-queue.cjs");
 const { RequestPendingMap } = require("./request-pending.cjs");
 const { cleanupFilePaths, createStagingDirectory, createTransferState, materializeRemoteTool, rewriteTransferPaths, streamFileDownload, transferError } = require("./file-transfer.cjs");
@@ -451,7 +451,7 @@ async function executeMappedHostTool(request, tool, args, tabId) {
   if (!extensionMsg) throw new Error(`Unknown tool: ${tool}`);
   if (extensionMsg.type === "UNSUPPORTED_ACTION") throw new Error(extensionMsg.message);
   if (extensionMsg.type === "LOCAL_WAIT") {
-    await require("./abort.cjs").abortableDelay(extensionMsg.seconds * 1000, request.signal);
+    await abortableDelay(extensionMsg.seconds * 1000, request.signal);
     return { success: true };
   }
   if (extensionMsg.type === "BATCH_EXECUTE" || extensionMsg.type.endsWith("_QUERY")) {
@@ -508,7 +508,7 @@ async function runHostPlaybook(msg, request) {
     signal: request.signal,
     executeTool: (tool, args) => executeMappedHostTool(request, tool, args, msg.tabId),
     executeNative: (handler, args, options) => executeNativePlaybook(request, handler, args, options),
-    sleep: (ms) => require("./abort.cjs").abortableDelay(ms, request.signal),
+    sleep: (ms) => abortableDelay(ms, request.signal),
     onEvent: report,
     beforeDispatch: async () => updateReceipt(receipt, "dispatched"),
     afterDispatch: async ({ status, error }) => updateReceipt(receipt, status, { error }),
