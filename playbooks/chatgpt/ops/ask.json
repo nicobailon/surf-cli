@@ -1,0 +1,25 @@
+{
+  "id": "ask",
+  "description": "Send a prompt to ChatGPT",
+  "effect": "write",
+  "args": {
+    "prompt": { "required": true, "desc": "Prompt text" },
+    "model": { "required": false, "desc": "ChatGPT model" },
+    "timeout": { "required": false, "default": 2700, "desc": "Timeout in seconds" }
+  },
+  "auth": { "requiresSession": true, "origins": ["https://chatgpt.com"] },
+  "safety": {
+    "authorization": "implicit",
+    "duplicate": "repeatable-window",
+    "windowMs": 30000,
+    "key": ["prompt"]
+  },
+  "run": [
+    {
+      "using": "native",
+      "handler": "chatgpt.ask",
+      "extract": { "field": "response" },
+      "expect": { "truthy": true }
+    }
+  ]
+}

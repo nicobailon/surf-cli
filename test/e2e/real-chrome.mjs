@@ -190,14 +190,19 @@ try {
   mkdirSync(join(profileDir, "NativeMessagingHosts"), { recursive: true });
   cpSync(standardManifest, testingManifest);
 
-  server = createServer((_request, response) => {
-    response.writeHead(200, { "content-type": "text/html; charset=utf-8" });
+  server = createServer((request, response) => {
+    const hasSessionCookie = request.headers.cookie?.includes("surf_session=present") === true;
+    response.writeHead(200, {
+      "content-type": "text/html; charset=utf-8",
+      "set-cookie": "surf_session=present; Path=/; HttpOnly; SameSite=Lax",
+    });
     response.end(`<!doctype html>
 <html>
   <head><title>Surf real Chrome fixture</title></head>
   <body>
     <main>
       <h1>Surf real Chrome fixture</h1>
+      <p id="session-state">${hasSessionCookie ? "session-cookie-present" : "session-cookie-missing"}</p>
       <button id="fixture-button">Mark complete</button>
       <p id="fixture-result">Waiting for Surf</p>
     </main>
@@ -277,6 +282,19 @@ try {
   const initialText = await runSurf("page.text");
   if (!initialText.includes("Surf real Chrome fixture") || !initialText.includes("Waiting for Surf")) {
     throw new Error(`page.text did not contain fixture text: ${initialText}`);
+  }
+
+  const playbookRead = JSON.parse(
+    await runSurf("use", "page", "read", "--json", "--tab-id", String(fixtureTab.id)),
+  );
+  if (
+    playbookRead.strategy !== "network" ||
+    typeof playbookRead.value !== "string" ||
+    !playbookRead.value.includes("session-cookie-present")
+  ) {
+    throw new Error(
+      `page playbook did not use page-context fetch with the browser session: ${JSON.stringify(playbookRead)}`,
+    );
   }
 
   const pageRead = await runSurf("read", "--depth", "2", "--compact");

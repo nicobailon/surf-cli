@@ -1,0 +1,7 @@
+{
+  "id": "chatgpt",
+  "name": "ChatGPT",
+  "version": "1.0.0",
+  "description": "Built-in ChatGPT browser-session capabilities",
+  "origins": ["https://chatgpt.com"]
+}

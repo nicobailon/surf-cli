@@ -1,7 +1,7 @@
-const crypto = require("crypto");
 const fs = require("fs");
 const path = require("path");
 const { version: PACKAGE_VERSION } = require("../package.json");
+const { atomicWriteFile } = require("./private-state.cjs");
 
 const MAX_NETWORK_EXPORT_FILE_BYTES = 256 * 1024 * 1024;
 const INTERNAL_FIELDS = new Set(["_requestId", "_responseReceived", "_loadingFinished"]);
@@ -22,6 +22,20 @@ function headerList(headers) {
   return Object.entries(headers).map(([name, value]) => ({ name, value: String(value) }));
 }
 
+function headerValue(headers, name) {
+  if (!headers || typeof headers !== "object") return "";
+  const match = Object.entries(headers).find(([key]) => key.toLowerCase() === name);
+  return match ? String(match[1]) : "";
+}
+
+function queryList(url) {
+  try {
+    return [...new URL(url).searchParams.entries()].map(([name, value]) => ({ name, value }));
+  } catch {
+    return [];
+  }
+}
+
 function harEntry(entry) {
   const requestBody = entry.requestBody;
   const responseBody = entry.responseBody;
@@ -37,11 +51,11 @@ function harEntry(entry) {
       url: entry.url || "",
       httpVersion: "HTTP/1.1",
       headers: headerList(requestHeaders),
-      queryString: [],
+      queryString: queryList(entry.url || ""),
       cookies: [],
       headersSize: -1,
       bodySize: Number.isFinite(entry.requestBodySize) ? entry.requestBodySize : requestBody ? Buffer.byteLength(String(requestBody)) : -1,
-      ...(requestBody !== undefined ? { postData: { mimeType: "application/octet-stream", text: String(requestBody) } } : {}),
+      ...(requestBody !== undefined ? { postData: { mimeType: headerValue(requestHeaders, "content-type") || "application/octet-stream", text: String(requestBody) } } : {}),
     },
     response: {
       status: Number.isFinite(entry.status) ? entry.status : 0,
@@ -53,6 +67,8 @@ function harEntry(entry) {
         size: Number.isFinite(entry.responseBodySize) ? entry.responseBodySize : responseBody ? Buffer.byteLength(String(responseBody)) : 0,
         mimeType: entry.mimeType || "",
         ...(responseBody !== undefined ? { text: String(responseBody) } : {}),
+        ...(entry.responseBodyEncoding === "base64" ? { encoding: "base64" } : {}),
+        _surfBodyCapture: entry.bodyCapture || { mode: "none", complete: responseBody === undefined ? false : true },
       },
       redirectURL: "",
       headersSize: -1,
@@ -87,20 +103,7 @@ function writeNetworkExport(outputPath, entries, format = "json") {
   const bytes = Buffer.byteLength(content);
   if (bytes > MAX_NETWORK_EXPORT_FILE_BYTES) throw new Error("network export exceeds the 256 MiB file limit");
   fs.mkdirSync(path.dirname(outputPath), { recursive: true });
-  const temporaryPath = path.join(path.dirname(outputPath), `.${path.basename(outputPath)}.surf-${crypto.randomBytes(12).toString("hex")}.tmp`);
-  try {
-    const fd = fs.openSync(temporaryPath, "wx", 0o600);
-    try {
-      fs.writeFileSync(fd, content, "utf8");
-      fs.fchmodSync(fd, 0o600);
-    } finally {
-      fs.closeSync(fd);
-    }
-    fs.renameSync(temporaryPath, outputPath);
-  } catch (error) {
-    try { fs.rmSync(temporaryPath, { force: true }); } catch {}
-    throw error;
-  }
+  atomicWriteFile(outputPath, content, { encoding: "utf8" });
   return { path: outputPath, format, count: entries.length, bytes };
 }
 

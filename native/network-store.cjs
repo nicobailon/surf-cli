@@ -11,11 +11,17 @@ const fs = require("fs");
 const path = require("path");
 const crypto = require("crypto");
 const readline = require("readline");
+const {
+  appendPrivateJsonLine,
+  assertNotSymlink,
+  atomicWriteFile,
+  atomicWriteJson,
+  ensurePrivateDir,
+  privateStatePath,
+} = require("./private-state.cjs");
 
 // Configuration
-const DEFAULT_BASE = process.platform === "win32"
-  ? require("path").join(require("os").tmpdir(), "surf")
-  : "/tmp/surf";
+const DEFAULT_BASE = privateStatePath("network");
 const DEFAULT_TTL = 24 * 60 * 60 * 1000;  // 24 hours
 const DEFAULT_MAX_SIZE = 200 * 1024 * 1024; // 200MB
 const AUTO_CLEANUP_INTERVAL = 60 * 60 * 1000; // 1 hour
@@ -23,22 +29,12 @@ const AUTO_CLEANUP_INTERVAL = 60 * 60 * 1000; // 1 hour
 // Lock file for concurrent access
 let writeLock = Promise.resolve();
 
-// Runtime override for base path (set via CLI --network-path)
-let runtimeBasePath = null;
-
-/**
- * Set base path at runtime (from CLI --network-path flag)
- */
-function setBasePath(newPath) {
-  runtimeBasePath = newPath;
-}
-
 /**
  * Get base path for network storage
- * Priority: runtime override > SURF_NETWORK_PATH env var > default
+ * Priority: SURF_NETWORK_PATH env var > default
  */
 function getBasePath() {
-  return runtimeBasePath || process.env.SURF_NETWORK_PATH || DEFAULT_BASE;
+  return process.env.SURF_NETWORK_PATH || DEFAULT_BASE;
 }
 
 /**
@@ -68,13 +64,8 @@ function getMetaPath() {
 function ensureDirectories() {
   const base = getBasePath();
   const bodies = getBodiesPath();
-  
-  if (!fs.existsSync(base)) {
-    fs.mkdirSync(base, { recursive: true });
-  }
-  if (!fs.existsSync(bodies)) {
-    fs.mkdirSync(bodies, { recursive: true });
-  }
+  ensurePrivateDir(base, base);
+  ensurePrivateDir(bodies, base);
 }
 
 /**
@@ -84,6 +75,7 @@ function readMeta() {
   const metaPath = getMetaPath();
   try {
     if (fs.existsSync(metaPath)) {
+      assertNotSymlink(metaPath, false);
       return JSON.parse(fs.readFileSync(metaPath, "utf-8"));
     }
   } catch (err) {
@@ -98,7 +90,7 @@ function readMeta() {
 function writeMeta(meta) {
   const metaPath = getMetaPath();
   ensureDirectories();
-  fs.writeFileSync(metaPath, JSON.stringify(meta, null, 2));
+  atomicWriteJson(metaPath, meta, { root: getBasePath() });
 }
 
 /**
@@ -124,7 +116,7 @@ function storeBody(content, isRequest = false) {
   
   // Only write if doesn't exist (dedup)
   if (!fs.existsSync(bodyPath)) {
-    fs.writeFileSync(bodyPath, buffer);
+    atomicWriteFile(bodyPath, buffer, { root: getBasePath() });
   }
   
   return hash;
@@ -142,6 +134,7 @@ function readBody(hash, isRequest = false) {
   
   try {
     if (fs.existsSync(bodyPath)) {
+      assertNotSymlink(bodyPath, false);
       return fs.readFileSync(bodyPath);
     }
   } catch (err) {
@@ -186,10 +179,7 @@ async function appendEntry(entry) {
       ...entry
     };
     
-    const line = JSON.stringify(fullEntry) + "\n";
-    
-    // Atomic append using flag 'a'
-    fs.appendFileSync(getRequestsPath(), line, { flag: "a" });
+    appendPrivateJsonLine(getRequestsPath(), fullEntry, { root: getBasePath() });
     
     return fullEntry;
   } finally {
@@ -214,15 +204,14 @@ function appendEntrySync(entry) {
     ...entry
   };
   
-  const line = JSON.stringify(fullEntry) + "\n";
-  
   // Use a simple lock file for synchronous operations
   const lockPath = path.join(getBasePath(), ".lock");
   let lockFd;
   
   try {
     // Try to acquire lock
-    lockFd = fs.openSync(lockPath, "wx");
+    assertNotSymlink(lockPath, true);
+    lockFd = fs.openSync(lockPath, "wx", 0o600);
   } catch (err) {
     // Lock exists - check if stale and remove, otherwise proceed without lock
     try {
@@ -230,7 +219,7 @@ function appendEntrySync(entry) {
       if (Date.now() - stat.mtimeMs > 5000) {
         fs.unlinkSync(lockPath);
         try {
-          lockFd = fs.openSync(lockPath, "wx");
+          lockFd = fs.openSync(lockPath, "wx", 0o600);
         } catch (e) {
           // Still can't get lock, proceed without it
         }
@@ -241,13 +230,13 @@ function appendEntrySync(entry) {
     
     if (lockFd === undefined) {
       // Proceed without lock as fallback
-      fs.appendFileSync(getRequestsPath(), line, { flag: "a" });
+      appendPrivateJsonLine(getRequestsPath(), fullEntry, { root: getBasePath() });
       return fullEntry;
     }
   }
   
   try {
-    fs.appendFileSync(getRequestsPath(), line, { flag: "a" });
+    appendPrivateJsonLine(getRequestsPath(), fullEntry, { root: getBasePath() });
   } finally {
     if (lockFd !== undefined) {
       fs.closeSync(lockFd);
@@ -385,6 +374,7 @@ async function readEntries(filters = {}) {
   if (!fs.existsSync(requestsPath)) {
     return [];
   }
+  assertNotSymlink(requestsPath, false);
   
   const { last } = filters;
   const entries = [];
@@ -433,6 +423,7 @@ function readEntriesSync(filters = {}) {
   if (!fs.existsSync(requestsPath)) {
     return [];
   }
+  assertNotSymlink(requestsPath, false);
   
   const { last } = filters;
   const entries = [];
@@ -682,10 +673,8 @@ async function cleanup(options = {}) {
   
   if (deletedEntries > 0 || entries.length === 0) {
     // Atomic write: write to temp then rename
-    const tempPath = requestsPath + ".tmp";
     const content = entries.map(e => JSON.stringify(e)).join("\n") + (entries.length > 0 ? "\n" : "");
-    fs.writeFileSync(tempPath, content);
-    fs.renameSync(tempPath, requestsPath);
+    atomicWriteFile(requestsPath, content, { root: getBasePath(), encoding: "utf8" });
   }
   
   // 6. Update meta
@@ -777,10 +766,8 @@ async function clear(options = {}) {
   
   // Rewrite entries file
   if (deletedEntries > 0) {
-    const tempPath = requestsPath + ".tmp";
     const content = remaining.map(e => JSON.stringify(e)).join("\n") + (remaining.length > 0 ? "\n" : "");
-    fs.writeFileSync(tempPath, content);
-    fs.renameSync(tempPath, requestsPath);
+    atomicWriteFile(requestsPath, content, { root: getBasePath(), encoding: "utf8" });
   }
   
   return { deletedEntries, deletedBodies };
@@ -806,9 +793,6 @@ function maybeAutoCleanup() {
     // Ignore errors during auto-cleanup check
   }
 }
-
-// Run auto-cleanup check on module load
-maybeAutoCleanup();
 
 module.exports = {
   // Configuration
@@ -840,10 +824,6 @@ module.exports = {
   cleanup,
   clear,
   maybeAutoCleanup,
-  
-  // Configuration
-  setBasePath,
-  getBasePath,
   
   // Constants
   DEFAULT_BASE,

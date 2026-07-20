@@ -1,0 +1,22 @@
+{
+  "id": "read",
+  "description": "Read the current site's root document",
+  "effect": "read",
+  "run": [
+    {
+      "using": "network",
+      "request": { "method": "GET", "url": "/" },
+      "extract": { "field": "body" },
+      "expect": { "truthy": true }
+    },
+    {
+      "using": "workflow",
+      "steps": [
+        { "tool": "page.text", "args": {}, "as": "content" }
+      ],
+      "extract": { "jsonPath": "$.vars.content" },
+      "expect": { "truthy": true }
+    }
+  ],
+  "on": { "drift": { "fallback": "next", "report": true } }
+}

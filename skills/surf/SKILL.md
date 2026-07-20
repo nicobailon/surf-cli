@@ -410,9 +410,12 @@ surf network.body --id "req-123"  # Get response body
 surf network.curl --id "req-123"  # Generate curl command
 surf network.origins           # List origins with stats
 surf network.stats             # Capture statistics
-surf network.export            # Export all requests
+surf network -vv --body-mode text --per-body-bytes 65536
+surf network.export --har --output ./trace.har
 surf network.clear             # Clear captured requests
 ```
+
+Response-body capture supports `none`, `text`, and `all` modes plus per-body and per-tab-session byte caps. HAR exports carry body completeness metadata. Persistent network state is private under `~/.surf/state/network/` by default; configure `SURF_NETWORK_PATH` in the native host environment to change it.
 
 ## Console
 
@@ -581,6 +584,41 @@ surf workflow.validate workflow.json
 - Tab switches → waits for tab to load
 
 **Why use `do`?** Instead of 6-8 separate CLI calls with LLM orchestration between each, a workflow executes deterministically. Faster, cheaper, and more reliable.
+
+## Playbooks
+
+Use `surf do` for a direct command sequence. Use a playbook for a reusable site capability with provenance, browser-session network execution, workflow fallback, and write-safety policy.
+
+```bash
+surf playbook list
+surf pb show page
+surf pb ops page
+surf use page read --json
+```
+
+Resolution order is project (`./.surf/playbooks/`), user (`~/.surf/playbooks/`), then built-in. Provider compatibility commands pin their provider built-in. A write op requires `--write`; Surf records semantic intent before dispatch so a timeout or concurrent retry cannot silently double-submit.
+
+Author from redacted recent activity when it contains only read/navigation behavior, or use an explicit record for richer evidence:
+
+```bash
+surf pb suggest --since 1h
+surf pb save example --op read --from-recent 1h
+surf pb record start example --op read --network --watch
+surf pb record mark "loaded results"
+surf pb record stop --draft
+surf pb save --from-record <record-id>
+surf pb trace export --from-record <record-id> --har ./trace.har
+```
+
+Records, trace slices, receipts, and the bounded activity journal are private Surf state. Inputs and authentication headers are redacted by default. Use `--include-input-values` only when the saved values are necessary and acceptable.
+
+Client projections replay a validated read endpoint and never embed captured browser credentials:
+
+```bash
+surf pb client derive example --op read --from-record <record-id> --out ./client
+surf pb client export example --op read --out ./client
+surf pb client verify ./client
+```
 
 ## Error Diagnostics
 

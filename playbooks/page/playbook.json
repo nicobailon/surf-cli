@@ -1,0 +1,7 @@
+{
+  "id": "page",
+  "name": "Current page",
+  "version": "1.0.0",
+  "description": "Read the current browser page with a network fast path and UI fallback",
+  "origins": []
+}

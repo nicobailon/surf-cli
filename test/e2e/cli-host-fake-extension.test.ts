@@ -74,8 +74,10 @@ const { spawn } = require("node:child_process") as {
   spawn: (command: string, args: string[], options: Record<string, unknown>) => ChildProcessLike;
 };
 const fs = require("node:fs") as {
+  mkdirSync(targetPath: string, options: { recursive: boolean }): void;
   mkdtempSync(prefix: string): string;
   rmSync(targetPath: string, options: { recursive: boolean; force: boolean }): void;
+  writeFileSync(targetPath: string, content: string): void;
 };
 const os = require("node:os") as { tmpdir(): string };
 const path = require("node:path") as { join(...paths: string[]): string };
@@ -146,6 +148,17 @@ function buildExtensionResponse(message: NativeMessage, currentUrl: string) {
         width: 1,
         height: 1,
       };
+    case "EXECUTE_JAVASCRIPT":
+      return {
+        id: message.id,
+        output: JSON.stringify({
+          status: 200,
+          ok: true,
+          url: "https://fixture.test/api",
+          body: '{"ok":true}',
+          bodyJson: { ok: true },
+        }),
+      };
     default:
       return { id: message.id, error: `Unhandled fake extension message: ${message.type}` };
   }
@@ -153,9 +166,11 @@ function buildExtensionResponse(message: NativeMessage, currentUrl: string) {
 
 function startHost(socketPath: string) {
   const hostPath = path.join(process.cwd(), "native", "host.cjs");
+  const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), "surf-e2e-state-"));
+  tempDirs.push(stateDir);
   const child = spawn(process.execPath, [hostPath], {
     cwd: process.cwd(),
-    env: { ...process.env, SURF_SOCKET: socketPath },
+    env: { ...process.env, SURF_SOCKET: socketPath, SURF_STATE_DIR: stateDir },
     stdio: ["pipe", "pipe", "pipe"],
   });
   const messages: NativeMessage[] = [];
@@ -277,12 +292,12 @@ function startHost(socketPath: string) {
   };
 }
 
-async function runCli(socketPath: string, args: string[]) {
+async function runCli(socketPath: string, args: string[], cwd = process.cwd()) {
   const cliPath = path.join(process.cwd(), "native", "cli.cjs");
 
   return await new Promise<CliResult>((resolve, reject) => {
     const child = spawn(process.execPath, [cliPath, ...args], {
-      cwd: process.cwd(),
+      cwd,
       env: { ...process.env, SURF_SOCKET: socketPath },
       stdio: ["ignore", "pipe", "pipe"],
     });
@@ -362,6 +377,73 @@ describe("CLI/native-host/fake-extension E2E contract", () => {
           }),
           expect.objectContaining({ type: "EXECUTE_SCREENSHOT" }),
         ]),
+      );
+    } finally {
+      await host.dispose();
+    }
+  });
+
+  it("runs a playbook under one host lease and blocks a duplicate semantic write", async () => {
+    const socketPath = createSocketPath();
+    const project = fs.mkdtempSync(path.join(os.tmpdir(), "surf-playbook-project-"));
+    tempDirs.push(project);
+    const playbookDir = path.join(project, ".surf", "playbooks", "mutation", "ops");
+    fs.mkdirSync(playbookDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(project, ".surf", "playbooks", "mutation", "playbook.json"),
+      JSON.stringify({ id: "mutation", version: "1.0.0", origins: ["https://fixture.test"] }),
+    );
+    fs.writeFileSync(
+      path.join(playbookDir, "submit.json"),
+      JSON.stringify({
+        id: "submit",
+        effect: "write",
+        args: { action: { required: true } },
+        safety: { authorization: "explicit", duplicate: "transactional", key: ["action"] },
+        run: [
+          {
+            using: "network",
+            request: {
+              method: "POST",
+              url: "https://fixture.test/api",
+              body: { action: "{{action}}" },
+            },
+            extract: { jsonPath: "$.ok" },
+            expect: { truthy: true },
+          },
+        ],
+      }),
+    );
+    const host = startHost(socketPath);
+
+    try {
+      await host.waitForMessage((message) => message.type === "HOST_READY");
+      const read = await runCli(socketPath, ["use", "page", "read", "--json"]);
+      expect(read).toMatchObject({ code: 0, stderr: "" });
+      expect(JSON.parse(read.stdout)).toMatchObject({
+        status: "completed",
+        strategy: "network",
+        provenance: { scope: "built-in" },
+      });
+
+      const results = await Promise.all([
+        runCli(
+          socketPath,
+          ["use", "mutation", "submit", "--action", "same", "--write", "--no-lock"],
+          project,
+        ),
+        runCli(
+          socketPath,
+          ["use", "mutation", "submit", "--action", "same", "--write", "--no-lock"],
+          project,
+        ),
+      ]);
+      expect(results.filter((result) => result.code === 0)).toHaveLength(1);
+      expect(results.filter((result) => result.code === 1)[0]?.stderr).toMatch(
+        /write blocked by verified receipt/,
+      );
+      expect(host.messages.filter((message) => message.type === "EXECUTE_JAVASCRIPT")).toHaveLength(
+        2,
       );
     } finally {
       await host.dispose();

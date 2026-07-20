@@ -44,7 +44,9 @@ export interface NetworkEntry {
   mimeType?: string;
   responseHeaders?: Record<string, string>;
   responseBody?: string;         // Will be fetched via getResponseBody
+  responseBodyEncoding?: "base64";
   responseBodySize?: number;
+  bodyCapture: { mode: "none" | "text" | "all"; complete: boolean; reason?: string; capturedBytes?: number };
   
   // Metadata
   tabId: number;
@@ -135,10 +137,13 @@ export class CDPController {
   private networkRequestStartTimes: Map<string, number> = new Map();
   private pendingDialogs: Map<number, PendingDialog> = new Map();
   private networkEntrySeq = 0; // Sequence counter for unique IDs
+  private networkBodyBytes: Map<number, number> = new Map();
+  private networkCapture: Map<number, { mode: "none" | "text" | "all"; perBodyBytes: number; totalBytes: number }> = new Map();
   private static debuggerListenerRegistered = false;
 
   // Body fetch settings
-  private static readonly MAX_INLINE_BODY_SIZE = 16 * 1024; // 16KB
+  private static readonly DEFAULT_PER_BODY_BYTES = 64 * 1024;
+  private static readonly DEFAULT_TOTAL_BODY_BYTES = 2 * 1024 * 1024;
   private static readonly STATIC_ASSET_TYPES = new Set([
     'image/png', 'image/jpeg', 'image/gif', 'image/webp', 'image/svg+xml', 'image/x-icon',
     'font/woff', 'font/woff2', 'font/ttf', 'font/otf', 'application/font-woff', 'application/font-woff2',
@@ -192,6 +197,8 @@ export class CDPController {
       this.consoleMessages.delete(tabId);
       this.networkRequests.delete(tabId);
       this.networkEntries.delete(tabId);
+      this.networkBodyBytes.delete(tabId);
+      this.networkCapture.delete(tabId);
       this.consoleCallbacks.delete(tabId);
       this.networkCallbacks.delete(tabId);
       this.pendingDialogs.delete(tabId);
@@ -222,13 +229,15 @@ export class CDPController {
         this.consoleMessages.delete(tabId);
         this.networkRequests.delete(tabId);
         this.networkEntries.delete(tabId);
+        this.networkBodyBytes.delete(tabId);
+        this.networkCapture.delete(tabId);
         this.consoleCallbacks.delete(tabId);
         this.networkCallbacks.delete(tabId);
       }
     });
   }
 
-  private handleCDPEvent(tabId: number, method: string, params: any): void {
+  private async handleCDPEvent(tabId: number, method: string, params: any): Promise<void> {
     switch (method) {
       case "Runtime.consoleAPICalled":
         this.handleRuntimeConsole(tabId, params);
@@ -246,7 +255,7 @@ export class CDPController {
         this.handleNetworkFailed(tabId, params);
         break;
       case "Network.loadingFinished":
-        this.handleLoadingFinished(tabId, params);
+        await this.handleLoadingFinished(tabId, params);
         break;
       case "Page.javascriptDialogOpening":
         this.handleDialogOpening(tabId, params);
@@ -380,6 +389,7 @@ export class CDPController {
       tabUrl: params.documentURL,
       type: params.type,
       flags: [],
+      bodyCapture: { mode: this.networkCapture.get(tabId)?.mode || "none", complete: false, reason: "pending" },
       _requestId: params.requestId,
       _responseReceived: false,
       _loadingFinished: false,
@@ -535,36 +545,6 @@ export class CDPController {
         existing.duration = Math.round(now - startTime);
       }
 
-      // Fetch response body for small non-static responses (< 16KB)
-      const shouldFetchBody = 
-        !this.isStaticAsset(existing.mimeType) &&
-        !this.isBinaryType(existing.mimeType) &&
-        (params.encodedDataLength || 0) <= CDPController.MAX_INLINE_BODY_SIZE;
-
-      if (shouldFetchBody) {
-        try {
-          const result = await this.send(tabId, "Network.getResponseBody", {
-            requestId: params.requestId,
-          });
-          
-          if (result.base64Encoded) {
-            try {
-              existing.responseBody = atob(result.body);
-            } catch {
-              existing.responseBody = result.body;
-            }
-          } else {
-            existing.responseBody = result.body;
-          }
-          
-          // Truncate if too large
-          if (existing.responseBody && existing.responseBody.length > CDPController.MAX_INLINE_BODY_SIZE) {
-            existing.responseBody = existing.responseBody.slice(0, CDPController.MAX_INLINE_BODY_SIZE);
-          }
-        } catch (e) {
-          // Body may not be available (e.g., cached, redirected)
-        }
-      }
     }
 
     // Update full NetworkEntry format
@@ -583,40 +563,38 @@ export class CDPController {
     // Set response body size from encoded data length
     entry.responseBodySize = params.encodedDataLength;
     entry._loadingFinished = true;
-
-    // Decide whether to fetch body inline
-    const shouldFetchBody = 
-      !this.isStaticAsset(entry.mimeType) &&
-      !this.isBinaryType(entry.mimeType) &&
-      (params.encodedDataLength || 0) <= CDPController.MAX_INLINE_BODY_SIZE;
-
-    if (shouldFetchBody) {
-      try {
-        const result = await this.send(tabId, "Network.getResponseBody", {
-          requestId: params.requestId,
-        });
-        
-        if (result.base64Encoded) {
-          // Decode base64 for text content
-          try {
-            entry.responseBody = atob(result.body);
-          } catch {
-            entry.responseBody = result.body;
-            entry.flags.push('binary');
-          }
-        } else {
-          entry.responseBody = result.body;
-        }
-        
-        // Check if truncated
-        if (entry.responseBody && entry.responseBody.length > CDPController.MAX_INLINE_BODY_SIZE) {
-          entry.responseBody = entry.responseBody.slice(0, CDPController.MAX_INLINE_BODY_SIZE);
-          entry.flags.push('truncated');
-        }
-      } catch (e) {
-        // Body may not be available (e.g., cached, redirected)
-        // This is not an error - just means no body to capture
+    const capture = this.networkCapture.get(tabId) || { mode: "none" as const, perBodyBytes: 0, totalBytes: 0 };
+    const encodedBytes = Math.max(0, Number(params.encodedDataLength) || 0);
+    let reason: string | null = null;
+    if (capture.mode === "none") reason = "disabled";
+    else if (capture.mode === "text" && (this.isStaticAsset(entry.mimeType) || this.isBinaryType(entry.mimeType))) reason = "content-mode";
+    else if (encodedBytes > capture.perBodyBytes) reason = "per-body-cap";
+    else if ((this.networkBodyBytes.get(tabId) || 0) + encodedBytes > capture.totalBytes) reason = "session-cap";
+    if (reason) {
+      entry.bodyCapture = { mode: capture.mode, complete: false, reason };
+      if (reason.endsWith("cap")) entry.flags.push("truncated");
+      return;
+    }
+    try {
+      const result = await this.send(tabId, "Network.getResponseBody", { requestId: params.requestId });
+      const body = typeof result.body === "string" ? result.body : "";
+      const capturedBytes = result.base64Encoded ? Math.ceil(body.length * 0.75) : new TextEncoder().encode(body).byteLength;
+      if (capturedBytes > capture.perBodyBytes || (this.networkBodyBytes.get(tabId) || 0) + capturedBytes > capture.totalBytes) {
+        entry.flags.push("truncated");
+        entry.bodyCapture = { mode: capture.mode, complete: false, reason: capturedBytes > capture.perBodyBytes ? "per-body-cap" : "session-cap" };
+        return;
       }
+      if (result.base64Encoded && capture.mode === "all") {
+        entry.responseBody = body;
+        entry.responseBodyEncoding = "base64";
+      } else if (result.base64Encoded) {
+        try { entry.responseBody = atob(body); } catch { entry.bodyCapture = { mode: capture.mode, complete: false, reason: "decode-failed" }; return; }
+      } else entry.responseBody = body;
+      this.networkBodyBytes.set(tabId, (this.networkBodyBytes.get(tabId) || 0) + capturedBytes);
+      entry.bodyCapture = { mode: capture.mode, complete: true, capturedBytes };
+      if (existing) existing.responseBody = entry.responseBody;
+    } catch {
+      entry.bodyCapture = { mode: capture.mode, complete: false, reason: "unavailable" };
     }
   }
 
@@ -649,8 +627,19 @@ export class CDPController {
     } catch (e) {}
   }
 
-  async enableNetworkTracking(tabId: number): Promise<void> {
+  async enableNetworkTracking(
+    tabId: number,
+    options: { bodyMode?: "none" | "text" | "all"; perBodyBytes?: number; totalBytes?: number } = {},
+  ): Promise<void> {
     await this.ensureAttached(tabId);
+    const mode = options.bodyMode || "text";
+    const perBodyBytes = options.perBodyBytes ?? CDPController.DEFAULT_PER_BODY_BYTES;
+    const totalBytes = options.totalBytes ?? CDPController.DEFAULT_TOTAL_BODY_BYTES;
+    if (!Number.isInteger(perBodyBytes) || perBodyBytes < 0 || !Number.isInteger(totalBytes) || totalBytes < 0) {
+      throw new Error("network body caps must be non-negative integers");
+    }
+    this.networkCapture.set(tabId, { mode, perBodyBytes, totalBytes });
+    if (!this.networkBodyBytes.has(tabId)) this.networkBodyBytes.set(tabId, 0);
     try {
       await this.send(tabId, "Network.enable", { maxPostDataSize: 65536 });
     } catch (e) {}
@@ -1011,6 +1000,7 @@ export class CDPController {
   clearNetworkRequests(tabId: number): void {
     this.networkRequests.set(tabId, []);
     this.networkEntries.set(tabId, new Map());
+    this.networkBodyBytes.set(tabId, 0);
   }
 
   /**
@@ -1044,6 +1034,7 @@ export class CDPController {
         type: req.type,
         status: req.status,
         flags: [],
+        bodyCapture: { mode: "none", complete: false, reason: "legacy" },
         _requestId: req.requestId,
         _responseReceived: true,
         _loadingFinished: true,

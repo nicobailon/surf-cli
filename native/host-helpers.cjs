@@ -1,6 +1,5 @@
 const fs = require("fs");
 const networkFormatters = require("./formatters/network.cjs");
-const networkStore = require("./network-store.cjs");
 
 function buildProviderUploadMessage(provider, tabId, filePaths, id) {
   const normalizedProvider = String(provider || "").toLowerCase();
@@ -123,19 +122,6 @@ function formatToolContent(result, log = () => {}, options = {}) {
   // Handle both requests (basic) and entries (full) formats
   const items = result.requests || result.entries;
   if (items && Array.isArray(items)) {
-    // Persist entries with full data to disk
-    if (result.entries && items.length > 0) {
-      (async () => {
-        for (const entry of items) {
-          try {
-            await networkStore.appendEntry(entry);
-          } catch (err) {
-            log(`Failed to persist network entry: ${err.message}`);
-          }
-        }
-      })();
-    }
-    
     if (items.length === 0) {
       return text("No network requests captured");
     }
@@ -679,6 +665,9 @@ function mapToolToMessage(tool, args, tabId) {
         limit: a.limit || a.last,
         format: a.format,
         verbose: a.v ? 1 : (a.vv ? 2 : 0),
+        bodyMode: a["body-mode"] || a.bodyMode,
+        perBodyBytes: a["per-body-bytes"] || a.perBodyBytes,
+        totalBodyBytes: a["total-body-bytes"] || a.totalBodyBytes,
         ...baseMsg 
       };
 
@@ -732,6 +721,9 @@ function mapToolToMessage(tool, args, tabId) {
         type: "EXPORT_NETWORK_REQUESTS",
         har: a.har,
         jsonl: a.jsonl,
+        bodyMode: a["body-mode"] || a.bodyMode,
+        perBodyBytes: a["per-body-bytes"] || a.perBodyBytes,
+        totalBodyBytes: a["total-body-bytes"] || a.totalBodyBytes,
         ...baseMsg 
       };
 

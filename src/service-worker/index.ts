@@ -2259,11 +2259,54 @@ export async function handleMessage(
       return { success: true };
     }
 
+    case "START_NETWORK_CAPTURE": {
+      if (!tabId) throw new Error("No tabId provided");
+      cdp.clearNetworkRequests(tabId);
+      await cdp.enableNetworkTracking(tabId, {
+        bodyMode: message.bodyMode || "text",
+        perBodyBytes: message.perBodyBytes,
+        totalBytes: message.totalBodyBytes,
+      });
+      return { success: true };
+    }
+
+    case "GET_PLAYBOOK_RECORD_CONTEXT": {
+      if (!tabId) throw new Error("No tabId provided");
+      const tab = await chrome.tabs.get(tabId);
+      let origin: string | undefined;
+      try {
+        if (tab.url) {
+          const parsed = new URL(tab.url);
+          if (parsed.protocol === "http:" || parsed.protocol === "https:") origin = parsed.origin;
+        }
+      } catch {}
+      return { success: true, origin, url: tab.url };
+    }
+
+    case "START_PLAYBOOK_WATCH": {
+      if (!tabId) throw new Error("No tabId provided");
+      await chrome.tabs.sendMessage(tabId, { type: "PLAYBOOK_WATCH_START", includeInputValues: message.includeInputValues === true }, { frameId: 0 });
+      return { success: true };
+    }
+
+    case "STOP_PLAYBOOK_WATCH": {
+      if (!tabId) throw new Error("No tabId provided");
+      await chrome.tabs.sendMessage(tabId, { type: "PLAYBOOK_WATCH_STOP" }, { frameId: 0 }).catch(() => {});
+      return { success: true };
+    }
+
+    case "PLAYBOOK_WATCH_EVENT": {
+      postToNativeHost({ ...message, tabId: sender.tab?.id, type: "PLAYBOOK_WATCH_EVENT" });
+      return { success: true };
+    }
+
     case "READ_NETWORK_REQUESTS": {
       if (!tabId) throw new Error("No tabId provided");
 
       try {
-        await cdp.enableNetworkTracking(tabId);
+        if (message.bodyMode !== undefined || message.perBodyBytes !== undefined || message.totalBodyBytes !== undefined) {
+          await cdp.enableNetworkTracking(tabId, { bodyMode: message.bodyMode, perBodyBytes: message.perBodyBytes, totalBytes: message.totalBodyBytes });
+        } else await cdp.enableNetworkTracking(tabId);
       } catch (e) {}
 
       // If full flag is passed, use getNetworkEntries for rich data
@@ -2327,7 +2370,9 @@ export async function handleMessage(
       if (!tabId) throw new Error("No tabId provided");
       if (message.har && message.jsonl) throw new Error("network export cannot combine HAR and JSONL");
       try {
-        await cdp.enableNetworkTracking(tabId);
+        if (message.bodyMode !== undefined || message.perBodyBytes !== undefined || message.totalBodyBytes !== undefined) {
+          await cdp.enableNetworkTracking(tabId, { bodyMode: message.bodyMode, perBodyBytes: message.perBodyBytes, totalBytes: message.totalBodyBytes });
+        } else await cdp.enableNetworkTracking(tabId);
       } catch (e) {}
       const entries = cdp.getNetworkEntries(tabId, {});
       const serializedSize = new TextEncoder().encode(JSON.stringify(entries)).byteLength;

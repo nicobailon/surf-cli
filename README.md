@@ -536,6 +536,7 @@ surf network --type json              # Only JSON responses
 surf network --status 4xx,5xx         # Only errors
 surf network --since 5m               # Last 5 minutes
 surf network --exclude-static         # Skip images/fonts/css/js
+surf network -vv --body-mode text      # Full entries with capped text bodies
 
 # Drill down
 surf network.get r_001                # Full request/response details
@@ -546,10 +547,12 @@ surf network.origins                  # List captured domains
 # Management
 surf network.clear                    # Clear captured data
 surf network.stats                    # Capture statistics
+surf network.export --har --output ./trace.har
 ```
 
-Storage location: `/tmp/surf/` (override with `--network-path` or `SURF_NETWORK_PATH` env).
-Auto-cleanup: 24 hours TTL, 200MB max.
+Response bodies are fetched at `Network.loadingFinished` when capture is enabled. `--body-mode none|text|all`, `--per-body-bytes`, and `--total-body-bytes` control content and caps; exports include completeness metadata.
+
+Storage location: `~/.surf/state/network/` (override with `SURF_NETWORK_PATH` in the native host environment). Surf creates private `0700` directories and `0600` files and rejects symlink targets. Auto-cleanup: 24 hours TTL, 200MB max.
 
 ### Workflows
 
@@ -677,6 +680,46 @@ surf workflow.validate ./my-workflow.json
 
 **Supported commands:** All surf commands work in workflows. Use aliases (`go`, `snap`, `read`) or full names (`navigate`, `screenshot`, `page.read`).
 
+### Playbooks
+
+Use `surf do` for a direct sequence of browser commands. Use a playbook for a reusable site capability that can try a browser-session network request and fall back to a workflow when the endpoint drifts.
+
+```bash
+surf playbook list
+surf pb show page
+surf pb ops page
+surf use page read --json
+
+# Write ops require explicit authorization and a durable duplicate-safety receipt.
+surf use <site> <write-op> --write --resource-id 123
+```
+
+Project playbooks in `./.surf/playbooks/` override user playbooks in `~/.surf/playbooks/`; built-ins are the final fallback. `show` reports the selected source. Provider compatibility commands pin their own built-ins.
+
+Author a playbook from redacted recent activity or an explicit evidence record:
+
+```bash
+surf pb suggest --since 1h
+surf pb save example --op read --from-recent 1h
+surf pb record start example --op read --network --watch
+surf pb record mark "loaded results"
+surf pb record stop --draft
+surf pb save --from-record <record-id>
+surf pb trace export --from-record <record-id> --har ./trace.har
+```
+
+Records, traces, receipts, and recent-use journals live under private Surf state. Input values and authentication headers are redacted by default; `--include-input-values` is an explicit recording choice.
+
+Generate a standalone client only from an observed or validated read endpoint:
+
+```bash
+surf pb client derive example --op read --from-record <record-id> --out ./client
+surf pb client export example --op read --out ./client
+surf pb client verify ./client
+```
+
+Generated manifests declare provenance and authentication environment inputs. Surf excludes cookies, bearer tokens, and captured credentials and does not export write-capable clients without explicit review.
+
 ## Global Options
 
 ```bash
@@ -687,13 +730,12 @@ surf workflow.validate ./my-workflow.json
 --no-lock          # Bypass the per-socket browser request lock
 --no-screenshot    # Skip auto-screenshot after actions
 --full             # Full resolution screenshots (skip resize)
---network-path <path>  # Custom path for network logs (default: /tmp/surf, or SURF_NETWORK_PATH env)
 ```
 
 ## Environment Variables
 
 ```bash
-SURF_NETWORK_PATH         # Path for network capture logs (default: /tmp/surf)
+SURF_NETWORK_PATH         # Native-host network state root (default: ~/.surf/state/network)
 SURF_SOCKET               # Socket path or named pipe (default: /tmp/surf.sock, Windows: //./pipe/surf)
 SURF_REMOTE               # Remote Surf endpoint as host:port (overrides SURF_SOCKET)
 SURF_REMOTE_CREDENTIAL    # Client Ed25519 credential for the selected remote endpoint

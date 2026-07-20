@@ -1,15 +1,25 @@
 #!/usr/bin/env node
 const fs = require("fs");
 const path = require("path");
-const os = require("os");
 const { execFileSync, execSync } = require("child_process");
 const { loadConfig, getConfigPath, createStarterConfig } = require("./config.cjs");
 const networkFormatters = require("./formatters/network.cjs");
-const networkStore = require("./network-store.cjs");
-const { parseDoCommands } = require("./do-parser.cjs");
+const {
+  applyArgDefaults,
+  formatStep,
+  getWorkflowDirs,
+  getWorkflowInfo,
+  listWorkflows,
+  normalizeWorkflow,
+  parseDoCommands,
+  resolveWorkflow,
+  validateWorkflowArgs,
+  validateWorkflowFile,
+} = require("./workflow-definition.cjs");
 const { executeDoSteps } = require("./do-executor.cjs");
 const { openClientTransport } = require("./client-transport.cjs");
 const { version: VERSION } = require("../package.json");
+const { formatPlaybookOutput, handlePlaybookCli, playbookCommandNeedsBrowser } = require("./playbook-cli.cjs");
 
 const IS_WIN = process.platform === "win32";
 const { SURF_TMP, formatSocketError } = require("./socket-path.cjs");
@@ -61,249 +71,6 @@ function installBrowserLock({ noLock, timeoutMs }, endpoint) {
     release();
     process.exit(143);
   });
-}
-
-// ============================================================================
-// Workflow Resolution and Management
-// ============================================================================
-
-/**
- * Get workflow search directories
- * @returns {Array<{path: string, scope: string}>}
- */
-function getWorkflowDirs() {
-  return [
-    { path: path.join(process.cwd(), '.surf', 'workflows'), scope: 'project' },
-    { path: path.join(os.homedir(), '.surf', 'workflows'), scope: 'user' },
-  ];
-}
-
-/**
- * Resolve a workflow by name or path
- * @param {string} nameOrPath - Workflow name or file path
- * @returns {{ type: 'inline'|'file'|'not_found', content?: string, path?: string, name?: string }}
- */
-function resolveWorkflow(nameOrPath) {
-  // Check if it's an inline workflow (contains pipe)
-  if (nameOrPath.includes('|')) {
-    return { type: 'inline', content: nameOrPath };
-  }
-
-  // Check if it's a direct file path (with extension or path separator)
-  if (nameOrPath.includes('/') || nameOrPath.includes('\\') || nameOrPath.endsWith('.json')) {
-    if (fs.existsSync(nameOrPath)) {
-      return { type: 'file', path: nameOrPath };
-    }
-    return { type: 'not_found', name: nameOrPath };
-  }
-
-  // Look up by name in workflow directories
-  const searchDirs = getWorkflowDirs();
-
-  for (const { path: dir } of searchDirs) {
-    const filePath = path.join(dir, `${nameOrPath}.json`);
-    if (fs.existsSync(filePath)) {
-      return { type: 'file', path: filePath };
-    }
-  }
-
-  return { type: 'not_found', name: nameOrPath };
-}
-
-/**
- * List all available workflows
- * @returns {Array<{name: string, description: string, scope: string, path: string, args?: object}>}
- */
-function listWorkflows() {
-  const workflows = [];
-  const searchDirs = getWorkflowDirs();
-
-  for (const { path: dir, scope } of searchDirs) {
-    if (fs.existsSync(dir)) {
-      try {
-        const files = fs.readdirSync(dir).filter(f => f.endsWith('.json'));
-        for (const file of files) {
-          const filePath = path.join(dir, file);
-          try {
-            const content = JSON.parse(fs.readFileSync(filePath, 'utf8'));
-            workflows.push({
-              name: content.name || file.replace('.json', ''),
-              description: content.description || '',
-              scope,
-              path: filePath,
-              args: content.args,
-              stepCount: content.steps?.length || 0,
-            });
-          } catch {
-            // Skip invalid JSON files
-          }
-        }
-      } catch {
-        // Skip inaccessible directories
-      }
-    }
-  }
-
-  return workflows;
-}
-
-/**
- * Get detailed info about a workflow
- * @param {string} name - Workflow name
- * @returns {{ error?: string, name?: string, description?: string, args?: object, steps?: Array, path?: string }}
- */
-function getWorkflowInfo(name) {
-  const resolved = resolveWorkflow(name);
-
-  if (resolved.type === 'not_found') {
-    return { error: `Workflow not found: ${name}` };
-  }
-
-  if (resolved.type === 'inline') {
-    return { error: 'Cannot get info for inline workflows' };
-  }
-
-  try {
-    const content = JSON.parse(fs.readFileSync(resolved.path, 'utf8'));
-    return {
-      name: content.name || name,
-      description: content.description || '',
-      args: content.args || {},
-      steps: content.steps || [],
-      path: resolved.path,
-    };
-  } catch (e) {
-    return { error: `Failed to parse workflow: ${e.message}` };
-  }
-}
-
-/**
- * Validate workflow args against schema
- * @param {object} workflow - Workflow with args schema
- * @param {object} providedArgs - User-provided args
- * @returns {string[]} - Array of error messages
- */
-function validateWorkflowArgs(workflow, providedArgs) {
-  const errors = [];
-  if (workflow.args) {
-    for (const [name, spec] of Object.entries(workflow.args)) {
-      if (spec.required && providedArgs[name] === undefined) {
-        errors.push(`Missing required argument: --${name}`);
-      }
-    }
-  }
-  return errors;
-}
-
-/**
- * Apply default values to workflow args
- * @param {object} workflow - Workflow with args schema
- * @param {object} providedArgs - User-provided args
- * @returns {object} - Args with defaults applied
- */
-function applyArgDefaults(workflow, providedArgs) {
-  const vars = { ...providedArgs };
-  if (workflow.args) {
-    for (const [name, spec] of Object.entries(workflow.args)) {
-      if (vars[name] === undefined && spec.default !== undefined) {
-        vars[name] = spec.default;
-      }
-    }
-  }
-  return vars;
-}
-
-/**
- * Validate a workflow JSON file
- * @param {string} filePath - Path to workflow file
- * @returns {{ valid: boolean, error?: string, workflow?: object }}
- */
-function validateWorkflowFile(filePath) {
-  if (!fs.existsSync(filePath)) {
-    return { valid: false, error: `File not found: ${filePath}` };
-  }
-
-  try {
-    const content = fs.readFileSync(filePath, 'utf8');
-    const workflow = JSON.parse(content);
-
-    // Basic structure validation
-    if (!workflow.steps || !Array.isArray(workflow.steps)) {
-      return { valid: false, error: "Workflow must have a 'steps' array" };
-    }
-
-    if (workflow.steps.length === 0) {
-      return { valid: false, error: "Workflow has no steps" };
-    }
-
-    // Validate each step
-    for (let i = 0; i < workflow.steps.length; i++) {
-      const step = workflow.steps[i];
-
-      // Check for loops
-      if (step.repeat !== undefined || step.each !== undefined) {
-        if (!step.steps || !Array.isArray(step.steps)) {
-          return { valid: false, error: `Step ${i + 1}: loop must have a 'steps' array` };
-        }
-        continue;
-      }
-
-      // Regular step must have tool/cmd
-      if (!step.tool && !step.cmd) {
-        return { valid: false, error: `Step ${i + 1}: must have 'tool' field` };
-      }
-    }
-
-    // Validate args schema if present
-    if (workflow.args && typeof workflow.args !== 'object') {
-      return { valid: false, error: "'args' must be an object" };
-    }
-
-    return { valid: true, workflow };
-  } catch (e) {
-    return { valid: false, error: `Invalid JSON: ${e.message}` };
-  }
-}
-
-/**
- * Format a step for display
- * @param {object} step - Workflow step
- * @param {number} indent - Indentation level
- * @returns {string}
- */
-function formatStep(step, indent = 0) {
-  const pad = '  '.repeat(indent);
-
-  if (step.repeat !== undefined) {
-    const lines = [`${pad}repeat ${step.repeat} times:`];
-    for (const s of step.steps || []) {
-      lines.push(formatStep(s, indent + 1));
-    }
-    if (step.until) {
-      lines.push(`${pad}  until: ${step.until.tool || step.until.cmd}`);
-    }
-    return lines.join('\n');
-  }
-
-  if (step.each !== undefined) {
-    const lines = [`${pad}each ${step.each} as ${step.as || 'item'}:`];
-    for (const s of step.steps || []) {
-      lines.push(formatStep(s, indent + 1));
-    }
-    return lines.join('\n');
-  }
-
-  const tool = step.tool || step.cmd;
-  const args = step.args || {};
-  const argStr = Object.entries(args)
-    .map(([k, v]) => `${k}=${JSON.stringify(v)}`)
-    .join(' ');
-
-  let line = `${pad}${tool}`;
-  if (argStr) line += ` ${argStr}`;
-  if (step.as) line += ` → ${step.as}`;
-
-  return line;
 }
 
 // Cross-platform image resize (macOS: sips, Linux: ImageMagick)
@@ -384,6 +151,32 @@ try {
 } catch (error) {
   console.error(`Error: ${error.message}`);
   process.exit(1);
+}
+
+let playbookArgs = args;
+let providerPlaybookSugar = false;
+if (args[0] === "chatgpt" && args[1] && !args.includes("--file") && !args.includes("--with-page")) {
+  providerPlaybookSugar = true;
+  playbookArgs = ["use", "chatgpt", "ask", "--prompt", args[1], "--pin-built-in", ...args.slice(2)];
+}
+if (["playbook", "pb", "use"].includes(playbookArgs[0])) {
+  if (playbookCommandNeedsBrowser(playbookArgs)) {
+    installBrowserLock(parseBrowserLockOptions(playbookArgs.includes("--no-lock")), endpoint);
+  }
+  handlePlaybookCli(playbookArgs, { endpoint, cwd: process.cwd() })
+    .then((result) => {
+      if (!result.handled) throw new Error("Playbook command was not handled");
+      if (result.value !== undefined) {
+        const output = providerPlaybookSugar && !result.json ? result.value?.value : result.value;
+        console.log(formatPlaybookOutput(output, result.json));
+      }
+      process.exit(0);
+    })
+    .catch((error) => {
+      console.error(`Error: ${error.message}`);
+      process.exit(1);
+    });
+  return;
 }
 
 const ALIASES = {
@@ -951,6 +744,9 @@ const TOOLS = {
           all: "Show all (no limit)",
           v: "Verbose output",
           vv: "Very verbose output",
+          "body-mode": "Response bodies: none, text, or all (default: text)",
+          "per-body-bytes": "Maximum captured bytes per response body",
+          "total-body-bytes": "Maximum captured response-body bytes per tab session",
           clear: "Clear after reading",
           stream: "Continuous output"
         },
@@ -1015,9 +811,17 @@ const TOOLS = {
       "network.export": {
         desc: "Export captured requests",
         args: [],
-        opts: { jsonl: "Export as JSONL", output: "Output file path" },
+        opts: {
+          har: "Export as HAR 1.2",
+          jsonl: "Export as JSONL",
+          output: "Output file path",
+          "body-mode": "Response bodies: none, text, or all (default: text)",
+          "per-body-bytes": "Maximum captured bytes per response body",
+          "total-body-bytes": "Maximum captured response-body bytes per tab session",
+        },
         examples: [
-          { cmd: "network.export --jsonl --output /tmp/requests.jsonl", desc: "Export as JSONL" }
+          { cmd: "network.export --jsonl --output /tmp/requests.jsonl", desc: "Export as JSONL" },
+          { cmd: "network.export --har --output /tmp/requests.har", desc: "Export as HAR" },
         ]
       },
       "network.path": {
@@ -1760,6 +1564,10 @@ const showFullHelp = () => {
 
 Usage: surf <command> [args] [options]
 
+Playbooks:
+  surf playbook|pb <list|show|ops|run|record|suggest|save|client|trace>
+  surf use <playbook> <op> [--arg value]
+
 `);
   for (const [groupName, group] of Object.entries(TOOLS)) {
     console.log(`${groupName.toUpperCase()} - ${group.desc}`);
@@ -2402,9 +2210,7 @@ if (args[0] === "do") {
 
     // Process workflow file if loaded
     if (workflow) {
-      if (!workflow.steps || !Array.isArray(workflow.steps)) {
-        throw new Error("Workflow must have a 'steps' array");
-      }
+      workflow = normalizeWorkflow(workflow);
 
       // Validate required args
       const argErrors = validateWorkflowArgs(workflow, workflowArgs);
@@ -2424,30 +2230,7 @@ if (args[0] === "do") {
         process.exit(1);
       }
 
-      // Convert steps: support both { tool, args } and { cmd, args } formats
-      // Also preserve loop steps as-is
-      steps = workflow.steps.map(s => {
-        if (s.repeat !== undefined || s.each !== undefined) {
-          // Loop step - convert nested steps recursively
-          const convertSteps = (stepsArr) => stepsArr.map(ns => {
-            if (ns.repeat !== undefined || ns.each !== undefined) {
-              // Recursively convert nested loop steps and until condition
-              return {
-                ...ns,
-                steps: convertSteps(ns.steps || []),
-                until: ns.until ? { cmd: ns.until.tool || ns.until.cmd, args: ns.until.args || {} } : undefined
-              };
-            }
-            return { cmd: ns.tool || ns.cmd, args: ns.args || {}, as: ns.as };
-          });
-          return {
-            ...s,
-            steps: convertSteps(s.steps || []),
-            until: s.until ? { cmd: s.until.tool || s.until.cmd, args: s.until.args || {} } : undefined
-          };
-        }
-        return { cmd: s.tool || s.cmd, args: s.args || {}, as: s.as };
-      });
+      steps = workflow.steps;
     }
   } catch (e) {
     console.error(`Error: Failed to parse workflow: ${e.message}`);
@@ -2949,8 +2732,8 @@ if (toolArgs["window-id"] !== undefined) {
   delete toolArgs["window-id"];
 }
 if (toolArgs["network-path"] !== undefined) {
-  networkStore.setBasePath(toolArgs["network-path"]);
-  delete toolArgs["network-path"];
+  console.error("Error: --network-path cannot configure browser-host persistence; set SURF_NETWORK_PATH in the native host environment");
+  process.exit(1);
 }
 const wantJson = toolArgs.json === true;
 delete toolArgs.json;

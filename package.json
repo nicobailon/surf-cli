@@ -28,6 +28,7 @@
   },
   "files": [
     "native/",
+    "playbooks/",
     "scripts/",
     "dist/",
     "skills/",

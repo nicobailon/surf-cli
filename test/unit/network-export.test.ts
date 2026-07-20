@@ -25,9 +25,9 @@ describe("network export serialization", () => {
       id: "r-1",
       ts: 1700000000000,
       method: "POST",
-      url: "https://example.test/api",
+      url: "https://example.test/api?q=surf",
       origin: "https://example.test",
-      requestHeaders: { accept: "application/json" },
+      requestHeaders: { accept: "application/json", "content-type": "text/plain" },
       requestBody: "body",
       requestBodySize: 4,
       status: 201,
@@ -38,6 +38,7 @@ describe("network export serialization", () => {
       mimeType: "application/json",
       duration: 25,
       ttfb: 10,
+      bodyCapture: { mode: "text", complete: true, capturedBytes: 11 },
       _requestId: "secret-request-id",
       _responseReceived: true,
       _loadingFinished: true,
@@ -64,8 +65,23 @@ describe("network export serialization", () => {
     expect(har.log.version).toBe("1.2");
     expect(har.log.creator.name).toBe("surf-cli");
     expect(har.log.entries[0].request.method).toBe("POST");
+    expect(har.log.entries[0].request.queryString).toEqual([{ name: "q", value: "surf" }]);
+    expect(har.log.entries[0].request.postData.mimeType).toBe("text/plain");
     expect(har.log.entries[0].response.status).toBe(201);
+    expect(har.log.entries[0].response.content._surfBodyCapture).toEqual({
+      mode: "text",
+      complete: true,
+      capturedBytes: 11,
+    });
     expect((await fs.stat(output)).mode & 0o777).toBe(0o600);
+  });
+
+  it("creates missing export parent directories", async () => {
+    const directory = await tempDir();
+    const output = path.join(directory, "nested", "capture.har");
+    const result = exporter.writeNetworkExport(output, entries, "har");
+    expect(result.path).toBe(output);
+    expect(JSON.parse(await fs.readFile(output, "utf8")).log.entries).toHaveLength(1);
   });
 
   it("does not let __proto__ entries influence HAR fields", () => {
@@ -73,6 +89,16 @@ describe("network export serialization", () => {
     const har = JSON.parse(exporter.serializeNetworkExport([entry], "har"));
     expect(har.log.entries[0].request.url).toBe("");
     expect(JSON.stringify(har)).not.toContain("hidden");
+  });
+
+  it("marks encoded response bodies as base64 in HAR", () => {
+    const har = JSON.parse(
+      exporter.serializeNetworkExport(
+        [{ ...entries[0], responseBody: "AAEC", responseBodyEncoding: "base64" }],
+        "har",
+      ),
+    );
+    expect(har.log.entries[0].response.content.encoding).toBe("base64");
   });
 
   it("rejects unsupported formats", () => {
