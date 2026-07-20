@@ -1,45 +1,13 @@
 const fs = require("fs");
+const http = require("http");
 const path = require("path");
+const { execFile } = require("child_process");
 const { atomicWriteFile, atomicWriteJson, ensurePrivateDir } = require("./private-state.cjs");
 const { resolveOp } = require("./playbooks.cjs");
 const { readRecord, recordsRoot } = require("./playbook-records.cjs");
 const { getPrivateStateRoot, readPrivateJson } = require("./private-state.cjs");
+const { assertNoEmbeddedSecrets, assertUrlHasNoEmbeddedSecrets, safeHeaders } = require("./redaction.cjs");
 const { version: PACKAGE_VERSION } = require("../package.json");
-
-const SECRET_HEADERS = new Set(["authorization", "cookie", "proxy-authorization", "set-cookie", "x-api-key"]);
-
-function safeHeaders(headers = {}) {
-  return Object.fromEntries(Object.entries(headers).filter(([name]) => !SECRET_HEADERS.has(name.toLowerCase())));
-}
-
-function isTemplate(value) {
-  return typeof value === "string" && /\{\{[a-zA-Z0-9._-]+\}\}/.test(value);
-}
-
-function assertNoEmbeddedSecrets(value, key = "") {
-  if (Array.isArray(value)) {
-    for (const item of value) assertNoEmbeddedSecrets(item, key);
-    return;
-  }
-  if (value && typeof value === "object") {
-    for (const [name, item] of Object.entries(value)) assertNoEmbeddedSecrets(item, name);
-    return;
-  }
-  if (typeof value !== "string" || isTemplate(value)) return;
-  if (/(?:^|[-_])(authorization|cookie|password|secret|token|api[-_]?key)(?:$|[-_])/i.test(key) && value) {
-    throw new Error(`client projection requires an auth input instead of a literal ${key}`);
-  }
-  if (/\bbearer\s+[a-z0-9._~-]+|\bsk-[a-z0-9_-]{12,}|\bgh[pousr]_[a-z0-9_]{12,}|\beyj[a-z0-9_-]+\.[a-z0-9_-]+\.[a-z0-9_-]+/i.test(value)) {
-    throw new Error("client projection contains a credential-like literal");
-  }
-}
-
-function assertUrlHasNoEmbeddedSecrets(url) {
-  if (typeof url !== "string") return;
-  let parsed;
-  try { parsed = new URL(url, "https://surf.invalid"); } catch { return; }
-  for (const [name, value] of parsed.searchParams) assertNoEmbeddedSecrets(value, name);
-}
 
 function absoluteEndpointUrl(url, origins = []) {
   if (typeof url !== "string" || !url) throw new Error("client projection requires an endpoint URL");
@@ -87,7 +55,7 @@ const template = (value) => typeof value === "string"
   : value && typeof value === "object" ? Object.fromEntries(Object.entries(value).map(([key, item]) => [key, template(item)]))
   : value;
 const endpoint = template(manifest.endpoint);
-const url = new URL(endpoint.url);
+const url = new URL(process.env.SURF_CLIENT_ENDPOINT_URL || endpoint.url);
 for (const [name, value] of Object.entries(endpoint.query || {})) url.searchParams.set(name, String(value));
 const headers = { ...(endpoint.headers || {}) };
 for (const input of manifest.authInputs || []) {
@@ -102,12 +70,22 @@ const response = await fetch(url, {
 });
 const text = await response.text();
 if (!response.ok) throw new Error(\`HTTP \${response.status}: \${text.slice(0, 500)}\`);
-let output = text;
-try { output = JSON.parse(text); } catch {}
+let bodyJson;
+try { bodyJson = JSON.parse(text); } catch {}
+let output = manifest.extract ? {
+  status: response.status,
+  ok: response.ok,
+  url: response.url,
+  headers: Object.fromEntries(response.headers.entries()),
+  body: text,
+  bodyJson,
+} : bodyJson ?? text;
 if (manifest.extract?.jsonPath) {
-  for (const part of manifest.extract.jsonPath.replace(/^\\$\\.?/, "").split(".").filter(Boolean)) output = output[part];
+  output = bodyJson ?? output;
+  for (const part of manifest.extract.jsonPath.replace(/^\\$\\.?/, "").split(".").filter(Boolean)) output = output?.[part];
 }
-process.stdout.write(typeof output === "string" ? output : JSON.stringify(output, null, 2));
+if (manifest.extract?.field) output = output?.[manifest.extract.field];
+process.stdout.write(output === undefined ? "" : typeof output === "string" ? output : JSON.stringify(output, null, 2));
 process.stdout.write("\\n");
 `;
 }
@@ -164,14 +142,91 @@ function deriveClient(site, opId, out, options = {}) {
   const record = options.recordId ? readRecord(options.recordId, root) : findRecord(site, opId, root);
   if (!record) throw new Error(`no record found for ${site} ${opId}`);
   const trace = readPrivateJson(path.join(recordsRoot(root), record.id, "network", "trace.json"), null, { root });
-  const entry = trace?.entries?.findLast((candidate) => ["GET", "HEAD"].includes(candidate.method) && candidate.status >= 200 && candidate.status < 400);
+  const candidates = (trace?.entries || []).filter((candidate) => ["GET", "HEAD"].includes(candidate.method) && candidate.status >= 200 && candidate.status < 400);
+  const entry = options.requestId
+    ? candidates.find((candidate) => candidate.id === options.requestId || candidate._requestId === options.requestId)
+    : candidates.length === 1 ? candidates[0] : null;
+  if (!options.requestId && candidates.length > 1) throw new Error(`record ${record.id} has multiple read endpoints; pass --request-id`);
   if (!entry) throw new Error(`record ${record.id} has no validated read endpoint`);
   const op = { id: opId, effect: "read", run: [] };
   const strategy = { using: "network", request: { method: entry.method, url: entry.url, headers: safeHeaders(entry.requestHeaders) } };
   return generateClient({ playbookId: site, op, strategy, provenance: { type: "record", recordId: record.id }, out });
 }
 
-async function verifyClient(directory, { fetchImpl = globalThis.fetch, live } = {}) {
+function collectTemplateArgs(value, names = new Set()) {
+  if (typeof value === "string") {
+    for (const match of value.matchAll(/\{\{([a-zA-Z0-9._-]+)\}\}/g)) names.add(match[1]);
+  } else if (Array.isArray(value)) {
+    for (const item of value) collectTemplateArgs(item, names);
+  } else if (value && typeof value === "object") {
+    for (const item of Object.values(value)) collectTemplateArgs(item, names);
+  }
+  return names;
+}
+
+function clientArgs(manifest) {
+  return [...collectTemplateArgs(manifest.endpoint)].flatMap((name) => [`--${name}`, "verify"]);
+}
+
+function authEnv(manifest, live) {
+  const env = {};
+  for (const input of manifest.authInputs || []) {
+    if (!input.env) continue;
+    if (live) {
+      if (process.env[input.env] !== undefined) env[input.env] = process.env[input.env];
+    } else env[input.env] = "verify-token";
+  }
+  return env;
+}
+
+function verificationBody(manifest) {
+  if (manifest.extract?.field === "body") return "verified";
+  return JSON.stringify({ ok: true, body: "verified", data: "verified", items: ["verified"] });
+}
+
+function runClient(resolved, manifest, { env = {}, live = false } = {}) {
+  return new Promise((resolve, reject) => {
+    execFile(process.execPath, [path.join(resolved, "client.mjs"), ...clientArgs(manifest)], {
+      cwd: resolved,
+      env: { ...process.env, ...authEnv(manifest, live), ...env },
+      encoding: "utf8",
+      timeout: 30000,
+    }, (error, stdout, stderr) => {
+      if (error) {
+        error.message = stderr || error.message;
+        reject(error);
+      } else resolve(stdout);
+    });
+  });
+}
+
+async function verifyWithLocalServer(resolved, manifest) {
+  let requests = 0;
+  const server = http.createServer((request, response) => {
+    requests++;
+    if (request.method !== manifest.endpoint.method) {
+      response.writeHead(405);
+      response.end("wrong method");
+      return;
+    }
+    const body = verificationBody(manifest);
+    response.writeHead(manifest.verification?.status || 200, { "content-type": body.startsWith("{") ? "application/json" : "text/plain" });
+    response.end(body);
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  try {
+    const address = server.address();
+    const stdout = await runClient(resolved, manifest, {
+      env: { SURF_CLIENT_ENDPOINT_URL: `http://127.0.0.1:${address.port}/verify` },
+    });
+    if (requests === 0) throw new Error("generated client did not call its verification endpoint");
+    return { requests, stdout: stdout.trim() };
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+  }
+}
+
+async function verifyClient(directory, { live } = {}) {
   const resolved = path.resolve(directory);
   const manifest = JSON.parse(fs.readFileSync(path.join(resolved, "surf-client.json"), "utf8"));
   const source = fs.readFileSync(path.join(resolved, "client.mjs"), "utf8");
@@ -179,14 +234,8 @@ async function verifyClient(directory, { fetchImpl = globalThis.fetch, live } = 
   if (!manifest.noEmbeddedSecrets || /bearer [a-z0-9._-]+|cookie:\s*[^<]|authorization\s*[:=]\s*["'][^<]/i.test(serialized)) throw new Error("generated client contains embedded credentials");
   if (!manifest.endpoint?.method || !manifest.endpoint?.url) throw new Error("generated client endpoint is incomplete");
   absoluteEndpointUrl(manifest.endpoint.url);
-  let liveResult = null;
-  if (live === true || (live !== false && manifest.verification?.url)) {
-    const response = await fetchImpl(manifest.verification?.url || manifest.endpoint.url, { method: manifest.endpoint.method, headers: manifest.endpoint.headers });
-    const expected = manifest.verification?.status || 200;
-    if (response.status !== expected) throw new Error(`client verification expected HTTP ${expected}, got ${response.status}`);
-    liveResult = { status: response.status };
-  }
-  return { valid: true, playbook: manifest.playbook, op: manifest.op, endpoint: manifest.endpoint, live: liveResult };
+  const execution = live ? { stdout: (await runClient(resolved, manifest, { live: true })).trim() } : await verifyWithLocalServer(resolved, manifest);
+  return { valid: true, playbook: manifest.playbook, op: manifest.op, endpoint: manifest.endpoint, execution };
 }
 
 module.exports = { absoluteEndpointUrl, deriveClient, exportClient, generateClient, safeHeaders, verifyClient };

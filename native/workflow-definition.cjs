@@ -1,6 +1,7 @@
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
+const { isSensitiveName, redactSensitiveFields } = require("./redaction.cjs");
 
 const COMMANDS = {
   ai: { primaryArg: "query", effect: "read", argKinds: { query: "user-input" }, sensitiveArgs: ["query"] },
@@ -9,9 +10,20 @@ const COMMANDS = {
   perplexity: { primaryArg: "query", effect: "page-write", argKinds: { query: "user-input" }, sensitiveArgs: ["query"] },
   grok: { primaryArg: "query", effect: "page-write", argKinds: { query: "user-input" }, sensitiveArgs: ["query"] },
   navigate: { primaryArg: "url", effect: "navigation", argKinds: { url: "url" } },
+  go: { primaryArg: "url", effect: "navigation", argKinds: { url: "url" } },
+  back: { effect: "navigation" },
+  forward: { effect: "navigation" },
+  reload: { effect: "navigation" },
   js: { primaryArg: "code", effect: "unknown", recordable: false, argKinds: { code: "code" }, sensitiveArgs: ["code"] },
   javascript_tool: { primaryArg: "code", effect: "unknown", recordable: false, argKinds: { code: "code" }, sensitiveArgs: ["code"] },
+  click: { effect: "page-write", argKinds: { ref: "element-ref", selector: "selector", x: "number", y: "number" } },
   key: { primaryArg: "key", effect: "page-write", argKinds: { key: "key" } },
+  submit: { effect: "page-write" },
+  hover: { effect: "read", argKinds: { ref: "element-ref", selector: "selector" } },
+  scroll: { effect: "page-write", argKinds: { direction: "name", scroll_pixels: "number" } },
+  "scroll.top": { effect: "page-write", argKinds: { selector: "selector" } },
+  "scroll.bottom": { effect: "page-write", argKinds: { selector: "selector" } },
+  "scroll.info": { effect: "read", argKinds: { selector: "selector" } },
   wait: { primaryArg: "duration", effect: "read", recordable: false, argKinds: { duration: "duration" } },
   health: { primaryArg: "url", effect: "read", argKinds: { url: "url" } },
   new_tab: { primaryArg: "url", effect: "navigation", argKinds: { url: "url" } },
@@ -39,6 +51,10 @@ const COMMANDS = {
   "network.body": { primaryArg: "id", effect: "read", argKinds: { id: "request-id" } },
   "network.curl": { primaryArg: "id", effect: "read", argKinds: { id: "request-id" } },
   "network.path": { primaryArg: "id", effect: "read", argKinds: { id: "request-id" } },
+  "page.read": { effect: "read" },
+  "page.text": { effect: "read" },
+  "page.state": { effect: "read" },
+  screenshot: { effect: "read" },
   "window.new": { primaryArg: "url", effect: "navigation", argKinds: { url: "url" } },
   "window.focus": { primaryArg: "id", effect: "navigation", argKinds: { id: "window-id" } },
   "window.close": { primaryArg: "id", effect: "page-write", argKinds: { id: "window-id" } },
@@ -49,6 +65,10 @@ const COMMANDS = {
   "frame.js": { primaryArg: "code", effect: "unknown", recordable: false, argKinds: { code: "code" }, sensitiveArgs: ["code"] },
   "element.styles": { primaryArg: "selector", effect: "read", argKinds: { selector: "selector" } },
   select: { primaryArg: "selector", effect: "page-write", argKinds: { selector: "selector", values: "user-input" }, sensitiveArgs: ["values"] },
+  "form.fill": { effect: "page-write", argKinds: { data: "user-input" }, sensitiveArgs: ["data"] },
+  "dialog.accept": { effect: "page-write", argKinds: { text: "user-input" }, sensitiveArgs: ["text"] },
+  "dialog.dismiss": { effect: "page-write" },
+  "dialog.info": { effect: "read" },
 };
 
 const ALIASES = {
@@ -68,25 +88,25 @@ PRIMARY_ARG_MAP.find = "term";
 
 function commandMetadata(command) {
   const name = ALIASES[command] || command;
-  const metadata = COMMANDS[name] || {};
+  const metadata = COMMANDS[name];
   return {
     name,
-    primaryArg: metadata.primaryArg,
-    effect: metadata.effect || "unknown",
-    recordable: metadata.recordable !== false,
-    argKinds: metadata.argKinds || {},
-    sensitiveArgs: metadata.sensitiveArgs || [],
+    primaryArg: metadata?.primaryArg,
+    effect: metadata?.effect || "unknown",
+    recordable: Boolean(metadata) && metadata.recordable !== false,
+    argKinds: metadata?.argKinds || {},
+    sensitiveArgs: metadata?.sensitiveArgs || [],
   };
 }
 
 function redactCommandArgs(command, args, includeInputValues = false) {
   const metadata = commandMetadata(command);
-  const redacted = { ...(args || {}) };
+  const redacted = redactSensitiveFields({ ...(args || {}) });
   for (const name of metadata.sensitiveArgs) {
     if (!includeInputValues && Object.hasOwn(redacted, name)) redacted[name] = `<${name}>`;
   }
   for (const name of Object.keys(redacted)) {
-    if (/(?:^|[-_])(authorization|cookie|password|secret|token|api[-_]?key)(?:$|[-_])/i.test(name)) redacted[name] = "<redacted>";
+    if (isSensitiveName(name)) redacted[name] = "<redacted>";
   }
   return redacted;
 }

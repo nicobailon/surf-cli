@@ -99,6 +99,49 @@ describe("playbook resolution and strategies", () => {
     expect(op.origins).toEqual(["https://example.test"]);
   });
 
+  it("rejects literal credentials and multi-step write workflows", () => {
+    const validate = (op: unknown) => playbooks.validateOp(op, { origins: [] });
+    expect(() =>
+      validate({
+        id: "read",
+        run: [
+          {
+            using: "network",
+            request: { method: "GET", url: "https://example.test/api?access_token=captured" },
+          },
+        ],
+      }),
+    ).toThrow(/auth input/);
+    expect(() =>
+      validate({
+        id: "mutate",
+        effect: "write",
+        safety: { duplicate: "transactional", key: ["id"] },
+        run: [
+          {
+            using: "workflow",
+            steps: [
+              { tool: "click", args: { selector: "#a" } },
+              { tool: "click", args: { selector: "#b" } },
+            ],
+          },
+        ],
+      }),
+    ).toThrow(/exactly one commit step/);
+    expect(
+      validate({
+        id: "mutate",
+        effect: "write",
+        safety: {
+          duplicate: "transactional",
+          key: ["id"],
+          serverIdempotency: { header: "Idempotency-Key" },
+        },
+        run: [{ using: "workflow", steps: [{ tool: "click", args: { selector: "#submit" } }] }],
+      }).safety.serverIdempotency,
+    ).toEqual({ header: "Idempotency-Key" });
+  });
+
   it("rejects a page-context network request outside the declared origins", async () => {
     const fetchImpl = vi.fn();
     const executeTool = vi.fn(async (_tool: string, args: { code: string }) => {
@@ -149,6 +192,37 @@ describe("playbook resolution and strategies", () => {
     expect(result.value).toBe("value");
   });
 
+  it("injects server idempotency into write network requests", async () => {
+    const executeTool = vi.fn(async (_tool: string, args: { code: string }) => {
+      expect(args.code).toContain('"Idempotency-Key":"attempt-one"');
+      return { output: JSON.stringify({ ok: true, status: 200, bodyJson: { ok: true } }) };
+    });
+    await runtime.runPlaybookOp({
+      playbook: { id: "fixture", provenance: { scope: "test" } },
+      op: {
+        id: "mutate",
+        effect: "write",
+        args: {},
+        safety: {
+          duplicate: "transactional",
+          key: ["id"],
+          serverIdempotency: { header: "Idempotency-Key" },
+        },
+        run: [
+          {
+            using: "network",
+            request: { method: "POST", url: "https://example.test/api" },
+            expect: { truthy: true },
+          },
+        ],
+      },
+      args: {},
+      attemptId: "attempt-one",
+      executeTool,
+    });
+    expect(executeTool).toHaveBeenCalledOnce();
+  });
+
   it("distinguishes pre-dispatch write failures from ambiguous dispatched failures", async () => {
     const statuses: string[] = [];
     await expect(
@@ -185,5 +259,21 @@ describe("playbook resolution and strategies", () => {
       }),
     ).rejects.toThrow(/timeout/);
     expect(statuses).toEqual(["dispatched", "indeterminate"]);
+  });
+
+  it("exports and imports validated playbook directories", () => {
+    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "surf-playbook-project-"));
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), "surf-playbook-home-"));
+    const otherHome = fs.mkdtempSync(path.join(os.tmpdir(), "surf-playbook-home-"));
+    tempDirs.push(cwd, home, otherHome);
+    writePlaybook(cwd, "fixture", "project");
+    const exported = playbooks.exportPlaybookDirectory("fixture", {
+      cwd,
+      home,
+      out: path.join(cwd, "exported-fixture"),
+    });
+    const imported = playbooks.importPlaybookDirectory(exported.directory, { home: otherHome });
+    expect(playbooks.resolvePlaybook("fixture", { home: otherHome }).description).toBe("project");
+    expect(imported.scope).toBe("user");
   });
 });

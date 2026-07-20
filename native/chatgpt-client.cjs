@@ -658,6 +658,7 @@ async function query(options) {
     cdpEvaluate,
     cdpCommand,
     uploadFile,
+    beforeSubmit,
     log = () => {},
     signal,
   } = options;
@@ -729,6 +730,7 @@ async function query(options) {
     await typePrompt(cdp, inputCdp, prompt, signal);
     log("Prompt typed");
     const baseline = normalizeResponseSnapshot(await readChatGPTResponseSnapshot(cdp));
+    if (beforeSubmit) await raceAbort(beforeSubmit, signal);
     await clickSend(cdp, inputCdp, signal);
     log("Prompt sent, waiting for response...");
     const response = await waitForResponse(

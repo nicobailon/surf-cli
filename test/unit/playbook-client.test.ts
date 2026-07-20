@@ -55,7 +55,10 @@ describe("playbook client projection", () => {
     await expect(clients.verifyClient(out, { live: false })).resolves.toMatchObject({
       valid: true,
       endpoint: { method: "POST", url: "https://example.test/search" },
+      execution: { requests: 1 },
     });
+    fs.writeFileSync(path.join(out, "client.mjs"), "process.exit(0);\n");
+    await expect(clients.verifyClient(out, { live: false })).rejects.toThrow(/did not call/);
   });
 
   it("requires a runnable absolute endpoint for standalone clients", () => {

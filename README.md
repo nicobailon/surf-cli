@@ -706,6 +706,8 @@ surf pb record mark "loaded results"
 surf pb record stop --draft
 surf pb save --from-record <record-id>
 surf pb trace export --from-record <record-id> --har ./trace.har
+surf pb export example --out ./example-playbook
+surf pb import ./example-playbook
 ```
 
 Records, traces, receipts, and recent-use journals live under private Surf state. Input values and authentication headers are redacted by default; `--include-input-values` is an explicit recording choice.
@@ -713,7 +715,7 @@ Records, traces, receipts, and recent-use journals live under private Surf state
 Generate a standalone client only from an observed or validated read endpoint:
 
 ```bash
-surf pb client derive example --op read --from-record <record-id> --out ./client
+surf pb client derive example --op read --from-record <record-id> --request-id <request-id> --out ./client
 surf pb client export example --op read --out ./client
 surf pb client verify ./client
 ```

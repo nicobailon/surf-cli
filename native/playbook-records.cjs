@@ -10,6 +10,7 @@ const {
   readPrivateFile,
   readPrivateJson,
 } = require("./private-state.cjs");
+const { redactSensitiveFields, redactUrlSecrets, safeHeaders } = require("./redaction.cjs");
 const { commandMetadata } = require("./workflow-definition.cjs");
 const { version: PACKAGE_VERSION } = require("../package.json");
 
@@ -106,20 +107,20 @@ function readEvents(recordId, root = getPrivateStateRoot()) {
   return content.split("\n").filter(Boolean).map((line) => JSON.parse(line));
 }
 
-function redactHeaders(headers) {
-  if (!headers || typeof headers !== "object") return {};
-  return Object.fromEntries(Object.entries(headers).filter(([name]) => !["authorization", "cookie", "set-cookie", "proxy-authorization"].includes(name.toLowerCase())));
+function sanitizeTraceEntry(entry, includeInputValues = false) {
+  return {
+    ...redactSensitiveFields(entry),
+    url: redactUrlSecrets(entry.url),
+    requestHeaders: safeHeaders(entry.requestHeaders),
+    responseHeaders: safeHeaders(entry.responseHeaders),
+    ...(includeInputValues ? {} : { requestBody: entry.requestBody === undefined ? undefined : "<request-body>" }),
+  };
 }
 
 function attachNetworkTrace(recordId, entries, root = getPrivateStateRoot()) {
   const record = readRecord(recordId, root);
   if (!record) throw new Error(`record not found: ${recordId}`);
-  const sanitized = entries.map((entry) => ({
-    ...entry,
-    requestHeaders: redactHeaders(entry.requestHeaders),
-    responseHeaders: redactHeaders(entry.responseHeaders),
-    ...(record.redaction.includeInputValues ? {} : { requestBody: entry.requestBody === undefined ? undefined : "<request-body>" }),
-  }));
+  const sanitized = entries.map((entry) => sanitizeTraceEntry(entry, record.redaction.includeInputValues));
   const directory = path.join(recordDirectory(recordId, root), "network");
   ensurePrivateDir(directory, root);
   const tracePath = path.join(directory, "trace.json");
@@ -132,11 +133,12 @@ function attachNetworkTrace(recordId, entries, root = getPrivateStateRoot()) {
 function draftFromRecord(recordId, root = getPrivateStateRoot()) {
   const record = readRecord(recordId, root);
   if (!record) throw new Error(`record not found: ${recordId}`);
-  const events = readEvents(recordId, root).filter((event) => event.type === "tool.completed" || event.type === "tool.issued");
+  const events = readEvents(recordId, root).filter((event) => event.type === "tool.completed");
   let effect = "read";
   const steps = [];
   for (const event of events) {
     const metadata = commandMetadata(event.command);
+    if (!metadata.recordable) continue;
     if (["page-write", "unknown"].includes(metadata.effect)) effect = "write";
     steps.push({ tool: event.command, args: event.argsRedacted || {} });
   }
@@ -145,7 +147,7 @@ function draftFromRecord(recordId, root = getPrivateStateRoot()) {
   const strategies = [];
   const observed = trace?.entries?.findLast((entry) => ["GET", "HEAD"].includes(entry.method) && entry.status >= 200 && entry.status < 400);
   if (observed) {
-    strategies.push({ using: "network", request: { method: observed.method, url: observed.url, headers: redactHeaders(observed.requestHeaders) } });
+    strategies.push({ using: "network", request: { method: observed.method, url: observed.url, headers: safeHeaders(observed.requestHeaders) } });
   }
   if (steps.length > 0) strategies.push({ using: "workflow", steps });
   if (strategies.length === 0) throw new Error("record has no executable evidence");

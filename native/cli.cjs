@@ -1565,7 +1565,7 @@ const showFullHelp = () => {
 Usage: surf <command> [args] [options]
 
 Playbooks:
-  surf playbook|pb <list|show|ops|run|record|suggest|save|client|trace>
+  surf playbook|pb <list|show|ops|run|record|suggest|save|client|trace|export|import>
   surf use <playbook> <op> [--arg value]
 
 `);

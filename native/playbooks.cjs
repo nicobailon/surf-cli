@@ -2,7 +2,8 @@ const fs = require("fs");
 const os = require("os");
 const path = require("path");
 const { atomicWriteJson } = require("./private-state.cjs");
-const { normalizeStep } = require("./workflow-definition.cjs");
+const { assertNoEmbeddedSecrets, assertUrlHasNoEmbeddedSecrets } = require("./redaction.cjs");
+const { commandMetadata, normalizeStep } = require("./workflow-definition.cjs");
 
 const BUILTIN_DIR = path.join(__dirname, "..", "playbooks");
 const PINNED_BUILTINS = new Set(["chatgpt", "aistudio", "x"]);
@@ -45,17 +46,52 @@ function validateOrigins(origins) {
   });
 }
 
-function validateStrategy(strategy, effect) {
+function validateServerIdempotency(value, opId) {
+  if (value === undefined) return undefined;
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error(`write op ${opId} serverIdempotency must declare a header, query, or body field`);
+  }
+  const result = {};
+  for (const key of ["header", "query", "body"]) {
+    if (value[key] === undefined) continue;
+    if (typeof value[key] !== "string" || !value[key] || /[\r\n]/.test(value[key])) {
+      throw new Error(`write op ${opId} serverIdempotency.${key} must be a string`);
+    }
+    result[key] = value[key];
+  }
+  if (Object.keys(result).length === 0) {
+    throw new Error(`write op ${opId} serverIdempotency must declare a header, query, or body field`);
+  }
+  return result;
+}
+
+function validateWriteWorkflowSteps(steps, opId) {
+  if (steps.length !== 1 || steps[0].repeat !== undefined || steps[0].each !== undefined) {
+    throw new Error(`write op ${opId} workflow strategy must contain exactly one commit step`);
+  }
+  const metadata = commandMetadata(steps[0].cmd);
+  if (metadata.effect !== "page-write") {
+    throw new Error(`write op ${opId} workflow commit step must be page-write`);
+  }
+}
+
+function validateStrategy(strategy, effect, opId) {
   if (!strategy || typeof strategy !== "object" || Array.isArray(strategy)) throw new Error("playbook strategy must be an object");
   if (strategy.using === "workflow") {
     if (!Array.isArray(strategy.steps) || strategy.steps.length === 0) throw new Error("workflow strategy requires steps");
-    return { ...strategy, steps: strategy.steps.map(normalizeStep) };
+    const steps = strategy.steps.map(normalizeStep);
+    if (effect === "write") validateWriteWorkflowSteps(steps, opId);
+    return { ...strategy, steps };
   }
   if (strategy.using === "network") {
     const request = strategy.request;
     if (!request || typeof request !== "object" || typeof request.url !== "string") throw new Error("network strategy requires request.url");
     const method = String(request.method || "GET").toUpperCase();
     if (effect === "read" && !["GET", "HEAD", "OPTIONS"].includes(method)) throw new Error("read ops cannot use a mutating network method");
+    assertUrlHasNoEmbeddedSecrets(request.url);
+    assertNoEmbeddedSecrets(request.headers || {});
+    assertNoEmbeddedSecrets(request.query || {});
+    assertNoEmbeddedSecrets(request.body);
     return { ...strategy, request: { ...request, method } };
   }
   if (strategy.using === "native") {
@@ -76,6 +112,9 @@ function validateOp(value, manifest) {
     if (!value.safety || !["transactional", "repeatable-window"].includes(value.safety.duplicate)) throw new Error(`write op ${id} requires duplicate safety`);
     if (!Array.isArray(value.safety.key) || value.safety.key.length === 0) throw new Error(`write op ${id} requires a semantic safety key`);
     safety = { ...value.safety, authorization: value.safety.authorization || "explicit" };
+    if (value.safety.serverIdempotency !== undefined) {
+      safety.serverIdempotency = validateServerIdempotency(value.safety.serverIdempotency, id);
+    }
     if (!new Set(["explicit", "implicit"]).has(safety.authorization)) throw new Error(`write op ${id} has invalid authorization`);
     if (safety.authorization === "implicit" && safety.duplicate !== "repeatable-window") {
       throw new Error(`implicit write op ${id} must use repeatable-window duplicate safety`);
@@ -91,7 +130,7 @@ function validateOp(value, manifest) {
     effect,
     ...(safety ? { safety } : {}),
     auth: { ...auth, origins },
-    run: value.run.map((strategy) => validateStrategy(strategy, effect)),
+    run: value.run.map((strategy) => validateStrategy(strategy, effect, id)),
     origins,
   };
 }
@@ -159,7 +198,37 @@ function savePlaybook({ manifest, op, scope = "user", cwd = process.cwd(), home 
   return { directory, playbook: validatedManifest.id, op: validatedOp.id, scope };
 }
 
+function writePlaybookDirectory(directory, playbook) {
+  if (fs.existsSync(directory)) throw new Error(`playbook output already exists: ${directory}`);
+  fs.mkdirSync(path.join(directory, "ops"), { recursive: true });
+  const { ops, ...manifest } = playbook;
+  delete manifest.directory;
+  delete manifest.provenance;
+  atomicWriteJson(path.join(directory, "playbook.json"), manifest);
+  for (const op of ops.values()) atomicWriteJson(path.join(directory, "ops", `${op.id}.json`), op);
+}
+
+function exportPlaybookDirectory(playbookId, { out, cwd = process.cwd(), home = os.homedir() } = {}) {
+  if (typeof out !== "string" || !out) throw new Error("playbook export requires --out <directory>");
+  const playbook = resolvePlaybook(playbookId, { cwd, home });
+  const directory = path.resolve(out);
+  writePlaybookDirectory(directory, playbook);
+  return { playbook: playbook.id, directory };
+}
+
+function importPlaybookDirectory(source, { scope = "user", cwd = process.cwd(), home = os.homedir() } = {}) {
+  if (scope !== "user" && scope !== "project") throw new Error("playbook import scope must be user or project");
+  if (typeof source !== "string" || !source) throw new Error("playbook import requires a directory");
+  const playbook = loadPlaybookDirectory(path.resolve(source), "import");
+  const base = playbookDirs({ cwd, home }).find((entry) => entry.scope === scope).path;
+  const directory = path.join(base, playbook.id);
+  writePlaybookDirectory(directory, playbook);
+  return { playbook: playbook.id, directory, scope };
+}
+
 module.exports = {
+  exportPlaybookDirectory,
+  importPlaybookDirectory,
   listPlaybooks,
   resolveOp,
   resolvePlaybook,

@@ -70,7 +70,10 @@ function reserveReceipt({ playbookId, op, args, repeat = false, retryAttempt, ov
     if (retryAttempt) {
       const retry = existing.find((attempt) => attempt.attemptId === retryAttempt);
       if (!retry) throw new Error(`receipt attempt not found: ${retryAttempt}`);
-      if (!op.safety.serverIdempotency) throw new Error("--retry-attempt requires declared server idempotency");
+      if (retry.status === "verified") throw new Error(`receipt attempt is already verified: ${retryAttempt}`);
+      if (retry.status !== "reserved" && retry.status !== "not_dispatched" && !op.safety.serverIdempotency) {
+        throw new Error("--retry-attempt after dispatch requires declared server idempotency");
+      }
       return { claimKey, claimDir, attemptId: retryAttempt, path: path.join(claimDir, `${retryAttempt}.json`), receipt: retry };
     }
     if (latest) {

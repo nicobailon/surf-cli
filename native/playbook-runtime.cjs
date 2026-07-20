@@ -51,6 +51,21 @@ function verifyResult(value, expect = {}, raw = value) {
   return true;
 }
 
+function withServerIdempotency(request, idempotency, attemptId) {
+  if (!idempotency || !attemptId) return request;
+  const next = { ...request };
+  if (idempotency.header) next.headers = { ...(request.headers || {}), [idempotency.header]: attemptId };
+  if (idempotency.query) next.query = { ...(request.query || {}), [idempotency.query]: attemptId };
+  if (idempotency.body) {
+    if (next.body === undefined) next.body = {};
+    if (!next.body || typeof next.body !== "object" || Array.isArray(next.body)) {
+      throw new Error("server idempotency body field requires an object request body");
+    }
+    next.body = { ...next.body, [idempotency.body]: attemptId };
+  }
+  return next;
+}
+
 function networkScript(request, allowedOrigins = []) {
   const headers = request.headers || {};
   const query = request.query || {};
@@ -96,7 +111,11 @@ async function runStrategy(strategy, context) {
     return result;
   }
   if (strategy.using === "network") {
-    const request = applyTemplate(strategy.request, context.args);
+    const request = withServerIdempotency(
+      applyTemplate(strategy.request, context.args),
+      context.serverIdempotency,
+      context.attemptId,
+    );
     await context.markDispatched?.();
     const response = await context.executeTool("javascript_tool", { code: networkScript(request, context.allowedOrigins) }, { signal: context.signal });
     if (response?.error) throw new Error(typeof response.error === "string" ? response.error : JSON.stringify(response.error));
@@ -106,13 +125,12 @@ async function runStrategy(strategy, context) {
   }
   if (strategy.using === "native") {
     if (typeof context.executeNative !== "function") throw new Error("native strategy is not available");
-    await context.markDispatched?.();
-    return context.executeNative(strategy.handler, context.args, { signal: context.signal });
+    return context.executeNative(strategy.handler, context.args, { signal: context.signal, markDispatched: context.markDispatched });
   }
   throw new Error(`unsupported strategy: ${strategy.using}`);
 }
 
-async function runPlaybookOp({ playbook, op, args: providedArgs = {}, executeTool, executeNative, signal, sleep, onEvent = () => {}, beforeDispatch = async () => {}, afterDispatch = async () => {} }) {
+async function runPlaybookOp({ playbook, op, args: providedArgs = {}, attemptId, executeTool, executeNative, signal, sleep, onEvent = () => {}, beforeDispatch = async () => {}, afterDispatch = async () => {} }) {
   const args = resolveArgs(op, providedArgs);
   const attempts = [];
   for (let index = 0; index < op.run.length; index++) {
@@ -125,7 +143,18 @@ async function runPlaybookOp({ playbook, op, args: providedArgs = {}, executeToo
     };
     onEvent({ type: "strategy.started", playbook: playbook.id, op: op.id, using: strategy.using, index, startedAt: new Date().toISOString() });
     try {
-      const raw = await runStrategy(strategy, { args, executeTool, executeNative, signal, sleep, onEvent, allowedOrigins: op.origins || playbook.origins || [], markDispatched: op.effect === "write" ? markDispatched : undefined });
+      const raw = await runStrategy(strategy, {
+        args,
+        attemptId,
+        executeTool,
+        executeNative,
+        signal,
+        sleep,
+        onEvent,
+        allowedOrigins: op.origins || playbook.origins || [],
+        markDispatched: op.effect === "write" ? markDispatched : undefined,
+        serverIdempotency: op.effect === "write" ? op.safety?.serverIdempotency : undefined,
+      });
       const value = extractResult(raw, strategy.extract);
       verifyResult(value, strategy.verify || strategy.expect || op.on?.success?.expect, raw);
       if (op.effect === "write") await afterDispatch({ status: "verified", strategy, index });

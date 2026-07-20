@@ -50,6 +50,54 @@ describe("activity and explicit record evidence", () => {
     expect(stopped.draft.run[0]).toMatchObject({ using: "workflow" });
   });
 
+  it("redacts nested activity and trace credentials before drafting", () => {
+    const root = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "surf-records-")), "state");
+    roots.push(path.dirname(root));
+    journal.journalCommand(
+      "form.fill",
+      { data: [{ selector: "#email", value: "top secret" }] },
+      { root },
+    );
+    journal.journalCommand("unknown.tool", { text: "do not record" }, { root });
+    const recent = fs.readFileSync(journal.journalPath(root), "utf8");
+    expect(recent).not.toContain("top secret");
+    expect(recent).not.toContain("do not record");
+
+    const record = records.startRecord({ site: "fixture", op: "read", root });
+    records.appendRecordEvent(
+      { type: "tool.issued", command: "click", argsRedacted: { selector: "#go" } },
+      { root },
+    );
+    records.appendRecordEvent(
+      { type: "tool.completed", command: "click", argsRedacted: { selector: "#go" } },
+      { root },
+    );
+    records.attachNetworkTrace(
+      record.id,
+      [
+        {
+          id: "r-1",
+          method: "GET",
+          status: 200,
+          url: "https://example.test/api?access_token=captured-secret&q=ok",
+          requestHeaders: { "x-api-key": "captured-secret", accept: "application/json" },
+          responseHeaders: { "set-cookie": "sid=captured-secret" },
+          requestBody: "captured-secret",
+        },
+      ],
+      root,
+    );
+    const stopped = records.stopRecord({ draft: true, root });
+    const trace = fs.readFileSync(
+      path.join(records.recordsRoot(root), record.id, "network", "trace.json"),
+      "utf8",
+    );
+    expect(trace).not.toContain("captured-secret");
+    expect(
+      stopped.draft.run.find((strategy: { using: string }) => strategy.using === "workflow").steps,
+    ).toHaveLength(1);
+  });
+
   it("does not turn recent or recorded page writes into an unreviewed read op", () => {
     const root = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "surf-records-")), "state");
     roots.push(path.dirname(root));

@@ -139,6 +139,7 @@ export class CDPController {
   private networkEntrySeq = 0; // Sequence counter for unique IDs
   private networkBodyBytes: Map<number, number> = new Map();
   private networkCapture: Map<number, { mode: "none" | "text" | "all"; perBodyBytes: number; totalBytes: number }> = new Map();
+  private networkEventQueue: Map<number, Promise<void>> = new Map();
   private static debuggerListenerRegistered = false;
 
   // Body fetch settings
@@ -219,7 +220,7 @@ export class CDPController {
       const tabId = source.tabId;
       if (!tabId || !this.targets.has(tabId)) return;
 
-      this.handleCDPEvent(tabId, method, params);
+      this.enqueueCDPEvent(tabId, method, params);
     });
 
     chrome.debugger.onDetach.addListener((source, reason) => {
@@ -235,6 +236,22 @@ export class CDPController {
         this.networkCallbacks.delete(tabId);
       }
     });
+  }
+
+  private enqueueCDPEvent(tabId: number, method: string, params: any): void {
+    const previous = this.networkEventQueue.get(tabId) || Promise.resolve();
+    const next = previous
+      .catch(() => undefined)
+      .then(() => this.handleCDPEvent(tabId, method, params))
+      .catch(() => undefined);
+    this.networkEventQueue.set(tabId, next);
+    next.finally(() => {
+      if (this.networkEventQueue.get(tabId) === next) this.networkEventQueue.delete(tabId);
+    });
+  }
+
+  async drainNetworkEvents(tabId: number): Promise<void> {
+    await this.networkEventQueue.get(tabId);
   }
 
   private async handleCDPEvent(tabId: number, method: string, params: any): Promise<void> {

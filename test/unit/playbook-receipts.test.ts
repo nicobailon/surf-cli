@@ -71,4 +71,51 @@ describe("playbook write receipts", () => {
       }),
     ).toThrow(/unresolved semantic claim/);
   });
+
+  it("allows same-attempt retry before dispatch and requires idempotency after dispatch", () => {
+    const root = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "surf-receipts-")), "state");
+    roots.push(path.dirname(root));
+    const op = {
+      id: "mutate",
+      effect: "write",
+      safety: { duplicate: "transactional", key: ["resourceId"] },
+    };
+    const first = receipts.reserveReceipt({
+      playbookId: "fixture",
+      op,
+      args: { resourceId: "r1" },
+      attemptId: "attempt-one",
+      root,
+    });
+    receipts.updateReceipt(first, "not_dispatched", {}, root);
+    expect(
+      receipts.reserveReceipt({
+        playbookId: "fixture",
+        op,
+        args: { resourceId: "r1" },
+        retryAttempt: "attempt-one",
+        root,
+      }).attemptId,
+    ).toBe("attempt-one");
+
+    receipts.updateReceipt(first, "indeterminate", { error: "timeout" }, root);
+    expect(() =>
+      receipts.reserveReceipt({
+        playbookId: "fixture",
+        op,
+        args: { resourceId: "r1" },
+        retryAttempt: "attempt-one",
+        root,
+      }),
+    ).toThrow(/server idempotency/);
+    expect(
+      receipts.reserveReceipt({
+        playbookId: "fixture",
+        op: { ...op, safety: { ...op.safety, serverIdempotency: { header: "Idempotency-Key" } } },
+        args: { resourceId: "r1" },
+        retryAttempt: "attempt-one",
+        root,
+      }).attemptId,
+    ).toBe("attempt-one");
+  });
 });

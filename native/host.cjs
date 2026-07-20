@@ -460,7 +460,7 @@ async function executeMappedHostTool(request, tool, args, tabId) {
   return requestCallExtension(request, tool, extensionMsg, resolveRequestDeadlineMs(tool, args));
 }
 
-async function executeNativePlaybook(request, handler, args) {
+async function executeNativePlaybook(request, handler, args, options = {}) {
   if (handler !== "chatgpt.ask") throw new Error(`unknown native playbook handler: ${handler}`);
   const result = await chatgptClient.query({
     prompt: args.prompt,
@@ -472,6 +472,7 @@ async function executeNativePlaybook(request, handler, args) {
     closeTab: (tabId) => requestCallExtension(request, "close_tab", { type: "CHATGPT_CLOSE_TAB", tabId }, 45000, true),
     cdpEvaluate: (tabId, expression) => requestCallExtension(request, "cdp_evaluate", { type: "CHATGPT_EVALUATE", tabId, expression }),
     cdpCommand: (tabId, method, params) => requestCallExtension(request, "cdp_command", { type: "CHATGPT_CDP_COMMAND", tabId, method, params }),
+    beforeSubmit: options.markDispatched,
     log: (message) => log(`[playbook:chatgpt] ${message}`),
   });
   return { response: result.response, model: result.model, tookMs: result.tookMs };
@@ -503,9 +504,10 @@ async function runHostPlaybook(msg, request) {
     playbook,
     op,
     args: runArgs,
+    attemptId: receipt?.attemptId,
     signal: request.signal,
     executeTool: (tool, args) => executeMappedHostTool(request, tool, args, msg.tabId),
-    executeNative: (handler, args) => executeNativePlaybook(request, handler, args),
+    executeNative: (handler, args, options) => executeNativePlaybook(request, handler, args, options),
     sleep: (ms) => require("./abort.cjs").abortableDelay(ms, request.signal),
     onEvent: report,
     beforeDispatch: async () => updateReceipt(receipt, "dispatched"),

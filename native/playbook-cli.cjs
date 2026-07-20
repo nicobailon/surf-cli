@@ -1,8 +1,9 @@
 const path = require("path");
 const { openClientTransport } = require("./client-transport.cjs");
+const { resolveRequestDeadlineMs } = require("./host-sessions.cjs");
 const { exportRecordHar, saveFromRecent, saveFromRecord, suggestions } = require("./playbook-authoring.cjs");
 const { deriveClient, exportClient, verifyClient } = require("./playbook-client.cjs");
-const { listPlaybooks, resolvePlaybook } = require("./playbooks.cjs");
+const { exportPlaybookDirectory, importPlaybookDirectory, listPlaybooks, resolvePlaybook } = require("./playbooks.cjs");
 
 function parseCommandArgs(argv) {
   const positional = [];
@@ -52,6 +53,19 @@ function runSpec(argv) {
   return { playbook, op, args, options: parsed.options };
 }
 
+function resolveRunTimeout(spec, cwd) {
+  const explicit = Number(spec.args.timeout);
+  if (Number.isFinite(explicit) && explicit > 0) return explicit;
+  try {
+    const playbook = resolvePlaybook(spec.playbook, { cwd, pinBuiltIn: spec.options["pin-built-in"] === true });
+    const op = playbook.ops.get(spec.op);
+    const value = Number(op?.args?.timeout?.default);
+    return Number.isFinite(value) && value > 0 ? value : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 function playbookCommandNeedsBrowser(argv) {
   if (argv[0] === "use") return true;
   const subcommand = argv[1];
@@ -63,22 +77,28 @@ async function handlePlaybookCli(argv, { endpoint, cwd = process.cwd() }) {
   if (!["playbook", "pb", "use"].includes(argv[0])) return { handled: false };
   if (argv[0] === "use" || argv[1] === "run") {
     const spec = runSpec(argv);
-    const value = await requestHost(endpoint, "playbook.run", {
+    const timeout = resolveRunTimeout(spec, cwd);
+    const args = {
       playbook: spec.playbook,
       op: spec.op,
       args: spec.args,
       projectDir: cwd,
+      ...(timeout ? { timeout } : {}),
       write: spec.options.write === true,
       repeat: spec.options.repeat === true,
       retryAttempt: spec.options["retry-attempt"],
       overrideInDoubt: spec.options["override-in-doubt"] === true,
       pinBuiltIn: spec.options["pin-built-in"] === true,
-    }, { tabId: spec.options["tab-id"] });
+    };
+    const value = await requestHost(endpoint, "playbook.run", args, {
+      tabId: spec.options["tab-id"],
+      timeoutMs: resolveRequestDeadlineMs("playbook.run", args),
+    });
     return { handled: true, value, json: spec.options.json === true };
   }
   const command = argv[1];
   const parsed = parseCommandArgs(argv.slice(2));
-  if (!command || command === "help") return { handled: true, value: "Usage: surf playbook|pb <list|show|ops|run|record|suggest|save|client|trace>" };
+  if (!command || command === "help") return { handled: true, value: "Usage: surf playbook|pb <list|show|ops|run|record|suggest|save|client|trace|export|import>" };
   if (command === "list") return { handled: true, value: listPlaybooks({ cwd }), json: parsed.options.json === true };
   if (command === "show") {
     const playbook = resolvePlaybook(parsed.positional[0], { cwd });
@@ -109,7 +129,7 @@ async function handlePlaybookCli(argv, { endpoint, cwd = process.cwd() }) {
   }
   if (command === "client") {
     const action = parsed.positional[0];
-    if (action === "derive") return { handled: true, value: deriveClient(parsed.positional[1], parsed.options.op, parsed.options.out, { recordId: parsed.options["from-record"] }), json: parsed.options.json === true };
+    if (action === "derive") return { handled: true, value: deriveClient(parsed.positional[1], parsed.options.op, parsed.options.out, { recordId: parsed.options["from-record"], requestId: parsed.options["request-id"] }), json: parsed.options.json === true };
     if (action === "export") {
       const playbook = parsed.positional[1];
       const resolved = resolvePlaybook(playbook, { cwd });
@@ -123,6 +143,8 @@ async function handlePlaybookCli(argv, { endpoint, cwd = process.cwd() }) {
     if (!parsed.options["from-record"] || !parsed.options.har) throw new Error("trace export requires --from-record <id> --har <path>");
     return { handled: true, value: exportRecordHar(parsed.options["from-record"], path.resolve(parsed.options.har)), json: parsed.options.json === true };
   }
+  if (command === "export") return { handled: true, value: exportPlaybookDirectory(parsed.positional[0], { out: parsed.options.out, cwd }), json: parsed.options.json === true };
+  if (command === "import") return { handled: true, value: importPlaybookDirectory(parsed.positional[0], { scope: parsed.options.project ? "project" : "user", cwd }), json: parsed.options.json === true };
   throw new Error(`Unknown playbook command: ${command}`);
 }
 
