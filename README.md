@@ -694,7 +694,7 @@ surf use page read --json
 surf use <site> <write-op> --write --resource-id 123
 ```
 
-Project playbooks in `./.surf/playbooks/` override user playbooks in `~/.surf/playbooks/`; built-ins are the final fallback. `show` reports the selected source. Provider compatibility commands pin their own built-ins.
+Project playbooks in `./.surf/playbooks/` override user playbooks in `~/.surf/playbooks/`; built-ins are the final fallback. `show` reports the selected source. Provider compatibility commands continue to use their validated command paths until provider playbooks have real login-flow validation.
 
 Author a playbook from redacted recent activity or an explicit evidence record:
 

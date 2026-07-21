@@ -153,23 +153,14 @@ try {
   process.exit(1);
 }
 
-let playbookArgs = args;
-let providerPlaybookSugar = false;
-if (args[0] === "chatgpt" && args[1] && !args.includes("--file") && !args.includes("--with-page")) {
-  providerPlaybookSugar = true;
-  playbookArgs = ["use", "chatgpt", "ask", "--prompt", args[1], "--pin-built-in", ...args.slice(2)];
-}
-if (["playbook", "pb", "use"].includes(playbookArgs[0])) {
-  if (playbookCommandNeedsBrowser(playbookArgs)) {
-    installBrowserLock(parseBrowserLockOptions(playbookArgs.includes("--no-lock")), endpoint);
+if (["playbook", "pb", "use"].includes(args[0])) {
+  if (playbookCommandNeedsBrowser(args)) {
+    installBrowserLock(parseBrowserLockOptions(args.includes("--no-lock")), endpoint);
   }
-  handlePlaybookCli(playbookArgs, { endpoint, cwd: process.cwd() })
+  handlePlaybookCli(args, { endpoint, cwd: process.cwd() })
     .then((result) => {
       if (!result.handled) throw new Error("Playbook command was not handled");
-      if (result.value !== undefined) {
-        const output = providerPlaybookSugar && !result.json ? result.value?.value : result.value;
-        console.log(formatPlaybookOutput(output, result.json));
-      }
+      if (result.value !== undefined) console.log(formatPlaybookOutput(result.value, result.json));
       process.exit(0);
     })
     .catch((error) => {
@@ -2731,8 +2722,8 @@ if (toolArgs["window-id"] !== undefined) {
   globalOpts.windowId = wid;
   delete toolArgs["window-id"];
 }
-if (toolArgs["network-path"] !== undefined) {
-  console.error("Error: --network-path cannot configure browser-host persistence; set SURF_NETWORK_PATH in the native host environment");
+if (toolArgs["network-path"] !== undefined && typeof toolArgs["network-path"] !== "string") {
+  console.error("Error: --network-path requires a directory");
   process.exit(1);
 }
 const wantJson = toolArgs.json === true;

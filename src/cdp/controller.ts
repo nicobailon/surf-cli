@@ -662,6 +662,16 @@ export class CDPController {
     } catch (e) {}
   }
 
+  async disableNetworkTracking(tabId: number): Promise<void> {
+    await this.drainNetworkEvents(tabId);
+    this.networkCapture.delete(tabId);
+    this.networkBodyBytes.delete(tabId);
+    if (this.networkCallbacks.get(tabId)?.size) return;
+    try {
+      await this.send(tabId, "Network.disable");
+    } catch (e) {}
+  }
+
   async handleDialog(tabId: number, accept: boolean, promptText?: string): Promise<{ success: boolean; error?: string }> {
     try {
       await this.send(tabId, "Page.handleJavaScriptDialog", {

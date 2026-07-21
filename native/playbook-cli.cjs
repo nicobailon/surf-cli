@@ -99,6 +99,7 @@ async function handlePlaybookCli(argv, { endpoint, cwd = process.cwd() }) {
   const command = argv[1];
   const parsed = parseCommandArgs(argv.slice(2));
   if (!command || command === "help") return { handled: true, value: "Usage: surf playbook|pb <list|show|ops|run|record|suggest|save|client|trace|export|import>" };
+  if (endpoint?.kind === "remote" && ["list", "show", "ops"].includes(command)) throw new Error(`playbook ${command} is local-only with --remote because runs resolve on the browser host`);
   if (command === "list") return { handled: true, value: listPlaybooks({ cwd }), json: parsed.options.json === true };
   if (command === "show") {
     const playbook = resolvePlaybook(parsed.positional[0], { cwd });

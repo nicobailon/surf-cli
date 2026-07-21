@@ -141,14 +141,17 @@ function deriveClient(site, opId, out, options = {}) {
   const record = options.recordId ? readRecord(options.recordId, root) : findRecord(site, opId, root);
   if (!record) throw new Error(`no record found for ${site} ${opId}`);
   const trace = readPrivateJson(path.join(recordsRoot(root), record.id, "network", "trace.json"), null, { root });
-  const candidates = (trace?.entries || []).filter((candidate) => ["GET", "HEAD"].includes(candidate.method) && candidate.status >= 200 && candidate.status < 400);
+  const candidates = (trace?.entries || []).filter((candidate) => ["GET", "HEAD", "OPTIONS", "POST"].includes(candidate.method) && candidate.status >= 200 && candidate.status < 400);
   const entry = options.requestId
     ? candidates.find((candidate) => candidate.id === options.requestId || candidate._requestId === options.requestId)
     : candidates.length === 1 ? candidates[0] : null;
   if (!options.requestId && candidates.length > 1) throw new Error(`record ${record.id} has multiple read endpoints; pass --request-id`);
   if (!entry) throw new Error(`record ${record.id} has no validated read endpoint`);
   const op = { id: opId, effect: "read", run: [] };
-  const strategy = { using: "network", request: { method: entry.method, url: entry.url, headers: safeHeaders(entry.requestHeaders) } };
+  const url = new URL(entry.url);
+  const query = Object.fromEntries(url.searchParams.entries());
+  url.search = "";
+  const strategy = { using: "network", request: { method: entry.method, url: url.toString(), query, headers: safeHeaders(entry.requestHeaders), ...(entry.requestBody !== undefined ? { body: entry.requestBody } : {}) } };
   return generateClient({ playbookId: site, op, strategy, provenance: { type: "record", recordId: record.id }, out });
 }
 
@@ -183,6 +186,13 @@ function verificationBody(manifest) {
   return JSON.stringify({ ok: true, body: "verified", data: "verified", items: ["verified"] });
 }
 
+function templateForVerify(value) {
+  if (typeof value === "string") return value.replace(/\{\{[a-zA-Z0-9._-]+\}\}/g, "verify");
+  if (Array.isArray(value)) return value.map(templateForVerify);
+  if (value && typeof value === "object") return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, templateForVerify(item)]));
+  return value;
+}
+
 function runClient(resolved, manifest, { env = {}, live = false } = {}) {
   return new Promise((resolve, reject) => {
     execFile(process.execPath, [path.join(resolved, "client.mjs"), ...clientArgs(manifest)], {
@@ -200,26 +210,35 @@ function runClient(resolved, manifest, { env = {}, live = false } = {}) {
 }
 
 async function verifyWithLocalServer(resolved, manifest) {
-  let requests = 0;
+  const requests = [];
+  const endpoint = templateForVerify(manifest.endpoint);
+  const expectedUrl = new URL(endpoint.url);
+  for (const [name, value] of Object.entries(endpoint.query || {})) expectedUrl.searchParams.set(name, String(value));
+  const expectedPath = `${expectedUrl.pathname}${expectedUrl.search}`;
+  const expectedBody = endpoint.body === undefined ? undefined : typeof endpoint.body === "string" ? endpoint.body : JSON.stringify(endpoint.body);
   const server = http.createServer((request, response) => {
-    requests++;
-    if (request.method !== manifest.endpoint.method) {
-      response.writeHead(405);
-      response.end("wrong method");
-      return;
-    }
-    const body = verificationBody(manifest);
-    response.writeHead(manifest.verification?.status || 200, { "content-type": body.startsWith("{") ? "application/json" : "text/plain" });
-    response.end(body);
+    let requestBody = "";
+    request.setEncoding("utf8");
+    request.on("data", (chunk) => { requestBody += chunk; });
+    request.on("end", () => {
+      requests.push({ method: request.method, url: request.url, body: requestBody });
+      const body = verificationBody(manifest);
+      response.writeHead(manifest.verification?.status || 200, { "content-type": body.startsWith("{") ? "application/json" : "text/plain" });
+      response.end(body);
+    });
   });
   await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
   try {
     const address = server.address();
     const stdout = await runClient(resolved, manifest, {
-      env: { SURF_CLIENT_ENDPOINT_URL: `http://127.0.0.1:${address.port}/verify` },
+      env: { SURF_CLIENT_ENDPOINT_URL: `http://127.0.0.1:${address.port}${expectedPath}` },
     });
-    if (requests === 0) throw new Error("generated client did not call its verification endpoint");
-    return { requests, stdout: stdout.trim() };
+    if (requests.length === 0) throw new Error("generated client did not call its verification endpoint");
+    const request = requests[0];
+    if (request.method !== endpoint.method) throw new Error(`generated client used ${request.method} instead of ${endpoint.method}`);
+    if (request.url !== expectedPath) throw new Error(`generated client requested ${request.url} instead of ${expectedPath}`);
+    if (expectedBody !== undefined && request.body !== expectedBody) throw new Error("generated client request body did not match the projected endpoint");
+    return { requests: requests.length, stdout: stdout.trim() };
   } finally {
     await new Promise((resolve) => server.close(resolve));
   }

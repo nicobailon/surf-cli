@@ -38,13 +38,9 @@ describe("playbook resolution and strategies", () => {
     tempDirs.push(cwd, home);
     writePlaybook(home, "fixture", "user");
     writePlaybook(cwd, "fixture", "project");
-    writePlaybook(cwd, "chatgpt", "shadow");
     const resolved = playbooks.resolvePlaybook("fixture", { cwd, home });
     expect(resolved.provenance.scope).toBe("project");
     expect(resolved.description).toBe("project");
-    expect(
-      playbooks.resolvePlaybook("chatgpt", { cwd, home, pinBuiltIn: true }).provenance.scope,
-    ).toBe("built-in");
 
     const executeTool = vi.fn(async (tool: string) =>
       tool === "javascript_tool" ? { error: "CORS drift" } : { value: "fallback content" },
@@ -101,6 +97,15 @@ describe("playbook resolution and strategies", () => {
 
   it("rejects literal credentials and multi-step write workflows", () => {
     const validate = (op: unknown) => playbooks.validateOp(op, { origins: [] });
+    expect(
+      validate({
+        id: "search",
+        effect: "read",
+        run: [
+          { using: "network", request: { method: "POST", url: "https://example.test/search" } },
+        ],
+      }).run[0].request.method,
+    ).toBe("POST");
     expect(() =>
       validate({
         id: "read",

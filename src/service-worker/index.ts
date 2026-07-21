@@ -2270,6 +2270,12 @@ export async function handleMessage(
       return { success: true };
     }
 
+    case "STOP_NETWORK_CAPTURE": {
+      if (!tabId) throw new Error("No tabId provided");
+      await cdp.disableNetworkTracking(tabId);
+      return { success: true };
+    }
+
     case "GET_PLAYBOOK_RECORD_CONTEXT": {
       if (!tabId) throw new Error("No tabId provided");
       const tab = await chrome.tabs.get(tabId);

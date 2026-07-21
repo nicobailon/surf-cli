@@ -1,7 +1,7 @@
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
-const { isSensitiveName, redactSensitiveFields } = require("./redaction.cjs");
+const { isSensitiveName, redactSensitiveFields, redactUrlSecrets } = require("./redaction.cjs");
 
 const COMMANDS = {
   ai: { primaryArg: "query", effect: "read", argKinds: { query: "user-input" }, sensitiveArgs: ["query"] },
@@ -105,10 +105,35 @@ function redactCommandArgs(command, args, includeInputValues = false) {
   for (const name of metadata.sensitiveArgs) {
     if (!includeInputValues && Object.hasOwn(redacted, name)) redacted[name] = `<${name}>`;
   }
+  for (const [name, kind] of Object.entries(metadata.argKinds)) {
+    if (kind === "url" && Object.hasOwn(redacted, name)) redacted[name] = redactUrlSecrets(redacted[name]);
+  }
   for (const name of Object.keys(redacted)) {
     if (isSensitiveName(name)) redacted[name] = "<redacted>";
   }
   return redacted;
+}
+
+function templateRedactedArgs(value, args = {}) {
+  if (typeof value === "string") {
+    const match = value.match(/^<([a-z0-9._-]+)>$/);
+    if (!match) return value;
+    args[match[1]] = { required: true, desc: `Recorded ${match[1]}` };
+    return `{{${match[1]}}}`;
+  }
+  if (Array.isArray(value)) return value.map((item) => templateRedactedArgs(item, args));
+  if (value && typeof value === "object") {
+    return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, templateRedactedArgs(item, args)]));
+  }
+  return value;
+}
+
+function promoteRedactedStepArgs(steps) {
+  const args = {};
+  return {
+    args,
+    steps: steps.map((step) => ({ ...step, args: templateRedactedArgs(step.args || {}, args) })),
+  };
 }
 
 function tokenize(line) {
@@ -334,6 +359,7 @@ module.exports = {
   normalizeWorkflow,
   parseCommandLine,
   parseDoCommands,
+  promoteRedactedStepArgs,
   redactCommandArgs,
   resolveWorkflow,
   tokenize,

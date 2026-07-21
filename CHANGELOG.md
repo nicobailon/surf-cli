@@ -2,6 +2,9 @@
 
 ## [Unreleased]
 
+### Added
+- **Surf Playbooks** - Added durable browser-session playbooks with `surf playbook`/`surf pb` management, `surf use` execution, workflow and network strategies, host-owned write receipts, private activity/record state, record drafting, trace export, and standalone client projection.
+
 ## [2.9.0] - 2026-07-17
 
 ### Added

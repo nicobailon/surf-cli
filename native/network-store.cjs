@@ -33,22 +33,22 @@ let writeLock = Promise.resolve();
  * Get base path for network storage
  * Priority: SURF_NETWORK_PATH env var > default
  */
-function getBasePath() {
-  return process.env.SURF_NETWORK_PATH || DEFAULT_BASE;
+function getBasePath(basePath) {
+  return basePath || process.env.SURF_NETWORK_PATH || DEFAULT_BASE;
 }
 
 /**
  * Get path to requests.jsonl
  */
-function getRequestsPath() {
-  return path.join(getBasePath(), "requests.jsonl");
+function getRequestsPath(basePath) {
+  return path.join(getBasePath(basePath), "requests.jsonl");
 }
 
 /**
  * Get path to bodies directory
  */
-function getBodiesPath() {
-  return path.join(getBasePath(), "bodies");
+function getBodiesPath(basePath) {
+  return path.join(getBasePath(basePath), "bodies");
 }
 
 /**
@@ -61,9 +61,9 @@ function getMetaPath() {
 /**
  * Ensure all required directories exist
  */
-function ensureDirectories() {
-  const base = getBasePath();
-  const bodies = getBodiesPath();
+function ensureDirectories(basePath) {
+  const base = getBasePath(basePath);
+  const bodies = getBodiesPath(basePath);
   ensurePrivateDir(base, base);
   ensurePrivateDir(bodies, base);
 }
@@ -192,8 +192,8 @@ async function appendEntry(entry) {
  * @param {Object} entry - Network entry to append
  * @returns {Object} The entry with assigned ID
  */
-function appendEntrySync(entry) {
-  ensureDirectories();
+function appendEntrySync(entry, basePath) {
+  ensureDirectories(basePath);
   
   const id = entry.id || generateId();
   const timestamp = entry.timestamp || Date.now();
@@ -205,7 +205,7 @@ function appendEntrySync(entry) {
   };
   
   // Use a simple lock file for synchronous operations
-  const lockPath = path.join(getBasePath(), ".lock");
+  const lockPath = path.join(getBasePath(basePath), ".lock");
   let lockFd;
   
   try {
@@ -230,13 +230,13 @@ function appendEntrySync(entry) {
     
     if (lockFd === undefined) {
       // Proceed without lock as fallback
-      appendPrivateJsonLine(getRequestsPath(), fullEntry, { root: getBasePath() });
+      appendPrivateJsonLine(getRequestsPath(basePath), fullEntry, { root: getBasePath(basePath) });
       return fullEntry;
     }
   }
   
   try {
-    appendPrivateJsonLine(getRequestsPath(), fullEntry, { root: getBasePath() });
+    appendPrivateJsonLine(getRequestsPath(basePath), fullEntry, { root: getBasePath(basePath) });
   } finally {
     if (lockFd !== undefined) {
       fs.closeSync(lockFd);

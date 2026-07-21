@@ -26,8 +26,8 @@ describe("activity and explicit record evidence", () => {
     records.appendRecordEvent(
       {
         type: "tool.completed",
-        command: "page.text",
-        argsRedacted: {},
+        command: "search",
+        argsRedacted: { term: "<term>" },
         startedAt: new Date().toISOString(),
         endedAt: new Date().toISOString(),
         resultSummary: "success",
@@ -47,7 +47,9 @@ describe("activity and explicit record evidence", () => {
     expect(summary).not.toContain("opened page");
     expect(events).toContain("opened page");
     expect(stopped.record.status).toBe("draft_created");
+    expect(stopped.draft.args.term).toMatchObject({ required: true });
     expect(stopped.draft.run[0]).toMatchObject({ using: "workflow" });
+    expect(stopped.draft.run[0].steps[0].args.term).toBe("{{term}}");
   });
 
   it("redacts nested activity and trace credentials before drafting", () => {
@@ -56,6 +58,11 @@ describe("activity and explicit record evidence", () => {
     journal.journalCommand(
       "form.fill",
       { data: [{ selector: "#email", value: "top secret" }] },
+      { root },
+    );
+    journal.journalCommand(
+      "navigate",
+      { url: "https://example.test/?access_token=captured-secret&q=ok" },
       { root },
     );
     journal.journalCommand("unknown.tool", { text: "do not record" }, { root });
@@ -83,6 +90,7 @@ describe("activity and explicit record evidence", () => {
           requestHeaders: { "x-api-key": "captured-secret", accept: "application/json" },
           responseHeaders: { "set-cookie": "sid=captured-secret" },
           requestBody: "captured-secret",
+          responseBody: "captured-secret",
         },
       ],
       root,
@@ -122,6 +130,13 @@ describe("activity and explicit record evidence", () => {
       },
       { root },
     );
-    expect(records.stopRecord({ draft: true, root }).draft.effect).toBe("write");
+    const stopped = records.stopRecord({ draft: true, root });
+    expect(stopped.draft).toMatchObject({
+      effect: "write",
+      safety: { authorization: "explicit", duplicate: "transactional", key: ["review_key"] },
+    });
+    expect(() =>
+      authoring.saveFromRecord({ recordId: stopped.record.id, root, home: path.dirname(root) }),
+    ).not.toThrow();
   });
 });

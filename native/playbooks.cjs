@@ -87,7 +87,7 @@ function validateStrategy(strategy, effect, opId) {
     const request = strategy.request;
     if (!request || typeof request !== "object" || typeof request.url !== "string") throw new Error("network strategy requires request.url");
     const method = String(request.method || "GET").toUpperCase();
-    if (effect === "read" && !["GET", "HEAD", "OPTIONS"].includes(method)) throw new Error("read ops cannot use a mutating network method");
+    if (effect === "read" && !["GET", "HEAD", "OPTIONS", "POST"].includes(method)) throw new Error("read ops cannot use a mutating network method");
     assertUrlHasNoEmbeddedSecrets(request.url);
     assertNoEmbeddedSecrets(request.headers || {});
     assertNoEmbeddedSecrets(request.query || {});

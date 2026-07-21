@@ -5,6 +5,7 @@ const os = require("node:os");
 const path = require("node:path");
 
 const clients = require("../../native/playbook-client.cjs");
+const records = require("../../native/playbook-records.cjs");
 const directories: string[] = [];
 
 afterEach(() => {
@@ -92,6 +93,42 @@ describe("playbook client projection", () => {
       out,
     });
     expect(result.manifest.endpoint.url).toBe("https://example.test/api");
+  });
+
+  it("derives POST read clients without dropping query or body shape", () => {
+    const parent = fs.mkdtempSync(path.join(os.tmpdir(), "surf-client-"));
+    directories.push(parent);
+    const root = path.join(parent, "state");
+    const record = records.startRecord({
+      site: "fixture",
+      op: "search",
+      includeInputValues: true,
+      root,
+    });
+    records.attachNetworkTrace(
+      record.id,
+      [
+        {
+          id: "r-1",
+          method: "POST",
+          status: 200,
+          url: "https://example.test/search?q=shoes",
+          requestHeaders: { accept: "application/json" },
+          requestBody: JSON.stringify({ q: "shoes" }),
+        },
+      ],
+      root,
+    );
+    const result = clients.deriveClient("fixture", "search", path.join(parent, "client"), {
+      root,
+      recordId: record.id,
+    });
+    expect(result.manifest.endpoint).toMatchObject({
+      method: "POST",
+      url: "https://example.test/search",
+      query: { q: "shoes" },
+      body: JSON.stringify({ q: "shoes" }),
+    });
   });
 
   it("rejects credential-like literals outside declared auth inputs", () => {

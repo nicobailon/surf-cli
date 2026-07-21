@@ -28,6 +28,7 @@ const { RequestPendingMap } = require("./request-pending.cjs");
 const { cleanupFilePaths, createStagingDirectory, createTransferState, materializeRemoteTool, rewriteTransferPaths, streamFileDownload, transferError } = require("./file-transfer.cjs");
 const { writeNetworkExport } = require("./network-export.cjs");
 const networkStore = require("./network-store.cjs");
+const { redactUrlSecrets } = require("./redaction.cjs");
 const { appendActivity, journalCommand } = require("./activity-journal.cjs");
 const { reserveReceipt, updateReceipt } = require("./playbook-receipts.cjs");
 const {
@@ -537,6 +538,8 @@ async function handleRecordRequest(tool, args, msg, request) {
       }
       return record;
     } catch (error) {
+      if (record?.capture.network) await requestCallExtension(request, tool, { type: "STOP_NETWORK_CAPTURE", tabId: record.tabId }, 30000, true).catch(() => {});
+      if (record?.capture.watch) await requestCallExtension(request, tool, { type: "STOP_PLAYBOOK_WATCH", tabId: record.tabId }, 30000, true).catch(() => {});
       discardRecord();
       throw error;
     }
@@ -547,6 +550,7 @@ async function handleRecordRequest(tool, args, msg, request) {
   if (tool === "playbook.record.resume") return resumeRecord();
   if (tool === "playbook.record.discard") {
     const record = activeRecord();
+    if (record?.capture.network) await requestCallExtension(request, tool, { type: "STOP_NETWORK_CAPTURE", tabId: record.tabId }, 30000, true).catch(() => {});
     if (record?.capture.watch) await requestCallExtension(request, tool, { type: "STOP_PLAYBOOK_WATCH", tabId: record.tabId }, 30000, true).catch(() => {});
     return discardRecord();
   }
@@ -554,9 +558,13 @@ async function handleRecordRequest(tool, args, msg, request) {
     const record = activeRecord();
     if (!record) throw new Error("no active playbook record");
     if (record.capture.network) {
-      const result = await requestCallExtension(request, tool, { type: "READ_NETWORK_REQUESTS", tabId: record.tabId, full: true, limit: 500 });
-      const cutoff = Date.parse(record.startedAt);
-      attachNetworkTrace(record.id, (result.entries || []).filter((entry) => entry.ts >= cutoff));
+      try {
+        const result = await requestCallExtension(request, tool, { type: "READ_NETWORK_REQUESTS", tabId: record.tabId, full: true, limit: 500 });
+        const cutoff = Date.parse(record.startedAt);
+        attachNetworkTrace(record.id, (result.entries || []).filter((entry) => entry.ts >= cutoff));
+      } finally {
+        await requestCallExtension(request, tool, { type: "STOP_NETWORK_CAPTURE", tabId: record.tabId }, 30000, true).catch(() => {});
+      }
     }
     if (record.capture.watch) await requestCallExtension(request, tool, { type: "STOP_PLAYBOOK_WATCH", tabId: record.tabId }, 30000, true).catch(() => {});
     return stopRecord({ draft: args.draft === true });
@@ -1433,6 +1441,7 @@ function handleToolRequest(msg, socket, requestContext = requestStorage.getStore
     networkExport: extensionMsg.type === "EXPORT_NETWORK_REQUESTS",
     persistNetwork: extensionMsg.type === "READ_NETWORK_REQUESTS" && extensionMsg.full && args?.["no-save"] !== true,
     networkExportPath: args?.output,
+    networkPath: args?.["network-path"],
     networkExportFormat: extensionMsg.har ? "har" : extensionMsg.jsonl ? "jsonl" : "json",
     fullRes: extensionMsg.fullRes || args?.fullRes,
     maxSize: extensionMsg.maxSize || args?.maxSize,
@@ -1606,7 +1615,7 @@ function processInput() {
           event: msg.event,
           selector: msg.selector,
           value: msg.value,
-          url: msg.url,
+          url: redactUrlSecrets(msg.url),
           tabId: msg.tabId,
           timestamp: msg.timestamp || new Date().toISOString(),
         });
@@ -1672,7 +1681,7 @@ function processInput() {
             }
           } else if (pending.persistNetwork && Array.isArray(msg.entries)) {
             try {
-              for (const entry of msg.entries) networkStore.appendEntrySync(entry);
+              for (const entry of msg.entries) networkStore.appendEntrySync(entry, pending.networkPath);
               networkStore.maybeAutoCleanup();
               sendToolResponse(socket, originalId, msg, null);
             } catch (error) {

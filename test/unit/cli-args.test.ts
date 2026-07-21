@@ -302,6 +302,24 @@ describe("CLI argument parsing", () => {
     expect(result.stderr).not.toContain("/tmp/surf.sock");
   });
 
+  it("rejects remote playbook catalog before attempting a connection", async () => {
+    const credential = createRemoteCredential();
+    const result = await runCliWithoutSocket([
+      "pb",
+      "list",
+      "--remote",
+      "browser.tailnet:4321",
+      "--remote-credential",
+      credential.credentialPath,
+    ]);
+    fs.rmSync(credential.stateDir, { recursive: true, force: true });
+
+    expect(result.code).toBe(1);
+    expect(result.stdout).toBe("");
+    expect(result.stderr).toContain("playbook list is local-only with --remote");
+    expect(result.stderr).not.toContain("/tmp/surf.sock");
+  });
+
   it("routes normal, script, and workflow requests to TCP remote without forwarding --remote", async () => {
     const requests: any[] = [];
     const connections = new Set<any>();
@@ -380,6 +398,14 @@ describe("CLI argument parsing", () => {
     expect(fs.readFileSync(request.params.args.output, "utf8")).toBe("[]");
     expect(stdout).toContain(request.params.args.output);
     fs.rmSync(request.params.args.output, { force: true });
+  });
+
+  it("preserves network-path for host-side persistence", async () => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), "surf-network-path-"));
+    const { request } = await runCli(["network", "--network-path", directory]);
+    expect(request.params.tool).toBe("network");
+    expect(request.params.args["network-path"]).toBe(directory);
+    fs.rmSync(directory, { recursive: true, force: true });
   });
 
   it("writes local-prefixed screenshot output to the normalized path", async () => {

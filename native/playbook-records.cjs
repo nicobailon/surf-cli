@@ -11,7 +11,7 @@ const {
   readPrivateJson,
 } = require("./private-state.cjs");
 const { redactSensitiveFields, redactUrlSecrets, safeHeaders } = require("./redaction.cjs");
-const { commandMetadata } = require("./workflow-definition.cjs");
+const { commandMetadata, promoteRedactedStepArgs } = require("./workflow-definition.cjs");
 const { version: PACKAGE_VERSION } = require("../package.json");
 
 function recordsRoot(root = getPrivateStateRoot()) {
@@ -113,6 +113,7 @@ function sanitizeTraceEntry(entry, includeInputValues = false) {
     url: redactUrlSecrets(entry.url),
     requestHeaders: safeHeaders(entry.requestHeaders),
     responseHeaders: safeHeaders(entry.responseHeaders),
+    responseBody: entry.responseBody === undefined ? undefined : "<response-body>",
     ...(includeInputValues ? {} : { requestBody: entry.requestBody === undefined ? undefined : "<request-body>" }),
   };
 }
@@ -145,13 +146,23 @@ function draftFromRecord(recordId, root = getPrivateStateRoot()) {
   const tracePath = path.join(recordDirectory(recordId, root), "network", "trace.json");
   const trace = readPrivateJson(tracePath, null, { root });
   const strategies = [];
-  const observed = trace?.entries?.findLast((entry) => ["GET", "HEAD"].includes(entry.method) && entry.status >= 200 && entry.status < 400);
+  const observed = trace?.entries?.findLast((entry) => ["GET", "HEAD", "OPTIONS", "POST"].includes(entry.method) && entry.status >= 200 && entry.status < 400);
   if (observed) {
-    strategies.push({ using: "network", request: { method: observed.method, url: observed.url, headers: safeHeaders(observed.requestHeaders) } });
+    const url = new URL(observed.url);
+    const query = Object.fromEntries(url.searchParams.entries());
+    url.search = "";
+    strategies.push({ using: "network", request: { method: observed.method, url: url.toString(), query, headers: safeHeaders(observed.requestHeaders), ...(observed.requestBody !== undefined ? { body: observed.requestBody } : {}) } });
   }
-  if (steps.length > 0) strategies.push({ using: "workflow", steps });
+  let args = {};
+  if (steps.length > 0) {
+    const promoted = promoteRedactedStepArgs(steps);
+    args = promoted.args;
+    strategies.push({ using: "workflow", steps: promoted.steps });
+  }
   if (strategies.length === 0) throw new Error("record has no executable evidence");
-  const op = { id: record.op, description: `Drafted from ${record.id}`, effect, args: {}, run: strategies, provenance: { recordId: record.id } };
+  const safety = effect === "write" ? { authorization: "explicit", duplicate: "transactional", key: Object.keys(args).length ? Object.keys(args) : ["review_key"] } : undefined;
+  if (effect === "write" && !args.review_key && safety.key.includes("review_key")) args.review_key = { required: true, desc: "Semantic key for reviewed write replay" };
+  const op = { id: record.op, description: `Drafted from ${record.id}`, effect, args, ...(safety ? { safety } : {}), run: strategies, provenance: { recordId: record.id } };
   const draftDir = path.join(recordDirectory(recordId, root), "draft");
   ensurePrivateDir(draftDir, root);
   atomicWriteJson(path.join(draftDir, "op.json"), op, { root });

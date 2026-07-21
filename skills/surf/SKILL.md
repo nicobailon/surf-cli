@@ -596,7 +596,7 @@ surf pb ops page
 surf use page read --json
 ```
 
-Resolution order is project (`./.surf/playbooks/`), user (`~/.surf/playbooks/`), then built-in. Provider compatibility commands pin their provider built-in. A write op requires `--write`; Surf records semantic intent before dispatch so a timeout or concurrent retry cannot silently double-submit.
+Resolution order is project (`./.surf/playbooks/`), user (`~/.surf/playbooks/`), then built-in. Provider compatibility commands stay on their validated command paths until provider playbooks have real login-flow validation. A write op requires `--write`; Surf records semantic intent before dispatch so a timeout or concurrent retry cannot silently double-submit.
 
 Author from redacted recent activity when it contains only read/navigation behavior, or use an explicit record for richer evidence:
 
