@@ -818,7 +818,7 @@ function handleToolRequest(msg, socket, requestContext = requestStorage.getStore
   }
 
   if (extensionMsg.type.startsWith("ORACLE_")) {
-    oracleHost.handle(requestContext, extensionMsg)
+    Promise.resolve(oracleHost.handle(requestContext, extensionMsg))
       .then((result) => sendToolResponse(socket, originalId, result, null))
       .catch((error) => sendToolResponse(socket, originalId, null, error));
     return;
