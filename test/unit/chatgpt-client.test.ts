@@ -393,6 +393,50 @@ describe("chatgpt-client", () => {
     });
   });
 
+  describe("fresh-tab harvest gates", () => {
+    it("preserves Cloudflare challenge classification", async () => {
+      const closeTab = vi.fn(async () => undefined);
+
+      await expect(
+        chatgptClient.harvest({
+          tabId: null,
+          conversationUrl: "https://chatgpt.com/c/conversation-id",
+          promptEcho: "review",
+          createTab: async () => ({ tabId: 123 }),
+          closeTab,
+          cdpCommand: vi.fn(async () => ({})),
+          cdpEvaluate: async (_tabId: number, expression: string) => {
+            if (expression === "document.readyState") {
+              return { result: { value: "complete" } };
+            }
+            if (expression === "document.title.toLowerCase()") {
+              return { result: { value: "just a moment" } };
+            }
+            throw new Error(`Unexpected expression: ${expression}`);
+          },
+        }),
+      ).rejects.toMatchObject({ code: "cloudflare" });
+      expect(closeTab).toHaveBeenCalledWith(123);
+    });
+
+    it("preserves login failure classification", async () => {
+      const closeTab = vi.fn(async () => undefined);
+
+      await expect(
+        chatgptClient.harvest({
+          tabId: null,
+          conversationUrl: "https://chatgpt.com/c/conversation-id",
+          promptEcho: "review",
+          createTab: async () => ({ tabId: 123 }),
+          closeTab,
+          cdpCommand: vi.fn(async () => ({})),
+          cdpEvaluate: createReadyChatGptEvaluate({ status: 401, hasLoginCta: true }),
+        }),
+      ).rejects.toMatchObject({ code: "auth" });
+      expect(closeTab).toHaveBeenCalledWith(123);
+    });
+  });
+
   describe("query", () => {
     it("invokes the upload callback for ChatGPT files and propagates upload errors", async () => {
       const uploadFile = vi.fn(async () => ({ error: "composer file input not found" }));

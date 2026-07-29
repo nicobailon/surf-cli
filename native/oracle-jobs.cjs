@@ -207,6 +207,26 @@ function appendTurn(id, turn) {
   return updated;
 }
 
+function markTurnCaptured(id, { dispatchedAt, capturedAt }) {
+  const job = getJob(id);
+  const turnIndex = job.turns.findIndex((turn) => turn.dispatchedAt === dispatchedAt);
+  if (turnIndex === -1) {
+    throw codedError(
+      "invalid_transition",
+      `oracle job ${id} has no follow turn dispatched at ${dispatchedAt}`,
+    );
+  }
+  const turns = [...job.turns];
+  turns[turnIndex] = { ...turns[turnIndex], capturedAt };
+  const root = getPrivateStateRoot();
+  const directory = jobDirectory(id, root);
+  const turnName = `${String(turnIndex + 1).padStart(4, "0")}.json`;
+  atomicWriteJson(path.join(directory, "turns", turnName), turns[turnIndex], { root });
+  const updated = { ...job, turns };
+  atomicWriteJson(path.join(directory, "job.json"), updated, { root });
+  return updated;
+}
+
 function listJobs({ limit } = {}) {
   const jobs = readJobs();
   return limit === undefined ? jobs : jobs.slice(0, Math.max(0, limit));
@@ -227,6 +247,7 @@ module.exports = {
   markCaptured,
   markDispatched,
   markFailed,
+  markTurnCaptured,
   oracleRoot,
   updateTabId,
 };

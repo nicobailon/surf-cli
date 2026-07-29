@@ -122,16 +122,44 @@ describe("oracle job registry", () => {
     }
   });
 
-  it("records follow lineage and replacement tabs", () => {
-    useTempState();
+  it("records follow lineage, capture time, and replacement tabs", () => {
+    const root = useTempState();
     const parent = jobs.createJob({ prompt: "first" });
-    jobs.markFailed(parent.id, { code: "timeout", message: "finished" });
+    jobs.markDispatched(parent.id, { tabId: 6, promptEcho: "first" });
+    jobs.markAwaiting(parent.id, {
+      conversationUrl: "https://chatgpt.com/c/conversation-id",
+      promptEcho: "first",
+    });
+    jobs.markCaptured(parent.id, { response: "first answer" });
     const child = jobs.createJob({ prompt: "follow", follow: parent.id });
-    jobs.markDispatched(child.id, { tabId: 7, promptEcho: "follow" });
-
+    const dispatched = jobs.markDispatched(child.id, { tabId: 7, promptEcho: "follow" });
+    jobs.appendTurn(parent.id, {
+      prompt: "follow",
+      dispatchedAt: dispatched.dispatchedAt,
+    });
     const updated = jobs.updateTabId(child.id, 8);
+    jobs.markAwaiting(child.id, {
+      conversationUrl: "https://chatgpt.com/c/conversation-id",
+      promptEcho: "follow",
+    });
+    const captured = jobs.markCaptured(child.id, { response: "follow answer" });
+
+    const lineage = jobs.markTurnCaptured(parent.id, {
+      dispatchedAt: captured.dispatchedAt,
+      capturedAt: captured.capturedAt,
+    });
 
     expect(updated).toMatchObject({ follow: parent.id, tabId: 8, promptEcho: "follow" });
+    expect(lineage.turns[0]).toMatchObject({
+      prompt: "follow",
+      dispatchedAt: captured.dispatchedAt,
+      capturedAt: captured.capturedAt,
+    });
+    expect(
+      JSON.parse(
+        fs.readFileSync(path.join(root, "oracle", parent.id, "turns", "0001.json"), "utf8"),
+      ),
+    ).toEqual(lineage.turns[0]);
   });
 
   it("rejects illegal state transitions with the amended taxonomy code", () => {

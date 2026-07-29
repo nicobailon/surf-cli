@@ -2,8 +2,8 @@ const { openClientTransport } = require("./client-transport.cjs");
 const { resolveRequestDeadlineMs } = require("./host-sessions.cjs");
 const { assembleContext } = require("./oracle-context.cjs");
 
-const RESULT_TIMEOUT_SECONDS = 25;
-const POLL_DELAY_MS = 5000;
+const RESULT_TIMEOUT_SECONDS = 20;
+const POLL_DELAYS_MS = [5000, 10000, 20000, 40000, 60000];
 const ORACLE_ERROR_CODES = new Set([
   "auth",
   "capacity",
@@ -191,6 +191,7 @@ function composeAskRequest(spec, context) {
     prompt,
     ...(spec.model ? { model: spec.model } : {}),
     ...(spec.effort ? { effort: spec.effort } : {}),
+    ...(context ? { contextManifest: context.manifest } : {}),
     ...(context?.bundlePath ? { bundlePath: context.bundlePath } : {}),
     ...(spec.id ? { follow: spec.id } : {}),
   };
@@ -293,6 +294,7 @@ async function waitForResult(job, spec, io) {
 
   try {
     let current = job;
+    let pollIndex = 0;
     while (current.state !== "captured") {
       try {
         current = await requestHost(
@@ -321,7 +323,9 @@ async function waitForResult(job, spec, io) {
         );
       }
       if (current.state !== "captured") {
-        await new Promise((resolve) => setTimeout(resolve, POLL_DELAY_MS));
+        const delayMs = POLL_DELAYS_MS[Math.min(pollIndex, POLL_DELAYS_MS.length - 1)];
+        pollIndex += 1;
+        await new Promise((resolve) => setTimeout(resolve, delayMs));
       }
     }
     return current;
@@ -393,13 +397,27 @@ async function handleOracleCli(argv, {
     })
     : null;
   const request = composeAskRequest(spec, context);
+  const dispatchInterrupt = () => {
+    stderr.write(
+      "Interrupted during dispatch. A job may already have been created. Run surf oracle status or surf oracle list to find it.\n",
+    );
+    process.exit(130);
+  };
+  process.once("SIGINT", dispatchInterrupt);
   let value;
   try {
     value = await requestHost(endpoint, "oracle.ask", request, withBrowserLock);
   } catch (error) {
     throw classifyError(error, "dispatch_failed");
+  } finally {
+    process.removeListener("SIGINT", dispatchInterrupt);
   }
   if (spec.detach || value.state === "captured") {
+    if (spec.detach && value.state === "dispatched") {
+      stderr.write(
+        `Warning: the durable conversation URL is not yet captured. Run surf oracle result ${value.id} promptly.\n`,
+      );
+    }
     return { handled: true, value, json: spec.json };
   }
   value = await waitForResult(value, spec, io);

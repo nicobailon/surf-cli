@@ -6,6 +6,7 @@ const { SURF_TMP } = require("./socket-path.cjs");
 
 const fsp = fs.promises;
 const DEFAULT_INLINE_THRESHOLD = 60000;
+const MAX_EVIDENCE_CHARS = 2000000;
 const GLOB_PATTERN = /[*?]/;
 const SENSITIVE_BASENAME_PATTERNS = [
   /^\.env.*$/i,
@@ -261,6 +262,16 @@ async function assembleContext({
 
   const nonce = crypto.randomBytes(12).toString("hex");
   const built = buildEnvelope(readFiles, nonce);
+  if (built.evidenceChars > MAX_EVIDENCE_CHARS) {
+    const largestFiles = [...readFiles]
+      .sort((left, right) => right.content.length - left.content.length || comparePaths(left.path, right.path))
+      .slice(0, 5);
+    throw contextError(
+      "context_incomplete",
+      `context evidence total ${built.evidenceChars} characters exceeds the ${MAX_EVIDENCE_CHARS}-character budget; largest files`,
+      largestFiles.map((file) => file.path),
+    );
+  }
   const mode = readFiles.length > 0 && built.evidenceChars > inlineThreshold ? "bundle" : "inline";
   const manifestFiles = readFiles.map((file) => {
     const overridden = sensitive.includes(file);

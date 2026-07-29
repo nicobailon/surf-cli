@@ -67,6 +67,7 @@ function createOracleHost({ queueAiRequest, requestCallExtension, buildProviderU
     const model = args.model ? chatgptClient.normalizeChatGPTModelChoice(args.model) : null;
     const created = oracleJobs.createJob({
       prompt: args.prompt,
+      contextManifest: args.contextManifest,
       model,
       effortRequested: args.effort ?? null,
       follow: args.follow ?? null,
@@ -179,14 +180,17 @@ function createOracleHost({ queueAiRequest, requestCallExtension, buildProviderU
         if (!liveTab && !job.conversationUrl) {
           throw codedError(
             "harvest_failed",
-            `oracle job ${job.id} has no live tab or conversation URL`,
+            `oracle job ${job.id} tab is no longer available; the response may still exist in ChatGPT web history but cannot be recovered without a conversation URL`,
           );
         }
 
         const options = browserOptions(request);
-        if (liveTab && job.state === "dispatched") {
-          const href = await options.cdpEvaluate(job.tabId, "location.href");
-          const conversationUrl = chatgptClient.extractConversationUrl(href);
+        const readConversationUrl = async (tabId) => {
+          const href = await options.cdpEvaluate(tabId, "location.href");
+          return chatgptClient.extractConversationUrl(href?.result?.value);
+        };
+        if (liveTab && !job.conversationUrl) {
+          const conversationUrl = await readConversationUrl(job.tabId);
           if (conversationUrl) {
             job = oracleJobs.markAwaiting(job.id, {
               conversationUrl,
@@ -194,9 +198,8 @@ function createOracleHost({ queueAiRequest, requestCallExtension, buildProviderU
             });
           }
         }
-        const harvestResult = await chatgptClient.harvest({
+        const harvestOptions = {
           ...options,
-          tabId: liveTab ? job.tabId : null,
           conversationUrl: job.conversationUrl,
           promptEcho: job.promptEcho,
           timeout,
@@ -207,12 +210,35 @@ function createOracleHost({ queueAiRequest, requestCallExtension, buildProviderU
             return tabInfo;
           },
           log: (message) => log(`[oracle:${job.id}:harvest] ${message}`),
-        });
+        };
+        let harvestResult;
+        if (liveTab) {
+          try {
+            harvestResult = await chatgptClient.harvest({
+              ...harvestOptions,
+              tabId: job.tabId,
+            });
+          } catch (error) {
+            if (error?.code === "timeout" || error?.code === "SURF_REQUEST_ABORTED") throw error;
+            job = oracleJobs.getJob(job.id);
+            if (!job.conversationUrl) throw error;
+            log(`[oracle:${job.id}:harvest] Live-tab harvest failed; retrying via conversation URL`);
+            harvestResult = await chatgptClient.harvest({
+              ...harvestOptions,
+              tabId: null,
+              conversationUrl: job.conversationUrl,
+            });
+          }
+        } else {
+          harvestResult = await chatgptClient.harvest({
+            ...harvestOptions,
+            tabId: null,
+          });
+        }
 
         job = oracleJobs.getJob(job.id);
         if (job.state === "dispatched" && job.tabId) {
-          const href = await options.cdpEvaluate(job.tabId, "location.href");
-          const conversationUrl = chatgptClient.extractConversationUrl(href);
+          const conversationUrl = await readConversationUrl(job.tabId);
           if (!conversationUrl) {
             throw codedError("harvest_failed", `oracle job ${job.id} conversation URL is unavailable`);
           }
@@ -226,6 +252,12 @@ function createOracleHost({ queueAiRequest, requestCallExtension, buildProviderU
 
       job = oracleJobs.getJob(job.id);
       const captured = oracleJobs.markCaptured(job.id, harvested);
+      if (captured.follow) {
+        oracleJobs.markTurnCaptured(captured.follow, {
+          dispatchedAt: captured.dispatchedAt,
+          capturedAt: captured.capturedAt,
+        });
+      }
       if (captured.tabId) {
         await closeTab(request, captured.tabId).catch((error) => {
           log(`[oracle:${captured.id}] Failed to close tab ${captured.tabId}: ${error?.message || error}`);

@@ -46,16 +46,18 @@ describe("oracle CLI helpers", () => {
       "--model",
       "thinking",
     ]);
+    const contextManifest = { files: [{ path: "src/a.ts", bytes: 12 }] };
     const request = composeAskRequest(spec, {
       mode: "bundle",
       envelope: "Attachment evidence envelope",
       bundlePath: "/tmp/context.txt",
-      manifest: {},
+      manifest: contextManifest,
     });
 
     expect(request).toEqual({
       prompt: "challenge the conclusion\n\nAttachment evidence envelope",
       model: "thinking",
+      contextManifest,
       bundlePath: "/tmp/context.txt",
       follow: "job-1",
     });
@@ -67,7 +69,10 @@ describe("oracle CLI helpers", () => {
       { mode: "inline", envelope: "Inline evidence", manifest: {} },
     );
 
-    expect(request).toEqual({ prompt: "review this\n\nInline evidence" });
+    expect(request).toEqual({
+      prompt: "review this\n\nInline evidence",
+      contextManifest: {},
+    });
   });
 
   it("preserves structured error codes and adds a recovery command", () => {

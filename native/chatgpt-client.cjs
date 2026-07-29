@@ -246,6 +246,21 @@ async function harvest(options) {
     if (ownsTab) {
       await inputCdp("Page.navigate", { url: conversationUrl });
       await waitForPageLoad(cdp, 45000, signal);
+      if (await isCloudflareBlocked(cdp)) {
+        throw codedError("Cloudflare challenge detected - complete in browser", "cloudflare");
+      }
+      const loginStatus = await checkLoginStatus(cdp);
+      if (loginStatus.status === 0) {
+        throw codedError(
+          loginStatus.error
+            ? `ChatGPT login check failed: ${loginStatus.error}`
+            : "ChatGPT login check failed",
+          "auth",
+        );
+      }
+      if (loginStatus.status !== 200 || loginStatus.hasLoginCta) {
+        throw codedError("ChatGPT login required", "auth");
+      }
     }
 
     const elapsedSinceSend = baseline?.[RESPONSE_STARTED_AT]
@@ -267,7 +282,7 @@ async function harvest(options) {
     };
   } catch (error) {
     const fallbackCode = error?.message === "Response timeout" ? "timeout" : "harvest_failed";
-    throw classifyError(error, fallbackCode, ["timeout"]);
+    throw classifyError(error, fallbackCode, ["auth", "cloudflare", "timeout"]);
   } finally {
     if (ownsTab && !keepCreatedTabOpen) {
       try {

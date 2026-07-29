@@ -131,6 +131,19 @@ describe("oracle context assembly", () => {
     });
   });
 
+  it("rejects evidence over the hard context budget and names the largest file", async () => {
+    const cwd = await tempDir();
+    await fsp.writeFile(path.join(cwd, "largest.txt"), "x".repeat(2_000_001));
+
+    await expect(assembleContext({ files: ["largest.txt"], cwd })).rejects.toMatchObject({
+      code: "context_incomplete",
+      paths: ["largest.txt"],
+      message: expect.stringMatching(
+        /^context evidence total \d+ characters exceeds the 2000000-character budget; largest files:/,
+      ),
+    });
+  });
+
   it("switches to one private bundle containing the identical evidence envelope", async () => {
     const cwd = await tempDir();
     const surfTmp = path.join(cwd, "surf-tmp");
