@@ -6,10 +6,15 @@ const {
   delay,
   evaluate,
   isCloudflareBlocked,
+  normalizeChatGPTEffortChoice,
   normalizeChatGPTModelChoice,
+  resolveChatGPTEffortMenuOption,
   resolveChatGPTModelMenuOption,
+  selectEffort,
   selectModel,
   typePrompt,
+  verifyChatGPTEffortSelection,
+  verifyChatGPTModelSelection,
   waitForPageLoad,
   waitForPromptReady,
 } = require("./chatgpt-client-ui.cjs");
@@ -81,6 +86,7 @@ async function dispatch(options) {
   const {
     prompt,
     model,
+    effort,
     file,
     getCookies,
     createTab,
@@ -140,9 +146,15 @@ async function dispatch(options) {
       throw new Error("Prompt textarea not ready");
     }
     log("Prompt ready");
+    let modelVerified = null;
+    let effortVerified = null;
     if (model) {
-      const selectedLabel = await selectModel(cdp, model, 8000, signal);
-      log(`Selected model: ${selectedLabel}`);
+      modelVerified = await selectModel(cdp, model, 8000, signal);
+      log(`Verified model: ${modelVerified}`);
+    }
+    if (effort) {
+      effortVerified = await selectEffort(cdp, effort, 8000, signal);
+      log(`Verified effort: ${effortVerified}`);
     }
     if (file) {
       if (!uploadFile) {
@@ -170,7 +182,9 @@ async function dispatch(options) {
     await clickSend(cdp, inputCdp, signal);
     baseline[RESPONSE_STARTED_AT] = Date.now();
     const promptEcho = normalizePromptEcho(prompt);
-    if (afterSubmit) await afterSubmit({ tabId, promptEcho });
+    if (afterSubmit) {
+      await afterSubmit({ tabId, promptEcho, modelVerified, effortVerified });
+    }
     log("Prompt sent, waiting for response...");
     const conversationUrl = await waitForConversationUrl(cdp, 30000, signal);
 
@@ -179,10 +193,16 @@ async function dispatch(options) {
       conversationUrl,
       promptEcho,
       model: model || "current",
+      modelVerified,
+      effortVerified,
       baseline,
     };
   } catch (error) {
-    throw classifyError(error, "dispatch_failed", ["auth", "cloudflare"]);
+    throw classifyError(error, "dispatch_failed", [
+      "auth",
+      "cloudflare",
+      "model_verification_failed",
+    ]);
   }
 }
 
@@ -306,12 +326,16 @@ module.exports = {
   hasRequiredCookies,
   cleanChatGPTResponseText,
   extractLatestAssistantSnapshot,
+  normalizeChatGPTEffortChoice,
   normalizeChatGPTModelChoice,
+  resolveChatGPTEffortMenuOption,
   resolveChatGPTModelMenuOption,
   isNewAssistantContent,
   isChatGPTResponseComplete,
   normalizePromptEcho,
   matchesPromptEcho,
   extractConversationUrl,
+  verifyChatGPTEffortSelection,
+  verifyChatGPTModelSelection,
   CHATGPT_URL,
 };

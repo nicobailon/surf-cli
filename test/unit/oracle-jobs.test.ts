@@ -55,7 +55,11 @@ describe("oracle job registry", () => {
       "turns",
     ]);
 
-    jobs.markDispatched(created.id, { tabId: 42 });
+    jobs.markDispatched(created.id, {
+      tabId: 42,
+      modelVerified: "ChatGPT 5.4 Pro",
+      effortVerified: "Extended",
+    });
     jobs.markAwaiting(created.id, {
       conversationUrl: "https://chatgpt.com/c/conversation-id",
       promptEcho: "Review this verbatim.",
@@ -76,6 +80,8 @@ describe("oracle job registry", () => {
     expect(withTurn.turns).toEqual([turn]);
     expect(captured).toMatchObject({
       state: "captured",
+      model: "ChatGPT 5.4 Pro",
+      effortVerified: "Extended",
       tabId: 42,
       conversationUrl: "https://chatgpt.com/c/conversation-id",
       promptEcho: "Review this verbatim.",

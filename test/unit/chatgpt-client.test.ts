@@ -231,6 +231,57 @@ describe("chatgpt-client", () => {
     });
   });
 
+  describe("verified ChatGPT picker state", () => {
+    const modelState = [
+      {
+        role: "button",
+        label: "ChatGPT 5.4 Thinking",
+        testId: "model-switcher-dropdown-button",
+      },
+    ];
+    const effortOptions = [
+      { role: "menuitemradio", label: "Light", testId: "thinking-time-light" },
+      { role: "menuitemradio", label: "Standard", testId: "thinking-time-standard" },
+      { role: "menuitemradio", label: "Extended", testId: "thinking-time-extended" },
+      { role: "menuitemradio", label: "Heavy", testId: "thinking-time-heavy" },
+    ];
+
+    it.each([
+      ["requested model found", modelState, "thinking", "ChatGPT 5.4 Thinking"],
+      ["requested model missing", modelState, "pro", null],
+      ["ambiguous model state", [...modelState, ...modelState], "thinking", null],
+      ["unreadable model state", [{ role: "button", label: "", testId: null }], "thinking", null],
+    ])("handles %s", (_, items, requested, expectedLabel) => {
+      expect(chatgptClient.verifyChatGPTModelSelection(items, requested)?.label ?? null).toBe(
+        expectedLabel,
+      );
+    });
+
+    it.each([
+      ["requested effort found", [effortOptions[2]], "extended", "Extended"],
+      ["requested effort missing", [effortOptions[1]], "extended", null],
+      ["ambiguous effort state", [effortOptions[2], effortOptions[2]], "extended", null],
+      [
+        "unreadable effort state",
+        [{ role: "menuitemradio", label: "", testId: null }],
+        "extended",
+        null,
+      ],
+    ])("handles %s", (_, items, requested, expectedLabel) => {
+      expect(chatgptClient.verifyChatGPTEffortSelection(items, requested)?.label ?? null).toBe(
+        expectedLabel,
+      );
+    });
+
+    it("resolves effort options and accepts only the documented vocabulary", () => {
+      expect(chatgptClient.resolveChatGPTEffortMenuOption(effortOptions, "extended")).toEqual(
+        effortOptions[2],
+      );
+      expect(chatgptClient.normalizeChatGPTEffortChoice("STANDARD")).toBe("standard");
+      expect(chatgptClient.normalizeChatGPTEffortChoice("maximum")).toBeNull();
+    });
+  });
+
   describe("isNewAssistantContent", () => {
     it.each([
       ["no latest", null, { text: "Answer" }, 2, 1, false],

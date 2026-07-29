@@ -89,6 +89,7 @@ function createOracleHost({ queueAiRequest, requestCallExtension, buildProviderU
         ...browserOptions(request),
         prompt: args.prompt,
         model,
+        effort: args.effort,
         file: args.bundlePath,
         startUrl: parent?.conversationUrl,
         createTab: async () => {
@@ -96,8 +97,13 @@ function createOracleHost({ queueAiRequest, requestCallExtension, buildProviderU
           createdTabId = tabInfo?.tabId || null;
           return tabInfo;
         },
-        afterSubmit: ({ tabId, promptEcho }) => {
-          const dispatchedJob = oracleJobs.markDispatched(created.id, { tabId, promptEcho });
+        afterSubmit: ({ tabId, promptEcho, modelVerified, effortVerified }) => {
+          const dispatchedJob = oracleJobs.markDispatched(created.id, {
+            tabId,
+            promptEcho,
+            modelVerified,
+            effortVerified,
+          });
           if (parent) {
             oracleJobs.appendTurn(parent.id, {
               prompt: args.prompt,

@@ -136,11 +136,13 @@ function transition(id, state, updates) {
   return updated;
 }
 
-function markDispatched(id, { tabId, promptEcho }) {
+function markDispatched(id, { tabId, promptEcho, modelVerified, effortVerified }) {
   return transition(id, "dispatched", {
     dispatchedAt: new Date().toISOString(),
     tabId,
     ...(promptEcho ? { promptEcho } : {}),
+    ...(modelVerified ? { model: modelVerified } : {}),
+    ...(effortVerified ? { effortVerified } : {}),
   });
 }
 
