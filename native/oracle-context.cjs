@@ -190,6 +190,7 @@ function checkGitIgnored(cwd, files) {
         resolve(new Set(stdout.toString("utf8").split("\0").filter(Boolean)));
       },
     );
+    child.stdin.on("error", () => {});
     child.stdin.end(input);
   });
 }
