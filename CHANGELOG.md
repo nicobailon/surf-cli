@@ -2,6 +2,9 @@
 
 ## [Unreleased]
 
+### Changed
+- **Extension icon** - Replaced the placeholder teal glyph with on-brand artwork matching the project banner: a cartoon wave curl with the surfing robot mascot, tuned to stay legible at 16px in the Chrome toolbar.
+
 ## [2.10.0] - 2026-07-29
 
 ### Added
