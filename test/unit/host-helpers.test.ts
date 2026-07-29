@@ -106,6 +106,31 @@ describe("mapToolToMessage", () => {
     });
   });
 
+  describe("oracle commands", () => {
+    it("maps oracle socket tools to host-owned messages", () => {
+      expect(helpers.mapToolToMessage("oracle.ask", { prompt: "review", model: "pro" })).toEqual({
+        type: "ORACLE_ASK",
+        prompt: "review",
+        model: "pro",
+      });
+      expect(helpers.mapToolToMessage("oracle.status", { id: "job" })).toEqual({
+        type: "ORACLE_STATUS",
+        id: "job",
+      });
+      expect(helpers.mapToolToMessage("oracle.result", { id: "job", timeout: 5 })).toEqual({
+        type: "ORACLE_RESULT",
+        id: "job",
+        timeout: 5,
+      });
+      expect(helpers.mapToolToMessage("oracle.list", {})).toEqual({ type: "ORACLE_LIST" });
+    });
+
+    it("requires ask prompts and result ids", () => {
+      expect(() => helpers.mapToolToMessage("oracle.ask", {})).toThrow("prompt required");
+      expect(() => helpers.mapToolToMessage("oracle.result", {})).toThrow("id required");
+    });
+  });
+
   describe("aistudio commands", () => {
     it("maps aistudio to AISTUDIO_QUERY with default model", () => {
       const msg = helpers.mapToolToMessage("aistudio", { query: "hi" });
@@ -344,6 +369,22 @@ describe("mapToolToMessage", () => {
   describe("error cases", () => {
     it("returns null for unknown tool", () => {
       expect(helpers.mapToolToMessage("unknown.command", {})).toBeNull();
+    });
+  });
+});
+
+describe("formatToolError", () => {
+  it("preserves structured codes and job ids", () => {
+    const error = Object.assign(new Error("capacity reached"), {
+      code: "capacity",
+      jobId: "job-id",
+    });
+
+    expect(helpers.formatToolError(error)).toEqual({
+      code: "capacity",
+      jobId: "job-id",
+      message: "capacity reached",
+      content: [{ type: "text", text: "capacity reached" }],
     });
   });
 });

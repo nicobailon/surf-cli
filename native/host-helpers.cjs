@@ -13,6 +13,21 @@ function normalizeModelString(model) {
   return String(model || "").trim().toLowerCase();
 }
 
+function formatToolError(error) {
+  const message = error instanceof Error
+    ? error.message
+    : typeof error === "string"
+      ? error
+      : error?.message || String(error);
+  const result = { content: [{ type: "text", text: message }] };
+  if (error && typeof error === "object") {
+    result.message = message;
+    if (typeof error.code === "string") result.code = error.code;
+    if (typeof error.jobId === "string") result.jobId = error.jobId;
+  }
+  return result;
+}
+
 /**
  * Format tool result content for MCP response
  * @param {*} result - The result object from the extension
@@ -1082,6 +1097,16 @@ function mapToolToMessage(tool, args, tabId) {
     case "history.search":
       if (!a.query) throw new Error("query required");
       return { type: "HISTORY_SEARCH", query: a.query, limit: a.limit !== undefined ? parseInt(a.limit, 10) : 20 };
+    case "oracle.ask":
+      if (!a.prompt) throw new Error("prompt required");
+      return { ...a, type: "ORACLE_ASK" };
+    case "oracle.status":
+      return { ...a, type: "ORACLE_STATUS" };
+    case "oracle.result":
+      if (!a.id) throw new Error("id required");
+      return { ...a, type: "ORACLE_RESULT" };
+    case "oracle.list":
+      return { type: "ORACLE_LIST" };
     case "chatgpt":
       if (!a.query) throw new Error("query required");
       return { 
@@ -1196,4 +1221,4 @@ function mapToolToMessage(tool, args, tabId) {
   }
 }
 
-module.exports = { mapToolToMessage, mapComputerAction, formatToolContent, buildProviderUploadMessage };
+module.exports = { mapToolToMessage, mapComputerAction, formatToolContent, formatToolError, buildProviderUploadMessage };

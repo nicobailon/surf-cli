@@ -7,6 +7,7 @@ const {
   atomicWriteJson,
   ensurePrivateDir,
   getPrivateStateRoot,
+  readPrivateFile,
   readPrivateJson,
 } = require("./private-state.cjs");
 
@@ -27,9 +28,10 @@ function jobDirectory(id, root = getPrivateStateRoot()) {
   return path.join(oracleRoot(root), id);
 }
 
-function codedError(code, message) {
+function codedError(code, message, details = {}) {
   const error = new Error(message);
   error.code = code;
+  Object.assign(error, details);
   return error;
 }
 
@@ -45,13 +47,17 @@ function readJobs(root = getPrivateStateRoot()) {
     .filter(Boolean);
 }
 
-function createJob({ prompt, contextManifest = {}, model = null, effortRequested = null }) {
+function createJob({ prompt, contextManifest = {}, model = null, effortRequested = null, follow = null }) {
   const root = getPrivateStateRoot();
   const base = oracleRoot(root);
   ensurePrivateDir(base, root);
   const inFlight = readJobs(root).find((job) => !TERMINAL_STATES.has(job.state));
   if (inFlight) {
-    throw codedError("capacity", `oracle job capacity reached; in-flight job: ${inFlight.id}`);
+    throw codedError(
+      "capacity",
+      `oracle job capacity reached; in-flight job: ${inFlight.id}`,
+      { jobId: inFlight.id },
+    );
   }
 
   const now = new Date();
@@ -90,6 +96,7 @@ function createJob({ prompt, contextManifest = {}, model = null, effortRequested
       promptEcho: null,
       error: null,
       turns: [],
+      ...(follow ? { follow } : {}),
     };
     atomicWriteJson(path.join(directory, "job.json"), job, { root });
     return job;
@@ -106,6 +113,15 @@ function getJob(id) {
   return job;
 }
 
+function getResponse(id) {
+  const root = getPrivateStateRoot();
+  getJob(id);
+  return readPrivateFile(path.join(jobDirectory(id, root), "response.md"), {
+    root,
+    encoding: "utf8",
+  });
+}
+
 function transition(id, state, updates) {
   const job = getJob(id);
   if (!TRANSITIONS[job.state]?.has(state)) {
@@ -120,10 +136,11 @@ function transition(id, state, updates) {
   return updated;
 }
 
-function markDispatched(id, { tabId }) {
+function markDispatched(id, { tabId, promptEcho }) {
   return transition(id, "dispatched", {
     dispatchedAt: new Date().toISOString(),
     tabId,
+    ...(promptEcho ? { promptEcho } : {}),
   });
 }
 
@@ -158,6 +175,20 @@ function markFailed(id, { code, message }) {
   });
 }
 
+function updateTabId(id, tabId) {
+  const job = getJob(id);
+  if (TERMINAL_STATES.has(job.state)) {
+    throw codedError(
+      "invalid_transition",
+      `oracle job ${id} cannot transition from ${job.state} to update tab`,
+    );
+  }
+  const updated = { ...job, tabId };
+  const root = getPrivateStateRoot();
+  atomicWriteJson(path.join(jobDirectory(id, root), "job.json"), updated, { root });
+  return updated;
+}
+
 function appendTurn(id, turn) {
   const job = getJob(id);
   const storedTurn = {
@@ -188,10 +219,12 @@ module.exports = {
   appendTurn,
   createJob,
   getJob,
+  getResponse,
   listJobs,
   markAwaiting,
   markCaptured,
   markDispatched,
   markFailed,
   oracleRoot,
+  updateTabId,
 };

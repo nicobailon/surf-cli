@@ -23,6 +23,7 @@ const PROVIDER_DEFAULT_TIMEOUT_SECONDS = {
   gemini: 300,
   grok: 300,
   perplexity: 120,
+  "oracle.result": 300,
   "playbook.run": 600,
 };
 

@@ -88,6 +88,8 @@ async function dispatch(options) {
     cdpCommand,
     uploadFile,
     beforeSubmit,
+    afterSubmit,
+    startUrl,
     log = () => {},
     signal,
   } = options;
@@ -114,6 +116,7 @@ async function dispatch(options) {
     const inputCdp = (method, params) =>
       raceAbort(() => cdpCommand(tabId, method, params), signal);
 
+    if (startUrl) await inputCdp("Page.navigate", { url: startUrl });
     await waitForPageLoad(cdp, 45000, signal);
     log("Page loaded");
     if (await isCloudflareBlocked(cdp)) {
@@ -166,13 +169,15 @@ async function dispatch(options) {
     if (beforeSubmit) await raceAbort(beforeSubmit, signal);
     await clickSend(cdp, inputCdp, signal);
     baseline[RESPONSE_STARTED_AT] = Date.now();
+    const promptEcho = normalizePromptEcho(prompt);
+    if (afterSubmit) await afterSubmit({ tabId, promptEcho });
     log("Prompt sent, waiting for response...");
     const conversationUrl = await waitForConversationUrl(cdp, 30000, signal);
 
     return {
       tabId,
       conversationUrl,
-      promptEcho: normalizePromptEcho(prompt),
+      promptEcho,
       model: model || "current",
       baseline,
     };
@@ -192,6 +197,7 @@ async function harvest(options) {
     closeTab,
     cdpEvaluate,
     cdpCommand,
+    keepCreatedTabOpen = false,
     log = () => {},
     signal,
   } = options;
@@ -243,7 +249,7 @@ async function harvest(options) {
     const fallbackCode = error?.message === "Response timeout" ? "timeout" : "harvest_failed";
     throw classifyError(error, fallbackCode, ["timeout"]);
   } finally {
-    if (ownsTab) {
+    if (ownsTab && !keepCreatedTabOpen) {
       try {
         await closeTab(tabId);
       } catch (error) {

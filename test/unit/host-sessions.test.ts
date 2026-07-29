@@ -228,6 +228,8 @@ describe("host session manager", () => {
     expect(resolveRequestDeadlineMs("click")).toBe(60000);
     expect(resolveRequestDeadlineMs("chatgpt")).toBe(2700000 + 60000);
     expect(resolveRequestDeadlineMs("gemini", { timeout: 10 })).toBe(10000 + 60000);
+    expect(resolveRequestDeadlineMs("oracle.result")).toBe(300000 + 60000);
+    expect(resolveRequestDeadlineMs("oracle.result", { timeout: 10 })).toBe(10000 + 60000);
     expect(resolveRequestDeadlineMs("aistudio.build")).toBe(600000 + 60000);
     expect(resolveRequestDeadlineMs("playbook.run", { args: { timeout: 2700 } })).toBe(
       2700000 + 60000,

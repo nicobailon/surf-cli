@@ -14,7 +14,8 @@ const perplexityClient = require("./perplexity-client.cjs");
 const grokClient = require("./grok-client.cjs");
 const aistudioClient = require("./aistudio-client.cjs");
 const aistudioBuild = require("./aistudio-build.cjs");
-const { mapToolToMessage, mapComputerAction, formatToolContent, buildProviderUploadMessage } = require("./host-helpers.cjs");
+const { mapToolToMessage, mapComputerAction, formatToolContent, formatToolError, buildProviderUploadMessage } = require("./host-helpers.cjs");
+const { createOracleHost } = require("./oracle-host.cjs");
 
 const IS_WIN = process.platform === "win32";
 const { SOCKET_PATH, SURF_TMP } = require("./socket-path.cjs");
@@ -402,6 +403,15 @@ aiQueue = new BoundedAiQueue({
     : handler(),
 });
 
+const oracleHost = createOracleHost({
+  queueAiRequest,
+  requestCallExtension,
+  buildProviderUploadMessage,
+  log,
+});
+const adoptedOracleJobs = oracleHost.adoptOrphans();
+log(`Oracle adoption: ${adoptedOracleJobs.length} job(s); ids=${adoptedOracleJobs.map((job) => job.id).join(",") || "none"}`);
+
 function sendSocket(socket, value, options = {}) {
   const writer = socketWriters.get(socket);
   return writer ? writer.send(value, options) : writeFrame(socket, value);
@@ -672,8 +682,14 @@ function sendToolResponse(socket, id, result, error) {
     } catch (transferFailure) {
       finalError = transferFailure.message;
     }
-    if (finalError && request) {
-      finalError = rewriteTransferPaths(finalError, request.pathRewrites || []);
+    const formattedError = finalError ? formatToolError(finalError) : null;
+    if (formattedError && request) {
+      const rewrittenMessage = rewriteTransferPaths(
+        formattedError.content[0].text,
+        request.pathRewrites || [],
+      );
+      formattedError.content[0].text = rewrittenMessage;
+      if (formattedError.message) formattedError.message = rewrittenMessage;
     }
     if (request?.tool && !request.tool.startsWith("playbook.")) {
       const metadata = commandMetadata(request.tool);
@@ -697,7 +713,7 @@ function sendToolResponse(socket, id, result, error) {
       : finalError ? "error" : "completed";
     await completeOwnedRequest(context, id, outcome);
     const response = { type: "tool_response", id };
-    if (finalError) response.error = { content: [{ type: "text", text: finalError }] };
+    if (formattedError) response.error = formattedError;
     else response.result = { content: formatToolContent(output, log, { suppressImages: Boolean(context?.isRemote) }) };
     if (!context?.closed) await sendSocket(socket, response);
   })().catch((sendError) => log(`Error sending tool_response: ${sendError.message}`));
@@ -798,6 +814,13 @@ function handleToolRequest(msg, socket, requestContext = requestStorage.getStore
     require("./abort.cjs").abortableDelay(extensionMsg.seconds * 1000, requestContext.signal)
       .then(() => sendToolResponse(socket, originalId, { success: true }, null))
       .catch((error) => sendToolResponse(socket, originalId, null, error.message));
+    return;
+  }
+
+  if (extensionMsg.type.startsWith("ORACLE_")) {
+    oracleHost.handle(requestContext, extensionMsg)
+      .then((result) => sendToolResponse(socket, originalId, result, null))
+      .catch((error) => sendToolResponse(socket, originalId, null, error));
     return;
   }
   
@@ -1948,6 +1971,7 @@ const handleClient = (socket) => {
       }
       log(`Handling tool_request: ${msg.method} ${tool}${principal ? ` for ${principal.label}` : ""}`);
       try {
+        if (tool.startsWith("oracle.")) oracleHost.assertLocal(request);
         if (isRemote) {
           await applyRequestTransfers(msg, request, transferState, ensureTransferState);
         }
@@ -1955,7 +1979,7 @@ const handleClient = (socket) => {
         requestStorage.run(request, () => handleToolRequest(msg, socket, request));
       } catch (e) {
         await discardRequestTransfers(msg, transferState);
-        sendToolResponse(socket, msg.id || null, null, e.message || "Request failed");
+        sendToolResponse(socket, msg.id || null, null, e?.code ? e : e.message || "Request failed");
       }
       return;
     }

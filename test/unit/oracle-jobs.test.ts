@@ -93,6 +93,7 @@ describe("oracle job registry", () => {
       JSON.parse(fs.readFileSync(path.join(directory, "context-manifest.json"), "utf8")),
     ).toEqual({ files: [{ path: "src/a.ts", bytes: 12 }] });
     expect(fs.readFileSync(path.join(directory, "response.md"), "utf8")).toBe("The answer.\n");
+    expect(jobs.getResponse(created.id)).toBe("The answer.\n");
     expect(JSON.parse(fs.readFileSync(path.join(directory, "turns", "0001.json"), "utf8"))).toEqual(
       turn,
     );
@@ -110,8 +111,21 @@ describe("oracle job registry", () => {
     } catch (error: any) {
       expect(error).toBeInstanceOf(Error);
       expect(error.code).toBe("capacity");
+      expect(error.jobId).toBe(first.id);
       expect(error.message).toContain(first.id);
     }
+  });
+
+  it("records follow lineage and replacement tabs", () => {
+    useTempState();
+    const parent = jobs.createJob({ prompt: "first" });
+    jobs.markFailed(parent.id, { code: "timeout", message: "finished" });
+    const child = jobs.createJob({ prompt: "follow", follow: parent.id });
+    jobs.markDispatched(child.id, { tabId: 7, promptEcho: "follow" });
+
+    const updated = jobs.updateTabId(child.id, 8);
+
+    expect(updated).toMatchObject({ follow: parent.id, tabId: 8, promptEcho: "follow" });
   });
 
   it("rejects illegal state transitions with the amended taxonomy code", () => {
