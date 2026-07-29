@@ -82,6 +82,37 @@ surf chatgpt "review" --model gpt-4o              # Specify model
 surf chatgpt "analyze" --file document.pdf        # With file attachment
 ```
 
+### Oracle
+
+Use `surf chatgpt` for quick one-shot questions. Use `surf oracle` for long-running or Pro coding consults that need a durable job, explicit model and effort selection, file context, recovery, or follow-up turns. Oracle is local-only.
+
+For agent workflows, detach after dispatch and keep the returned `.id`:
+
+```bash
+surf oracle ask "Review this change and identify release risks" \
+  --files "src/**/*.ts" --files "package.json" \
+  --model pro --effort extended --detach --json
+
+surf oracle status <job-id> --json
+surf oracle result <job-id> --json
+# Or let Surf keep polling until capture:
+surf oracle result <job-id> --wait --json
+```
+
+`status` reads persisted state without touching Chrome. `result` attempts to harvest the answer and returns the job object with `response` once its state is `captured`. A Ctrl-C during waiting exits with status 130 and prints `Recover with: surf oracle result <id>`. Once the job is `awaiting`, the persisted ChatGPT conversation URL is its durable key, so `surf oracle result <id>` can recover after CLI exit, native-host restart, or Chrome restart by reopening that conversation.
+
+Treat Pro quota as scarce. Oracle never selects Pro implicitly; request it with `--model pro`. Accepted `--effort` values are `light`, `standard`, `extended`, and `heavy`. Requested model and effort selections are read back before submission, and an unverifiable selection fails with `model_verification_failed` instead of silently continuing. Capacity is one non-terminal oracle job. A `capacity` error includes the in-flight job ID; poll that job or wait for it to finish rather than submitting the same consult again.
+
+Context comes from repeatable `--files` globs. Surf fails closed when a glob matches nothing or a matched file is unreadable, binary, or invalid UTF-8. It also blocks gitignored files and basenames matching `.env*`, `*.pem`, `*.key`, `id_rsa*`, `id_ed25519*`, `*.p12`, `*.pfx`, `credentials*`, or `secrets*`. Use `--allow-sensitive` only after intentionally reviewing those files; it overrides the block rather than redacting content. Context up to 60,000 evidence characters is inserted inline, while larger context becomes one private text attachment. The assembly manifest records each path, byte count, SHA-256, inline or bundle disposition, and deny-list outcome.
+
+Continue a captured consult with `follow`. Use the ID returned by each turn for the next turn:
+
+```bash
+surf oracle follow <job-id> "Challenge your recommendation. What could invalidate it?" --detach --json
+surf oracle result <follow-job-id> --wait --json
+surf oracle follow <follow-job-id> "Give the final decision and concrete next steps." --detach --json
+```
+
 ### Gemini
 ```bash
 surf gemini "explain quantum computing"

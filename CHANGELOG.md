@@ -2,8 +2,12 @@
 
 ## [Unreleased]
 
+### Added
+- **Durable ChatGPT oracle jobs** - Added `surf oracle ask|status|result|follow|list` with recoverable conversation-backed jobs, repeatable context globs, and fail-closed context, model, and effort gates.
+
 ### Changed
 - **Extension icon** - Replaced the placeholder teal glyph with on-brand artwork matching the project banner: a cartoon wave curl with the surfing robot mascot, tuned to stay legible at 16px in the browser toolbar.
+- **ChatGPT model selection** - `surf chatgpt --model` now fails closed with `model_verification_failed` when the requested model cannot be verified as selected instead of continuing with the current model.
 
 ## [2.10.0] - 2026-07-29
 

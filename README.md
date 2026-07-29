@@ -492,6 +492,19 @@ surf aistudio.build "crm dashboard" --output ./out            # Extract zip to d
 surf aistudio.build "game" --keep-open --timeout 600          # Keep tab open, 10min timeout
 ```
 
+#### Oracle
+
+Use `surf oracle` for a durable, local ChatGPT consult instead of a quick `surf chatgpt` one-shot. It persists jobs by conversation URL, supports repeatable file-context globs, and verifies requested model and reasoning effort before submission.
+
+```bash
+surf oracle ask "review this change" --files "src/**/*.ts" --model pro --effort extended --detach --json
+surf oracle status <job-id> --json
+surf oracle result <job-id> --wait --json
+surf oracle follow <job-id> "challenge that recommendation" --detach --json
+```
+
+Only one oracle job can be in flight. Sensitive filename patterns and gitignored context are blocked unless `--allow-sensitive` is explicit.
+
 Each AI tool uses your existing browser login - no API keys needed. Just be logged into the respective service in Chrome (chatgpt.com, gemini.google.com, perplexity.ai, x.com, or aistudio.google.com).
 
 **Grok troubleshooting:** If queries fail, run `surf grok --validate` to check if the UI structure changed. Use `--save-models` to update the model cache in `surf.json`. Default model is `fast`.
