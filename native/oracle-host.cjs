@@ -130,8 +130,11 @@ function createOracleHost({ queueAiRequest, requestCallExtension, buildProviderU
           message: error?.message || String(error),
         });
       }
+      const keepForManualClearance = ["auth", "cloudflare"].includes(error?.code)
+        && current.state === "created";
       if (
         createdTabId
+        && !keepForManualClearance
         && (error?.code !== "SURF_REQUEST_ABORTED" || current.state === "created")
       ) {
         await closeTab(request, createdTabId).catch(() => {});

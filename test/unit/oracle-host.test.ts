@@ -80,6 +80,38 @@ describe("oracle host recovery", () => {
     ).toEqual(contextManifest);
   });
 
+  it("leaves Cloudflare challenge tabs open for manual clearance", async () => {
+    useTempState();
+    vi.spyOn(chatgptClient, "dispatch").mockImplementation(async (options: any) => {
+      await options.createTab();
+      throw Object.assign(new Error("Cloudflare challenge detected - complete in browser"), {
+        code: "cloudflare",
+      });
+    });
+    const requestCallExtension = vi.fn(async (_request, tool) => {
+      if (tool === "create_tab") {
+        return { tabId: 7 };
+      }
+      if (tool === "close_tab") {
+        return {};
+      }
+      throw new Error(`Unexpected extension call: ${tool}`);
+    });
+    const host = createHost(requestCallExtension);
+
+    await expect(
+      host.handle({ context: { isRemote: false } }, { type: "ORACLE_ASK", prompt: "review" }),
+    ).rejects.toMatchObject({ code: "cloudflare" });
+
+    expect(requestCallExtension).not.toHaveBeenCalledWith(
+      expect.anything(),
+      "close_tab",
+      expect.anything(),
+      expect.anything(),
+      expect.anything(),
+    );
+  });
+
   it("recaptures a live dispatched job URL before harvesting", async () => {
     useTempState();
     const job = oracleJobs.createJob({ prompt: "review" });
