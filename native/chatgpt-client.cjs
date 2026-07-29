@@ -347,6 +347,7 @@ module.exports = {
   resolveChatGPTModelMenuOption,
   isNewAssistantContent,
   isChatGPTResponseComplete,
+  isCloudflareBlocked,
   normalizePromptEcho,
   matchesPromptEcho,
   extractConversationUrl,

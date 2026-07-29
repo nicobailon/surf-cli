@@ -96,8 +96,26 @@ async function waitForPageLoad(cdp, timeoutMs = 45000, signal) {
 
 async function isCloudflareBlocked(cdp) {
   const title = await evaluate(cdp, "document.title.toLowerCase()");
-  if (title && title.includes("just a moment")) return true;
-  return evaluate(cdp, `Boolean(document.querySelector('${SELECTORS.cloudflareScript}'))`);
+  if (title && (title.includes("just a moment") || title.includes("verify you are human"))) {
+    return true;
+  }
+  return evaluate(
+    cdp,
+    `(() => {
+      const hasPrompt = Boolean(document.querySelector(${JSON.stringify(SELECTORS.promptTextarea)}));
+      if (hasPrompt) return false;
+      const text = (document.body?.innerText || '').toLowerCase();
+      const challengeText = [
+        'checking if the site connection is secure',
+        'verify you are human',
+        'review the security of your connection',
+        'needs to review the security of your connection',
+        'cloudflare ray id'
+      ];
+      return challengeText.some(marker => text.includes(marker))
+        || Boolean(document.querySelector('input[name="cf-turnstile-response"], .cf-turnstile, #challenge-stage, iframe[src*="challenges.cloudflare.com"]'));
+    })()`,
+  );
 }
 
 async function checkLoginStatus(cdp) {

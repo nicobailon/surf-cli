@@ -12,7 +12,7 @@ function createReadyChatGptEvaluate(
     if (expression === "document.title.toLowerCase()") {
       return { result: { value: "chatgpt" } };
     }
-    if (expression.includes("challenge-platform")) {
+    if (expression.includes("challenge-platform") || expression.includes("cloudflare ray id")) {
       return { result: { value: false } };
     }
     if (expression.includes("fetch('/backend-api/me'")) {
@@ -26,6 +26,30 @@ function createReadyChatGptEvaluate(
 }
 
 describe("chatgpt-client", () => {
+  describe("isCloudflareBlocked", () => {
+    it("does not treat normal logged-in ChatGPT pages with challenge scripts as blocked", async () => {
+      const result = await chatgptClient.isCloudflareBlocked(async (expression: string) => {
+        if (expression === "document.title.toLowerCase()") {
+          return { result: { value: "chatgpt" } };
+        }
+        return { result: { value: false } };
+      });
+
+      expect(result).toBe(false);
+    });
+
+    it("detects visible Cloudflare challenge pages", async () => {
+      const result = await chatgptClient.isCloudflareBlocked(async (expression: string) => {
+        if (expression === "document.title.toLowerCase()") {
+          return { result: { value: "chatgpt" } };
+        }
+        return { result: { value: true } };
+      });
+
+      expect(result).toBe(true);
+    });
+  });
+
   describe("cleanChatGPTResponseText", () => {
     it.each([
       [
