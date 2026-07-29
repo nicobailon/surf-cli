@@ -19,6 +19,11 @@ const {
 const { executeDoSteps } = require("./do-executor.cjs");
 const { openClientTransport } = require("./client-transport.cjs");
 const { version: VERSION } = require("../package.json");
+const {
+  formatOracleError,
+  formatOracleOutput,
+  handleOracleCli,
+} = require("./oracle-cli.cjs");
 const { formatPlaybookOutput, handlePlaybookCli, playbookCommandNeedsBrowser } = require("./playbook-cli.cjs");
 
 const IS_WIN = process.platform === "win32";
@@ -71,6 +76,28 @@ function installBrowserLock({ noLock, timeoutMs }, endpoint) {
     release();
     process.exit(143);
   });
+}
+
+async function runWithBrowserLock(lockOptions, endpoint, operation) {
+  let releaseBrowserLock = () => {};
+  if (!lockOptions.noLock) {
+    const lock = acquireBrowserLock(endpoint.key, SURF_TMP, {
+      timeoutMs: lockOptions.timeoutMs,
+    });
+    releaseBrowserLock = lock.release;
+  }
+  const release = () => {
+    const releaseCurrent = releaseBrowserLock;
+    releaseBrowserLock = () => {};
+    releaseCurrent();
+  };
+  process.once("exit", release);
+  try {
+    return await operation();
+  } finally {
+    process.removeListener("exit", release);
+    release();
+  }
 }
 
 // Cross-platform image resize (macOS: sips, Linux: ImageMagick)
@@ -151,6 +178,28 @@ try {
 } catch (error) {
   console.error(`Error: ${error.message}`);
   process.exit(1);
+}
+
+if (args[0] === "oracle") {
+  handleOracleCli(args, {
+    endpoint,
+    cwd: process.cwd(),
+    withBrowserLock: (operation) => runWithBrowserLock(
+      parseBrowserLockOptions(args.includes("--no-lock")),
+      endpoint,
+      operation,
+    ),
+  })
+    .then((result) => {
+      if (!result.handled) throw new Error("Oracle command was not handled");
+      if (result.value !== undefined) console.log(formatOracleOutput(result.value, result.json));
+      process.exit(0);
+    })
+    .catch((error) => {
+      console.error(formatOracleError(error, args.includes("--json")));
+      process.exit(1);
+    });
+  return;
 }
 
 if (["playbook", "pb", "use"].includes(args[0])) {
@@ -1496,6 +1545,7 @@ Common Commands:
   search <term>      Search for text in page (alias: find)
   window.new <url>   Create isolated browser window
   doctor             Diagnose native host/socket setup
+  oracle ask <prompt> Start a durable ChatGPT consult
   wait <seconds>     Wait N seconds
 
 Quick Examples:
@@ -1554,6 +1604,9 @@ const showFullHelp = () => {
   console.log(`surf v${VERSION} - Browser automation CLI
 
 Usage: surf <command> [args] [options]
+
+Oracle:
+  surf oracle <ask|status|result|follow|list>
 
 Playbooks:
   surf playbook|pb <list|show|ops|run|record|suggest|save|client|trace|export|import>

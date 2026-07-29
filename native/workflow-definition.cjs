@@ -7,6 +7,7 @@ const COMMANDS = {
   ai: { primaryArg: "query", effect: "read", argKinds: { query: "user-input" }, sensitiveArgs: ["query"] },
   gemini: { primaryArg: "query", effect: "page-write", argKinds: { query: "user-input" }, sensitiveArgs: ["query"] },
   chatgpt: { primaryArg: "query", effect: "page-write", argKinds: { query: "user-input" }, sensitiveArgs: ["query"] },
+  "oracle.ask": { primaryArg: "prompt", effect: "page-write", argKinds: { prompt: "user-input" }, sensitiveArgs: ["prompt"] },
   perplexity: { primaryArg: "query", effect: "page-write", argKinds: { query: "user-input" }, sensitiveArgs: ["query"] },
   grok: { primaryArg: "query", effect: "page-write", argKinds: { query: "user-input" }, sensitiveArgs: ["query"] },
   navigate: { primaryArg: "url", effect: "navigation", argKinds: { url: "url" } },
