@@ -1,4 +1,5 @@
-const { executeWorkflow } = require("./workflow-runtime.cjs");
+const { executeSingleStep, executeWorkflow } = require("./workflow-runtime.cjs");
+const { runWorkflowScript } = require("./workflow-script-runtime.cjs");
 
 function applyTemplate(value, args) {
   if (typeof value === "string") {
@@ -93,6 +94,31 @@ return { status: response.status, ok: response.ok, url: response.url, headers: O
 }
 
 async function runStrategy(strategy, context) {
+  if (strategy.using === "script") {
+    if (context.allowScript !== true) throw new Error("script strategy requires --allow-script");
+    const vars = { ...context.args };
+    const result = await runWorkflowScript({
+      script: strategy.script,
+      input: context.args,
+      timeoutMs: strategy.timeoutMs ?? 10 * 60 * 1000,
+      signal: context.signal,
+      onEvent: context.onEvent,
+      executeTool: async (tool, args, options = {}) => {
+        await context.markDispatched?.();
+        const step = await executeSingleStep({ cmd: tool, args, as: "value" }, vars, {
+          autoWait: strategy.autoWait !== false,
+          executeTool: context.executeTool,
+          onEvent: context.onEvent,
+          signal: options.signal || context.signal,
+          sleep: context.sleep,
+          stepDelay: strategy.stepDelay ?? 100,
+        });
+        if (!step.success) throw new Error(step.error || `tool ${tool} failed`);
+        return step.output;
+      },
+    });
+    return result.value;
+  }
   if (strategy.using === "workflow") {
     const result = await executeWorkflow(applyTemplate(strategy.steps, context.args), {
       autoWait: strategy.autoWait !== false,
@@ -130,7 +156,7 @@ async function runStrategy(strategy, context) {
   throw new Error(`unsupported strategy: ${strategy.using}`);
 }
 
-async function runPlaybookOp({ playbook, op, args: providedArgs = {}, attemptId, executeTool, executeNative, signal, sleep, onEvent = () => {}, beforeDispatch = async () => {}, afterDispatch = async () => {} }) {
+async function runPlaybookOp({ playbook, op, args: providedArgs = {}, attemptId, executeTool, executeNative, signal, sleep, onEvent = () => {}, beforeDispatch = async () => {}, afterDispatch = async () => {}, allowScript = false }) {
   const args = resolveArgs(op, providedArgs);
   const attempts = [];
   for (let index = 0; index < op.run.length; index++) {
@@ -154,6 +180,7 @@ async function runPlaybookOp({ playbook, op, args: providedArgs = {}, attemptId,
         allowedOrigins: op.origins || playbook.origins || [],
         markDispatched: op.effect === "write" ? markDispatched : undefined,
         serverIdempotency: op.effect === "write" ? op.safety?.serverIdempotency : undefined,
+        allowScript,
       });
       const value = extractResult(raw, strategy.extract);
       verifyResult(value, strategy.verify || strategy.expect || op.on?.success?.expect, raw);

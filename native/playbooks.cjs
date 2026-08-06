@@ -75,8 +75,21 @@ function validateWriteWorkflowSteps(steps, opId) {
   }
 }
 
+function normalizeScript(value) {
+  if (typeof value === "string") return value;
+  if (Array.isArray(value) && value.every((line) => typeof line === "string")) return value.join("\n");
+  return null;
+}
+
 function validateStrategy(strategy, effect, opId) {
   if (!strategy || typeof strategy !== "object" || Array.isArray(strategy)) throw new Error("playbook strategy must be an object");
+  if (strategy.using === "script") {
+    if (effect === "write") throw new Error(`write op ${opId} script strategy is not supported`);
+    const script = normalizeScript(strategy.script);
+    if (!script?.trim()) throw new Error("script strategy requires script");
+    if (strategy.timeoutMs !== undefined && (!Number.isInteger(strategy.timeoutMs) || strategy.timeoutMs < 1)) throw new Error("script strategy timeoutMs must be a positive integer");
+    return { ...strategy, script };
+  }
   if (strategy.using === "workflow") {
     if (!Array.isArray(strategy.steps) || strategy.steps.length === 0) throw new Error("workflow strategy requires steps");
     const steps = strategy.steps.map(normalizeStep);

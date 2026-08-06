@@ -48,7 +48,7 @@ function runSpec(argv) {
   const parsed = parseCommandArgs(argv.slice(offset));
   const [playbook, op] = parsed.positional;
   if (!playbook || !op) throw new Error(direct ? "Usage: surf use <playbook> <op> [--arg value]" : "Usage: surf pb run <playbook> <op> [--arg value]");
-  const reserved = new Set(["json", "no-lock", "tab-id", "write", "repeat", "retry-attempt", "override-in-doubt", "pin-built-in"]);
+  const reserved = new Set(["json", "no-lock", "tab-id", "write", "repeat", "retry-attempt", "override-in-doubt", "pin-built-in", "allow-script"]);
   const args = Object.fromEntries(Object.entries(parsed.options).filter(([name]) => !reserved.has(name)));
   return { playbook, op, args, options: parsed.options };
 }
@@ -89,6 +89,7 @@ async function handlePlaybookCli(argv, { endpoint, cwd = process.cwd() }) {
       retryAttempt: spec.options["retry-attempt"],
       overrideInDoubt: spec.options["override-in-doubt"] === true,
       pinBuiltIn: spec.options["pin-built-in"] === true,
+      allowScript: spec.options["allow-script"] === true,
     };
     const value = await requestHost(endpoint, "playbook.run", args, {
       tabId: spec.options["tab-id"],
@@ -98,7 +99,7 @@ async function handlePlaybookCli(argv, { endpoint, cwd = process.cwd() }) {
   }
   const command = argv[1];
   const parsed = parseCommandArgs(argv.slice(2));
-  if (!command || command === "help") return { handled: true, value: "Usage: surf playbook|pb <list|show|ops|run|record|suggest|save|client|trace|export|import>" };
+  if (!command || command === "help") return { handled: true, value: "Usage: surf playbook|pb <list|show|ops|run|record|suggest|save|client|trace|export|import>\nRun trusted script strategies with: surf use <playbook> <op> --allow-script" };
   if (endpoint?.kind === "remote" && ["list", "show", "ops"].includes(command)) throw new Error(`playbook ${command} is local-only with --remote because runs resolve on the browser host`);
   if (command === "list") return { handled: true, value: listPlaybooks({ cwd }), json: parsed.options.json === true };
   if (command === "show") {

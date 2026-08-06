@@ -2,6 +2,9 @@
 
 ## [Unreleased]
 
+### Added
+- **Playbook script strategies** - Added opt-in trusted read-op scripts with dynamic `tools.run`/`tools.all` Surf tool orchestration and workflow auto-waits.
+
 ## [2.11.0] - 2026-07-29
 
 ### Added

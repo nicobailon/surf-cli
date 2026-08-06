@@ -95,7 +95,7 @@ describe("playbook resolution and strategies", () => {
     expect(op.origins).toEqual(["https://example.test"]);
   });
 
-  it("rejects literal credentials and multi-step write workflows", () => {
+  it("rejects literal credentials and unsafe write workflows", () => {
     const validate = (op: unknown) => playbooks.validateOp(op, { origins: [] });
     expect(
       validate({
@@ -133,6 +133,20 @@ describe("playbook resolution and strategies", () => {
         ],
       }),
     ).toThrow(/exactly one commit step/);
+    expect(() =>
+      validate({
+        id: "mutate",
+        effect: "write",
+        safety: { duplicate: "transactional", key: ["id"] },
+        run: [
+          {
+            using: "script",
+            script:
+              "return await tools.run('commit', { tool: 'click', args: { selector: '#submit' } })",
+          },
+        ],
+      }),
+    ).toThrow(/script strategy is not supported/);
     expect(
       validate({
         id: "mutate",
@@ -145,6 +159,122 @@ describe("playbook resolution and strategies", () => {
         run: [{ using: "workflow", steps: [{ tool: "click", args: { selector: "#submit" } }] }],
       }).safety.serverIdempotency,
     ).toEqual({ header: "Idempotency-Key" });
+  });
+
+  it("requires opt-in before running trusted script strategies", async () => {
+    await expect(
+      runtime.runPlaybookOp({
+        playbook: { id: "fixture", provenance: { scope: "test" } },
+        op: {
+          id: "read",
+          effect: "read",
+          args: {},
+          run: [
+            {
+              using: "script",
+              script: "return input.constructor.constructor('return process')()",
+            },
+          ],
+        },
+        executeTool: vi.fn(),
+      }),
+    ).rejects.toThrow(/--allow-script/);
+  });
+
+  it("aborts in-flight script tool calls when the script times out", async () => {
+    let toolSignal: AbortSignal | undefined;
+    let markDispatched: () => void = () => undefined;
+    const toolDispatched = new Promise<void>((resolve) => {
+      markDispatched = resolve;
+    });
+    const run = runtime.runPlaybookOp({
+      playbook: { id: "fixture", provenance: { scope: "test" } },
+      op: {
+        id: "read",
+        effect: "read",
+        args: {},
+        run: [
+          {
+            using: "script",
+            timeoutMs: 1000,
+            script: `return await tools.run("hang", { tool: "page.text", args: {} });`,
+          },
+        ],
+      },
+      executeTool: vi.fn(
+        async (
+          _tool: string,
+          _args: Record<string, unknown>,
+          options?: { signal?: AbortSignal },
+        ) => {
+          toolSignal = options?.signal;
+          markDispatched();
+          return await new Promise(() => undefined);
+        },
+      ),
+      sleep: vi.fn(),
+      allowScript: true,
+    });
+
+    await toolDispatched;
+    await expect(run).rejects.toThrow(/timed out/);
+    expect(toolSignal).toBeDefined();
+    expect(toolSignal?.aborted).toBe(true);
+  });
+
+  it("runs a trusted script strategy with dynamic Surf tool calls", async () => {
+    const calls: Array<{ tool: string; args: Record<string, unknown> }> = [];
+    const executeTool = vi.fn(async (tool: string, args: Record<string, unknown>) => {
+      calls.push({ tool, args });
+      if (tool === "page.text") {
+        return { value: "page content" };
+      }
+      if (tool === "click") {
+        return { value: args.selector };
+      }
+      return { value: true };
+    });
+
+    const op = playbooks.validateOp(
+      {
+        id: "read",
+        effect: "read",
+        args: { selectors: { required: true } },
+        run: [
+          {
+            using: "script",
+            stepDelay: 0,
+            script: [
+              `const page = await tools.run("page", { tool: "page.text", args: {} });`,
+              `const clicked = await tools.all(input.selectors.map((selector) => ({ key: "click-" + selector.slice(1), tool: "click", args: { selector } })));`,
+              `emit({ clicked: clicked.length });`,
+              `return { page: page.output, selectors: clicked.map((entry) => entry.output) };`,
+            ],
+          },
+        ],
+        expect: { truthy: true },
+      },
+      { origins: [] },
+    );
+
+    const result = await runtime.runPlaybookOp({
+      playbook: { id: "fixture", provenance: { scope: "test" } },
+      op,
+      args: { selectors: ["#a", "#b"] },
+      executeTool,
+      sleep: vi.fn(),
+      allowScript: true,
+    });
+
+    expect(result).toMatchObject({
+      status: "completed",
+      strategy: "script",
+      value: { page: "page content", selectors: ["#a", "#b"] },
+    });
+    expect(calls.filter((call) => call.tool === "click").map((call) => call.args.selector)).toEqual(
+      ["#a", "#b"],
+    );
+    expect(calls.some((call) => call.tool === "wait.dom")).toBe(true);
   });
 
   it("rejects a page-context network request outside the declared origins", async () => {

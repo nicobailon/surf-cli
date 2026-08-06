@@ -707,6 +707,21 @@ surf use page read --json
 surf use <site> <write-op> --write --resource-id 123
 ```
 
+Playbook read ops can also use a trusted `script` strategy when fixed JSON steps are too rigid. Scripts require `--allow-script` at run time. Only run scripts from playbooks you trust. This is not a security sandbox.
+
+The script gets `input`, `tools.run`, `tools.all`, `tools.ref`/`refs`, `emit`, and `console`. Tool calls still use Surf workflow step behavior, including auto-waits unless `autoWait` is `false`.
+
+```json
+{
+  "using": "script",
+  "script": [
+    "const page = await tools.run('page', { tool: 'page.text', args: {} });",
+    "const clicked = await tools.all(input.selectors.map((selector) => ({ key: selector.slice(1), tool: 'click', args: { selector } })));",
+    "return { page: page.output, clicked: clicked.map((link) => link.output) };"
+  ]
+}
+```
+
 Project playbooks in `./.surf/playbooks/` override user playbooks in `~/.surf/playbooks/`; built-ins are the final fallback. `show` reports the selected source. Provider compatibility commands continue to use their validated command paths until provider playbooks have real login-flow validation.
 
 Author a playbook from redacted recent activity or an explicit evidence record:

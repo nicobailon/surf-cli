@@ -523,6 +523,7 @@ async function runHostPlaybook(msg, request) {
     onEvent: report,
     beforeDispatch: async () => updateReceipt(receipt, "dispatched"),
     afterDispatch: async ({ status, error }) => updateReceipt(receipt, status, { error }),
+    allowScript: params.allowScript === true,
   });
 }
 
