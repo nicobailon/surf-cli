@@ -154,16 +154,23 @@ function getResolvedRole(element: Element): string {
 
 if (!window.__piElementMap) window.__piElementMap = {};
 
+interface ElementRef {
+  role: string;
+  name: string;
+  ref: string;
+}
+
+const elementRefs = new WeakMap<Element, ElementRef>();
 let globalRefCounter = 0;
 
 function getOrAssignRef(element: Element, role: string, name: string): string {
-  const existing = (element as any)._piRef as { role: string; name: string; ref: string } | undefined;
+  const existing = elementRefs.get(element);
   if (existing && existing.role === role && existing.name === name) {
     return existing.ref;
   }
   
   const ref = `e${++globalRefCounter}`;
-  (element as any)._piRef = { role, name, ref };
+  elementRefs.set(element, { role, name, ref });
   return ref;
 }
 

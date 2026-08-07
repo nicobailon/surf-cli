@@ -10,10 +10,25 @@ export interface ApiStreamCallbacks {
 const streamCallbacks = new Map<string, ApiStreamCallbacks>();
 let streamIdCounter = 0;
 
-export function handleNativeApiResponse(msg: any): boolean {
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return !!value && typeof value === "object" && !Array.isArray(value);
+}
+
+function isStringRecord(value: unknown): value is Record<string, string> {
+  return isRecord(value) && Object.values(value).every((entry) => typeof entry === "string");
+}
+
+function failStream(callbacks: ApiStreamCallbacks, streamId: string, error: string): true {
+  callbacks.onError(error);
+  streamCallbacks.delete(streamId);
+  return true;
+}
+
+export function handleNativeApiResponse(msg: unknown): boolean {
+  if (!isRecord(msg)) return false;
   const { type, streamId } = msg;
   
-  if (!streamId || !streamCallbacks.has(streamId)) {
+  if (typeof streamId !== "string" || !streamCallbacks.has(streamId)) {
     return false;
   }
   
@@ -21,9 +36,15 @@ export function handleNativeApiResponse(msg: any): boolean {
   
   switch (type) {
     case "API_RESPONSE_START":
+      if (typeof msg.status !== "number" || !isStringRecord(msg.headers)) {
+        return failStream(callbacks, streamId, "Malformed API response start");
+      }
       callbacks.onStart(msg.status, msg.headers);
       return true;
     case "API_RESPONSE_CHUNK":
+      if (typeof msg.chunk !== "string") {
+        return failStream(callbacks, streamId, "Malformed API response chunk");
+      }
       callbacks.onChunk(msg.chunk);
       return true;
     case "API_RESPONSE_END":
@@ -31,6 +52,9 @@ export function handleNativeApiResponse(msg: any): boolean {
       streamCallbacks.delete(streamId);
       return true;
     case "API_RESPONSE_ERROR":
+      if (typeof msg.error !== "string") {
+        return failStream(callbacks, streamId, "Malformed API response error");
+      }
       callbacks.onError(msg.error);
       streamCallbacks.delete(streamId);
       return true;

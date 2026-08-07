@@ -5,6 +5,9 @@
 ### Added
 - **Playbook script strategies** - Added opt-in trusted read-op scripts with dynamic `tools.run`/`tools.all` Surf tool orchestration and workflow auto-waits.
 
+### Changed
+- **TypeScript boundary cleanup** - Replaced content element ref expandos with a WeakMap and validated native API stream response frames before dispatch.
+
 ## [2.11.0] - 2026-07-29
 
 ### Added
