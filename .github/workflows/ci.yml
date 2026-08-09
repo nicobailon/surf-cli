@@ -77,7 +77,7 @@ jobs:
         run: npm ci
 
       - name: Install pinned Chrome for Testing
-        run: npx puppeteer browsers install chrome@151.0.7922.47
+        run: npx puppeteer browsers install chrome@151.0.7922.71
 
       - name: Build extension
         run: npm run build
