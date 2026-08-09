@@ -262,6 +262,7 @@ export function createMockTab(overrides: Partial<chrome.tabs.Tab> = {}): chrome.
     autoDiscardable: true,
     frozen: false,
     groupId: -1,
+    lastAccessed: 0,
     ...overrides,
   };
 }
