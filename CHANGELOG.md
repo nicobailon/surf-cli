@@ -2,6 +2,9 @@
 
 ## [Unreleased]
 
+### Fixed
+- **Windows private state** - Skip unsupported POSIX permission-bit checks when reading private state files on Windows. Thanks to Andrey Oz (@ozand) for #181.
+
 ## [2.13.0] - 2026-08-08
 
 ### Added

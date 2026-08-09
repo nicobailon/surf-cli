@@ -45,4 +45,30 @@ describe("private state boundary", () => {
     fs.symlinkSync(target, link);
     expect(() => state.ensurePrivateDir(path.join(link, "nested"), root)).toThrow(/symbolic link/);
   });
+
+  it("enforces private file mode checks on POSIX but skips them on Windows", () => {
+    const parent = fs.mkdtempSync(path.join(os.tmpdir(), "surf-private-state-"));
+    roots.push(parent);
+    const root = path.join(parent, "state");
+    state.ensurePrivateDir(root, root);
+    const file = path.join(root, "private.json");
+    fs.writeFileSync(file, "private");
+    fs.chmodSync(file, 0o644);
+    const platformDescriptor = Object.getOwnPropertyDescriptor(process, "platform");
+    if (!platformDescriptor) {
+      throw new Error("process.platform descriptor is unavailable");
+    }
+
+    try {
+      Object.defineProperty(process, "platform", { value: "linux" });
+      expect(() => state.readPrivateFile(file, { root, encoding: "utf8" })).toThrow(
+        /permissions are too broad/,
+      );
+
+      Object.defineProperty(process, "platform", { value: "win32" });
+      expect(state.readPrivateFile(file, { root, encoding: "utf8" })).toBe("private");
+    } finally {
+      Object.defineProperty(process, "platform", platformDescriptor);
+    }
+  });
 });

@@ -132,7 +132,7 @@ function readPrivateFile(filePath, options = {}) {
   const stat = assertNotSymlink(resolved, options.allowMissing === true);
   if (!stat) return options.fallback;
   if (!stat.isFile()) throw new Error(`private state path is not a file: ${resolved}`);
-  if ((stat.mode & 0o077) !== 0) throw new Error(`private state file permissions are too broad: ${resolved}`);
+  if (process.platform !== "win32" && (stat.mode & 0o077) !== 0) throw new Error(`private state file permissions are too broad: ${resolved}`);
   return fs.readFileSync(resolved, options.encoding || null);
 }
 
