@@ -69,7 +69,7 @@
     "@types/node": "^26.1.2",
     "@vitest/coverage-v8": "^4.1.9",
     "@vitest/ui": "^4.1.9",
-    "puppeteer": "25.4.0",
+    "puppeteer": "25.5.0",
     "typescript": "^7.0.2",
     "vite": "^8.1.4",
     "vitest": "^4.1.9",
