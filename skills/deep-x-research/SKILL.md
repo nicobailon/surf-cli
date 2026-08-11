@@ -1,6 +1,7 @@
 ---
 name: deep-x-research
-description: Deep, exhaustive research on a topic across X (Twitter) by driving Grok (x.com/i/grok) through surf. Use when the user wants comprehensive X research on a concept, technique, trend, tool, or creator scene; needs categorized findings with every claim traceable to post URLs; or when a single Grok query is not enough.
+description: Research a topic exhaustively across X (Twitter) using Grok through surf.
+disable-model-invocation: true
 ---
 
 # Deep X Research
