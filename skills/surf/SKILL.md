@@ -78,7 +78,7 @@ Query AI models using your browser's logged-in session. Must be logged into the 
 ```bash
 surf chatgpt "explain this code"
 surf chatgpt "summarize" --with-page              # Include current page context
-surf chatgpt "review" --model gpt-4o              # Specify model
+surf chatgpt "review" --model gpt-5.5             # Specify model
 surf chatgpt "analyze" --file document.pdf        # With file attachment
 ```
 
@@ -91,7 +91,7 @@ For agent workflows, detach after dispatch and keep the returned `.id`:
 ```bash
 surf oracle ask "Review this change and identify release risks" \
   --files "src/**/*.ts" --files "package.json" \
-  --model pro --effort extended --detach --json
+  --model gpt-5.5 --effort pro --detach --json
 
 surf oracle status <job-id> --json
 surf oracle result <job-id> --json
@@ -101,7 +101,7 @@ surf oracle result <job-id> --wait --json
 
 `status` reads persisted state without touching Chrome. `result` attempts to harvest the answer and returns the job object with `response` once its state is `captured`. A Ctrl-C during waiting exits with status 130 and prints `Recover with: surf oracle result <id>`. Once the job is `awaiting`, the persisted ChatGPT conversation URL is its durable key, so `surf oracle result <id>` can recover after CLI exit, native-host restart, or Chrome restart by reopening that conversation.
 
-Treat Pro quota as scarce. Oracle never selects Pro implicitly; request it with `--model pro`. Accepted `--effort` values are `light`, `standard`, `extended`, and `heavy`. Requested model and effort selections are read back before submission, and an unverifiable selection fails with `model_verification_failed` instead of silently continuing. Capacity is one non-terminal oracle job. A `capacity` error includes the in-flight job ID; poll that job or wait for it to finish rather than submitting the same consult again.
+Treat Pro quota as scarce. Oracle never selects Pro implicitly; request it with `--model pro` or `--effort pro`. ChatGPT model aliases include `instant`, `thinking`, `pro`, `gpt-5.5`, and `gpt-5.6-sol`. Accepted `--effort` values are `light`, `standard`, `extended`, `heavy`, and `pro`. Requested model and effort selections are read back before submission, and an unverifiable selection fails with `model_verification_failed` instead of silently continuing. Capacity is one non-terminal oracle job. A `capacity` error includes the in-flight job ID; poll that job or wait for it to finish rather than submitting the same consult again.
 
 Context comes from repeatable `--files` globs. Surf fails closed when a glob matches nothing or a matched file is unreadable, binary, or invalid UTF-8. It also blocks gitignored files and basenames matching `.env*`, `*.pem`, `*.key`, `id_rsa*`, `id_ed25519*`, `*.p12`, `*.pfx`, `credentials*`, or `secrets*`. Use `--allow-sensitive` only after intentionally reviewing those files; it overrides the block rather than redacting content. Context up to 60,000 evidence characters is inserted inline, while larger context becomes one private text attachment. The assembly manifest records each path, byte count, SHA-256, inline or bundle disposition, and deny-list outcome.
 

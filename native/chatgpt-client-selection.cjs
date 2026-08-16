@@ -1,15 +1,25 @@
-const CHATGPT_EFFORT_CHOICES = ["light", "standard", "extended", "heavy"];
+const CHATGPT_EFFORT_CHOICES = ["light", "standard", "extended", "heavy", "pro"];
+const CHATGPT_MODEL_ALIASES = new Map([
+  ["instant", "instant"],
+  ["gpt53", "instant"],
+  ["thinking", "thinking"],
+  ["gpt54thinking", "thinking"],
+  ["pro", "pro"],
+  ["gpt54pro", "pro"],
+  ["55", "gpt55"],
+  ["gpt55", "gpt55"],
+  ["chatgpt55", "gpt55"],
+  ["56sol", "gpt56sol"],
+  ["gpt56sol", "gpt56sol"],
+  ["chatgpt56sol", "gpt56sol"],
+]);
 
 function normalizeChatGPTModelChoice(desiredModel) {
   const normalized = String(desiredModel || "")
     .toLowerCase()
     .replace(/[^a-z0-9]/g, "");
 
-  if (["instant", "gpt53"].includes(normalized)) return "instant";
-  if (["thinking", "gpt54thinking"].includes(normalized)) return "thinking";
-  if (["pro", "gpt54pro"].includes(normalized)) return "pro";
-
-  return normalized;
+  return CHATGPT_MODEL_ALIASES.get(normalized) || normalized;
 }
 
 function normalizeChatGPTEffortChoice(desiredEffort) {
@@ -29,7 +39,9 @@ function normalizedWords(value) {
 function modelCandidateMatches(item, targetModel) {
   const values = [item?.label, item?.testId?.replace(/^model-switcher-/, "")].filter(Boolean);
   return values.some((value) => {
-    if (normalizeChatGPTModelChoice(value) === targetModel) return true;
+    const normalizedValue = normalizeChatGPTModelChoice(value);
+    if (normalizedValue === targetModel) return true;
+    if (targetModel.startsWith("gpt") && normalizedValue.includes(targetModel)) return true;
     const variants = ["instant", "thinking", "pro"].filter((variant) =>
       normalizedWords(value).includes(variant),
     );
@@ -58,9 +70,7 @@ function resolveChatGPTModelMenuOption(items, desiredModel) {
   return uniqueMatch(
     items,
     (item) =>
-      item?.role === "menuitemradio" &&
-      typeof item?.testId === "string" &&
-      item.testId.startsWith("model-switcher-") &&
+      ["button", "menuitem", "menuitemradio", "radio"].includes(item?.role) &&
       modelCandidateMatches(item, targetModel),
   );
 }

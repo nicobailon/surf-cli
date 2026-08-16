@@ -197,6 +197,12 @@ describe("chatgpt-client", () => {
       ["gpt-5-4-thinking", "thinking"],
       ["Pro", "pro"],
       ["gpt-5-4-pro", "pro"],
+      ["GPT-5.5", "gpt55"],
+      ["ChatGPT 5.5", "gpt55"],
+      ["5.5", "gpt55"],
+      ["GPT-5.6 Sol", "gpt56sol"],
+      ["ChatGPT 5.6 Sol", "gpt56sol"],
+      ["5.6 Sol", "gpt56sol"],
       ["something-else", "somethingelse"],
     ])("normalizes %s", (input, expected) => {
       expect(chatgptClient.normalizeChatGPTModelChoice(input)).toBe(expected);
@@ -242,6 +248,29 @@ describe("chatgpt-client", () => {
       });
     });
 
+    it("matches nested advanced model options without model-switcher test ids", () => {
+      expect(
+        chatgptClient.resolveChatGPTModelMenuOption(
+          [
+            { role: "menuitemradio", label: "GPT-5.6 Sol", testId: null },
+            { role: "menuitemradio", label: "GPT-5.5", testId: null },
+            { role: "menuitemradio", label: "o3 Leaving on August 26", testId: null },
+          ],
+          "gpt-5.6-sol",
+        ),
+      ).toEqual({ role: "menuitemradio", label: "GPT-5.6 Sol", testId: null });
+      expect(
+        chatgptClient.resolveChatGPTModelMenuOption(
+          [
+            { role: "menuitemradio", label: "GPT-5.6 Sol", testId: null },
+            { role: "menuitemradio", label: "GPT-5.5", testId: null },
+            { role: "menuitemradio", label: "o3 Leaving on August 26", testId: null },
+          ],
+          "gpt-5.5",
+        ),
+      ).toEqual({ role: "menuitemradio", label: "GPT-5.5", testId: null });
+    });
+
     it("ignores non-selectable menu rows like section labels and configure", () => {
       expect(
         chatgptClient.resolveChatGPTModelMenuOption(
@@ -272,6 +301,24 @@ describe("chatgpt-client", () => {
 
     it.each([
       ["requested model found", modelState, "thinking", "ChatGPT 5.4 Thinking"],
+      [
+        "GPT-5.5 readback",
+        [{ role: "button", label: "ChatGPT 5.5 | Current model is ChatGPT 5.5", testId: null }],
+        "gpt-5.5",
+        "ChatGPT 5.5 | Current model is ChatGPT 5.5",
+      ],
+      [
+        "GPT-5.6 Sol readback",
+        [
+          {
+            role: "button",
+            label: "ChatGPT 5.6 Sol | Current model is ChatGPT 5.6 Sol",
+            testId: null,
+          },
+        ],
+        "gpt-5.6-sol",
+        "ChatGPT 5.6 Sol | Current model is ChatGPT 5.6 Sol",
+      ],
       ["requested model missing", modelState, "pro", null],
       ["ambiguous model state", [...modelState, ...modelState], "thinking", null],
       ["unreadable model state", [{ role: "button", label: "", testId: null }], "thinking", null],
@@ -302,6 +349,7 @@ describe("chatgpt-client", () => {
         effortOptions[2],
       );
       expect(chatgptClient.normalizeChatGPTEffortChoice("STANDARD")).toBe("standard");
+      expect(chatgptClient.normalizeChatGPTEffortChoice("Pro")).toBe("pro");
       expect(chatgptClient.normalizeChatGPTEffortChoice("maximum")).toBeNull();
     });
   });

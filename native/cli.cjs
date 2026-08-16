@@ -270,7 +270,7 @@ const TOOLS = {
         args: ["query"],
         opts: {
           "with-page": "Include current page context",
-          model: "Model: gpt-4o, o1, etc.",
+          model: "Model: instant, thinking, pro, gpt-5.5, gpt-5.6-sol, or a visible model label",
           file: "Attach file",
           timeout: "Timeout in seconds (default: 2700 = 45min)"
         },
@@ -278,7 +278,7 @@ const TOOLS = {
           { cmd: 'chatgpt "explain this code"', desc: "Basic query" },
           { cmd: 'chatgpt "summarize" --with-page', desc: "With page context" },
           { cmd: 'chatgpt "review" --file code.ts', desc: "With file" },
-          { cmd: 'chatgpt "analyze" --model gpt-4o', desc: "Specify model" },
+          { cmd: 'chatgpt "analyze" --model gpt-5.5', desc: "Specify model" },
         ]
       },
       "gemini": {

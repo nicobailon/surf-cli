@@ -2,6 +2,9 @@
 
 ## [Unreleased]
 
+### Fixed
+- **ChatGPT Pro picker** - Support the current GPT-5.5 and GPT-5.6 Sol advanced model menu plus the Pro effort selector for ChatGPT Oracle dispatch.
+
 ## [2.13.1] - 2026-08-09
 
 ### Changed

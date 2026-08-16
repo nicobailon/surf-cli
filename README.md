@@ -458,7 +458,7 @@ Query AI models using your browser's logged-in session:
 # ChatGPT
 surf chatgpt "explain this code"
 surf chatgpt "summarize" --with-page     # Include page context
-surf chatgpt "analyze" --model gpt-4o    # Specify model
+surf chatgpt "analyze" --model gpt-5.5   # Specify model
 surf chatgpt "review" --file code.ts     # Attach file
 
 # Gemini
@@ -505,10 +505,10 @@ surf aistudio.build "game" --keep-open --timeout 600          # Keep tab open, 1
 
 #### Oracle
 
-Use `surf oracle` for a durable, local ChatGPT consult instead of a quick `surf chatgpt` one-shot. It persists jobs by conversation URL, supports repeatable file-context globs, and verifies requested model and reasoning effort before submission.
+Use `surf oracle` for a durable, local ChatGPT consult instead of a quick `surf chatgpt` one-shot. It persists jobs by conversation URL, supports repeatable file-context globs, and verifies requested model and reasoning effort before submission. ChatGPT model aliases include `instant`, `thinking`, `pro`, `gpt-5.5`, and `gpt-5.6-sol`.
 
 ```bash
-surf oracle ask "review this change" --files "src/**/*.ts" --model pro --effort extended --detach --json
+surf oracle ask "review this change" --files "src/**/*.ts" --model gpt-5.5 --effort pro --detach --json
 surf oracle status <job-id> --json
 surf oracle result <job-id> --wait --json
 surf oracle follow <job-id> "challenge that recommendation" --detach --json

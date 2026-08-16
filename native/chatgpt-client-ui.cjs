@@ -18,9 +18,10 @@ const SELECTORS = {
   loginCta: 'a[href*="/auth/login"], button',
   sendButton:
     'button[data-testid="send-button"], button[data-testid*="composer-send"], form button[type="submit"]',
-  modelButton: '[data-testid="model-switcher-dropdown-button"]',
+  modelButton:
+    '[data-testid="model-switcher-dropdown-button"], [data-testid="composer-footer-actions"] button[aria-haspopup="menu"], button.__composer-pill[aria-haspopup="menu"], .__composer-pill-composite button[aria-haspopup="menu"]',
   modelMenu: '[role="menu"][data-radix-menu-content]',
-  modelMenuItem: '[role="menuitemradio"][data-testid^="model-switcher-"]',
+  modelMenuItem: 'button, [role="menuitem"], [role="menuitemradio"]',
   menuItemPrimaryLabel: '.min-w-0 > span',
   effortButton:
     '[data-testid="composer-footer-actions"] button[aria-haspopup="menu"], button.__composer-pill[aria-haspopup="menu"], .__composer-pill-composite button[aria-haspopup="menu"]',
@@ -191,8 +192,8 @@ async function readPicker(cdp, kind, click = false) {
       ${buildClickDispatcher()}
       const kind = ${JSON.stringify(kind)};
       const nodes = Array.from(document.querySelectorAll(${JSON.stringify(selector)})).filter((node) => {
-        if (kind === 'model') return true;
         const value = ((node.getAttribute?.('aria-label') || '') + ' ' + (node.textContent || '')).toLowerCase();
+        if (kind === 'model') return value.includes('gpt') || value.includes('pro') || value.includes('thinking') || value.includes('instant');
         return value.includes('thinking') || value.includes('pro');
       });
       const items = nodes.map((node) => {
@@ -224,13 +225,31 @@ async function readMenu(cdp, kind, allowSubmenu) {
       const choices = ${JSON.stringify(CHATGPT_EFFORT_CHOICES)};
       const containers = Array.from(document.querySelectorAll(${JSON.stringify(menuSelector)}));
       const normalize = (value) => String(value || '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
-      let menu = isModel ? containers[0] : containers.find((container) => {
+      let menu = isModel ? containers.find((container) => {
+        const labels = Array.from(container.querySelectorAll(${JSON.stringify(itemSelector)}))
+          .filter((item) => item.getAttribute?.('aria-haspopup') !== 'menu')
+          .map((item) => normalize((item.getAttribute?.('aria-label') || '') + ' ' + (item.textContent || '')));
+        return labels.some((label) => label.includes('gpt') || /^o[0-9]/.test(label));
+      }) : containers.find((container) => {
         const label = normalize(container.querySelector?.(${JSON.stringify(SELECTORS.effortMenuLabel)})?.textContent);
         const levels = new Set(Array.from(container.querySelectorAll(${JSON.stringify(itemSelector)}))
           .flatMap((item) => normalize(item.textContent).split(/\\s+/))
           .filter((word) => choices.includes(word)));
         return label.includes('thinking time') || levels.size >= 2;
       });
+      if (!menu && isModel && ${allowSubmenu}) {
+        for (const container of containers) {
+          const trigger = Array.from(container.querySelectorAll(${JSON.stringify(SELECTORS.effortSubmenuTrigger)}))
+            .find((item) => {
+              const label = normalize((item.getAttribute?.('aria-label') || '') + ' ' + (item.textContent || ''));
+              return label.includes('model') || label.includes('advanced');
+            });
+          if (trigger) {
+            dispatchClickSequence(trigger);
+            return { found: false, submenuOpened: true, items: [] };
+          }
+        }
+      }
       if (!menu && !isModel && ${allowSubmenu}) {
         for (const container of containers) {
           const trigger = Array.from(container.querySelectorAll(${JSON.stringify(SELECTORS.effortSubmenuTrigger)}))
@@ -299,7 +318,7 @@ async function clickMenuItem(cdp, kind, match) {
           .replace(/\\s+/g, ' ').trim().slice(0, 80);
         return label === expectedLabel;
       });
-      return matches.length === 1 ? dispatchClickSequence(matches[0]) : false;
+      return matches.length >= 1 ? dispatchClickSequence(matches[0]) : false;
     })()`,
   );
 }
@@ -317,8 +336,17 @@ async function selectModel(cdp, desiredModel, timeoutMs = 8000, signal) {
   await delay(200, signal);
   const state = await readPicker(cdp, "model");
   const verified = verifyChatGPTModelSelection(state?.items, desiredModel);
-  if (!verified) throw verificationError("model", desiredModel, menu.items);
-  return verified.displayLabel || verified.label;
+  if (verified) return verified.displayLabel || verified.label;
+
+  const reopened = await readPicker(cdp, "model", true);
+  if (reopened?.items?.length !== 1) throw verificationError("model", desiredModel, menu.items);
+  const readbackMenu = await waitForMenu(cdp, "model", timeoutMs, signal);
+  const readbackVerified = verifyChatGPTModelSelection(
+    readbackMenu.items.filter((item) => item.selected),
+    desiredModel,
+  );
+  if (!readbackVerified) throw verificationError("model", desiredModel, readbackMenu.items);
+  return readbackVerified.label;
 }
 
 async function selectEffort(cdp, desiredEffort, timeoutMs = 8000, signal) {

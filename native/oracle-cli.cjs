@@ -30,8 +30,8 @@ Commands:
 
 Ask/follow options:
   --files <glob>          Add context files (repeatable)
-  --model <model>         Select a ChatGPT model
-  --effort <effort>       Select reasoning effort
+  --model <model>         Select model: instant, thinking, pro, gpt-5.5, gpt-5.6-sol
+  --effort <effort>       Select effort: light, standard, extended, heavy, pro
   --detach                Return after dispatch
   --allow-sensitive       Allow deny-listed context files
 
