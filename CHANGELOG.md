@@ -2,6 +2,9 @@
 
 ## [Unreleased]
 
+### Added
+- **Surf Oracle external-job provider** - Register a stable `surf-oracle` external-job provider for Pi integrations, with durable start/status/result/reattach/follow operations backed by Surf Oracle job state.
+
 ### Fixed
 - **ChatGPT Pro picker** - Support the current GPT-5.5 and GPT-5.6 Sol advanced model menu plus the Pro effort selector for ChatGPT Oracle dispatch.
 

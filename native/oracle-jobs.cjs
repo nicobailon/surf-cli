@@ -35,6 +35,24 @@ function codedError(code, message, details = {}) {
   return error;
 }
 
+function promptDigest(prompt) {
+  return `sha256:${crypto.createHash("sha256").update(prompt).digest("hex")}`;
+}
+
+function hydrateJobMetadata(job, root = getPrivateStateRoot()) {
+  const prompt = job.promptDigest ? null : readPrivateFile(path.join(jobDirectory(job.id, root), "request.md"), {
+    root,
+    encoding: "utf8",
+  });
+  const legacyModel = job.modelRequested === undefined && job.modelVerified === undefined;
+  return {
+    ...job,
+    modelRequested: job.modelRequested ?? (legacyModel && job.state === "created" ? job.model ?? null : null),
+    modelVerified: job.modelVerified ?? (legacyModel && job.state !== "created" ? job.model ?? null : null),
+    promptDigest: job.promptDigest ?? promptDigest(prompt),
+  };
+}
+
 function readJobs(root = getPrivateStateRoot()) {
   const base = oracleRoot(root);
   if (!fs.existsSync(base)) return [];
@@ -44,7 +62,8 @@ function readJobs(root = getPrivateStateRoot()) {
     .filter((id) => JOB_ID_PATTERN.test(id))
     .sort((a, b) => b.localeCompare(a))
     .map((id) => readPrivateJson(path.join(base, id, "job.json"), null, { root }))
-    .filter(Boolean);
+    .filter(Boolean)
+    .map((job) => hydrateJobMetadata(job, root));
 }
 
 function createJob({ prompt, contextManifest = {}, model = null, effortRequested = null, follow = null }) {
@@ -84,8 +103,11 @@ function createJob({ prompt, contextManifest = {}, model = null, effortRequested
       id,
       state: "created",
       model,
+      modelRequested: model,
+      modelVerified: null,
       effortRequested,
       effortVerified: null,
+      promptDigest: promptDigest(prompt),
       createdAt: now.toISOString(),
       dispatchedAt: null,
       awaitingAt: null,
@@ -110,7 +132,7 @@ function getJob(id) {
   const root = getPrivateStateRoot();
   const job = readPrivateJson(path.join(jobDirectory(id, root), "job.json"), null, { root });
   if (!job) throw codedError("not_found", `oracle job not found: ${id}`);
-  return job;
+  return hydrateJobMetadata(job, root);
 }
 
 function getResponse(id) {
@@ -141,7 +163,7 @@ function markDispatched(id, { tabId, promptEcho, modelVerified, effortVerified }
     dispatchedAt: new Date().toISOString(),
     tabId,
     ...(promptEcho ? { promptEcho } : {}),
-    ...(modelVerified ? { model: modelVerified } : {}),
+    ...(modelVerified ? { model: modelVerified, modelVerified } : {}),
     ...(effortVerified ? { effortVerified } : {}),
   });
 }

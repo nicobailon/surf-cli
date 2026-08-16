@@ -1,4 +1,5 @@
 import { createRequire } from "node:module";
+import { createHash } from "node:crypto";
 import { Type } from "typebox";
 
 const require = createRequire(import.meta.url);
@@ -26,6 +27,9 @@ const ORACLE_FINISHED_CHANNEL = "surf-oracle:finished";
 const BACKGROUND_WORK_PROTOCOL_VERSION = 1;
 const BACKGROUND_WORK_REGISTRY_KEY = "pi-subagents.background-work.v1";
 const BACKGROUND_WORK_MODULE_SPECIFIER = "pi-subagents/background-work";
+const EXTERNAL_JOB_PROVIDER_PROTOCOL_VERSION = 1;
+const EXTERNAL_JOB_PROVIDER_REGISTRY_KEY = "pi-subagents.external-job-providers.v1";
+const EXTERNAL_JOB_PROVIDER_MODULE_SPECIFIER = "pi-subagents/external-job-provider";
 
 type Pi = {
   registerTool(tool: Record<string, unknown>): void;
@@ -36,6 +40,20 @@ type Pi = {
 type SurfEndpoint = { kind?: string };
 
 type ToolResult = { content: Array<{ type: "text" | "image"; text?: string; data?: string; mimeType?: string }>; details?: unknown; isError?: boolean };
+
+type OracleJob = {
+  id: string;
+  state: string;
+  conversationUrl?: string | null;
+  model?: string | null;
+  modelRequested?: string | null;
+  modelVerified?: string | null;
+  effortRequested?: string | null;
+  effortVerified?: string | null;
+  promptDigest?: string | null;
+  response?: string;
+  error?: { code?: string; message?: string } | null;
+};
 
 type BackgroundWorkProvider = {
   name: string;
@@ -54,6 +72,46 @@ type BackgroundWorkRegistry = {
   providers: Map<string, BackgroundWorkProvider>;
 };
 
+type OracleExternalJob = {
+  provider: "surf-oracle";
+  id: string;
+  state: string;
+  conversationUrl: string | null;
+  requestedModel: string | null;
+  verifiedModel: string | null;
+  requestedEffort: string | null;
+  verifiedEffort: string | null;
+  promptDigest: string | null;
+  resultText?: string;
+  resultArtifact?: { kind: "inline-text"; bytes: number };
+  failure?: { code: string; message: string };
+};
+
+type OracleExternalJobProvider = {
+  name: "surf-oracle";
+  kind: "external-job";
+  wakeChannels: string[];
+  start(input: Record<string, unknown>): Promise<OracleExternalJob>;
+  status(id: string): Promise<OracleExternalJob>;
+  result(id: string, input?: Record<string, unknown>): Promise<OracleExternalJob>;
+  reattach(id: string, input?: Record<string, unknown>): Promise<OracleExternalJob>;
+  follow(id: string, message: string, input?: Record<string, unknown>): Promise<OracleExternalJob>;
+};
+
+type RegisterExternalJobProvider = (provider: OracleExternalJobProvider) => () => void;
+
+type ExternalJobProviderModule = {
+  registerExternalJobProvider?: unknown;
+};
+
+type ExternalJobProviderRegistry = {
+  version: typeof EXTERNAL_JOB_PROVIDER_PROTOCOL_VERSION;
+  providers: Map<string, OracleExternalJobProvider>;
+};
+
+type RememberOracleJob = (jobId: string) => boolean;
+type EmitOracleJob = (job: Pick<OracleExternalJob, "id" | "state">) => boolean;
+
 function textResult(value: unknown, isError = false): ToolResult {
   const text = typeof value === "string" ? value : JSON.stringify(value, null, 2);
   const bounded = text.length > MAX_OUTPUT_CHARS
@@ -64,7 +122,12 @@ function textResult(value: unknown, isError = false): ToolResult {
 
 export function resultFromHost(response: Record<string, unknown>): ToolResult {
   const error = response.error as { content?: Array<{ text?: string }> } | undefined;
-  if (error) return textResult(error.content?.map((item) => item.text ?? "").join("\n") || "Surf request failed", true);
+  if (error) {
+    return {
+      ...textResult(error.content?.map((item) => item.text ?? "").join("\n") || "Surf request failed", true),
+      details: error,
+    };
+  }
   const result = response.result as { content?: ToolResult["content"] } | undefined;
   if (!result?.content) return textResult(result ?? "OK");
   const text = result.content.find((item) => item.type === "text")?.text;
@@ -138,6 +201,33 @@ export function registerGlobalBackgroundProvider(provider: BackgroundWorkProvide
   };
 }
 
+export function registerGlobalExternalJobProvider(provider: OracleExternalJobProvider): () => void {
+  const key = Symbol.for(EXTERNAL_JOB_PROVIDER_REGISTRY_KEY);
+  const globalObject = globalThis as Record<PropertyKey, unknown>;
+  const existing = globalObject[key];
+  let registry: ExternalJobProviderRegistry;
+
+  if (existing === undefined) {
+    registry = { version: EXTERNAL_JOB_PROVIDER_PROTOCOL_VERSION, providers: new Map() };
+    globalObject[key] = registry;
+  } else if (
+    existing &&
+    typeof existing === "object" &&
+    !Array.isArray(existing) &&
+    (existing as Partial<ExternalJobProviderRegistry>).version === EXTERNAL_JOB_PROVIDER_PROTOCOL_VERSION &&
+    (existing as Partial<ExternalJobProviderRegistry>).providers instanceof Map
+  ) {
+    registry = existing as ExternalJobProviderRegistry;
+  } else {
+    throw new Error(`Unsupported external-job provider registry at Symbol.for("${EXTERNAL_JOB_PROVIDER_REGISTRY_KEY}").`);
+  }
+
+  registry.providers.set(provider.name, provider);
+  return () => {
+    if (registry.providers.get(provider.name) === provider) registry.providers.delete(provider.name);
+  };
+}
+
 export async function resolveBackgroundWorkRegister(
   loadModule: () => Promise<BackgroundWorkModule> = () => import(BACKGROUND_WORK_MODULE_SPECIFIER) as Promise<BackgroundWorkModule>,
 ): Promise<RegisterBackgroundWorkProvider> {
@@ -152,6 +242,137 @@ export async function resolveBackgroundWorkRegister(
   return registerGlobalBackgroundProvider;
 }
 
+export async function resolveExternalJobProviderRegister(
+  loadModule: () => Promise<ExternalJobProviderModule> = () => import(EXTERNAL_JOB_PROVIDER_MODULE_SPECIFIER) as Promise<ExternalJobProviderModule>,
+): Promise<RegisterExternalJobProvider> {
+  try {
+    const module = await loadModule();
+    if (typeof module.registerExternalJobProvider === "function") {
+      return module.registerExternalJobProvider as RegisterExternalJobProvider;
+    }
+  } catch {
+    // The provider bridge is optional until pi-subagents ships this consumer API.
+  }
+  return registerGlobalExternalJobProvider;
+}
+
+function digestPrompt(prompt: string) {
+  return `sha256:${createHash("sha256").update(prompt).digest("hex")}`;
+}
+
+function asOracleJob(value: unknown): OracleJob {
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Surf oracle response did not include job metadata");
+  const job = value as Partial<OracleJob>;
+  if (typeof job.id !== "string" || typeof job.state !== "string") throw new Error("Surf oracle response did not include job id and state");
+  return job as OracleJob;
+}
+
+function oracleExternalJob(job: OracleJob): OracleExternalJob {
+  const resultText = typeof job.response === "string" ? job.response : undefined;
+  const failure = job.error
+    ? { code: job.error.code || "failed", message: job.error.message || "Surf oracle job failed" }
+    : undefined;
+  const requestedModel = Object.hasOwn(job, "modelRequested") ? job.modelRequested ?? null : job.model ?? null;
+  return {
+    provider: "surf-oracle",
+    id: job.id,
+    state: job.state,
+    conversationUrl: job.conversationUrl ?? null,
+    requestedModel,
+    verifiedModel: job.modelVerified ?? null,
+    requestedEffort: job.effortRequested ?? null,
+    verifiedEffort: job.effortVerified ?? null,
+    promptDigest: job.promptDigest ?? null,
+    ...(resultText === undefined ? {} : { resultText, resultArtifact: { kind: "inline-text", bytes: Buffer.byteLength(resultText, "utf8") } }),
+    ...(failure ? { failure } : {}),
+  };
+}
+
+async function requestOracleJob(request: typeof requestSurf, tool: string, args: Record<string, unknown>) {
+  const result = await request(tool, args);
+  if (result.isError) {
+    const details = result.details as { code?: unknown; jobId?: unknown; message?: unknown } | undefined;
+    const message = typeof details?.message === "string"
+      ? details.message
+      : result.content.map((item) => item.text ?? "").join("\n") || "Surf oracle request failed";
+    const error = new Error(message);
+    if (typeof details?.code === "string") Object.assign(error, { code: details.code });
+    if (typeof details?.jobId === "string") Object.assign(error, { jobId: details.jobId });
+    throw error;
+  }
+  return oracleExternalJob(asOracleJob(result.details));
+}
+
+function emitFailedOracleJob(error: unknown, emitTerminal: EmitOracleJob) {
+  if (!error || typeof error !== "object" || !("jobId" in error) || typeof error.jobId !== "string") return;
+  emitTerminal({ id: error.jobId, state: "failed" });
+}
+
+export function createOracleExternalJobProvider(
+  sessionId: string,
+  jobIds: Set<string>,
+  request: typeof requestSurf = requestSurf,
+  rememberJob: RememberOracleJob = (jobId) => {
+    jobIds.add(jobId);
+    return true;
+  },
+  emitTerminal: EmitOracleJob = () => false,
+): OracleExternalJobProvider {
+  return {
+    name: "surf-oracle",
+    kind: "external-job",
+    wakeChannels: [ORACLE_FINISHED_CHANNEL],
+    async start(input) {
+      const prompt = typeof input.prompt === "string" ? input.prompt : "";
+      if (!prompt.trim()) throw new Error("prompt required");
+      const job = await requestOracleJob(request, "oracle.ask", {
+        prompt,
+        ...(typeof input.model === "string" ? { model: input.model } : {}),
+        ...(typeof input.effort === "string" ? { effort: input.effort } : {}),
+      });
+      rememberJob(job.id);
+      return { ...job, promptDigest: job.promptDigest ?? digestPrompt(prompt) };
+    },
+    status(id) {
+      return requestOracleJob(request, "oracle.status", { id });
+    },
+    result(id, input = {}) {
+      return requestOracleJob(request, "oracle.result", { id, ...(typeof input.timeout === "number" ? { timeout: input.timeout } : {}) })
+        .then((job) => {
+          emitTerminal({ id: job.id, state: job.state });
+          return job;
+        })
+        .catch((error) => {
+          emitFailedOracleJob(error, emitTerminal);
+          throw error;
+        });
+    },
+    reattach(id, input = {}) {
+      return requestOracleJob(request, "oracle.result", { id, ...(typeof input.timeout === "number" ? { timeout: input.timeout } : {}) })
+        .then((job) => {
+          rememberJob(job.id);
+          emitTerminal({ id: job.id, state: job.state });
+          return job;
+        })
+        .catch((error) => {
+          emitFailedOracleJob(error, emitTerminal);
+          throw error;
+        });
+    },
+    async follow(id, message, input = {}) {
+      if (!message.trim()) throw new Error("message required");
+      const job = await requestOracleJob(request, "oracle.ask", {
+        follow: id,
+        prompt: message,
+        ...(typeof input.model === "string" ? { model: input.model } : {}),
+        ...(typeof input.effort === "string" ? { effort: input.effort } : {}),
+      });
+      rememberJob(job.id);
+      return { ...job, promptDigest: job.promptDigest ?? digestPrompt(message) };
+    },
+  };
+}
+
 export function registerOptionalBackgroundProvider(sessionId: string, jobIds: Set<string>, listJobs: () => Array<{ id: string; state: string }>, register: RegisterBackgroundWorkProvider) {
   return register({
     name: "surf-oracle",
@@ -160,6 +381,17 @@ export function registerOptionalBackgroundProvider(sessionId: string, jobIds: Se
       .filter((job) => jobIds.has(job.id) && ORACLE_ACTIVE_STATES.has(job.state))
       .map((job) => ({ id: job.id, sessionId })),
   });
+}
+
+export function registerOptionalExternalJobProvider(
+  sessionId: string,
+  jobIds: Set<string>,
+  register: RegisterExternalJobProvider,
+  request: typeof requestSurf = requestSurf,
+  rememberJob?: RememberOracleJob,
+  emitTerminal?: EmitOracleJob,
+) {
+  return register(createOracleExternalJobProvider(sessionId, jobIds, request, rememberJob, emitTerminal));
 }
 
 export function rememberOracleJobForSession(jobIds: Set<string>, jobId: unknown, requestGeneration: number, currentGeneration: number, sessionActive: boolean): boolean {
@@ -219,7 +451,12 @@ export default function surfExtension(pi: Pi) {
     async execute(_id: string, args: Record<string, unknown>) {
       try {
         const result = await requestSurf("oracle.result", args);
-        emitOracleFinished(pi, result.details ?? { id: args.id, state: result.isError ? "failed" : undefined });
+        const errorDetails = result.details as { jobId?: unknown } | undefined;
+        if (result.isError) {
+          if (typeof errorDetails?.jobId === "string") emitOracleFinished(pi, { id: errorDetails.jobId, state: "failed" });
+        } else {
+          emitOracleFinished(pi, result.details);
+        }
         return result;
       } catch (error) {
         return textResult(error instanceof Error ? error.message : String(error), true);
@@ -249,12 +486,15 @@ export default function surfExtension(pi: Pi) {
   });
 
   let dispose: (() => void) | undefined;
+  let disposeExternal: (() => void) | undefined;
   pi.on("session_start", (_event, ctx) => {
     sessionGeneration++;
     const generation = sessionGeneration;
     sessionActive = false;
     dispose?.();
+    disposeExternal?.();
     dispose = undefined;
+    disposeExternal = undefined;
     oracleJobIds.clear();
 
     const session = ctx as { sessionManager?: { getSessionId?: () => string }; sessionId?: string };
@@ -262,7 +502,10 @@ export default function surfExtension(pi: Pi) {
     if (!sessionId) return;
     try {
       const jobs = require("../native/oracle-jobs.cjs") as { listJobs(): Array<{ id: string; state: string }> };
+      const rememberForGeneration = (jobId: string) => rememberOracleJobForSession(oracleJobIds, jobId, generation, sessionGeneration, sessionActive);
+      const emitFinished = (job: Pick<OracleExternalJob, "id" | "state">) => emitOracleFinished(pi, job);
       dispose = registerOptionalBackgroundProvider(sessionId, oracleJobIds, jobs.listJobs, registerGlobalBackgroundProvider);
+      disposeExternal = registerOptionalExternalJobProvider(sessionId, oracleJobIds, registerGlobalExternalJobProvider, requestSurf, rememberForGeneration, emitFinished);
       sessionActive = true;
       void resolveBackgroundWorkRegister().then((register) => {
         try {
@@ -278,6 +521,20 @@ export default function surfExtension(pi: Pi) {
           // Keep the already-registered fallback provider.
         }
       });
+      void resolveExternalJobProviderRegister().then((register) => {
+        try {
+          if (register === registerGlobalExternalJobProvider || generation !== sessionGeneration) return;
+          const nextDispose = registerOptionalExternalJobProvider(sessionId, oracleJobIds, register, requestSurf, rememberForGeneration, emitFinished);
+          if (generation !== sessionGeneration) {
+            nextDispose();
+            return;
+          }
+          disposeExternal?.();
+          disposeExternal = nextDispose;
+        } catch {
+          // Keep the already-registered fallback provider.
+        }
+      });
     } catch {
       // The Pi bridge is optional. Browser tools work without pi-subagents.
     }
@@ -286,7 +543,9 @@ export default function surfExtension(pi: Pi) {
     sessionGeneration++;
     sessionActive = false;
     dispose?.();
+    disposeExternal?.();
     dispose = undefined;
+    disposeExternal = undefined;
     oracleJobIds.clear();
   });
 }

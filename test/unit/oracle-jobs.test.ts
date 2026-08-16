@@ -41,8 +41,11 @@ describe("oracle job registry", () => {
       "id",
       "state",
       "model",
+      "modelRequested",
+      "modelVerified",
       "effortRequested",
       "effortVerified",
+      "promptDigest",
       "createdAt",
       "dispatchedAt",
       "awaitingAt",
@@ -81,7 +84,10 @@ describe("oracle job registry", () => {
     expect(captured).toMatchObject({
       state: "captured",
       model: "ChatGPT 5.4 Pro",
+      modelRequested: "pro",
+      modelVerified: "ChatGPT 5.4 Pro",
       effortVerified: "Extended",
+      promptDigest: expect.stringMatching(/^sha256:[0-9a-f]{64}$/),
       tabId: 42,
       conversationUrl: "https://chatgpt.com/c/conversation-id",
       promptEcho: "Review this verbatim.",
@@ -160,6 +166,38 @@ describe("oracle job registry", () => {
         fs.readFileSync(path.join(root, "oracle", parent.id, "turns", "0001.json"), "utf8"),
       ),
     ).toEqual(lineage.turns[0]);
+  });
+
+  it("hydrates metadata for jobs persisted by the released schema", () => {
+    const root = useTempState();
+    const job = jobs.createJob({ prompt: "legacy prompt", model: "pro", effortRequested: "pro" });
+    jobs.markDispatched(job.id, {
+      tabId: 7,
+      promptEcho: "legacy prompt",
+      modelVerified: "ChatGPT 5.6 Sol",
+      effortVerified: "Pro",
+    });
+    jobs.markAwaiting(job.id, {
+      conversationUrl: "https://chatgpt.com/c/conversation-id",
+      promptEcho: "legacy prompt",
+    });
+    const jobPath = path.join(root, "oracle", job.id, "job.json");
+    const legacy = JSON.parse(fs.readFileSync(jobPath, "utf8"));
+    legacy.modelRequested = undefined;
+    legacy.modelVerified = undefined;
+    legacy.promptDigest = undefined;
+    fs.writeFileSync(jobPath, `${JSON.stringify(legacy, null, 2)}\n`);
+
+    expect(jobs.getJob(job.id)).toMatchObject({
+      model: "ChatGPT 5.6 Sol",
+      modelRequested: null,
+      modelVerified: "ChatGPT 5.6 Sol",
+      promptDigest: expect.stringMatching(/^sha256:[0-9a-f]{64}$/),
+    });
+    expect(jobs.listJobs({ limit: 1 })[0]).toMatchObject({
+      modelVerified: "ChatGPT 5.6 Sol",
+      promptDigest: expect.stringMatching(/^sha256:[0-9a-f]{64}$/),
+    });
   });
 
   it("rejects illegal state transitions with the amended taxonomy code", () => {

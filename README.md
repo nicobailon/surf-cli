@@ -969,6 +969,8 @@ pi -e /path/to/surf-cli/pi-extension/surf.ts
 
 It registers `surf_read`, `surf_screenshot`, `surf_click`, `surf_type`, `surf_tool`, and the `surf_oracle_*` tools. Browser calls use Surf's native-host socket, not shell commands. If `pi-subagents/background-work` is installed, the extension also reports active oracle jobs started by that Pi session. Pi still loads the browser tools when pi-subagents is not installed.
 
+The extension also registers a `surf-oracle` external-job provider when a Pi runtime exposes that provider bridge. The provider has `start`, `status`, `result`, `reattach`, and `follow` operations. Each operation returns Surf job metadata with the durable conversation URL, requested and verified ChatGPT model and effort, prompt digest, result text when captured, and failure details when present. Capacity stays fail-closed: Surf returns the blocking job id instead of silently queueing a second ChatGPT job.
+
 Surf agents share one browser session. Use read tools for parallel scouts when possible. `surf_click` and `surf_type` can interfere with another agent's browser actions. Browser leases are not available yet.
 
 ## Development
