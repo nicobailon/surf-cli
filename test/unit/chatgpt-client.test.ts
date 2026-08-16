@@ -195,7 +195,7 @@ describe("chatgpt-client", () => {
       ["gpt-5-3", "instant"],
       ["Thinking", "thinking"],
       ["gpt-5-4-thinking", "thinking"],
-      ["Pro", "pro"],
+      ["Pro", "gpt56sol"],
       ["gpt-5-4-pro", "pro"],
       ["GPT-5.5", "gpt55"],
       ["ChatGPT 5.5", "gpt55"],
@@ -269,6 +269,15 @@ describe("chatgpt-client", () => {
           "gpt-5.5",
         ),
       ).toEqual({ role: "menuitemradio", label: "GPT-5.5", testId: null });
+      expect(
+        chatgptClient.resolveChatGPTModelMenuOption(
+          [
+            { role: "menuitemradio", label: "GPT-5.6 Sol", testId: null },
+            { role: "menuitemradio", label: "GPT-5.5", testId: null },
+          ],
+          "pro",
+        ),
+      ).toEqual({ role: "menuitemradio", label: "GPT-5.6 Sol", testId: null });
     });
 
     it("ignores non-selectable menu rows like section labels and configure", () => {
@@ -317,6 +326,18 @@ describe("chatgpt-client", () => {
           },
         ],
         "gpt-5.6-sol",
+        "ChatGPT 5.6 Sol | Current model is ChatGPT 5.6 Sol",
+      ],
+      [
+        "Pro alias readback",
+        [
+          {
+            role: "button",
+            label: "ChatGPT 5.6 Sol | Current model is ChatGPT 5.6 Sol",
+            testId: null,
+          },
+        ],
+        "pro",
         "ChatGPT 5.6 Sol | Current model is ChatGPT 5.6 Sol",
       ],
       ["requested model missing", modelState, "pro", null],

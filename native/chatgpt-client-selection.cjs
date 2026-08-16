@@ -4,7 +4,7 @@ const CHATGPT_MODEL_ALIASES = new Map([
   ["gpt53", "instant"],
   ["thinking", "thinking"],
   ["gpt54thinking", "thinking"],
-  ["pro", "pro"],
+  ["pro", "gpt56sol"],
   ["gpt54pro", "pro"],
   ["55", "gpt55"],
   ["gpt55", "gpt55"],
