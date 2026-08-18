@@ -49,7 +49,7 @@ describe("tab handlers", () => {
     );
   });
 
-  it("routes selector typing to the selected iframe", async () => {
+  it("routes selector typing to the explicit host-provided iframe", async () => {
     const handleMessage = await loadHandleMessage();
     const chrome = (globalThis as any).chrome;
     chrome.webNavigation.getAllFrames.mockResolvedValue([
@@ -57,13 +57,14 @@ describe("tab handlers", () => {
       { frameId: 7, parentFrameId: 0, url: "https://example.com/frame" },
     ]);
 
-    await handleMessage({ type: "FRAME_SWITCH", tabId: 123, index: 0 }, {});
+    const switched = await handleMessage({ type: "FRAME_SWITCH", tabId: 123, index: 0 }, {});
     chrome.tabs.sendMessage.mockResolvedValue({ success: true, contentEditable: false });
 
     const result = await handleMessage(
       {
         type: "SMART_TYPE",
         tabId: 123,
+        frameId: switched.frameId,
         selector: "#card-number",
         text: "4242",
         clear: true,

@@ -142,7 +142,7 @@ surf remote revoke agent-macbook
 surf remote list
 ```
 
-`--remote <host>:<port>` takes precedence over `SURF_REMOTE`; `--remote-credential` takes precedence over `SURF_REMOTE_CREDENTIAL`. A selected remote endpoint overrides `SURF_SOCKET` and the default local socket. Local and remote requests share one bounded FIFO browser lease, so they cannot race each other. Disconnects and timeouts abort queued or in-flight work and hold the lease until request-owned cleanup drains or the hard deadline is reached. Browser side effects that already completed are not rolled back.
+`--remote <host>:<port>` takes precedence over `SURF_REMOTE`; `--remote-credential` takes precedence over `SURF_REMOTE_CREDENTIAL`. A selected remote endpoint overrides `SURF_SOCKET` and the default local socket. Local and remote requests share the same host scheduler: each tab has a FIFO lane, different tabs may execute concurrently, and browser-wide writers are exclusive. Disconnects and timeouts abort queued or in-flight work and retain admission until request-owned cleanup drains or the hard deadline is reached. Browser side effects that already completed are not rolled back.
 
 `surf install --listen` persists the explicit Tailnet address in the native-host wrapper. Re-run `surf install` without `--listen` to remove it. The address must be a Tailscale IPv4 or IPv6 address with a port; Surf does not bind every interface. Remote listeners currently require a POSIX browser host and are not supported by Windows native-host wrappers.
 
@@ -348,43 +348,64 @@ surf tab.switch "dashboard"         # Switch by name
 surf tab.group --name "Work" --color blue
 ```
 
-### Window Isolation
+### Browser Sessions and Concurrent Agents
 
-Keep using your browser while the agent works in a separate window:
+Give every independent agent a durable Surf session before its first browser command. `session.ensure` is idempotent: it creates a missing session, reuses a live one, and reopens a stale or closed binding.
 
 ```bash
-# Create a separate window for agent work
+# First command rule for every independent agent shell
+export SURF_SESSION="$(basename "$PWD" | sed 's/[^A-Za-z0-9._-]/-/g')"
+surf session.ensure "$SURF_SESSION" about:blank
+
+# All later tab-scoped commands use that session automatically
+surf go "https://example.com"
+surf read
+surf click e5
+```
+
+Use a distinct worktree/directory name per agent. When several agents share one directory, append a stable agent identifier instead of reusing the same `SURF_SESSION` value.
+
+A session owns one explicit Chrome tab. New sessions use a separate **unfocused normal window** by default, so Chrome focus changes cannot retarget another agent's commands.
+
+```bash
+surf session.new research "https://example.com"   # separate unfocused window
+surf session.ensure research about:blank           # safe to run repeatedly
+surf session.new scout about:blank --tab            # inactive tab instead
+
+surf --session research read                        # explicit selector
+SURF_SESSION=research surf screenshot               # environment selector
+
+surf session.list --refresh                         # all bindings + queue state
+surf session.info research --refresh                # target and scheduler details
+surf session.close research                         # closes Surf-created target
+surf session.rebind research --tab-id 789            # adopt an existing tab
+surf session.reopen research                         # recreate from last URL
+```
+
+Commands for the same session tab run FIFO. Commands for different session tabs can overlap. Browser-wide mutations—such as creating, moving, closing, or focusing tabs/windows and writing cookies—wait for active tab lanes to drain. Add `--no-wait` to return `tab_busy` or `browser_busy` immediately instead of queueing.
+
+Recovery errors print an exact command that can be copied directly:
+
+```text
+Error: The tab for session research is gone.
+Recovery: surf session.reopen research
+```
+
+`session.info` distinguishes work queued on the session's own tab, activity on other tabs, and an active or waiting browser-wide writer. Browser-login provider commands such as `surf chatgpt`, `surf gemini`, and `surf oracle ask` print a warning before taking exclusive browser access, so a queued provider flow is not mistaken for a hung command.
+
+Sessions share the same Chrome profile. Cookies, authentication, same-origin storage, downloads, history, bookmarks, and other profile state are shared. For hard isolation, use separate browser profiles/instances with separate native hosts and `SURF_SOCKET` values.
+
+### Explicit Tabs and Windows
+
+Session targeting is the recommended coordination mechanism. Explicit IDs and named tabs remain available for one-off work:
+
+```bash
 surf window.new "https://example.com"
-# Returns: Window 123456 (tab 789)
-
-# Target that window or its tab from later commands
-surf click e5 --window-id 123456
 surf read --tab-id 789
-surf tab.new "https://other.com" --window-id 123456
-
-# Name tabs when humans or agents need stable aliases
+surf click e5 --window-id 123456
 surf tab.name dashboard --tab-id 789
 surf tab.switch dashboard
-
-# Or manage windows directly
-surf window.list                    # List all windows
-surf window.list --tabs             # Include tab details
-surf window.focus 123456            # Bring window to front
-surf window.close 123456            # Close window
 ```
-
-`window.new`, `--window-id`, `--tab-id`, and named tabs are Surf's supported coordination tools for parallel workflows. They help agents avoid accidentally driving the same visible tab.
-
-Surf also serializes non-streaming browser CLI requests per socket with a file-based lock, so two agents sharing the same native host wait instead of interleaving browser commands. Use `--no-lock` only when you intentionally want to bypass the guard for a command.
-
-For hard isolation, run separate browser instances/profiles with separate Surf native hosts and socket paths, then point each shell at the matching socket. Each socket has its own independent lock:
-
-```bash
-SURF_SOCKET=/tmp/surf-agent-a.sock surf tab.list
-SURF_SOCKET=/tmp/surf-agent-b.sock surf tab.list
-```
-
-Surf does not yet provide `session.new`, session IDs, or independent per-agent CDP sessions.
 
 ### Device Emulation
 
@@ -764,11 +785,13 @@ Generated manifests declare provenance and authentication environment inputs. Su
 ## Global Options
 
 ```bash
---tab-id <id>      # Target specific tab
---window-id <id>   # Target specific window (isolate agent from your browsing)
---json             # Output raw JSON
+--session <name>   # Target a durable browser session (or set SURF_SESSION)
+--tab-id <id>      # Target a specific tab
+--window-id <id>   # Target a specific window
+--no-wait          # Return tab_busy/browser_busy instead of queueing
+--json             # Raw JSON including resolved target metadata
 --soft-fail        # Warn instead of error (exit 0) on restricted pages
---no-lock          # Bypass the per-socket browser request lock
+--no-lock          # Bypass the legacy lock for compound client-side commands
 --no-screenshot    # Skip auto-screenshot after actions
 --full             # Full resolution screenshots (skip resize)
 ```
@@ -777,6 +800,8 @@ Generated manifests declare provenance and authentication environment inputs. Su
 
 ```bash
 SURF_NETWORK_PATH         # Native-host network state root (default: ~/.surf/state/network)
+SURF_STATE_DIR            # Private Surf state root, including browser sessions (default: ~/.surf/state)
+SURF_SESSION              # Default named browser session for tab-scoped commands
 SURF_SOCKET               # Socket path or named pipe (default: /tmp/surf.sock, Windows: //./pipe/surf)
 SURF_REMOTE               # Remote Surf endpoint as host:port (overrides SURF_SOCKET)
 SURF_REMOTE_CREDENTIAL    # Client Ed25519 credential for the selected remote endpoint
@@ -788,7 +813,9 @@ SURF_EXTENSION_PATH       # Path to extension dist/ directory
 ```
 
 **Use cases:**
-- `SURF_SOCKET`: Advanced socket override. Set it for both the native host and CLI if you need a non-default socket, including separate sockets for separate browser/profile instances in hard-isolated multi-agent workflows. Each socket gets an independent request lock.
+- `SURF_SESSION`: Per-shell default session. Give each independent agent a unique value and run `surf session.ensure "$SURF_SESSION" about:blank` before its first browser command.
+- `SURF_STATE_DIR`: Private mode-0700 state root for durable browser-session bindings and other Surf state.
+- `SURF_SOCKET`: Advanced socket override. Set it for both the native host and CLI when separate browser/profile instances need hard isolation.
 - `SURF_REMOTE`: Remote client endpoint. `--remote <host>:<port>` overrides it; both override `SURF_SOCKET`.
 - `SURF_REMOTE_CREDENTIAL`: Credential used for mutual remote authentication. `--remote-credential <path>` overrides it.
 - `SURF_REMOTE_STATE_DIR`: Advanced host-side override for the mode-0700 identity and client registry directory.
@@ -971,7 +998,7 @@ It registers `surf_read`, `surf_screenshot`, `surf_click`, `surf_type`, `surf_to
 
 The extension also registers a `surf-oracle` external-job provider when a Pi runtime exposes that provider bridge. The provider has `start`, `status`, `result`, `reattach`, and `follow` operations. Each operation returns Surf job metadata with the durable conversation URL, requested and verified ChatGPT model and effort, prompt digest, result text when captured, and failure details when present. Capacity stays fail-closed: Surf returns the blocking job id instead of silently queueing a second ChatGPT job.
 
-Surf agents share one browser session. Use read tools for parallel scouts when possible. `surf_click` and `surf_type` can interfere with another agent's browser actions. Browser leases are not available yet.
+Shell-based agents should select a unique session with `SURF_SESSION` and call `surf session.ensure` before their first browser command. The optional Pi extension still uses its existing socket-tool interface; callers that coordinate several Pi workers should pass explicit tab targets until session selection is exposed by that integration.
 
 ## Development
 

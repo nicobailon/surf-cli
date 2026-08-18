@@ -48,6 +48,10 @@ const {
 const { resolveArgs, runPlaybookOp } = require("./playbook-runtime.cjs");
 const { resolveOp } = require("./playbooks.cjs");
 const { commandMetadata, redactCommandArgs } = require("./workflow-definition.cjs");
+const { BrowserScheduler } = require("./browser-scheduler.cjs");
+const { BrowserSessionStore, validateSessionName } = require("./browser-session-store.cjs");
+const { classifyTool } = require("./tool-scope.cjs");
+const { fromExtensionError, surfError } = require("./surf-error.cjs");
 const MAX_CLIENT_FRAME_BYTES = MAX_FRAME_BYTES;
 const TEST_REQUEST_DEADLINE_MS = process.env.SURF_TEST_MODE === "1" && Number.isFinite(Number(process.env.SURF_TEST_REQUEST_DEADLINE_MS))
   ? Number(process.env.SURF_TEST_REQUEST_DEADLINE_MS)
@@ -379,6 +383,77 @@ const activeStreams = new Map();
 const socketContexts = new WeakMap();
 const socketWriters = new WeakMap();
 let requestCounter = 0;
+const browserSessionStore = new BrowserSessionStore();
+let browserIdentity = null;
+const browserIdentityWaiters = new Set();
+const transientFrameContexts = new Map();
+
+function setBrowserIdentity(value) {
+  if (!value?.browserInstanceId || !value?.browserEpoch) return;
+  const identityChanged = browserIdentity && (
+    browserIdentity.browserInstanceId !== value.browserInstanceId ||
+    browserIdentity.browserEpoch !== value.browserEpoch
+  );
+  if (identityChanged) transientFrameContexts.clear();
+  browserIdentity = {
+    browserInstanceId: value.browserInstanceId,
+    browserEpoch: value.browserEpoch,
+    extensionVersion: value.extensionVersion,
+    protocolVersion: value.protocolVersion,
+    capabilities: Array.isArray(value.capabilities) ? value.capabilities : [],
+  };
+  for (const waiter of browserIdentityWaiters) waiter.resolve(browserIdentity);
+  browserIdentityWaiters.clear();
+  log(`Browser identity connected: ${browserIdentity.browserInstanceId} epoch=${browserIdentity.browserEpoch}`);
+}
+
+function requireBrowserIdentity(timeoutMs = 5000) {
+  if (browserIdentity) return Promise.resolve(browserIdentity);
+  return new Promise((resolve, reject) => {
+    const waiter = { resolve, reject, timer: null };
+    waiter.timer = setTimeout(() => {
+      browserIdentityWaiters.delete(waiter);
+      reject(surfError("extension_identity_missing", "Surf extension identity is unavailable. Restart the browser and retry."));
+    }, timeoutMs);
+    waiter.resolve = (identity) => {
+      clearTimeout(waiter.timer);
+      resolve(identity);
+    };
+    browserIdentityWaiters.add(waiter);
+  });
+}
+
+function handleTargetEvent(message) {
+  if (!browserIdentity) return;
+  try {
+    if (message.event === "tab-removed" && Number.isInteger(message.tabId)) {
+      clearTransientFrameContextsByTab(message.tabId);
+      browserSessionStore.invalidateByTab(browserIdentity, message.tabId, "tab_gone");
+      for (const [streamId, stream] of activeStreams) {
+        if (stream.tabId === message.tabId) stopActiveStream(streamId, { notifyExtension: false });
+      }
+      return;
+    }
+    if (message.event === "window-removed" && Number.isInteger(message.windowId)) {
+      clearTransientFrameContextsByWindow(message.windowId);
+      browserSessionStore.invalidateByWindow(browserIdentity, message.windowId, "window_gone");
+      for (const [streamId, stream] of activeStreams) {
+        if (stream.windowId === message.windowId) stopActiveStream(streamId, { notifyExtension: false });
+      }
+      return;
+    }
+    if ((message.event === "navigation" || message.event === "frame-reset") && Number.isInteger(message.tabId)) {
+      clearFrameContextsByTab(message.tabId, message.reason || message.event);
+      if (message.event === "frame-reset") return;
+      const patch = { lastValidatedAt: new Date().toISOString() };
+      if (typeof message.url === "string") patch.lastUrl = message.url;
+      if (typeof message.title === "string") patch.lastTitle = message.title;
+      browserSessionStore.updateTabMetadata(browserIdentity, message.tabId, patch);
+    }
+  } catch (error) {
+    log(`Target event state update failed: ${error.message}`);
+  }
+}
 
 function auditSession(event) {
   const context = event.context;
@@ -392,9 +467,18 @@ function auditSession(event) {
     peer: context?.socket?.remoteAddress || "local",
     requestId: request?.id,
     tool: request?.tool,
+    session: request?.target?.session || event.session,
+    laneKey: request?.laneKey || event.laneKey,
+    scope: request?.scope || event.scope,
+    resourceKeys: request?.resourceKeys || event.resourceKeys,
+    queueMs: event.queueMs,
     elapsedMs: event.elapsedMs,
   })}`);
 }
+
+const browserScheduler = new BrowserScheduler({
+  audit: (event) => auditSession(event),
+});
 
 aiQueue = new BoundedAiQueue({
   maxQueued: 8,
@@ -458,9 +542,575 @@ function requestCallExtension(request, tool, message, timeoutMs = 30000, cleanup
   });
 }
 
+
+async function requestExtensionOrThrow(request, tool, message, timeoutMs = 30000, cleanup = false) {
+  const result = await requestCallExtension(request, tool, message, timeoutMs, cleanup);
+  const error = fromExtensionError(result);
+  if (error) throw error;
+  return result;
+}
+
+function positiveId(value, name) {
+  if (value === undefined || value === null || value === "") return undefined;
+  const parsed = Number(value);
+  if (!Number.isInteger(parsed) || parsed <= 0) {
+    throw surfError("target_invalid", `${name} must be a positive integer`);
+  }
+  return parsed;
+}
+
+function targetLaneKey(identity, tabId) {
+  return `tab:${identity.browserEpoch}:${tabId}`;
+}
+
+const FRAME_CONTEXT_MESSAGE_TYPES = new Set([
+  "CLICK_TYPE", "CLICK_TYPE_SUBMIT", "AUTOCOMPLETE_SELECT", "SMART_TYPE",
+  "READ_PAGE", "GET_ELEMENT_COORDINATES", "FORM_INPUT", "EVAL_IN_PAGE",
+  "SCROLL_TO_ELEMENT", "LOCATE_ROLE", "LOCATE_TEXT", "LOCATE_LABEL",
+  "GET_ELEMENT_STYLES", "SELECT_OPTION", "CLICK_REF", "HOVER_REF",
+  "WAIT_FOR_ELEMENT", "FORM_FILL", "UPLOAD_FILE", "SEARCH_PAGE",
+]);
+
+function transientFrameContextKey(target) {
+  if (!target?.browserInstanceId || !target?.browserEpoch || !target?.tabId) return null;
+  return `${target.browserInstanceId}:${target.browserEpoch}:${target.tabId}`;
+}
+
+function clearTransientFrameContextsByTab(tabId) {
+  for (const [key, context] of transientFrameContexts) {
+    if (context.tabId === tabId) transientFrameContexts.delete(key);
+  }
+}
+
+function clearTransientFrameContextsByWindow(windowId) {
+  for (const [key, context] of transientFrameContexts) {
+    if (context.windowId === windowId) transientFrameContexts.delete(key);
+  }
+}
+
+function clearFrameContextsByTab(tabId, reason) {
+  clearTransientFrameContextsByTab(tabId);
+  if (!browserIdentity) return;
+  browserSessionStore.updateTabMetadata(browserIdentity, tabId, {
+    frameContext: null,
+    frameContextResetReason: reason,
+    frameContextResetAt: new Date().toISOString(),
+  });
+}
+
+function currentFrameContext(request) {
+  const target = request?.target;
+  if (!target?.tabId) return null;
+  if (target.session) {
+    const record = browserSessionStore.get(request.browserIdentity, target.session);
+    const context = record?.frameContext;
+    if (
+      context &&
+      context.browserEpoch === request.browserIdentity?.browserEpoch &&
+      context.tabId === target.tabId &&
+      Number.isInteger(context.frameId) &&
+      context.frameId > 0
+    ) return context;
+    return null;
+  }
+  const key = transientFrameContextKey(target);
+  return key ? transientFrameContexts.get(key) || null : null;
+}
+
+function applyFrameContextToMessage(request, extensionMessage) {
+  if (!extensionMessage || !FRAME_CONTEXT_MESSAGE_TYPES.has(extensionMessage.type)) return;
+  const context = currentFrameContext(request);
+  if (context) extensionMessage.frameId = context.frameId;
+}
+
+function persistFrameContext(request, frameId, url) {
+  const target = request?.target;
+  if (!target?.tabId || !Number.isInteger(frameId) || frameId <= 0) return;
+  const context = {
+    frameId,
+    url,
+    tabId: target.tabId,
+    windowId: target.windowId,
+    browserEpoch: request.browserIdentity?.browserEpoch,
+    selectedAt: new Date().toISOString(),
+  };
+  if (target.session) {
+    browserSessionStore.update(request.browserIdentity, target.session, {
+      frameContext: context,
+      frameContextResetReason: null,
+      frameContextResetAt: null,
+    });
+    return;
+  }
+  const key = transientFrameContextKey(target);
+  if (key) transientFrameContexts.set(key, context);
+}
+
+function clearFrameContextForRequest(request, reason) {
+  const target = request?.target;
+  if (!target?.tabId) return;
+  if (target.session) {
+    const record = browserSessionStore.get(request.browserIdentity, target.session);
+    if (record) {
+      browserSessionStore.update(request.browserIdentity, target.session, {
+        frameContext: null,
+        frameContextResetReason: reason,
+        frameContextResetAt: new Date().toISOString(),
+      });
+    }
+    return;
+  }
+  const key = transientFrameContextKey(target);
+  if (key) transientFrameContexts.delete(key);
+}
+
+function updateFrameContextFromResult(request, tool, result) {
+  if (!request || !result || result.error) return;
+  if (tool === "frame.switch" && Number.isInteger(result.frameId) && result.frameId > 0) {
+    persistFrameContext(request, result.frameId, result.url);
+  } else if (tool === "frame.main") {
+    clearFrameContextForRequest(request, "explicit-main-frame");
+  }
+}
+
+function handleFrameContextFailure(request, result) {
+  if (!request || result?.errorCode !== "frame_context_reset") return;
+  clearFrameContextForRequest(request, result.errorDetails?.reason || "frame-context-reset");
+  if (request.target?.session) {
+    result.errorDetails = {
+      ...(result.errorDetails || {}),
+      session: request.target.session,
+      recoveryCommand: `surf --session ${request.target.session} frame.list`,
+    };
+  }
+}
+
+function sessionQueueState(identity, record) {
+  const laneKey = targetLaneKey(identity, record.tabId);
+  const stats = browserScheduler.stats({ laneKey });
+  const activeOthers = stats.activeTabLanes.filter((entry) => entry.laneKey !== laneKey);
+  return {
+    laneKey,
+    active: stats.lane?.active || false,
+    queued: stats.lane?.queued || 0,
+    blockedBy: stats.lane?.blockedBy || null,
+    browserWriter: stats.writer,
+    queuedBrowserWriters: stats.queuedWriters,
+    otherActiveTabLanes: activeOthers,
+    totalQueued: stats.queued,
+  };
+}
+
+async function inspectBrowserTab(request, tabId) {
+  return requestExtensionOrThrow(request, "target.inspect", {
+    type: "TARGET_INSPECT",
+    tabId,
+  });
+}
+
+function sessionFailure(code, message, record) {
+  return surfError(code, message, {
+    session: record.name,
+    lastUrl: record.lastUrl,
+    target: { tabId: record.tabId, windowId: record.windowId },
+    browserEpoch: browserIdentity?.browserEpoch,
+    expectedBrowserEpoch: record.browserEpoch,
+    recoveryCommand: `surf session.reopen ${record.name}`,
+  });
+}
+
+async function resolveSessionTarget(request, identity, name) {
+  validateSessionName(name);
+  const record = browserSessionStore.get(identity, name);
+  if (!record) {
+    throw surfError("session_unknown", `Unknown session: ${name}`, {
+      session: name,
+      recoveryCommand: `surf session.ensure ${name} about:blank`,
+    });
+  }
+  if (record.browserEpoch !== identity.browserEpoch) {
+    throw sessionFailure(
+      "session_epoch_stale",
+      `Session ${record.name} belongs to an earlier browser run.`,
+      record,
+    );
+  }
+  if (record.invalidReason === "tab_gone" || record.invalidReason === "window_gone") {
+    throw sessionFailure("tab_gone", `The tab for session ${record.name} is gone.`, record);
+  }
+
+  let inspected;
+  try {
+    inspected = await inspectBrowserTab(request, record.tabId);
+  } catch (error) {
+    if (error?.code === "tab_gone") {
+      browserSessionStore.invalidateByTab(identity, record.tabId, "tab_gone");
+      throw sessionFailure("tab_gone", `The tab for session ${record.name} is gone.`, record);
+    }
+    throw error;
+  }
+  if (record.windowId && inspected.windowId !== record.windowId) {
+    throw surfError("binding_mismatch", `Session ${record.name} moved from window ${record.windowId} to ${inspected.windowId}.`, {
+      session: record.name,
+      target: { tabId: record.tabId, windowId: inspected.windowId },
+      recoveryCommand: `surf session.rebind ${record.name} --tab-id ${record.tabId} --replace`,
+    });
+  }
+  const updated = browserSessionStore.replace(identity, record.name, {
+    ...record,
+    lastUrl: inspected.url || record.lastUrl,
+    lastTitle: inspected.title || record.lastTitle,
+    lastValidatedAt: new Date().toISOString(),
+  });
+  return {
+    source: "session",
+    session: updated.name,
+    strict: true,
+    tabId: inspected.tabId,
+    windowId: inspected.windowId,
+    browserInstanceId: identity.browserInstanceId,
+    browserEpoch: identity.browserEpoch,
+    url: inspected.url,
+    title: inspected.title,
+    restricted: inspected.restricted,
+  };
+}
+
+async function resolveRequestTarget(msg, request, classification) {
+  if (classification.targetUse === "host") {
+    return { identity: browserIdentity, target: null };
+  }
+  const identity = await requireBrowserIdentity();
+  const args = msg.params?.args || {};
+  let sessionName = msg.target?.session || msg.session;
+  const sessionSource = msg.target?.source || msg.sessionSource || "explicit";
+  const rawTabId = msg.tabId ?? msg.params?.tabId ?? args.tabId;
+  const rawWindowId = msg.windowId ?? msg.params?.windowId ?? args.windowId;
+  const explicitTabId = positiveId(rawTabId, "tabId");
+  const explicitWindowId = positiveId(rawWindowId, "windowId");
+
+  if (classification.targetUse !== "default-tab") {
+    if (sessionName && sessionSource === "explicit" && !String(request.tool).startsWith("session.")) {
+      throw surfError("target_not_applicable", `--session does not apply to ${request.tool}`);
+    }
+    return { identity, target: null };
+  }
+
+  if (sessionName && (explicitTabId || explicitWindowId)) {
+    if (sessionSource === "environment") sessionName = undefined;
+    else {
+      throw surfError("ambiguous_target", "Use either --session or --tab-id/--window-id, not both.", {
+        session: sessionName,
+      });
+    }
+  }
+
+  let target;
+  if (sessionName) {
+    target = await resolveSessionTarget(request, identity, String(sessionName));
+  } else if (explicitTabId) {
+    const inspected = await inspectBrowserTab(request, explicitTabId);
+    target = {
+      source: "explicit-tab",
+      strict: true,
+      tabId: inspected.tabId,
+      windowId: inspected.windowId,
+      browserInstanceId: identity.browserInstanceId,
+      browserEpoch: identity.browserEpoch,
+      url: inspected.url,
+      title: inspected.title,
+      restricted: inspected.restricted,
+    };
+  } else {
+    const inspected = await requestExtensionOrThrow(request, "target.resolve", {
+      type: "TARGET_RESOLVE",
+      windowId: explicitWindowId,
+      allowCreate: true,
+    });
+    target = {
+      source: explicitWindowId ? "explicit-window" : "legacy-implicit",
+      strict: false,
+      tabId: inspected.tabId,
+      windowId: inspected.windowId,
+      browserInstanceId: identity.browserInstanceId,
+      browserEpoch: identity.browserEpoch,
+      url: inspected.url,
+      title: inspected.title,
+      restricted: inspected.restricted,
+      autoCreated: inspected.autoCreated,
+    };
+  }
+  msg.tabId = target.tabId;
+  msg.windowId = target.windowId;
+  return { identity, target };
+}
+
+async function prepareToolRequest(msg, request) {
+  const args = msg.params?.args || {};
+  const classification = classifyTool(request.tool, args);
+  request.scope = classification.scope;
+  request.classification = classification;
+  request.resourceKeys = classification.resourceKeys || [];
+  const { identity, target } = await resolveRequestTarget(msg, request, classification);
+  request.browserIdentity = identity;
+  request.target = target;
+  request.laneKey = target?.tabId ? targetLaneKey(identity, target.tabId) : undefined;
+  if (classification.scope === "provider") {
+    request.notice = `${request.tool} uses exclusive browser access; other Surf sessions will queue until it finishes.`;
+  }
+  request.admissionToken = await browserScheduler.acquire({
+    scope: classification.scope,
+    laneKey: request.laneKey,
+    resourceKeys: request.resourceKeys,
+    session: target?.session,
+    wait: msg.admission?.wait !== false,
+    signal: request.signal,
+    request,
+  });
+  request.queuedMs = Math.max(0, request.admissionToken.acquiredAt - request.admissionToken.queuedAt);
+}
+
+function releaseBrowserAdmission(request) {
+  if (!request?.admissionToken) return;
+  const token = request.admissionToken;
+  request.admissionToken = null;
+  token.release();
+}
+
+async function sessionRecordStatus(identity, request, record, refresh = false) {
+  let status = "live";
+  let inspected = null;
+  if (record.browserEpoch !== identity.browserEpoch) status = "epoch_stale";
+  else if (record.invalidReason === "tab_gone" || record.invalidReason === "window_gone") status = "tab_gone";
+  else if (refresh) {
+    try {
+      inspected = await inspectBrowserTab(request, record.tabId);
+      if (record.windowId && inspected.windowId !== record.windowId) status = "binding_mismatch";
+      else {
+        browserSessionStore.replace(identity, record.name, {
+          ...record,
+          lastUrl: inspected.url || record.lastUrl,
+          lastTitle: inspected.title || record.lastTitle,
+          lastValidatedAt: new Date().toISOString(),
+        });
+      }
+    } catch (error) {
+      if (error?.code === "tab_gone") {
+        browserSessionStore.invalidateByTab(identity, record.tabId, "tab_gone");
+        status = "tab_gone";
+      } else throw error;
+    }
+  }
+  return {
+    ...record,
+    status,
+    currentUrl: inspected?.url,
+    currentTitle: inspected?.title,
+    queue: sessionQueueState(identity, record),
+  };
+}
+
+async function createSessionBinding(request, identity, name, args, previous = null) {
+  const mode = args.tab === true ? "tab" : args.window === true ? "window" : previous?.mode || "window";
+  if (args.tab === true && args.window === true) {
+    throw surfError("session_mode_ambiguous", "Use either --window or --tab, not both.", { session: name });
+  }
+  const url = args.url || previous?.lastUrl || "about:blank";
+  const created = await requestExtensionOrThrow(request, "session.create", {
+    type: "SESSION_CREATE_TARGET",
+    name,
+    url,
+    mode,
+    focused: args.focused === true,
+    windowId: mode === "tab" ? positiveId(args.windowId ?? args["window-id"], "windowId") : undefined,
+  });
+  try {
+    const values = {
+      tabId: created.tabId,
+      windowId: created.windowId,
+      browserEpoch: identity.browserEpoch,
+      mode,
+      ownership: "surf-created",
+      lastUrl: created.url || url,
+      lastTitle: created.title,
+      groupId: created.groupId,
+      frameContext: null,
+      frameContextResetReason: null,
+      frameContextResetAt: null,
+    };
+    return previous
+      ? browserSessionStore.replace(identity, name, values)
+      : browserSessionStore.create(identity, name, values);
+  } catch (error) {
+    await requestExtensionOrThrow(request, "session.cleanup", {
+      type: "SESSION_CLOSE_TARGET",
+      tabId: created.tabId,
+    }, 30000, true).catch(() => {});
+    throw error;
+  }
+}
+
+async function handleBrowserSessionCommand(tool, args, request) {
+  const identity = await requireBrowserIdentity();
+  const name = args.name;
+  if (tool !== "session.list") validateSessionName(name);
+
+  if (tool === "session.new") {
+    if (browserSessionStore.get(identity, name)) {
+      throw surfError("session_exists", `Session already exists: ${name}`, {
+        session: name,
+        recoveryCommand: `surf session.ensure ${name}${args.url ? ` ${args.url}` : ""}`,
+      });
+    }
+    const record = await createSessionBinding(request, identity, name, args);
+    return { session: await sessionRecordStatus(identity, request, record, false), created: true };
+  }
+
+  if (tool === "session.ensure") {
+    const existing = browserSessionStore.get(identity, name);
+    if (!existing) {
+      const record = await createSessionBinding(request, identity, name, args);
+      return { session: await sessionRecordStatus(identity, request, record, false), created: true };
+    }
+    if (existing.browserEpoch === identity.browserEpoch && !existing.invalidReason) {
+      try {
+        const target = await resolveSessionTarget(request, identity, name);
+        const record = browserSessionStore.get(identity, name);
+        return { session: await sessionRecordStatus(identity, request, record, false), created: false, target };
+      } catch (error) {
+        if (error?.code !== "tab_gone" && error?.code !== "session_epoch_stale") throw error;
+      }
+    }
+    const record = await createSessionBinding(request, identity, name, args, existing);
+    return { session: await sessionRecordStatus(identity, request, record, false), created: false, reopened: true };
+  }
+
+  if (tool === "session.list") {
+    const records = browserSessionStore.list(identity);
+    const sessions = [];
+    for (const record of records) sessions.push(await sessionRecordStatus(identity, request, record, args.refresh === true));
+    return { sessions, browser: identity, scheduler: browserScheduler.stats() };
+  }
+
+  const existing = browserSessionStore.get(identity, name);
+  if (!existing) {
+    throw surfError("session_unknown", `Unknown session: ${name}`, {
+      session: name,
+      recoveryCommand: `surf session.ensure ${name} about:blank`,
+    });
+  }
+
+  if (tool === "session.info") {
+    const session = await sessionRecordStatus(identity, request, existing, args.refresh === true);
+    return {
+      session,
+      browser: identity,
+      sharedProfile: "Cookies, authentication, same-origin storage, downloads, history, bookmarks, and other profile state are shared across Surf sessions.",
+    };
+  }
+
+  if (tool === "session.close") {
+    const shouldCloseTarget = args["keep-target"] !== true && (
+      args["close-target"] === true || existing.ownership === "surf-created"
+    );
+    if (shouldCloseTarget && existing.browserEpoch === identity.browserEpoch) {
+      await requestExtensionOrThrow(request, "session.close", {
+        type: "SESSION_CLOSE_TARGET",
+        tabId: existing.tabId,
+      }, 30000, true).catch((error) => {
+        if (error?.code !== "tab_gone") throw error;
+      });
+    }
+    browserSessionStore.remove(identity, name);
+    return { success: true, name: existing.name, tabId: existing.tabId, targetClosed: shouldCloseTarget };
+  }
+
+  if (tool === "session.rebind") {
+    const tabId = positiveId(args.tabId ?? args["tab-id"], "tabId");
+    if (!tabId) throw surfError("target_required", "session.rebind requires --tab-id <id>", { session: name });
+    if (existing.browserEpoch === identity.browserEpoch && !existing.invalidReason && args.replace !== true) {
+      throw surfError("session_live", `Session ${name} still has a live binding. Pass --replace to rebind it.`, {
+        session: name,
+        recoveryCommand: `surf session.rebind ${name} --tab-id ${tabId} --replace`,
+      });
+    }
+    const conflict = browserSessionStore.findByTab(identity, tabId, name);
+    if (conflict) {
+      throw surfError("tab_already_bound", `Tab ${tabId} is already bound to session ${conflict.name}.`, {
+        session: conflict.name,
+      });
+    }
+    const inspected = await inspectBrowserTab(request, tabId);
+    const record = browserSessionStore.replace(identity, name, {
+      tabId,
+      windowId: inspected.windowId,
+      browserEpoch: identity.browserEpoch,
+      mode: "tab",
+      ownership: "adopted",
+      lastUrl: inspected.url,
+      lastTitle: inspected.title,
+      frameContext: null,
+      frameContextResetReason: null,
+      frameContextResetAt: null,
+    });
+    return { session: await sessionRecordStatus(identity, request, record, false), rebound: true };
+  }
+
+  if (tool === "session.reopen") {
+    if (existing.browserEpoch === identity.browserEpoch && !existing.invalidReason && args.replace !== true) {
+      try {
+        await inspectBrowserTab(request, existing.tabId);
+        throw surfError("session_live", `Session ${name} is still live. Pass --replace to reopen it.`, {
+          session: name,
+          recoveryCommand: `surf session.reopen ${name} --replace`,
+        });
+      } catch (error) {
+        if (error?.code !== "tab_gone") throw error;
+      }
+    }
+    if (args.replace === true && existing.ownership === "surf-created" && existing.browserEpoch === identity.browserEpoch) {
+      await requestExtensionOrThrow(request, "session.close", {
+        type: "SESSION_CLOSE_TARGET",
+        tabId: existing.tabId,
+      }, 30000, true).catch(() => {});
+    }
+    const record = await createSessionBinding(request, identity, name, args, existing);
+    return { session: await sessionRecordStatus(identity, request, record, false), reopened: true };
+  }
+
+  throw surfError("unknown_tool", `Unknown browser session command: ${tool}`);
+}
+
+async function handleNamedTabCommand(tool, args, request) {
+  const identity = await requireBrowserIdentity();
+  if (tool === "tab.name" || tool === "tabs_register") {
+    const name = args.name;
+    validateSessionName(name);
+    const target = request.target;
+    if (!target?.tabId) throw surfError("target_required", "tab.name requires a resolved tab");
+    return browserSessionStore.setNamedTab(identity, name, {
+      tabId: target.tabId,
+      windowId: target.windowId,
+      lastUrl: target.url,
+      lastTitle: target.title,
+    });
+  }
+  if (tool === "tab.unname" || tool === "tabs_unregister") {
+    const removed = browserSessionStore.removeNamedTab(identity, args.name);
+    if (!removed) throw surfError("named_tab_unknown", `No named tab: ${args.name}`);
+    return { success: true, name: removed.name };
+  }
+  if (tool === "tab.named" || tool === "tabs_list_named") {
+    return { tabs: browserSessionStore.listNamedTabs(identity) };
+  }
+  return null;
+}
+
 async function executeMappedHostTool(request, tool, args, tabId) {
   const extensionMsg = mapToolToMessage(tool, args, tabId);
   if (!extensionMsg) throw new Error(`Unknown tool: ${tool}`);
+  if (request.target?.strict) extensionMsg.strictTarget = true;
+  applyFrameContextToMessage(request, extensionMsg);
   if (extensionMsg.type === "UNSUPPORTED_ACTION") throw new Error(extensionMsg.message);
   if (extensionMsg.type === "LOCAL_WAIT") {
     await abortableDelay(extensionMsg.seconds * 1000, request.signal);
@@ -469,7 +1119,7 @@ async function executeMappedHostTool(request, tool, args, tabId) {
   if (extensionMsg.type === "BATCH_EXECUTE" || extensionMsg.type.endsWith("_QUERY")) {
     throw new Error(`tool ${tool} is not available inside a host-owned workflow`);
   }
-  return requestCallExtension(request, tool, extensionMsg, resolveRequestDeadlineMs(tool, args));
+  return requestExtensionOrThrow(request, tool, extensionMsg, resolveRequestDeadlineMs(tool, args));
 }
 
 async function executeNativePlaybook(request, handler, args, options = {}) {
@@ -595,6 +1245,7 @@ const sessionManager = new HostSessionManager({
     };
     cleanupRequestTransfers(request)
       .then(() => {
+        releaseBrowserAdmission(request);
         sessionManager.complete(context, request.id, "hard-timeout");
         if (!context.closed) return sendSocket(context.socket, response);
       })
@@ -646,12 +1297,14 @@ function completeOwnedRequest(context, id, outcome) {
     request.completionOutcome = outcome;
     request.completionPromise = new Promise((resolve) => {
       pendingToolRequests.onDrain(request, () => {
+        releaseBrowserAdmission(request);
         sessionManager.complete(context, id, request.completionOutcome);
         resolve();
       });
     });
     return request.completionPromise;
   }
+  releaseBrowserAdmission(request);
   sessionManager.complete(context, id, outcome);
   return Promise.resolve();
 }
@@ -715,6 +1368,17 @@ function sendToolResponse(socket, id, result, error) {
       : finalError ? "error" : "completed";
     await completeOwnedRequest(context, id, outcome);
     const response = { type: "tool_response", id };
+    if (request?.target) {
+      response.target = {
+        source: request.target.source,
+        session: request.target.session,
+        tabId: request.target.tabId,
+        windowId: request.target.windowId,
+        browserEpoch: request.target.browserEpoch,
+        queuedMs: request.queuedMs || 0,
+      };
+    }
+    if (request?.notice) response.notice = request.notice;
     if (formattedError) response.error = formattedError;
     else response.result = { content: formatToolContent(output, log, { suppressImages: Boolean(context?.isRemote) }) };
     if (!context?.closed) await sendSocket(socket, response);
@@ -729,15 +1393,28 @@ function stopActiveStream(streamId, { notifyExtension = true } = {}) {
   if (notifyExtension) writeMessage({ type: "STREAM_STOP", streamId });
 }
 
-function handleStreamRequest(msg, socket) {
+async function resolveStreamRequest(msg) {
+  const tool = msg.streamType === "STREAM_CONSOLE" ? "console" : "network";
+  const controller = new AbortController();
+  const request = { tool, signal: controller.signal };
+  const classification = classifyTool(tool, msg.options || {});
+  const { target } = await resolveRequestTarget(msg, request, classification);
+  if (!target?.tabId) throw surfError("target_required", `${tool} stream requires a resolved tab`);
+  return target;
+}
+
+function handleStreamRequest(msg, socket, target) {
   const { streamType, options, id: originalId } = msg;
-  const tabId = msg.tabId;
+  const tabId = target.tabId;
   const streamId = ++requestCounter;
 
   activeStreams.set(streamId, {
     socket,
     originalId,
     streamType,
+    tabId,
+    windowId: target.windowId,
+    session: target.session,
   });
 
   writeMessage({
@@ -745,9 +1422,20 @@ function handleStreamRequest(msg, socket) {
     streamId,
     options: options || {},
     tabId,
+    strictTarget: target.strict === true,
   });
 
-  sendSocket(socket, { type: "stream_started", streamId }, { stream: true }).catch((error) => {
+  sendSocket(socket, {
+    type: "stream_started",
+    streamId,
+    target: {
+      source: target.source,
+      session: target.session,
+      tabId: target.tabId,
+      windowId: target.windowId,
+      browserEpoch: target.browserEpoch,
+    },
+  }, { stream: true }).catch((error) => {
     log(`Error sending stream_started: ${error.message}`);
     stopActiveStream(streamId);
     socket.destroy(error);
@@ -788,6 +1476,18 @@ function handleToolRequest(msg, socket, requestContext = requestStorage.getStore
   requestContext.args = args || {};
   requestContext.activityStartedAt = new Date().toISOString();
   if (!tool.startsWith("playbook.")) journalCommand(tool, args || {}, { tabId });
+  if (tool.startsWith("session.")) {
+    handleBrowserSessionCommand(tool, args || {}, requestContext)
+      .then((result) => sendToolResponse(socket, originalId, result, null))
+      .catch((error) => sendToolResponse(socket, originalId, null, error));
+    return;
+  }
+  if (["tab.name", "tabs_register", "tab.unname", "tabs_unregister", "tab.named", "tabs_list_named"].includes(tool)) {
+    handleNamedTabCommand(tool, args || {}, requestContext)
+      .then((result) => sendToolResponse(socket, originalId, result, null))
+      .catch((error) => sendToolResponse(socket, originalId, null, error));
+    return;
+  }
   if (tool === "playbook.run") {
     runHostPlaybook(msg, requestContext)
       .then((result) => sendToolResponse(socket, originalId, { output: JSON.stringify(result) }, null))
@@ -806,6 +1506,8 @@ function handleToolRequest(msg, socket, requestContext = requestStorage.getStore
     sendToolResponse(socket, originalId, null, `Unknown tool: ${tool}`);
     return;
   }
+  if (requestContext.target?.strict) extensionMsg.strictTarget = true;
+  applyFrameContextToMessage(requestContext, extensionMsg);
   
   if (extensionMsg.type === "UNSUPPORTED_ACTION") {
     sendToolResponse(socket, originalId, null, extensionMsg.message);
@@ -1535,25 +2237,39 @@ function handleToolRequest(msg, socket, requestContext = requestStorage.getStore
   
   if (extensionMsg.type === "NAMED_TAB_SWITCH" || extensionMsg.type === "NAMED_TAB_CLOSE") {
     const { name, type: opType } = extensionMsg;
-    requestCallExtension(
-      requestContext,
-      "tabs_get_by_name",
-      { type: "TABS_GET_BY_NAME", name },
-    ).then((result) => {
-      if (result.error || !result.tabId) {
-        throw new Error(result.error || `No tab found with name "${name}"`);
+    (async () => {
+      const identity = await requireBrowserIdentity();
+      const named = browserSessionStore.getNamedTab(identity, name);
+      if (!named) {
+        throw surfError("named_tab_unknown", `No named tab: ${name}`, {
+          recoveryCommand: "surf tab.named",
+        });
+      }
+      if (named.browserEpoch !== identity.browserEpoch) {
+        browserSessionStore.removeNamedTab(identity, name);
+        throw surfError("named_tab_stale", `Named tab ${name} belongs to an earlier browser run.`, {
+          recoveryCommand: `surf tab.name ${name} --tab-id ${named.tabId}`,
+        });
+      }
+      try {
+        await inspectBrowserTab(requestContext, named.tabId);
+      } catch (error) {
+        if (error?.code === "tab_gone") browserSessionStore.removeNamedTab(identity, name);
+        throw error;
       }
       const actionType = opType === "NAMED_TAB_SWITCH" ? "SWITCH_TAB" : "CLOSE_TAB";
       const actionTool = opType === "NAMED_TAB_SWITCH" ? "switch_tab" : "close_tab";
-      return requestCallExtension(
+      const result = await requestExtensionOrThrow(
         requestContext,
         actionTool,
-        { type: actionType, tabId: result.tabId },
+        { type: actionType, tabId: named.tabId },
         30000,
         actionTool === "close_tab",
       );
-    }).then((result) => sendToolResponse(socket, originalId, result, result?.error || null))
-      .catch((error) => sendToolResponse(socket, originalId, null, error.message));
+      if (actionTool === "close_tab") browserSessionStore.removeNamedTab(identity, name);
+      return result;
+    })().then((result) => sendToolResponse(socket, originalId, result, null))
+      .catch((error) => sendToolResponse(socket, originalId, null, error));
     return;
   }
   
@@ -1605,6 +2321,8 @@ function executeBatch(actions, tabId, socket, originalId, requestContext = reque
     const toolArgs = mapBatchActionToArgs(action);
     
     const extensionMsg = mapToolToMessage(toolName, toolArgs, tabId);
+    if (requestContext.target?.strict && extensionMsg) extensionMsg.strictTarget = true;
+    applyFrameContextToMessage(requestContext, extensionMsg);
     if (!extensionMsg || extensionMsg.type === "UNSUPPORTED_ACTION") {
       results.push({ index: currentIndex, type: action.type, success: false, error: "Unsupported action" });
       sendToolResponse(socket, originalId, {
@@ -1706,6 +2424,16 @@ function processInput() {
     try {
       const msg = JSON.parse(jsonStr);
       log(`Received from extension: ${msg.type || "unknown"}${msg.id !== undefined ? ` id=${msg.id}` : ""}`);
+
+      if (msg.type === "EXTENSION_HELLO") {
+        setBrowserIdentity(msg);
+        return;
+      }
+
+      if (msg.type === "TARGET_EVENT") {
+        handleTargetEvent(msg);
+        return;
+      }
       
       if (msg.type === "GET_AUTH") {
         log("Handling GET_AUTH from extension");
@@ -1786,6 +2514,8 @@ function processInput() {
           }
           return;
         }
+        handleFrameContextFailure(pending.request, msg);
+        updateFrameContextFromResult(pending.request, pending.tool, msg);
         if (pending.resolve || pending.onComplete) {
           pendingToolRequests.resolve(msg.id, msg);
           return;
@@ -1857,7 +2587,7 @@ function processInput() {
               .then(() => requestCallExtension(
                 pending.request,
                 "screenshot",
-                { type: "EXECUTE_SCREENSHOT", tabId },
+                { type: "EXECUTE_SCREENSHOT", tabId, strictTarget: pending.request?.target?.strict === true },
               ))
               .then((screenshotMsg) => {
                 if (screenshotMsg.base64) {
@@ -1916,7 +2646,7 @@ function processInput() {
                                 !msg.output && !msg.messages && !msg.requests;
             
             if (isPureError) {
-              sendToolResponse(socket, originalId, null, msg.error);
+              sendToolResponse(socket, originalId, null, fromExtensionError(msg) || msg.error);
             } else {
               sendToolResponse(socket, originalId, msg, null);
             }
@@ -1946,6 +2676,12 @@ const connectedSockets = new Set();
 
 process.stdin.on("end", () => {
   log("stdin ended (extension disconnected), notifying clients");
+  browserIdentity = null;
+  for (const waiter of browserIdentityWaiters) {
+    clearTimeout(waiter.timer);
+    waiter.reject(surfError("extension_disconnected", "Surf extension disconnected."));
+  }
+  browserIdentityWaiters.clear();
   for (const socket of Array.from(connectedSockets)) {
     sendSocket(socket, {
       type: "extension_disconnected",
@@ -2066,8 +2802,9 @@ const handleClient = (socket) => {
       let request;
       try {
         const deadlineMs = TEST_REQUEST_DEADLINE_MS || resolveRequestDeadlineMs(tool, msg.params?.args);
-        request = await sessionManager.beginRequest(context, { id: msg.id, tool, deadlineMs });
+        request = await sessionManager.beginRequest(context, { id: msg.id, tool, deadlineMs, skipLease: true });
         request.context = context;
+        request.args = msg.params?.args || {};
       } catch (error) {
         if (transferState) await discardRequestTransfers(msg, transferState);
         await sendSocket(socket, { type: "tool_response", id: msg.id || null, error: { content: [{ type: "text", text: error.message }] } }).catch(() => {});
@@ -2078,7 +2815,10 @@ const handleClient = (socket) => {
         if (tool.startsWith("oracle.")) oracleHost.assertLocal(request);
         if (isRemote) {
           await applyRequestTransfers(msg, request, transferState, ensureTransferState);
+          request.args = msg.params?.args || {};
         }
+        throwIfAborted(request.signal, "Request cancelled");
+        await prepareToolRequest(msg, request);
         throwIfAborted(request.signal, "Request cancelled");
         requestStorage.run(request, () => handleToolRequest(msg, socket, request));
       } catch (e) {
@@ -2100,7 +2840,14 @@ const handleClient = (socket) => {
         return;
       }
       log(`Handling stream_request: ${msg.streamType}`);
-      handleStreamRequest(msg, socket);
+      try {
+        const target = await resolveStreamRequest(msg);
+        handleStreamRequest(msg, socket, target);
+      } catch (error) {
+        sessionManager.stopStream(context);
+        const formatted = formatToolError(error);
+        await sendSocket(socket, { type: "stream_error", error: formatted }).catch(() => {});
+      }
       return;
     }
 

@@ -89,6 +89,7 @@ function createCliEnv(socketPath?: string) {
   env.SURF_NO_LOCK = undefined;
   env.SURF_LOCK_TIMEOUT_MS = undefined;
   env.SURF_REMOTE = undefined;
+  env.SURF_SESSION = undefined;
 
   if (socketPath) {
     env.SURF_SOCKET = socketPath;
@@ -145,7 +146,10 @@ function createCliFixtureResult(request: any) {
   return "OK";
 }
 
-function runCli(args: string[]): Promise<{ request: any; stdout: string; stderr: string }> {
+function runCli(
+  args: string[],
+  extraEnv: Record<string, string | undefined> = {},
+): Promise<{ request: any; stdout: string; stderr: string }> {
   return new Promise((resolve, reject) => {
     const socketPath = createSocketPath();
     cleanupSocket(socketPath);
@@ -176,7 +180,7 @@ function runCli(args: string[]): Promise<{ request: any; stdout: string; stderr:
     server.listen(socketPath, () => {
       const child = spawn(process.execPath, ["native/cli.cjs", ...args], {
         cwd: process.cwd(),
-        env: createCliEnv(socketPath),
+        env: { ...createCliEnv(socketPath), ...extraEnv },
         stdio: ["ignore", "pipe", "pipe"],
       });
 
@@ -876,15 +880,121 @@ describe("CLI argument parsing", () => {
     expect(request.params.args.file).toBe(path.resolve("fixtures/report.txt"));
   });
 
-  it("serializes concurrent CLI requests by socket", async () => {
+  it("parses idempotent session.ensure in dotted and spaced forms", async () => {
+    const dotted = await runCli(["session.ensure", "research", "about:blank"]);
+    expect(dotted.request.params).toEqual({
+      tool: "session.ensure",
+      args: { name: "research", url: "about:blank" },
+    });
+
+    const spaced = await runCli(["session", "ensure", "scout", "https://example.com/"]);
+    expect(spaced.request.params).toEqual({
+      tool: "session.ensure",
+      args: { name: "scout", url: "https://example.com/" },
+    });
+  });
+
+  it("sends explicit session selection and no-wait admission outside tool args", async () => {
+    const { request } = await runCli(["--session", "research", "page.read", "--no-wait"]);
+
+    expect(request).toMatchObject({
+      session: "research",
+      sessionSource: "explicit",
+      admission: { wait: false },
+      params: { tool: "page.read", args: {} },
+    });
+  });
+
+  it("uses SURF_SESSION only for default-tab tools and lets explicit tabs override it", async () => {
+    const selected = await runCli(["page.read"], { SURF_SESSION: "research" });
+    expect(selected.request).toMatchObject({ session: "research", sessionSource: "environment" });
+
+    const explicitTab = await runCli(["page.read", "--tab-id", "42"], { SURF_SESSION: "research" });
+    expect(explicitTab.request.tabId).toBe(42);
+    expect(explicitTab.request).not.toHaveProperty("session");
+  });
+
+  it("keeps a no-ID tab.close bound to SURF_SESSION", async () => {
+    const selected = await runCli(["tab.close"], { SURF_SESSION: "research" });
+    expect(selected.request).toMatchObject({
+      session: "research",
+      sessionSource: "environment",
+      params: { tool: "tab.close", args: {} },
+    });
+  });
+
+  it("does not apply SURF_SESSION to an explicit tab.close target", async () => {
+    const selected = await runCli(["tab.close", "42"], { SURF_SESSION: "research" });
+    expect(selected.request).not.toHaveProperty("session");
+    expect(selected.request.params).toMatchObject({ tool: "tab.close", args: { id: 42 } });
+  });
+
+  it("rejects --session on browser-global commands", async () => {
+    const result = await runCliWithoutSocket(["--session", "research", "tab.list"]);
+    expect(result.code).toBe(1);
+    expect(result.stderr).toContain("--session does not apply to tab.list");
+  });
+
+  it("warns before provider tools request exclusive browser access", async () => {
+    const { stderr } = await runCli(["--session", "research", "chatgpt", "hello"]);
+    expect(stderr).toContain("requires exclusive browser access");
+    expect(stderr).toContain("Session research remains selected");
+  });
+
+  it("propagates session selection and no-wait to script and do workflows", async () => {
+    const scriptPath = path.join(
+      os.tmpdir(),
+      `surf-session-script-${process.pid}-${Date.now()}.json`,
+    );
+    fs.writeFileSync(scriptPath, JSON.stringify({ steps: [{ tool: "page.state" }] }));
+    try {
+      const script = await runCli(["--script", scriptPath, "--session", "research", "--no-wait"]);
+      expect(script.request).toMatchObject({
+        session: "research",
+        sessionSource: "explicit",
+        admission: { wait: false },
+        params: { tool: "page.state" },
+      });
+
+      const workflow = await runCli(["do", "page.state", "--session", "research", "--no-wait"]);
+      expect(workflow.request).toMatchObject({
+        session: "research",
+        sessionSource: "explicit",
+        admission: { wait: false },
+        params: { tool: "page.state" },
+      });
+    } finally {
+      fs.rmSync(scriptPath, { force: true });
+    }
+  });
+
+  it("propagates session selection and no-wait to playbook runs", async () => {
+    const result = await runCli(["use", "page", "read", "--session", "research", "--no-wait"]);
+
+    expect(result.request).toMatchObject({
+      session: "research",
+      sessionSource: "explicit",
+      admission: { wait: false },
+      params: {
+        tool: "playbook.run",
+        args: { playbook: "page", op: "read" },
+      },
+    });
+  });
+
+  it("lets ordinary one-shot requests reach the host concurrently", async () => {
     const socketPath = createSocketPath();
     cleanupSocket(socketPath);
     let requestCount = 0;
     let firstRequestAt = 0;
     let secondRequestAt = 0;
     let resolveFirstRequest!: () => void;
+    let resolveSecondRequest!: () => void;
     const firstRequest = new Promise<void>((resolve) => {
       resolveFirstRequest = resolve;
+    });
+    const secondRequest = new Promise<void>((resolve) => {
+      resolveSecondRequest = resolve;
     });
 
     const server = net.createServer((socket: any) => {
@@ -897,7 +1007,6 @@ describe("CLI argument parsing", () => {
         }
 
         const request = JSON.parse(buffer.slice(0, lineEnd));
-        buffer = buffer.slice(lineEnd + 1);
         requestCount++;
         if (requestCount === 1) {
           firstRequestAt = Date.now();
@@ -912,6 +1021,7 @@ describe("CLI argument parsing", () => {
         }
 
         secondRequestAt = Date.now();
+        resolveSecondRequest();
         socket.write(
           `${JSON.stringify({ id: request.id, result: { content: [{ type: "text", text: "second" }] } })}\n`,
         );
@@ -928,12 +1038,13 @@ describe("CLI argument parsing", () => {
       const first = spawnCliWithSocket(["page.text"], socketPath);
       await waitFor(firstRequest, 1000, "first request");
       const second = spawnCliWithSocket(["page.state"], socketPath);
+      await waitFor(secondRequest, 200, "second concurrent request");
       const [firstDone, secondDone] = await Promise.all([first.done, second.done]);
 
       expect(firstDone.code).toBe(0);
       expect(secondDone.code).toBe(0);
       expect(requestCount).toBe(2);
-      expect(secondRequestAt - firstRequestAt).toBeGreaterThanOrEqual(200);
+      expect(secondRequestAt - firstRequestAt).toBeLessThan(200);
     } finally {
       server.close();
       cleanupSocket(socketPath);
@@ -954,7 +1065,7 @@ describe("CLI argument parsing", () => {
       args: () => ({ args: ["do", "page.state"], cleanup: () => undefined }),
     },
   ]) {
-    it(`serializes ${workflowCase.name} requests by socket`, async () => {
+    it(`lets ${workflowCase.name} requests reach the host scheduler concurrently`, async () => {
       const socketPath = createSocketPath();
       cleanupSocket(socketPath);
       const workflow = workflowCase.args();
@@ -962,8 +1073,12 @@ describe("CLI argument parsing", () => {
       let firstRequestAt = 0;
       let secondRequestAt = 0;
       let resolveFirstRequest!: () => void;
+      let resolveSecondRequest!: () => void;
       const firstRequest = new Promise<void>((resolve) => {
         resolveFirstRequest = resolve;
+      });
+      const secondRequest = new Promise<void>((resolve) => {
+        resolveSecondRequest = resolve;
       });
 
       const server = net.createServer((socket: any) => {
@@ -991,6 +1106,7 @@ describe("CLI argument parsing", () => {
           }
 
           secondRequestAt = Date.now();
+          resolveSecondRequest();
           socket.write(
             `${JSON.stringify({ id: request.id, result: { content: [{ type: "text", text: "second" }] } })}\n`,
           );
@@ -1007,12 +1123,13 @@ describe("CLI argument parsing", () => {
         const first = spawnCliWithSocket(["page.text"], socketPath);
         await waitFor(firstRequest, 1000, "first request");
         const second = spawnCliWithSocket(workflow.args, socketPath);
+        await waitFor(secondRequest, 200, "second concurrent request");
         const [firstDone, secondDone] = await Promise.all([first.done, second.done]);
 
         expect(firstDone.code).toBe(0);
         expect(secondDone.code).toBe(0);
         expect(requestCount).toBe(2);
-        expect(secondRequestAt - firstRequestAt).toBeGreaterThanOrEqual(200);
+        expect(secondRequestAt - firstRequestAt).toBeLessThan(200);
       } finally {
         server.close();
         cleanupSocket(socketPath);

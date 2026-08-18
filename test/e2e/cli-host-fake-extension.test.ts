@@ -41,7 +41,7 @@ type ChildProcessLike = EventEmitterLike & {
   kill(signal: string): void;
 };
 
-type NativeMessage = {
+type NativeMessage = Record<string, unknown> & {
   id?: number;
   type?: string;
   url?: string;
@@ -115,6 +115,17 @@ function writeNativeMessage(stdin: WritableLike, message: NativeMessage) {
 
 function buildExtensionResponse(message: NativeMessage, currentUrl: string) {
   switch (message.type) {
+    case "TARGET_RESOLVE":
+    case "TARGET_INSPECT":
+      return {
+        id: message.id,
+        tabId: message.tabId || 42,
+        windowId: 7,
+        title: "Contract Fixture",
+        url: currentUrl,
+        active: true,
+        restricted: false,
+      };
     case "LIST_TABS":
       return {
         id: message.id,
@@ -218,12 +229,21 @@ function startHost(socketPath: string) {
       messages.push(message);
       notifyWaiters(message);
 
+      if (message.type === "HOST_READY") {
+        writeNativeMessage(child.stdin, {
+          type: "EXTENSION_HELLO",
+          protocolVersion: 2,
+          extensionVersion: "test",
+          browserInstanceId: "contract-browser",
+          browserEpoch: `contract-epoch-${process.pid}`,
+          capabilities: ["browser-sessions", "strict-targets", "keyed-lanes"],
+        });
+        continue;
+      }
       if (message.type === "EXECUTE_NAVIGATE" && message.url) {
         currentUrl = message.url;
       }
-      if (message.type !== "HOST_READY") {
-        writeNativeMessage(child.stdin, buildExtensionResponse(message, currentUrl));
-      }
+      writeNativeMessage(child.stdin, buildExtensionResponse(message, currentUrl));
     }
   });
 
@@ -348,21 +368,25 @@ describe("CLI/native-host/fake-extension E2E contract", () => {
         "https://fixture.test/page",
         "--no-screenshot",
       ]);
-      expect(navigation).toMatchObject({ code: 0, stderr: "", stdout: "OK\n" });
+      expect(navigation).toMatchObject({ code: 0, stdout: "OK\n" });
+      expect(navigation.stderr).toContain("[surf tab=42 window=7]");
 
       const pageText = await runCli(socketPath, ["page.text"]);
-      expect(pageText).toMatchObject({ code: 0, stderr: "" });
+      expect(pageText.code).toBe(0);
+      expect(pageText.stderr).toContain("[surf tab=42 window=7]");
       expect(pageText.stdout).toContain("Title: Contract Fixture");
       expect(pageText.stdout).toContain("URL: https://fixture.test/page");
       expect(pageText.stdout).toContain("Contract fixture page text from the fake extension.");
 
       const pageRead = await runCli(socketPath, ["read", "--depth", "2", "--compact"]);
-      expect(pageRead).toMatchObject({ code: 0, stderr: "" });
+      expect(pageRead.code).toBe(0);
+      expect(pageRead.stderr).toContain("[surf tab=42 window=7]");
       expect(pageRead.stdout).toContain('[e1] heading "Contract Fixture"');
       expect(pageRead.stdout).toContain('[e2] button "Continue"');
 
       const screenshot = await runCli(socketPath, ["screenshot", "--no-save"]);
-      expect(screenshot).toMatchObject({ code: 0, stderr: "" });
+      expect(screenshot.code).toBe(0);
+      expect(screenshot.stderr).toContain("[surf tab=42 window=7]");
       expect(screenshot.stdout).toContain("Screenshot captured (1x1) - ID: fake-screenshot-1");
 
       expect(host.messages).toEqual(

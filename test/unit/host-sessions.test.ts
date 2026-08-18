@@ -79,6 +79,30 @@ describe("host session manager", () => {
     sessions.close(second);
   });
 
+  it("admits independent requests without the legacy lease when browser scheduling is external", async () => {
+    const sessions = manager();
+    const first = connection(sessions);
+    const second = connection(sessions);
+
+    const one = await sessions.beginRequest(first, {
+      id: "one",
+      tool: "page.read",
+      skipLease: true,
+    } as any);
+    const two = await sessions.beginRequest(second, {
+      id: "two",
+      tool: "page.read",
+      skipLease: true,
+    } as any);
+
+    expect(one.queued).toBe(false);
+    expect(two.queued).toBe(false);
+    sessions.complete(first, "one");
+    sessions.complete(second, "two");
+    sessions.close(first);
+    sessions.close(second);
+  });
+
   it("retains an abandoned lease until the active request settles", async () => {
     const sessions = manager();
     const first = connection(sessions);

@@ -171,6 +171,16 @@ describe("CDPController", () => {
       expect(mockChrome.debugger.attach).toHaveBeenCalledTimes(1);
     });
 
+    it("reports debugger_busy instead of assuming ownership of an existing attachment", async () => {
+      mockChrome.debugger.attach.mockRejectedValue(
+        new Error("Another debugger is already attached to the tab"),
+      );
+
+      await expect(controller.attach(tabId)).rejects.toMatchObject({
+        code: "debugger_busy",
+      });
+    });
+
     it("throws descriptive error for restricted pages", async () => {
       mockChrome.debugger.attach.mockRejectedValue(new Error("Cannot access a chrome:// URL"));
 

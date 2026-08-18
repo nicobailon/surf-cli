@@ -275,6 +275,21 @@ async function startHostHarness(
     const parsed = parseNativeFrames(stdoutBuffer, chunk as BufferLike);
     stdoutBuffer = parsed.buffer;
     for (const message of parsed.messages) {
+      if (message.type === "TARGET_RESOLVE" || message.type === "TARGET_INSPECT") {
+        const requestedTabId = Number(message.tabId) || 1;
+        child.stdin.write(
+          encodeNativeMessage({
+            id: message.id,
+            tabId: requestedTabId,
+            windowId: 1,
+            url: "https://example.test/",
+            title: "Example",
+            active: true,
+            restricted: false,
+          }),
+        );
+        continue;
+      }
       publish(message);
     }
   });
@@ -328,6 +343,16 @@ async function startHostHarness(
   });
 
   await waitForMessage((message) => message.type === "HOST_READY", "HOST_READY");
+  child.stdin.write(
+    encodeNativeMessage({
+      type: "EXTENSION_HELLO",
+      protocolVersion: 2,
+      extensionVersion: "test",
+      browserInstanceId: "integration-browser",
+      browserEpoch: `integration-epoch-${process.pid}`,
+      capabilities: ["browser-sessions", "strict-targets", "keyed-lanes"],
+    }),
+  );
   if (!fs.existsSync(socketPath)) {
     throw new Error(`Native host did not create socket: ${socketPath}`);
   }
@@ -1506,7 +1531,7 @@ describe("native host protocol integration", () => {
     socket.destroy();
   });
 
-  it("serializes local and authenticated remote requests through one host lease", async () => {
+  it("allows local browser reads and authenticated remote tab work to overlap", async () => {
     const reservation = net.createServer();
     await new Promise<void>((resolve) => reservation.listen(0, "127.0.0.1", resolve));
     const tcpPort = reservation.address().port;
@@ -1537,23 +1562,19 @@ describe("native host protocol integration", () => {
       params: { tool: "page.text", args: {} },
       id: "remote",
     });
-    await host.expectNoMessage(
-      (message) => message.type === "GET_PAGE_TEXT",
-      "remote request before local lease release",
-    );
-    host.send({ id: firstExtensionRequest.id, tabs: [] });
-    await new Promise<void>((resolve) => local.once("data", () => resolve()));
-    local.end();
     const secondExtensionRequest = await host.waitForMessage(
       (message) => message.type === "GET_PAGE_TEXT",
-      "second GET_PAGE_TEXT",
+      "concurrent GET_PAGE_TEXT",
     );
     host.send({ id: secondExtensionRequest.id, text: "remote result" });
     expect(await readRemote).toContain('"id":"remote"');
+    host.send({ id: firstExtensionRequest.id, tabs: [] });
+    await new Promise<void>((resolve) => local.once("data", () => resolve()));
+    local.end();
     remote.destroy();
   });
 
-  it("keeps a disconnected active request leased until extension settlement", async () => {
+  it("does not let a disconnected shared reader block another browser read", async () => {
     const host = await startHostHarness();
     const first = net.createConnection(host.socketPath);
     await new Promise<void>((resolve) => first.once("connect", resolve));
@@ -1576,16 +1597,13 @@ describe("native host protocol integration", () => {
       params: { tool: "tab.list", args: {} },
       id: "queued",
     });
-    await host.expectNoMessage(
-      (message) => message.type === "LIST_TABS",
-      "queued request before abandoned operation settles",
-    );
-    host.send({ id: extensionRequest.id, tabs: [] });
     const secondExtensionRequest = await host.waitForMessage(
       (message) => message.type === "LIST_TABS",
-      "queued LIST_TABS",
+      "concurrent LIST_TABS",
     );
     host.send({ id: secondExtensionRequest.id, tabs: [] });
+    await new Promise<void>((resolve) => second.once("data", () => resolve()));
+    host.send({ id: extensionRequest.id, tabs: [] });
     second.destroy();
   });
 

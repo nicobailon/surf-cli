@@ -1,5 +1,6 @@
 const fs = require("fs");
 const networkFormatters = require("./formatters/network.cjs");
+const { recoveryFor } = require("./surf-error.cjs");
 
 function buildProviderUploadMessage(provider, tabId, filePaths, id) {
   const normalizedProvider = String(provider || "").toLowerCase();
@@ -19,11 +20,22 @@ function formatToolError(error) {
     : typeof error === "string"
       ? error
       : error?.message || String(error);
-  const result = { content: [{ type: "text", text: message }] };
+  const recoveryCommand = recoveryFor(error);
+  const display = recoveryCommand ? `${message}\nRecovery: ${recoveryCommand}` : message;
+  const result = { content: [{ type: "text", text: display }] };
   if (error && typeof error === "object") {
     result.message = message;
     if (typeof error.code === "string") result.code = error.code;
     if (typeof error.jobId === "string") result.jobId = error.jobId;
+    const details = typeof error.toJSON === "function" ? error.toJSON() : {};
+    for (const key of [
+      "session", "target", "lastUrl", "laneKey", "resourceKeys", "retryable", "queue", "reason",
+      "browserEpoch", "expectedBrowserEpoch", "recoveryCommand",
+    ]) {
+      if (error[key] !== undefined) details[key] = error[key];
+    }
+    if (recoveryCommand) details.recoveryCommand = recoveryCommand;
+    if (Object.keys(details).length > 0) result.details = details;
   }
   return result;
 }
@@ -38,6 +50,10 @@ function formatToolContent(result, log = () => {}, options = {}) {
   const text = (s) => [{ type: "text", text: s }];
   
   if (!result) return text("OK");
+
+  if (result.session || Array.isArray(result.sessions) || Object.hasOwn(result, "targetClosed")) {
+    return text(JSON.stringify(result, null, 2));
+  }
   
   if (result.aiResult) {
     if (result.mode === "find") {
@@ -805,7 +821,7 @@ function mapToolToMessage(tool, args, tabId) {
     case "switch_tab":
       return { type: "SWITCH_TAB", tabId: a.tab_id || a.tabId };
     case "close_tab":
-      return { type: "CLOSE_TAB", tabId: a.tab_id || a.tabId, tabIds: a.tab_ids || a.tabIds };
+      return { type: "CLOSE_TAB", tabId: a.tab_id || a.tabId || tabId, tabIds: a.tab_ids || a.tabIds };
     case "tab.list":
       return { type: "LIST_TABS" };
     case "tab.new":
@@ -823,7 +839,7 @@ function mapToolToMessage(tool, args, tabId) {
       if (typeof id === "string" && !/^\d+$/.test(id)) {
         return { type: "NAMED_TAB_CLOSE", name: id };
       }
-      return { type: "CLOSE_TAB", tabId: id, tabIds: ids };
+      return { type: "CLOSE_TAB", tabId: id ?? tabId, tabIds: ids };
     }
     case "tab.move": {
       const id = a.id || a.tab_id || a.tabId;

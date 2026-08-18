@@ -264,8 +264,11 @@ describe("Page HTML handler", () => {
     ]);
 
     try {
-      await handleMessage({ type: "FRAME_SWITCH", tabId: 1, index: 0 }, {});
-      const result = await handleMessage({ type: "GET_PAGE_HTML", tabId: 1 }, {});
+      const switched = await handleMessage({ type: "FRAME_SWITCH", tabId: 1, index: 0 }, {});
+      const result = await handleMessage(
+        { type: "GET_PAGE_HTML", tabId: 1, frameId: switched.frameId },
+        {},
+      );
 
       expect(result).toEqual({ html: "<!doctype html>\n<html><body>Rendered</body></html>" });
       expect(chrome.scripting.executeScript).toHaveBeenCalledWith(

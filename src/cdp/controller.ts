@@ -1,6 +1,18 @@
 type Debuggee = chrome.debugger.Debuggee;
 type MouseButton = "left" | "right" | "middle" | "none";
 
+class CDPControllerError extends Error {
+  code: string;
+  details?: Record<string, unknown>;
+
+  constructor(code: string, message: string, details?: Record<string, unknown>) {
+    super(message);
+    this.name = "CDPControllerError";
+    this.code = code;
+    this.details = details;
+  }
+}
+
 interface ConsoleMessage {
   type: string;
   text: string;
@@ -136,6 +148,7 @@ export class CDPController {
   private networkCallbacks: Map<number, Map<number, NetworkEventCallback>> = new Map();
   private networkRequestStartTimes: Map<string, number> = new Map();
   private pendingDialogs: Map<number, PendingDialog> = new Map();
+  private detachReasons: Map<number, string> = new Map();
   private networkEntrySeq = 0; // Sequence counter for unique IDs
   private networkBodyBytes: Map<number, number> = new Map();
   private networkCapture: Map<number, { mode: "none" | "text" | "all"; perBodyBytes: number; totalBytes: number }> = new Map();
@@ -166,16 +179,24 @@ export class CDPController {
       await chrome.debugger.attach(target, "1.3");
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
-      if (message.includes("Already attached")) {
-        this.targets.set(tabId, target);
-        return;
+      if (/already attached/i.test(message)) {
+        throw new CDPControllerError(
+          "debugger_busy",
+          `Another debugger already controls tab ${tabId}. Close DevTools or the competing debugger and retry.`,
+          { tabId },
+        );
       }
       if (message.includes("Cannot access") || message.includes("Cannot attach")) {
-        throw new Error(`Cannot control this page. Chrome restricts automation on chrome://, extensions, and web store pages.`);
+        throw new CDPControllerError(
+          "restricted_target",
+          "Cannot control this page. Chrome restricts automation on chrome://, extensions, and web store pages.",
+          { tabId },
+        );
       }
-      throw new Error(`Failed to attach debugger: ${message}`);
+      throw new CDPControllerError("debugger_attach_failed", `Failed to attach debugger: ${message}`, { tabId });
     }
     this.targets.set(tabId, target);
+    this.detachReasons.delete(tabId);
 
     this.setupEventListener();
     this.consoleMessages.set(tabId, []);
@@ -203,6 +224,8 @@ export class CDPController {
       this.consoleCallbacks.delete(tabId);
       this.networkCallbacks.delete(tabId);
       this.pendingDialogs.delete(tabId);
+      this.clearRequestStartTimes(tabId);
+      this.detachReasons.delete(tabId);
     }
   }
 
@@ -226,6 +249,7 @@ export class CDPController {
     chrome.debugger.onDetach.addListener((source, reason) => {
       const tabId = source.tabId;
       if (tabId && this.targets.has(tabId)) {
+        this.detachReasons.set(tabId, reason || "unknown");
         this.targets.delete(tabId);
         this.consoleMessages.delete(tabId);
         this.networkRequests.delete(tabId);
@@ -234,8 +258,21 @@ export class CDPController {
         this.networkCapture.delete(tabId);
         this.consoleCallbacks.delete(tabId);
         this.networkCallbacks.delete(tabId);
+        this.pendingDialogs.delete(tabId);
+        this.clearRequestStartTimes(tabId);
       }
     });
+  }
+
+  private requestStartKey(tabId: number, requestId: string): string {
+    return `${tabId}:${requestId}`;
+  }
+
+  private clearRequestStartTimes(tabId: number): void {
+    const prefix = `${tabId}:`;
+    for (const key of this.networkRequestStartTimes.keys()) {
+      if (key.startsWith(prefix)) this.networkRequestStartTimes.delete(key);
+    }
   }
 
   private enqueueCDPEvent(tabId: number, method: string, params: any): void {
@@ -348,7 +385,7 @@ export class CDPController {
     if (!req) return;
 
     const timestamp = params.timestamp ? params.timestamp * 1000 : Date.now();
-    this.networkRequestStartTimes.set(params.requestId, timestamp);
+    this.networkRequestStartTimes.set(this.requestStartKey(tabId, params.requestId), timestamp);
 
     // Legacy format for backward compatibility
     const reqHeaders: Record<string, string> = {};
@@ -439,11 +476,11 @@ export class CDPController {
 
       const callbacks = this.networkCallbacks.get(tabId);
       if (callbacks) {
-        const startTime = this.networkRequestStartTimes.get(params.requestId);
+        const startTime = this.networkRequestStartTimes.get(this.requestStartKey(tabId, params.requestId));
         const now = Date.now();
         const duration = startTime ? Math.round(now - startTime) : undefined;
         // Don't delete start time yet - we need it for loadingFinished
-        // this.networkRequestStartTimes.delete(params.requestId);
+        // this.networkRequestStartTimes.delete(this.requestStartKey(tabId, params.requestId));
 
         for (const cb of callbacks.values()) {
           cb({
@@ -464,7 +501,7 @@ export class CDPController {
       const response = params.response;
       
       // Calculate TTFB (time to first byte)
-      const startTime = this.networkRequestStartTimes.get(params.requestId);
+      const startTime = this.networkRequestStartTimes.get(this.requestStartKey(tabId, params.requestId));
       const now = params.timestamp ? params.timestamp * 1000 : Date.now();
       if (startTime) {
         entry.ttfb = Math.round(now - startTime);
@@ -507,10 +544,10 @@ export class CDPController {
 
       const callbacks = this.networkCallbacks.get(tabId);
       if (callbacks) {
-        const startTime = this.networkRequestStartTimes.get(params.requestId);
+        const startTime = this.networkRequestStartTimes.get(this.requestStartKey(tabId, params.requestId));
         const now = Date.now();
         const duration = startTime ? Math.round(now - startTime) : undefined;
-        this.networkRequestStartTimes.delete(params.requestId);
+        this.networkRequestStartTimes.delete(this.requestStartKey(tabId, params.requestId));
 
         for (const cb of callbacks.values()) {
           cb({
@@ -528,12 +565,12 @@ export class CDPController {
     const entriesMap = this.networkEntries.get(tabId);
     const entry = entriesMap?.get(params.requestId);
     if (entry) {
-      const startTime = this.networkRequestStartTimes.get(params.requestId);
+      const startTime = this.networkRequestStartTimes.get(this.requestStartKey(tabId, params.requestId));
       const now = params.timestamp ? params.timestamp * 1000 : Date.now();
       if (startTime) {
         entry.duration = Math.round(now - startTime);
       }
-      this.networkRequestStartTimes.delete(params.requestId);
+      this.networkRequestStartTimes.delete(this.requestStartKey(tabId, params.requestId));
       
       entry.status = 0;
       entry.flags.push('failed');
@@ -556,7 +593,7 @@ export class CDPController {
     const existing = requests.find((r) => r.requestId === params.requestId);
     if (existing) {
       // Calculate duration
-      const startTime = this.networkRequestStartTimes.get(params.requestId);
+      const startTime = this.networkRequestStartTimes.get(this.requestStartKey(tabId, params.requestId));
       const now = params.timestamp ? params.timestamp * 1000 : Date.now();
       if (startTime) {
         existing.duration = Math.round(now - startTime);
@@ -570,12 +607,12 @@ export class CDPController {
     if (!entry) return;
 
     // Calculate total duration
-    const startTime = this.networkRequestStartTimes.get(params.requestId);
+    const startTime = this.networkRequestStartTimes.get(this.requestStartKey(tabId, params.requestId));
     const now = params.timestamp ? params.timestamp * 1000 : Date.now();
     if (startTime) {
       entry.duration = Math.round(now - startTime);
     }
-    this.networkRequestStartTimes.delete(params.requestId);
+    this.networkRequestStartTimes.delete(this.requestStartKey(tabId, params.requestId));
 
     // Set response body size from encoded data length
     entry.responseBodySize = params.encodedDataLength;
@@ -1192,9 +1229,16 @@ export class CDPController {
   }
 
   private async ensureAttached(tabId: number): Promise<void> {
-    if (!this.targets.has(tabId)) {
-      await this.attach(tabId);
+    const detachReason = this.detachReasons.get(tabId);
+    if (detachReason) {
+      this.detachReasons.delete(tabId);
+      throw new CDPControllerError(
+        "debugger_detached",
+        `Debugger detached from tab ${tabId}: ${detachReason}. Retry after closing any competing debugger.`,
+        { tabId, reason: detachReason },
+      );
     }
+    if (!this.targets.has(tabId)) await this.attach(tabId);
   }
 
   async getViewportSize(tabId: number): Promise<{ width: number; height: number }> {

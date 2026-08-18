@@ -36,6 +36,11 @@ async function requestHost(endpoint, tool, args, options = {}) {
   try {
     const request = { type: "tool_request", method: "execute_tool", params: { tool, args }, id: `playbook-${Date.now()}-${Math.random()}` };
     if (options.tabId) request.tabId = options.tabId;
+    if (options.session) {
+      request.session = options.session;
+      request.sessionSource = options.sessionSource || "environment";
+    }
+    if (options.admission) request.admission = options.admission;
     return unwrapResponse(await transport.request(request, options.timeoutMs || 11 * 60 * 1000));
   } finally {
     await transport.close();
@@ -48,7 +53,7 @@ function runSpec(argv) {
   const parsed = parseCommandArgs(argv.slice(offset));
   const [playbook, op] = parsed.positional;
   if (!playbook || !op) throw new Error(direct ? "Usage: surf use <playbook> <op> [--arg value]" : "Usage: surf pb run <playbook> <op> [--arg value]");
-  const reserved = new Set(["json", "no-lock", "tab-id", "write", "repeat", "retry-attempt", "override-in-doubt", "pin-built-in", "allow-script"]);
+  const reserved = new Set(["json", "no-lock", "no-wait", "session", "tab-id", "write", "repeat", "retry-attempt", "override-in-doubt", "pin-built-in", "allow-script"]);
   const args = Object.fromEntries(Object.entries(parsed.options).filter(([name]) => !reserved.has(name)));
   return { playbook, op, args, options: parsed.options };
 }
@@ -73,7 +78,7 @@ function playbookCommandNeedsBrowser(argv) {
   return subcommand === "record" && ["start", "stop", "discard"].includes(argv[2]);
 }
 
-async function handlePlaybookCli(argv, { endpoint, cwd = process.cwd() }) {
+async function handlePlaybookCli(argv, { endpoint, cwd = process.cwd(), session, sessionSource, admission } = {}) {
   if (!["playbook", "pb", "use"].includes(argv[0])) return { handled: false };
   if (argv[0] === "use" || argv[1] === "run") {
     const spec = runSpec(argv);
@@ -93,6 +98,9 @@ async function handlePlaybookCli(argv, { endpoint, cwd = process.cwd() }) {
     };
     const value = await requestHost(endpoint, "playbook.run", args, {
       tabId: spec.options["tab-id"],
+      session: spec.options.session || session,
+      sessionSource: spec.options.session ? "explicit" : sessionSource,
+      admission: spec.options["no-wait"] === true ? { wait: false } : admission,
       timeoutMs: resolveRequestDeadlineMs("playbook.run", args),
     });
     return { handled: true, value, json: spec.options.json === true };
@@ -118,7 +126,12 @@ async function handlePlaybookCli(argv, { endpoint, cwd = process.cwd() }) {
     else if (action === "mark") args = { label: parsed.positional.slice(1).join(" ") };
     else if (action === "stop") args = { draft: parsed.options.draft === true };
     else if (!["status", "pause", "resume", "discard"].includes(action)) throw new Error("Unknown record command");
-    const value = await requestHost(endpoint, tool, args, { tabId: parsed.options["tab-id"] });
+    const value = await requestHost(endpoint, tool, args, {
+      tabId: parsed.options["tab-id"],
+      session: parsed.options.session || session,
+      sessionSource: parsed.options.session ? "explicit" : sessionSource,
+      admission: parsed.options["no-wait"] === true ? { wait: false } : admission,
+    });
     return { handled: true, value, json: parsed.options.json === true };
   }
   if (command === "suggest") return { handled: true, value: suggestions({ since: parsed.options.since || "1h" }), json: parsed.options.json === true };

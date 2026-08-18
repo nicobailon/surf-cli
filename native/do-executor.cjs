@@ -13,6 +13,11 @@ function sendDoRequest(toolName, toolArgs, context = {}) {
   };
   if (context.tabId) request.tabId = context.tabId;
   if (context.windowId) request.windowId = context.windowId;
+  if (context.session) {
+    request.session = context.session;
+    request.sessionSource = context.sessionSource || "environment";
+  }
+  if (context.admission) request.admission = context.admission;
   const timeoutMs = context.timeoutMs || resolveRequestDeadlineMs(toolName, toolArgs);
   const endpoint = context.endpoint || selectEndpoint([]).endpoint;
   const prepared = endpoint.kind === "remote"

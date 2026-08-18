@@ -91,6 +91,14 @@ describe("mapToolToMessage", () => {
       expect(msg.url).toBe("https://example.com");
     });
 
+    it("uses the resolved target for a no-ID tab.close", () => {
+      expect(helpers.mapToolToMessage("tab.close", {}, 42)).toEqual({
+        type: "CLOSE_TAB",
+        tabId: 42,
+        tabIds: undefined,
+      });
+    });
+
     it("maps tab.move to TAB_MOVE", () => {
       const msg = helpers.mapToolToMessage("tab.move", {
         id: "123",
@@ -410,9 +418,36 @@ describe("formatToolError", () => {
       content: [{ type: "text", text: "capacity reached" }],
     });
   });
+
+  it("adds a copy-paste recovery command for stale session targets", () => {
+    const error = Object.assign(new Error("tab is gone"), {
+      code: "tab_gone",
+      session: "research",
+      lastUrl: "https://example.com/",
+    });
+
+    const formatted = helpers.formatToolError(error);
+    expect(formatted.content[0].text).toContain("Recovery: surf session.reopen research");
+    expect(formatted.details).toMatchObject({
+      session: "research",
+      lastUrl: "https://example.com/",
+      recoveryCommand: "surf session.reopen research",
+    });
+  });
 });
 
 describe("formatToolContent", () => {
+  it("preserves browser session results as reviewable JSON", () => {
+    const result = helpers.formatToolContent({
+      session: { name: "research", tabId: 10, queue: { active: false } },
+      created: true,
+    });
+    expect(JSON.parse(result[0].text)).toMatchObject({
+      session: { name: "research", tabId: 10 },
+      created: true,
+    });
+  });
+
   describe("window responses", () => {
     it("formats window.new success", () => {
       const result = helpers.formatToolContent({

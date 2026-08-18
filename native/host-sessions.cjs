@@ -123,7 +123,7 @@ class HostSessionManager {
     context.stream = false;
   }
 
-  beginRequest(context, { id, tool, deadlineMs }) {
+  beginRequest(context, { id, tool, deadlineMs, skipLease = false }) {
     if (context.closed) return Promise.reject(new Error("connection is closed"));
     if (context.workTimer) {
       clearTimeout(context.workTimer);
@@ -149,8 +149,15 @@ class HostSessionManager {
       controller,
       signal: controller.signal,
       tombstoned: false,
+      skipLease,
     };
     context.activeRequest = request;
+    if (skipLease) {
+      request.queued = false;
+      request.timer = setTimeout(() => this.onRequestTimeout(context, request), request.deadlineMs);
+      this.audit({ event: "admission", context, request, outcome: "accepted" });
+      return Promise.resolve(request);
+    }
     const grant = () => {
       if (context.closed) return Promise.reject(new Error("connection closed while waiting for browser lease"));
       request.queued = false;
