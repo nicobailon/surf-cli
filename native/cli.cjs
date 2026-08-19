@@ -2913,6 +2913,13 @@ if (tool === "batch" && toolArgs.file) {
     console.error(`Error: Failed to read batch file: ${e.message}`);
     process.exit(1);
   }
+} else if (tool === "batch" && typeof toolArgs.actions === "string") {
+  try {
+    toolArgs.actions = JSON.parse(toolArgs.actions);
+  } catch (e) {
+    console.error(`Error: Failed to parse batch actions: ${e.message}`);
+    process.exit(1);
+  }
 }
 
 // Handle select command: capture multiple values after selector

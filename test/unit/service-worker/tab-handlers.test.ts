@@ -87,6 +87,31 @@ describe("tab handlers", () => {
     expect(result).toEqual({ success: true, contentEditable: false });
   });
 
+  it("routes selector clicks to the explicit host-provided iframe", async () => {
+    const handleMessage = await loadHandleMessage();
+    const chrome = (globalThis as any).chrome;
+    chrome.webNavigation.getAllFrames.mockResolvedValue([
+      { frameId: 0, parentFrameId: -1, url: "https://example.com/" },
+      { frameId: 7, parentFrameId: 0, url: "https://example.com/frame" },
+    ]);
+    chrome.scripting.executeScript.mockResolvedValue([
+      { result: { success: true, selector: "#pay", index: 0, matchCount: 1 } },
+    ]);
+
+    const result = await handleMessage(
+      { type: "CLICK_SELECTOR", tabId: 123, frameId: 7, selector: "#pay", index: 0 },
+      {},
+    );
+
+    expect(chrome.scripting.executeScript).toHaveBeenLastCalledWith({
+      target: { tabId: 123, frameIds: [7] },
+      func: expect.any(Function),
+      args: ["#pay", 0],
+    });
+    expect(chrome.debugger.sendCommand).not.toHaveBeenCalled();
+    expect(result).toEqual({ success: true, selector: "#pay", index: 0, matchCount: 1 });
+  });
+
   it("moves tabs to the destination window", async () => {
     const handleMessage = await loadHandleMessage();
     const chrome = (globalThis as any).chrome;

@@ -914,6 +914,31 @@ describe("CLI argument parsing", () => {
     expect(explicitTab.request).not.toHaveProperty("session");
   });
 
+  it("keeps batch workflows bound to SURF_SESSION", async () => {
+    const selected = await runCli(
+      [
+        "batch",
+        "--actions",
+        '[{"type":"frame.switch","index":0},{"type":"click","selector":"#pay"}]',
+      ],
+      { SURF_SESSION: "research" },
+    );
+
+    expect(selected.request).toMatchObject({
+      session: "research",
+      sessionSource: "environment",
+      params: {
+        tool: "batch",
+        args: {
+          actions: [
+            { type: "frame.switch", index: 0 },
+            { type: "click", selector: "#pay" },
+          ],
+        },
+      },
+    });
+  });
+
   it("keeps a no-ID tab.close bound to SURF_SESSION", async () => {
     const selected = await runCli(["tab.close"], { SURF_SESSION: "research" });
     expect(selected.request).toMatchObject({

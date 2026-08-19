@@ -3207,6 +3207,23 @@ export async function handleMessage(
       if (!tabId) throw new Error("No tabId provided");
       const selector = message.selector;
       const index = message.index || 0;
+      const frameId = getFrameIdForTab(tabId, message);
+
+      if (frameId > 0) {
+        const [result] = await chrome.scripting.executeScript({
+          target: { tabId, frameIds: [frameId] },
+          func: (selector: string, index: number) => {
+            const elements = document.querySelectorAll(selector);
+            if (elements.length === 0) return { error: "No elements match selector" };
+            if (index >= elements.length) return { error: `Index ${index} out of range (found ${elements.length} elements)` };
+
+            (elements[index] as HTMLElement).click();
+            return { success: true, selector, index, matchCount: elements.length };
+          },
+          args: [selector, index],
+        });
+        return result?.result || { error: "Failed to click element" };
+      }
 
       const script = `(() => {
         const elements = document.querySelectorAll(${JSON.stringify(selector)});
