@@ -308,6 +308,16 @@ function emitFailedOracleJob(error: unknown, emitTerminal: EmitOracleJob) {
   emitTerminal({ id: error.jobId, state: "failed" });
 }
 
+function oracleOption(input: Record<string, unknown>, key: "model" | "effort"): string | undefined {
+  const options = input.options;
+  if (options && typeof options === "object" && !Array.isArray(options)) {
+    const value = (options as Record<string, unknown>)[key];
+    if (typeof value === "string") return value;
+  }
+  const direct = input[key];
+  return typeof direct === "string" ? direct : undefined;
+}
+
 export function createOracleExternalJobProvider(
   sessionId: string,
   jobIds: Set<string>,
@@ -325,10 +335,12 @@ export function createOracleExternalJobProvider(
     async start(input) {
       const prompt = typeof input.prompt === "string" ? input.prompt : "";
       if (!prompt.trim()) throw new Error("prompt required");
+      const model = oracleOption(input, "model");
+      const effort = oracleOption(input, "effort");
       const job = await requestOracleJob(request, "oracle.ask", {
         prompt,
-        ...(typeof input.model === "string" ? { model: input.model } : {}),
-        ...(typeof input.effort === "string" ? { effort: input.effort } : {}),
+        ...(model !== undefined ? { model } : {}),
+        ...(effort !== undefined ? { effort } : {}),
       });
       rememberJob(job.id);
       return { ...job, promptDigest: job.promptDigest ?? digestPrompt(prompt) };
@@ -361,11 +373,13 @@ export function createOracleExternalJobProvider(
     },
     async follow(id, message, input = {}) {
       if (!message.trim()) throw new Error("message required");
+      const model = oracleOption(input, "model");
+      const effort = oracleOption(input, "effort");
       const job = await requestOracleJob(request, "oracle.ask", {
         follow: id,
         prompt: message,
-        ...(typeof input.model === "string" ? { model: input.model } : {}),
-        ...(typeof input.effort === "string" ? { effort: input.effort } : {}),
+        ...(model !== undefined ? { model } : {}),
+        ...(effort !== undefined ? { effort } : {}),
       });
       rememberJob(job.id);
       return { ...job, promptDigest: job.promptDigest ?? digestPrompt(message) };

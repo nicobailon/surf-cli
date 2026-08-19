@@ -5,11 +5,13 @@
 ### Added
 - **Durable browser sessions** - Added `session.new`, idempotent `session.ensure`, list/info/close/rebind/reopen commands, `--session`, and `SURF_SESSION` for explicit tab-bound work.
 - **Concurrent tab lanes** - Different session tabs can execute concurrently while each tab remains FIFO; browser-wide mutations and browser-login provider flows remain exclusive.
+- **GPT Pro package agent** - Surf now exposes an optional `gpt-pro` package agent for `pi-subagents` users.
 
 ### Changed
 - **Agent recovery UX** - Session and scheduler errors now include copy-paste recovery commands, `session.info` reports queue blockers, and provider tools warn before taking exclusive browser access.
 - **Strict target safety** - Session commands never fall back to the active tab, and screenshot fallback refuses to capture a different visible tab.
 - **Surf skill guidance** - Updated iframe and batch examples for session-based agent workflows.
+- **Pi external-job options** - The `surf-oracle` provider now honors external-job `options.model` and `options.effort`, so Pi profiles can request ChatGPT GPT-5.6 Sol Pro web mode with `model: pro`.
 
 ### Fixed
 - **Batch iframe targeting** - Selector clicks in a batch now use the selected session frame after `frame.switch`.

@@ -1,5 +1,8 @@
 import { describe, expect, it, vi } from "vitest";
 
+const fs = require("node:fs");
+const path = require("node:path");
+
 const {
   createOracleExternalJobProvider,
   createToolRequest,
@@ -18,6 +21,19 @@ const backgroundWorkKey = Symbol.for("pi-subagents.background-work.v1");
 const externalJobProviderKey = Symbol.for("pi-subagents.external-job-providers.v1");
 
 describe("Pi extension", () => {
+  it("exposes the optional GPT Pro package agent", () => {
+    const root = process.cwd();
+    const packageJson = JSON.parse(fs.readFileSync(path.join(root, "package.json"), "utf8"));
+    const agent = fs.readFileSync(path.join(root, "agents", "gpt-pro.md"), "utf8");
+
+    expect(packageJson.files).toContain("agents/");
+    expect(packageJson.pi.subagents.agents).toEqual(["./agents"]);
+    expect(agent).toContain("name: gpt-pro");
+    expect(agent).toContain("type: external-job");
+    expect(agent).toContain("provider: surf-oracle");
+    expect(agent).toContain("model: pro");
+  });
+
   it("maps browser tools to the native host request frame", () => {
     const request = createToolRequest("page.read", { filter: "interactive" }, 42);
 
@@ -239,7 +255,12 @@ describe("Pi extension", () => {
     const provider = createOracleExternalJobProvider("pi-session", jobIds, request);
 
     await expect(
-      provider.start({ prompt: "review", model: "gpt-5.6-sol", effort: "pro" }),
+      provider.start({
+        prompt: "review",
+        model: "gpt-5.5",
+        effort: "thinking",
+        options: { model: "pro", effort: "pro" },
+      }),
     ).resolves.toMatchObject({
       provider: "surf-oracle",
       id: "job-started",
@@ -258,15 +279,23 @@ describe("Pi extension", () => {
       resultArtifact: { kind: "inline-text", bytes: 6 },
     });
     await provider.reattach("job-started", { timeout: 2 });
-    await provider.follow("job-started", "continue", { model: "gpt-5.5" });
+    await provider.follow("job-started", "continue", {
+      model: "thinking",
+      options: { model: "gpt-5.5" },
+    });
+    await provider.follow("job-started", "legacy", { model: "thinking", effort: "heavy" });
 
     expect(jobIds.has("job-started")).toBe(true);
     expect(requests).toEqual([
-      { tool: "oracle.ask", args: { prompt: "review", model: "gpt-5.6-sol", effort: "pro" } },
+      { tool: "oracle.ask", args: { prompt: "review", model: "pro", effort: "pro" } },
       { tool: "oracle.status", args: { id: "job-started" } },
       { tool: "oracle.result", args: { id: "job-started", timeout: 1 } },
       { tool: "oracle.result", args: { id: "job-started", timeout: 2 } },
       { tool: "oracle.ask", args: { follow: "job-started", prompt: "continue", model: "gpt-5.5" } },
+      {
+        tool: "oracle.ask",
+        args: { follow: "job-started", prompt: "legacy", model: "thinking", effort: "heavy" },
+      },
     ]);
   });
 

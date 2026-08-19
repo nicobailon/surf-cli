@@ -33,6 +33,7 @@
     "playbooks/",
     "scripts/",
     "dist/",
+    "agents/",
     "skills/",
     "README.md",
     "LICENSE"
@@ -81,7 +82,12 @@
     ],
     "skills": [
       "./skills"
-    ]
+    ],
+    "subagents": {
+      "agents": [
+        "./agents"
+      ]
+    }
   },
   "peerDependencies": {
     "typebox": "*"

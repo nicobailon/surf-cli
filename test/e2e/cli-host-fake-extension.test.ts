@@ -369,24 +369,24 @@ describe("CLI/native-host/fake-extension E2E contract", () => {
         "--no-screenshot",
       ]);
       expect(navigation).toMatchObject({ code: 0, stdout: "OK\n" });
-      expect(navigation.stderr).toContain("[surf tab=42 window=7]");
+      expect(navigation.stderr).toMatch(/\[surf tab=42 window=7(?: queued=\d+ms)?\]/);
 
       const pageText = await runCli(socketPath, ["page.text"]);
       expect(pageText.code).toBe(0);
-      expect(pageText.stderr).toContain("[surf tab=42 window=7]");
+      expect(pageText.stderr).toMatch(/\[surf tab=42 window=7(?: queued=\d+ms)?\]/);
       expect(pageText.stdout).toContain("Title: Contract Fixture");
       expect(pageText.stdout).toContain("URL: https://fixture.test/page");
       expect(pageText.stdout).toContain("Contract fixture page text from the fake extension.");
 
       const pageRead = await runCli(socketPath, ["read", "--depth", "2", "--compact"]);
       expect(pageRead.code).toBe(0);
-      expect(pageRead.stderr).toContain("[surf tab=42 window=7]");
+      expect(pageRead.stderr).toMatch(/\[surf tab=42 window=7(?: queued=\d+ms)?\]/);
       expect(pageRead.stdout).toContain('[e1] heading "Contract Fixture"');
       expect(pageRead.stdout).toContain('[e2] button "Continue"');
 
       const screenshot = await runCli(socketPath, ["screenshot", "--no-save"]);
       expect(screenshot.code).toBe(0);
-      expect(screenshot.stderr).toContain("[surf tab=42 window=7]");
+      expect(screenshot.stderr).toMatch(/\[surf tab=42 window=7(?: queued=\d+ms)?\]/);
       expect(screenshot.stdout).toContain("Screenshot captured (1x1) - ID: fake-screenshot-1");
 
       expect(host.messages).toEqual(
