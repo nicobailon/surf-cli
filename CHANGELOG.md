@@ -9,6 +9,7 @@
 ### Changed
 - **Agent recovery UX** - Session and scheduler errors now include copy-paste recovery commands, `session.info` reports queue blockers, and provider tools warn before taking exclusive browser access.
 - **Strict target safety** - Session commands never fall back to the active tab, and screenshot fallback refuses to capture a different visible tab.
+- **Surf skill guidance** - Updated iframe and batch examples for session-based agent workflows.
 
 ### Fixed
 - **Batch iframe targeting** - Selector clicks in a batch now use the selected session frame after `frame.switch`.

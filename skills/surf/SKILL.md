@@ -457,14 +457,16 @@ surf upload --ref e5 --files "/path/file1.txt,/path/file2.txt"
 
 ```bash
 surf frame.list                # List frames with IDs
-surf frame.switch "FRAME_ID"   # Switch to iframe context
+surf frame.switch --selector "#payment-iframe"
+surf frame.switch --name "checkout"
+surf frame.switch --index 0    # First iframe
 surf frame.main                # Return to main frame
-surf frame.js --id "FRAME_ID" --code "return document.title"
+surf frame.js "return document.title" --id "FRAME_ID"
 
 # After frame.switch, subsequent commands target that frame:
-surf frame.switch "iframe-1"
+surf frame.switch --selector "#payment-iframe"
 surf page.read                 # Reads iframe content
-surf click e5                  # Clicks in iframe
+surf click --selector "#pay"   # Clicks in iframe
 surf frame.main                # Back to main page
 ```
 
@@ -567,6 +569,9 @@ surf do 'go "https://example.com" | click e5 | screenshot'
 
 # Multi-step login flow
 surf do 'go "https://example.com/login" | type "user@example.com" --selector "#email" | type "pass" --selector "#password" | click --selector "button[type=submit]"'
+
+# JSON action batch. Uses SURF_SESSION when it is set.
+surf batch --actions '[{"type":"frame.switch","index":0},{"type":"click","selector":"#pay"}]'
 
 # Validate without executing
 surf do 'go "url" | click e5' --dry-run
