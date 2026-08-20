@@ -1,5 +1,4 @@
 import { createRequire } from "node:module";
-import { createHash } from "node:crypto";
 import { Type } from "typebox";
 
 const require = createRequire(import.meta.url);
@@ -73,29 +72,31 @@ type BackgroundWorkRegistry = {
 };
 
 type OracleExternalJob = {
-  provider: "surf-oracle";
   id: string;
   state: string;
   conversationUrl: string | null;
-  requestedModel: string | null;
-  verifiedModel: string | null;
-  requestedEffort: string | null;
-  verifiedEffort: string | null;
-  promptDigest: string | null;
   resultText?: string;
-  resultArtifact?: { kind: "inline-text"; bytes: number };
   failure?: { code: string; message: string };
 };
 
+type PiExternalJobState = "queued" | "running" | "completed" | "failed";
+
+type PiExternalJobHandle = {
+  providerJobId: string;
+  state: PiExternalJobState;
+  conversationUrl?: string;
+  failureCode?: string;
+  failureMessage?: string;
+};
+
+type PiExternalJobResult = PiExternalJobHandle & { output?: string };
+
 type OracleExternalJobProvider = {
   name: "surf-oracle";
-  kind: "external-job";
-  wakeChannels: string[];
-  start(input: Record<string, unknown>): Promise<OracleExternalJob>;
-  status(id: string): Promise<OracleExternalJob>;
-  result(id: string, input?: Record<string, unknown>): Promise<OracleExternalJob>;
-  reattach(id: string, input?: Record<string, unknown>): Promise<OracleExternalJob>;
-  follow(id: string, message: string, input?: Record<string, unknown>): Promise<OracleExternalJob>;
+  start(input: Record<string, unknown>): Promise<PiExternalJobHandle>;
+  status(id: string): Promise<PiExternalJobHandle>;
+  result(id: string): Promise<PiExternalJobResult>;
+  reattach(id: string): Promise<PiExternalJobHandle>;
 };
 
 type RegisterExternalJobProvider = (provider: OracleExternalJobProvider) => () => void;
@@ -251,13 +252,9 @@ export async function resolveExternalJobProviderRegister(
       return module.registerExternalJobProvider as RegisterExternalJobProvider;
     }
   } catch {
-    // The provider bridge is optional until pi-subagents ships this consumer API.
+    // The Pi bridge is optional. Surf also runs in other coding-agent harnesses and as a direct CLI.
   }
   return registerGlobalExternalJobProvider;
-}
-
-function digestPrompt(prompt: string) {
-  return `sha256:${createHash("sha256").update(prompt).digest("hex")}`;
 }
 
 function asOracleJob(value: unknown): OracleJob {
@@ -272,20 +269,51 @@ function oracleExternalJob(job: OracleJob): OracleExternalJob {
   const failure = job.error
     ? { code: job.error.code || "failed", message: job.error.message || "Surf oracle job failed" }
     : undefined;
-  const requestedModel = Object.hasOwn(job, "modelRequested") ? job.modelRequested ?? null : job.model ?? null;
   return {
-    provider: "surf-oracle",
     id: job.id,
     state: job.state,
     conversationUrl: job.conversationUrl ?? null,
-    requestedModel,
-    verifiedModel: job.modelVerified ?? null,
-    requestedEffort: job.effortRequested ?? null,
-    verifiedEffort: job.effortVerified ?? null,
-    promptDigest: job.promptDigest ?? null,
-    ...(resultText === undefined ? {} : { resultText, resultArtifact: { kind: "inline-text", bytes: Buffer.byteLength(resultText, "utf8") } }),
+    ...(resultText === undefined ? {} : { resultText }),
     ...(failure ? { failure } : {}),
   };
+}
+
+// pi-subagents' external-job contract rejects unknown fields, null values,
+// untrimmed strings, and non-contract states, so map oracle payloads at this
+// boundary instead of passing them through.
+const PI_STATE_BY_ORACLE_STATE: Record<string, PiExternalJobState> = {
+  created: "queued",
+  dispatched: "running",
+  awaiting: "running",
+  captured: "completed",
+  failed: "failed",
+};
+const PI_MAX_FAILURE_CODE_CHARS = 128;
+const PI_MAX_FAILURE_MESSAGE_CHARS = 4_096;
+const PI_MAX_OUTPUT_CHARS = 1024 * 1024;
+
+function piBounded(value: string, maxChars: number): string {
+  return value.slice(0, maxChars).trim();
+}
+
+export function piExternalJobHandle(job: OracleExternalJob): PiExternalJobHandle {
+  const state = PI_STATE_BY_ORACLE_STATE[job.state];
+  if (!state) throw new Error(`Surf oracle job ${job.id} reported unknown state '${job.state}'`);
+  const conversationUrl = job.conversationUrl ?? undefined;
+  const failureCode = job.failure ? piBounded(job.failure.code, PI_MAX_FAILURE_CODE_CHARS) : "";
+  const failureMessage = job.failure ? piBounded(job.failure.message, PI_MAX_FAILURE_MESSAGE_CHARS) : "";
+  return {
+    providerJobId: job.id,
+    state,
+    ...(conversationUrl ? { conversationUrl } : {}),
+    ...(failureCode ? { failureCode } : {}),
+    ...(failureMessage ? { failureMessage } : {}),
+  };
+}
+
+export function piExternalJobResult(job: OracleExternalJob): PiExternalJobResult {
+  const output = job.resultText === undefined ? "" : piBounded(job.resultText, PI_MAX_OUTPUT_CHARS);
+  return { ...piExternalJobHandle(job), ...(output ? { output } : {}) };
 }
 
 async function requestOracleJob(request: typeof requestSurf, tool: string, args: Record<string, unknown>) {
@@ -298,6 +326,7 @@ async function requestOracleJob(request: typeof requestSurf, tool: string, args:
     const error = new Error(message);
     if (typeof details?.code === "string") Object.assign(error, { code: details.code });
     if (typeof details?.jobId === "string") Object.assign(error, { jobId: details.jobId });
+    if (details?.code === "capacity" && typeof details?.jobId === "string") Object.assign(error, { blockingJobId: details.jobId });
     throw error;
   }
   return oracleExternalJob(asOracleJob(result.details));
@@ -330,8 +359,6 @@ export function createOracleExternalJobProvider(
 ): OracleExternalJobProvider {
   return {
     name: "surf-oracle",
-    kind: "external-job",
-    wakeChannels: [ORACLE_FINISHED_CHANNEL],
     async start(input) {
       const prompt = typeof input.prompt === "string" ? input.prompt : "";
       if (!prompt.trim()) throw new Error("prompt required");
@@ -343,46 +370,33 @@ export function createOracleExternalJobProvider(
         ...(effort !== undefined ? { effort } : {}),
       });
       rememberJob(job.id);
-      return { ...job, promptDigest: job.promptDigest ?? digestPrompt(prompt) };
+      return piExternalJobHandle(job);
     },
-    status(id) {
-      return requestOracleJob(request, "oracle.status", { id });
+    async status(id) {
+      return piExternalJobHandle(await requestOracleJob(request, "oracle.status", { id }));
     },
-    result(id, input = {}) {
-      return requestOracleJob(request, "oracle.result", { id, ...(typeof input.timeout === "number" ? { timeout: input.timeout } : {}) })
+    result(id) {
+      return requestOracleJob(request, "oracle.result", { id })
         .then((job) => {
           emitTerminal({ id: job.id, state: job.state });
-          return job;
+          return piExternalJobResult(job);
         })
         .catch((error) => {
           emitFailedOracleJob(error, emitTerminal);
           throw error;
         });
     },
-    reattach(id, input = {}) {
-      return requestOracleJob(request, "oracle.result", { id, ...(typeof input.timeout === "number" ? { timeout: input.timeout } : {}) })
+    reattach(id) {
+      return requestOracleJob(request, "oracle.result", { id })
         .then((job) => {
           rememberJob(job.id);
           emitTerminal({ id: job.id, state: job.state });
-          return job;
+          return piExternalJobHandle(job);
         })
         .catch((error) => {
           emitFailedOracleJob(error, emitTerminal);
           throw error;
         });
-    },
-    async follow(id, message, input = {}) {
-      if (!message.trim()) throw new Error("message required");
-      const model = oracleOption(input, "model");
-      const effort = oracleOption(input, "effort");
-      const job = await requestOracleJob(request, "oracle.ask", {
-        follow: id,
-        prompt: message,
-        ...(model !== undefined ? { model } : {}),
-        ...(effort !== undefined ? { effort } : {}),
-      });
-      rememberJob(job.id);
-      return { ...job, promptDigest: job.promptDigest ?? digestPrompt(message) };
     },
   };
 }

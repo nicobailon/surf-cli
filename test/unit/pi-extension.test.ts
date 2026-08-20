@@ -207,8 +207,6 @@ describe("Pi extension", () => {
     let provider:
       | {
           name: string;
-          kind: string;
-          wakeChannels: string[];
           start(input: Record<string, unknown>): Promise<unknown>;
         }
       | undefined;
@@ -225,13 +223,18 @@ describe("Pi extension", () => {
     );
 
     expect(provider?.name).toBe("surf-oracle");
-    expect(provider?.kind).toBe("external-job");
-    expect(provider?.wakeChannels).toEqual(["surf-oracle:finished"]);
+    expect(Object.keys(provider ?? {}).sort()).toEqual([
+      "name",
+      "reattach",
+      "result",
+      "start",
+      "status",
+    ]);
     dispose();
     expect(provider).toBeUndefined();
   });
 
-  it("maps Surf Oracle external-job operations to durable oracle tools", async () => {
+  it("maps Surf Oracle external-job operations to pi's external-job contract", async () => {
     const jobIds = new Set<string>();
     const requests: Array<{ tool: string; args: Record<string, unknown> }> = [];
     const request = vi.fn(async (tool: string, args: Record<string, unknown>) => {
@@ -243,12 +246,7 @@ describe("Pi extension", () => {
           id,
           state: tool === "oracle.result" ? "captured" : "awaiting",
           conversationUrl: "https://chatgpt.com/c/conversation-id",
-          modelRequested: "gpt-5.6-sol",
-          modelVerified: "ChatGPT 5.6 Sol",
-          effortRequested: "pro",
-          effortVerified: "Pro",
-          promptDigest: `sha256:${"a".repeat(64)}`,
-          ...(tool === "oracle.result" ? { response: "answer" } : {}),
+          ...(tool === "oracle.result" ? { response: "answer\n" } : {}),
         },
       };
     });
@@ -261,60 +259,57 @@ describe("Pi extension", () => {
         effort: "thinking",
         options: { model: "pro", effort: "pro" },
       }),
-    ).resolves.toMatchObject({
-      provider: "surf-oracle",
-      id: "job-started",
-      state: "awaiting",
-      requestedModel: "gpt-5.6-sol",
-      verifiedModel: "ChatGPT 5.6 Sol",
-      requestedEffort: "pro",
-      verifiedEffort: "Pro",
-      promptDigest: `sha256:${"a".repeat(64)}`,
+    ).resolves.toEqual({
+      providerJobId: "job-started",
+      state: "running",
+      conversationUrl: "https://chatgpt.com/c/conversation-id",
     });
-    await expect(provider.status("job-started")).resolves.toMatchObject({ id: "job-started" });
-    await expect(provider.result("job-started", { timeout: 1 })).resolves.toMatchObject({
-      id: "job-started",
-      state: "captured",
-      resultText: "answer",
-      resultArtifact: { kind: "inline-text", bytes: 6 },
+    await expect(provider.status("job-started")).resolves.toMatchObject({
+      providerJobId: "job-started",
+      state: "running",
     });
-    await provider.reattach("job-started", { timeout: 2 });
-    await provider.follow("job-started", "continue", {
-      model: "thinking",
-      options: { model: "gpt-5.5" },
+    await expect(provider.result("job-started")).resolves.toEqual({
+      providerJobId: "job-started",
+      state: "completed",
+      conversationUrl: "https://chatgpt.com/c/conversation-id",
+      output: "answer",
     });
-    await provider.follow("job-started", "legacy", { model: "thinking", effort: "heavy" });
+    await provider.reattach("job-started");
 
     expect(jobIds.has("job-started")).toBe(true);
     expect(requests).toEqual([
       { tool: "oracle.ask", args: { prompt: "review", model: "pro", effort: "pro" } },
       { tool: "oracle.status", args: { id: "job-started" } },
-      { tool: "oracle.result", args: { id: "job-started", timeout: 1 } },
-      { tool: "oracle.result", args: { id: "job-started", timeout: 2 } },
-      { tool: "oracle.ask", args: { follow: "job-started", prompt: "continue", model: "gpt-5.5" } },
-      {
-        tool: "oracle.ask",
-        args: { follow: "job-started", prompt: "legacy", model: "thinking", effort: "heavy" },
-      },
+      { tool: "oracle.result", args: { id: "job-started" } },
+      { tool: "oracle.result", args: { id: "job-started" } },
     ]);
   });
 
-  it("preserves explicit null requested model metadata", async () => {
-    const provider = createOracleExternalJobProvider("pi-session", new Set(), async () => ({
-      content: [{ type: "text", text: "{}" }],
-      details: {
-        id: "legacy-job",
-        state: "awaiting",
-        model: "ChatGPT 5.6 Sol",
-        modelRequested: null,
-        modelVerified: "ChatGPT 5.6 Sol",
-      },
-    }));
+  it("maps failed oracle jobs to pi failure fields and rejects unknown states", async () => {
+    const provider = createOracleExternalJobProvider(
+      "pi-session",
+      new Set(),
+      async (_tool: string, args: Record<string, unknown>) => ({
+        content: [{ type: "text", text: "{}" }],
+        details:
+          args.id === "weird-job"
+            ? { id: "weird-job", state: "harvesting" }
+            : {
+                id: "failed-job",
+                state: "failed",
+                conversationUrl: null,
+                error: { code: "harvest_failed", message: " harvest failed " },
+              },
+      }),
+    );
 
-    await expect(provider.status("legacy-job")).resolves.toMatchObject({
-      requestedModel: null,
-      verifiedModel: "ChatGPT 5.6 Sol",
+    await expect(provider.status("failed-job")).resolves.toEqual({
+      providerJobId: "failed-job",
+      state: "failed",
+      failureCode: "harvest_failed",
+      failureMessage: "harvest failed",
     });
+    await expect(provider.status("weird-job")).rejects.toThrow(/unknown state 'harvesting'/);
   });
 
   it("registers reattached active jobs as background work", async () => {
@@ -454,7 +449,7 @@ describe("Pi extension", () => {
       details: { id: "late-job", state: "awaiting" },
     });
 
-    await expect(started).resolves.toMatchObject({ id: "late-job" });
+    await expect(started).resolves.toMatchObject({ providerJobId: "late-job", state: "running" });
     expect([...jobIds]).toEqual([]);
   });
 
@@ -473,6 +468,7 @@ describe("Pi extension", () => {
     await expect(provider.start({ prompt: "review" })).rejects.toMatchObject({
       code: "capacity",
       jobId: "blocking-job",
+      blockingJobId: "blocking-job",
       message: "oracle job capacity reached; in-flight job: blocking-job",
     });
   });

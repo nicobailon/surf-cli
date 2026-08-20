@@ -36,5 +36,12 @@ export default defineConfig({
 
     // Global test utilities
     globals: true,
+
+    // pi-subagents publishes TypeScript sources; inline it so vitest transforms them.
+    server: {
+      deps: {
+        inline: ["pi-subagents"],
+      },
+    },
   },
 });
