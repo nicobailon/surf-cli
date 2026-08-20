@@ -2,11 +2,22 @@
 
 ## [Unreleased]
 
+## [2.15.1] - 2026-08-20
+
+### Highlights
+- Pi users can run the packaged `gpt-pro` agent through Surf when ChatGPT is open and logged in.
+- Device aliases such as `iphone`, `pixel`, and `ipadpro` now resolve to the same presets everywhere.
+- Help text and release notes now point users at the right commands and current release details.
+
 ### Changed
 - **Dependency maintenance** - Updated Puppeteer to 25.6.0 and aligned the real-Chrome CI pin to 151.0.7922.77.
+- **Docs and help text** - The README now links to the changelog for current release notes, and the packaged Surf skill labels `surf --help` as basic help while keeping `surf --help-full` as the full command list.
 
 ### Fixed
-- **Pi external-job contract** - Surf now registers `surf-oracle` with pi-subagents' actual external-job contract, so Pi can run packaged `gpt-pro` jobs through Surf against ChatGPT web mode when the browser is logged in. The provider returns the expected job fields (`providerJobId`, contract states, `output`, `failureCode`/`failureMessage`) and capacity errors carry `blockingJobId` for pi's fail-closed handling. A contract test validates the provider against pi-subagents' real validators.
+- **Pi GPT Pro jobs** - Surf now registers `surf-oracle` with pi-subagents' external-job contract, so Pi can run packaged `gpt-pro` jobs through Surf against ChatGPT web mode when the browser is logged in. Capacity errors now include the blocking job id.
+- **Device aliases** - Extension-side device emulation now resolves aliases before fuzzy matching, so `iphone`, `pixel`, `galaxy`, and similar names match the native preset list.
+- **AI Studio parse errors** - Invalid GenerateContent responses now keep the original parse error as the cause.
+- **Extension cleanup** - Removed unused extension transport and debug exports.
 
 ## [2.15.0] - 2026-08-19
 
