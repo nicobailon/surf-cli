@@ -2,6 +2,9 @@
 
 ## [Unreleased]
 
+### Changed
+- **Dependency maintenance** - Updated Puppeteer to 25.6.0 and aligned the real-Chrome CI pin to 151.0.7922.77.
+
 ### Fixed
 - **Pi external-job contract** - The registered `surf-oracle` provider now returns pi-subagents' actual external-job contract shape (`providerJobId`, contract states, `output`, `failureCode`/`failureMessage`) and registers without extra fields, so the packaged `gpt-pro` agent works with released pi-subagents instead of failing validation. Capacity errors now carry `blockingJobId` for pi's fail-closed handling. A contract test validates the provider against pi-subagents' real validators.
 

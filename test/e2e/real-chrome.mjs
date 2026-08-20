@@ -23,7 +23,7 @@ const repo = process.cwd();
 const extensionKey =
   "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEArWZVsRzpoyzuyQFqRzGOnkxv9FNaX/SR/VMw2f9ld+DKmUMxJhi/14olehkLWRJQumFPYTzWr1oqb1LwwI2KhBtn9mbaqzPSrrRGQ1VobTx7ZmxU+ooppXNdb2KGh/WXVqahS0D1nsQplAE6hCqQWPjsPCnXnWjUIH/B0EsInIUDwA8PKfuMG8p2HDlLj8hEpmLwOA48W4aHbl2S6bZHu9O50Lbd0L94aSwJLBNLKuXpBt/kFwlnpHd3zoJme9DIbqnDU/nMNh9SlA+EXRT6FhyiKdo6ZBMdtJeUPLQI2uHeoF8wikkNhIXX/E2EXlBqtZJJaFEi895x2s40+j/iZQIDAQAB"; // gitleaks:allow -- public test manifest key
 const extensionId = "nionemkjcnknfdhdolfloigkhpjnifmf";
-const pinnedChromeVersion = "151.0.7922.71";
+const pinnedChromeVersion = "151.0.7922.77";
 const scratch = mkdtempSync(join(tmpdir(), "surf-real-chrome-"));
 const home = join(scratch, "home");
 const extensionDir = join(scratch, "extension");
