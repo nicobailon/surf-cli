@@ -28,7 +28,3 @@ export function debugLog(...args: unknown[]): void {
     console.log("[Surf]", ...args);
   }
 }
-
-export function isDebugMode(): boolean {
-  return debugMode;
-}

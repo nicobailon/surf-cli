@@ -112,6 +112,19 @@ describe("tab handlers", () => {
     expect(result).toEqual({ success: true, selector: "#pay", index: 0, matchCount: 1 });
   });
 
+  it("uses native device aliases before fuzzy matching", async () => {
+    const handleMessage = await loadHandleMessage();
+    const chrome = (globalThis as any).chrome;
+
+    await handleMessage({ type: "EMULATE_DEVICE", tabId: 123, device: "iphone" }, {});
+
+    expect(chrome.debugger.sendCommand).toHaveBeenCalledWith(
+      { tabId: 123 },
+      "Emulation.setDeviceMetricsOverride",
+      expect.objectContaining({ width: 390, height: 844 }),
+    );
+  });
+
   it("moves tabs to the destination window", async () => {
     const handleMessage = await loadHandleMessage();
     const chrome = (globalThis as any).chrome;

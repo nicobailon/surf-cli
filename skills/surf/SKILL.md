@@ -40,7 +40,7 @@ Remote paths are client-local by default. `local:./file` is explicit client-loca
 ## CLI Quick Reference
 
 ```bash
-surf --help                    # Full help
+surf --help                    # Basic help
 surf <group>                   # Group help (tab, scroll, page, wait, dialog, emulate, form, perf, ai)
 surf --help-full               # All commands
 surf --find <term>             # Search tools

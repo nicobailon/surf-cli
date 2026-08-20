@@ -519,7 +519,6 @@ chrome.windows.onRemoved.addListener((windowId) => {
  */
 async function waitForRuntimeReady(tabId: number, timeoutMs = 10000): Promise<void> {
   const deadline = Date.now() + timeoutMs;
-  const delay = (ms: number) => new Promise(r => setTimeout(r, ms));
 
   // Poll until we can successfully evaluate JS
   while (Date.now() < deadline) {
@@ -527,13 +526,13 @@ async function waitForRuntimeReady(tabId: number, timeoutMs = 10000): Promise<vo
       const result = await cdp.evaluateScript(tabId, "document.readyState");
       if (result?.result?.value === "complete") {
         // Extra delay for framework hydration (React, Vue, etc.)
-        await delay(1500);
+        await sleep(1500);
         return;
       }
     } catch {
       // CDP not ready yet, continue polling
     }
-    await delay(200);
+    await sleep(200);
   }
 
   // Timeout but proceed anyway - the page might still work
@@ -1916,7 +1915,25 @@ export async function handleMessage(
 
       // Find matching device (case-insensitive partial match, prefer longest match)
       type DevicePreset = { width: number; height: number; deviceScaleFactor: number; mobile: boolean; touch: boolean; userAgent: string };
+      const aliases: Record<string, string> = {
+        iphone: "iPhone 14",
+        iphone14: "iPhone 14",
+        iphone13: "iPhone 13",
+        iphone12: "iPhone 12",
+        iphonese: "iPhone SE",
+        pixel: "Pixel 7",
+        pixel7: "Pixel 7",
+        pixel6: "Pixel 6",
+        galaxy: "Galaxy S23",
+        galaxys23: "Galaxy S23",
+        ipad: "iPad",
+        ipadpro: "iPad Pro",
+      };
       let device: DevicePreset | undefined = presets[deviceName];
+      if (!device) {
+        const lowerName = deviceName.toLowerCase();
+        device = presets[aliases[lowerName.replace(/\s+/g, "")]];
+      }
       if (!device) {
         const lowerName = deviceName.toLowerCase();
         let bestMatch: { name: string; preset: DevicePreset } | null = null;

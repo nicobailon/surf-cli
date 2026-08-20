@@ -327,8 +327,11 @@ function parseAiStudioGenerateContentText(rawText) {
   let parsed;
   try {
     parsed = JSON.parse(normalized);
-  } catch (e) {
-    throw new Error(`Invalid GenerateContent JSON (${normalized.length} chars): ${e.message}`);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    throw new Error(`Invalid GenerateContent JSON (${normalized.length} chars): ${message}`, {
+      cause: error,
+    });
   }
 
   const segments = [];

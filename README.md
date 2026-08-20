@@ -10,7 +10,7 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg?style=for-the-badge)](LICENSE)
 [![Platform](https://img.shields.io/badge/Platform-macOS%20%7C%20Linux%20%7C%20Windows-blue?style=for-the-badge)]()
 
-> **v2.6.0** — AI Studio support (`surf aistudio`, `surf aistudio.build`), Windows support, Helium browser support, env var overrides. See [CHANGELOG](CHANGELOG.md).
+> See [CHANGELOG](CHANGELOG.md) for current release notes.
 
 ```bash
 surf go "https://example.com"

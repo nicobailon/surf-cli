@@ -1,5 +1,4 @@
 import { debugLog } from "../utils/debug";
-import { handleNativeApiResponse } from "./native-api-transport";
 
 let nativePort: chrome.runtime.Port | null = null;
 let messageHandler: ((msg: any) => Promise<any>) | null = null;
@@ -105,7 +104,6 @@ function connect(): void {
       }
 
       if (msg.type?.startsWith("API_RESPONSE_")) {
-        handleNativeApiResponse(msg);
         chrome.runtime.sendMessage(msg).catch(() => {});
         return;
       }
