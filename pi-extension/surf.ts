@@ -50,6 +50,8 @@ type OracleJob = {
   effortRequested?: string | null;
   effortVerified?: string | null;
   promptDigest?: string | null;
+  requestId?: string | null;
+  follow?: string | null;
   response?: string;
   error?: { code?: string; message?: string } | null;
 };
@@ -75,6 +77,9 @@ type OracleExternalJob = {
   id: string;
   state: string;
   conversationUrl: string | null;
+  follow?: string;
+  requestId?: string;
+  promptDigest?: string;
   resultText?: string;
   failure?: { code: string; message: string };
 };
@@ -97,6 +102,7 @@ type OracleExternalJobProvider = {
   status(id: string): Promise<PiExternalJobHandle>;
   result(id: string): Promise<PiExternalJobResult>;
   reattach(id: string): Promise<PiExternalJobHandle>;
+  followUp?(input: Record<string, unknown>): Promise<PiExternalJobHandle>;
 };
 
 type RegisterExternalJobProvider = (provider: OracleExternalJobProvider) => () => void;
@@ -273,6 +279,9 @@ function oracleExternalJob(job: OracleJob): OracleExternalJob {
     id: job.id,
     state: job.state,
     conversationUrl: job.conversationUrl ?? null,
+    ...(typeof job.follow === "string" ? { follow: job.follow } : {}),
+    ...(typeof job.requestId === "string" ? { requestId: job.requestId } : {}),
+    ...(typeof job.promptDigest === "string" ? { promptDigest: job.promptDigest } : {}),
     ...(resultText === undefined ? {} : { resultText }),
     ...(failure ? { failure } : {}),
   };
@@ -347,6 +356,38 @@ function oracleOption(input: Record<string, unknown>, key: "model" | "effort"): 
   return typeof direct === "string" ? direct : undefined;
 }
 
+function optionalString(input: Record<string, unknown>, key: string): string | undefined {
+  const value = input[key];
+  return typeof value === "string" && value.trim() ? value : undefined;
+}
+
+function parentProviderJobId(input: Record<string, unknown>): string {
+  const id = optionalString(input, "parentProviderJobId") ?? optionalString(input, "providerJobId");
+  if (!id) throw new Error("parentProviderJobId required");
+  return id;
+}
+
+function assertFollowJob(job: OracleExternalJob, parentId: string) {
+  if (job.id === parentId) throw new Error(`Surf oracle follow-up reused parent job '${parentId}'`);
+  if (job.follow !== parentId) throw new Error(`Surf oracle follow-up job '${job.id}' is not linked to parent '${parentId}'`);
+}
+
+const ORACLE_STATUS_HARVEST_TIMEOUT_SECONDS = 5;
+
+async function requestOracleJobStatus(request: typeof requestSurf, id: string) {
+  try {
+    return await requestOracleJob(request, "oracle.result", {
+      id,
+      timeout: ORACLE_STATUS_HARVEST_TIMEOUT_SECONDS,
+    });
+  } catch (error) {
+    if (error && typeof error === "object" && "jobId" in error && error.jobId === id) {
+      return requestOracleJob(request, "oracle.status", { id });
+    }
+    throw error;
+  }
+}
+
 export function createOracleExternalJobProvider(
   sessionId: string,
   jobIds: Set<string>,
@@ -356,8 +397,9 @@ export function createOracleExternalJobProvider(
     return true;
   },
   emitTerminal: EmitOracleJob = () => false,
+  options: { followUp?: boolean } = {},
 ): OracleExternalJobProvider {
-  return {
+  const provider: OracleExternalJobProvider = {
     name: "surf-oracle",
     async start(input) {
       const prompt = typeof input.prompt === "string" ? input.prompt : "";
@@ -373,7 +415,7 @@ export function createOracleExternalJobProvider(
       return piExternalJobHandle(job);
     },
     async status(id) {
-      return piExternalJobHandle(await requestOracleJob(request, "oracle.status", { id }));
+      return piExternalJobHandle(await requestOracleJobStatus(request, id));
     },
     result(id) {
       return requestOracleJob(request, "oracle.result", { id })
@@ -387,7 +429,7 @@ export function createOracleExternalJobProvider(
         });
     },
     reattach(id) {
-      return requestOracleJob(request, "oracle.result", { id })
+      return requestOracleJobStatus(request, id)
         .then((job) => {
           rememberJob(job.id);
           emitTerminal({ id: job.id, state: job.state });
@@ -399,6 +441,27 @@ export function createOracleExternalJobProvider(
         });
     },
   };
+  if (options.followUp) {
+    provider.followUp = async (input) => {
+      const prompt = typeof input.prompt === "string" ? input.prompt : "";
+      if (!prompt.trim()) throw new Error("prompt required");
+      const parentId = parentProviderJobId(input);
+      const model = oracleOption(input, "model");
+      const effort = oracleOption(input, "effort");
+      const requestId = optionalString(input, "requestId");
+      const job = await requestOracleJob(request, "oracle.ask", {
+        prompt,
+        follow: parentId,
+        ...(model !== undefined ? { model } : {}),
+        ...(effort !== undefined ? { effort } : {}),
+        ...(requestId !== undefined ? { requestId } : {}),
+      });
+      assertFollowJob(job, parentId);
+      rememberJob(job.id);
+      return piExternalJobHandle(job);
+    };
+  }
+  return provider;
 }
 
 export function registerOptionalBackgroundProvider(sessionId: string, jobIds: Set<string>, listJobs: () => Array<{ id: string; state: string }>, register: RegisterBackgroundWorkProvider) {
@@ -419,7 +482,15 @@ export function registerOptionalExternalJobProvider(
   rememberJob?: RememberOracleJob,
   emitTerminal?: EmitOracleJob,
 ) {
-  return register(createOracleExternalJobProvider(sessionId, jobIds, request, rememberJob, emitTerminal));
+  const provider = createOracleExternalJobProvider(sessionId, jobIds, request, rememberJob, emitTerminal, { followUp: true });
+  try {
+    return register(provider);
+  } catch (error) {
+    if (String(error instanceof Error ? error.message : error).includes("followUp")) {
+      return register(createOracleExternalJobProvider(sessionId, jobIds, request, rememberJob, emitTerminal));
+    }
+    throw error;
+  }
 }
 
 export function rememberOracleJobForSession(jobIds: Set<string>, jobId: unknown, requestGeneration: number, currentGeneration: number, sessionActive: boolean): boolean {

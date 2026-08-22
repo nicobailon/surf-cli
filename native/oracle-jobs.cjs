@@ -39,6 +39,32 @@ function promptDigest(prompt) {
   return `sha256:${crypto.createHash("sha256").update(prompt).digest("hex")}`;
 }
 
+function stableJson(value) {
+  if (Array.isArray(value)) return `[${value.map(stableJson).join(",")}]`;
+  if (value && typeof value === "object") {
+    return `{${Object.keys(value).sort().map((key) => `${JSON.stringify(key)}:${stableJson(value[key])}`).join(",")}}`;
+  }
+  return JSON.stringify(value) ?? "null";
+}
+
+function requestFingerprint({ prompt, contextManifest, model, effortRequested, follow }) {
+  return promptDigest(stableJson({
+    promptDigest: promptDigest(prompt),
+    contextManifest: contextManifest ?? {},
+    model: model ?? null,
+    effortRequested: effortRequested ?? null,
+    follow: follow ?? null,
+  }));
+}
+
+function normalizedRequestId(requestId) {
+  if (requestId === null || requestId === undefined) return null;
+  if (typeof requestId !== "string" || !requestId.trim() || requestId.trim() !== requestId || requestId.length > 256 || requestId.includes("\0")) {
+    throw codedError("invalid_request", "oracle requestId must be a non-empty trimmed string");
+  }
+  return requestId;
+}
+
 function hydrateJobMetadata(job, root = getPrivateStateRoot()) {
   const prompt = job.promptDigest ? null : readPrivateFile(path.join(jobDirectory(job.id, root), "request.md"), {
     root,
@@ -66,10 +92,25 @@ function readJobs(root = getPrivateStateRoot()) {
     .map((job) => hydrateJobMetadata(job, root));
 }
 
-function createJob({ prompt, contextManifest = {}, model = null, effortRequested = null, follow = null }) {
+function createJob({ prompt, contextManifest = {}, model = null, effortRequested = null, follow = null, requestId = null }) {
   const root = getPrivateStateRoot();
   const base = oracleRoot(root);
   ensurePrivateDir(base, root);
+  const safeRequestId = normalizedRequestId(requestId);
+  const fingerprint = requestFingerprint({ prompt, contextManifest, model, effortRequested, follow });
+  if (safeRequestId) {
+    const existing = readJobs(root).find((job) => job.requestId === safeRequestId);
+    if (existing) {
+      if (existing.requestFingerprint !== fingerprint) {
+        throw codedError(
+          "idempotency_conflict",
+          `oracle requestId ${safeRequestId} was already used for a different request`,
+          { jobId: existing.id },
+        );
+      }
+      return { ...existing, requestDeduped: true };
+    }
+  }
   const inFlight = readJobs(root).find((job) => !TERMINAL_STATES.has(job.state));
   if (inFlight) {
     throw codedError(
@@ -108,6 +149,7 @@ function createJob({ prompt, contextManifest = {}, model = null, effortRequested
       effortRequested,
       effortVerified: null,
       promptDigest: promptDigest(prompt),
+      ...(safeRequestId ? { requestId: safeRequestId, requestFingerprint: fingerprint } : {}),
       createdAt: now.toISOString(),
       dispatchedAt: null,
       awaitingAt: null,
@@ -215,10 +257,14 @@ function updateTabId(id, tabId) {
 
 function appendTurn(id, turn) {
   const job = getJob(id);
+  const duplicate = job.turns.find((existing) => (turn.childJobId && existing.childJobId === turn.childJobId) || (turn.requestId && existing.requestId === turn.requestId));
+  if (duplicate) return job;
   const storedTurn = {
     prompt: turn.prompt,
     dispatchedAt: turn.dispatchedAt ?? null,
     capturedAt: turn.capturedAt ?? null,
+    ...(turn.childJobId ? { childJobId: turn.childJobId } : {}),
+    ...(turn.requestId ? { requestId: turn.requestId } : {}),
   };
   const root = getPrivateStateRoot();
   const directory = jobDirectory(id, root);
@@ -229,9 +275,9 @@ function appendTurn(id, turn) {
   return updated;
 }
 
-function markTurnCaptured(id, { dispatchedAt, capturedAt }) {
+function markTurnCaptured(id, { dispatchedAt, capturedAt, childJobId, requestId }) {
   const job = getJob(id);
-  const turnIndex = job.turns.findIndex((turn) => turn.dispatchedAt === dispatchedAt);
+  const turnIndex = job.turns.findIndex((turn) => (childJobId && turn.childJobId === childJobId) || (requestId && turn.requestId === requestId) || turn.dispatchedAt === dispatchedAt);
   if (turnIndex === -1) {
     throw codedError(
       "invalid_transition",

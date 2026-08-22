@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+### Added
+- **GPT Pro follow-up groundwork** - Surf Oracle now records idempotent request IDs and follow-up lineage for Pi integrations that continue GPT Pro conversations.
+
+### Fixed
+- **Pi GPT Pro polling** - The `surf-oracle` external-job provider now performs bounded result harvesting during status and reattach checks, so Pi polling can observe completed GPT Pro jobs without a separate result call.
+
 ## [2.15.2] - 2026-08-22
 
 ### Highlights

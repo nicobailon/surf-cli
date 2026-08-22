@@ -71,7 +71,9 @@ function createOracleHost({ queueAiRequest, requestCallExtension, buildProviderU
       model,
       effortRequested: args.effort ?? null,
       follow: args.follow ?? null,
+      requestId: args.requestId ?? null,
     });
+    if (created.requestDeduped) return oracleJobs.getJob(created.id);
     let createdTabId = null;
 
     try {
@@ -109,6 +111,8 @@ function createOracleHost({ queueAiRequest, requestCallExtension, buildProviderU
             oracleJobs.appendTurn(parent.id, {
               prompt: args.prompt,
               dispatchedAt: dispatchedJob.dispatchedAt,
+              childJobId: created.id,
+              requestId: args.requestId ?? null,
             });
           }
         },
@@ -259,6 +263,8 @@ function createOracleHost({ queueAiRequest, requestCallExtension, buildProviderU
         oracleJobs.markTurnCaptured(captured.follow, {
           dispatchedAt: captured.dispatchedAt,
           capturedAt: captured.capturedAt,
+          childJobId: captured.id,
+          requestId: captured.requestId ?? null,
         });
       }
       if (captured.tabId) {

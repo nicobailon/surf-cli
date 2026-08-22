@@ -113,6 +113,31 @@ describe("oracle job registry", () => {
     expect(fs.statSync(path.join(directory, "turns")).mode & 0o777).toBe(0o700);
   });
 
+  it("deduplicates exact request ids and rejects conflicting reuse", () => {
+    useTempState();
+    const first = jobs.createJob({
+      prompt: "first",
+      contextManifest: { files: [{ path: "src/a.ts", bytes: 1 }] },
+      model: "gpt-5.6-sol",
+      effortRequested: "pro",
+      requestId: "request-1",
+    });
+
+    const duplicate = jobs.createJob({
+      prompt: "first",
+      contextManifest: { files: [{ bytes: 1, path: "src/a.ts" }] },
+      model: "gpt-5.6-sol",
+      effortRequested: "pro",
+      requestId: "request-1",
+    });
+
+    expect(duplicate).toMatchObject({ id: first.id, requestDeduped: true });
+    expect(jobs.listJobs({})).toHaveLength(1);
+    expect(() => jobs.createJob({ prompt: "different", requestId: "request-1" })).toThrow(
+      expect.objectContaining({ code: "idempotency_conflict", jobId: first.id }),
+    );
+  });
+
   it("rejects capacity while naming the in-flight job", () => {
     useTempState();
     const first = jobs.createJob({ prompt: "first" });
@@ -142,6 +167,14 @@ describe("oracle job registry", () => {
     jobs.appendTurn(parent.id, {
       prompt: "follow",
       dispatchedAt: dispatched.dispatchedAt,
+      childJobId: child.id,
+      requestId: "follow-request",
+    });
+    jobs.appendTurn(parent.id, {
+      prompt: "follow",
+      dispatchedAt: dispatched.dispatchedAt,
+      childJobId: child.id,
+      requestId: "follow-request",
     });
     const updated = jobs.updateTabId(child.id, 8);
     jobs.markAwaiting(child.id, {
@@ -151,8 +184,10 @@ describe("oracle job registry", () => {
     const captured = jobs.markCaptured(child.id, { response: "follow answer" });
 
     const lineage = jobs.markTurnCaptured(parent.id, {
-      dispatchedAt: captured.dispatchedAt,
+      dispatchedAt: "wrong-dispatch-time",
       capturedAt: captured.capturedAt,
+      childJobId: child.id,
+      requestId: "follow-request",
     });
 
     expect(updated).toMatchObject({ follow: parent.id, tabId: 8, promptEcho: "follow" });
@@ -160,6 +195,8 @@ describe("oracle job registry", () => {
       prompt: "follow",
       dispatchedAt: captured.dispatchedAt,
       capturedAt: captured.capturedAt,
+      childJobId: child.id,
+      requestId: "follow-request",
     });
     expect(
       JSON.parse(

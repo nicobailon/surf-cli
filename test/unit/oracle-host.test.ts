@@ -80,6 +80,97 @@ describe("oracle host recovery", () => {
     ).toEqual(contextManifest);
   });
 
+  it("deduplicates repeated oracle.ask requests by requestId", async () => {
+    useTempState();
+    const dispatch = vi
+      .spyOn(chatgptClient, "dispatch")
+      .mockImplementation(async (options: any) => {
+        await options.afterSubmit({ tabId: 7, promptEcho: "review" });
+        return {
+          tabId: 7,
+          conversationUrl: "https://chatgpt.com/c/conversation-id",
+          promptEcho: "review",
+        };
+      });
+    const host = createHost(vi.fn());
+
+    const first = await host.handle(
+      { context: { isRemote: false } },
+      { type: "ORACLE_ASK", prompt: "review", requestId: "request-1" },
+    );
+    const duplicate = await host.handle(
+      { context: { isRemote: false } },
+      { type: "ORACLE_ASK", prompt: "review", requestId: "request-1" },
+    );
+
+    expect(duplicate.id).toBe(first.id);
+    expect(dispatch).toHaveBeenCalledTimes(1);
+    await expect(
+      host.handle(
+        { context: { isRemote: false } },
+        { type: "ORACLE_ASK", prompt: "different", requestId: "request-1" },
+      ),
+    ).rejects.toMatchObject({ code: "idempotency_conflict", jobId: first.id });
+  });
+
+  it("records follow turns with child and request identity", async () => {
+    useTempState();
+    const parent = oracleJobs.createJob({ prompt: "first" });
+    oracleJobs.markDispatched(parent.id, { tabId: 6, promptEcho: "first" });
+    oracleJobs.markAwaiting(parent.id, {
+      conversationUrl: "https://chatgpt.com/c/conversation-id",
+      promptEcho: "first",
+    });
+    oracleJobs.markCaptured(parent.id, { response: "first answer" });
+    vi.spyOn(chatgptClient, "dispatch").mockImplementation(async (options: any) => {
+      expect(options.startUrl).toBe("https://chatgpt.com/c/conversation-id");
+      await options.afterSubmit({ tabId: 8, promptEcho: "follow" });
+      return {
+        tabId: 8,
+        conversationUrl: "https://chatgpt.com/c/conversation-id",
+        promptEcho: "follow",
+      };
+    });
+    const host = createHost(vi.fn());
+
+    const child = await host.handle(
+      { context: { isRemote: false } },
+      { type: "ORACLE_ASK", prompt: "follow", follow: parent.id, requestId: "follow-request" },
+    );
+
+    expect(child).toMatchObject({ follow: parent.id, requestId: "follow-request" });
+    expect(oracleJobs.getJob(parent.id).turns).toEqual([
+      expect.objectContaining({
+        prompt: "follow",
+        childJobId: child.id,
+        requestId: "follow-request",
+      }),
+    ]);
+  });
+
+  it("fails closed when a follow parent is missing", async () => {
+    useTempState();
+    const dispatch = vi.spyOn(chatgptClient, "dispatch").mockResolvedValue({
+      tabId: 7,
+      conversationUrl: "https://chatgpt.com/c/conversation-id",
+      promptEcho: "follow",
+    });
+    const host = createHost(vi.fn());
+
+    await expect(
+      host.handle(
+        { context: { isRemote: false } },
+        {
+          type: "ORACLE_ASK",
+          prompt: "follow",
+          follow: "20260729-120000-dead",
+          requestId: "missing-parent",
+        },
+      ),
+    ).rejects.toMatchObject({ code: "not_found" });
+    expect(dispatch).not.toHaveBeenCalled();
+  });
+
   it("leaves Cloudflare challenge tabs open for manual clearance", async () => {
     useTempState();
     vi.spyOn(chatgptClient, "dispatch").mockImplementation(async (options: any) => {
