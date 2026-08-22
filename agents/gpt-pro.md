@@ -5,7 +5,8 @@ runner:
   type: external-job
   provider: surf-oracle
   options:
-    model: pro
+    model: gpt-5.6-sol
+    effort: pro
 async: true
 systemPromptMode: replace
 inheritProjectContext: false

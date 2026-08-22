@@ -6,6 +6,7 @@
 - **Dependency maintenance** - Updated Puppeteer to 25.6.0 and aligned the real-Chrome CI pin to 151.0.7922.77.
 
 ### Fixed
+- **GPT Pro package agent** - Request ChatGPT `GPT-5.6 Sol` with `Pro` effort instead of treating `pro` as a model alias, matching the current ChatGPT model/effort picker split.
 - **Pi external-job contract** - Surf now registers `surf-oracle` with pi-subagents' actual external-job contract, so Pi can run packaged `gpt-pro` jobs through Surf against ChatGPT web mode when the browser is logged in. The provider returns the expected job fields (`providerJobId`, contract states, `output`, `failureCode`/`failureMessage`) and capacity errors carry `blockingJobId` for pi's fail-closed handling. A contract test validates the provider against pi-subagents' real validators.
 
 ## [2.15.0] - 2026-08-19
@@ -25,7 +26,7 @@
 - **Recovery guidance** - Session and scheduler errors now include copy-paste recovery commands, `session.info` reports queue blockers, and provider tools warn before taking exclusive browser access.
 - **Strict target safety** - Session commands never fall back to the active tab, and screenshot fallback refuses to capture a different visible tab.
 - **Surf skill guidance** - Updated iframe and batch examples for session-based workflows.
-- **Pi external-job options** - The `surf-oracle` provider now honors `options.model` and `options.effort`, so Pi agent profiles can request ChatGPT GPT-5.6 Sol Pro web mode with `model: pro`.
+- **Pi external-job options** - The `surf-oracle` provider now honors `options.model` and `options.effort`, so Pi agent profiles can request ChatGPT GPT-5.6 Sol with Pro effort via `model: gpt-5.6-sol` and `effort: pro`.
 - **Dependency maintenance** - Updated dev dependencies: `@types/node` 26.2.0, `@biomejs/biome` 2.5.8, and `typebox` 1.3.14.
 
 ### Fixed

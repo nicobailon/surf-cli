@@ -195,7 +195,7 @@ describe("chatgpt-client", () => {
       ["gpt-5-3", "instant"],
       ["Thinking", "thinking"],
       ["gpt-5-4-thinking", "thinking"],
-      ["Pro", "gpt56sol"],
+      ["Pro", "pro"],
       ["gpt-5-4-pro", "pro"],
       ["GPT-5.5", "gpt55"],
       ["ChatGPT 5.5", "gpt55"],
@@ -277,7 +277,7 @@ describe("chatgpt-client", () => {
           ],
           "pro",
         ),
-      ).toEqual({ role: "menuitemradio", label: "GPT-5.6 Sol", testId: null });
+      ).toBeNull();
     });
 
     it("ignores non-selectable menu rows like section labels and configure", () => {
@@ -329,16 +329,35 @@ describe("chatgpt-client", () => {
         "ChatGPT 5.6 Sol | Current model is ChatGPT 5.6 Sol",
       ],
       [
-        "Pro alias readback",
+        "advanced menu current model row",
+        [{ role: "menuitem", label: "Model GPT-5.6 Sol", testId: null }],
+        "gpt-5.6-sol",
+        "Model GPT-5.6 Sol",
+      ],
+      [
+        "model readback ignores separate Pro effort",
         [
           {
             role: "button",
             label: "ChatGPT 5.6 Sol | Current model is ChatGPT 5.6 Sol",
             testId: null,
           },
+          { role: "button", label: "Pro", testId: null },
+        ],
+        "gpt-5.6-sol",
+        "ChatGPT 5.6 Sol | Current model is ChatGPT 5.6 Sol",
+      ],
+      [
+        "Pro model readback",
+        [
+          {
+            role: "button",
+            label: "Pro | Current model is Pro",
+            testId: null,
+          },
         ],
         "pro",
-        "ChatGPT 5.6 Sol | Current model is ChatGPT 5.6 Sol",
+        "Pro | Current model is Pro",
       ],
       ["requested model missing", modelState, "pro", null],
       ["ambiguous model state", [...modelState, ...modelState], "thinking", null],

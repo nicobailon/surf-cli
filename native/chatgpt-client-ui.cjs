@@ -191,11 +191,22 @@ async function readPicker(cdp, kind, click = false) {
     `(() => {
       ${buildClickDispatcher()}
       const kind = ${JSON.stringify(kind)};
-      const nodes = Array.from(document.querySelectorAll(${JSON.stringify(selector)})).filter((node) => {
+      let nodes = Array.from(document.querySelectorAll(${JSON.stringify(selector)})).filter((node) => {
         const value = ((node.getAttribute?.('aria-label') || '') + ' ' + (node.textContent || '')).toLowerCase();
-        if (kind === 'model') return value.includes('gpt') || value.includes('pro') || value.includes('thinking') || value.includes('instant');
-        return value.includes('thinking') || value.includes('pro');
+        if (kind !== 'model') return value.includes('thinking') || value.includes('pro');
+        return value.includes('gpt') || value.includes('thinking') || value.includes('instant');
       });
+      if (kind === 'model' && nodes.length === 0) {
+        nodes = Array.from(document.querySelectorAll(${JSON.stringify(selector)})).filter((node) => {
+          const value = ((node.getAttribute?.('aria-label') || '') + ' ' + (node.textContent || '')).toLowerCase();
+          return value.includes('pro');
+        });
+      }
+      if (kind === 'model' && nodes.length === 0) {
+        nodes = Array.from(document.querySelectorAll(${JSON.stringify(selector)})).filter((node) =>
+          node.getAttribute?.('aria-haspopup') === 'menu' || node.getAttribute?.('aria-expanded') !== null
+        );
+      }
       const items = nodes.map((node) => {
         const text = (node.textContent || '').replace(/\\s+/g, ' ').trim();
         const aria = (node.getAttribute?.('aria-label') || '').replace(/\\s+/g, ' ').trim();
@@ -329,6 +340,12 @@ async function selectModel(cdp, desiredModel, timeoutMs = 8000, signal) {
   if (picker?.items?.length !== 1) throw verificationError("model", desiredModel);
   await delay(300, signal);
   const menu = await waitForMenu(cdp, "model", timeoutMs, signal);
+  const currentAdvancedModel = verifyChatGPTModelSelection(
+    menu.items.filter((item) => /\bmodel\b/i.test(String(item?.label || ""))),
+    desiredModel,
+  );
+  if (currentAdvancedModel) return currentAdvancedModel.displayLabel || currentAdvancedModel.label;
+
   const match = resolveChatGPTModelMenuOption(menu.items, desiredModel);
   if (!match || !(await clickMenuItem(cdp, "model", match))) {
     throw verificationError("model", desiredModel, menu.items);
