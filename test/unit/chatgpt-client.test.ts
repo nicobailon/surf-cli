@@ -495,6 +495,60 @@ describe("chatgpt-client", () => {
       await expect(chatgptClientUi.selectEffort(cdp, "pro", 100)).resolves.toBe("Pro");
     });
 
+    it("clears stale composer text before typing the prompt", async () => {
+      class FakeEventTarget {
+        dispatchEvent() {
+          return true;
+        }
+      }
+      class FakeInputEvent {
+        constructor(
+          readonly type: string,
+          readonly init: unknown,
+        ) {}
+      }
+      class FakeMouseEvent extends FakeInputEvent {}
+      let focused = false;
+      const textarea = new (class extends FakeEventTarget {
+        tagName = "TEXTAREA";
+        value = "stale text";
+        innerText = "";
+        textContent = "";
+        ownerDocument = {
+          getSelection: () => null,
+        };
+
+        focus() {
+          focused = true;
+        }
+      })();
+      const document = {
+        querySelector: (selector: string) => (selector === "#prompt-textarea" ? textarea : null),
+      };
+      const cdp = async (expression: string) => ({
+        result: {
+          value: Function(
+            "document",
+            "EventTarget",
+            "MouseEvent",
+            "PointerEvent",
+            "InputEvent",
+            "window",
+            `return ${expression};`,
+          )(document, FakeEventTarget, FakeMouseEvent, undefined, FakeInputEvent, {}),
+        },
+      });
+      const inputCdp = async (_method: string, params: { text: string }) => {
+        textarea.value += params.text;
+        return {};
+      };
+
+      await chatgptClientUi.typePrompt(cdp, inputCdp, "Reply with exactly: READY");
+
+      expect(textarea.value).toBe("Reply with exactly: READY");
+      expect(focused).toBe(true);
+    });
+
     it("resolves effort options and accepts only the documented vocabulary", () => {
       expect(chatgptClient.resolveChatGPTEffortMenuOption(effortOptions, "extended")).toEqual(
         effortOptions[2],

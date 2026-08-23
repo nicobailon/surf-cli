@@ -436,6 +436,13 @@ async function typePrompt(cdp, inputCdp, prompt, signal) {
         const node = document.querySelector(selector);
         if (!node) continue;
         dispatchClickSequence(node);
+        if ('value' in node) {
+          node.value = '';
+          node.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'deleteContentBackward' }));
+        } else {
+          node.textContent = '';
+          node.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'deleteContentBackward' }));
+        }
         if (typeof node.focus === 'function') node.focus();
         const doc = node.ownerDocument;
         const selection = doc?.getSelection?.();

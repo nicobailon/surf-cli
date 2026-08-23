@@ -152,10 +152,6 @@ async function dispatch(options) {
       modelVerified = await selectModel(cdp, model, 8000, signal);
       log(`Verified model: ${modelVerified}`);
     }
-    if (effort) {
-      effortVerified = await selectEffort(cdp, effort, 8000, signal);
-      log(`Verified effort: ${effortVerified}`);
-    }
     if (file) {
       if (!uploadFile) {
         throw new Error(
@@ -177,6 +173,10 @@ async function dispatch(options) {
     }
     await typePrompt(cdp, inputCdp, prompt, signal);
     log("Prompt typed");
+    if (effort) {
+      effortVerified = await selectEffort(cdp, effort, 8000, signal);
+      log(`Verified effort: ${effortVerified}`);
+    }
     const baseline = normalizeResponseSnapshot(await readChatGPTResponseSnapshot(cdp));
     if (beforeSubmit) await raceAbort(beforeSubmit, signal);
     await clickSend(cdp, inputCdp, signal);
