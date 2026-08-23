@@ -50,12 +50,16 @@ function modelCandidateMatches(item, targetModel) {
 }
 
 function effortCandidateMatches(item, targetEffort) {
-  const variants = new Set(
-    [item?.label, item?.testId]
-      .flatMap((value) => normalizedWords(value))
-      .filter((word) => CHATGPT_EFFORT_CHOICES.includes(word)),
+  const labelVariants = new Set(
+    normalizedWords(item?.label).filter((word) => CHATGPT_EFFORT_CHOICES.includes(word)),
   );
-  return variants.size === 1 && variants.has(targetEffort);
+  if (labelVariants.size > 0) {
+    return labelVariants.size === 1 && labelVariants.has(targetEffort);
+  }
+  const testIdVariants = new Set(
+    normalizedWords(item?.testId).filter((word) => CHATGPT_EFFORT_CHOICES.includes(word)),
+  );
+  return testIdVariants.size === 1 && testIdVariants.has(targetEffort);
 }
 
 function uniqueMatch(items, matches) {

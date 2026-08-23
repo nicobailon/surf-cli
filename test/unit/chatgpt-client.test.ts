@@ -370,6 +370,18 @@ describe("chatgpt-client", () => {
 
     it.each([
       ["requested effort found", [effortOptions[2]], "extended", "Extended"],
+      [
+        "visible Pro label wins over unrelated test id metadata",
+        [{ role: "button", label: "Pro", testId: "thinking-time-standard" }],
+        "pro",
+        "Pro",
+      ],
+      [
+        "ambiguous visible label stays fail-closed",
+        [{ role: "button", label: "Pro Extended", testId: "thinking-time-pro" }],
+        "pro",
+        null,
+      ],
       ["requested effort missing", [effortOptions[1]], "extended", null],
       ["ambiguous effort state", [effortOptions[2], effortOptions[2]], "extended", null],
       [
