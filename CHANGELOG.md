@@ -1,7 +1,7 @@
 # Changelog
 
 ## [Unreleased]
-- **ChatGPT Pro effort verification** - Surf now verifies the selected Pro effort from the composer picker label and readback state without letting unrelated metadata reject the accepted value.
+- **ChatGPT Pro effort verification** - Surf now verifies already-selected Pro effort from the composer picker label and readback state without letting unrelated metadata reject the accepted value.
 
 ## [2.16.0] - 2026-08-23
 

@@ -478,6 +478,23 @@ describe("chatgpt-client", () => {
       await expect(chatgptClientUi.selectEffort(cdp, "pro", 100)).resolves.toBe("Pro");
     });
 
+    it("does not reopen the effort menu when Pro is already selected", async () => {
+      const cdp = async (expression: string) => {
+        if (expression.includes('const kind = "effort"')) {
+          return {
+            result: {
+              value: {
+                items: [{ role: "button", label: "Pro", displayLabel: "Pro", testId: null }],
+              },
+            },
+          };
+        }
+        throw new Error(`Unexpected expression: ${expression}`);
+      };
+
+      await expect(chatgptClientUi.selectEffort(cdp, "pro", 100)).resolves.toBe("Pro");
+    });
+
     it("resolves effort options and accepts only the documented vocabulary", () => {
       expect(chatgptClient.resolveChatGPTEffortMenuOption(effortOptions, "extended")).toEqual(
         effortOptions[2],

@@ -395,6 +395,10 @@ async function selectEffort(cdp, desiredEffort, timeoutMs = 8000, signal) {
   throwIfAborted(signal);
   const normalizedEffort = normalizeChatGPTEffortChoice(desiredEffort);
   if (!normalizedEffort) throw verificationError("effort", desiredEffort, [], true);
+  const current = await readPicker(cdp, "effort");
+  const currentVerified = verifyChatGPTEffortSelection(current?.items, normalizedEffort);
+  if (currentVerified) return currentVerified.displayLabel || currentVerified.label;
+
   const picker = await readPicker(cdp, "effort", true);
   if (picker?.items?.length !== 1) throw verificationError("effort", desiredEffort);
   await delay(300, signal);
