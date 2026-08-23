@@ -191,6 +191,7 @@ describe("oracle job registry", () => {
     });
 
     expect(updated).toMatchObject({ follow: parent.id, tabId: 8, promptEcho: "follow" });
+    expect(lineage.turns).toHaveLength(1);
     expect(lineage.turns[0]).toMatchObject({
       prompt: "follow",
       dispatchedAt: captured.dispatchedAt,

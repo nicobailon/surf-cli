@@ -18,7 +18,7 @@ function oracleResponse(details: Record<string, unknown>) {
 describe("pi-subagents external-job contract", () => {
   it("registers the provider object with pi's validator", () => {
     delete (globalThis as Record<PropertyKey, unknown>)[externalJobProviderKey];
-    const provider = createOracleExternalJobProvider("pi-session", new Set(), vi.fn());
+    const provider = createOracleExternalJobProvider(new Set(), vi.fn());
 
     const dispose = registerExternalJobProvider(provider);
 
@@ -27,9 +27,15 @@ describe("pi-subagents external-job contract", () => {
   });
 
   it("returns payloads that pass pi's handle and result validation for every oracle state", async () => {
-    for (const oracleState of ["created", "dispatched", "awaiting", "captured", "failed"]) {
+    const states = [
+      ["created", "queued"],
+      ["dispatched", "running"],
+      ["awaiting", "running"],
+      ["captured", "completed"],
+      ["failed", "failed"],
+    ] as const;
+    for (const [oracleState, state] of states) {
       const provider = createOracleExternalJobProvider(
-        "pi-session",
         new Set(),
         oracleResponse({
           id: "job-1",
@@ -47,16 +53,19 @@ describe("pi-subagents external-job contract", () => {
         validateExternalJobHandle("surf-oracle", await provider.status("job-1")),
       ).toMatchObject({
         providerJobId: "job-1",
+        state,
       });
       expect(
         validateExternalJobHandle("surf-oracle", await provider.reattach("job-1")),
       ).toMatchObject({
         providerJobId: "job-1",
+        state,
       });
       expect(
         validateExternalJobResult("surf-oracle", await provider.result("job-1")),
       ).toMatchObject({
         providerJobId: "job-1",
+        state,
         ...(oracleState === "captured" ? { output: "answer text" } : {}),
       });
     }
@@ -64,7 +73,6 @@ describe("pi-subagents external-job contract", () => {
 
   it("returns a start handle that passes pi's handle validation", async () => {
     const provider = createOracleExternalJobProvider(
-      "pi-session",
       new Set(),
       oracleResponse({ id: "job-2", state: "created", conversationUrl: null }),
     );

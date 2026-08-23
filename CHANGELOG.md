@@ -7,6 +7,7 @@
 
 ### Fixed
 - **Pi GPT Pro polling** - The `surf-oracle` external-job provider now performs bounded result harvesting during status and reattach checks, so Pi polling can observe completed GPT Pro jobs without a separate result call.
+- **Pi GPT Pro cancellation** - Aborted Surf Oracle requests now stay non-terminal and keep their cancellation error instead of emitting a failed-job wake event.
 
 ## [2.15.2] - 2026-08-22
 

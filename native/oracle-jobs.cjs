@@ -97,7 +97,9 @@ function createJob({ prompt, contextManifest = {}, model = null, effortRequested
   const base = oracleRoot(root);
   ensurePrivateDir(base, root);
   const safeRequestId = normalizedRequestId(requestId);
-  const fingerprint = requestFingerprint({ prompt, contextManifest, model, effortRequested, follow });
+  const fingerprint = safeRequestId
+    ? requestFingerprint({ prompt, contextManifest, model, effortRequested, follow })
+    : null;
   if (safeRequestId) {
     const existing = readJobs(root).find((job) => job.requestId === safeRequestId);
     if (existing) {
