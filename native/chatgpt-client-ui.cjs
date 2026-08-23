@@ -191,14 +191,33 @@ async function readPicker(cdp, kind, click = false) {
     `(() => {
       ${buildClickDispatcher()}
       const kind = ${JSON.stringify(kind)};
+      const effortChoices = new Set(${JSON.stringify(CHATGPT_EFFORT_CHOICES)});
+      const effortOwnerLabels = new Set([...effortChoices, 'thinking']);
+      const normalize = (value) => String(value || '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+      const labelFor = (node) => {
+        const labelledBy = String(node.getAttribute?.('aria-labelledby') || '')
+          .split(/\s+/)
+          .map((id) => document.getElementById(id)?.textContent || '')
+          .join(' ');
+        const text = (node.innerText || node.textContent || '').replace(/\s+/g, ' ').trim();
+        const aria = (node.getAttribute?.('aria-label') || '').replace(/\s+/g, ' ').trim();
+        const title = (node.getAttribute?.('title') || '').replace(/\s+/g, ' ').trim();
+        return [text, aria, labelledBy, title].filter(Boolean).join(' | ');
+      };
       let nodes = Array.from(document.querySelectorAll(${JSON.stringify(selector)})).filter((node) => {
-        const value = ((node.getAttribute?.('aria-label') || '') + ' ' + (node.textContent || '')).toLowerCase();
-        if (kind !== 'model') return value.includes('thinking') || value.includes('pro');
+        const value = normalize(labelFor(node));
+        if (kind !== 'model') {
+          const words = value.split(/\s+/).filter(Boolean);
+          const hasEffort = words.some((word) => effortOwnerLabels.has(word));
+          const looksLikeModel = node.getAttribute?.('data-testid') === 'model-switcher-dropdown-button' ||
+            value.includes('current model') || value.includes('gpt') || value.includes('instant');
+          return hasEffort && !looksLikeModel;
+        }
         return value.includes('gpt') || value.includes('thinking') || value.includes('instant');
       });
       if (kind === 'model' && nodes.length === 0) {
         nodes = Array.from(document.querySelectorAll(${JSON.stringify(selector)})).filter((node) => {
-          const value = ((node.getAttribute?.('aria-label') || '') + ' ' + (node.textContent || '')).toLowerCase();
+          const value = normalize(labelFor(node));
           return value.includes('pro');
         });
       }
@@ -208,13 +227,19 @@ async function readPicker(cdp, kind, click = false) {
         );
       }
       const items = nodes.map((node) => {
-        const text = (node.textContent || '').replace(/\\s+/g, ' ').trim();
+        const text = (node.innerText || node.textContent || '').replace(/\\s+/g, ' ').trim();
         const aria = (node.getAttribute?.('aria-label') || '').replace(/\\s+/g, ' ').trim();
+        const labelledBy = String(node.getAttribute?.('aria-labelledby') || '')
+          .split(/\\s+/)
+          .map((id) => document.getElementById(id)?.textContent || '')
+          .join(' ')
+          .replace(/\\s+/g, ' ')
+          .trim();
         const title = (node.getAttribute?.('title') || '').replace(/\\s+/g, ' ').trim();
         return {
           role: node.getAttribute?.('role') || (node.tagName === 'BUTTON' ? 'button' : null),
-          label: [text, aria, title].filter(Boolean).join(' | ').slice(0, 240),
-          displayLabel: (text || aria || title).slice(0, 80),
+          label: [text, aria, labelledBy, title].filter(Boolean).join(' | ').slice(0, 240),
+          displayLabel: (text || aria || labelledBy || title).slice(0, 80),
           testId: node.getAttribute?.('data-testid') || null,
         };
       });

@@ -1,6 +1,8 @@
 import { vi } from "vitest";
 // @ts-expect-error - CommonJS module without type definitions
 import * as chatgptClient from "../../native/chatgpt-client.cjs";
+// @ts-expect-error - CommonJS module without type definitions
+import * as chatgptClientUi from "../../native/chatgpt-client-ui.cjs";
 
 function createReadyChatGptEvaluate(
   loginStatus: Record<string, unknown> = { status: 200, hasLoginCta: false },
@@ -394,6 +396,86 @@ describe("chatgpt-client", () => {
       expect(chatgptClient.verifyChatGPTEffortSelection(items, requested)?.label ?? null).toBe(
         expectedLabel,
       );
+    });
+
+    it("verifies Pro after opening a Thinking composer effort pill", async () => {
+      class FakeEventTarget {
+        dispatchEvent() {
+          return true;
+        }
+      }
+      class FakeButton extends FakeEventTarget {
+        tagName = "BUTTON";
+        textContent: string;
+        innerText: string;
+        attributes: Record<string, string>;
+
+        constructor(textContent: string, attributes: Record<string, string>) {
+          super();
+          this.textContent = textContent;
+          this.innerText = textContent;
+          this.attributes = attributes;
+        }
+
+        getAttribute(name: string) {
+          return this.attributes[name] ?? null;
+        }
+      }
+      class FakeMouseEvent {
+        constructor(
+          readonly type: string,
+          readonly init: unknown,
+        ) {}
+      }
+
+      const modelButton = new FakeButton("Pro", {
+        "aria-haspopup": "menu",
+        "data-testid": "model-switcher-dropdown-button",
+      });
+      const effortButton = new FakeButton("", {
+        "aria-haspopup": "menu",
+        "aria-labelledby": "effort-label",
+      });
+      let effortLabel = "Thinking";
+      const document = {
+        getElementById: (id: string) =>
+          id === "effort-label" ? { textContent: effortLabel } : null,
+        querySelectorAll: () => [modelButton, effortButton],
+      };
+
+      const cdp = async (expression: string) => {
+        if (expression.includes('const kind = "effort"')) {
+          return {
+            result: {
+              value: Function(
+                "document",
+                "EventTarget",
+                "MouseEvent",
+                "PointerEvent",
+                "window",
+                `return ${expression};`,
+              )(document, FakeEventTarget, FakeMouseEvent, undefined, {}),
+            },
+          };
+        }
+        if (expression.includes("const containers = Array.from")) {
+          return {
+            result: {
+              value: {
+                found: true,
+                items: [{ role: "menuitemradio", label: "Pro", testId: null, selected: false }],
+              },
+            },
+          };
+        }
+        if (expression.includes("const expectedLabel")) {
+          effortLabel = "Pro";
+          return { result: { value: true } };
+        }
+        throw new Error(`Unexpected expression: ${expression}`);
+      };
+
+      await expect(chatgptClientUi.selectEffort(cdp, "pro", 100)).resolves.toBe("Pro");
     });
 
     it("resolves effort options and accepts only the documented vocabulary", () => {
