@@ -5,6 +5,8 @@ const os = require("node:os");
 const path = require("node:path");
 type ChatGptDispatchOptions = {
   startUrl?: string | null;
+  file?: string | string[];
+  github?: boolean;
   createTab(): Promise<{ tabId?: number }>;
   afterSubmit(result: {
     tabId: number;
@@ -97,6 +99,48 @@ describe("oracle host recovery", () => {
     ).toEqual(contextManifest);
   });
 
+  it("passes a validated attachment and GitHub context through Oracle dispatch", async () => {
+    const root = useTempState();
+    const attachment = path.join(root, "report.md");
+    fs.mkdirSync(root, { recursive: true });
+    fs.writeFileSync(attachment, "report");
+    vi.spyOn(chatgptClient, "dispatch").mockImplementation(async (options) => {
+      expect(options.file).toBe(attachment);
+      expect(options.github).toBe(true);
+      await options.afterSubmit({ tabId: 7, promptEcho: "review" });
+      return {
+        tabId: 7,
+        conversationUrl: "https://chatgpt.com/c/conversation-id",
+        promptEcho: "review",
+      };
+    });
+    const host = createHost(vi.fn());
+
+    const result = await host.handle(
+      { context: { isRemote: false } },
+      { type: "ORACLE_ASK", prompt: "review", file: attachment, github: true },
+    );
+
+    expect(result.state).toBe("awaiting");
+  });
+
+  it("rejects an inaccessible Oracle attachment before creating a job", async () => {
+    useTempState();
+    const dispatch = vi.spyOn(chatgptClient, "dispatch");
+    const host = createHost(vi.fn());
+
+    await expect(
+      host.handle(
+        { context: { isRemote: false } },
+        { type: "ORACLE_ASK", prompt: "review", file: "/tmp/surf-oracle-missing-attachment" },
+      ),
+    ).rejects.toMatchObject({
+      code: "attachment_file_access",
+      message: expect.stringContaining("Oracle attachment file access failed"),
+    });
+    expect(dispatch).not.toHaveBeenCalled();
+  });
+
   it("deduplicates repeated oracle.ask requests by requestId", async () => {
     useTempState();
     const dispatch = vi.spyOn(chatgptClient, "dispatch").mockImplementation(async (options) => {
@@ -128,8 +172,56 @@ describe("oracle host recovery", () => {
     ).rejects.toMatchObject({ code: "idempotency_conflict", jobId: first.id });
   });
 
+  it("deduplicates before validating a generated context bundle", async () => {
+    const root = useTempState();
+    const bundlePath = path.join(root, "bundle.txt");
+    fs.mkdirSync(root, { recursive: true });
+    fs.writeFileSync(bundlePath, "bundle");
+    const dispatch = vi.spyOn(chatgptClient, "dispatch").mockImplementation(async (options) => {
+      await options.afterSubmit({ tabId: 7, promptEcho: "review" });
+      return {
+        tabId: 7,
+        conversationUrl: "https://chatgpt.com/c/conversation-id",
+        promptEcho: "review",
+      };
+    });
+    const host = createHost(vi.fn());
+    const contextManifest = {
+      mode: "bundle",
+      files: [{ path: "src/a.ts", bytes: 1, sha256: "sha" }],
+    };
+
+    const first = await host.handle(
+      { context: { isRemote: false } },
+      {
+        type: "ORACLE_ASK",
+        prompt: "review",
+        contextManifest,
+        bundlePath,
+        requestId: "bundle-request",
+      },
+    );
+    fs.rmSync(bundlePath);
+    const duplicate = await host.handle(
+      { context: { isRemote: false } },
+      {
+        type: "ORACLE_ASK",
+        prompt: "review",
+        contextManifest,
+        bundlePath,
+        requestId: "bundle-request",
+      },
+    );
+
+    expect(duplicate.id).toBe(first.id);
+    expect(dispatch).toHaveBeenCalledTimes(1);
+  });
+
   it("records follow turns with child and request identity", async () => {
-    useTempState();
+    const root = useTempState();
+    const followAttachment = path.join(root, "follow.md");
+    fs.mkdirSync(root, { recursive: true });
+    fs.writeFileSync(followAttachment, "follow");
     const parent = oracleJobs.createJob({ prompt: "first" });
     oracleJobs.markDispatched(parent.id, { tabId: 6, promptEcho: "first" });
     oracleJobs.markAwaiting(parent.id, {
@@ -139,6 +231,8 @@ describe("oracle host recovery", () => {
     oracleJobs.markCaptured(parent.id, { response: "first answer" });
     vi.spyOn(chatgptClient, "dispatch").mockImplementation(async (options) => {
       expect(options.startUrl).toBe("https://chatgpt.com/c/conversation-id");
+      expect(options.file).toBe(followAttachment);
+      expect(options.github).toBe(true);
       await options.afterSubmit({ tabId: 8, promptEcho: "follow" });
       return {
         tabId: 8,
@@ -150,7 +244,14 @@ describe("oracle host recovery", () => {
 
     const child = await host.handle(
       { context: { isRemote: false } },
-      { type: "ORACLE_ASK", prompt: "follow", follow: parent.id, requestId: "follow-request" },
+      {
+        type: "ORACLE_ASK",
+        prompt: "follow",
+        follow: parent.id,
+        file: followAttachment,
+        github: true,
+        requestId: "follow-request",
+      },
     );
 
     expect(child).toMatchObject({ follow: parent.id, requestId: "follow-request" });

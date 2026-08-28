@@ -2,6 +2,9 @@
 
 ## [Unreleased]
 
+### Added
+- **GPT Pro Oracle context controls** - Surf Oracle can attach one local file and explicitly require ChatGPT's Chat tab with the GitHub tool for GPT Pro runs and follow-ups.
+
 ## [2.16.1] - 2026-08-23
 
 ### Highlights

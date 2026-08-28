@@ -260,7 +260,7 @@ describe("Pi extension", () => {
         prompt: "review",
         model: "gpt-5.5",
         effort: "thinking",
-        options: { model: "pro", effort: "pro" },
+        options: { model: "pro", effort: "pro", file: "/tmp/report.md", github: true },
       }),
     ).resolves.toEqual({
       providerJobId: "job-started",
@@ -281,11 +281,32 @@ describe("Pi extension", () => {
 
     expect(jobIds.has("job-started")).toBe(true);
     expect(requests).toEqual([
-      { tool: "oracle.ask", args: { prompt: "review", model: "pro", effort: "pro" } },
+      {
+        tool: "oracle.ask",
+        args: {
+          prompt: "review",
+          model: "pro",
+          effort: "pro",
+          file: "/tmp/report.md",
+          github: true,
+        },
+      },
       { tool: "oracle.result", args: { id: "job-started", timeout: 5 } },
       { tool: "oracle.result", args: { id: "job-started" } },
       { tool: "oracle.result", args: { id: "job-started", timeout: 5 } },
     ]);
+  });
+
+  it("does not treat options.files as an Oracle attachment alias", async () => {
+    const request = vi.fn(async () => ({
+      content: [{ type: "text", text: "{}" }],
+      details: { id: "job-started", state: "awaiting" },
+    }));
+    const provider = createOracleExternalJobProvider(new Set(), request);
+
+    await provider.start({ prompt: "review", options: { files: ["/tmp/report.md"] } });
+
+    expect(request).toHaveBeenCalledWith("oracle.ask", { prompt: "review" });
   });
 
   it("falls back to oracle.status when bounded status harvest reports a failed job", async () => {
@@ -381,7 +402,7 @@ describe("Pi extension", () => {
         parentProviderJobId: "parent-job",
         prompt: "continue",
         requestId: "follow-request",
-        options: { model: "pro", effort: "pro" },
+        options: { model: "pro", effort: "pro", file: "/tmp/follow.md", github: true },
       }),
     ).resolves.toMatchObject({ providerJobId: "follow-job", state: "running" });
 
@@ -394,6 +415,8 @@ describe("Pi extension", () => {
           follow: "parent-job",
           model: "pro",
           effort: "pro",
+          file: "/tmp/follow.md",
+          github: true,
           requestId: "follow-request",
         },
       },

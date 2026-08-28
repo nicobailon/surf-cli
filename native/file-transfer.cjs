@@ -270,6 +270,11 @@ function validateLocalToolPaths(tool, args = {}) {
       ? args.files.map((value) => normalize("files", value))
       : String(args.files).split(",").map((value) => normalize("files", value.trim())).join(",");
   }
+  if (tool === "oracle.ask" && args.file !== undefined) {
+    normalized.file = Array.isArray(args.file)
+      ? args.file.map((value) => normalize("file", value))
+      : normalize("file", args.file);
+  }
   if (tool === "screenshot") {
     if (args.savePath !== undefined && args.output !== undefined) throw transferError("screenshot accepts only one output path", "SURF_PATH_FIELD");
     for (const field of ["savePath", "output"]) if (args[field] !== undefined) normalized[field] = normalize(field, args[field]);

@@ -161,6 +161,26 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+class ProviderUploadError extends Error {
+  code: string;
+
+  constructor(code: string, message: string) {
+    super(message);
+    this.name = "ProviderUploadError";
+    this.code = code;
+  }
+}
+
+function uploadError(provider: string, stage: "selector" | "chooser" | "processing", message: string): ProviderUploadError {
+  const code = stage === "selector"
+    ? "attachment_selector_drift"
+    : stage === "chooser" ? "attachment_chooser_interception" : "attachment_processing";
+  const label = stage === "selector"
+    ? "UI selector drift"
+    : stage === "chooser" ? "chooser interception" : "processing";
+  return new ProviderUploadError(code, `${provider} attachment ${label}: ${message}`);
+}
+
 const providerUploadStrategies = {
   gemini: {
     openerSelector: 'button[aria-label="Upload & tools"], button[aria-label="Open upload file menu"]',
@@ -178,17 +198,29 @@ async function setFileInputFilesBySelector(
   filePaths: string[],
   selector: string,
 ): Promise<boolean> {
-  const result = await cdp.sendCommand(tabId, "Runtime.evaluate", {
-    expression: `(() => {
-      const input = document.querySelector(${JSON.stringify(selector)});
-      if (!input || input.tagName !== 'INPUT' || input.type !== 'file') return null;
-      return input;
-    })()`,
-    userGesture: true,
-  });
+  let result: any;
+  try {
+    result = await cdp.sendCommand(tabId, "Runtime.evaluate", {
+      expression: `(() => {
+        const input = document.querySelector(${JSON.stringify(selector)});
+        if (!input || input.tagName !== 'INPUT' || input.type !== 'file') return null;
+        return input;
+      })()`,
+      userGesture: true,
+    });
+  } catch (error) {
+    throw uploadError("ChatGPT", "selector", error instanceof Error ? error.message : String(error));
+  }
+  if (result?.exceptionDetails) {
+    throw uploadError("ChatGPT", "selector", "file input selector evaluation failed");
+  }
   const objectId = result?.result?.objectId;
   if (!objectId) return false;
-  await cdp.sendCommand(tabId, "DOM.setFileInputFiles", { files: filePaths, objectId });
+  try {
+    await cdp.sendCommand(tabId, "DOM.setFileInputFiles", { files: filePaths, objectId });
+  } catch (error) {
+    throw uploadError("ChatGPT", "processing", error instanceof Error ? error.message : String(error));
+  }
   return true;
 }
 
@@ -197,7 +229,11 @@ async function uploadFilesWithChooser(
   filePaths: string[],
   provider: "gemini" | "chatgpt",
 ): Promise<void> {
-  await cdp.sendCommand(tabId, "Page.setInterceptFileChooserDialog", { enabled: true });
+  try {
+    await cdp.sendCommand(tabId, "Page.setInterceptFileChooserDialog", { enabled: true });
+  } catch (error) {
+    throw uploadError(provider, "chooser", error instanceof Error ? error.message : String(error));
+  }
 
   let timeoutId: ReturnType<typeof setTimeout> | null = null;
   let handler: ((source: chrome.debugger.Debuggee, method: string, params: any) => void) | null = null;
@@ -215,10 +251,18 @@ async function uploadFilesWithChooser(
       handler = (source: chrome.debugger.Debuggee, method: string, params: any) => {
         if (source.tabId === tabId && method === "Page.fileChooserOpened") {
           cleanup();
+          if (!params?.backendNodeId) {
+            reject(uploadError(provider, "chooser", "file chooser did not provide a backend node"));
+            return;
+          }
           cdp.sendCommand(tabId, "DOM.setFileInputFiles", {
             files: filePaths,
             backendNodeId: params.backendNodeId,
-          }).then(() => resolve()).catch(reject);
+          }).then(() => resolve()).catch((error) => reject(uploadError(
+            provider,
+            "processing",
+            error instanceof Error ? error.message : String(error),
+          )));
         }
       };
       chrome.debugger.onEvent.addListener(handler);
@@ -244,10 +288,21 @@ async function uploadFilesWithChooser(
       return;
     }
 
-    await cdp.sendCommand(tabId, "Runtime.evaluate", {
-      expression: `document.querySelector(${JSON.stringify(providerUploadStrategies.chatgpt.openerSelector)})?.click()`,
-      userGesture: true,
-    });
+    let result: any;
+    try {
+      result = await cdp.sendCommand(tabId, "Runtime.evaluate", {
+        expression: `(() => { const button = document.querySelector(${JSON.stringify(providerUploadStrategies.chatgpt.openerSelector)}); if (!button) return false; button.click(); return true; })()`,
+        userGesture: true,
+      });
+    } catch (error) {
+      throw uploadError("ChatGPT", "selector", error instanceof Error ? error.message : String(error));
+    }
+    if (result?.exceptionDetails) {
+      throw uploadError("ChatGPT", "selector", "Add files selector evaluation failed");
+    }
+    if (result?.result?.value === false || result?.result?.value === null) {
+      throw uploadError("ChatGPT", "selector", "Add files control was not found");
+    }
   };
 
   const maxAttempts = 3;
@@ -264,10 +319,12 @@ async function uploadFilesWithChooser(
       } catch (err) {
         lastError = err as Error;
         cleanup();
+        const errorCode = (lastError as Error & { code?: string })?.code;
+        if (errorCode && errorCode !== "attachment_chooser_interception") throw lastError;
         if (attempt < maxAttempts) await sleep(1000);
       }
     }
-    throw new Error(`${provider} file upload failed after ${maxAttempts} attempts: ${lastError?.message}`);
+    throw lastError || uploadError(provider, "chooser", "file chooser did not open");
   } finally {
     cleanup();
     try { await cdp.sendCommand(tabId, "Page.setInterceptFileChooserDialog", { enabled: false }); } catch {}
@@ -279,8 +336,12 @@ async function uploadFilesToProviderTab(
   tabId: number,
   filePaths: string[],
 ): Promise<{ success: true }> {
-  await cdp.attach(tabId);
-  await cdp.sendCommand(tabId, "DOM.enable", {});
+  try {
+    await cdp.attach(tabId);
+    await cdp.sendCommand(tabId, "DOM.enable", {});
+  } catch (error) {
+    throw uploadError(provider === "chatgpt" ? "ChatGPT" : "Gemini", "selector", error instanceof Error ? error.message : String(error));
+  }
 
   if (provider === "chatgpt") {
     const directUpload = await setFileInputFilesBySelector(

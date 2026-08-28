@@ -375,6 +375,27 @@ function oracleOption(input: Record<string, unknown>, key: "model" | "effort"): 
   return typeof direct === "string" ? direct : undefined;
 }
 
+function oracleAttachmentOption(input: Record<string, unknown>): string | string[] | undefined {
+  const options = input.options;
+  const optionRecord = options && typeof options === "object" && !Array.isArray(options)
+    ? options as Record<string, unknown>
+    : undefined;
+  const optionValue = optionRecord?.file;
+  const value = optionValue === undefined ? input.file : optionValue;
+  if (typeof value === "string") return value;
+  if (Array.isArray(value) && value.every((entry) => typeof entry === "string")) return value as string[];
+  return undefined;
+}
+
+function oracleBooleanOption(input: Record<string, unknown>, key: string): boolean {
+  const options = input.options;
+  const optionValue = options && typeof options === "object" && !Array.isArray(options)
+    ? (options as Record<string, unknown>)[key]
+    : undefined;
+  const value = optionValue === undefined ? input[key] : optionValue;
+  return value === true;
+}
+
 function optionalString(input: Record<string, unknown>, key: string): string | undefined {
   const value = input[key];
   return typeof value === "string" && value.trim() ? value : undefined;
@@ -426,10 +447,14 @@ export function createOracleExternalJobProvider(
       if (!prompt.trim()) throw new Error("prompt required");
       const model = oracleOption(input, "model");
       const effort = oracleOption(input, "effort");
+      const file = oracleAttachmentOption(input);
+      const github = oracleBooleanOption(input, "github");
       const job = await requestOracleJob(request, "oracle.ask", {
         prompt,
         ...(model !== undefined ? { model } : {}),
         ...(effort !== undefined ? { effort } : {}),
+        ...(file !== undefined ? { file } : {}),
+        ...(github ? { github: true } : {}),
       });
       rememberJob(job.id);
       return piExternalJobHandle(job);
@@ -470,12 +495,16 @@ export function createOracleExternalJobProvider(
       const parentId = parentProviderJobId(input);
       const model = oracleOption(input, "model");
       const effort = oracleOption(input, "effort");
+      const file = oracleAttachmentOption(input);
+      const github = oracleBooleanOption(input, "github");
       const requestId = optionalString(input, "requestId");
       const job = await requestOracleJob(request, "oracle.ask", {
         prompt,
         follow: parentId,
         ...(model !== undefined ? { model } : {}),
         ...(effort !== undefined ? { effort } : {}),
+        ...(file !== undefined ? { file } : {}),
+        ...(github ? { github: true } : {}),
         ...(requestId !== undefined ? { requestId } : {}),
       });
       assertFollowJob(job, parentId);
@@ -590,8 +619,8 @@ export default function surfExtension(pi: Pi) {
   pi.registerTool({
     name: "surf_oracle_ask",
     label: "surf_oracle_ask",
-    description: "Start a durable local Surf ChatGPT oracle job.",
-    parameters: Type.Object({ prompt: Type.String(), model: Type.Optional(Type.String()), effort: Type.Optional(Type.String()), follow: Type.Optional(Type.String()) }),
+    description: "Start a durable local Surf ChatGPT oracle job, optionally with one local file and GitHub context.",
+    parameters: Type.Object({ prompt: Type.String(), model: Type.Optional(Type.String()), effort: Type.Optional(Type.String()), file: Type.Optional(Type.String()), github: Type.Optional(Type.Boolean()), follow: Type.Optional(Type.String()) }),
     async execute(_id: string, args: Record<string, unknown>) {
       const requestGeneration = sessionGeneration;
       try {

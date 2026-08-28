@@ -95,14 +95,14 @@ surf chatgpt "analyze" --file document.pdf        # With file attachment
 
 ### Oracle
 
-Use `surf chatgpt` for quick one-shot questions. Use `surf oracle` for long-running or Pro coding consults that need a durable job, explicit model and effort selection, file context, recovery, or follow-up turns. Oracle is local-only.
+Use `surf chatgpt` for quick one-shot questions. Use `surf oracle` for long-running or Pro coding consults that need a durable job, explicit model and effort selection, file context, a direct local attachment, recovery, or follow-up turns. Oracle is local-only.
 
 For agent workflows, detach after dispatch and keep the returned `.id`:
 
 ```bash
 surf oracle ask "Review this change and identify release risks" \
   --files "src/**/*.ts" --files "package.json" \
-  --model gpt-5.5 --effort pro --detach --json
+  --model gpt-5.5 --effort pro --file ./design.md --github --detach --json
 
 surf oracle status <job-id> --json
 surf oracle result <job-id> --json
@@ -114,16 +114,16 @@ surf oracle result <job-id> --wait --json
 
 Treat Pro quota as scarce. Oracle never selects Pro effort implicitly; request it with `--effort pro`. ChatGPT model aliases include `instant`, `thinking`, `pro`, `gpt-5.5`, and `gpt-5.6-sol`. Accepted `--effort` values are `light`, `standard`, `extended`, `heavy`, and `pro`. Use `--model gpt-5.6-sol --effort pro` for GPT-5.6 Sol with Pro effort. Requested model and effort selections are read back before submission, and an unverifiable selection fails with `model_verification_failed` instead of silently continuing. Capacity is one non-terminal oracle job. A `capacity` error includes the in-flight job ID; poll that job or wait for it to finish rather than submitting the same consult again.
 
-When loaded as a Pi extension, Surf also registers a `surf-oracle` external-job provider when the runtime exposes that bridge. The provider maps `start`, `status`, `result`, and `reattach` to durable Surf Oracle jobs and returns pi-subagents' external-job contract shape: `providerJobId`, a contract state (`queued`, `running`, `completed`, `failed`), the conversation URL, the captured result text as `output`, and failure code and message. It honors `options.model` and `options.effort` for starts, so `model: gpt-5.6-sol` plus `effort: pro` selects ChatGPT GPT-5.6 Sol with Pro effort through the browser. `reattach` only harvests an existing job by ID; it never submits the prompt again.
+When loaded as a Pi extension, Surf also registers a `surf-oracle` external-job provider when the runtime exposes that bridge. The provider maps `start`, `status`, `result`, and `reattach` to durable Surf Oracle jobs and returns pi-subagents' external-job contract shape: `providerJobId`, a contract state (`queued`, `running`, `completed`, `failed`), the conversation URL, the captured result text as `output`, and failure code and message. It honors `options.model`, `options.effort`, `options.file`, and `options.github` for starts and follow-ups, so `model: gpt-5.6-sol` plus `effort: pro` selects ChatGPT GPT-5.6 Sol with Pro effort through the browser, while `github: true` requires Chat mode and the connected GitHub tool. `reattach` only harvests an existing job by ID; it never submits the prompt again.
 
 When Surf is installed as a Pi package, it exposes an optional `gpt-pro` package agent for `pi-subagents`. That profile uses `runner.type: external-job`, provider `surf-oracle`, `options.model: gpt-5.6-sol`, and `options.effort: pro`. Surf remains useful without Pi or `pi-subagents`.
 
-Context comes from repeatable `--files` globs. Surf fails closed when a glob matches nothing or a matched file is unreadable, binary, or invalid UTF-8. It also blocks gitignored files and basenames matching `.env*`, `*.pem`, `*.key`, `id_rsa*`, `id_ed25519*`, `*.p12`, `*.pfx`, `credentials*`, or `secrets*`. Use `--allow-sensitive` only after intentionally reviewing those files; it overrides the block rather than redacting content. Context up to 60,000 evidence characters is inserted inline, while larger context becomes one private text attachment. The assembly manifest records each path, byte count, SHA-256, inline or bundle disposition, and deny-list outcome.
+Context comes from repeatable `--files` globs. Use `--file <path>` for one additional local attachment; `--github` requires Chat mode and a connected GitHub tool. Surf fails closed when a glob matches nothing or a matched file is unreadable, binary, or invalid UTF-8. It also blocks gitignored files and basenames matching `.env*`, `*.pem`, `*.key`, `id_rsa*`, `id_ed25519*`, `*.p12`, `*.pfx`, `credentials*`, or `secrets*`. Use `--allow-sensitive` only after intentionally reviewing those files; it overrides the block rather than redacting content. Context up to 60,000 evidence characters is inserted inline, while larger context becomes one private text attachment. The assembly manifest records each path, byte count, SHA-256, inline or bundle disposition, and deny-list outcome.
 
 Continue a captured consult with `follow`. Use the ID returned by each turn for the next turn:
 
 ```bash
-surf oracle follow <job-id> "Challenge your recommendation. What could invalidate it?" --detach --json
+surf oracle follow <job-id> "Challenge your recommendation. What could invalidate it?" --file ./follow-up.md --github --detach --json
 surf oracle result <follow-job-id> --wait --json
 surf oracle follow <follow-job-id> "Give the final decision and concrete next steps." --detach --json
 ```

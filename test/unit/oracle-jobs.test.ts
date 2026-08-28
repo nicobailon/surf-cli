@@ -120,6 +120,8 @@ describe("oracle job registry", () => {
       contextManifest: { files: [{ path: "src/a.ts", bytes: 1 }] },
       model: "gpt-5.6-sol",
       effortRequested: "pro",
+      attachmentPaths: ["/tmp/report.md"],
+      github: true,
       requestId: "request-1",
     });
 
@@ -128,6 +130,8 @@ describe("oracle job registry", () => {
       contextManifest: { files: [{ bytes: 1, path: "src/a.ts" }] },
       model: "gpt-5.6-sol",
       effortRequested: "pro",
+      attachmentPaths: ["/tmp/report.md"],
+      github: true,
       requestId: "request-1",
     });
 

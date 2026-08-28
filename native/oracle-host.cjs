@@ -1,3 +1,5 @@
+const fs = require("fs");
+const path = require("path");
 const chatgptClient = require("./chatgpt-client.cjs");
 const oracleJobs = require("./oracle-jobs.cjs");
 
@@ -21,6 +23,39 @@ function withJobId(error, jobId, fallbackCode) {
   if (!result.code) result.code = fallbackCode;
   result.jobId = jobId;
   return result;
+}
+
+async function resolveOracleAttachments(args) {
+  const explicit = args?.file === undefined || args?.file === null
+    ? []
+    : Array.isArray(args.file) ? args.file : [args.file];
+  if (explicit.length > 1) {
+    throw codedError(
+      "attachment_file_access",
+      "Oracle supports one explicit local attachment; provide a single --file path",
+    );
+  }
+  const requested = [...explicit, ...(args?.bundlePath ? [args.bundlePath] : [])];
+  const resolved = [];
+  for (const filePath of requested) {
+    if (typeof filePath !== "string" || !filePath.trim()) {
+      throw codedError("attachment_file_access", "Oracle attachment file access failed: file path is required");
+    }
+    const absolutePath = path.resolve(filePath);
+    try {
+      const stats = await fs.promises.stat(absolutePath);
+      if (!stats.isFile()) throw new Error("not a regular file");
+      await fs.promises.access(absolutePath, fs.constants.R_OK);
+    } catch (error) {
+      throw codedError(
+        "attachment_file_access",
+        `Oracle attachment file access failed for ${absolutePath}: ${error?.message || error}`,
+        { path: absolutePath },
+      );
+    }
+    resolved.push(absolutePath);
+  }
+  return resolved;
 }
 
 function createOracleHost({ queueAiRequest, requestCallExtension, buildProviderUploadMessage, log }) {
@@ -65,6 +100,7 @@ function createOracleHost({ queueAiRequest, requestCallExtension, buildProviderU
   async function ask(request, args) {
     assertLocalOracleRequest(request);
     const model = args.model ? chatgptClient.normalizeChatGPTModelChoice(args.model) : null;
+    const explicitAttachmentPaths = await resolveOracleAttachments({ ...args, bundlePath: undefined });
     const created = oracleJobs.createJob({
       prompt: args.prompt,
       contextManifest: args.contextManifest,
@@ -72,11 +108,16 @@ function createOracleHost({ queueAiRequest, requestCallExtension, buildProviderU
       effortRequested: args.effort ?? null,
       follow: args.follow ?? null,
       requestId: args.requestId ?? null,
+      attachmentPaths: explicitAttachmentPaths,
+      github: args.github === true,
     });
     if (created.requestDeduped) return oracleJobs.getJob(created.id);
     let createdTabId = null;
 
     try {
+      const attachmentPaths = args?.bundlePath
+        ? [...explicitAttachmentPaths, ...(await resolveOracleAttachments({ bundlePath: args.bundlePath }))]
+        : explicitAttachmentPaths;
       let parent = null;
       if (args.follow) {
         parent = oracleJobs.getJob(args.follow);
@@ -93,7 +134,10 @@ function createOracleHost({ queueAiRequest, requestCallExtension, buildProviderU
         prompt: args.prompt,
         model,
         effort: args.effort,
-        file: args.bundlePath,
+        file: attachmentPaths.length > 0
+          ? attachmentPaths.length === 1 ? attachmentPaths[0] : attachmentPaths
+          : undefined,
+        ...(args.github === true ? { github: true } : {}),
         startUrl: parent?.conversationUrl,
         createTab: async () => {
           const tabInfo = await browserOptions(request).createTab();
@@ -304,4 +348,4 @@ function createOracleHost({ queueAiRequest, requestCallExtension, buildProviderU
   };
 }
 
-module.exports = { assertLocalOracleRequest, createOracleHost };
+module.exports = { assertLocalOracleRequest, createOracleHost, resolveOracleAttachments };

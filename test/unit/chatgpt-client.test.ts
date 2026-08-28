@@ -549,6 +549,132 @@ describe("chatgpt-client", () => {
       expect(focused).toBe(true);
     });
 
+    it("selects Chat before a repository-aware Oracle request", async () => {
+      const cdp = vi
+        .fn()
+        .mockResolvedValueOnce({
+          result: {
+            value: {
+              chat: [{ label: "Chat", selected: false }],
+              work: [{ label: "Work", selected: true }],
+            },
+          },
+        })
+        .mockResolvedValueOnce({ result: { value: true } })
+        .mockResolvedValueOnce({
+          result: {
+            value: {
+              chat: [{ label: "Chat", selected: true }],
+              work: [{ label: "Work", selected: false }],
+            },
+          },
+        });
+
+      await expect(chatgptClientUi.selectChatTab(cdp, 500)).resolves.toBe("Chat");
+    });
+
+    it("fails closed when ChatGPT exposes only Work mode", async () => {
+      const cdp = async (expression: string) => {
+        if (expression.includes("const details = (node)")) {
+          return { result: { value: { chat: [], work: [{ label: "Work", selected: true }] } } };
+        }
+        throw new Error(`Unexpected expression: ${expression}`);
+      };
+
+      await expect(chatgptClientUi.selectChatTab(cdp, 100)).rejects.toMatchObject({
+        code: "chat_mode_unavailable",
+        message: expect.stringContaining("only exposes Work mode"),
+      });
+    });
+
+    it("selects and verifies the connected GitHub tool", async () => {
+      const cdp = vi
+        .fn()
+        .mockResolvedValueOnce({ result: { value: { controls: [] } } })
+        .mockResolvedValueOnce({ result: { value: true } })
+        .mockResolvedValueOnce({
+          result: {
+            value: {
+              controls: [
+                {
+                  label: "GitHub (connected)",
+                  role: "menuitem",
+                  selected: false,
+                  disconnected: false,
+                  testId: null,
+                },
+              ],
+            },
+          },
+        })
+        .mockResolvedValueOnce({ result: { value: true } })
+        .mockResolvedValueOnce({
+          result: {
+            value: {
+              controls: [
+                {
+                  label: "GitHub (connected)",
+                  role: "menuitem",
+                  selected: true,
+                  disconnected: false,
+                  testId: null,
+                },
+              ],
+            },
+          },
+        });
+
+      await expect(chatgptClientUi.selectGitHubTool(cdp, 500)).resolves.toBe("GitHub (connected)");
+    });
+
+    it("reports ChatGPT attachment processing failures", async () => {
+      const cdp = async (expression: string) => {
+        if (expression.includes("const scope = document.querySelector('form')")) {
+          return {
+            result: {
+              value: {
+                fileCount: 0,
+                hasAttachmentNode: false,
+                processingError: true,
+                text: "Upload failed",
+              },
+            },
+          };
+        }
+        throw new Error(`Unexpected expression: ${expression}`);
+      };
+
+      await expect(
+        chatgptClientUi.waitForChatGPTAttachment(cdp, ["/tmp/report.md"], 100),
+      ).rejects.toMatchObject({
+        code: "attachment_processing",
+        message: expect.stringContaining("processing failed"),
+      });
+    });
+
+    it("does not treat a selected file input as processed attachment", async () => {
+      const cdp = async (expression: string) => {
+        if (expression.includes("const scope = document.querySelector('form')")) {
+          return {
+            result: {
+              value: {
+                fileCount: 1,
+                hasAttachmentNode: false,
+                attachmentLabels: [],
+                processingError: false,
+                text: "",
+              },
+            },
+          };
+        }
+        throw new Error(`Unexpected expression: ${expression}`);
+      };
+
+      await expect(
+        chatgptClientUi.waitForChatGPTAttachment(cdp, ["/tmp/report.md"], 100),
+      ).rejects.toMatchObject({ code: "attachment_processing" });
+    });
+
     it("resolves effort options and accepts only the documented vocabulary", () => {
       expect(chatgptClient.resolveChatGPTEffortMenuOption(effortOptions, "extended")).toEqual(
         effortOptions[2],

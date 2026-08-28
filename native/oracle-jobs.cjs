@@ -47,13 +47,15 @@ function stableJson(value) {
   return JSON.stringify(value) ?? "null";
 }
 
-function requestFingerprint({ prompt, contextManifest, model, effortRequested, follow }) {
+function requestFingerprint({ prompt, contextManifest, model, effortRequested, follow, attachmentPaths, github }) {
   return promptDigest(stableJson({
     promptDigest: promptDigest(prompt),
     contextManifest: contextManifest ?? {},
     model: model ?? null,
     effortRequested: effortRequested ?? null,
     follow: follow ?? null,
+    attachmentPaths: attachmentPaths ?? [],
+    github: github === true,
   }));
 }
 
@@ -92,13 +94,13 @@ function readJobs(root = getPrivateStateRoot()) {
     .map((job) => hydrateJobMetadata(job, root));
 }
 
-function createJob({ prompt, contextManifest = {}, model = null, effortRequested = null, follow = null, requestId = null }) {
+function createJob({ prompt, contextManifest = {}, model = null, effortRequested = null, follow = null, requestId = null, attachmentPaths = [], github = false }) {
   const root = getPrivateStateRoot();
   const base = oracleRoot(root);
   ensurePrivateDir(base, root);
   const safeRequestId = normalizedRequestId(requestId);
   const fingerprint = safeRequestId
-    ? requestFingerprint({ prompt, contextManifest, model, effortRequested, follow })
+    ? requestFingerprint({ prompt, contextManifest, model, effortRequested, follow, attachmentPaths, github })
     : null;
   if (safeRequestId) {
     const existing = readJobs(root).find((job) => job.requestId === safeRequestId);

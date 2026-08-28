@@ -116,10 +116,19 @@ describe("mapToolToMessage", () => {
 
   describe("oracle commands", () => {
     it("maps oracle socket tools to host-owned messages", () => {
-      expect(helpers.mapToolToMessage("oracle.ask", { prompt: "review", model: "pro" })).toEqual({
+      expect(
+        helpers.mapToolToMessage("oracle.ask", {
+          prompt: "review",
+          model: "pro",
+          file: "/tmp/report.md",
+          github: true,
+        }),
+      ).toEqual({
         type: "ORACLE_ASK",
         prompt: "review",
         model: "pro",
+        file: "/tmp/report.md",
+        github: true,
       });
       expect(helpers.mapToolToMessage("oracle.status", { id: "job" })).toEqual({
         type: "ORACLE_STATUS",

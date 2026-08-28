@@ -1,16 +1,30 @@
 const { openClientTransport } = require("./client-transport.cjs");
 const { resolveRequestDeadlineMs } = require("./host-sessions.cjs");
 const { assembleContext } = require("./oracle-context.cjs");
+const fs = require("fs");
+const path = require("path");
 
 const RESULT_TIMEOUT_SECONDS = 20;
 const POLL_DELAYS_MS = [5000, 10000, 20000, 40000, 60000];
 const ORACLE_ERROR_CODES = new Set([
   "auth",
+  "attachment_chooser_interception",
+  "attachment_file_access",
+  "attachment_processing",
+  "attachment_selector_drift",
   "capacity",
+  "chat_mode_selection_failed",
+  "chat_mode_selector_drift",
+  "chat_mode_unavailable",
   "cloudflare",
   "context_incomplete",
   "dispatch_failed",
+  "github_tool_disconnected",
+  "github_tool_missing",
+  "github_tool_selection_failed",
+  "github_tool_selector_drift",
   "harvest_failed",
+  "invalid_request",
   "invalid_transition",
   "model_verification_failed",
   "not_found",
@@ -30,8 +44,10 @@ Commands:
 
 Ask/follow options:
   --files <glob>          Add context files (repeatable)
+  --file <path>           Attach one local file
   --model <model>         Select model: instant, thinking, pro, gpt-5.5, gpt-5.6-sol
   --effort <effort>       Select effort: light, standard, extended, heavy, pro
+  --github                Require the ChatGPT Chat tab and GitHub tool
   --detach                Return after dispatch
   --allow-sensitive       Allow deny-listed context files
 
@@ -56,11 +72,12 @@ function requireOptionValue(argv, index, name) {
 
 function parseOptions(argv) {
   const positional = [];
-  const options = { files: [] };
-  const valueOptions = new Set(["files", "model", "effort"]);
+  const options = { files: [], file: [] };
+  const valueOptions = new Set(["files", "file", "model", "effort"]);
   const booleanOptions = new Set([
     "allow-sensitive",
     "detach",
+    "github",
     "json",
     "no-lock",
     "wait",
@@ -75,7 +92,7 @@ function parseOptions(argv) {
     const name = value.slice(2);
     if (valueOptions.has(name)) {
       const optionValue = requireOptionValue(argv, index, name);
-      if (name === "files") options.files.push(optionValue);
+      if (name === "files" || name === "file") options[name].push(optionValue);
       else options[name] = optionValue;
       index += 1;
     } else if (booleanOptions.has(name)) {
@@ -94,14 +111,16 @@ function assertAllowedOptions(command, options) {
     "allow-sensitive",
     "detach",
     "effort",
+    "file",
     "files",
+    "github",
     "model",
   ]);
   const allowed = command === "ask" || command === "follow"
     ? ask
     : command === "result" ? new Set([...common, "wait"]) : common;
   for (const [name, value] of Object.entries(options)) {
-    if (name === "files" && value.length === 0) continue;
+    if ((name === "files" || name === "file") && value.length === 0) continue;
     if (value !== undefined && !allowed.has(name)) {
       throw codedError("invalid_transition", `--${name} is not supported by oracle ${command}`);
     }
@@ -131,8 +150,12 @@ function parseOracleCommand(argv) {
       command,
       prompt,
       files: parsed.options.files,
+      ...(parsed.options.file.length > 0
+        ? { file: parsed.options.file.length === 1 ? parsed.options.file[0] : parsed.options.file }
+        : {}),
       model: parsed.options.model,
       effort: parsed.options.effort,
+      github: parsed.options.github === true,
       detach: parsed.options.detach === true,
       allowSensitive: parsed.options["allow-sensitive"] === true,
       json,
@@ -151,8 +174,12 @@ function parseOracleCommand(argv) {
       id,
       prompt,
       files: parsed.options.files,
+      ...(parsed.options.file.length > 0
+        ? { file: parsed.options.file.length === 1 ? parsed.options.file[0] : parsed.options.file }
+        : {}),
       model: parsed.options.model,
       effort: parsed.options.effort,
+      github: parsed.options.github === true,
       detach: parsed.options.detach === true,
       allowSensitive: parsed.options["allow-sensitive"] === true,
       json,
@@ -191,10 +218,42 @@ function composeAskRequest(spec, context) {
     prompt,
     ...(spec.model ? { model: spec.model } : {}),
     ...(spec.effort ? { effort: spec.effort } : {}),
+    ...(spec.file ? { file: spec.file } : {}),
+    ...(spec.github ? { github: true } : {}),
     ...(context ? { contextManifest: context.manifest } : {}),
     ...(context?.bundlePath ? { bundlePath: context.bundlePath } : {}),
     ...(spec.id ? { follow: spec.id } : {}),
   };
+}
+
+async function resolveOracleAttachment(value, cwd = process.cwd()) {
+  const values = value === undefined || value === null
+    ? []
+    : Array.isArray(value) ? value : [value];
+  if (values.length > 1) {
+    throw codedError(
+      "attachment_file_access",
+      "Oracle supports one explicit local attachment; provide a single --file path",
+    );
+  }
+  if (values.length === 0) return undefined;
+  const requested = values[0];
+  if (typeof requested !== "string" || !requested.trim()) {
+    throw codedError("attachment_file_access", "Oracle attachment file access failed: --file must be a path");
+  }
+  const resolved = path.resolve(cwd, requested);
+  try {
+    const stats = await fs.promises.stat(resolved);
+    if (!stats.isFile()) throw new Error("not a regular file");
+    await fs.promises.access(resolved, fs.constants.R_OK);
+  } catch (error) {
+    throw codedError(
+      "attachment_file_access",
+      `Oracle attachment file access failed for ${resolved}: ${error?.message || error}`,
+      { path: resolved },
+    );
+  }
+  return resolved;
 }
 
 function unwrapResponse(response) {
@@ -389,6 +448,7 @@ async function handleOracleCli(argv, {
     }
   }
 
+  const attachment = await resolveOracleAttachment(spec.file, cwd);
   const context = spec.files.length > 0
     ? await assembleContext({
       files: spec.files,
@@ -396,7 +456,7 @@ async function handleOracleCli(argv, {
       allowSensitive: spec.allowSensitive,
     })
     : null;
-  const request = composeAskRequest(spec, context);
+  const request = composeAskRequest({ ...spec, ...(attachment ? { file: attachment } : {}) }, context);
   const dispatchInterrupt = () => {
     stderr.write(
       "Interrupted during dispatch. A job may already have been created. Run surf oracle status or surf oracle list to find it.\n",
@@ -430,5 +490,6 @@ module.exports = {
   formatOracleOutput,
   handleOracleCli,
   parseOracleCommand,
+  resolveOracleAttachment,
   shapeOracleError,
 };

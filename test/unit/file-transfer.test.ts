@@ -103,6 +103,20 @@ describe("file transfer path policy", () => {
     ).toThrow(/local mode/);
   });
 
+  it("normalizes local Oracle attachment paths before host dispatch", () => {
+    const normalized = transfer.validateLocalToolPaths("oracle.ask", {
+      prompt: "review",
+      file: "local:report.md",
+    });
+    expect(normalized.file).toBe(path.resolve("report.md"));
+    expect(() =>
+      transfer.validateLocalToolPaths("oracle.ask", {
+        prompt: "review",
+        file: "remote:/tmp/report.md",
+      }),
+    ).toThrow(/local mode/);
+  });
+
   it("keeps client-local resolved paths out of host descriptors", () => {
     const prepared = transfer.prepareRemoteTool("screenshot", { savePath: "local:shot.png" });
     expect(prepared.pathRefs[0]).toMatchObject({

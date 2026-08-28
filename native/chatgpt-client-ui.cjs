@@ -29,6 +29,8 @@ const SELECTORS = {
   effortMenuItem: 'button, [role="menuitem"], [role="menuitemradio"]',
   effortMenuLabel: '.__menu-label, [class*="menu-label"]',
   effortSubmenuTrigger: '[role="menuitem"][aria-haspopup="menu"], button[aria-haspopup="menu"]',
+  toolsButton:
+    'button[data-testid="composer-plus-btn"], button[aria-label="Add files and more"]',
   selectedMenuIndicator:
     '[aria-checked="true"], [aria-selected="true"], [data-selected="true"], [data-state="checked"], [data-state="selected"], [data-state="on"]',
   assistantMessage:
@@ -168,6 +170,315 @@ async function waitForPromptReady(cdp, timeoutMs = 30000, signal) {
     await delay(200, signal);
   }
   return false;
+}
+
+function uiError(code, message) {
+  const error = new Error(message);
+  error.code = code;
+  return error;
+}
+
+async function readChatTabState(cdp, signal) {
+  return evaluate(
+    cdp,
+    `(() => {
+      const normalize = (value) => String(value || '').replace(/\\s+/g, ' ').trim().toLowerCase();
+      const visible = (node) => {
+        if (!node || node.hasAttribute?.('hidden') || node.getAttribute?.('aria-hidden') === 'true') return false;
+        const style = window.getComputedStyle?.(node);
+        if (style && (style.display === 'none' || style.visibility === 'hidden')) return false;
+        const rect = node.getBoundingClientRect?.();
+        return !rect || (rect.width > 0 && rect.height > 0);
+      };
+      const selected = (node) => node.getAttribute?.('aria-selected') === 'true' ||
+        node.getAttribute?.('aria-current') === 'page' ||
+        node.getAttribute?.('data-state') === 'active' ||
+        node.getAttribute?.('data-state') === 'selected' ||
+        node.getAttribute?.('data-active') === 'true' ||
+        /\\b(active|selected)\\b/i.test(String(node.className || ''));
+      const labelFor = (node) => [
+        node.innerText || node.textContent || '',
+        node.getAttribute?.('aria-label') || '',
+        node.getAttribute?.('title') || '',
+      ].join(' ').replace(/\\s+/g, ' ').trim();
+      const matchesName = (node, name) => [
+        node.innerText || node.textContent || '',
+        node.getAttribute?.('aria-label') || '',
+        node.getAttribute?.('title') || '',
+      ].some((value) => {
+        const normalized = normalize(value);
+        return normalized === name || normalized === name + ' tab' || normalized === 'switch to ' + name;
+      });
+      const nodes = Array.from(new Set([
+        ...document.querySelectorAll('[role="tab"], button, a'),
+      ])).filter(visible);
+      const details = (node) => ({ label: labelFor(node).slice(0, 120), selected: selected(node) });
+      const matches = (name) => nodes
+        .filter((node) => matchesName(node, name))
+        .map(details);
+      return { chat: matches('chat'), work: matches('work') };
+    })()`,
+    signal,
+  );
+}
+
+async function selectChatTab(cdp, timeoutMs = 8000, signal) {
+  throwIfAborted(signal);
+  const read = () => readChatTabState(cdp, signal);
+  let state = await read();
+  if (state?.chat?.length === 1 && state.chat[0].selected) return state.chat[0].label;
+  if (state?.chat?.length === 0 && state?.work?.length > 0) {
+    throw uiError(
+      "chat_mode_unavailable",
+      "ChatGPT only exposes Work mode; the Chat tab is required for Oracle",
+    );
+  }
+  if (state?.chat?.length !== 1) {
+    throw uiError(
+      "chat_mode_selector_drift",
+      state?.chat?.length
+        ? "ChatGPT Chat tab selector drift: Chat tab is ambiguous"
+        : "ChatGPT Chat tab selector drift: Chat tab was not found",
+    );
+  }
+
+  const clicked = await evaluate(
+    cdp,
+    `(() => {
+      ${buildClickDispatcher()}
+      const normalize = (value) => String(value || '').replace(/\\s+/g, ' ').trim().toLowerCase();
+      const matchesName = (node) => [
+        node.innerText || node.textContent || '',
+        node.getAttribute?.('aria-label') || '',
+        node.getAttribute?.('title') || '',
+      ].some((value) => {
+        const normalized = normalize(value);
+        return normalized === 'chat' || normalized === 'chat tab' || normalized === 'switch to chat';
+      });
+      const nodes = Array.from(new Set([
+        ...document.querySelectorAll('[role="tab"], button, a'),
+      ])).filter(matchesName);
+      return nodes.length === 1 ? dispatchClickSequence(nodes[0]) : false;
+    })()`,
+    signal,
+  );
+  if (!clicked) {
+    throw uiError("chat_mode_selector_drift", "ChatGPT Chat tab selector drift: Chat tab could not be clicked");
+  }
+
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    await delay(100, signal);
+    state = await read();
+    if (state?.chat?.length === 1 && state.chat[0].selected) return state.chat[0].label;
+    if (state?.chat?.length === 0 && state?.work?.length > 0) {
+      throw uiError(
+        "chat_mode_unavailable",
+        "ChatGPT only exposes Work mode; the Chat tab is required for Oracle",
+      );
+    }
+  }
+  throw uiError("chat_mode_selection_failed", "ChatGPT Chat tab could not be selected before timeout");
+}
+
+async function readGitHubToolState(cdp, signal) {
+  return evaluate(
+    cdp,
+    `(() => {
+      const normalize = (value) => String(value || '').replace(/\\s+/g, ' ').trim().toLowerCase();
+      const visible = (node) => {
+        if (!node || node.hasAttribute?.('hidden') || node.getAttribute?.('aria-hidden') === 'true') return false;
+        const style = window.getComputedStyle?.(node);
+        if (style && (style.display === 'none' || style.visibility === 'hidden')) return false;
+        const rect = node.getBoundingClientRect?.();
+        return !rect || (rect.width > 0 && rect.height > 0);
+      };
+      const labelFor = (node) => [
+        node.innerText || node.textContent || '',
+        node.getAttribute?.('aria-label') || '',
+        node.getAttribute?.('title') || '',
+        node.getAttribute?.('data-testid') || '',
+        node.getAttribute?.('data-tool') || '',
+      ].join(' ').replace(/\\s+/g, ' ').trim();
+      const selected = (node, label) => node.getAttribute?.('aria-checked') === 'true' ||
+        node.getAttribute?.('aria-selected') === 'true' ||
+        node.getAttribute?.('aria-pressed') === 'true' ||
+        node.getAttribute?.('data-selected') === 'true' ||
+        node.getAttribute?.('data-active') === 'true' ||
+        ['checked', 'selected', 'on', 'active'].includes(normalize(node.getAttribute?.('data-state'))) ||
+        /\\b(active|selected)\\b/i.test(label);
+      const controls = Array.from(new Set([
+        ...document.querySelectorAll('[role="menuitem"], [role="option"], [role="button"], button, [data-testid*="github" i], [data-tool*="github" i], [aria-label*="github" i], [title*="github" i]'),
+      ])).filter(visible);
+      const github = controls.filter((node) => normalize(labelFor(node)).includes('github'));
+      return {
+        controls: github.map((node) => {
+          const label = labelFor(node).slice(0, 160);
+          return {
+            label,
+            role: node.getAttribute?.('role') || (node.tagName === 'BUTTON' ? 'button' : null),
+            selected: selected(node, label),
+            disconnected: /\\b(disconnected|not connected|connect|authorize|sign in)\\b/i.test(label),
+            testId: node.getAttribute?.('data-testid') || null,
+          };
+        }),
+      };
+    })()`,
+    signal,
+  );
+}
+
+async function openToolsMenu(cdp, signal) {
+  return evaluate(
+    cdp,
+    `(() => {
+      ${buildClickDispatcher()}
+      const selectors = ${JSON.stringify(SELECTORS.toolsButton.split(", "))};
+      const visible = (node) => {
+        if (!node || node.hasAttribute?.('hidden') || node.getAttribute?.('aria-hidden') === 'true') return false;
+        const style = window.getComputedStyle?.(node);
+        return !style || (style.display !== 'none' && style.visibility !== 'hidden');
+      };
+      for (const selector of selectors) {
+        const node = Array.from(document.querySelectorAll(selector)).find(visible);
+        if (node) return dispatchClickSequence(node);
+      }
+      return false;
+    })()`,
+    signal,
+  );
+}
+
+async function clickGitHubTool(cdp, signal) {
+  return evaluate(
+    cdp,
+    `(() => {
+      ${buildClickDispatcher()}
+      const normalize = (value) => String(value || '').replace(/\\s+/g, ' ').trim().toLowerCase();
+      const labelFor = (node) => [
+        node.innerText || node.textContent || '',
+        node.getAttribute?.('aria-label') || '',
+        node.getAttribute?.('title') || '',
+        node.getAttribute?.('data-testid') || '',
+        node.getAttribute?.('data-tool') || '',
+      ].join(' ').replace(/\\s+/g, ' ').trim();
+      const controls = Array.from(new Set([
+        ...document.querySelectorAll('[role="menuitem"], [role="option"], [role="button"], button, [data-testid*="github" i], [data-tool*="github" i], [aria-label*="github" i], [title*="github" i]'),
+      ])).filter((node) => normalize(labelFor(node)).includes('github'));
+      const menuItems = controls.filter((node) => ['menuitem', 'option'].includes(node.getAttribute?.('role')));
+      const candidates = menuItems.length > 0 ? menuItems : controls;
+      return candidates.length === 1 ? dispatchClickSequence(candidates[0]) : false;
+    })()`,
+    signal,
+  );
+}
+
+async function selectGitHubTool(cdp, timeoutMs = 10000, signal) {
+  throwIfAborted(signal);
+  let state = await readGitHubToolState(cdp, signal);
+  const findConnected = () => state?.controls?.filter((control) => !control.disconnected) || [];
+  if (state?.controls?.some((control) => control.disconnected)) {
+    throw uiError(
+      "github_tool_disconnected",
+      "ChatGPT GitHub tool is missing or disconnected; connect GitHub before running Oracle with --github",
+    );
+  }
+  if (findConnected().length === 1 && state.controls[0].selected) return state.controls[0].label;
+  if (state?.controls?.length > 1) {
+    throw uiError("github_tool_selector_drift", "ChatGPT GitHub tool selector drift: GitHub tool is ambiguous");
+  }
+  if (state?.controls?.length === 0) {
+    const opened = await openToolsMenu(cdp, signal);
+    if (!opened) {
+      throw uiError("github_tool_selector_drift", "ChatGPT tools selector drift: tools menu could not be opened");
+    }
+    const menuDeadline = Date.now() + timeoutMs;
+    while (Date.now() < menuDeadline) {
+      await delay(100, signal);
+      state = await readGitHubToolState(cdp, signal);
+      if (state?.controls?.some((control) => control.disconnected)) {
+        throw uiError(
+          "github_tool_disconnected",
+          "ChatGPT GitHub tool is missing or disconnected; connect GitHub before running Oracle with --github",
+        );
+      }
+      if (state?.controls?.length > 0) break;
+    }
+  }
+  if (!state?.controls?.length) {
+    throw uiError("github_tool_missing", "ChatGPT GitHub tool is not available in the tools menu");
+  }
+  if (state.controls.length === 1 && state.controls[0].selected) return state.controls[0].label;
+  if (state.controls.length !== 1 || !(await clickGitHubTool(cdp, signal))) {
+    throw uiError("github_tool_selector_drift", "ChatGPT GitHub tool selector drift: GitHub tool could not be selected");
+  }
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    await delay(100, signal);
+    state = await readGitHubToolState(cdp, signal);
+    if (state?.controls?.some((control) => control.disconnected)) {
+      throw uiError(
+        "github_tool_disconnected",
+        "ChatGPT GitHub tool became disconnected while selecting it",
+      );
+    }
+    if (state?.controls?.length === 1 && state.controls[0].selected) return state.controls[0].label;
+  }
+  throw uiError("github_tool_selection_failed", "ChatGPT GitHub tool could not be verified after selection");
+}
+
+async function waitForChatGPTAttachment(cdp, filePaths, timeoutMs = 30000, signal) {
+  const expectedNames = (Array.isArray(filePaths) ? filePaths : [filePaths])
+    .map((filePath) => String(filePath).split(/[\\/]/).pop().toLowerCase());
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const state = await evaluate(
+      cdp,
+      `(() => {
+        const scope = document.querySelector('form') || document.querySelector('[data-testid*="composer"]') || document;
+        const text = (scope.innerText || scope.textContent || '').replace(/\\s+/g, ' ').trim();
+        const inputs = Array.from(scope.querySelectorAll?.('input[type="file"]') || []);
+        const fileCount = inputs.reduce((count, input) => count + (input.files?.length || 0), 0);
+        const attachmentNodes = Array.from(scope.querySelectorAll?.('[data-testid*="attachment" i], [data-testid*="file" i], [aria-label*="remove attachment" i], [aria-label*="remove file" i]') || [])
+          .filter((node) => node.tagName !== 'INPUT' || node.type !== 'file');
+        const hasAttachmentNode = attachmentNodes.some((node) => {
+          const rect = node.getBoundingClientRect?.();
+          return !rect || (rect.width > 0 && rect.height > 0);
+        });
+        const attachmentLabels = attachmentNodes
+          .filter((node) => {
+            const rect = node.getBoundingClientRect?.();
+            return !rect || (rect.width > 0 && rect.height > 0);
+          })
+          .map((node) => [
+            node.innerText || node.textContent || '',
+            node.getAttribute?.('aria-label') || '',
+            node.getAttribute?.('title') || '',
+          ].join(' ').replace(/\\s+/g, ' ').trim().toLowerCase())
+          .filter(Boolean);
+        const processingError = /\\b(upload failed|failed to upload|couldn.t upload|unsupported file|file too large|processing failed|error processing)\\b/i.test(text);
+        return { fileCount, hasAttachmentNode, attachmentLabels, processingError, text: text.slice(-300) };
+      })()`,
+      signal,
+    );
+    if (state?.processingError) {
+      throw uiError(
+        "attachment_processing",
+        `ChatGPT attachment processing failed${state.text ? `: ${state.text}` : ""}`,
+      );
+    }
+    const attachmentLabels = Array.isArray(state?.attachmentLabels) ? state.attachmentLabels : [];
+    const hasExpectedName = expectedNames.every((expected) =>
+      attachmentLabels.some((label) => label.includes(expected)),
+    );
+    const hasPotentialFilename = attachmentLabels.some((label) => /(?:^|\\s)[\\w.-]+\\.[a-z0-9]{1,8}(?:$|\\s|[)\\]])/i.test(label));
+    if (state?.hasAttachmentNode && (hasExpectedName || !hasPotentialFilename)) return true;
+    await delay(250, signal);
+  }
+  throw uiError(
+    "attachment_processing",
+    `ChatGPT attachment processing did not complete for ${expectedNames.filter(Boolean).join(", ") || "the selected file"}`,
+  );
 }
 
 function verificationError(kind, requested, items = [], invalid = false) {
@@ -552,10 +863,13 @@ module.exports = {
   normalizeChatGPTModelChoice,
   resolveChatGPTEffortMenuOption,
   resolveChatGPTModelMenuOption,
+  selectChatTab,
   selectEffort,
+  selectGitHubTool,
   selectModel,
   verifyChatGPTEffortSelection,
   verifyChatGPTModelSelection,
+  waitForChatGPTAttachment,
   typePrompt,
   waitForPageLoad,
   waitForPromptReady,

@@ -11,10 +11,13 @@ const {
   resolveChatGPTEffortMenuOption,
   resolveChatGPTModelMenuOption,
   selectEffort,
+  selectChatTab,
+  selectGitHubTool,
   selectModel,
   typePrompt,
   verifyChatGPTEffortSelection,
   verifyChatGPTModelSelection,
+  waitForChatGPTAttachment,
   waitForPageLoad,
   waitForPromptReady,
 } = require("./chatgpt-client-ui.cjs");
@@ -32,6 +35,12 @@ const {
 
 const CHATGPT_URL = "https://chatgpt.com/";
 const RESPONSE_STARTED_AT = Symbol("responseStartedAt");
+const ATTACHMENT_ERROR_CODES = new Set([
+  "attachment_chooser_interception",
+  "attachment_file_access",
+  "attachment_processing",
+  "attachment_selector_drift",
+]);
 
 function hasRequiredCookies(cookies) {
   if (!cookies || !Array.isArray(cookies)) return false;
@@ -93,6 +102,7 @@ async function dispatch(options) {
     cdpEvaluate,
     cdpCommand,
     uploadFile,
+    github = false,
     beforeSubmit,
     afterSubmit,
     startUrl,
@@ -141,6 +151,12 @@ async function dispatch(options) {
       throw codedError("ChatGPT login required", "auth");
     }
     log("Login verified");
+    if (github) {
+      await selectChatTab(cdp, 10000, signal);
+      log("Verified Chat tab");
+      await selectGitHubTool(cdp, 10000, signal);
+      log("Verified GitHub tool");
+    }
     const promptReady = await waitForPromptReady(cdp, 30000, signal);
     if (!promptReady) {
       throw new Error("Prompt textarea not ready");
@@ -154,22 +170,46 @@ async function dispatch(options) {
     }
     if (file) {
       if (!uploadFile) {
-        throw new Error(
+        throw codedError(
           "ChatGPT file upload unavailable: native host did not provide upload callback",
+          "attachment_chooser_interception",
         );
       }
       const files = Array.isArray(file) ? file : [file];
       const absFiles = files.map((filePath) => path.resolve(process.cwd(), filePath));
       log(`Uploading ${absFiles.length} file(s) to ChatGPT...`);
-      const uploadResult = await guardedUploadFile(tabId, absFiles);
+      let uploadResult;
+      try {
+        uploadResult = await guardedUploadFile(tabId, absFiles);
+      } catch (error) {
+        throw classifyError(
+          error,
+          "attachment_chooser_interception",
+          ["attachment_file_access", "attachment_processing", "attachment_selector_drift", "attachment_chooser_interception"],
+        );
+      }
       if (uploadResult?.error) {
-        throw new Error(`ChatGPT file upload failed: ${uploadResult.error}`);
+        const uploadCode = ATTACHMENT_ERROR_CODES.has(uploadResult.errorCode)
+          ? uploadResult.errorCode
+          : "attachment_chooser_interception";
+        throw codedError(
+          `ChatGPT file upload failed: ${uploadResult.error}`,
+          uploadCode,
+        );
       }
       if (!uploadResult?.success) {
-        throw new Error("ChatGPT file upload failed: upload did not report success");
+        throw codedError(
+          "ChatGPT attachment processing failed: upload did not report success",
+          "attachment_processing",
+        );
       }
       log("File uploaded, waiting for ChatGPT attachment processing...");
       await delay(1500, signal);
+      try {
+        await waitForChatGPTAttachment(cdp, absFiles, 30000, signal);
+      } catch (error) {
+        throw classifyError(error, "attachment_processing", ["attachment_processing"]);
+      }
     }
     await typePrompt(cdp, inputCdp, prompt, signal);
     log("Prompt typed");
@@ -201,6 +241,17 @@ async function dispatch(options) {
     throw classifyError(error, "dispatch_failed", [
       "auth",
       "cloudflare",
+      "attachment_chooser_interception",
+      "attachment_file_access",
+      "attachment_processing",
+      "attachment_selector_drift",
+      "chat_mode_selection_failed",
+      "chat_mode_selector_drift",
+      "chat_mode_unavailable",
+      "github_tool_disconnected",
+      "github_tool_missing",
+      "github_tool_selection_failed",
+      "github_tool_selector_drift",
       "model_verification_failed",
     ]);
   }
@@ -353,5 +404,8 @@ module.exports = {
   extractConversationUrl,
   verifyChatGPTEffortSelection,
   verifyChatGPTModelSelection,
+  selectChatTab,
+  selectGitHubTool,
+  waitForChatGPTAttachment,
   CHATGPT_URL,
 };
