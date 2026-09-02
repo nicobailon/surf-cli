@@ -40,6 +40,7 @@ const COMMANDS = {
   "session.ensure": { primaryArg: "name", effect: "navigation", recordable: false, argKinds: { name: "name", url: "url" } },
   "session.list": { effect: "read", recordable: false },
   "session.info": { primaryArg: "name", effect: "read", recordable: false, argKinds: { name: "name" } },
+  "session.cleanup": { effect: "page-write", recordable: false, argKinds: { "idle-after": "duration" } },
   "session.close": { primaryArg: "name", effect: "page-write", recordable: false, argKinds: { name: "name" } },
   "session.rebind": { primaryArg: "name", effect: "page-write", recordable: false, argKinds: { name: "name", tabId: "tab-id" } },
   "session.reopen": { primaryArg: "name", effect: "navigation", recordable: false, argKinds: { name: "name", url: "url" } },

@@ -51,7 +51,7 @@ function formatToolContent(result, log = () => {}, options = {}) {
   
   if (!result) return text("OK");
 
-  if (result.session || Array.isArray(result.sessions) || Object.hasOwn(result, "targetClosed")) {
+  if (result.session || Array.isArray(result.sessions) || Array.isArray(result.removed) || Object.hasOwn(result, "targetClosed")) {
     return text(JSON.stringify(result, null, 2));
   }
   

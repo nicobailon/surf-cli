@@ -9,6 +9,24 @@ const { surfError } = require("./surf-error.cjs");
 
 const STORE_VERSION = 1;
 const SESSION_NAME_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
+const SESSION_DURATION_PATTERN = /^(\d+(?:\.\d+)?)(s|m|h|d)?$/i;
+
+function parseDurationMs(value) {
+  if (typeof value === "boolean" || value === undefined || value === null) {
+    throw new Error("--idle-after requires a positive duration such as 30s, 5m, 1h, or 1d");
+  }
+  const match = String(value).trim().match(SESSION_DURATION_PATTERN);
+  if (!match) {
+    throw new Error("--idle-after must be a duration such as 30s, 5m, 1h, or 1d (plain seconds are also accepted)");
+  }
+  const amount = Number(match[1]);
+  const multiplier = { s: 1000, m: 60000, h: 3600000, d: 86400000 }[(match[2] || "s").toLowerCase()];
+  const milliseconds = amount * multiplier;
+  if (!Number.isFinite(milliseconds) || milliseconds <= 0) {
+    throw new Error("--idle-after must be a positive duration");
+  }
+  return Math.max(1, Math.round(milliseconds));
+}
 
 function normalizeName(name) {
   return String(name || "").toLowerCase();
@@ -114,6 +132,7 @@ class BrowserSessionStore {
       browserEpoch: identity.browserEpoch,
       createdAt: timestamp,
       updatedAt: timestamp,
+      lastAccessedAt: values.lastAccessedAt || timestamp,
       lastValidatedAt: values.lastValidatedAt || timestamp,
     };
     bucket.sessions[key] = record;
@@ -137,6 +156,7 @@ class BrowserSessionStore {
       browserEpoch: identity.browserEpoch,
       createdAt: existing?.createdAt || timestamp,
       updatedAt: timestamp,
+      lastAccessedAt: values.lastAccessedAt || timestamp,
       lastValidatedAt: values.lastValidatedAt || timestamp,
     };
     delete record.invalidReason;
@@ -149,7 +169,13 @@ class BrowserSessionStore {
   update(identity, name, patch) {
     const existing = this.get(identity, name);
     if (!existing) throw surfError("session_unknown", `unknown session: ${name}`, { session: name });
-    return this.replace(identity, name, { ...existing, ...patch, updatedAt: this.now() });
+    const timestamp = this.now();
+    return this.replace(identity, name, {
+      ...existing,
+      ...patch,
+      updatedAt: timestamp,
+      lastAccessedAt: patch?.lastAccessedAt || timestamp,
+    });
   }
 
   remove(identity, name) {
@@ -212,7 +238,8 @@ class BrowserSessionStore {
     let changed = false;
     for (const record of Object.values(bucket.sessions || {})) {
       if (record.tabId !== tabId) continue;
-      Object.assign(record, patch, { updatedAt: this.now() });
+      const timestamp = this.now();
+      Object.assign(record, patch, { updatedAt: timestamp, lastAccessedAt: patch?.lastAccessedAt || timestamp });
       changed = true;
     }
     if (changed) this.save(state);
@@ -266,6 +293,7 @@ module.exports = {
   BrowserSessionStore,
   SESSION_NAME_PATTERN,
   STORE_VERSION,
+  parseDurationMs,
   normalizeName,
   validateSessionName,
 };

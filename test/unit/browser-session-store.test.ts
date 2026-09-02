@@ -4,13 +4,14 @@ const { mkdtempSync, rmSync, writeFileSync } = require("node:fs");
 const { tmpdir } = require("node:os");
 const { join } = require("node:path");
 
-const { BrowserSessionStore, validateSessionName } =
+const { BrowserSessionStore, parseDurationMs, validateSessionName } =
   require("../../native/browser-session-store.cjs") as {
     BrowserSessionStore: new (options: {
       filePath: string;
       root: string;
       now?: () => string;
     }) => any;
+    parseDurationMs(value: string | number): number;
     validateSessionName(name: string): string;
   };
 
@@ -38,6 +39,17 @@ function store() {
 const identity = { browserInstanceId: "browser-a", browserEpoch: "epoch-a" };
 
 describe("BrowserSessionStore", () => {
+  it("parses explicit cleanup durations and plain seconds", () => {
+    expect(parseDurationMs("30s")).toBe(30_000);
+    expect(parseDurationMs("5m")).toBe(300_000);
+    expect(parseDurationMs("1h")).toBe(3_600_000);
+    expect(parseDurationMs("2d")).toBe(172_800_000);
+    expect(parseDurationMs(45)).toBe(45_000);
+    expect(() => parseDurationMs("1w")).toThrow(/duration/i);
+    expect(() => parseDurationMs(0)).toThrow(/positive/i);
+    expect(() => parseDurationMs(undefined as never)).toThrow(/requires/i);
+  });
+
   it("persists case-insensitive named bindings without changing their display name", () => {
     const { store: sessions } = store();
     const created = sessions.create(identity, "Research", {
@@ -49,6 +61,7 @@ describe("BrowserSessionStore", () => {
     });
 
     expect(created.name).toBe("Research");
+    expect(created.lastAccessedAt).toBe("2026-08-18T00:00:00.000Z");
     expect(sessions.get(identity, "research")).toMatchObject({ tabId: 11, windowId: 22 });
     expect(() => sessions.create(identity, "RESEARCH", { tabId: 99 })).toThrow(/already exists/i);
   });

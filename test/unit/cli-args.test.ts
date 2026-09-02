@@ -894,6 +894,20 @@ describe("CLI argument parsing", () => {
     });
   });
 
+  it("parses opt-in session.cleanup durations in dotted and spaced forms", async () => {
+    const dotted = await runCli(["session.cleanup", "--idle-after", "5m", "--dry-run"]);
+    expect(dotted.request.params).toEqual({
+      tool: "session.cleanup",
+      args: { "idle-after": "5m", "dry-run": true },
+    });
+
+    const spaced = await runCli(["session", "cleanup", "--idle-after", "120"]);
+    expect(spaced.request.params).toEqual({
+      tool: "session.cleanup",
+      args: { "idle-after": 120 },
+    });
+  });
+
   it("sends explicit session selection and no-wait admission outside tool args", async () => {
     const { request } = await runCli(["--session", "research", "page.read", "--no-wait"]);
 

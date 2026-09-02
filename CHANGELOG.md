@@ -2,6 +2,9 @@
 
 ## [Unreleased]
 
+### Added
+- **One-shot session cleanup** - Added opt-in `surf session.cleanup --idle-after <duration> [--dry-run]` to remove gone or idle session bindings, closing only inactive Surf-created targets. Reported by @marcoatpaladin in #233.
+
 ## [2.17.0] - 2026-08-28
 
 ### Highlights

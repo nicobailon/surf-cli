@@ -57,6 +57,10 @@ type NativeMessage = Record<string, unknown> & {
   fullpage?: boolean;
 };
 
+type FakeHostOptions = {
+  targetActive?: boolean;
+};
+
 type CliResult = {
   code: number | null;
   stdout: string;
@@ -76,8 +80,9 @@ const { spawn } = require("node:child_process") as {
 const fs = require("node:fs") as {
   mkdirSync(targetPath: string, options: { recursive: boolean }): void;
   mkdtempSync(prefix: string): string;
+  readFileSync(targetPath: string, encoding: "utf8"): string;
   rmSync(targetPath: string, options: { recursive: boolean; force: boolean }): void;
-  writeFileSync(targetPath: string, content: string): void;
+  writeFileSync(targetPath: string, content: string, options?: { mode?: number }): void;
 };
 const os = require("node:os") as { tmpdir(): string };
 const path = require("node:path") as { join(...paths: string[]): string };
@@ -113,7 +118,7 @@ function writeNativeMessage(stdin: WritableLike, message: NativeMessage) {
   stdin.write(BufferCtor.concat([header, BufferCtor.from(json, "utf8")]));
 }
 
-function buildExtensionResponse(message: NativeMessage, currentUrl: string) {
+function buildExtensionResponse(message: NativeMessage, currentUrl: string, targetActive: boolean) {
   switch (message.type) {
     case "TARGET_RESOLVE":
     case "TARGET_INSPECT":
@@ -123,9 +128,11 @@ function buildExtensionResponse(message: NativeMessage, currentUrl: string) {
         windowId: 7,
         title: "Contract Fixture",
         url: currentUrl,
-        active: true,
+        active: targetActive,
         restricted: false,
       };
+    case "SESSION_CLOSE_TARGET":
+      return { id: message.id, success: true, tabId: message.tabId };
     case "LIST_TABS":
       return {
         id: message.id,
@@ -175,7 +182,7 @@ function buildExtensionResponse(message: NativeMessage, currentUrl: string) {
   }
 }
 
-function startHost(socketPath: string) {
+function startHost(socketPath: string, options: FakeHostOptions = {}) {
   const hostPath = path.join(process.cwd(), "native", "host.cjs");
   const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), "surf-e2e-state-"));
   tempDirs.push(stateDir);
@@ -188,6 +195,7 @@ function startHost(socketPath: string) {
   const waiters: MessageWaiter[] = [];
   let stdoutBuffer = BufferCtor.alloc(0);
   let currentUrl = "about:blank";
+  const targetActive = options.targetActive !== false;
   let stderr = "";
   let closed = false;
 
@@ -243,7 +251,7 @@ function startHost(socketPath: string) {
       if (message.type === "EXECUTE_NAVIGATE" && message.url) {
         currentUrl = message.url;
       }
-      writeNativeMessage(child.stdin, buildExtensionResponse(message, currentUrl));
+      writeNativeMessage(child.stdin, buildExtensionResponse(message, currentUrl, targetActive));
     }
   });
 
@@ -261,6 +269,7 @@ function startHost(socketPath: string) {
 
   return {
     child,
+    stateDir,
     messages,
     waitForMessage(
       predicate: (message: NativeMessage) => boolean,
@@ -350,6 +359,48 @@ afterEach(() => {
     fs.rmSync(tempDir, { recursive: true, force: true });
   }
 });
+
+function seedOldSession(stateDir: string, ownership = "surf-created") {
+  const browserEpoch = `contract-epoch-${process.pid}`;
+  fs.writeFileSync(
+    path.join(stateDir, "browser-sessions.json"),
+    JSON.stringify({
+      version: 1,
+      browsers: {
+        "contract-browser": {
+          sessions: {
+            old: {
+              bindingId: "old-binding",
+              name: "old",
+              browserInstanceId: "contract-browser",
+              browserEpoch,
+              tabId: 42,
+              windowId: 7,
+              mode: "window",
+              ownership,
+              lastUrl: "https://fixture.test/old",
+              createdAt: "2000-01-01T00:00:00.000Z",
+              updatedAt: "2000-01-01T00:00:00.000Z",
+              lastAccessedAt: "2000-01-01T00:00:00.000Z",
+              lastValidatedAt: "2000-01-01T00:00:00.000Z",
+            },
+          },
+          namedTabs: {},
+        },
+      },
+    }),
+    { mode: 0o600 },
+  );
+}
+
+function sessionAccessTime(stateDir: string) {
+  const state = JSON.parse(
+    fs.readFileSync(path.join(stateDir, "browser-sessions.json"), "utf8"),
+  ) as {
+    browsers: { "contract-browser": { sessions: { old: { lastAccessedAt?: string } } } };
+  };
+  return state.browsers["contract-browser"].sessions.old.lastAccessedAt;
+}
 
 describe("CLI/native-host/fake-extension E2E contract", () => {
   it("runs browser-like navigation, page text, and screenshot flows without Chrome", async () => {
@@ -469,6 +520,111 @@ describe("CLI/native-host/fake-extension E2E contract", () => {
       expect(host.messages.filter((message) => message.type === "EXECUTE_JAVASCRIPT")).toHaveLength(
         2,
       );
+    } finally {
+      await host.dispose();
+    }
+  });
+
+  it("removes an old live Surf-created session and its target", async () => {
+    const socketPath = createSocketPath();
+    const host = startHost(socketPath, { targetActive: false });
+
+    try {
+      await host.waitForMessage((message) => message.type === "HOST_READY");
+      seedOldSession(host.stateDir);
+
+      const cleanup = await runCli(socketPath, ["session.cleanup", "--idle-after", "1s", "--json"]);
+      expect(cleanup).toMatchObject({ code: 0, stderr: "" });
+      expect(JSON.parse(cleanup.stdout)).toMatchObject({
+        dryRun: false,
+        removed: [{ name: "old", targetAction: "close", targetClosed: true }],
+      });
+      expect(host.messages).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ type: "SESSION_CLOSE_TARGET", tabId: 42 }),
+        ]),
+      );
+
+      const listed = await runCli(socketPath, ["session.list", "--json"]);
+      expect(JSON.parse(listed.stdout).sessions).toEqual([]);
+    } finally {
+      await host.dispose();
+    }
+  });
+
+  it("keeps an old session and target during cleanup dry-run", async () => {
+    const socketPath = createSocketPath();
+    const host = startHost(socketPath, { targetActive: false });
+
+    try {
+      await host.waitForMessage((message) => message.type === "HOST_READY");
+      seedOldSession(host.stateDir);
+
+      const cleanup = await runCli(socketPath, [
+        "session.cleanup",
+        "--idle-after",
+        "1s",
+        "--dry-run",
+        "--json",
+      ]);
+      expect(cleanup).toMatchObject({ code: 0, stderr: "" });
+      expect(JSON.parse(cleanup.stdout)).toMatchObject({
+        dryRun: true,
+        removed: [{ name: "old", targetAction: "close", targetClosed: true }],
+      });
+      expect(host.messages.some((message) => message.type === "SESSION_CLOSE_TARGET")).toBe(false);
+
+      const listed = await runCli(socketPath, ["session.list", "--json"]);
+      expect(JSON.parse(listed.stdout).sessions).toHaveLength(1);
+    } finally {
+      await host.dispose();
+    }
+  });
+
+  it("removes an idle adopted binding without closing its target", async () => {
+    const socketPath = createSocketPath();
+    const host = startHost(socketPath, { targetActive: false });
+
+    try {
+      await host.waitForMessage((message) => message.type === "HOST_READY");
+      seedOldSession(host.stateDir, "adopted");
+
+      const cleanup = await runCli(socketPath, ["session.cleanup", "--idle-after", "1s", "--json"]);
+      expect(cleanup).toMatchObject({ code: 0, stderr: "" });
+      expect(JSON.parse(cleanup.stdout)).toMatchObject({
+        removed: [{ name: "old", ownership: "adopted", targetAction: "keep", targetClosed: false }],
+      });
+      expect(host.messages.some((message) => message.type === "SESSION_CLOSE_TARGET")).toBe(false);
+
+      const listed = await runCli(socketPath, ["session.list", "--json"]);
+      expect(JSON.parse(listed.stdout).sessions).toEqual([]);
+    } finally {
+      await host.dispose();
+    }
+  });
+
+  it("does not refresh idle activity during list/info validation", async () => {
+    const socketPath = createSocketPath();
+    const host = startHost(socketPath, { targetActive: false });
+
+    try {
+      await host.waitForMessage((message) => message.type === "HOST_READY");
+      seedOldSession(host.stateDir);
+      const originalAccessTime = sessionAccessTime(host.stateDir);
+
+      const listed = await runCli(socketPath, ["session.list", "--refresh", "--json"]);
+      expect(listed.code).toBe(0);
+      expect(sessionAccessTime(host.stateDir)).toBe(originalAccessTime);
+
+      const info = await runCli(socketPath, ["session.info", "old", "--refresh", "--json"]);
+      expect(info.code).toBe(0);
+      expect(sessionAccessTime(host.stateDir)).toBe(originalAccessTime);
+
+      const cleanup = await runCli(socketPath, ["session.cleanup", "--idle-after", "1s", "--json"]);
+      expect(cleanup.code).toBe(0);
+      expect(JSON.parse(cleanup.stdout).removed).toMatchObject([
+        { name: "old", reason: "idle", targetAction: "close" },
+      ]);
     } finally {
       await host.dispose();
     }

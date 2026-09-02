@@ -10,6 +10,10 @@ describe("tool scope classification", () => {
       scope: "browser-write",
       targetUse: "browser",
     });
+    expect(classifyTool("session.cleanup")).toMatchObject({
+      scope: "browser-write",
+      targetUse: "browser",
+    });
     expect(classifyTool("session.info")).toMatchObject({ scope: "host", targetUse: "host" });
     expect(classifyTool("session.info", { refresh: true })).toMatchObject({
       scope: "browser-read",

@@ -313,6 +313,14 @@ const TOOLS = {
         args: [],
         opts: { refresh: "Validate every binding against Chrome" },
       },
+      "session.cleanup": {
+        desc: "Remove idle session bindings and close only Surf-created targets",
+        args: [],
+        opts: {
+          "idle-after": "Required threshold such as 30s, 5m, 1h, or 1d",
+          "dry-run": "Report matches without removing bindings or closing targets",
+        },
+      },
       "session.info": {
         desc: "Show one session, target, and scheduler queue state",
         args: ["name"],
@@ -1561,7 +1569,7 @@ Exclude text content:
 };
 
 const ALL_SOCKET_TOOLS = [
-  "session.new", "session.ensure", "session.list", "session.info", "session.close", "session.rebind", "session.reopen",
+  "session.new", "session.ensure", "session.list", "session.cleanup", "session.info", "session.close", "session.rebind", "session.reopen",
   "ai", "screenshot", "record", "animate-audit", "perf-audit", "navigate",
   "form_input", "find_and_type", "autocomplete", "set_value", "smart_type",
   "scroll_to_position", "get_scroll_info", "close_dialogs", "page_state",
@@ -1641,6 +1649,7 @@ Usage: surf <command> [args] [options]
 
 Common Commands:
   session.ensure <name> [url]  Idempotently create or reuse a tab-bound session
+  session.cleanup --idle-after <duration>  Remove idle sessions (opt-in; use --dry-run first)
   navigate <url>     Go to URL (alias: go)
   click <ref>        Click element by ref or selector
   type <text>        Type text at cursor or into element
@@ -1707,6 +1716,7 @@ Device/viewport: surf emulate.device "iPhone 14" | surf resize 375 812
 Cookies: surf cookie list | surf cookie get "name" | surf cookie delete "name"
 Session targeting: surf --session research read | SURF_SESSION=research surf read
 Session status/queue: surf session.info research | surf session.list --refresh
+Session cleanup: surf session.cleanup --idle-after 1h [--dry-run]
 Recovery: run the exact command printed after Recovery: on tab_gone, session_epoch_stale, tab_busy, or browser_busy
 Concurrency: commands for different session tabs can overlap; each tab remains FIFO; provider flows are browser-exclusive
 Doctor: surf doctor --browser all              # native host/socket diagnostics
@@ -2686,6 +2696,7 @@ if (tool === "session" && firstArg) {
     new: "session.new",
     ensure: "session.ensure",
     list: "session.list",
+    cleanup: "session.cleanup",
     info: "session.info",
     close: "session.close",
     rebind: "session.rebind",
@@ -3613,6 +3624,21 @@ async function handleResponse(response) {
           queueSummary(entry.queue),
           entry.lastUrl || "",
         ].join("\t"));
+      }
+    }
+  } else if (finalTool === "session.cleanup" && data?.success) {
+    const removed = Array.isArray(data.removed) ? data.removed : [];
+    if (removed.length === 0) {
+      console.log("No browser sessions matched the idle cleanup threshold.");
+    } else {
+      const verb = data.dryRun ? "Would remove" : "Removed";
+      for (const entry of removed) {
+        const target = entry.targetAction === "close"
+          ? "target closed"
+          : entry.targetAction === "keep"
+            ? "target kept"
+            : "target already gone";
+        console.log(`${verb} session ${entry.name} tab=${entry.tabId ?? "-"} (${target})`);
       }
     }
   } else if (finalTool === "session.info" && data?.session) {

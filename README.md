@@ -378,9 +378,13 @@ SURF_SESSION=research surf screenshot               # environment selector
 surf session.list --refresh                         # all bindings + queue state
 surf session.info research --refresh                # target and scheduler details
 surf session.close research                         # closes Surf-created target
+surf session.cleanup --idle-after 1h --dry-run      # preview forgotten sessions
+surf session.cleanup --idle-after 1h                 # remove idle bindings
 surf session.rebind research --tab-id 789            # adopt an existing tab
 surf session.reopen research                         # recreate from last URL
 ```
+
+`session.cleanup` is an explicit, one-shot cleanup operation; `--idle-after` is required. It inspects current bindings first, removes gone or stale records, and removes live inactive bindings older than the threshold. Only Surf-created targets are closed. Adopted targets remain open while their session binding is removed. Use `--dry-run` to report the exact bindings and target actions without changing the store or browser.
 
 Commands for the same session tab run FIFO. Commands for different session tabs can overlap. Browser-wide mutations—such as creating, moving, closing, or focusing tabs/windows and writing cookies—wait for active tab lanes to drain. Add `--no-wait` to return `tab_busy` or `browser_busy` immediately instead of queueing.
 

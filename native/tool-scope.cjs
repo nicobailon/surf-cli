@@ -21,7 +21,7 @@ const BROWSER_READ_TOOLS = new Set([
 ]);
 
 const BROWSER_WRITE_TOOLS = new Set([
-  "session.new", "session.ensure", "session.close", "session.rebind", "session.reopen",
+  "session.new", "session.ensure", "session.cleanup", "session.close", "session.rebind", "session.reopen",
   "tab.new", "new_tab", "tabs_create",
   "tab.move", "tab.switch", "switch_tab",
   "tab.group", "tab.ungroup",

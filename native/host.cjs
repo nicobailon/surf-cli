@@ -49,7 +49,7 @@ const { resolveArgs, runPlaybookOp } = require("./playbook-runtime.cjs");
 const { resolveOp } = require("./playbooks.cjs");
 const { commandMetadata, redactCommandArgs } = require("./workflow-definition.cjs");
 const { BrowserScheduler } = require("./browser-scheduler.cjs");
-const { BrowserSessionStore, validateSessionName } = require("./browser-session-store.cjs");
+const { BrowserSessionStore, parseDurationMs, validateSessionName } = require("./browser-session-store.cjs");
 const { classifyTool } = require("./tool-scope.cjs");
 const { fromExtensionError, surfError } = require("./surf-error.cjs");
 const MAX_CLIENT_FRAME_BYTES = MAX_FRAME_BYTES;
@@ -756,11 +756,13 @@ async function resolveSessionTarget(request, identity, name) {
       recoveryCommand: `surf session.rebind ${record.name} --tab-id ${record.tabId} --replace`,
     });
   }
+  const accessedAt = new Date().toISOString();
   const updated = browserSessionStore.replace(identity, record.name, {
     ...record,
     lastUrl: inspected.url || record.lastUrl,
     lastTitle: inspected.title || record.lastTitle,
-    lastValidatedAt: new Date().toISOString(),
+    lastAccessedAt: accessedAt,
+    lastValidatedAt: accessedAt,
   });
   return {
     source: "session",
@@ -891,6 +893,7 @@ async function sessionRecordStatus(identity, request, record, refresh = false) {
           ...record,
           lastUrl: inspected.url || record.lastUrl,
           lastTitle: inspected.title || record.lastTitle,
+          lastAccessedAt: record.lastAccessedAt || record.updatedAt || record.createdAt,
           lastValidatedAt: new Date().toISOString(),
         });
       }
@@ -907,6 +910,158 @@ async function sessionRecordStatus(identity, request, record, refresh = false) {
     currentUrl: inspected?.url,
     currentTitle: inspected?.title,
     queue: sessionQueueState(identity, record),
+  };
+}
+
+function sessionActivity(record) {
+  const value = record.lastAccessedAt || record.updatedAt || record.createdAt;
+  if (typeof value !== "string" || !value) return null;
+  const timestamp = Date.parse(value);
+  return Number.isFinite(timestamp) ? { value, timestamp } : null;
+}
+
+function cleanupEntry(record, { reason, targetAction, idleMs, lastAccessedAt, ...details }) {
+  return {
+    name: record.name,
+    tabId: record.tabId,
+    windowId: record.windowId,
+    ownership: record.ownership || "adopted",
+    reason,
+    targetAction,
+    targetClosed: targetAction === "close",
+    ...(lastAccessedAt ? { lastAccessedAt } : {}),
+    ...(idleMs !== undefined ? { idleMs } : {}),
+    ...details,
+  };
+}
+
+async function cleanupBrowserSessions(identity, request, args) {
+  const rawIdleAfter = args["idle-after"];
+  const idleAfterMs = parseDurationMs(rawIdleAfter);
+  const dryRun = args["dry-run"] === true;
+  const now = Date.now();
+  const records = browserSessionStore.list(identity);
+  const operations = [];
+  const retained = [];
+  let inspected = 0;
+
+  for (const record of records) {
+    const activity = sessionActivity(record);
+    const common = {
+      lastAccessedAt: activity?.value || record.lastAccessedAt || record.updatedAt || record.createdAt,
+    };
+
+    if (record.browserEpoch !== identity.browserEpoch) {
+      operations.push({
+        record,
+        closeTarget: false,
+        entry: cleanupEntry(record, { ...common, reason: "epoch-stale", targetAction: "already-gone" }),
+      });
+      continue;
+    }
+
+    if (record.invalidReason === "tab_gone" || record.invalidReason === "window_gone") {
+      operations.push({
+        record,
+        closeTarget: false,
+        entry: cleanupEntry(record, { ...common, reason: "target-gone", targetAction: "already-gone" }),
+      });
+      continue;
+    }
+
+    if (record.invalidReason) {
+      retained.push(cleanupEntry(record, { ...common, reason: "invalid", targetAction: "kept" }));
+      continue;
+    }
+
+    let inspectedTarget;
+    try {
+      inspectedTarget = await inspectBrowserTab(request, record.tabId);
+      inspected += 1;
+    } catch (error) {
+      if (error?.code === "tab_gone") {
+        operations.push({
+          record,
+          closeTarget: false,
+          entry: cleanupEntry(record, { ...common, reason: "target-gone", targetAction: "already-gone" }),
+        });
+        continue;
+      }
+      throw error;
+    }
+
+    if (record.windowId && inspectedTarget.windowId !== record.windowId) {
+      retained.push(cleanupEntry(record, {
+        ...common,
+        reason: "binding-mismatch",
+        targetAction: "kept",
+        currentWindowId: inspectedTarget.windowId,
+      }));
+      continue;
+    }
+
+    if (inspectedTarget.active !== false) {
+      retained.push(cleanupEntry(record, { ...common, reason: "active", targetAction: "kept" }));
+      continue;
+    }
+
+    if (!activity || now <= activity.timestamp) {
+      retained.push(cleanupEntry(record, { ...common, reason: "activity-unknown", targetAction: "kept" }));
+      continue;
+    }
+
+    const idleMs = now - activity.timestamp;
+    if (idleMs <= idleAfterMs) {
+      retained.push(cleanupEntry(record, { ...common, reason: "not-idle", targetAction: "kept", idleMs }));
+      continue;
+    }
+
+    const closeTarget = record.ownership === "surf-created";
+    operations.push({
+      record,
+      closeTarget,
+      entry: cleanupEntry(record, {
+        ...common,
+        reason: "idle",
+        targetAction: closeTarget ? "close" : "keep",
+        idleMs,
+      }),
+    });
+  }
+
+  if (!dryRun) {
+    for (const operation of operations) {
+      if (operation.closeTarget) {
+        try {
+          const result = await requestExtensionOrThrow(request, "session.cleanup", {
+            type: "SESSION_CLOSE_TARGET",
+            tabId: operation.record.tabId,
+          }, 30000, true);
+          if (result?.alreadyGone === true) {
+            operation.entry.targetAction = "already-gone";
+            operation.entry.targetClosed = false;
+            operation.entry.reason = "target-gone";
+          }
+        } catch (error) {
+          if (error?.code !== "tab_gone") throw error;
+          operation.entry.targetAction = "already-gone";
+          operation.entry.targetClosed = false;
+          operation.entry.reason = "target-gone";
+        }
+      }
+      browserSessionStore.remove(identity, operation.record.name);
+    }
+  }
+
+  return {
+    success: true,
+    dryRun,
+    idleAfter: String(rawIdleAfter).trim(),
+    idleAfterMs,
+    scanned: records.length,
+    inspected,
+    removed: operations.map(({ entry }) => entry),
+    retained,
   };
 }
 
@@ -931,6 +1086,7 @@ async function createSessionBinding(request, identity, name, args, previous = nu
       browserEpoch: identity.browserEpoch,
       mode,
       ownership: "surf-created",
+      lastAccessedAt: new Date().toISOString(),
       lastUrl: created.url || url,
       lastTitle: created.title,
       groupId: created.groupId,
@@ -953,7 +1109,7 @@ async function createSessionBinding(request, identity, name, args, previous = nu
 async function handleBrowserSessionCommand(tool, args, request) {
   const identity = await requireBrowserIdentity();
   const name = args.name;
-  if (tool !== "session.list") validateSessionName(name);
+  if (tool !== "session.list" && tool !== "session.cleanup") validateSessionName(name);
 
   if (tool === "session.new") {
     if (browserSessionStore.get(identity, name)) {
@@ -990,6 +1146,10 @@ async function handleBrowserSessionCommand(tool, args, request) {
     const sessions = [];
     for (const record of records) sessions.push(await sessionRecordStatus(identity, request, record, args.refresh === true));
     return { sessions, browser: identity, scheduler: browserScheduler.stats() };
+  }
+
+  if (tool === "session.cleanup") {
+    return cleanupBrowserSessions(identity, request, args);
   }
 
   const existing = browserSessionStore.get(identity, name);
@@ -1047,6 +1207,7 @@ async function handleBrowserSessionCommand(tool, args, request) {
       browserEpoch: identity.browserEpoch,
       mode: "tab",
       ownership: "adopted",
+      lastAccessedAt: new Date().toISOString(),
       lastUrl: inspected.url,
       lastTitle: inspected.title,
       frameContext: null,
