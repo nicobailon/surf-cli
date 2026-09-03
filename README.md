@@ -146,6 +146,8 @@ surf remote list
 
 `surf install --listen` persists the explicit Tailnet address in the native-host wrapper. Re-run `surf install` without `--listen` to remove it. The address must be a Tailscale IPv4 or IPv6 address with a port; Surf does not bind every interface. Remote listeners currently require a POSIX browser host and are not supported by Windows native-host wrappers.
 
+For advanced local-only sharing, `surf install <extension-id> --socket-mode 660 --socket-group <group>` persists an opt-in group-owned socket. The default remains mode `600`; mode `660` gives every account in that group full Surf authority, so use a dedicated narrow group. Re-run `surf install` without these flags to clear persisted socket settings. Remote Surf credentials remain the revocable per-client alternative.
+
 Keep Tailscale policy restrictions as defense in depth. For example:
 
 ```json
@@ -811,6 +813,8 @@ SURF_REMOTE               # Remote Surf endpoint as host:port (overrides SURF_SO
 SURF_REMOTE_CREDENTIAL    # Client Ed25519 credential for the selected remote endpoint
 SURF_REMOTE_STATE_DIR     # Host identity/authorization directory (default: ~/.surf/remote)
 SURF_LISTEN               # Native-host Tailnet bind address as <tailscale-ip>:<port>
+SURF_SOCKET_MODE          # Advanced POSIX local socket mode: 600 (default) or 660
+SURF_SOCKET_GROUP         # Group name or numeric gid required with mode 660
 SURF_NODE_PATH            # Path to node binary (for native host wrapper)
 SURF_HOST_PATH            # Path to native/host.cjs (for native host wrapper)
 SURF_EXTENSION_PATH       # Path to extension dist/ directory
@@ -824,6 +828,7 @@ SURF_EXTENSION_PATH       # Path to extension dist/ directory
 - `SURF_REMOTE_CREDENTIAL`: Credential used for mutual remote authentication. `--remote-credential <path>` overrides it.
 - `SURF_REMOTE_STATE_DIR`: Advanced host-side override for the mode-0700 identity and client registry directory.
 - `SURF_LISTEN`: Native-host listener address on the browser machine. Use `surf install ... --listen <tailscale-ip>:<port>` to persist it in that host's wrapper.
+- `SURF_SOCKET_MODE` / `SURF_SOCKET_GROUP`: Advanced POSIX native-host settings. Use `surf install ... --socket-mode 660 --socket-group <group>` to persist group access; mode `660` grants full Surf authority to every member of that group.
 - `SURF_NODE_PATH` / `SURF_HOST_PATH`: Package manager installs (e.g., Nix) that store binaries in non-standard locations
 - `SURF_EXTENSION_PATH`: Package managers that create stable symlinks instead of changing paths on reinstall
 

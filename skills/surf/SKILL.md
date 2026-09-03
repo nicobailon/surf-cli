@@ -15,6 +15,8 @@ On macOS, Chrome reads the native messaging manifest at `~/Library/Application S
 
 If a command reports `Socket connect failed`, run `surf doctor` first, then check the `Attempted socket:` line. Default sockets are `/tmp/surf.sock` on macOS/Linux/WSL2 and `//./pipe/surf` on Windows. If `SURF_SOCKET` is set, the browser-launched host and the shell running `surf` must use the same value.
 
+For opt-in POSIX group sharing, install with `surf install <extension-id> --socket-mode 660 --socket-group <group>`. The default remains `0600`; mode `660` grants every member of that group full Surf authority, so use a dedicated narrow group. Re-run `surf install` without those flags to clear the wrapper settings. Remote Surf credentials remain the revocable per-client alternative.
+
 ## Remote Surf
 
 Remote clients require a per-client credential; Tailnet reachability alone is not authorization. On the POSIX browser host, authorize the client before installing the listener:

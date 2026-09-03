@@ -50,6 +50,7 @@ const { resolveOp } = require("./playbooks.cjs");
 const { commandMetadata, redactCommandArgs } = require("./workflow-definition.cjs");
 const { BrowserScheduler } = require("./browser-scheduler.cjs");
 const { BrowserSessionStore, parseDurationMs, validateSessionName } = require("./browser-session-store.cjs");
+const { applySocketPermissions, resolveSocketPermissions } = require("./socket-permissions.cjs");
 const { classifyTool } = require("./tool-scope.cjs");
 const { fromExtensionError, surfError } = require("./surf-error.cjs");
 const MAX_CLIENT_FRAME_BYTES = MAX_FRAME_BYTES;
@@ -61,7 +62,15 @@ if (IS_WIN) { try { fs.mkdirSync(SURF_TMP, { recursive: true }); } catch {} }
 // The endpoint passed here is already validated by the caller. Keeping this
 // lifecycle separate lets tests use an ephemeral loopback port without adding
 // a localhost escape hatch to SURF_LISTEN parsing.
-function createListenerLifecycle({ localPath, tcpEndpoint, handler, onReady, onFatal }) {
+function createListenerLifecycle({
+  localPath,
+  tcpEndpoint,
+  handler,
+  onReady,
+  onFatal,
+  socketMode = process.env.SURF_SOCKET_MODE,
+  socketGroup = process.env.SURF_SOCKET_GROUP,
+}) {
   const localServer = net.createServer(handler);
   const tcpServer = tcpEndpoint ? net.createServer(handler) : null;
   let shuttingDown = false;
@@ -85,9 +94,10 @@ function createListenerLifecycle({ localPath, tcpEndpoint, handler, onReady, onF
     if (startPromise) return startPromise;
     startPromise = (async () => {
       try {
+        const socketPermissions = IS_WIN ? null : resolveSocketPermissions(socketMode, socketGroup);
         await listen(localServer, localPath);
         if (shuttingDown) return false;
-        if (!IS_WIN) { try { fs.chmodSync(localPath, 0o600); } catch {} }
+        if (!IS_WIN) applySocketPermissions(localPath, socketPermissions);
         if (tcpServer) {
           await listen(tcpServer, tcpEndpoint);
           if (shuttingDown) return false;

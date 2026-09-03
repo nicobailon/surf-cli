@@ -2024,12 +2024,17 @@ Options:
                   On WSL2, auto installs for Windows Chrome. Use linux for WSLg/Linux browsers.
   --listen <tailscale-ip>:<port>
                   Requires surf remote authorize <label> --output <path> first.
+  --socket-mode <600|660>
+                  Persist the local POSIX socket mode (default: 600); 660 requires --socket-group.
+  --socket-group <group-or-gid>
+                  Persist the local POSIX socket group for mode 660.
 
 Examples:
   surf install hnfbepgmaoklhekckbpjnleifhahkcpl
   surf install hnfbepgmaoklhekckbpjnleifhahkcpl --browser brave
   surf install hnfbepgmaoklhekckbpjnleifhahkcpl --browser all
   surf install hnfbepgmaoklhekckbpjnleifhahkcpl --target linux
+  surf install hnfbepgmaoklhekckbpjnleifhahkcpl --socket-mode 660 --socket-group surf
 `);
     process.exit(0);
   }

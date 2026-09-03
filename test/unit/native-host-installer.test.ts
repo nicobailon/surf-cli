@@ -15,8 +15,14 @@ const {
   createWrapper,
   writeManifest,
   assertListenTargetSupported,
+  assertSocketAccessTargetSupported,
 } = require("../../scripts/install-native-host.cjs");
 const { parseListenEndpoint } = require("../../native/listener.cjs");
+const {
+  normalizeSocketConfig,
+  parseSocketMode,
+  validateSocketGroup,
+} = require("../../native/socket-permissions.cjs");
 
 const extensionA = "abcdefghijklmnopabcdefghijklmnop";
 const extensionB = "bcdefghijklmnopabcdefghijklmnopa";
@@ -25,9 +31,11 @@ function makeTempDir() {
   return fs.mkdtempSync(path.join(os.tmpdir(), "surf-native-host-test-"));
 }
 
-function envWithoutListen() {
+function envWithoutPersistedSettings() {
   const env = { ...process.env };
   env.SURF_LISTEN = undefined;
+  env.SURF_SOCKET_MODE = undefined;
+  env.SURF_SOCKET_GROUP = undefined;
   return env;
 }
 
@@ -40,6 +48,25 @@ describe("native host installer", () => {
     expect(result.status).toBe(0);
     expect(result.stdout).toContain("--listen <tailscale-ip>:<port>");
     expect(result.stdout).toContain("Tailnet-only listener endpoint");
+    expect(result.stdout).toContain("--socket-mode <600|660>");
+    expect(result.stdout).toContain("--socket-group <group-or-gid>");
+  });
+
+  it("accepts only the private socket modes and safe group values", () => {
+    expect(parseSocketMode(undefined)).toBe(0o600);
+    expect(parseSocketMode(600)).toBe(0o600);
+    expect(parseSocketMode(660)).toBe(0o660);
+    expect(parseSocketMode("600")).toBe(0o600);
+    expect(parseSocketMode("0660")).toBe(0o660);
+    expect(() => parseSocketMode("664")).toThrow(/600 or 660/);
+    expect(() => parseSocketMode("777")).toThrow(/600 or 660/);
+    expect(() => parseSocketMode("6000")).toThrow(/600 or 660/);
+    expect(validateSocketGroup("surf")).toBe("surf");
+    expect(validateSocketGroup("1000")).toBe("1000");
+    expect(() => validateSocketGroup("surf;id")).toThrow(/group/i);
+    expect(() => validateSocketGroup(null)).toThrow(/group/i);
+    expect(() => normalizeSocketConfig("660", undefined)).toThrow(/requires/i);
+    expect(() => assertSocketAccessTargetSupported("660", "surf", "win32")).toThrow(/POSIX/i);
   });
 
   it("merges manifest allowed_origins without dropping existing fields", () => {
@@ -81,7 +108,7 @@ describe("native host installer", () => {
     const hostPath = path.join(tempDir, "host.cjs");
     fs.writeFileSync(
       hostPath,
-      "process.stdout.write(JSON.stringify({ listen: process.env.SURF_LISTEN, args: process.argv.slice(2) }));",
+      "process.stdout.write(JSON.stringify({ listen: process.env.SURF_LISTEN, mode: process.env.SURF_SOCKET_MODE, group: process.env.SURF_SOCKET_GROUP, args: process.argv.slice(2) }));",
     );
 
     const nativeWrapperPath = createWrapper(tempDir, nodePath, hostPath, "linux");
@@ -92,9 +119,14 @@ describe("native host installer", () => {
       expect(nativeWrapperContent).toContain(`"${hostPath}" "$@"`);
       const persisted = spawnSync(nativeWrapperPath, ["one"], {
         encoding: "utf8",
-        env: envWithoutListen(),
+        env: envWithoutPersistedSettings(),
       });
-      expect(JSON.parse(persisted.stdout)).toEqual({ listen: undefined, args: ["one"] });
+      expect(JSON.parse(persisted.stdout)).toEqual({
+        listen: undefined,
+        mode: undefined,
+        group: undefined,
+        args: ["one"],
+      });
 
       const configuredWrapper = createWrapper(
         tempDir,
@@ -105,22 +137,78 @@ describe("native host installer", () => {
       );
       const defaulted = spawnSync(configuredWrapper, ["two"], {
         encoding: "utf8",
-        env: envWithoutListen(),
+        env: envWithoutPersistedSettings(),
       });
-      expect(JSON.parse(defaulted.stdout)).toEqual({ listen: "100.64.1.2:4321", args: ["two"] });
+      expect(JSON.parse(defaulted.stdout)).toEqual({
+        listen: "100.64.1.2:4321",
+        mode: undefined,
+        group: undefined,
+        args: ["two"],
+      });
       const overridden = spawnSync(configuredWrapper, ["three"], {
         encoding: "utf8",
-        env: { ...envWithoutListen(), SURF_LISTEN: "100.64.1.3:4321" },
+        env: { ...envWithoutPersistedSettings(), SURF_LISTEN: "100.64.1.3:4321" },
       });
-      expect(JSON.parse(overridden.stdout)).toEqual({ listen: "100.64.1.3:4321", args: ["three"] });
+      expect(JSON.parse(overridden.stdout)).toEqual({
+        listen: "100.64.1.3:4321",
+        mode: undefined,
+        group: undefined,
+        args: ["three"],
+      });
+
+      const socketConfiguredWrapper = createWrapper(
+        tempDir,
+        nodePath,
+        hostPath,
+        "linux",
+        undefined,
+        "660",
+        "surf",
+      );
+      const socketDefaulted = spawnSync(socketConfiguredWrapper, ["four"], {
+        encoding: "utf8",
+        env: envWithoutPersistedSettings(),
+      });
+      expect(JSON.parse(socketDefaulted.stdout)).toEqual({
+        listen: undefined,
+        mode: "660",
+        group: "surf",
+        args: ["four"],
+      });
+      const socketOverridden = spawnSync(socketConfiguredWrapper, ["five"], {
+        encoding: "utf8",
+        env: {
+          ...envWithoutPersistedSettings(),
+          SURF_SOCKET_MODE: "600",
+          SURF_SOCKET_GROUP: "other",
+        },
+      });
+      expect(JSON.parse(socketOverridden.stdout)).toEqual({
+        listen: undefined,
+        mode: "600",
+        group: "other",
+        args: ["five"],
+      });
 
       const reinstalled = createWrapper(tempDir, nodePath, hostPath, "linux");
       expect(fs.readFileSync(reinstalled, "utf8")).not.toContain("SURF_LISTEN");
-      const inherited = spawnSync(reinstalled, ["four"], {
+      expect(fs.readFileSync(reinstalled, "utf8")).not.toContain("SURF_SOCKET_MODE");
+      expect(fs.readFileSync(reinstalled, "utf8")).not.toContain("SURF_SOCKET_GROUP");
+      const inherited = spawnSync(reinstalled, ["six"], {
         encoding: "utf8",
-        env: { ...envWithoutListen(), SURF_LISTEN: "100.64.1.4:4321" },
+        env: {
+          ...envWithoutPersistedSettings(),
+          SURF_LISTEN: "100.64.1.4:4321",
+          SURF_SOCKET_MODE: "660",
+          SURF_SOCKET_GROUP: "inherited",
+        },
       });
-      expect(JSON.parse(inherited.stdout)).toEqual({ listen: "100.64.1.4:4321", args: ["four"] });
+      expect(JSON.parse(inherited.stdout)).toEqual({
+        listen: "100.64.1.4:4321",
+        mode: "660",
+        group: "inherited",
+        args: ["six"],
+      });
     }
 
     const cmdPath = createWrapper(tempDir, nodePath, hostPath, "wsl-windows");

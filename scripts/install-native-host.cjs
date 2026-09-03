@@ -4,6 +4,7 @@ const path = require("path");
 const os = require("os");
 const { execFileSync, execSync } = require("child_process");
 const { parseListenEndpoint } = require("../native/listener.cjs");
+const { normalizeSocketConfig } = require("../native/socket-permissions.cjs");
 const { getStateDir, loadHostIdentity, loadRegistry } = require("../native/remote-auth.cjs");
 
 const HOST_NAME = "surf.browser.host";
@@ -166,7 +167,9 @@ function wslPathToWindowsPath(wslPath) {
   }
 }
 
-function createWrapper(wrapperDir, nodePath, hostPath, target = process.platform, listen) {
+function createWrapper(wrapperDir, nodePath, hostPath, target = process.platform, listen, socketMode, socketGroup) {
+  const socketConfig = normalizeSocketConfig(socketMode, socketGroup);
+  assertSocketAccessTargetSupported(socketConfig.mode, socketConfig.group, target);
   fs.mkdirSync(wrapperDir, { recursive: true });
 
   if (target === "wsl-windows") {
@@ -186,9 +189,13 @@ function createWrapper(wrapperDir, nodePath, hostPath, target = process.platform
 
   const shPath = path.join(wrapperDir, "host-wrapper.sh");
   const hostDir = path.dirname(hostPath);
+  const socketEnvironment = [
+    socketConfig.mode === undefined ? "" : `: "\${SURF_SOCKET_MODE:=${socketConfig.mode.toString(8)}}"\nexport SURF_SOCKET_MODE\n`,
+    socketConfig.group === undefined ? "" : `: "\${SURF_SOCKET_GROUP:=${socketConfig.group}}"\nexport SURF_SOCKET_GROUP\n`,
+  ].join("");
   const content = `#!/usr/bin/env bash
 cd "${hostDir}"
-${listen ? `: "\${SURF_LISTEN:=${listen}}"\nexport SURF_LISTEN\n` : ""}exec "${nodePath}" "${hostPath}" "$@"
+${listen ? `: "\${SURF_LISTEN:=${listen}}"\nexport SURF_LISTEN\n` : ""}${socketEnvironment}exec "${nodePath}" "${hostPath}" "$@"
 `;
   fs.writeFileSync(shPath, content);
   fs.chmodSync(shPath, "755");
@@ -198,6 +205,12 @@ ${listen ? `: "\${SURF_LISTEN:=${listen}}"\nexport SURF_LISTEN\n` : ""}exec "${n
 function assertListenTargetSupported(listen, target) {
   if (listen && (target === "win32" || target === "wsl-windows")) {
     throw new Error("--listen is not supported for Windows native-host wrappers");
+  }
+}
+
+function assertSocketAccessTargetSupported(socketMode, socketGroup, target) {
+  if ((socketMode !== undefined || socketGroup !== undefined) && (target === "win32" || target === "wsl-windows")) {
+    throw new Error("--socket-mode and --socket-group are only supported for POSIX native-host wrappers");
   }
 }
 
@@ -276,7 +289,14 @@ function installWindowsRegistry(browser, extensionId, wrapperPath) {
 
 function parseArgs() {
   const args = process.argv.slice(2);
-  const result = { extensionId: null, browsers: ["chrome"], target: "auto", listen: undefined };
+  const result = {
+    extensionId: null,
+    browsers: ["chrome"],
+    target: "auto",
+    listen: undefined,
+    socketMode: undefined,
+    socketGroup: undefined,
+  };
 
   for (let i = 0; i < args.length; i++) {
     const arg = args[i];
@@ -292,6 +312,12 @@ function parseArgs() {
     } else if (arg === "--listen") {
       result.listen = args[++i];
       if (!result.listen || result.listen.startsWith("--")) throw new Error("--listen requires a Tailnet IP and port");
+    } else if (arg === "--socket-mode") {
+      result.socketMode = args[++i];
+      if (!result.socketMode || result.socketMode.startsWith("--")) throw new Error("--socket-mode requires 600 or 660");
+    } else if (arg === "--socket-group") {
+      result.socketGroup = args[++i];
+      if (!result.socketGroup || result.socketGroup.startsWith("--")) throw new Error("--socket-group requires a group name or gid");
     } else if (arg === "--help" || arg === "-h") {
       printHelp();
       process.exit(0);
@@ -322,6 +348,12 @@ Options:
                   Persist an authenticated Tailnet-only listener endpoint.
                   Requires at least one surf remote authorize client first.
                   Supports Tailscale IPv4 or IPv6 addresses; POSIX wrappers only.
+  --socket-mode <600|660>
+                  Persist the local Unix socket mode (default: 600).
+                  Mode 660 requires --socket-group; POSIX wrappers only.
+  --socket-group <group-or-gid>
+                  Persist the local Unix socket group for mode 660.
+                  Use a dedicated group; this grants full Surf authority.
 
 Examples:
   node install-native-host.cjs abcdefghijklmnopabcdefghijklmnop
@@ -329,13 +361,14 @@ Examples:
   node install-native-host.cjs abcdefghijklmnop --browser all
   node install-native-host.cjs abcdefghijklmnop --target linux
   node install-native-host.cjs abcdefghijklmnop --listen 100.64.1.2:4321
+  node install-native-host.cjs abcdefghijklmnop --socket-mode 660 --socket-group surf
 `);
 }
 
 function main() {
   let parsed;
   try { parsed = parseArgs(); } catch (error) { console.error(`Error: ${error.message}`); process.exit(1); }
-  const { extensionId, browsers, target, listen } = parsed;
+  const { extensionId, browsers, target, listen, socketMode, socketGroup } = parsed;
 
   if (!extensionId) {
     console.error("Error: Extension ID required");
@@ -378,7 +411,12 @@ function main() {
   }
 
   const effectiveTarget = runningInWsl && target !== "linux" ? "wsl-windows" : process.platform;
-  try { assertListenTargetSupported(listen, effectiveTarget); } catch (error) { console.error(`Error: ${error.message}`); process.exit(1); }
+  let socketConfig;
+  try {
+    socketConfig = normalizeSocketConfig(socketMode, socketGroup);
+    assertListenTargetSupported(listen, effectiveTarget);
+    assertSocketAccessTargetSupported(socketMode, socketGroup, effectiveTarget);
+  } catch (error) { console.error(`Error: ${error.message}`); process.exit(1); }
 
   const nodePath = findNode();
   if (!nodePath) {
@@ -407,7 +445,15 @@ function main() {
   console.log(`Wrapper dir: ${wrapperDir}`);
   console.log("");
 
-  const wrapperPath = createWrapper(wrapperDir, nodePath, hostPath, effectiveTarget, listener);
+  const wrapperPath = createWrapper(
+    wrapperDir,
+    nodePath,
+    hostPath,
+    effectiveTarget,
+    listener,
+    socketConfig.mode,
+    socketConfig.group,
+  );
   console.log(`Created wrapper: ${wrapperPath}`);
   console.log("");
 
@@ -450,4 +496,5 @@ module.exports = {
   createWrapper,
   writeManifest,
   assertListenTargetSupported,
+  assertSocketAccessTargetSupported,
 };

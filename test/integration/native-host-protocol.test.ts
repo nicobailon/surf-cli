@@ -13,6 +13,7 @@ declare const process: {
   cwd(): string;
   env: Record<string, string | undefined>;
   execPath: string;
+  getgid(): number;
   pid: number;
   platform: string;
 };
@@ -66,6 +67,7 @@ const { spawn } = require("node:child_process") as {
 const fs = require("node:fs") as {
   existsSync(targetPath: string): boolean;
   mkdtempSync(prefix: string): string;
+  statSync(targetPath: string): { gid: number; mode: number };
   rmSync(targetPath: string, options: { recursive: boolean; force: boolean }): void;
   readdirSync(targetPath: string): string[];
   writeFileSync(targetPath: string, content: string): void;
@@ -406,6 +408,9 @@ describe("native host protocol integration", () => {
     });
     expect(await lifecycle.start()).toBe(true);
     expect(ready).toBe(true);
+    if (process.platform !== "win32") {
+      expect(fs.statSync(localPath).mode & 0o7777).toBe(0o600);
+    }
     const tcpAddress = lifecycle.tcpServer.address();
     expect(tcpAddress.port).toBeGreaterThan(0);
 
@@ -463,6 +468,61 @@ describe("native host protocol integration", () => {
     expect(fatal).toBeInstanceOf(Error);
     expect(fs.existsSync(localPath)).toBe(false);
     await new Promise<void>((resolve) => blocker.close(resolve));
+  });
+
+  it("applies opt-in group socket permissions before reporting ready", async () => {
+    if (process.platform === "win32") {
+      return;
+    }
+    const localPath = createSocketPath();
+    let ready = false;
+    const lifecycle = createListenerLifecycle({
+      localPath,
+      socketMode: "660",
+      socketGroup: String(process.getgid()),
+      handler() {
+        return undefined;
+      },
+      onReady() {
+        ready = true;
+      },
+      onFatal(error: Error) {
+        throw error;
+      },
+    });
+    expect(await lifecycle.start()).toBe(true);
+    expect(ready).toBe(true);
+    const stat = fs.statSync(localPath);
+    expect(stat.mode & 0o7777).toBe(0o660);
+    expect(stat.gid).toBe(process.getgid());
+    await lifecycle.shutdown();
+  });
+
+  it("fails closed for invalid explicit socket permissions", async () => {
+    if (process.platform === "win32") {
+      return;
+    }
+    const localPath = createSocketPath();
+    let ready = false;
+    let fatal: Error | undefined;
+    const lifecycle = createListenerLifecycle({
+      localPath,
+      socketMode: "666",
+      handler() {
+        return undefined;
+      },
+      onReady() {
+        ready = true;
+      },
+      onFatal(error: Error) {
+        fatal = error;
+      },
+    });
+    expect(await lifecycle.start()).toBe(false);
+    expect(ready).toBe(false);
+    expect(fatal).toBeInstanceOf(Error);
+    expect(fatal?.message).toContain("SURF_SOCKET_MODE");
+    expect(fs.existsSync(localPath)).toBe(false);
   });
 
   it("closes both listeners and unlinks local socket during shutdown", async () => {
