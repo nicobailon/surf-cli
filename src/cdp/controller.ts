@@ -90,6 +90,14 @@ type NetworkEventCallback = (event: {
   timestamp: number;
 }) => void;
 
+type ScreencastFrameCallback = (event: {
+  data: string;
+  metadata?: Record<string, unknown>;
+  sessionId: number;
+}) => void;
+
+type ScreencastErrorCallback = (error: Error) => void;
+
 const MODIFIERS = {
   alt: 1,
   ctrl: 2,
@@ -146,6 +154,7 @@ export class CDPController {
   private networkEntries: Map<number, Map<string, NetworkEntry>> = new Map(); // tabId -> requestId -> entry
   private consoleCallbacks: Map<number, Map<number, ConsoleEventCallback>> = new Map();
   private networkCallbacks: Map<number, Map<number, NetworkEventCallback>> = new Map();
+  private screencastCallbacks: Map<number, Map<string, { onFrame: ScreencastFrameCallback; onError: ScreencastErrorCallback }>> = new Map();
   private networkRequestStartTimes: Map<string, number> = new Map();
   private pendingDialogs: Map<number, PendingDialog> = new Map();
   private detachReasons: Map<number, string> = new Map();
@@ -223,6 +232,12 @@ export class CDPController {
       this.networkCapture.delete(tabId);
       this.consoleCallbacks.delete(tabId);
       this.networkCallbacks.delete(tabId);
+      this.notifyScreencastError(tabId, new CDPControllerError(
+        "debugger_detached",
+        `Debugger detached from tab ${tabId}`,
+        { tabId },
+      ));
+      this.screencastCallbacks.delete(tabId);
       this.pendingDialogs.delete(tabId);
       this.clearRequestStartTimes(tabId);
       this.detachReasons.delete(tabId);
@@ -258,6 +273,12 @@ export class CDPController {
         this.networkCapture.delete(tabId);
         this.consoleCallbacks.delete(tabId);
         this.networkCallbacks.delete(tabId);
+        this.notifyScreencastError(tabId, new CDPControllerError(
+          "debugger_detached",
+          `Debugger detached from tab ${tabId}: ${reason || "unknown reason"}`,
+          { tabId, reason: reason || "unknown" },
+        ));
+        this.screencastCallbacks.delete(tabId);
         this.pendingDialogs.delete(tabId);
         this.clearRequestStartTimes(tabId);
       }
@@ -317,6 +338,43 @@ export class CDPController {
       case "Page.javascriptDialogClosed":
         this.pendingDialogs.delete(tabId);
         break;
+      case "Page.screencastFrame":
+        await this.handleScreencastFrame(tabId, params);
+        break;
+    }
+  }
+
+  private async handleScreencastFrame(tabId: number, params: any): Promise<void> {
+    const sessionId = Number(params?.sessionId);
+    if (!Number.isInteger(sessionId)) return;
+
+    // ACK before forwarding the JPEG. Chrome stops sending frames when these
+    // acknowledgements are delayed, so the frame path deliberately does not
+    // wait on native messaging or callback work.
+    try {
+      await this.send(tabId, "Page.screencastFrameAck", { sessionId });
+    } catch (error) {
+      this.notifyScreencastError(tabId, error instanceof Error ? error : new Error(String(error)));
+      return;
+    }
+
+    const callbacks = this.screencastCallbacks.get(tabId);
+    if (!callbacks) return;
+    const event = {
+      data: typeof params?.data === "string" ? params.data : "",
+      metadata: params?.metadata,
+      sessionId,
+    };
+    for (const callback of callbacks.values()) {
+      try { callback.onFrame(event); } catch {}
+    }
+  }
+
+  private notifyScreencastError(tabId: number, error: Error): void {
+    const callbacks = this.screencastCallbacks.get(tabId);
+    if (!callbacks) return;
+    for (const callback of callbacks.values()) {
+      try { callback.onError(error); } catch {}
     }
   }
 
@@ -1191,6 +1249,38 @@ export class CDPController {
         this.networkCallbacks.delete(tabId);
       }
     }
+  }
+
+  subscribeToScreencast(
+    tabId: number,
+    recorderId: string,
+    onFrame: ScreencastFrameCallback,
+    onError: ScreencastErrorCallback = () => {},
+  ): void {
+    if (!this.screencastCallbacks.has(tabId)) this.screencastCallbacks.set(tabId, new Map());
+    this.screencastCallbacks.get(tabId)!.set(recorderId, { onFrame, onError });
+  }
+
+  unsubscribeFromScreencast(tabId: number, recorderId: string): void {
+    const callbacks = this.screencastCallbacks.get(tabId);
+    if (!callbacks) return;
+    callbacks.delete(recorderId);
+    if (callbacks.size === 0) this.screencastCallbacks.delete(tabId);
+  }
+
+  async startScreencast(
+    tabId: number,
+    options: { format?: "jpeg" | "png"; quality?: number; everyNthFrame?: number } = {},
+  ): Promise<any> {
+    return this.send(tabId, "Page.startScreencast", {
+      format: options.format || "jpeg",
+      quality: options.quality ?? 80,
+      everyNthFrame: options.everyNthFrame ?? 1,
+    });
+  }
+
+  async stopScreencast(tabId: number): Promise<any> {
+    return this.send(tabId, "Page.stopScreencast");
   }
 
   async evaluateScript(tabId: number, expression: string): Promise<{

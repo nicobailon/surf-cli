@@ -890,6 +890,64 @@ describe("CDPController", () => {
     });
   });
 
+  describe("screencast", () => {
+    it("ACKs frames and forwards JPEG data to subscribers", async () => {
+      const controller = new CDPController();
+      const frame = vi.fn();
+      mockChrome.debugger.attach.mockResolvedValue(undefined);
+      mockChrome.debugger.sendCommand.mockResolvedValue({});
+
+      await controller.attach(3100);
+      controller.subscribeToScreencast(3100, "video-1", frame);
+      await (
+        controller as unknown as {
+          handleCDPEvent: (tabId: number, method: string, params: unknown) => Promise<void>;
+        }
+      ).handleCDPEvent(3100, "Page.screencastFrame", {
+        data: "jpeg-base64",
+        metadata: { deviceWidth: 800 },
+        sessionId: 9,
+      });
+
+      expect(mockChrome.debugger.sendCommand).toHaveBeenLastCalledWith(
+        { tabId: 3100 },
+        "Page.screencastFrameAck",
+        { sessionId: 9 },
+      );
+      expect(frame).toHaveBeenCalledWith({
+        data: "jpeg-base64",
+        metadata: { deviceWidth: 800 },
+        sessionId: 9,
+      });
+    });
+
+    it("reports a frame ACK failure without forwarding the frame", async () => {
+      const controller = new CDPController();
+      const frame = vi.fn();
+      const onError = vi.fn();
+      mockChrome.debugger.attach.mockResolvedValue(undefined);
+      mockChrome.debugger.sendCommand
+        .mockResolvedValueOnce({})
+        .mockRejectedValueOnce(new Error("screencast ACK failed"));
+
+      await controller.attach(3101);
+      controller.subscribeToScreencast(3101, "video-1", frame, onError);
+      await (
+        controller as unknown as {
+          handleCDPEvent: (tabId: number, method: string, params: unknown) => Promise<void>;
+        }
+      ).handleCDPEvent(3101, "Page.screencastFrame", {
+        data: "jpeg-base64",
+        sessionId: 10,
+      });
+
+      expect(onError).toHaveBeenCalledWith(
+        expect.objectContaining({ message: "screencast ACK failed" }),
+      );
+      expect(frame).not.toHaveBeenCalled();
+    });
+  });
+
   describe("unsubscribeFromNetwork", () => {
     let controller: CDPController;
     const tabId = 2400;

@@ -6,6 +6,21 @@ debugLog("Service worker loaded");
 
 const cdp = new CDPController();
 const activeStreamTabs = new Map<number, number>();
+let activeVideoRecorder: { recorderId: string; tabId: number } | null = null;
+
+async function cleanupActiveVideoRecorder(): Promise<void> {
+  const active = activeVideoRecorder;
+  if (!active) return;
+
+  try {
+    await cdp.stopScreencast(active.tabId);
+  } catch (error) {
+    debugLog("Failed to stop video screencast after native host disconnect:", error);
+  } finally {
+    cdp.unsubscribeFromScreencast(active.tabId, active.recorderId);
+    if (activeVideoRecorder?.recorderId === active.recorderId) activeVideoRecorder = null;
+  }
+}
 
 function getFrameIdForTab(_tabId: number, message?: { frameId?: unknown }): number {
   const frameId = Number(message?.frameId);
@@ -567,6 +582,7 @@ chrome.tabs.onRemoved.addListener((tabId) => {
       activeStreamTabs.delete(streamId);
     }
   }
+  if (activeVideoRecorder?.tabId === tabId) activeVideoRecorder = null;
 });
 
 chrome.windows.onRemoved.addListener((windowId) => {
@@ -2589,6 +2605,71 @@ export async function handleMessage(
       return { success: true };
     }
 
+    case "VIDEO_START": {
+      if (!tabId) throw new Error("No tabId provided");
+      const recorderId = String(message.recorderId || "");
+      if (!recorderId) throw new Error("VIDEO_START requires recorderId");
+      if (activeVideoRecorder) throw new Error("A video recording is already active");
+      const fps = Number(message.fps);
+      if (!Number.isFinite(fps) || fps <= 0 || fps > 60) throw new Error("fps must be a number between 1 and 60");
+
+      const onError = (error: Error) => {
+        // Keep the active recorder until native fail-closed cleanup sends
+        // VIDEO_STOP, so Page.stopScreencast can still reach Chrome.
+        postToNativeHost({
+          type: "VIDEO_ERROR",
+          recorderId,
+          tabId,
+          errorCode: (error as Error & { code?: string }).code || "video_screencast_failed",
+          error: error.message,
+        });
+      };
+      cdp.subscribeToScreencast(tabId, recorderId, (event) => {
+        postToNativeHost({
+          type: "VIDEO_FRAME",
+          recorderId,
+          tabId,
+          data: event.data,
+          metadata: event.metadata,
+          sessionId: event.sessionId,
+          receivedAt: Date.now(),
+        });
+      }, onError);
+      activeVideoRecorder = { recorderId, tabId };
+      try {
+        await cdp.startScreencast(tabId, {
+          format: "jpeg",
+          quality: Number.isFinite(Number(message.quality)) ? Number(message.quality) : 80,
+          everyNthFrame: Number.isFinite(Number(message.everyNthFrame)) ? Number(message.everyNthFrame) : 1,
+        });
+        if (activeVideoRecorder?.recorderId !== recorderId) throw new Error("Video screencast stopped while starting");
+        return { success: true, recording: true, recorderId, tabId, fps };
+      } catch (error) {
+        if (activeVideoRecorder?.recorderId === recorderId) activeVideoRecorder = null;
+        cdp.unsubscribeFromScreencast(tabId, recorderId);
+        throw error;
+      }
+    }
+
+    case "VIDEO_STOP": {
+      const recorderId = message.recorderId ? String(message.recorderId) : undefined;
+      let active = activeVideoRecorder;
+      if (recorderId && active?.recorderId !== recorderId) active = null;
+      if (!recorderId && active?.tabId !== tabId) active = null;
+      if (!active) return { success: true, stopped: false };
+      let stopError: unknown;
+      try {
+        await cdp.stopScreencast(active.tabId);
+      } catch (error) {
+        stopError = error;
+      } finally {
+        if (activeVideoRecorder?.recorderId === active.recorderId) activeVideoRecorder = null;
+        cdp.unsubscribeFromScreencast(active.tabId, active.recorderId);
+      }
+      if (stopError) throw stopError;
+      return { success: true, stopped: true, recorderId: active.recorderId, tabId: active.tabId };
+    }
+
     case "GET_PLAYBOOK_RECORD_CONTEXT": {
       if (!tabId) throw new Error("No tabId provided");
       const tab = await chrome.tabs.get(tabId);
@@ -4008,4 +4089,4 @@ initNativeMessaging(async (msg) => {
     _resolvedWindowId: resolvedWindowId,
     _hint: hints.length > 0 ? hints.join(" ") : undefined,
   };
-});
+}, cleanupActiveVideoRecorder);

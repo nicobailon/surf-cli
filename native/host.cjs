@@ -53,6 +53,13 @@ const { BrowserSessionStore, parseDurationMs, validateSessionName } = require(".
 const { applySocketPermissions, resolveSocketPermissions } = require("./socket-permissions.cjs");
 const { classifyTool } = require("./tool-scope.cjs");
 const { fromExtensionError, surfError } = require("./surf-error.cjs");
+const {
+  DEFAULT_VIDEO_FPS,
+  VideoRecorder,
+  VideoRecorderError,
+  parseVideoFps,
+  validateVideoOutputPath,
+} = require("./video-recorder.cjs");
 const MAX_CLIENT_FRAME_BYTES = MAX_FRAME_BYTES;
 const TEST_REQUEST_DEADLINE_MS = process.env.SURF_TEST_MODE === "1" && Number.isFinite(Number(process.env.SURF_TEST_REQUEST_DEADLINE_MS))
   ? Number(process.env.SURF_TEST_REQUEST_DEADLINE_MS)
@@ -392,6 +399,11 @@ const pendingToolRequests = new RequestPendingMap({ getRequest: () => requestSto
 const activeStreams = new Map();
 const socketContexts = new WeakMap();
 const socketWriters = new WeakMap();
+let activeVideoRecorder = null;
+let videoStopPromise = null;
+let videoStopFailure = false;
+let lastVideoError = null;
+let lastVideoResult = null;
 let requestCounter = 0;
 const browserSessionStore = new BrowserSessionStore();
 let browserIdentity = null;
@@ -404,7 +416,12 @@ function setBrowserIdentity(value) {
     browserIdentity.browserInstanceId !== value.browserInstanceId ||
     browserIdentity.browserEpoch !== value.browserEpoch
   );
-  if (identityChanged) transientFrameContexts.clear();
+  if (identityChanged) {
+    transientFrameContexts.clear();
+    if (activeVideoRecorder) {
+      void settleVideoFailure(activeVideoRecorder, new VideoRecorderError("video_extension_reloaded", "Surf extension identity changed while video recording was active"));
+    }
+  }
   browserIdentity = {
     browserInstanceId: value.browserInstanceId,
     browserEpoch: value.browserEpoch,
@@ -439,6 +456,9 @@ function handleTargetEvent(message) {
     if (message.event === "tab-removed" && Number.isInteger(message.tabId)) {
       clearTransientFrameContextsByTab(message.tabId);
       browserSessionStore.invalidateByTab(browserIdentity, message.tabId, "tab_gone");
+      if (activeVideoRecorder?.tabId === message.tabId) {
+        void settleVideoFailure(activeVideoRecorder, new VideoRecorderError("video_tab_gone", `Recorded tab ${message.tabId} was closed`));
+      }
       for (const [streamId, stream] of activeStreams) {
         if (stream.tabId === message.tabId) stopActiveStream(streamId, { notifyExtension: false });
       }
@@ -447,6 +467,9 @@ function handleTargetEvent(message) {
     if (message.event === "window-removed" && Number.isInteger(message.windowId)) {
       clearTransientFrameContextsByWindow(message.windowId);
       browserSessionStore.invalidateByWindow(browserIdentity, message.windowId, "window_gone");
+      if (activeVideoRecorder?.windowId === message.windowId) {
+        void settleVideoFailure(activeVideoRecorder, new VideoRecorderError("video_window_gone", `Recorded window ${message.windowId} was closed`));
+      }
       for (const [streamId, stream] of activeStreams) {
         if (stream.windowId === message.windowId) stopActiveStream(streamId, { notifyExtension: false });
       }
@@ -558,6 +581,196 @@ async function requestExtensionOrThrow(request, tool, message, timeoutMs = 30000
   const error = fromExtensionError(result);
   if (error) throw error;
   return result;
+}
+
+function videoOptions(args = {}) {
+  const fps = parseVideoFps(args.fps, DEFAULT_VIDEO_FPS);
+  const output = validateVideoOutputPath(args.output, { createParent: false });
+  return { fps, output };
+}
+
+function videoStatus() {
+  if (activeVideoRecorder) return activeVideoRecorder.recorder.status();
+  return {
+    status: "idle",
+    ...(lastVideoError
+      ? { error: lastVideoError.message, errorCode: lastVideoError.code }
+      : {}),
+    ...(lastVideoResult ? { lastResult: lastVideoResult } : {}),
+  };
+}
+
+function rememberVideoFailure(error) {
+  const normalized = error instanceof VideoRecorderError
+    ? error
+    : new VideoRecorderError(
+      typeof error?.code === "string" ? error.code : "video_failed",
+      error?.message || String(error),
+    );
+  lastVideoError = normalized;
+  lastVideoResult = null;
+  return normalized;
+}
+
+async function settleVideoFailure(entry, error) {
+  if (!entry || activeVideoRecorder !== entry) return;
+  rememberVideoFailure(error);
+  if (videoStopPromise) return videoStopPromise;
+
+  videoStopFailure = true;
+  const promise = (async () => {
+    if (entry.extensionStarted) {
+      try {
+        writeMessage({ type: "VIDEO_STOP", recorderId: entry.recorderId, tabId: entry.tabId });
+      } catch {}
+    }
+    await entry.recorder.dispose();
+  })();
+  let settled;
+  settled = promise.finally(() => {
+    if (activeVideoRecorder === entry) activeVideoRecorder = null;
+    if (videoStopPromise === settled) {
+      videoStopPromise = null;
+      videoStopFailure = false;
+    }
+  });
+  videoStopPromise = settled;
+  await settled.catch(() => {});
+}
+
+async function startVideoRecording(args, msg, request) {
+  const { fps, output } = videoOptions(args);
+  if (activeVideoRecorder || videoStopPromise) {
+    throw new VideoRecorderError("video_active", "A video recording is already active for this native host");
+  }
+  const tabId = request.target?.tabId || msg.tabId;
+  if (!tabId) throw new VideoRecorderError("video_target_required", "video start requires a selected tab");
+
+  const recorderId = `video_${Date.now()}_${++requestCounter}`;
+  let entry;
+  const recorder = new VideoRecorder({
+    output,
+    fps,
+    tabId,
+    recorderId,
+    onFailure: (error, failedRecorder) => {
+      if (entry?.recorder === failedRecorder) void settleVideoFailure(entry, error);
+    },
+  });
+  entry = {
+    recorder,
+    recorderId,
+    tabId,
+    windowId: request.target?.windowId || msg.windowId,
+    extensionStarted: false,
+  };
+  activeVideoRecorder = entry;
+
+  try {
+    await recorder.start();
+    await requestExtensionOrThrow(request, "video.start", {
+      type: "VIDEO_START",
+      tabId,
+      recorderId,
+      fps,
+      quality: 80,
+      everyNthFrame: 1,
+      strictTarget: request.target?.strict === true,
+    });
+    entry.extensionStarted = true;
+    if (recorder.state === "failed" || activeVideoRecorder !== entry) {
+      throw recorder.failure || new VideoRecorderError("video_failed", "Video recorder failed while starting");
+    }
+    return { ...recorder.status(), status: "active" };
+  } catch (error) {
+    rememberVideoFailure(error);
+    if (entry.extensionStarted) {
+      try { writeMessage({ type: "VIDEO_STOP", recorderId, tabId }); } catch {}
+    }
+    await recorder.dispose().catch(() => {});
+    if (activeVideoRecorder === entry) activeVideoRecorder = null;
+    if (videoStopPromise) {
+      await videoStopPromise.catch(() => {});
+      videoStopPromise = null;
+      videoStopFailure = false;
+    }
+    throw error;
+  }
+}
+
+async function stopVideoRecording(request) {
+  if (videoStopPromise) {
+    const pending = videoStopPromise;
+    const failed = videoStopFailure;
+    const result = await pending;
+    if (failed) throw lastVideoError || new VideoRecorderError("video_failed", "Video recording failed");
+    return result;
+  }
+  const entry = activeVideoRecorder;
+  if (!entry) throw new VideoRecorderError("video_not_active", "No active video recording");
+
+  videoStopFailure = false;
+  const promise = (async () => {
+    let extensionError = null;
+    if (entry.extensionStarted) {
+      try {
+        await requestExtensionOrThrow(request, "video.stop", {
+          type: "VIDEO_STOP",
+          recorderId: entry.recorderId,
+          tabId: entry.tabId,
+        }, 30000, true);
+      } catch (error) {
+        // The tab may disappear between the stop request and its response. The
+        // native encoder can still finalize the file, so preserve that result.
+        extensionError = error;
+      }
+    }
+
+    let result;
+    try {
+      result = await entry.recorder.stop();
+    } catch (error) {
+      rememberVideoFailure(error);
+      throw error;
+    }
+    lastVideoError = null;
+    lastVideoResult = { ...result, status: "stopped" };
+    // A detached/gone page should not turn an otherwise finalized local file
+    // into a failed stop. Keep the extension detail available as a warning.
+    if (extensionError) lastVideoResult.warning = extensionError.message;
+    return lastVideoResult;
+  })();
+  let settled;
+  settled = promise.finally(() => {
+    if (activeVideoRecorder === entry) activeVideoRecorder = null;
+    if (videoStopPromise === settled) {
+      videoStopPromise = null;
+      videoStopFailure = false;
+    }
+  });
+  videoStopPromise = settled;
+  return settled;
+}
+
+async function handleVideoRequest(tool, args, msg, request) {
+  if (tool === "video.start") return startVideoRecording(args, msg, request);
+  if (tool === "video.stop") return stopVideoRecording(request);
+  if (tool === "video.status") return videoStatus();
+  if (tool === "video.restart") {
+    const options = videoOptions(args);
+    const existing = activeVideoRecorder;
+    if (!existing) throw new VideoRecorderError("video_not_active", "No active video recording to restart");
+    const stopped = await stopVideoRecording(request);
+    const result = await startVideoRecording({ output: options.output, fps: options.fps }, {
+      ...msg,
+      tabId: existing.tabId,
+    }, {
+      ...request,
+      target: { ...(request.target || {}), tabId: existing.tabId, strict: true },
+    });
+    return { ...result, previous: stopped.path };
+  }
+  throw new VideoRecorderError("video_command_unknown", `Unknown video command: ${tool}`);
 }
 
 function positiveId(value, name) {
@@ -859,6 +1072,7 @@ async function resolveRequestTarget(msg, request, classification) {
 
 async function prepareToolRequest(msg, request) {
   const args = msg.params?.args || {};
+  if (request.tool === "video.start" || request.tool === "video.restart") videoOptions(args);
   const classification = classifyTool(request.tool, args);
   request.scope = classification.scope;
   request.classification = classification;
@@ -1669,6 +1883,12 @@ function handleToolRequest(msg, socket, requestContext = requestStorage.getStore
     handleRecordRequest(tool, args || {}, msg, requestContext)
       .then((result) => sendToolResponse(socket, originalId, result, null))
       .catch((error) => sendToolResponse(socket, originalId, null, error.message));
+    return;
+  }
+  if (tool.startsWith("video.")) {
+    handleVideoRequest(tool, args || {}, msg, requestContext)
+      .then((result) => sendToolResponse(socket, originalId, result, null))
+      .catch((error) => sendToolResponse(socket, originalId, null, error));
     return;
   }
   
@@ -2647,6 +2867,23 @@ function processInput() {
         });
         return;
       }
+
+      if (msg.type === "VIDEO_FRAME") {
+        if (activeVideoRecorder && msg.recorderId === activeVideoRecorder.recorderId && msg.tabId === activeVideoRecorder.tabId) {
+          activeVideoRecorder.recorder.addFrame(msg.data, Number.isFinite(msg.receivedAt) ? msg.receivedAt : Date.now());
+        }
+        return;
+      }
+
+      if (msg.type === "VIDEO_ERROR") {
+        if (activeVideoRecorder && (!msg.recorderId || msg.recorderId === activeVideoRecorder.recorderId)) {
+          void settleVideoFailure(activeVideoRecorder, new VideoRecorderError(
+            typeof msg.errorCode === "string" ? msg.errorCode : "video_extension_error",
+            msg.error || "Video screencast failed",
+          ));
+        }
+        return;
+      }
       
       if (msg.type === "STREAM_EVENT") {
         const stream = activeStreams.get(msg.streamId);
@@ -3107,9 +3344,18 @@ function shutdown(code = 0) {
   if (shuttingDown) return;
   shuttingDown = true;
   const cleanupPromises = [...connectedSockets].map((socket) => socket.transferCleanup?.() || Promise.resolve());
+  const videoEntry = activeVideoRecorder;
+  const videoCleanup = videoStopPromise || (videoEntry
+    ? (async () => {
+      if (videoEntry.extensionStarted) {
+        try { writeMessage({ type: "VIDEO_STOP", recorderId: videoEntry.recorderId, tabId: videoEntry.tabId }); } catch {}
+      }
+      await videoEntry.recorder.dispose().catch(() => {});
+    })()
+    : Promise.resolve());
   for (const socket of connectedSockets) socket.destroy();
   pendingRequests.clear(); pendingToolRequests.clear(); activeStreams.clear();
-  Promise.allSettled([...cleanupPromises, Promise.resolve(listenerLifecycle?.shutdown())]).finally(scheduleExit);
+  Promise.allSettled([...cleanupPromises, videoCleanup, Promise.resolve(listenerLifecycle?.shutdown())]).finally(scheduleExit);
 }
 function failStartup(error, endpoint) {
   log(`Listener startup failed (${endpoint}): ${error.message}`);

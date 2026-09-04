@@ -317,6 +317,25 @@ describe("CLI argument parsing", () => {
     expect(result.stderr).not.toContain("/tmp/surf.sock");
   });
 
+  it("rejects remote video recording before attempting a connection", async () => {
+    const credential = createRemoteCredential();
+    const result = await runCliWithoutSocket([
+      "video",
+      "start",
+      path.join(os.tmpdir(), "surf-video-remote.webm"),
+      "--remote",
+      "browser.tailnet:4321",
+      "--remote-credential",
+      credential.credentialPath,
+    ]);
+    fs.rmSync(credential.stateDir, { recursive: true, force: true });
+
+    expect(result.code).toBe(1);
+    expect(result.stdout).toBe("");
+    expect(result.stderr).toContain("video recording is not supported with remote endpoint");
+    expect(result.stderr).not.toContain("/tmp/surf.sock");
+  });
+
   it("rejects remote playbook catalog before attempting a connection", async () => {
     const credential = createRemoteCredential();
     const result = await runCliWithoutSocket([
@@ -1252,6 +1271,16 @@ describe("CLI argument parsing", () => {
       fs.rmSync(magickDir, { recursive: true, force: true });
       fs.rmSync(outputPath, { force: true });
     }
+  });
+
+  it("routes space-separated video commands with a local WebM output path", async () => {
+    const outputPath = path.join(os.tmpdir(), `surf-video-${process.pid}-${Date.now()}.webm`);
+    const result = await runCli(["video", "start", outputPath, "--fps", "24", "--json"]);
+
+    expect(result.stderr).toBe("");
+    expect(result.request.params.tool).toBe("video.start");
+    expect(result.request.params.args).toMatchObject({ output: outputPath, fps: 24 });
+    expect(JSON.parse(result.stdout)).toBe("OK");
   });
 
   it("saves perf-audit JSON output", async () => {

@@ -36,7 +36,7 @@ const BROWSER_WRITE_TARGETED_TOOLS = new Set([
 ]);
 
 const TAB_TOOLS = new Set([
-  "ai", "computer", "batch", "record", "animate-audit", "perf-audit",
+  "ai", "computer", "batch", "record", "video.start", "animate-audit", "perf-audit",
   "navigate", "go", "back", "forward", "reload", "tab.reload",
   "screenshot", "snap", "resize",
   "page.read", "read_page", "page.text", "get_page_text", "page.html", "page.save", "page.state",
@@ -87,10 +87,14 @@ function classifyTool(tool, args = {}) {
     return { scope: "browser-write", targetUse: "default-tab" };
   }
   if (BROWSER_WRITE_TOOLS.has(tool)) return { scope: "browser-write", targetUse: "browser" };
+  if (tool === "video.stop" || tool === "video.status" || tool === "video.restart") {
+    return { scope: "host", targetUse: "host", resourceKeys: ["video-recorder"] };
+  }
   if (TAB_TOOLS.has(tool)) {
     const resourceKeys = [];
     if (tool === "network.export" && typeof args.output === "string") resourceKeys.push(`file:${path.resolve(args.output)}`);
     if (tool.startsWith("playbook.record.")) resourceKeys.push("playbook-recorder");
+    if (tool === "video.start") resourceKeys.push("video-recorder");
     return { scope: "tab", targetUse: "default-tab", resourceKeys };
   }
   return { scope: "browser-write", targetUse: "browser", conservative: true };

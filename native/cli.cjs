@@ -33,6 +33,7 @@ const { selectEndpoint, connectEndpoint, formatEndpointError } = require("./endp
 const { createFrameParser, createSocketWriter, writeFrame } = require("./remote-transport.cjs");
 const { resolveRequestDeadlineMs } = require("./host-sessions.cjs");
 const { classifyTool } = require("./tool-scope.cjs");
+const { parseVideoFps, validateVideoOutputPath } = require("./video-recorder.cjs");
 const { AUTO_SCREENSHOT_TOOLS, prepareRemoteTool, validateLocalToolPaths } = require("./file-transfer.cjs");
 const { authorizeClient, listClients, revokeClient, getStateDir } = require("./remote-auth.cjs");
 if (IS_WIN) { try { fs.mkdirSync(SURF_TMP, { recursive: true }); } catch {} }
@@ -626,6 +627,37 @@ const TOOLS = {
       },
       "snap": { desc: "Alias for screenshot (auto-saves to /tmp)", args: [], alias: "screenshot" },
     }
+  },
+  video: {
+    desc: "Local WebM recording",
+    commands: {
+      "video.start": {
+        desc: "Start local WebM recording",
+        args: ["output"],
+        opts: {
+          fps: "Frames per second (default: 30, max: 60)",
+        },
+        examples: [{ cmd: "video start ./demo.webm --fps 30", desc: "Start recording" }],
+      },
+      "video.stop": {
+        desc: "Stop local WebM recording",
+        args: [],
+        examples: [{ cmd: "video stop", desc: "Stop recording" }],
+      },
+      "video.status": {
+        desc: "Show local WebM recording status",
+        args: [],
+        examples: [{ cmd: "video status", desc: "Show status" }],
+      },
+      "video.restart": {
+        desc: "Restart local WebM recording",
+        args: ["output"],
+        opts: {
+          fps: "Frames per second (default: 30, max: 60)",
+        },
+        examples: [{ cmd: "video restart ./take2.webm --fps 60", desc: "Restart recording" }],
+      },
+    },
   },
   scroll: {
     desc: "Scrolling",
@@ -1570,7 +1602,7 @@ Exclude text content:
 
 const ALL_SOCKET_TOOLS = [
   "session.new", "session.ensure", "session.list", "session.cleanup", "session.info", "session.close", "session.rebind", "session.reopen",
-  "ai", "screenshot", "record", "animate-audit", "perf-audit", "navigate",
+  "ai", "screenshot", "record", "video.start", "video.stop", "video.status", "video.restart", "animate-audit", "perf-audit", "navigate",
   "form_input", "find_and_type", "autocomplete", "set_value", "smart_type",
   "scroll_to_position", "get_scroll_info", "close_dialogs", "page_state",
   "javascript_tool", "health", "smoke",
@@ -1629,6 +1661,10 @@ const SEE_ALSO = {
   "navigate": ["wait.load", "page.read"],
   "screenshot": ["page.read", "scroll.bottom for fullpage"],
   "record": ["screenshot", "animate-audit", "perf-audit"],
+  "video.start": ["video.stop", "video.status"],
+  "video.stop": ["video.status", "video.restart"],
+  "video.status": ["video.start", "video.stop"],
+  "video.restart": ["video.stop", "video.status"],
   "animate-audit": ["screenshot", "record", "perf-audit", "js"],
   "perf-audit": ["record", "animate-audit", "perf.metrics", "console"],
   "search": ["locate.text", "page.read"],
@@ -1655,6 +1691,10 @@ Common Commands:
   type <text>        Type text at cursor or into element
   screenshot         Capture screenshot (alias: snap)
   record             Capture screenshot frames into an animated GIF
+  video start <path> Start a long-running local WebM recording
+  video stop         Stop the active WebM recording
+  video status       Show WebM recording status
+  video restart <path> Replace the active WebM recording
   animate-audit      JSON timeline of element animation/style samples
   perf-audit         PerformanceObserver snapshot for motion/jank debugging
   page.read          Get page accessibility tree (alias: read)
@@ -1707,6 +1747,7 @@ Type: surf type "text" --submit                  # use --ref e5 to target a fiel
 Screenshot: surf screenshot /tmp/shot.png         # auto-saves to /tmp if no path
 Full page screenshot: surf screenshot --full-page /tmp/full.png
 Record animation: surf record --duration 2000 --fps 10 --output /tmp/anim.gif
+Video recording: surf video start ./demo.webm --fps 30; surf video stop
 Animation audit: surf animate-audit --selector ".thing" --duration 2000 --fps 10
 Performance audit: surf perf-audit --duration 3000 --trigger "click:.cta" --output /tmp/perf.json
 JavaScript: surf js "return document.title"
@@ -2731,6 +2772,21 @@ if (tool === "cookie" && firstArg) {
   }
 }
 
+if (tool === "video" && firstArg) {
+  const videoSubcommands = {
+    start: "video.start",
+    stop: "video.stop",
+    status: "video.status",
+    restart: "video.restart",
+  };
+  const videoTool = videoSubcommands[firstArg];
+  if (videoTool) {
+    tool = videoTool;
+    positional = [tool, ...positional.slice(2)];
+    firstArg = positional[1];
+  }
+}
+
 if (!tool) {
   console.error("Error: No command specified");
   process.exit(1);
@@ -2895,6 +2951,11 @@ if (tool === "record" && firstArg !== undefined && toolArgs.output === undefined
   firstArg = undefined;
 }
 
+if ((tool === "video.start" || tool === "video.restart") && firstArg !== undefined && toolArgs.output === undefined) {
+  toolArgs.output = firstArg;
+  firstArg = undefined;
+}
+
 if (firstArg !== undefined) {
   const primaryKey = PRIMARY_ARG_MAP[tool];
   if (primaryKey && toolArgs[primaryKey] === undefined) {
@@ -3023,8 +3084,11 @@ if (tool === "gemini") {
 if (tool === "network.export" && outputPath !== undefined) {
   toolArgs.output = outputPath;
 }
+if ((tool === "video.start" || tool === "video.restart") && outputPath !== undefined) {
+  toolArgs.output = outputPath;
+}
 
-if ((tool === "screenshot" || tool === "record" || tool === "perf-audit" || tool === "page.save") && outputPath && typeof outputPath !== "string") {
+if ((tool === "screenshot" || tool === "record" || tool === "perf-audit" || tool === "page.save" || tool === "video.start" || tool === "video.restart") && outputPath && typeof outputPath !== "string") {
   console.error("Error: --output requires a file path");
   process.exit(1);
 }
@@ -3032,6 +3096,16 @@ if ((tool === "screenshot" || tool === "record" || tool === "perf-audit" || tool
 if (tool === "page.save" && !outputPath) {
   console.error("Error: page.save requires --output <path>");
   process.exit(1);
+}
+
+if (tool === "video.start" || tool === "video.restart") {
+  try {
+    parseVideoFps(toolArgs.fps);
+    validateVideoOutputPath(toolArgs.output, { createParent: false });
+  } catch (error) {
+    console.error(`Error: ${error.message}`);
+    process.exit(1);
+  }
 }
 
 if (tool === "screenshot" && outputPath) {
@@ -3662,6 +3736,18 @@ async function handleResponse(response) {
     console.log(`Use: export SURF_SESSION=${entry.name}`);
   } else if (finalTool === "session.close" && data?.success) {
     console.log(`Session ${data.name} closed (${data.targetClosed ? "target closed" : "target kept"})`);
+  } else if (finalTool === "video.start" && data?.status === "active") {
+    console.log(`Video recording started: ${data.path} (${data.fps}fps)`);
+  } else if (finalTool === "video.restart" && data?.status === "active") {
+    console.log(`Video recording restarted: ${data.path} (${data.fps}fps)`);
+  } else if (finalTool === "video.stop" && data?.status === "stopped") {
+    console.log(`Saved video recording to ${data.path} (${data.frames} frames, ${data.capturedFrames} captured frames @ ${data.fps}fps)`);
+  } else if (finalTool === "video.status") {
+    if (data?.status === "active") {
+      console.log(`Video recording active: ${data.path} (${data.fps}fps, ${data.frames} frames, ${data.capturedFrames} captured frames)`);
+    } else {
+      console.log("No active video recording");
+    }
   } else if (tool === "screenshot" && data?.base64 && (outputPath || toolArgs.savePath)) {
     const saveTo = transferPlan.downloads?.[0]?.destination || toolArgs.savePath || outputPath;
     fs.writeFileSync(saveTo, Buffer.from(data.base64, "base64"));

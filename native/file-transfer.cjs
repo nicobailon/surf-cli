@@ -279,6 +279,9 @@ function validateLocalToolPaths(tool, args = {}) {
     if (args.savePath !== undefined && args.output !== undefined) throw transferError("screenshot accepts only one output path", "SURF_PATH_FIELD");
     for (const field of ["savePath", "output"]) if (args[field] !== undefined) normalized[field] = normalize(field, args[field]);
   }
+  if (tool === "video.start" || tool === "video.restart") {
+    if (args.output !== undefined) normalized.output = normalize("output", args.output);
+  }
   if (tool === "network.export") {
     if (args.har !== undefined && typeof args.har !== "boolean") throw transferError("network.export har must be boolean", "SURF_PATH_FIELD");
     if (args.jsonl !== undefined && typeof args.jsonl !== "boolean") throw transferError("network.export jsonl must be boolean", "SURF_PATH_FIELD");
@@ -356,6 +359,7 @@ function prepareRemoteTool(tool, args = {}) {
   if (args.autoScreenshot === true && !AUTO_SCREENSHOT_TOOLS.includes(tool)) throw transferError(`autoScreenshot is not supported for ${tool}`, "SURF_PATH_DESCRIPTOR");
   if (args.autoScreenshotOutput !== undefined) throw transferError("autoScreenshotOutput is internal", "SURF_PATH_DESCRIPTOR");
   if (tool === "record") throw transferError("record is not supported with remote endpoint", "SURF_REMOTE_UNSUPPORTED");
+  if (typeof tool === "string" && tool.startsWith("video.")) throw transferError("video recording is not supported with remote endpoint", "SURF_REMOTE_UNSUPPORTED");
   if (tool === "aistudio.build") throw transferError("aistudio.build is not supported for remote connections", "SURF_REMOTE_UNSUPPORTED");
   if (tool === "smoke" && args.screenshot !== undefined) throw transferError("smoke screenshots are not supported for remote connections", "SURF_REMOTE_UNSUPPORTED");
   if (tool === "network.export") {
@@ -437,7 +441,7 @@ async function materializeRemoteTool({ tool, args: rawArgs = {}, metadata = null
   const uploads = meta.uploads === undefined ? [] : meta.uploads;
   const downloads = meta.downloads === undefined ? [] : meta.downloads;
   if (!Array.isArray(pathRefs) || !Array.isArray(uploads) || !Array.isArray(downloads) || uploads.length > 1 || downloads.length > 1) throw transferError("invalid transfer metadata", "SURF_PATH_DESCRIPTOR");
-  if (tool === "record" || tool === "aistudio.build") throw transferError(`${tool} is not supported for remote connections`, "SURF_REMOTE_UNSUPPORTED");
+  if (tool === "record" || (typeof tool === "string" && tool.startsWith("video.")) || tool === "aistudio.build") throw transferError(`${tool} is not supported for remote connections`, "SURF_REMOTE_UNSUPPORTED");
   if (tool === "smoke" && args.screenshot !== undefined) throw transferError("smoke screenshots are not supported for remote connections", "SURF_REMOTE_UNSUPPORTED");
   if (tool === "network.export") {
     if (args.har !== undefined && typeof args.har !== "boolean") throw transferError("network.export har must be boolean", "SURF_PATH_FIELD");

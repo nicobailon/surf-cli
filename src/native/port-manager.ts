@@ -5,6 +5,7 @@ let messageHandler: ((msg: any) => Promise<any>) | null = null;
 let reconnectTimeout: ReturnType<typeof setTimeout> | null = null;
 let pendingNativeRequests = new Map<number, { resolve: (value: any) => void; reject: (err: Error) => void }>();
 let nativeRequestId = 0;
+let nativeHostDisconnectHandler: (() => void | Promise<void>) | null = null;
 
 const INSTANCE_ID_KEY = "surfBrowserInstanceId";
 const EPOCH_KEY = "surfBrowserEpoch";
@@ -40,15 +41,17 @@ async function postExtensionHello(port: chrome.runtime.Port): Promise<void> {
     type: "EXTENSION_HELLO",
     protocolVersion: 2,
     extensionVersion: chrome.runtime.getManifest().version,
-    capabilities: ["browser-sessions", "strict-targets", "keyed-lanes"],
+    capabilities: ["browser-sessions", "strict-targets", "keyed-lanes", "video-recording"],
     ...identity,
   });
 }
 
 export function initNativeMessaging(
-  handler: (msg: any) => Promise<any>
+  handler: (msg: any) => Promise<any>,
+  onDisconnect?: () => void | Promise<void>,
 ): void {
   messageHandler = handler;
+  nativeHostDisconnectHandler = onDisconnect || null;
   connect();
 }
 
@@ -142,7 +145,17 @@ function connect(): void {
     port.onDisconnect.addListener(() => {
       const error = chrome.runtime.lastError;
       debugLog("Native host disconnected:", error?.message || "unknown reason");
-      if (nativePort === port) nativePort = null;
+      const wasCurrentPort = nativePort === port;
+      if (wasCurrentPort) {
+        nativePort = null;
+        try {
+          Promise.resolve(nativeHostDisconnectHandler?.()).catch((cleanupError) => {
+            debugLog("Native host disconnect cleanup failed:", cleanupError);
+          });
+        } catch (cleanupError) {
+          debugLog("Native host disconnect cleanup failed:", cleanupError);
+        }
+      }
       for (const pending of pendingNativeRequests.values()) {
         pending.reject(new Error("Native host disconnected"));
       }

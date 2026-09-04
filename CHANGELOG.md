@@ -3,6 +3,7 @@
 ## [Unreleased]
 
 ### Added
+- **Local WebM video recording** - Added local `surf video start|stop|status|restart` commands using ffmpeg/VP9; remote recording is rejected.
 - **One-shot session cleanup** - Added opt-in `surf session.cleanup --idle-after <duration> [--dry-run]` to remove gone or idle session bindings, closing only inactive Surf-created targets. Reported by @marcoatpaladin in #233.
 - **Opt-in local socket groups** - `surf install` can persist POSIX socket mode `660` and a configured group while keeping the default at `0600`. Thanks to [@marcoatpaladin](https://github.com/marcoatpaladin) for #225.
 
