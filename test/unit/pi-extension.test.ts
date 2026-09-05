@@ -31,7 +31,7 @@ describe("Pi extension", () => {
     expect(agent).toContain("name: gpt-pro");
     expect(agent).toContain("type: external-job");
     expect(agent).toContain("provider: surf-oracle");
-    expect(agent).toContain("model: gpt-5.6-sol");
+    expect(agent).toContain("model: gpt-6-astra");
     expect(agent).toContain("effort: pro");
   });
 

@@ -45,8 +45,8 @@ Commands:
 Ask/follow options:
   --files <glob>          Add context files (repeatable)
   --file <path>           Attach one local file
-  --model <model>         Select model: instant, thinking, pro, gpt-5.5, gpt-5.6-sol
-  --effort <effort>       Select effort: light, standard, extended, heavy, pro
+  --model <model>         Select model: gpt-6-astra, latest, gpt-5.6-sol, gpt-5.5
+  --effort <effort>       Select effort: instant, medium, high, xhigh, pro
   --github                Require the ChatGPT Chat tab and GitHub tool
   --detach                Return after dispatch
   --allow-sensitive       Allow deny-listed context files

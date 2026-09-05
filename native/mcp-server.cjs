@@ -269,7 +269,7 @@ const TOOL_SCHEMAS = {
     desc: "Ask ChatGPT through the browser session",
     schema: {
       query: z.string().describe("Question or prompt"),
-      model: z.string().optional().describe("ChatGPT model: instant, thinking, pro, gpt-5.5, gpt-5.6-sol, or a visible model label"),
+      model: z.string().optional().describe("ChatGPT model: gpt-6-astra, latest, gpt-5.6-sol, gpt-5.5"),
       "with-page": z.boolean().optional().describe("Include current page context"),
       file: z.string().optional().describe("One attachment path"),
       timeout: z.number().optional().describe("Timeout in seconds")

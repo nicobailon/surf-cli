@@ -355,7 +355,7 @@ const TOOLS = {
         args: ["query"],
         opts: {
           "with-page": "Include current page context",
-          model: "Model: instant, thinking, pro, gpt-5.5, gpt-5.6-sol, or a visible model label",
+          model: "Model: gpt-6-astra, latest, gpt-5.6-sol, gpt-5.5",
           file: "Attach file",
           timeout: "Timeout in seconds (default: 2700 = 45min)"
         },

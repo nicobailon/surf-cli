@@ -1,6 +1,7 @@
 const { abortableDelay, throwIfAborted } = require("./abort.cjs");
 const {
   CHATGPT_EFFORT_CHOICES,
+  CHATGPT_EFFORT_VALUE,
   boundedOptionLabels,
   normalizeChatGPTEffortChoice,
   normalizeChatGPTModelChoice,
@@ -495,243 +496,356 @@ function verificationError(kind, requested, items = [], invalid = false) {
   return error;
 }
 
-async function readPicker(cdp, kind, click = false) {
-  const selector = kind === "model" ? SELECTORS.modelButton : SELECTORS.effortButton;
-  return evaluate(
-    cdp,
-    `(() => {
-      ${buildClickDispatcher()}
-      const kind = ${JSON.stringify(kind)};
-      const effortChoices = new Set(${JSON.stringify(CHATGPT_EFFORT_CHOICES)});
-      const effortOwnerLabels = new Set([...effortChoices, 'thinking']);
-      const normalize = (value) => String(value || '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
-      const labelFor = (node) => {
-        const labelledBy = String(node.getAttribute?.('aria-labelledby') || '')
-          .split(/\s+/)
-          .map((id) => document.getElementById(id)?.textContent || '')
-          .join(' ');
-        const text = (node.innerText || node.textContent || '').replace(/\s+/g, ' ').trim();
-        const aria = (node.getAttribute?.('aria-label') || '').replace(/\s+/g, ' ').trim();
-        const title = (node.getAttribute?.('title') || '').replace(/\s+/g, ' ').trim();
-        return [text, aria, labelledBy, title].filter(Boolean).join(' | ');
+
+function combinedPickerScript(click = false) {
+  return `(() => {
+    ${buildClickDispatcher()}
+    const pickerSelector = ${JSON.stringify(SELECTORS.modelButton)};
+    const normalizeText = (value) => String(value || '').replace(/\\s+/g, ' ').trim();
+    const visible = (node) => {
+      if (!node || node.nodeType !== 1) return false;
+      for (let el = node; el && el.nodeType === 1; el = el.parentElement) {
+        if (el.hasAttribute?.('hidden') || el.hasAttribute?.('inert') || el.getAttribute?.('aria-hidden') === 'true') return false;
+        const style = window.getComputedStyle?.(el);
+        if (style && (style.display === 'none' || style.visibility === 'hidden')) return false;
+      }
+      const rect = node.getBoundingClientRect?.();
+      return !rect || (rect.width > 0 && rect.height > 0);
+    };
+    const labelledText = (node) => {
+      const labelledBy = String(node.getAttribute?.('aria-labelledby') || '')
+        .split(/\\s+/)
+        .map((id) => document.getElementById(id)?.textContent || '')
+        .join(' ');
+      return [node.innerText || node.textContent || '', node.getAttribute?.('aria-label') || '', labelledBy, node.getAttribute?.('title') || '']
+        .map(normalizeText)
+        .filter(Boolean)
+        .join(' | ');
+    };
+    const directSpanText = (node) => Array.from(node?.children || [])
+      .filter((child) => child.tagName === 'SPAN')
+      .filter(visible)
+      .map((span) => normalizeText(span.innerText || span.textContent || ''))
+      .filter(Boolean)
+      .filter((label, index, labels) => labels.indexOf(label) === index)
+      .join(' ');
+    const itemFor = (node, fallbackLabel) => {
+      const text = normalizeText(directSpanText(node) || node.innerText || node.textContent || '');
+      const aria = normalizeText(node.getAttribute?.('aria-label') || '');
+      const labelled = labelledText(node);
+      const label = [text, aria, labelled]
+        .filter(Boolean)
+        .filter((value, index, values) => values.indexOf(value) === index)
+        .join(' | ');
+      const modelText = text.toLowerCase();
+      const modelKey = /\\b5\\.6\\b/.test(modelText) && /\\bsol\\b/.test(modelText)
+        ? 'gpt56sol'
+        : /\\b5\\.5\\b/.test(modelText)
+          ? 'gpt55'
+          : (/\\bgpt\\s*6\\b/.test(modelText) || /^6(?:\\s|$)/.test(modelText))
+            ? 'gpt6astra'
+            : /^latest$/.test(modelText)
+              ? 'latest'
+              : null;
+      return {
+        role: node.getAttribute?.('role') || (node.tagName === 'BUTTON' ? 'button' : null),
+        label: (label || fallbackLabel || '').slice(0, 240),
+        displayLabel: (text || aria || fallbackLabel || '').slice(0, 80),
+        testId: node.getAttribute?.('data-testid') || null,
+        ...(modelKey ? { modelKey } : {}),
       };
-      let nodes = Array.from(document.querySelectorAll(${JSON.stringify(selector)})).filter((node) => {
-        const value = normalize(labelFor(node));
-        if (kind !== 'model') {
-          const words = value.split(/\s+/).filter(Boolean);
-          const hasEffort = words.some((word) => effortOwnerLabels.has(word));
-          const looksLikeModel = node.getAttribute?.('data-testid') === 'model-switcher-dropdown-button' ||
-            value.includes('current model') || value.includes('gpt') || value.includes('instant');
-          return hasEffort && !looksLikeModel;
-        }
-        return value.includes('gpt') || value.includes('thinking') || value.includes('instant');
-      });
-      if (kind === 'model' && nodes.length === 0) {
-        nodes = Array.from(document.querySelectorAll(${JSON.stringify(selector)})).filter((node) => {
-          const value = normalize(labelFor(node));
-          return value.includes('pro');
-        });
-      }
-      if (kind === 'model' && nodes.length === 0) {
-        nodes = Array.from(document.querySelectorAll(${JSON.stringify(selector)})).filter((node) =>
-          node.getAttribute?.('aria-haspopup') === 'menu' || node.getAttribute?.('aria-expanded') !== null
-        );
-      }
-      const items = nodes.map((node) => {
-        const text = (node.innerText || node.textContent || '').replace(/\\s+/g, ' ').trim();
-        const aria = (node.getAttribute?.('aria-label') || '').replace(/\\s+/g, ' ').trim();
-        const labelledBy = String(node.getAttribute?.('aria-labelledby') || '')
+    };
+    const buttons = Array.from(document.querySelectorAll(pickerSelector)).filter((node) =>
+      visible(node) && (node.getAttribute?.('aria-haspopup') === 'menu' || node.getAttribute?.('aria-expanded') !== null)
+    );
+    const pickerButtons = buttons.map((node) => itemFor(node));
+    if (${click} && buttons.length === 1) dispatchClickSequence(buttons[0]);
+
+    const menus = Array.from(document.querySelectorAll('[role="menu"][data-radix-menu-content]')).filter(visible);
+    const menu = menus.find((node) => node.querySelector?.('[data-testid="composer-intelligence-picker-content"]')) || menus[0] || null;
+    if (!menu) return { pickerButtons, menuFound: false, modelItems: pickerButtons, effortItems: [] };
+
+    const content = menu.querySelector?.('[data-testid="composer-intelligence-picker-content"]') || menu;
+    const panels = Array.from(content.querySelectorAll?.('[data-testid="composer-model-picker-slider-simple-view"], [data-testid="composer-model-picker-slider-advanced-view"], [data-view="simple"], [data-view="advanced"]') || [])
+      .filter(visible);
+    const activePanel = panels.find((panel) => !panel.hasAttribute?.('inert')) || content;
+    const activeId = activePanel.getAttribute?.('data-testid') || '';
+    const view = activePanel.getAttribute?.('data-view') || (activeId.includes('advanced') ? 'advanced' : 'simple');
+
+    const modelToggle = Array.from(content.querySelectorAll?.('[role="menuitem"][aria-label="Select model"]') || [])
+      .filter(visible)[0] || null;
+    const modelToggleItem = modelToggle ? itemFor(modelToggle) : null;
+    const modelOptions = Array.from(activePanel.querySelectorAll?.('[role="menuitemradio"]') || [])
+      .filter(visible)
+      .map((node) => {
+        const item = itemFor(node);
+        const state = String(node.getAttribute?.('data-state') || '').toLowerCase();
+        return {
+          ...item,
+          selected: node.getAttribute?.('aria-checked') === 'true' || state === 'checked',
+        };
+      })
+      .filter((item) => /\\b(latest|gpt|5\\.6|5\\.5)\\b/i.test(item.label));
+
+    const power = Array.from(content.querySelectorAll?.('[role="menuitem"][aria-label="Power"]') || [])
+      .filter(visible)[0] || null;
+    let effortItems = [];
+    if (power) {
+      const slider = power.querySelector?.('[data-model-reasoning-effort-slider] [role="slider"]') || power.querySelector?.('[role="slider"]');
+      if (slider) {
+        const describedBy = String(power.getAttribute?.('aria-describedby') || slider.getAttribute?.('aria-describedby') || '')
           .split(/\\s+/)
-          .map((id) => document.getElementById(id)?.textContent || '')
-          .join(' ')
-          .replace(/\\s+/g, ' ')
-          .trim();
-        const title = (node.getAttribute?.('title') || '').replace(/\\s+/g, ' ').trim();
-        return {
-          role: node.getAttribute?.('role') || (node.tagName === 'BUTTON' ? 'button' : null),
-          label: [text, aria, labelledBy, title].filter(Boolean).join(' | ').slice(0, 240),
-          displayLabel: (text || aria || labelledBy || title).slice(0, 80),
-          testId: node.getAttribute?.('data-testid') || null,
-        };
-      });
-      if (${click} && nodes.length === 1) dispatchClickSequence(nodes[0]);
-      return { items };
-    })()`,
-  );
+          .map((id) => normalizeText(document.getElementById(id)?.textContent || ''))
+          .filter(Boolean)
+          .join(' | ');
+        const ariaValueText = normalizeText(slider.getAttribute?.('aria-valuetext') || '');
+        const powerText = normalizeText(power.innerText || power.textContent || '');
+        effortItems = [{
+          role: 'slider',
+          label: [ariaValueText, describedBy, powerText].filter(Boolean).join(' | ').slice(0, 240),
+          displayLabel: (ariaValueText || describedBy || powerText).slice(0, 80),
+          value: Number(slider.getAttribute?.('aria-valuenow')),
+          min: Number(slider.getAttribute?.('aria-valuemin')),
+          max: Number(slider.getAttribute?.('aria-valuemax')),
+          selected: true,
+        }];
+      }
+    }
+
+    return {
+      pickerButtons,
+      menuFound: true,
+      view,
+      modelToggle: modelToggleItem,
+      modelToggleExpanded: modelToggle?.getAttribute?.('aria-expanded') === 'true',
+      modelOptions,
+      modelItems: [...(modelToggleItem ? [modelToggleItem] : []), ...modelOptions.filter((item) => item.selected)],
+      effortItems,
+    };
+  })()`;
 }
 
-async function readMenu(cdp, kind, allowSubmenu) {
-  const isModel = kind === "model";
-  const menuSelector = isModel ? SELECTORS.modelMenu : SELECTORS.effortMenu;
-  const itemSelector = isModel ? SELECTORS.modelMenuItem : SELECTORS.effortMenuItem;
-  return evaluate(
-    cdp,
-    `(() => {
-      ${buildClickDispatcher()}
-      const isModel = ${isModel};
-      const choices = ${JSON.stringify(CHATGPT_EFFORT_CHOICES)};
-      const containers = Array.from(document.querySelectorAll(${JSON.stringify(menuSelector)}));
-      const normalize = (value) => String(value || '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
-      let menu = isModel ? containers.find((container) => {
-        const labels = Array.from(container.querySelectorAll(${JSON.stringify(itemSelector)}))
-          .filter((item) => item.getAttribute?.('aria-haspopup') !== 'menu')
-          .map((item) => normalize((item.getAttribute?.('aria-label') || '') + ' ' + (item.textContent || '')));
-        return labels.some((label) => label.includes('gpt') || /^o[0-9]/.test(label));
-      }) : containers.find((container) => {
-        const label = normalize(container.querySelector?.(${JSON.stringify(SELECTORS.effortMenuLabel)})?.textContent);
-        const levels = new Set(Array.from(container.querySelectorAll(${JSON.stringify(itemSelector)}))
-          .flatMap((item) => normalize(item.textContent).split(/\\s+/))
-          .filter((word) => choices.includes(word)));
-        return label.includes('thinking time') || levels.size >= 2;
-      });
-      if (!menu && isModel && ${allowSubmenu}) {
-        for (const container of containers) {
-          const trigger = Array.from(container.querySelectorAll(${JSON.stringify(SELECTORS.effortSubmenuTrigger)}))
-            .find((item) => {
-              const label = normalize((item.getAttribute?.('aria-label') || '') + ' ' + (item.textContent || ''));
-              return label.includes('model') || label.includes('advanced');
-            });
-          if (trigger) {
-            dispatchClickSequence(trigger);
-            return { found: false, submenuOpened: true, items: [] };
-          }
-        }
-      }
-      if (!menu && !isModel && ${allowSubmenu}) {
-        for (const container of containers) {
-          const trigger = Array.from(container.querySelectorAll(${JSON.stringify(SELECTORS.effortSubmenuTrigger)}))
-            .find((item) => {
-              const label = normalize((item.getAttribute?.('aria-label') || '') + ' ' + (item.textContent || ''));
-              return label.includes('thinking time') || label.includes('reasoning effort');
-            });
-          if (trigger) {
-            dispatchClickSequence(trigger);
-            return { found: false, submenuOpened: true, items: [] };
-          }
-        }
-      }
-      if (!menu) return { found: false, items: [] };
-      const items = Array.from(menu.querySelectorAll(${JSON.stringify(itemSelector)})).map((item) => {
-        const primary = isModel ? item.querySelector?.(${JSON.stringify(SELECTORS.menuItemPrimaryLabel)}) : null;
-        const label = (primary?.textContent || item.getAttribute?.('aria-label') || item.textContent || '')
-          .replace(/\\s+/g, ' ').trim().slice(0, 80);
-        const state = (item.getAttribute?.('data-state') || '').toLowerCase();
-        const selected = item.getAttribute?.('aria-checked') === 'true' ||
-          item.getAttribute?.('aria-selected') === 'true' || item.getAttribute?.('data-selected') === 'true' ||
-          ['checked', 'selected', 'on'].includes(state) ||
-          Boolean(item.querySelector?.(${JSON.stringify(SELECTORS.selectedMenuIndicator)}));
-        return {
-          role: item.getAttribute?.('role') || (item.tagName === 'BUTTON' ? 'button' : null),
-          label,
-          testId: item.getAttribute?.('data-testid') || null,
-          selected,
-        };
-      });
-      return { found: true, items };
-    })()`,
-  );
+async function readCombinedPicker(cdp, click = false, signal) {
+  return evaluate(cdp, combinedPickerScript(click), signal);
 }
 
-async function waitForMenu(cdp, kind, timeoutMs, signal) {
+async function waitForCombinedMenu(cdp, timeoutMs, signal) {
   const deadline = Date.now() + timeoutMs;
-  let allowSubmenu = true;
   while (Date.now() < deadline) {
-    const result = await readMenu(cdp, kind, allowSubmenu);
-    if (result?.found) return result;
-    if (result?.submenuOpened) allowSubmenu = false;
+    const result = await readCombinedPicker(cdp, false, signal);
+    if (result?.menuFound) return result;
     await delay(100, signal);
   }
-  return { found: false, items: [] };
+  return { menuFound: false, modelItems: [], modelOptions: [], effortItems: [] };
 }
 
-async function clickMenuItem(cdp, kind, match) {
-  const isModel = kind === "model";
-  const menuSelector = isModel ? SELECTORS.modelMenu : SELECTORS.effortMenu;
-  const itemSelector = isModel ? SELECTORS.modelMenuItem : SELECTORS.effortMenuItem;
+async function activateAdvancedModelView(cdp, signal) {
+  return evaluate(
+    cdp,
+    `(() => {
+      ${buildClickDispatcher()}
+      const visible = (node) => {
+        if (!node || node.nodeType !== 1) return false;
+        for (let el = node; el && el.nodeType === 1; el = el.parentElement) {
+          if (el.hasAttribute?.('hidden') || el.hasAttribute?.('inert') || el.getAttribute?.('aria-hidden') === 'true') return false;
+          const style = window.getComputedStyle?.(el);
+          if (style && (style.display === 'none' || style.visibility === 'hidden')) return false;
+        }
+        const rect = node.getBoundingClientRect?.();
+        return !rect || (rect.width > 0 && rect.height > 0);
+      };
+      const trigger = Array.from(document.querySelectorAll('[role="menuitem"][aria-label="Select model"]')).filter(visible)[0];
+      if (!trigger) return false;
+      if (trigger.getAttribute?.('aria-expanded') === 'true') return true;
+      return dispatchClickSequence(trigger);
+    })()`,
+    signal,
+  );
+}
+
+async function clickModelOption(cdp, match, signal) {
   return evaluate(
     cdp,
     `(() => {
       ${buildClickDispatcher()}
       const expectedTestId = ${JSON.stringify(match.testId)};
       const expectedLabel = ${JSON.stringify(match.label)};
-      const items = Array.from(new Set(
-        Array.from(document.querySelectorAll(${JSON.stringify(menuSelector)}))
-          .flatMap((menu) => Array.from(menu.querySelectorAll(${JSON.stringify(itemSelector)}))),
-      ));
-      const matches = items.filter((item) => {
+      const normalizeText = (value) => String(value || '').replace(/\\s+/g, ' ').trim();
+      const visible = (node) => {
+        if (!node || node.nodeType !== 1) return false;
+        for (let el = node; el && el.nodeType === 1; el = el.parentElement) {
+          if (el.hasAttribute?.('hidden') || el.hasAttribute?.('inert') || el.getAttribute?.('aria-hidden') === 'true') return false;
+          const style = window.getComputedStyle?.(el);
+          if (style && (style.display === 'none' || style.visibility === 'hidden')) return false;
+        }
+        const rect = node.getBoundingClientRect?.();
+        return !rect || (rect.width > 0 && rect.height > 0);
+      };
+      const menu = Array.from(document.querySelectorAll('[role="menu"][data-radix-menu-content]')).filter(visible)[0];
+      const content = menu?.querySelector?.('[data-testid="composer-intelligence-picker-content"]') || menu;
+      const panels = Array.from(content?.querySelectorAll?.('[data-testid="composer-model-picker-slider-advanced-view"], [data-view="advanced"]') || []).filter(visible);
+      const panel = panels.find((node) => !node.hasAttribute?.('inert')) || content;
+      const matches = Array.from(panel?.querySelectorAll?.('[role="menuitemradio"]') || []).filter(visible).filter((item) => {
         if (expectedTestId) return item.getAttribute?.('data-testid') === expectedTestId;
-        const primary = ${isModel} ? item.querySelector?.(${JSON.stringify(SELECTORS.menuItemPrimaryLabel)}) : null;
-        const label = (primary?.textContent || item.getAttribute?.('aria-label') || item.textContent || '')
-          .replace(/\\s+/g, ' ').trim().slice(0, 80);
+        const label = normalizeText(item.innerText || item.textContent || item.getAttribute?.('aria-label') || '').slice(0, 240);
         return label === expectedLabel;
       });
-      return matches.length >= 1 ? dispatchClickSequence(matches[0]) : false;
+      return matches.length === 1 ? dispatchClickSequence(matches[0]) : false;
     })()`,
+    signal,
   );
 }
 
-async function selectModel(cdp, desiredModel, timeoutMs = 8000, signal) {
-  throwIfAborted(signal);
-  const picker = await readPicker(cdp, "model", true);
-  if (picker?.items?.length !== 1) throw verificationError("model", desiredModel);
-  await delay(300, signal);
-  const menu = await waitForMenu(cdp, "model", timeoutMs, signal);
-  const currentAdvancedModel = verifyChatGPTModelSelection(
-    menu.items.filter((item) => /\bmodel\b/i.test(String(item?.label || ""))),
-    desiredModel,
-  );
-  if (currentAdvancedModel) return currentAdvancedModel.displayLabel || currentAdvancedModel.label;
+async function closeCombinedPicker(cdp, inputCdp, signal) {
+  const hasMenu = (await readCombinedPicker(cdp, false, signal))?.menuFound;
+  if (!hasMenu) return;
+  if (inputCdp) {
+    await inputCdp("Input.dispatchKeyEvent", { type: "keyDown", key: "Escape", code: "Escape", windowsVirtualKeyCode: 27 });
+    await inputCdp("Input.dispatchKeyEvent", { type: "keyUp", key: "Escape", code: "Escape", windowsVirtualKeyCode: 27 });
+  } else {
+    await evaluate(cdp, `document.activeElement?.blur?.(); document.body?.click?.(); true`, signal);
+  }
+  const deadline = Date.now() + 1000;
+  while (Date.now() < deadline) {
+    await delay(50, signal);
+    if (!(await readCombinedPicker(cdp, false, signal))?.menuFound) return;
+  }
+  throw uiError("picker_close_failed", "ChatGPT picker did not close after Escape/outside click");
+}
 
-  const match = resolveChatGPTModelMenuOption(menu.items, desiredModel);
-  if (!match || !(await clickMenuItem(cdp, "model", match))) {
-    throw verificationError("model", desiredModel, menu.items);
+async function verifyCurrentModel(cdp, inputCdp, desiredModel, timeoutMs = 8000, signal) {
+  throwIfAborted(signal);
+  const state = await readCombinedPicker(cdp, false, signal);
+  const verified = verifyChatGPTModelSelection(state?.modelItems, desiredModel);
+  if (verified) {
+    await closeCombinedPicker(cdp, inputCdp, signal);
+    return verified.displayLabel || verified.label;
+  }
+  let menu = state?.menuFound ? state : null;
+  if (!menu) {
+    const opened = await readCombinedPicker(cdp, true, signal);
+    if (opened?.pickerButtons?.length !== 1) throw verificationError("model", desiredModel, state?.modelItems);
+    await delay(150, signal);
+    menu = await waitForCombinedMenu(cdp, timeoutMs, signal);
+  }
+  let readback = verifyChatGPTModelSelection(menu.modelItems, desiredModel);
+  if (!readback) {
+    if (!(await activateAdvancedModelView(cdp, signal))) throw verificationError("model", desiredModel, menu.modelItems);
+    await delay(150, signal);
+    menu = await waitForCombinedMenu(cdp, timeoutMs, signal);
+    readback = verifyChatGPTModelSelection(menu.modelItems, desiredModel);
+  }
+  if (!readback) throw verificationError("model", desiredModel, menu.modelItems);
+  await closeCombinedPicker(cdp, inputCdp, signal);
+  return readback.displayLabel || readback.label;
+}
+
+async function selectModel(cdp, inputCdp, desiredModel, timeoutMs = 8000, signal) {
+  throwIfAborted(signal);
+  const picker = await readCombinedPicker(cdp, true, signal);
+  if (picker?.pickerButtons?.length !== 1) throw verificationError("model", desiredModel);
+  await delay(200, signal);
+  let menu = await waitForCombinedMenu(cdp, timeoutMs, signal);
+  const current = verifyChatGPTModelSelection(menu.modelItems, desiredModel);
+  if (current) {
+    await closeCombinedPicker(cdp, inputCdp, signal);
+    return current.displayLabel || current.label;
+  }
+
+  if (!(await activateAdvancedModelView(cdp, signal))) throw verificationError("model", desiredModel, menu.modelItems);
+  await delay(150, signal);
+  menu = await waitForCombinedMenu(cdp, timeoutMs, signal);
+  const selectedCurrent = verifyChatGPTModelSelection(menu.modelItems, desiredModel);
+  if (selectedCurrent) {
+    await closeCombinedPicker(cdp, inputCdp, signal);
+    return selectedCurrent.displayLabel || selectedCurrent.label;
+  }
+  const match = resolveChatGPTModelMenuOption(menu.modelOptions, desiredModel);
+  if (!match || !(await clickModelOption(cdp, match, signal))) {
+    throw verificationError("model", desiredModel, menu.modelOptions);
   }
   await delay(200, signal);
-  const state = await readPicker(cdp, "model");
-  const verified = verifyChatGPTModelSelection(state?.items, desiredModel);
-  if (verified) return verified.displayLabel || verified.label;
-
-  const reopened = await readPicker(cdp, "model", true);
-  if (reopened?.items?.length !== 1) throw verificationError("model", desiredModel, menu.items);
-  const readbackMenu = await waitForMenu(cdp, "model", timeoutMs, signal);
-  const readbackVerified = verifyChatGPTModelSelection(
-    readbackMenu.items.filter((item) => item.selected),
-    desiredModel,
-  );
-  if (!readbackVerified) throw verificationError("model", desiredModel, readbackMenu.items);
-  return readbackVerified.label;
+  return verifyCurrentModel(cdp, inputCdp, desiredModel, timeoutMs, signal);
 }
 
-async function selectEffort(cdp, desiredEffort, timeoutMs = 8000, signal) {
+async function focusPowerControl(cdp, signal) {
+  return evaluate(
+    cdp,
+    `(() => {
+      const visible = (node) => {
+        if (!node || node.nodeType !== 1) return false;
+        for (let el = node; el && el.nodeType === 1; el = el.parentElement) {
+          if (el.hasAttribute?.('hidden') || el.hasAttribute?.('inert') || el.getAttribute?.('aria-hidden') === 'true') return false;
+          const style = window.getComputedStyle?.(el);
+          if (style && (style.display === 'none' || style.visibility === 'hidden')) return false;
+        }
+        const rect = node.getBoundingClientRect?.();
+        return !rect || (rect.width > 0 && rect.height > 0);
+      };
+      const power = Array.from(document.querySelectorAll('[role="menuitem"][aria-label="Power"]')).filter(visible)[0];
+      if (!power) return false;
+      power.focus?.();
+      return true;
+    })()`,
+    signal,
+  );
+}
+
+async function dispatchEffortArrow(cdp, inputCdp, key, signal) {
+  if (inputCdp) {
+    const code = key === "ArrowRight" ? 39 : 37;
+    await inputCdp("Input.dispatchKeyEvent", { type: "keyDown", key, code: key, windowsVirtualKeyCode: code });
+    await inputCdp("Input.dispatchKeyEvent", { type: "keyUp", key, code: key, windowsVirtualKeyCode: code });
+    return;
+  }
+  await evaluate(cdp, `(() => {
+    const key = ${JSON.stringify(key)};
+    const power = document.activeElement || Array.from(document.querySelectorAll('[role="menuitem"][aria-label="Power"]'))[0];
+    power?.dispatchEvent?.(new KeyboardEvent('keydown', { key, code: key, bubbles: true, cancelable: true }));
+    power?.dispatchEvent?.(new KeyboardEvent('keyup', { key, code: key, bubbles: true, cancelable: true }));
+    return true;
+  })()`, signal);
+}
+
+function strictVerifiedEffort(items, desiredEffort) {
+  const verified = verifyChatGPTEffortSelection(items, desiredEffort);
+  if (!verified) return null;
+  return verified.min === 0 && verified.max === 4 && Number.isInteger(verified.value) ? verified : null;
+}
+
+async function selectEffort(cdp, inputCdp, desiredEffort, timeoutMs = 8000, signal) {
   throwIfAborted(signal);
   const normalizedEffort = normalizeChatGPTEffortChoice(desiredEffort);
   if (!normalizedEffort) throw verificationError("effort", desiredEffort, [], true);
-  const current = await readPicker(cdp, "effort");
-  const currentVerified = verifyChatGPTEffortSelection(current?.items, normalizedEffort);
-  if (currentVerified) return currentVerified.displayLabel || currentVerified.label;
+  const targetValue = CHATGPT_EFFORT_VALUE.get(normalizedEffort);
 
-  const picker = await readPicker(cdp, "effort", true);
-  if (picker?.items?.length !== 1) throw verificationError("effort", desiredEffort);
-  await delay(300, signal);
-  const menu = await waitForMenu(cdp, "effort", timeoutMs, signal);
-  const match = resolveChatGPTEffortMenuOption(menu.items, normalizedEffort);
-  if (!match || !(await clickMenuItem(cdp, "effort", match))) {
-    throw verificationError("effort", desiredEffort, menu.items);
-  }
+  const picker = await readCombinedPicker(cdp, true, signal);
+  if (picker?.pickerButtons?.length !== 1) throw verificationError("effort", desiredEffort);
   await delay(200, signal);
-  const pillState = await readPicker(cdp, "effort");
-  const pillVerified = verifyChatGPTEffortSelection(pillState?.items, normalizedEffort);
-  if (pillVerified) return pillVerified.displayLabel || pillVerified.label;
-
-  const reopened = await readPicker(cdp, "effort", true);
-  if (reopened?.items?.length !== 1) throw verificationError("effort", desiredEffort, menu.items);
-  const readbackMenu = await waitForMenu(cdp, "effort", timeoutMs, signal);
-  const verified = verifyChatGPTEffortSelection(
-    readbackMenu.items.filter((item) => item.selected),
-    normalizedEffort,
-  );
-  if (!verified) throw verificationError("effort", desiredEffort, readbackMenu.items);
-  return verified.label;
+  let menu = await waitForCombinedMenu(cdp, timeoutMs, signal);
+  const current = strictVerifiedEffort(menu.effortItems, normalizedEffort);
+  if (current) {
+    await closeCombinedPicker(cdp, inputCdp, signal);
+    return current.displayLabel || current.label;
+  }
+  const effort = menu.effortItems?.[0];
+  if (!effort || effort.min !== 0 || effort.max !== 4 || !Number.isInteger(effort.value) || !Number.isInteger(targetValue)) {
+    throw verificationError("effort", desiredEffort, menu.effortItems);
+  }
+  if (!verifyChatGPTEffortSelection(menu.effortItems, CHATGPT_EFFORT_CHOICES[effort.value])) {
+    throw verificationError("effort", desiredEffort, menu.effortItems);
+  }
+  if (!(await focusPowerControl(cdp, signal))) throw verificationError("effort", desiredEffort, menu.effortItems);
+  const direction = targetValue > effort.value ? "ArrowRight" : "ArrowLeft";
+  for (let index = 0; index < Math.abs(targetValue - effort.value); index += 1) {
+    await dispatchEffortArrow(cdp, inputCdp, direction, signal);
+    await delay(100, signal);
+  }
+  menu = await waitForCombinedMenu(cdp, timeoutMs, signal);
+  const verified = strictVerifiedEffort(menu.effortItems, normalizedEffort);
+  if (!verified) throw verificationError("effort", desiredEffort, menu.effortItems);
+  await closeCombinedPicker(cdp, inputCdp, signal);
+  return verified.displayLabel || verified.label;
 }
 
 async function typePrompt(cdp, inputCdp, prompt, signal) {
@@ -867,6 +981,7 @@ module.exports = {
   selectEffort,
   selectGitHubTool,
   selectModel,
+  verifyCurrentModel,
   verifyChatGPTEffortSelection,
   verifyChatGPTModelSelection,
   waitForChatGPTAttachment,

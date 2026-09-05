@@ -1,11 +1,11 @@
 ---
 name: gpt-pro
-description: Surf GPT Pro advisor through ChatGPT GPT-5.6 Sol Pro web mode
+description: Surf GPT Pro advisor through ChatGPT GPT-6 Astra Pro web mode
 runner:
   type: external-job
   provider: surf-oracle
   options:
-    model: gpt-5.6-sol
+    model: gpt-6-astra
     effort: pro
 async: true
 systemPromptMode: replace

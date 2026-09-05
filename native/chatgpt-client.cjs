@@ -14,6 +14,7 @@ const {
   selectChatTab,
   selectGitHubTool,
   selectModel,
+  verifyCurrentModel,
   typePrompt,
   verifyChatGPTEffortSelection,
   verifyChatGPTModelSelection,
@@ -165,7 +166,7 @@ async function dispatch(options) {
     let modelVerified = null;
     let effortVerified = null;
     if (model) {
-      modelVerified = await selectModel(cdp, model, 8000, signal);
+      modelVerified = await selectModel(cdp, inputCdp, model, 8000, signal);
       log(`Verified model: ${modelVerified}`);
     }
     if (file) {
@@ -214,8 +215,12 @@ async function dispatch(options) {
     await typePrompt(cdp, inputCdp, prompt, signal);
     log("Prompt typed");
     if (effort) {
-      effortVerified = await selectEffort(cdp, effort, 8000, signal);
+      effortVerified = await selectEffort(cdp, inputCdp, effort, 8000, signal);
       log(`Verified effort: ${effortVerified}`);
+    }
+    if (model) {
+      modelVerified = await verifyCurrentModel(cdp, inputCdp, model, 8000, signal);
+      log(`Reverified model before submit: ${modelVerified}`);
     }
     const baseline = normalizeResponseSnapshot(await readChatGPTResponseSnapshot(cdp));
     if (beforeSubmit) await raceAbort(beforeSubmit, signal);

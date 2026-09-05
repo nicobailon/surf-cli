@@ -1,3 +1,5 @@
+// biome-ignore-all format: fake DOM picker harness intentionally keeps branchy selector and CDP doubles local to the regression tests.
+// biome-ignore-all lint/complexity/noExcessiveCognitiveComplexity lint/style/useBlockStatements lint/style/noNestedTernary: fake DOM picker harness intentionally keeps branchy selector and CDP doubles local to the regression tests.
 import { vi } from "vitest";
 // @ts-expect-error - CommonJS module without type definitions
 import * as chatgptClient from "../../native/chatgpt-client.cjs";
@@ -191,14 +193,13 @@ describe("chatgpt-client", () => {
     });
   });
 
+
   describe("normalizeChatGPTModelChoice", () => {
     it.each([
-      ["Instant", "instant"],
-      ["gpt-5-3", "instant"],
-      ["Thinking", "thinking"],
-      ["gpt-5-4-thinking", "thinking"],
-      ["Pro", "pro"],
-      ["gpt-5-4-pro", "pro"],
+      ["Latest", "latest"],
+      ["GPT-6 Astra", "gpt6astra"],
+      ["GPT-6", "gpt6astra"],
+      ["6", "gpt6astra"],
       ["GPT-5.5", "gpt55"],
       ["ChatGPT 5.5", "gpt55"],
       ["5.5", "gpt55"],
@@ -212,158 +213,61 @@ describe("chatgpt-client", () => {
   });
 
   describe("resolveChatGPTModelMenuOption", () => {
-    it("matches current ChatGPT model menu options by visible label", () => {
-      expect(
-        chatgptClient.resolveChatGPTModelMenuOption(
-          [
-            { role: null, label: "Latest", testId: null },
-            { role: "menuitemradio", label: "Instant", testId: "model-switcher-gpt-5-3" },
-            { role: "menuitemradio", label: "Thinking", testId: "model-switcher-gpt-5-4-thinking" },
-            { role: "menuitemradio", label: "Pro", testId: "model-switcher-gpt-5-4-pro" },
-            { role: "menuitem", label: "Configure...", testId: "model-configure-modal" },
-          ],
-          "thinking",
-        ),
-      ).toEqual({
+    const currentOptions = [
+      { role: "menuitemradio", label: "Latest", testId: null },
+      { role: "menuitemradio", label: "GPT-5.6 Sol", testId: null },
+      { role: "menuitemradio", label: "GPT-5.5", testId: null },
+      { role: "menuitem", label: "Configure...", testId: "model-configure-modal" },
+    ];
+
+    it("selects the current model menu entries", () => {
+      expect(chatgptClient.resolveChatGPTModelMenuOption(currentOptions, "gpt-5.6-sol")).toEqual({
         role: "menuitemradio",
-        label: "Thinking",
-        testId: "model-switcher-gpt-5-4-thinking",
+        label: "GPT-5.6 Sol",
+        testId: null,
+      });
+      expect(chatgptClient.resolveChatGPTModelMenuOption(currentOptions, "gpt-5.5")).toEqual({
+        role: "menuitemradio",
+        label: "GPT-5.5",
+        testId: null,
+      });
+      expect(chatgptClient.resolveChatGPTModelMenuOption(currentOptions, "latest")).toEqual({
+        role: "menuitemradio",
+        label: "Latest",
+        testId: null,
       });
     });
 
-    it("matches current ChatGPT model menu options by internal test id alias", () => {
-      expect(
-        chatgptClient.resolveChatGPTModelMenuOption(
-          [
-            { role: null, label: "Latest", testId: null },
-            { role: "menuitemradio", label: "Instant", testId: "model-switcher-gpt-5-3" },
-            { role: "menuitemradio", label: "Thinking", testId: "model-switcher-gpt-5-4-thinking" },
-            { role: "menuitemradio", label: "Pro", testId: "model-switcher-gpt-5-4-pro" },
-            { role: "menuitem", label: "Configure...", testId: "model-configure-modal" },
-          ],
-          "gpt-5-4-pro",
-        ),
-      ).toEqual({
+    it("uses Latest as the selectable row for GPT-6 Astra but not as verification evidence", () => {
+      expect(chatgptClient.resolveChatGPTModelMenuOption(currentOptions, "gpt-6-astra")).toEqual({
         role: "menuitemradio",
-        label: "Pro",
-        testId: "model-switcher-gpt-5-4-pro",
+        label: "Latest",
+        testId: null,
       });
-    });
-
-    it("matches nested advanced model options without model-switcher test ids", () => {
       expect(
-        chatgptClient.resolveChatGPTModelMenuOption(
-          [
-            { role: "menuitemradio", label: "GPT-5.6 Sol", testId: null },
-            { role: "menuitemradio", label: "GPT-5.5", testId: null },
-            { role: "menuitemradio", label: "o3 Leaving on August 26", testId: null },
-          ],
-          "gpt-5.6-sol",
-        ),
-      ).toEqual({ role: "menuitemradio", label: "GPT-5.6 Sol", testId: null });
-      expect(
-        chatgptClient.resolveChatGPTModelMenuOption(
-          [
-            { role: "menuitemradio", label: "GPT-5.6 Sol", testId: null },
-            { role: "menuitemradio", label: "GPT-5.5", testId: null },
-            { role: "menuitemradio", label: "o3 Leaving on August 26", testId: null },
-          ],
-          "gpt-5.5",
-        ),
-      ).toEqual({ role: "menuitemradio", label: "GPT-5.5", testId: null });
-      expect(
-        chatgptClient.resolveChatGPTModelMenuOption(
-          [
-            { role: "menuitemradio", label: "GPT-5.6 Sol", testId: null },
-            { role: "menuitemradio", label: "GPT-5.5", testId: null },
-          ],
-          "pro",
+        chatgptClient.verifyChatGPTModelSelection(
+          [{ role: "menuitemradio", label: "Latest", selected: true, testId: null }],
+          "gpt-6-astra",
         ),
       ).toBeNull();
-    });
-
-    it("ignores non-selectable menu rows like section labels and configure", () => {
       expect(
-        chatgptClient.resolveChatGPTModelMenuOption(
-          [
-            { role: null, label: "Latest", testId: null },
-            { role: "menuitem", label: "Configure...", testId: "model-configure-modal" },
-          ],
-          "latest",
+        chatgptClient.verifyChatGPTModelSelection(
+          [{ role: "menuitemradio", label: "GPT-5.6 Sol", selected: false, testId: null }],
+          "gpt-5.6-sol",
         ),
       ).toBeNull();
     });
   });
 
   describe("verified ChatGPT picker state", () => {
-    const modelState = [
-      {
-        role: "button",
-        label: "ChatGPT 5.4 Thinking",
-        testId: "model-switcher-dropdown-button",
-      },
-    ];
-    const effortOptions = [
-      { role: "menuitemradio", label: "Light", testId: "thinking-time-light" },
-      { role: "menuitemradio", label: "Standard", testId: "thinking-time-standard" },
-      { role: "menuitemradio", label: "Extended", testId: "thinking-time-extended" },
-      { role: "menuitemradio", label: "Heavy", testId: "thinking-time-heavy" },
-    ];
-
     it.each([
-      ["requested model found", modelState, "thinking", "ChatGPT 5.4 Thinking"],
-      [
-        "GPT-5.5 readback",
-        [{ role: "button", label: "ChatGPT 5.5 | Current model is ChatGPT 5.5", testId: null }],
-        "gpt-5.5",
-        "ChatGPT 5.5 | Current model is ChatGPT 5.5",
-      ],
-      [
-        "GPT-5.6 Sol readback",
-        [
-          {
-            role: "button",
-            label: "ChatGPT 5.6 Sol | Current model is ChatGPT 5.6 Sol",
-            testId: null,
-          },
-        ],
-        "gpt-5.6-sol",
-        "ChatGPT 5.6 Sol | Current model is ChatGPT 5.6 Sol",
-      ],
-      [
-        "advanced menu current model row",
-        [{ role: "menuitem", label: "Model GPT-5.6 Sol", testId: null }],
-        "gpt-5.6-sol",
-        "Model GPT-5.6 Sol",
-      ],
-      [
-        "model readback ignores separate Pro effort",
-        [
-          {
-            role: "button",
-            label: "ChatGPT 5.6 Sol | Current model is ChatGPT 5.6 Sol",
-            testId: null,
-          },
-          { role: "button", label: "Pro", testId: null },
-        ],
-        "gpt-5.6-sol",
-        "ChatGPT 5.6 Sol | Current model is ChatGPT 5.6 Sol",
-      ],
-      [
-        "Pro model readback",
-        [
-          {
-            role: "button",
-            label: "Pro | Current model is Pro",
-            testId: null,
-          },
-        ],
-        "pro",
-        "Pro | Current model is Pro",
-      ],
-      ["requested model missing", modelState, "pro", null],
-      ["ambiguous model state", [...modelState, ...modelState], "thinking", null],
-      ["unreadable model state", [{ role: "button", label: "", testId: null }], "thinking", null],
+      ["GPT-6 Astra readback from current pill", [{ role: "button", label: "6 Pro" }], "gpt-6-astra", "6 Pro"],
+      ["GPT-5.5 readback", [{ role: "button", label: "5.5 Pro" }], "gpt-5.5", "5.5 Pro"],
+      ["GPT-5.6 Sol readback", [{ role: "button", label: "5.6 Sol Pro" }], "gpt-5.6-sol", "5.6 Sol Pro"],
+      ["Latest explicit readback", [{ role: "menuitemradio", label: "Latest", selected: true }], "latest", "Latest"],
+      ["GPT-6 Astra rejects floating Latest alone", [{ role: "menuitemradio", label: "Latest", selected: true }], "gpt-6-astra", null],
+      ["requested model missing", [{ role: "button", label: "5.6 Sol Pro" }], "gpt-6-astra", null],
+      ["ambiguous model state", [{ role: "button", label: "6 Pro" }, { role: "menuitem", label: "GPT-6 Astra" }], "gpt-6-astra", null],
     ])("handles %s", (_, items, requested, expectedLabel) => {
       expect(chatgptClient.verifyChatGPTModelSelection(items, requested)?.label ?? null).toBe(
         expectedLabel,
@@ -371,130 +275,374 @@ describe("chatgpt-client", () => {
     });
 
     it.each([
-      ["requested effort found", [effortOptions[2]], "extended", "Extended"],
-      [
-        "visible Pro label wins over unrelated test id metadata",
-        [{ role: "button", label: "Pro", testId: "thinking-time-standard" }],
-        "pro",
-        "Pro",
-      ],
-      [
-        "ambiguous visible label stays fail-closed",
-        [{ role: "button", label: "Pro Extended", testId: "thinking-time-pro" }],
-        "pro",
-        null,
-      ],
-      ["requested effort missing", [effortOptions[1]], "extended", null],
-      ["ambiguous effort state", [effortOptions[2], effortOptions[2]], "extended", null],
-      [
-        "unreadable effort state",
-        [{ role: "menuitemradio", label: "", testId: null }],
-        "extended",
-        null,
-      ],
-    ])("handles %s", (_, items, requested, expectedLabel) => {
+      ["Instant", [{ role: "slider", label: "Instant, 1 of 5.", value: 0 }], "instant", "Instant, 1 of 5."],
+      ["Medium", [{ role: "slider", label: "Medium, 2 of 5.", value: 1 }], "medium", "Medium, 2 of 5."],
+      ["High", [{ role: "slider", label: "High, 3 of 5.", value: 2 }], "high", "High, 3 of 5."],
+      ["Extra High", [{ role: "slider", label: "Extra High, 4 of 5.", value: 3 }], "xhigh", "Extra High, 4 of 5."],
+      ["Pro", [{ role: "slider", label: "Pro, 5 of 5.", value: 4 }], "pro", "Pro, 5 of 5."],
+      ["max value without label evidence", [{ role: "slider", label: "", value: 4 }], "pro", null],
+      ["obsolete effort name rejected", [{ role: "slider", label: "High, 3 of 5.", value: 2 }], "extended", null],
+    ])("handles effort %s", (_, items, requested, expectedLabel) => {
       expect(chatgptClient.verifyChatGPTEffortSelection(items, requested)?.label ?? null).toBe(
         expectedLabel,
       );
     });
 
-    it("verifies Pro after opening a Thinking composer effort pill", async () => {
-      class FakeEventTarget {
-        dispatchEvent() {
+    it("resolves effort options and accepts only the current vocabulary", () => {
+      const options = [
+        { role: "slider", label: "Instant", value: 0 },
+        { role: "slider", label: "Medium", value: 1 },
+        { role: "slider", label: "High", value: 2 },
+        { role: "slider", label: "Extra High", value: 3 },
+        { role: "slider", label: "Pro", value: 4 },
+      ];
+      expect(chatgptClient.resolveChatGPTEffortMenuOption(options, "extra-high")).toEqual(options[3]);
+      expect(chatgptClient.normalizeChatGPTEffortChoice("xhigh")).toBe("xhigh");
+      expect(chatgptClient.normalizeChatGPTEffortChoice("Pro")).toBe("pro");
+      expect(chatgptClient.normalizeChatGPTEffortChoice("standard")).toBeNull();
+    });
+  });
+
+  describe("current combined ChatGPT picker DOM operations", () => {
+    class FakeEventTarget {
+      nodeType = 1;
+
+      dispatchEvent(event: { type?: string; key?: string }) {
+        if (event.type === "click") {
+          this.handleClick();
+        }
+        if (event.type === "keydown") {
+          this.handleKey(event.key || "");
+        }
+        return true;
+      }
+
+      handleClick(): void {
+        // Default no-op for base fake target.
+      }
+      handleKey(_key: string): void {
+        // Default no-op for base fake target.
+      }
+    }
+
+    class FakeElement extends FakeEventTarget {
+      tagName: string;
+      attributes: Record<string, string>;
+      className: string;
+      children: FakeElement[];
+      parentElement: FakeElement | null = null;
+      textContent: string;
+      innerText: string;
+      onClick?: () => void;
+      onKey?: (key: string) => void;
+
+      constructor(tagName: string, text: string, attributes: Record<string, string> = {}, children: FakeElement[] = []) {
+        super();
+        this.tagName = tagName.toUpperCase();
+        this.textContent = text;
+        this.innerText = text;
+        this.attributes = { ...attributes };
+        this.className = attributes.class || "";
+        this.children = children;
+        for (const child of children) {
+          child.parentElement = this;
+        }
+      }
+
+      getAttribute(name: string) {
+        return this.attributes[name] ?? null;
+      }
+
+      hasAttribute(name: string) {
+        return Object.hasOwn(this.attributes, name);
+      }
+
+      setAttribute(name: string, value: string) {
+        this.attributes[name] = value;
+        if (name === "class") {
+          this.className = value;
+        }
+      }
+
+      removeAttribute(name: string) {
+        delete this.attributes[name];
+      }
+
+      getBoundingClientRect() {
+        return { width: 10, height: 10 };
+      }
+
+      focus() {
+        fakeDocument.activeElement = this;
+      }
+
+      blur() {
+        if (fakeDocument.activeElement === this) {
+          fakeDocument.activeElement = null;
+        }
+      }
+
+      handleClick() {
+        this.onClick?.();
+      }
+
+      handleKey(key: string) {
+        this.onKey?.(key);
+      }
+
+      querySelectorAll(selector: string) {
+        return querySelectorAll(this, selector, false);
+      }
+
+      querySelector(selector: string) {
+        return this.querySelectorAll(selector)[0] || null;
+      }
+    }
+
+    const fakeDocument: {
+      body: FakeElement;
+      activeElement: FakeElement | null;
+      getElementById(id: string): FakeElement | null;
+      querySelectorAll(selector: string): FakeElement[];
+      querySelector(selector: string): FakeElement | null;
+    } = {
+      body: new FakeElement("body", ""),
+      activeElement: null,
+      getElementById: () => null,
+      querySelectorAll: (selector) => querySelectorAll(fakeDocument.body, selector, true),
+      querySelector: (selector) => fakeDocument.querySelectorAll(selector)[0] || null,
+    };
+
+    class FakeMouseEvent {
+      constructor(readonly type: string, readonly init: unknown) {}
+    }
+
+    class FakeKeyboardEvent extends FakeMouseEvent {
+      key: string;
+
+      constructor(type: string, init: { key?: string }) {
+        super(type, init);
+        this.key = init.key || "";
+      }
+    }
+
+    function descendants(root: FakeElement, includeSelf: boolean) {
+      const nodes: FakeElement[] = includeSelf ? [root] : [];
+      for (const child of root.children) {
+        nodes.push(child, ...descendants(child, false));
+      }
+      return nodes;
+    }
+
+    function hasHiddenAncestor(node: FakeElement) {
+      for (let current: FakeElement | null = node; current; current = current.parentElement) {
+        if (current.hasAttribute("hidden") || current.hasAttribute("inert") || current.getAttribute("aria-hidden") === "true") {
           return true;
         }
       }
-      class FakeButton extends FakeEventTarget {
-        tagName = "BUTTON";
-        textContent: string;
-        innerText: string;
-        attributes: Record<string, string>;
+      return false;
+    }
 
-        constructor(textContent: string, attributes: Record<string, string>) {
-          super();
-          this.textContent = textContent;
-          this.innerText = textContent;
-          this.attributes = attributes;
-        }
+    const selectorMatchers = new Map<string, (node: FakeElement) => boolean>([
+      ["span", (node) => node.tagName === "SPAN"],
+      [
+        "button.__composer-pill[aria-haspopup=\"menu\"]",
+        (node) => node.tagName === "BUTTON" && node.className.includes("__composer-pill") && node.getAttribute("aria-haspopup") === "menu",
+      ],
+      ["[role=\"menu\"][data-radix-menu-content]", (node) => node.getAttribute("role") === "menu" && node.hasAttribute("data-radix-menu-content")],
+      ["[data-testid=\"composer-intelligence-picker-content\"]", (node) => node.getAttribute("data-testid") === "composer-intelligence-picker-content"],
+      ["[data-testid=\"composer-model-picker-slider-simple-view\"]", (node) => node.getAttribute("data-testid") === "composer-model-picker-slider-simple-view"],
+      ["[data-testid=\"composer-model-picker-slider-advanced-view\"]", (node) => node.getAttribute("data-testid") === "composer-model-picker-slider-advanced-view"],
+      ["[data-view=\"simple\"]", (node) => node.getAttribute("data-view") === "simple"],
+      ["[data-view=\"advanced\"]", (node) => node.getAttribute("data-view") === "advanced"],
+      ["[role=\"menuitem\"][aria-label=\"Select model\"]", (node) => node.getAttribute("role") === "menuitem" && node.getAttribute("aria-label") === "Select model"],
+      ["[role=\"menuitem\"][aria-label=\"Power\"]", (node) => node.getAttribute("role") === "menuitem" && node.getAttribute("aria-label") === "Power"],
+      ["[role=\"menuitemradio\"]", (node) => node.getAttribute("role") === "menuitemradio"],
+      ["[role=\"slider\"]", (node) => node.getAttribute("role") === "slider"],
+      ["[data-model-reasoning-effort-slider]", (node) => node.hasAttribute("data-model-reasoning-effort-slider")],
+    ]);
 
-        getAttribute(name: string) {
-          return this.attributes[name] ?? null;
-        }
+    function matchesSelector(node: FakeElement, selector: string) {
+      return selectorMatchers.get(selector.trim())?.(node) ?? false;
+    }
+
+    function querySelectorAll(root: FakeElement, selector: string, includeSelf: boolean): FakeElement[] {
+      if (selector.includes(",")) {
+        return [...new Set(selector.split(",").flatMap((part) => querySelectorAll(root, part, includeSelf)))];
       }
-      class FakeMouseEvent {
-        constructor(
-          readonly type: string,
-          readonly init: unknown,
-        ) {}
+      if (selector.trim() === "[data-model-reasoning-effort-slider] [role=\"slider\"]") {
+        return descendants(root, includeSelf).filter((node) =>
+          matchesSelector(node, '[role="slider"]') &&
+          !hasHiddenAncestor(node.parentElement || node) &&
+          descendants(root, includeSelf).some((candidate) => matchesSelector(candidate, "[data-model-reasoning-effort-slider]") && descendants(candidate, false).includes(node)),
+        );
+      }
+      return descendants(root, includeSelf).filter((node) => matchesSelector(node, selector) && !hasHiddenAncestor(node));
+    }
+
+    function createPickerDom(options: { model?: string; effort?: number; latestResolvesTo?: string; hiddenSiblingModel?: string; shortSolPill?: boolean } = {}) {
+      let open = false;
+      let advanced = false;
+      let model = options.model || "5.6 Sol";
+      let selectedRadio = model === "5.5" ? "GPT-5.5" : model === "5.6 Sol" ? "GPT-5.6 Sol" : "Latest";
+      let effort = options.effort ?? 0;
+      const labels = ["Instant", "Medium", "High", "Extra High", "Pro"];
+      const byId = new Map<string, FakeElement>();
+      const button = new FakeElement("button", "", { class: "__composer-pill", "aria-haspopup": "menu" });
+      const modelSpan = new FakeElement("span", "");
+      const effortSpan = new FakeElement("span", "");
+      button.children = [modelSpan, effortSpan];
+      modelSpan.parentElement = button;
+      effortSpan.parentElement = button;
+      button.onClick = () => {
+        open = !open;
+        refresh();
+      };
+      fakeDocument.body = new FakeElement("body", "", {}, [button]);
+      fakeDocument.getElementById = (id) => byId.get(id) || null;
+      fakeDocument.body.onClick = () => {
+        open = false;
+        refresh();
+      };
+      const inputEvents: Array<{ key?: string; type?: string }> = [];
+
+      function refresh() {
+        const pillModel = options.shortSolPill && model === "5.6 Sol" ? "5.6" : model;
+        modelSpan.textContent = pillModel;
+        modelSpan.innerText = pillModel;
+        effortSpan.textContent = labels[effort];
+        effortSpan.innerText = labels[effort];
+        button.textContent = `${pillModel}\n${labels[effort]}`;
+        button.innerText = button.textContent;
+        byId.clear();
+        fakeDocument.body.children = [button];
+        button.parentElement = fakeDocument.body;
+        if (!open) return;
+        const modelToggle = new FakeElement("div", `${pillModel} ${labels[effort]}`, {
+          role: "menuitem",
+          "aria-label": "Select model",
+          "aria-expanded": advanced ? "true" : "false",
+        }, [new FakeElement("span", pillModel), new FakeElement("span", labels[effort])]);
+        modelToggle.onClick = () => {
+          advanced = true;
+          refresh();
+        };
+        const simplePanel = new FakeElement("div", "", { "data-view": "simple", "data-testid": "composer-model-picker-slider-simple-view", ...(advanced ? { inert: "" } : {}) });
+        const advancedPanel = new FakeElement("div", "", { "data-view": "advanced", "data-testid": "composer-model-picker-slider-advanced-view", ...(advanced ? {} : { inert: "" }) });
+        for (const label of ["Latest", "GPT-5.6 Sol", "GPT-5.5"]) {
+          const option = new FakeElement("div", label, { role: "menuitemradio", "aria-checked": selectedRadio === label ? "true" : "false", "data-state": selectedRadio === label ? "checked" : "unchecked" });
+          option.onClick = () => {
+            selectedRadio = label;
+            if (label === "Latest") model = options.latestResolvesTo || "6";
+            else model = label.replace("GPT-", "");
+            advanced = false;
+            refresh();
+          };
+          advancedPanel.children.push(option);
+          option.parentElement = advancedPanel;
+        }
+        if (options.hiddenSiblingModel) {
+          const hidden = new FakeElement("div", options.hiddenSiblingModel, { role: "menuitemradio", "aria-checked": "true", "data-state": "checked", hidden: "" });
+          simplePanel.children.push(hidden);
+          hidden.parentElement = simplePanel;
+        }
+        const announce = new FakeElement("div", `${labels[effort]}, ${effort + 1} of 5.`, { id: "effort-announcement" });
+        const instructions = new FakeElement("div", "Use arrow keys", { id: "effort-instructions" });
+        byId.set("effort-announcement", announce);
+        byId.set("effort-instructions", instructions);
+        const slider = new FakeElement("span", "", { role: "slider", "aria-valuemin": "0", "aria-valuemax": "4", "aria-valuenow": String(effort), tabindex: "-1", "aria-hidden": "true" });
+        const sliderWrap = new FakeElement("div", "", { "data-model-reasoning-effort-slider": "" }, [slider]);
+        const power = new FakeElement("div", labels[effort], { role: "menuitem", "aria-label": "Power", "aria-keyshortcuts": "ArrowLeft ArrowRight", "aria-describedby": "effort-announcement effort-instructions" }, [sliderWrap, announce, instructions]);
+        power.onKey = (key) => {
+          if (key === "ArrowRight") effort = Math.min(4, effort + 1);
+          if (key === "ArrowLeft") effort = Math.max(0, effort - 1);
+          refresh();
+        };
+        const content = new FakeElement("div", "", { "data-testid": "composer-intelligence-picker-content" }, [modelToggle, simplePanel, advancedPanel, power]);
+        const menu = new FakeElement("div", "", { role: "menu", "data-radix-menu-content": "" }, [content]);
+        fakeDocument.body.children.push(menu);
+        menu.parentElement = fakeDocument.body;
       }
 
-      const modelButton = new FakeButton("Pro", {
-        "aria-haspopup": "menu",
-        "data-testid": "model-switcher-dropdown-button",
-      });
-      const effortButton = new FakeButton("", {
-        "aria-haspopup": "menu",
-        "aria-labelledby": "effort-label",
-      });
-      let effortLabel = "Thinking";
-      const document = {
-        getElementById: (id: string) =>
-          id === "effort-label" ? { textContent: effortLabel } : null,
-        querySelectorAll: () => [modelButton, effortButton],
+      refresh();
+      return {
+        cdp: async (expression: string) => ({
+          result: {
+            value: Function("document", "EventTarget", "MouseEvent", "PointerEvent", "KeyboardEvent", "window", `return ${expression};`)(
+              fakeDocument,
+              FakeEventTarget,
+              FakeMouseEvent,
+              undefined,
+              FakeKeyboardEvent,
+              { getComputedStyle: () => ({ display: "block", visibility: "visible" }) },
+            ),
+          },
+        }),
+        inputCdp: async (_method: string, params: { key?: string; type?: string }) => {
+          inputEvents.push({ key: params.key, type: params.type });
+          if (params.key === "Escape") {
+            open = false;
+            refresh();
+          } else if ((params.key === "ArrowLeft" || params.key === "ArrowRight") && params.type === "keyDown") {
+            fakeDocument.activeElement?.dispatchEvent({ type: "keydown", key: params.key });
+          }
+          return {};
+        },
+        inputEvents,
       };
+    }
 
-      const cdp = async (expression: string) => {
-        if (expression.includes('const kind = "effort"')) {
-          return {
-            result: {
-              value: Function(
-                "document",
-                "EventTarget",
-                "MouseEvent",
-                "PointerEvent",
-                "window",
-                `return ${expression};`,
-              )(document, FakeEventTarget, FakeMouseEvent, undefined, {}),
-            },
-          };
-        }
-        if (expression.includes("const containers = Array.from")) {
-          return {
-            result: {
-              value: {
-                found: true,
-                items: [{ role: "menuitemradio", label: "Pro", testId: null, selected: false }],
-              },
-            },
-          };
-        }
-        if (expression.includes("const expectedLabel")) {
-          effortLabel = "Pro";
-          return { result: { value: true } };
-        }
-        throw new Error(`Unexpected expression: ${expression}`);
-      };
-
-      await expect(chatgptClientUi.selectEffort(cdp, "pro", 100)).resolves.toBe("Pro");
+    it("selects GPT-6 Astra through Latest only when readback resolves to model 6", async () => {
+      const picker = createPickerDom({ model: "5.6 Sol", effort: 4, latestResolvesTo: "6" });
+      await expect(chatgptClientUi.selectModel(picker.cdp, picker.inputCdp, "gpt-6-astra", 500)).resolves.toBe("6 Pro");
     });
 
-    it("does not reopen the effort menu when Pro is already selected", async () => {
-      const cdp = async (expression: string) => {
-        if (expression.includes('const kind = "effort"')) {
-          return {
-            result: {
-              value: {
-                items: [{ role: "button", label: "Pro", displayLabel: "Pro", testId: null }],
-              },
-            },
-          };
-        }
-        throw new Error(`Unexpected expression: ${expression}`);
-      };
-
-      await expect(chatgptClientUi.selectEffort(cdp, "pro", 100)).resolves.toBe("Pro");
+    it("verifies explicit Latest from the checked advanced radio even when the pill reads 6", async () => {
+      const picker = createPickerDom({ model: "5.6 Sol", effort: 4, latestResolvesTo: "6" });
+      await expect(chatgptClientUi.selectModel(picker.cdp, picker.inputCdp, "latest", 500)).resolves.toBe("Latest");
+      await expect(chatgptClientUi.verifyCurrentModel(picker.cdp, picker.inputCdp, "latest", 500)).resolves.toBe("Latest");
     });
 
+    it("rejects GPT-6 Astra when Latest readback resolves to a non-6 model", async () => {
+      const picker = createPickerDom({ model: "5.6 Sol", effort: 4, latestResolvesTo: "5.6 Sol" });
+      await expect(chatgptClientUi.selectModel(picker.cdp, picker.inputCdp, "gpt-6-astra", 500)).rejects.toMatchObject({ code: "model_verification_failed" });
+    });
+
+    it("selects Pro from a lower effort and xhigh from Pro through Power key events", async () => {
+      const lower = createPickerDom({ model: "6", effort: 0 });
+      await expect(chatgptClientUi.selectEffort(lower.cdp, lower.inputCdp, "pro", 500)).resolves.toContain("Pro");
+      const upper = createPickerDom({ model: "6", effort: 4 });
+      await expect(chatgptClientUi.selectEffort(upper.cdp, upper.inputCdp, "extra-high", 500)).resolves.toContain("Extra High");
+    });
+
+    it("accepts an already-selected Pro effort from aria-hidden slider metadata inside visible Power", async () => {
+      const picker = createPickerDom({ model: "6", effort: 4 });
+      await expect(chatgptClientUi.selectEffort(picker.cdp, picker.inputCdp, "pro", 500)).resolves.toContain("Pro");
+    });
+
+    it("does not count inert sibling model radios as selection evidence", async () => {
+      const picker = createPickerDom({ model: "6", effort: 4, hiddenSiblingModel: "GPT-5.6 Sol" });
+      await expect(chatgptClientUi.selectModel(picker.cdp, picker.inputCdp, "gpt-5.6-sol", 500)).resolves.toBe("5.6 Sol Pro");
+    });
+
+    it("does not verify a merely present unselected model option as current", async () => {
+      const picker = createPickerDom({ model: "5.5", effort: 4 });
+      await expect(chatgptClientUi.verifyCurrentModel(picker.cdp, picker.inputCdp, "gpt-5.6-sol", 500)).rejects.toMatchObject({ code: "model_verification_failed" });
+    });
+
+    it("uses the checked Sol radio when the composer pill shortens Sol to 5.6 Pro", async () => {
+      const picker = createPickerDom({ model: "5.6 Sol", effort: 4, shortSolPill: true });
+      await expect(chatgptClientUi.verifyCurrentModel(picker.cdp, picker.inputCdp, "gpt-5.6-sol", 500)).resolves.toBe("GPT-5.6 Sol");
+    });
+
+    it("keeps the picker close sequence reliable across model, effort, and final model verification without submitting", async () => {
+      const picker = createPickerDom({ model: "5.6 Sol", effort: 3, latestResolvesTo: "6" });
+      await expect(chatgptClientUi.selectModel(picker.cdp, picker.inputCdp, "gpt-6-astra", 500)).resolves.toBe("6 Extra High");
+      await expect(chatgptClientUi.selectEffort(picker.cdp, picker.inputCdp, "pro", 500)).resolves.toContain("Pro");
+      await expect(chatgptClientUi.verifyCurrentModel(picker.cdp, picker.inputCdp, "gpt-6-astra", 500)).resolves.toBe("6 Pro");
+      expect(picker.inputEvents.some((event) => event.key === "Enter")).toBe(false);
+    });
+  });
     it("clears stale composer text before typing the prompt", async () => {
       class FakeEventTarget {
         dispatchEvent() {
@@ -675,15 +823,6 @@ describe("chatgpt-client", () => {
       ).rejects.toMatchObject({ code: "attachment_processing" });
     });
 
-    it("resolves effort options and accepts only the documented vocabulary", () => {
-      expect(chatgptClient.resolveChatGPTEffortMenuOption(effortOptions, "extended")).toEqual(
-        effortOptions[2],
-      );
-      expect(chatgptClient.normalizeChatGPTEffortChoice("STANDARD")).toBe("standard");
-      expect(chatgptClient.normalizeChatGPTEffortChoice("Pro")).toBe("pro");
-      expect(chatgptClient.normalizeChatGPTEffortChoice("maximum")).toBeNull();
-    });
-  });
 
   describe("isNewAssistantContent", () => {
     it.each([
@@ -910,11 +1049,75 @@ describe("chatgpt-client", () => {
             status: 0,
             error: "TypeError: Failed to fetch",
             url: "https://chatgpt.com/",
+
           }),
         }),
       ).rejects.toThrow("ChatGPT login check failed: TypeError: Failed to fetch");
 
       expect(closeCalls).toEqual([123]);
+    });
+
+    it("refuses to submit when final model verification fails after effort changes", async () => {
+      let combinedReads = 0;
+      let effortValue = 0;
+      let promptTyped = false;
+      let sendEvaluations = 0;
+      let enterDispatches = 0;
+
+      const combinedState = (modelLabel: string, effortLabel: string, menuFound = true) => ({
+        pickerButtons: [{ role: "button", label: modelLabel, displayLabel: modelLabel }],
+        menuFound,
+        modelItems: menuFound
+          ? [{ role: "menuitem", label: modelLabel, displayLabel: modelLabel }]
+          : [{ role: "button", label: modelLabel, displayLabel: modelLabel }],
+        modelOptions: [],
+        effortItems: [{ role: "slider", label: `${effortLabel}, ${effortValue + 1} of 5.`, displayLabel: `${effortLabel}, ${effortValue + 1} of 5.`, value: effortValue, min: 0, max: 4 }],
+      });
+
+      const cdpEvaluate = async (_tabId: number, expression: string) => {
+        if (expression === "document.readyState") return { result: { value: "complete" } };
+        if (expression === "document.title.toLowerCase()") return { result: { value: "chatgpt" } };
+        if (expression.includes("challenge-platform") || expression.includes("cloudflare ray id")) return { result: { value: false } };
+        if (expression.includes("fetch('/backend-api/me'")) return { result: { value: { status: 200, hasLoginCta: false } } };
+        if (expression.includes("deleteContentBackward")) return { result: { value: true } };
+        if (expression.includes("text.trim().length > 0")) return { result: { value: promptTyped } };
+        if (expression.includes("prompt-textarea")) return { result: { value: true } };
+        if (expression.includes("power.focus")) return { result: { value: true } };
+        if (expression.includes("send-button")) {
+          sendEvaluations += 1;
+          return { result: { value: "clicked" } };
+        }
+        if (expression.includes("pickerSelector")) {
+          combinedReads += 1;
+          if (combinedReads <= 2) return { result: { value: combinedState("6 Pro", "Instant", combinedReads === 1) } };
+          if (combinedReads <= 5) return { result: { value: combinedState("6 Pro", effortValue === 4 ? "Pro" : "Instant") } };
+          if (combinedReads === 6) return { result: { value: combinedState("5.6 Sol Pro", "Pro", false) } };
+          return { result: { value: combinedState("5.6 Sol Pro", "Pro", true) } };
+        }
+        throw new Error(`Unexpected expression: ${expression}`);
+      };
+      const cdpCommand = async (_tabId: number, _method: string, params: { key?: string; type?: string; text?: string }) => {
+        if (params.text) promptTyped = true;
+        if (params.key === "ArrowRight" && params.type === "keyDown") effortValue = Math.min(4, effortValue + 1);
+        if (params.key === "Enter") enterDispatches += 1;
+        return {};
+      };
+
+      await expect(
+        chatgptClient.dispatch({
+          prompt: "review",
+          model: "gpt-6-astra",
+          effort: "pro",
+          getCookies: async () => ({ cookies: [{ name: "__Secure-next-auth.session-token.0", value: "abc" }] }),
+          createTab: async () => ({ tabId: 123 }),
+          closeTab: async () => undefined,
+          cdpEvaluate,
+          cdpCommand,
+        }),
+      ).rejects.toMatchObject({ code: "model_verification_failed" });
+
+      expect(sendEvaluations).toBe(0);
+      expect(enterDispatches).toBe(0);
     });
   });
 

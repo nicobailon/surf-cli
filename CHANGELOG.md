@@ -7,6 +7,9 @@
 - **One-shot session cleanup** - Added opt-in `surf session.cleanup --idle-after <duration> [--dry-run]` to remove gone or idle session bindings, closing only inactive Surf-created targets. Reported by @marcoatpaladin in #233.
 - **Opt-in local socket groups** - `surf install` can persist POSIX socket mode `660` and a configured group while keeping the default at `0600`. Thanks to [@marcoatpaladin](https://github.com/marcoatpaladin) for #225.
 
+### Fixed
+- **GPT-6 Astra picker verification** - Surf Oracle now drives ChatGPT's combined model/Power picker, verifies GPT-6 Astra by model-6 readback instead of treating it as floating Latest, supports current effort names (`instant`, `medium`, `high`, `xhigh`, `pro`), and defaults the packaged `gpt-pro` Pi agent to `model: gpt-6-astra` with `effort: pro`.
+
 ## [2.17.0] - 2026-08-28
 
 ### Highlights
