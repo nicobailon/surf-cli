@@ -68,7 +68,7 @@
     "@biomejs/biome": "^2.5.4",
     "@types/chrome": "^0.2.2",
     "@types/node": "^26.1.2",
-    "@vitest/coverage-v8": "^4.1.9",
+    "@vitest/coverage-v8": "^5.0.0",
     "@vitest/ui": "^4.1.9",
     "pi-subagents": "^0.58.0",
     "puppeteer": "25.9.0",
