@@ -3,6 +3,7 @@
 ## [Unreleased]
 
 ### Added
+- **`surf js --options`** - Exposes a JSON object to `js`/`frame.js` scripts as a frozen `SURF_OPTIONS` constant.
 - **Typed page readiness** - `surf wait.ready` polls with a bounded budget and reports `ready`, `empty`, `login`, `challenge`, `not-found` or `error` instead of timing out silently; negative states exit with `page_login`, `page_challenge`, `page_not_found`, `page_error` or `page_timeout`, and `--accept` returns them to the caller. `surf page.readiness` classifies the page once. Detection uses visible UI state and the caller's expectations (`--selector`, `--text`, `--url-prefix`, `--empty-text`), not site-specific selectors.
 - **`surf frame.diagnose`** - DOM `<iframe>` elements (including those inside open shadow roots, reported with their `shadowHost`), extension frames with a content-script reachability check, and the CDP frame tree side by side, correlated by URL and by `name`/`id` for `srcdoc`/`about:blank` frames, with warnings for blank frames, sandboxes without `allow-scripts`, cross-origin frames, out-of-process frames that `frame.js` cannot reach (and which commands still work there), still-loading frames and count mismatches. The text report abbreviates long frame URLs; `--json` keeps them whole.
 

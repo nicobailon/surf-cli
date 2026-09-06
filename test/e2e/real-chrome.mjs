@@ -513,6 +513,18 @@ try {
   }
   await runSurf("tab.close", "--id", String(listTab.tabId), "--json");
 
+  // --- js --file with statements and --options -------------------------------
+  const optionsScript = join(repo, "test/e2e/fixtures/list-items.js");
+  const listTabForJs = { tabId: tabIdFromOutput(await runSurf("tab.new", `${baseUrl}/list?q=js`)) };
+  await runSurf("wait.ready", "--json", "--tab-id", String(listTabForJs.tabId), "--selector", ".item");
+  const jsOutput = unwrapJson(
+    await runSurf("js", "--file", optionsScript, "--options", '{"limit": 1}', "--tab-id", String(listTabForJs.tabId), "--json"),
+  );
+  if (jsOutput?.query !== "js" || jsOutput?.total !== 1 || jsOutput?.rows?.[0]?.title !== "Item 1") {
+    throw new Error(`js --file with statements and --options did not return the script result: ${JSON.stringify(jsOutput)}`);
+  }
+  await runSurf("tab.close", "--id", String(listTabForJs.tabId), "--json");
+
   await runSurf("screenshot", "--output", screenshotPath);
   const png = readFileSync(screenshotPath);
   if (png.length < 100 || png.subarray(0, 8).toString("hex") !== "89504e470d0a1a0a") {
