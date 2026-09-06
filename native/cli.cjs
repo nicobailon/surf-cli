@@ -18,7 +18,7 @@ const {
 } = require("./workflow-definition.cjs");
 const { executeDoSteps, sendDoRequest } = require("./do-executor.cjs");
 const { runExtraction, renderExtractionMarkdown } = require("./extract.cjs");
-const { parseScriptOptions } = require("./script-options.cjs");
+const { applyOptionsPrelude, parseScriptOptions } = require("./script-options.cjs");
 const { openClientTransport } = require("./client-transport.cjs");
 const { version: VERSION } = require("../package.json");
 const {
@@ -948,11 +948,13 @@ const TOOLS = {
       "js": {
         desc: "Execute JavaScript (use 'return' for values)",
         args: ["code"],
-        opts: { file: "Run JS from file" },
+        opts: { file: "Run JS from file", options: "JSON object exposed to the script as a frozen SURF_OPTIONS constant" },
         examples: [
           { cmd: 'js "return document.title"', desc: "Get title" },
           { cmd: 'js "document.body.style.background = \'red\'"', desc: "Run code" },
           { cmd: "js --file script.js", desc: "Run file" },
+          { cmd: 'js --file script.js --options \'{"limit": 20}\'', desc: "Run file with SURF_OPTIONS.limit" },
+          { cmd: 'js "piHelpers.setValue(document.querySelector(\'#q\'), \'hello\')"', desc: "Set a framework-controlled input" },
         ]
       },
     }
@@ -1220,7 +1222,7 @@ const TOOLS = {
       "frame.js": {
         desc: "Execute JS in specific frame",
         args: ["code"],
-        opts: { id: "Frame ID from frame.list", file: "Run JS from file" },
+        opts: { id: "Frame ID from frame.list", file: "Run JS from file", options: "JSON object exposed as SURF_OPTIONS" },
         examples: [
           { cmd: 'frame.js "return document.title" --id frame1', desc: "JS in specific frame" },
         ]
@@ -3178,6 +3180,17 @@ if ((tool === "js" || tool === "frame.js") && toolArgs.file) {
     delete toolArgs.file;
   } catch (e) {
     console.error(`Error: Failed to read file: ${e.message}`);
+    process.exit(1);
+  }
+}
+
+if ((tool === "js" || tool === "frame.js") && toolArgs.options !== undefined) {
+  try {
+    if (typeof toolArgs.code !== "string") throw new Error("--options needs code (inline or --file)");
+    toolArgs.code = applyOptionsPrelude(toolArgs.code, toolArgs.options);
+    delete toolArgs.options;
+  } catch (e) {
+    console.error(`Error: ${e.message}`);
     process.exit(1);
   }
 }
