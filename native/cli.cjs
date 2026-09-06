@@ -16,8 +16,9 @@ const {
   validateWorkflowArgs,
   validateWorkflowFile,
 } = require("./workflow-definition.cjs");
-const { executeDoSteps } = require("./do-executor.cjs");
-const { applyOptionsPrelude } = require("./script-options.cjs");
+const { executeDoSteps, sendDoRequest } = require("./do-executor.cjs");
+const { runExtraction, renderExtractionMarkdown } = require("./extract.cjs");
+const { applyOptionsPrelude, parseScriptOptions } = require("./script-options.cjs");
 const { openClientTransport } = require("./client-transport.cjs");
 const { version: VERSION } = require("../package.json");
 const {
@@ -906,6 +907,39 @@ const TOOLS = {
       },
       "hover": { desc: "Hover over element", args: [], opts: { ref: "Element ref", x: "X coordinate", y: "Y coordinate" } },
       "drag": { desc: "Drag between points", args: [], opts: { from: "Start x,y", to: "End x,y" } },
+    }
+  },
+  extract: {
+    desc: "Read-only extraction in an owned tab",
+    commands: {
+      "extract": {
+        desc: "Open a URL in a fresh tab, wait until it is ready, run a page-side script that returns JSON, print rows",
+        args: ["url"],
+        opts: {
+          file: "Script file; must `return` JSON (an array, or an object with a rows/items/results array)",
+          code: "Inline script instead of --file",
+          options: "JSON object exposed to the script as SURF_OPTIONS",
+          "options-file": "Read the options object from a JSON file",
+          "ready-selector": "wait.ready --selector before extracting",
+          "ready-text": "wait.ready --text before extracting",
+          "ready-url-prefix": "wait.ready --url-prefix; a different URL is a bounce",
+          "empty-text": "wait.ready --empty-text; lets an explicit no-results page pass the zero-rows check",
+          "ready-timeout": "Readiness timeout in ms (default: 20000)",
+          rows: "Key of the row array in the script result (default: auto)",
+          retry: "Fresh-tab retries on transient failures (default: 1, max: 5)",
+          "retry-delay-ms": "Delay between attempts (default: 500)",
+          "allow-empty": "Accept zero rows",
+          "keep-tab": "Leave the owned tab open on success and report its id",
+          "tab-id": "Extract from an existing tab instead (no fresh tab, no retry; navigates only if a URL is given)",
+          session: "Extract from a session's tab instead (same rules as --tab-id)",
+          json: "Print {data, rows, rowCount, attempts, readiness} as JSON",
+        },
+        examples: [
+          { cmd: 'extract "https://example.com/list" --file rows.js --ready-selector ".item"', desc: "Fresh tab, wait for items, print a Markdown table" },
+          { cmd: 'extract "https://example.com/search?q=x" --file rows.js --options \'{"limit": 20}\' --empty-text "No results" --json', desc: "Options prelude, explicit empty state, JSON output" },
+          { cmd: "extract --tab-id 42 --code 'return [...document.querySelectorAll(\"h2\")].map(h => ({ title: h.textContent }))'", desc: "Read an existing tab in place" },
+        ]
+      },
     }
   },
   js: {
@@ -2603,6 +2637,139 @@ if (args[0] === "do") {
       console.error(`Error: ${error.message}`);
       process.exit(1);
     });
+  return;
+}
+
+// Handle `surf extract`: a read-only page-side script in an owned tab with a
+// readiness gate, bounded fresh-tab retry and the zero-rows invariant.
+if (args[0] === "extract") {
+  const extractArgs = args.slice(1);
+  const valueFlags = new Set([
+    "file", "code", "options", "options-file", "ready-selector", "ready-text", "ready-url-prefix",
+    "ready-timeout", "ready-interval", "empty-text", "rows", "retry", "retry-delay-ms",
+    "tab-id", "window-id", "session",
+  ]);
+  const boolFlags = new Set(["allow-empty", "keep-tab", "json", "markdown", "no-wait", "no-lock", "help"]);
+  const opts = {};
+  let url = null;
+  for (let i = 0; i < extractArgs.length; i++) {
+    const arg = extractArgs[i];
+    if (arg === "-f") {
+      opts.file = extractArgs[++i];
+    } else if (arg.startsWith("--")) {
+      const key = arg.slice(2);
+      if (boolFlags.has(key)) opts[key] = true;
+      else if (valueFlags.has(key)) opts[key] = extractArgs[++i];
+      else {
+        console.error(`Error: unknown extract option --${key}`);
+        process.exit(1);
+      }
+    } else if (url === null) {
+      url = arg;
+    } else {
+      console.error(`Error: unexpected argument ${arg}`);
+      process.exit(1);
+    }
+  }
+  if (opts.help) {
+    showToolHelp("extract");
+    process.exit(0);
+  }
+  const wantJson = opts.json === true;
+  const fail = (code, message, details) => {
+    if (wantJson) {
+      console.log(JSON.stringify({ error: { code, message, ...(details ? { details } : {}) } }, null, 2));
+    } else {
+      console.error(`Error: ${message}${code ? ` [${code}]` : ""}`);
+    }
+    process.exit(1);
+  };
+
+  let code = null;
+  try {
+    if (opts.file && opts.code) fail("usage", "use either --file or --code, not both");
+    if (opts.file) code = fs.readFileSync(opts.file, "utf8");
+    else if (typeof opts.code === "string") code = opts.code;
+    else fail("usage", "an extraction script is required: --file script.js or --code 'return {...}'");
+  } catch (error) {
+    fail("usage", `Failed to read script: ${error.message}`);
+  }
+
+  let scriptOptions = {};
+  try {
+    if (opts.options && opts["options-file"]) fail("usage", "use either --options or --options-file, not both");
+    if (opts["options-file"]) scriptOptions = parseScriptOptions(fs.readFileSync(opts["options-file"], "utf8"));
+    else scriptOptions = parseScriptOptions(opts.options);
+  } catch (error) {
+    fail("usage", error.message);
+  }
+
+  const toInt = (key, fallback) => {
+    if (opts[key] === undefined) return fallback;
+    const parsed = parseInt(opts[key], 10);
+    if (Number.isNaN(parsed) || parsed < 0) fail("usage", `--${key} must be a non-negative integer`);
+    return parsed;
+  };
+
+  const targetOptions = resolveEarlyTargetOptions(extractArgs);
+  const hasTarget = Boolean(targetOptions.tabId || targetOptions.windowId || targetOptions.session);
+  if (!hasTarget && !url) fail("usage", "a URL is required unless --tab-id, --window-id or --session names the page to read");
+
+  const settings = {
+    code,
+    url: url ?? undefined,
+    options: scriptOptions,
+    ready: {
+      selector: opts["ready-selector"],
+      text: opts["ready-text"],
+      urlPrefix: opts["ready-url-prefix"],
+      emptyText: opts["empty-text"],
+      timeout: toInt("ready-timeout", undefined),
+      interval: toInt("ready-interval", undefined),
+    },
+    retry: { count: toInt("retry", undefined), delayMs: toInt("retry-delay-ms", undefined) },
+    keepTab: opts["keep-tab"] === true,
+    allowEmpty: opts["allow-empty"] === true,
+    rowsKey: opts.rows,
+    target: hasTarget,
+  };
+
+  const runExtract = async () => {
+    let transport;
+    try {
+      transport = await openClientTransport(endpoint);
+      const baseContext = { ...targetOptions, endpoint, transport };
+      const executeTool = (toolName, toolArgs, ownedTabId) => {
+        const context = ownedTabId
+          ? { tabId: ownedTabId, admission: targetOptions.admission, endpoint, transport }
+          : baseContext;
+        return sendDoRequest(toolName, toolArgs, context);
+      };
+      const result = await runExtraction({
+        ...settings,
+        executeTool,
+        onEvent: (event) => {
+          if (wantJson) return;
+          if (event.type === "attempt" && event.of > 1) console.error(`[surf] extract attempt ${event.attempt}/${event.of}`);
+          if (event.type === "attempt-failed" && event.retryable) console.error(`[surf] attempt ${event.attempt} failed (${event.error}); retrying with a fresh tab`);
+        },
+      });
+      if (wantJson) {
+        console.log(JSON.stringify(result, null, 2));
+      } else {
+        console.log(renderExtractionMarkdown(result.data, result.rows, { title: url ? `Extraction from ${url}` : "Extraction" }));
+        if (result.tabId) console.error(`[surf] tab ${result.tabId} left open (--keep-tab)`);
+      }
+      return 0;
+    } catch (error) {
+      fail(error.code || "extraction_failed", error.message, error.details);
+      return 1;
+    } finally {
+      await transport?.close();
+    }
+  };
+
+  runExtract().then((exitCode) => process.exit(exitCode));
   return;
 }
 
