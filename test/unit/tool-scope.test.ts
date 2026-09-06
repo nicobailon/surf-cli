@@ -48,6 +48,19 @@ describe("tool scope classification", () => {
     expect(classified.resourceKeys).toEqual([`file:${require("node:path").resolve("same.har")}`]);
   });
 
+  it("keeps readiness probes on the tab lane", () => {
+    expect(classifyTool("wait.ready", { selector: ".x" })).toEqual({
+      scope: "tab",
+      targetUse: "default-tab",
+      resourceKeys: [],
+    });
+    expect(classifyTool("page.readiness", {})).toEqual({
+      scope: "tab",
+      targetUse: "default-tab",
+      resourceKeys: [],
+    });
+  });
+
   it("fails conservative for unclassified browser commands", () => {
     expect(classifyTool("future.browser.command")).toMatchObject({
       scope: "browser-write",

@@ -543,3 +543,62 @@ describe("formatToolContent", () => {
     });
   });
 });
+
+describe("readiness tools", () => {
+  it("maps wait.ready with CLI flag spelling", () => {
+    const msg = helpers.mapToolToMessage(
+      "wait.ready",
+      {
+        selector: ".x",
+        "url-prefix": "https://a/",
+        "empty-text": "None",
+        timeout: 5000,
+        interval: 200,
+        accept: "login",
+      },
+      7,
+    );
+    expect(msg).toEqual({
+      type: "WAIT_FOR_READY",
+      expect: { selector: ".x", urlPrefix: "https://a/", emptyText: "None" },
+      timeout: 5000,
+      interval: 200,
+      accept: "login",
+      tabId: 7,
+    });
+  });
+
+  it("maps page.readiness with socket API spelling and drops empty values", () => {
+    const msg = helpers.mapToolToMessage(
+      "page.readiness",
+      { urlPrefix: "https://a/", text: "  ", selector: "" },
+      7,
+    );
+    expect(msg).toEqual({ type: "PAGE_READINESS", expect: { urlPrefix: "https://a/" }, tabId: 7 });
+  });
+
+  it("renders wait.ready results as JSON rather than the generic page-loaded line", () => {
+    const content = helpers.formatToolContent({
+      state: "ready",
+      evidence: ["document.readyState is complete"],
+      readyState: "complete",
+      polls: 2,
+      waited: 410,
+      _resolvedTabId: 7,
+    });
+    expect(content).toHaveLength(1);
+    expect(JSON.parse(content[0].text)).toEqual({
+      state: "ready",
+      evidence: ["document.readyState is complete"],
+      readyState: "complete",
+      polls: 2,
+      waited: 410,
+    });
+  });
+
+  it("prefers camelCase over hyphenated spelling when both are present", () => {
+    expect(helpers.readinessExpectations({ urlPrefix: "a", "url-prefix": "b" })).toEqual({
+      urlPrefix: "a",
+    });
+  });
+});

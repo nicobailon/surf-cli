@@ -1,3 +1,4 @@
+import { createDomProbe, probePageReadiness } from "./page-readiness-probe";
 import type { VisualIndicatorMessageType } from "./visual-indicator.ts";
 
 export {};
@@ -1570,6 +1571,14 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     case "FORM_INPUT": {
       const result = setFormValue(message.ref, message.value);
       sendResponse(result);
+      break;
+    }
+    case "PAGE_READINESS": {
+      try {
+        sendResponse(probePageReadiness(createDomProbe(document, window), message.expect || {}));
+      } catch (err) {
+        sendResponse({ error: err instanceof Error ? err.message : String(err) });
+      }
       break;
     }
     case "EVAL_IN_PAGE": {

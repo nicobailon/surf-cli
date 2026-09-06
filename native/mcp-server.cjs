@@ -159,6 +159,27 @@ const TOOL_SCHEMAS = {
       timeout: z.number().optional().describe("Max wait time in ms")
     }
   },
+  "wait.ready": {
+    desc: "Wait until the page is ready, or fail fast with a typed state (login, challenge, not-found, error)",
+    schema: {
+      selector: z.string().optional().describe("Visible CSS selector that marks a ready page"),
+      text: z.string().optional().describe("Page text that marks a ready page"),
+      urlPrefix: z.string().optional().describe("Expected URL prefix; anything else is a bounce"),
+      emptyText: z.string().optional().describe("Text of an explicit no-results render (state 'empty')"),
+      accept: z.string().optional().describe("Negative states to return instead of fail, comma-separated"),
+      timeout: z.number().optional().describe("Max wait time in ms (default 20000, max 120000)"),
+      interval: z.number().optional().describe("Poll interval in ms (default 400)")
+    }
+  },
+  "page.readiness": {
+    desc: "Classify the page once: ready, empty, loading, login, challenge, not-found, error",
+    schema: {
+      selector: z.string().optional().describe("Visible CSS selector that marks a ready page"),
+      text: z.string().optional().describe("Page text that marks a ready page"),
+      urlPrefix: z.string().optional().describe("Expected URL prefix"),
+      emptyText: z.string().optional().describe("Text of an explicit no-results render")
+    }
+  },
   "wait.load": {
     desc: "Wait for page to fully load",
     schema: { timeout: z.number().optional().describe("Max wait time in ms") }
