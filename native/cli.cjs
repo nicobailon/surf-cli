@@ -1134,6 +1134,14 @@ const TOOLS = {
         args: [],
         examples: [{ cmd: "frame.list", desc: "Show frame tree" }]
       },
+      "frame.diagnose": {
+        desc: "Explain frame mismatches: DOM iframes, extension frames with content-script reachability, CDP frame tree",
+        args: [],
+        examples: [
+          { cmd: "frame.diagnose", desc: "Why does my selector not reach the widget?" },
+          { cmd: "frame.diagnose --json", desc: "Full inventories as JSON" },
+        ]
+      },
       "frame.switch": {
         desc: "Switch to iframe context",
         args: [],
@@ -1624,7 +1632,7 @@ const ALL_SOCKET_TOOLS = [
   "form.fill",
   "perf.start", "perf.stop", "perf.metrics",
   "upload",
-  "frame.list", "frame.switch", "frame.main", "frame.js",
+  "frame.list", "frame.diagnose", "frame.switch", "frame.main", "frame.js",
   "cookie.list", "cookie.get", "cookie.set", "cookie.clear",
   "search", "batch",
   "zoom", "resize",
@@ -1646,7 +1654,8 @@ const SEE_ALSO = {
   "tab.new": ["window.new for isolation"],
   "window.new": ["window.list"],
   "window.list": ["tab.list"],
-  "frame.list": ["frame.switch", "frame.main"],
+  "frame.list": ["frame.switch", "frame.main", "frame.diagnose"],
+  "frame.diagnose": ["frame.list", "frame.switch", "frame.js"],
   "frame.switch": ["frame.list", "frame.main", "frame.js"],
   "frame.main": ["frame.list", "frame.switch"],
   "frame.js": ["frame.switch", "js"],
@@ -3822,6 +3831,42 @@ async function handleResponse(response) {
     }
     console.log("\nUsage: surf emulate.device \"<device name>\"");
     console.log('Reset:  surf emulate.device "reset"');
+  } else if (tool === "frame.diagnose" && data?.counts) {
+    const lines = [];
+    lines.push(`Frame diagnosis for ${data.mainPage?.href ?? "?"}${data.mainPage?.title ? ` (${data.mainPage.title})` : ""}`);
+    lines.push(`DOM iframes: ${data.counts.domIframes}, extension frames: ${data.counts.extensionFrames} (incl. main), CDP frames: ${data.counts.cdpFrames}`);
+    if (Array.isArray(data.domIframes) && data.domIframes.length > 0) {
+      lines.push("", "DOM iframes:");
+      for (const f of data.domIframes) {
+        const flags = [
+          f.blank ? "blank" : null,
+          f.crossOrigin ? "cross-origin" : null,
+          f.scriptsBlocked ? "scripts-blocked" : null,
+          f.zeroSize ? "0-size" : null,
+        ].filter(Boolean).join(",");
+        const links = [
+          f.extensionFrameIds?.length ? `ext ${f.extensionFrameIds.join("/")}` : "ext -",
+          f.cdpFrameIds?.length ? `cdp ${f.cdpFrameIds.join("/")}` : "cdp -",
+        ].join(", ");
+        lines.push(`  [${f.domIndex}] ${f.srcdoc ? "srcdoc" : (f.src || "about:blank")} ${Math.round(f.rect?.width ?? 0)}x${Math.round(f.rect?.height ?? 0)}${f.name ? ` name=${f.name}` : ""}${f.sandbox !== null && f.sandbox !== undefined ? ` sandbox="${f.sandbox}"` : ""}${flags ? ` [${flags}]` : ""} -> ${links}`);
+      }
+    }
+    if (Array.isArray(data.extensionFrames) && data.extensionFrames.length > 0) {
+      lines.push("", "Extension frames (frame.switch ids):");
+      for (const f of data.extensionFrames) {
+        const reach = f.contentScriptReachable ? "content-script ok" : `content-script unreachable${f.contentScriptError ? ` (${f.contentScriptError})` : ""}`;
+        lines.push(`  #${f.frameId}${f.isMain ? " main" : ` parent ${f.parentFrameId}`} ${f.url}${f.crossOrigin ? " [cross-origin]" : ""} - ${reach}`);
+      }
+    }
+    if (Array.isArray(data.cdpFrames) && data.cdpFrames.length > 0) {
+      lines.push("", "CDP frames (frame.js ids):");
+      for (const f of data.cdpFrames) {
+        lines.push(`  ${f.frameId}${f.isMain ? " main" : ` parent ${f.parentId}`} ${f.url}${f.name ? ` name=${f.name}` : ""}${f.extensionFrameIds?.length ? ` -> ext ${f.extensionFrameIds.join("/")}` : ""}`);
+      }
+    }
+    lines.push("", Array.isArray(data.warnings) && data.warnings.length > 0 ? "Warnings:" : "No warnings.");
+    for (const w of Array.isArray(data.warnings) ? data.warnings : []) lines.push(`  - ${w}`);
+    console.log(lines.join("\n"));
   } else if (tool === "js") {
     if (data?.result !== undefined) {
       const val = data.result.value ?? data.result;

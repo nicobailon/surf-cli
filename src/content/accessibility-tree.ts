@@ -1572,6 +1572,10 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       sendResponse(result);
       break;
     }
+    case "PING": {
+      sendResponse({ success: true, href: location.href, readyState: document.readyState });
+      break;
+    }
     case "EVAL_IN_PAGE": {
       try {
         const script = document.createElement('script');
