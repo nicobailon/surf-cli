@@ -1,5 +1,14 @@
 import { CDPController } from "../cdp/controller";
 import { debugLog } from "../utils/debug";
+import type { ReadinessExpectations } from "../utils/page-readiness";
+import {
+  type ReadinessProbeResult,
+  type ReadinessState,
+  clampReadinessBudget,
+  parseAcceptStates,
+  pollReadiness,
+  readinessErrorCode,
+} from "../utils/readiness-poll";
 import { initNativeMessaging, postToNativeHost } from "../native/port-manager";
 
 debugLog("Service worker loaded");
@@ -151,6 +160,55 @@ async function labelSessionTab(tabId: number, name: string): Promise<number | un
   } catch {
     return undefined;
   }
+}
+
+function readinessExpectationsFrom(input: unknown): ReadinessExpectations {
+  const raw = input && typeof input === "object" ? (input as Record<string, unknown>) : {};
+  const expect: ReadinessExpectations = {};
+  for (const key of ["selector", "text", "urlPrefix", "emptyText"] as const) {
+    const value = raw[key];
+    if (typeof value === "string" && value.trim() !== "") expect[key] = value;
+  }
+  return expect;
+}
+
+/**
+ * One readiness probe of a tab. A blank tab is `loading` (a navigation is
+ * usually pending), other restricted pages are `error`, and an unreachable
+ * content script (mid-navigation, or not injected yet) is `loading`, so the
+ * poll loop needs no special cases.
+ */
+async function probeTabReadiness(tabId: number, expect: ReadinessExpectations): Promise<ReadinessProbeResult> {
+  let tabStatus: string | undefined;
+  let tabUrl: string | undefined;
+  try {
+    const tab = await chrome.tabs.get(tabId);
+    tabStatus = tab.status;
+    tabUrl = tab.pendingUrl || tab.url;
+  } catch {}
+  if (!tabUrl || tabUrl === "about:blank") {
+    return { state: "loading", evidence: [`tab URL is ${tabUrl || "empty"}`], href: tabUrl, tabStatus };
+  }
+  if (isRestrictedTabUrl(tabUrl)) {
+    return { state: "error", evidence: [`restricted browser or extension page ${tabUrl}`], href: tabUrl, tabStatus };
+  }
+  try {
+    const report = await chrome.tabs.sendMessage(tabId, { type: "PAGE_READINESS", expect }, { frameId: 0 });
+    if (report?.state) {
+      return { ...report, tabStatus };
+    }
+    const reason = report?.error ? String(report.error) : "content script returned no verdict";
+    return { state: "loading", evidence: [reason], href: tabUrl, tabStatus };
+  } catch (err) {
+    const reason = err instanceof Error ? err.message : String(err);
+    return { state: "loading", evidence: [`content script unreachable: ${reason}`], href: tabUrl, tabStatus };
+  }
+}
+
+function describeReadiness(result: ReadinessProbeResult): string {
+  const where = result.href ? ` at ${result.href}` : "";
+  const evidence = result.evidence.length > 0 ? ` (${result.evidence.join("; ")})` : "";
+  return `${result.state}${where}${evidence}`;
 }
 
 const screenshotCache = new Map<string, { base64: string; width: number; height: number }>();
@@ -1853,6 +1911,52 @@ export async function handleMessage(
           await chrome.tabs.sendMessage(tabId, { type: "SHOW_AFTER_TOOL_USE" }, { frameId: 0 });
         } catch (e) {}
       }
+    }
+
+    case "PAGE_READINESS": {
+      if (!tabId) throw new Error("No tabId provided");
+      return await probeTabReadiness(tabId, readinessExpectationsFrom(message.expect));
+    }
+
+    case "WAIT_FOR_READY": {
+      if (!tabId) throw new Error("No tabId provided");
+      const expect = readinessExpectationsFrom(message.expect);
+      const budget = clampReadinessBudget({ timeoutMs: message.timeout, intervalMs: message.interval });
+      const accept: ReadinessState[] = parseAcceptStates(message.accept);
+      const outcome = await pollReadiness({
+        ...budget,
+        accept,
+        probe: () => probeTabReadiness(tabId, expect),
+      });
+      const summary = {
+        state: outcome.result.state,
+        evidence: outcome.result.evidence,
+        href: outcome.result.href,
+        title: outcome.result.title,
+        readyState: outcome.result.readyState,
+        tabStatus: outcome.result.tabStatus,
+        polls: outcome.polls,
+        waited: outcome.waitedMs,
+        timeout: budget.timeoutMs,
+        interval: budget.intervalMs,
+      };
+      if (outcome.kind === "settled" || outcome.kind === "accepted") {
+        // No `success` key on purpose: formatToolContent renders any
+        // {success, readyState} result as a fixed "Page loaded" line.
+        return { accepted: outcome.kind === "accepted", ...summary };
+      }
+      if (outcome.kind === "timeout") {
+        throw new BrowserCommandError(
+          "page_timeout",
+          `Page did not become ready within ${budget.timeoutMs}ms; last state ${describeReadiness(outcome.result)}`,
+          { ...summary, tabId },
+        );
+      }
+      throw new BrowserCommandError(
+        readinessErrorCode(outcome.result.state) ?? "page_not_ready",
+        `Page is not ready: ${describeReadiness(outcome.result)}`,
+        { ...summary, tabId },
+      );
     }
 
     case "WAIT_FOR_DOM_STABLE": {
