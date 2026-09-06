@@ -46,7 +46,7 @@ const TAB_TOOLS = new Set([
   "search", "locate.role", "locate.text", "locate.label", "element.styles",
   "js", "javascript_tool", "eval",
   "wait.element", "wait.url", "wait.network", "wait.dom", "wait.load", "wait.ready", "page.readiness", "health",
-  "frame.list", "frame.switch", "frame.main", "frame.js",
+  "frame.list", "frame.diagnose", "frame.switch", "frame.main", "frame.js",
   "dialog.accept", "dialog.dismiss", "dialog.info",
   "console", "network", "network.get", "network.body", "network.curl", "network.path",
   "network.origins", "network.clear", "network.stats", "network.export",

@@ -61,6 +61,13 @@ describe("tool scope classification", () => {
     });
   });
 
+  it("keeps frame.diagnose on the tab lane", () => {
+    expect(classifyTool("frame.diagnose", {})).toMatchObject({
+      scope: "tab",
+      targetUse: "default-tab",
+    });
+  });
+
   it("fails conservative for unclassified browser commands", () => {
     expect(classifyTool("future.browser.command")).toMatchObject({
       scope: "browser-write",

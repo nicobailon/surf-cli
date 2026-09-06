@@ -1,5 +1,11 @@
 import { CDPController } from "../cdp/controller";
 import { debugLog } from "../utils/debug";
+import {
+  DOM_IFRAME_INVENTORY_EXPRESSION,
+  type DomIframeEntry,
+  type ExtensionFrameEntry,
+  buildFrameDiagnosis,
+} from "../utils/frame-diagnose";
 import type { ReadinessExpectations } from "../utils/page-readiness";
 import {
   type ReadinessProbeResult,
@@ -216,6 +222,52 @@ function describeReadiness(result: ReadinessProbeResult): string {
   const where = result.href ? ` at ${result.href}` : "";
   const evidence = result.evidence.length > 0 ? ` (${result.evidence.join("; ")})` : "";
   return `${result.state}${where}${evidence}`;
+}
+
+async function collectDomIframeInventory(
+  tabId: number,
+): Promise<{ href: string; title: string; iframes: DomIframeEntry[] }> {
+  const result = await cdp.evaluateScript(tabId, DOM_IFRAME_INVENTORY_EXPRESSION);
+  if (result.exceptionDetails) {
+    throw new Error(
+      result.exceptionDetails.exception?.description ||
+        result.exceptionDetails.text ||
+        "Failed to collect the DOM iframe inventory",
+    );
+  }
+  const value = result.result?.value;
+  if (!value || typeof value !== "object" || !Array.isArray(value.iframes)) {
+    throw new Error("Unexpected DOM iframe inventory result shape");
+  }
+  return value as { href: string; title: string; iframes: DomIframeEntry[] };
+}
+
+/** webNavigation frames plus a content-script PING per frame. */
+async function collectExtensionFrames(tabId: number): Promise<ExtensionFrameEntry[]> {
+  const frames = (await chrome.webNavigation.getAllFrames({ tabId })) ?? [];
+  const entries: ExtensionFrameEntry[] = [];
+  for (const frame of frames) {
+    const entry: ExtensionFrameEntry = {
+      frameId: frame.frameId,
+      parentFrameId: frame.parentFrameId,
+      url: frame.url,
+      errorOccurred: frame.errorOccurred === true,
+      contentScriptReachable: false,
+    };
+    try {
+      const ping = await chrome.tabs.sendMessage(tabId, { type: "PING" }, { frameId: frame.frameId });
+      if (ping?.success) {
+        entry.contentScriptReachable = true;
+        entry.contentScript = { href: ping.href, readyState: ping.readyState };
+      } else {
+        entry.contentScriptError = ping?.error ? String(ping.error) : "no response";
+      }
+    } catch (err) {
+      entry.contentScriptError = err instanceof Error ? err.message : String(err);
+    }
+    entries.push(entry);
+  }
+  return entries;
 }
 
 const screenshotCache = new Map<string, { base64: string; width: number; height: number }>();
