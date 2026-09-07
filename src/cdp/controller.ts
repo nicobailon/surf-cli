@@ -1283,6 +1283,29 @@ export class CDPController {
     return this.send(tabId, "Page.stopScreencast");
   }
 
+  /**
+   * Parse `expression` in the page without running it. Lets the service
+   * worker check syntax although its own CSP forbids `new Function`.
+   */
+  async compileScript(tabId: number, expression: string): Promise<{ parses: boolean; error?: string }> {
+    await this.ensureAttached(tabId);
+    try {
+      await this.send(tabId, "Runtime.enable");
+    } catch (e) {}
+    const result = await this.send(tabId, "Runtime.compileScript", {
+      expression,
+      sourceURL: "",
+      persistScript: false,
+    });
+    if (result?.exceptionDetails) {
+      return {
+        parses: false,
+        error: result.exceptionDetails.exception?.description || result.exceptionDetails.text || "SyntaxError",
+      };
+    }
+    return { parses: true };
+  }
+
   async evaluateScript(tabId: number, expression: string): Promise<{
     result?: { value?: any; type?: string; description?: string };
     exceptionDetails?: { text?: string; exception?: { description?: string } };
