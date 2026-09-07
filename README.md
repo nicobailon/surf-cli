@@ -580,6 +580,8 @@ surf wait.ready --url-prefix "https://app.example.com/" --empty-text "No results
 surf wait.ready --accept login --json   # {"state":"login","evidence":[...]} instead of an error
 ```
 
+Errors from any command end their first line with the error code (`Error: Page is not ready: login at ... [page_login]`); with `--json` the same error is also printed to stdout as `{"error": {"code", "message", "details"}}`, so a script can branch on the code without parsing prose.
+
 Note that `js` on a tab that is not the active tab of its window can take many seconds in Brave (background-tab throttling of the DevTools session); `page.read` and `page.readiness` are unaffected because they run in the content script. Switch to the tab first (`surf tab.switch <id>`) or let `extract` open its own tab.
 
 ### Extraction

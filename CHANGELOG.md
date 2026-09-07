@@ -7,6 +7,9 @@
 - **`surf extract`** - Runs a read-only page-side script in an owned tab (`tab.new` -> `wait.ready` -> `js` -> `tab.close`) with bounded fresh-tab retry on transient failures, a zero-rows-is-failure invariant (`--allow-empty`, `--empty-text`), a `SURF_OPTIONS` prelude (`--options`) and Markdown or `--json` output. `--tab-id`/`--session` read an existing tab in place without retry.
 - **`surf js --options`** - Exposes a JSON object to `js`/`frame.js` scripts as a frozen `SURF_OPTIONS` constant.
 
+### Changed
+- **Error codes in CLI output** - The first line of every `Error:` message ends with the error code (`... [page_login]`), and `--json` also prints `{"error": {"code", "message", "details"}}` on stdout, the shape `surf extract` already used. `page.readiness`, `wait.ready` and `extract --json` no longer include the extension message `id` or `_resolved*` keys, and `formatToolContent` strips `_resolvedWindowId` like `_resolvedTabId`.
+
 ## [2.18.0] - 2026-09-04
 
 ### Highlights

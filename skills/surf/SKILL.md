@@ -402,6 +402,7 @@ surf wait.ready --selector ".results"                 # Ready, or fail fast: log
 surf wait.ready --url-prefix "https://app.example.com/" --empty-text "No results"  # empty vs blocked
 surf wait.ready --accept login --json                 # Return the negative state instead of failing
 # js on a background tab can stall for seconds in Brave; run surf tab.switch <id> first, or use extract (owns an active tab).
+# Errors carry their code on the first line ("... [page_login]"); with --json they are also printed as {"error": {code, message}} on stdout.
 surf page.readiness --json     # Classify the current page once (state + evidence)
 ```
 
