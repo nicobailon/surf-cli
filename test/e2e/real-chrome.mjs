@@ -34,6 +34,7 @@ const screenshotPath = join(scratch, "shot.png");
 const hostPidPath = join(scratch, "native-host.pid");
 let browser;
 let browserPid;
+let crossOriginServer;
 let chromeExecutablePath;
 let puppeteer;
 let server;
@@ -132,8 +133,19 @@ async function runSurfExpectingFailure(...args) {
   }
 }
 
-function fixturePages(request) {
+function fixturePages(request, { crossOriginBase }) {
   const url = new URL(request.url, "http://127.0.0.1");
+  if (url.pathname === "/frames") {
+    return `<!doctype html><html><head><title>Surf frames fixture</title></head>
+<body><h1>Frames</h1>
+<iframe id="same-origin" src="/fixture" width="300" height="120"></iframe>
+<iframe id="inline" srcdoc="<p>inline</p>" width="200" height="60"></iframe>
+<iframe id="cross-origin" src="${crossOriginBase}/fixture" width="300" height="120"></iframe>
+<iframe id="sandboxed" src="/fixture?sandboxed" sandbox="allow-forms" width="200" height="60"></iframe>
+<div id="host"></div>
+<script>document.getElementById("host").attachShadow({ mode: "open" }).innerHTML = '<iframe id="shadowed" src="/fixture?shadowed" width="200" height="60"></iframe>';</script>
+</body></html>`;
+  }
   if (url.pathname === "/login") {
     return `<!doctype html><html><head><title>Sign in - Surf fixture</title></head>
 <body><main><h1>Sign in</h1><form><label>Email <input type="email" name="email"></label>
@@ -224,8 +236,18 @@ try {
   mkdirSync(join(profileDir, "NativeMessagingHosts"), { recursive: true });
   cpSync(standardManifest, testingManifest);
 
+  crossOriginServer = createServer((request, response) => {
+    response.writeHead(200, { "content-type": "text/html; charset=utf-8" });
+    response.end(`<!doctype html><html><head><title>Cross-origin fixture</title></head><body><p>cross-origin ${request.url}</p></body></html>`);
+  });
+  await new Promise((resolve, reject) => {
+    crossOriginServer.once("error", reject);
+    crossOriginServer.listen(0, "127.0.0.1", resolve);
+  });
+  const crossOriginBase = `http://127.0.0.1:${crossOriginServer.address().port}`;
+
   server = createServer((request, response) => {
-    const extraPage = fixturePages(request);
+    const extraPage = fixturePages(request, { crossOriginBase });
     if (extraPage !== null) {
       response.writeHead(200, { "content-type": "text/html; charset=utf-8" });
       response.end(extraPage);
@@ -418,6 +440,36 @@ try {
   }
   await runSurf("tab.close", "--id", String(loginTab.tabId), "--json");
 
+  // --- frame.diagnose ----------------------------------------------------
+  const framesTab = { tabId: tabIdFromOutput(await runSurf("tab.new", `${baseUrl}/frames`)) };
+  await runSurf("wait.element", "#sandboxed", "--tab-id", String(framesTab.tabId), "--json");
+  await runSurf("wait.dom", "--tab-id", String(framesTab.tabId), "--json");
+  const diagnosis = unwrapJson(await runSurf("frame.diagnose", "--json", "--tab-id", String(framesTab.tabId)));
+  const byId = Object.fromEntries(diagnosis.domIframes.map((frame) => [frame.id, frame]));
+  if (diagnosis.counts.domIframes !== 5 || !byId["same-origin"] || !byId["inline"] || !byId["cross-origin"] || !byId["sandboxed"] || !byId["shadowed"]) {
+    throw new Error(`frame.diagnose did not list the five fixture iframes: ${JSON.stringify(diagnosis)}`);
+  }
+  if (byId["same-origin"].extensionFrameIds.length !== 1 || byId["same-origin"].cdpFrameIds.length !== 1) {
+    throw new Error(`same-origin iframe was not correlated: ${JSON.stringify(byId["same-origin"])}`);
+  }
+  if (byId["shadowed"].shadowHost !== "div#host" || byId["shadowed"].extensionFrameIds.length !== 1) {
+    throw new Error(`shadow-hosted iframe was not inventoried: ${JSON.stringify(byId["shadowed"])}`);
+  }
+  if (byId["inline"].cdpFrameIds.length !== 1) {
+    throw new Error(`srcdoc iframe was not matched to its CDP frame by id: ${JSON.stringify(byId["inline"])}`);
+  }
+  if (!byId["inline"].blank || byId["cross-origin"].crossOrigin !== true || byId["sandboxed"].scriptsBlocked !== true) {
+    throw new Error(`frame flags are wrong: ${JSON.stringify(byId)}`);
+  }
+  const sameOriginFrame = diagnosis.extensionFrames.find((frame) => frame.frameId === byId["same-origin"].extensionFrameIds[0]);
+  if (!sameOriginFrame?.contentScriptReachable) {
+    throw new Error(`content script PING did not reach the same-origin iframe: ${JSON.stringify(diagnosis.extensionFrames)}`);
+  }
+  if (!diagnosis.warnings.some((line) => line.includes("srcdoc")) || !diagnosis.warnings.some((line) => line.includes("allow-scripts"))) {
+    throw new Error(`frame.diagnose warnings missing: ${JSON.stringify(diagnosis.warnings)}`);
+  }
+  await runSurf("tab.close", "--id", String(framesTab.tabId), "--json");
+
   await runSurf("screenshot", "--output", screenshotPath);
   const png = readFileSync(screenshotPath);
   if (png.length < 100 || png.subarray(0, 8).toString("hex") !== "89504e470d0a1a0a") {
@@ -461,6 +513,7 @@ try {
         platform: process.platform,
         result: "pass",
         readiness: { fixture: readiness.state, loginAccepted: acceptedLogin.state },
+        frameDiagnoseWarnings: diagnosis.warnings.length,
         screenshotBytes: png.length,
         serviceWorker: workerTarget.url(),
       },
@@ -492,6 +545,15 @@ try {
   if (server) {
     await new Promise((resolve, reject) => {
       server.close((error) => (error ? reject(error) : resolve()));
+    });
+  }
+} catch (error) {
+  cleanupErrors.push(error);
+}
+try {
+  if (crossOriginServer) {
+    await new Promise((resolve, reject) => {
+      crossOriginServer.close((error) => (error ? reject(error) : resolve()));
     });
   }
 } catch (error) {
