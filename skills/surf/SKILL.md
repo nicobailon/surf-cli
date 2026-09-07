@@ -398,7 +398,13 @@ surf wait.network              # Wait for network idle
 surf wait.url "/success"       # Wait for URL pattern
 surf wait.dom --stable 100     # Wait for DOM stability
 surf wait.load                 # Wait for page load complete
+surf wait.ready --selector ".results"                 # Ready, or fail fast: login / challenge / not-found / error
+surf wait.ready --url-prefix "https://app.example.com/" --empty-text "No results"  # empty vs blocked
+surf wait.ready --accept login --json                 # Return the negative state instead of failing
+surf page.readiness --json     # Classify the current page once (state + evidence)
 ```
+
+Typed readiness states replace "the selector never appeared": exit codes carry `page_login`, `page_challenge`, `page_not_found`, `page_error` or `page_timeout`. Detection uses visible UI (a rendered password field, a login route, the page's wording, a URL outside `--url-prefix`), not site selectors.
 
 ## Dialog Handling
 
