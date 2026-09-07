@@ -497,6 +497,16 @@ describe("formatToolContent", () => {
       });
       expect(result[0].text).not.toContain("_resolvedTabId");
     });
+
+    it("strips _resolvedWindowId from JSON output", () => {
+      const result = helpers.formatToolContent({
+        state: "ready",
+        evidence: [],
+        _resolvedTabId: 123,
+        _resolvedWindowId: 456,
+      });
+      expect(JSON.parse(result[0].text)).toEqual({ state: "ready", evidence: [] });
+    });
   });
 
   describe("scroll responses", () => {

@@ -56,6 +56,32 @@ const rowsResult = ok({
 });
 
 describe("runExtraction (owned tab)", () => {
+  it("drops the message id and resolver keys from the readiness result", async () => {
+    const host = scriptedHost([
+      { tool: "tab.new", reply: ok({ success: true, tabId: 41, url: "https://x/" }) },
+      {
+        tool: "wait.ready",
+        reply: ok({
+          id: 27,
+          _resolvedTabId: 41,
+          _resolvedWindowId: 9,
+          state: "ready",
+          evidence: [],
+          polls: 1,
+          waited: 3,
+        }),
+      },
+      { tool: "js", reply: rowsResult },
+      { tool: "tab.close", reply: ok({ success: true }) },
+    ]);
+    const result = await extract.runExtraction({
+      executeTool: host.executeTool,
+      url: "https://x/",
+      code: "return 1;",
+    });
+    expect(result.readiness).toEqual({ state: "ready", evidence: [], polls: 1, waited: 3 });
+  });
+
   it("opens, waits, extracts and closes a fresh tab", async () => {
     const host = scriptedHost([
       { tool: "tab.new", reply: ok({ success: true, tabId: 41, url: "https://x/" }) },

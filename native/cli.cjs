@@ -1809,6 +1809,7 @@ Core loop: navigate -> wait/read -> act -> screenshot/read.
 Navigate: surf navigate "https://example.com"    # alias: surf go "..."
 Wait after navigation: surf wait 2                # or wait.load for load complete
 Wait for real content: surf wait.ready --selector ".results"   # fails fast with page_login / page_challenge / page_not_found; --accept login returns the state
+Errors: first line ends with [code]; --json also prints {"error":{code,message}} on stdout
 Read DOM/refs: surf page.read --depth 3 --compact # alias: surf read
 Refs: use e1/e2 refs from page.read; prefer refs over CSS when available.
 Click ref: surf click e5
@@ -3834,6 +3835,18 @@ function queueSummary(queue) {
   return pieces.join(" ");
 }
 
+const READINESS_TOOLS = new Set(["wait.ready", "page.readiness"]);
+
+/**
+ * Drop the extension message id and target-resolver keys from a data
+ * result; they mean nothing to a caller and change between runs.
+ */
+function stripTransportKeys(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return value;
+  const { id, _resolvedTabId, _resolvedWindowId, _hint, ...rest } = value;
+  return rest;
+}
+
 async function handleResponse(response) {
   clearTimeout(timeout);
   printResponseContext(response);
@@ -3845,7 +3858,27 @@ async function handleResponse(response) {
       socket.end();
       process.exit(0);
     }
-    console.error("Error:", errContent);
+    // Put the error code where scripts and agents can branch on it: after
+    // the first line in text mode, as {error: {code, message, details}} on
+    // stdout under --json (the same shape `surf extract` prints).
+    const errorCode = typeof response.error.code === "string" ? response.error.code : null;
+    const [firstLine, ...restLines] = errContent.split("\n");
+    const display = errorCode && !firstLine.includes(`[${errorCode}]`)
+      ? [`${firstLine} [${errorCode}]`, ...restLines].join("\n")
+      : errContent;
+    console.error("Error:", display);
+    if (wantJson) {
+      // details repeats code/message when the error serialises itself; keep the rest.
+      const { code: _code, message: _message, ...details } =
+        response.error.details && typeof response.error.details === "object" ? response.error.details : {};
+      console.log(JSON.stringify({
+        error: {
+          code: errorCode || "error",
+          message: typeof response.error.message === "string" ? response.error.message : firstLine,
+          ...(Object.keys(details).length > 0 ? { details } : {}),
+        },
+      }, null, 2));
+    }
 
     if (autoCapture) {
       await performAutoCapture();
@@ -3895,6 +3928,7 @@ async function handleResponse(response) {
   }
 
   if (wantJson) {
+    if (READINESS_TOOLS.has(finalTool) || finalTool === "frame.diagnose") data = stripTransportKeys(data);
     const output = response.target || response.notice
       ? { result: data ?? null, target: response.target || null, notice: response.notice || null }
       : data ?? null;

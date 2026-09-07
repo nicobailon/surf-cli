@@ -462,7 +462,7 @@ function formatToolContent(result, log = () => {}, options = {}) {
   }
   
   // Strip internal fields before JSON output
-  const { _resolvedTabId, _hint, ...cleanResult } = result;
+  const { _resolvedTabId, _resolvedWindowId, _hint, ...cleanResult } = result;
   if (_hint) {
     return text(JSON.stringify(cleanResult) + `\n[hint] ${_hint}`);
   }

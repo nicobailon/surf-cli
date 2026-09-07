@@ -249,8 +249,17 @@ function parseToolJson(response, stage) {
  * Run one extraction attempt on `tabId` (already navigated). Shared by the
  * owned-tab and caller-supplied-target modes.
  */
+/** Drop the extension message id and target-resolver keys from a readiness result. */
+function cleanReadiness(readiness) {
+  if (!readiness || typeof readiness !== "object") return readiness;
+  const { id, _resolvedTabId, _resolvedWindowId, _hint, ...rest } = readiness;
+  return rest;
+}
+
 async function runAttemptOnTab(executeTool, tabId, settings) {
-  const readiness = parseToolJson(await executeTool("wait.ready", readinessArgs(settings.ready), tabId), "wait.ready");
+  const readiness = cleanReadiness(
+    parseToolJson(await executeTool("wait.ready", readinessArgs(settings.ready), tabId), "wait.ready"),
+  );
   const code = applyOptionsPrelude(settings.code, settings.options);
   const jsResponse = await executeTool("js", { code }, tabId);
   const failure = responseError(jsResponse, "js");
