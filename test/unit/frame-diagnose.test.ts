@@ -200,7 +200,84 @@ describe("buildFrameDiagnosis", () => {
     expect(result.warnings).toEqual([
       "iframe 0 (https://late.example.com/) has no matching extension frame: it may still be loading, be blocked, or have navigated elsewhere.",
       "1 cross-origin iframe(s): selectors from the main page do not reach them; switch with frame.switch first.",
-      "DOM lists 1 iframe(s) but the extension sees 0 child frame(s); nested or detached frames account for the difference.",
+      "DOM lists 1 iframe(s) but the extension sees 0 child frame(s); the rest live in closed shadow roots, were created after the snapshot, or are detached.",
+    ]);
+  });
+
+  it("matches srcdoc and about:blank iframes to CDP frames by name or id", () => {
+    const result = buildFrameDiagnosis({
+      mainPage: { href: MAIN, title: "Page" },
+      domIframes: [
+        iframe({ src: "", srcdoc: true, id: "inline" }),
+        iframe({ domIndex: 1, src: "about:blank", name: "hidden" }),
+        iframe({ domIndex: 2, src: "about:blank" }),
+      ],
+      extensionFrames: [
+        mainExt,
+        extFrame({ frameId: 3, url: "about:srcdoc" }),
+        extFrame({ frameId: 4, url: "about:blank" }),
+      ],
+      cdpFrames: [
+        mainCdp,
+        cdpFrame({ frameId: "F3", url: "about:srcdoc", name: "inline" }),
+        cdpFrame({ frameId: "F4", url: "about:blank", name: "hidden" }),
+      ],
+    });
+    expect(result.domIframes.map((entry) => entry.cdpFrameIds)).toEqual([["F3"], ["F4"], []]);
+    expect(result.warnings[0]).toBe(
+      "1 iframe(s) have no URL (about:blank or srcdoc): DOM indexes 2. No CDP frame carries their name or id, so their content cannot be matched; give them a name or id attribute, or use frame.switch --index.",
+    );
+  });
+
+  it("explains out-of-process iframes that the CDP frame tree does not list", () => {
+    const result = buildFrameDiagnosis({
+      mainPage: { href: MAIN, title: "Page" },
+      domIframes: [
+        iframe({ src: "https://www.youtube.com/embed/x" }),
+        iframe({ domIndex: 1, src: "https://example.org/", sandbox: "" }),
+      ],
+      extensionFrames: [
+        mainExt,
+        extFrame({ frameId: 54, url: "https://www.youtube.com/embed/x" }),
+        extFrame({
+          frameId: 57,
+          url: "https://example.org/",
+          contentScriptReachable: false,
+          contentScriptError: "Receiving end does not exist.",
+        }),
+      ],
+      cdpFrames: [mainCdp],
+    });
+    expect(result.domIframes.map((entry) => entry.cdpFrameIds)).toEqual([[], []]);
+    expect(result.warnings).toContain(
+      "iframe 0 (https://www.youtube.com/embed/x) is out-of-process: it is missing from this tab's CDP frame tree, so frame.js cannot reach it; its content script answers, so frame.switch, page.read and click by ref work there.",
+    );
+    expect(result.warnings).toContain(
+      "iframe 1 (https://example.org/) is out-of-process: it is missing from this tab's CDP frame tree, so frame.js cannot reach it; its content script is unreachable too, so nothing in this tab can drive it.",
+    );
+    expect(result.warnings.some((line) => line.includes("DOM lists"))).toBe(false);
+  });
+
+  it("reports shadow-hosted iframes and nested frames in the count mismatch", () => {
+    const result = buildFrameDiagnosis({
+      mainPage: { href: MAIN, title: "Page" },
+      domIframes: [
+        iframe({ src: "https://app.example.com/inner", shadowHost: "div#host > x-widget" }),
+      ],
+      extensionFrames: [
+        mainExt,
+        extFrame({ frameId: 5, url: "https://app.example.com/inner" }),
+        extFrame({ frameId: 6, parentFrameId: 5, url: "https://app.example.com/inner/nested" }),
+      ],
+      cdpFrames: [
+        mainCdp,
+        cdpFrame({ frameId: "F5", url: "https://app.example.com/inner" }),
+        cdpFrame({ frameId: "F6", parentId: "F5", url: "https://app.example.com/inner/nested" }),
+      ],
+    });
+    expect(result.domIframes[0].shadowHost).toBe("div#host > x-widget");
+    expect(result.warnings).toEqual([
+      "DOM lists 1 iframe(s) (1 inside open shadow roots) but the extension sees 2 child frame(s), 1 of them nested below another frame; the nested frames account for the difference.",
     ]);
   });
 });
