@@ -13,6 +13,39 @@ class CDPControllerError extends Error {
   }
 }
 
+export interface DebuggerCommandError extends Error {
+  /** CDP error code (for example -32000) when the browser reported one. */
+  cdpCode?: number;
+  /** The CDP method that failed. */
+  cdpMethod?: string;
+}
+
+/**
+ * `chrome.debugger.sendCommand` rejects with the CDP error serialised as
+ * JSON in the message (`{"code":-32000,"message":"Inspected target navigated
+ * or closed"}`). Surface the message itself and keep the code as a property,
+ * so callers and users see "Inspected target navigated or closed" instead
+ * of a JSON blob. Anything that is not such a JSON object passes through.
+ */
+export function describeDebuggerError(err: unknown, method?: string): Error {
+  const raw = err instanceof Error ? err.message : String(err);
+  const trimmed = raw.trim();
+  if (trimmed.startsWith("{") && trimmed.endsWith("}")) {
+    try {
+      const parsed = JSON.parse(trimmed) as { code?: unknown; message?: unknown };
+      if (parsed && typeof parsed.message === "string" && parsed.message.length > 0) {
+        const error = new Error(parsed.message) as DebuggerCommandError;
+        if (typeof parsed.code === "number") error.cdpCode = parsed.code;
+        if (method) error.cdpMethod = method;
+        return error;
+      }
+    } catch {
+      // not JSON after all; fall through
+    }
+  }
+  return err instanceof Error ? err : new Error(raw);
+}
+
 interface ConsoleMessage {
   type: string;
   text: string;
@@ -1338,7 +1371,11 @@ export class CDPController {
   ): Promise<any> {
     await this.ensureAttached(tabId);
     const target = this.targets.get(tabId)!;
-    return chrome.debugger.sendCommand(target, method, params);
+    try {
+      return await chrome.debugger.sendCommand(target, method, params);
+    } catch (err) {
+      throw describeDebuggerError(err, method);
+    }
   }
 
   async sendCommand(
