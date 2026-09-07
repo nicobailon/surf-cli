@@ -3832,6 +3832,18 @@ async function handleResponse(response) {
     console.log("\nUsage: surf emulate.device \"<device name>\"");
     console.log('Reset:  surf emulate.device "reset"');
   } else if (tool === "frame.diagnose" && data?.counts) {
+    // Keep frame URLs readable: embed runners carry kilobyte-long state
+    // parameters that bury the report (use --json for the full URLs).
+    const abbreviateUrl = (url, max = 100) => {
+      if (typeof url !== "string" || url.length <= max) return url;
+      try {
+        const parsed = new URL(url);
+        const base = `${parsed.origin}${parsed.pathname}`;
+        const trailing = url.length - base.length;
+        if (trailing > 0 && base.length <= max - 12) return `${base}?...(+${trailing} chars)`;
+      } catch {}
+      return `${url.slice(0, max - 3)}...`;
+    };
     const lines = [];
     lines.push(`Frame diagnosis for ${data.mainPage?.href ?? "?"}${data.mainPage?.title ? ` (${data.mainPage.title})` : ""}`);
     lines.push(`DOM iframes: ${data.counts.domIframes}, extension frames: ${data.counts.extensionFrames} (incl. main), CDP frames: ${data.counts.cdpFrames}`);
@@ -3848,20 +3860,20 @@ async function handleResponse(response) {
           f.extensionFrameIds?.length ? `ext ${f.extensionFrameIds.join("/")}` : "ext -",
           f.cdpFrameIds?.length ? `cdp ${f.cdpFrameIds.join("/")}` : "cdp -",
         ].join(", ");
-        lines.push(`  [${f.domIndex}] ${f.srcdoc ? "srcdoc" : (f.src || "about:blank")} ${Math.round(f.rect?.width ?? 0)}x${Math.round(f.rect?.height ?? 0)}${f.name ? ` name=${f.name}` : ""}${f.sandbox !== null && f.sandbox !== undefined ? ` sandbox="${f.sandbox}"` : ""}${flags ? ` [${flags}]` : ""} -> ${links}`);
+        lines.push(`  [${f.domIndex}] ${f.srcdoc ? "srcdoc" : abbreviateUrl(f.src || "about:blank")} ${Math.round(f.rect?.width ?? 0)}x${Math.round(f.rect?.height ?? 0)}${f.name ? ` name=${f.name}` : f.id ? ` id=${f.id}` : ""}${f.sandbox !== null && f.sandbox !== undefined ? ` sandbox="${f.sandbox}"` : ""}${f.shadowHost ? ` in shadow root of ${f.shadowHost}` : ""}${flags ? ` [${flags}]` : ""} -> ${links}`);
       }
     }
     if (Array.isArray(data.extensionFrames) && data.extensionFrames.length > 0) {
       lines.push("", "Extension frames (frame.switch ids):");
       for (const f of data.extensionFrames) {
         const reach = f.contentScriptReachable ? "content-script ok" : `content-script unreachable${f.contentScriptError ? ` (${f.contentScriptError})` : ""}`;
-        lines.push(`  #${f.frameId}${f.isMain ? " main" : ` parent ${f.parentFrameId}`} ${f.url}${f.crossOrigin ? " [cross-origin]" : ""} - ${reach}`);
+        lines.push(`  #${f.frameId}${f.isMain ? " main" : ` parent ${f.parentFrameId}`} ${abbreviateUrl(f.url)}${f.crossOrigin ? " [cross-origin]" : ""} - ${reach}`);
       }
     }
     if (Array.isArray(data.cdpFrames) && data.cdpFrames.length > 0) {
       lines.push("", "CDP frames (frame.js ids):");
       for (const f of data.cdpFrames) {
-        lines.push(`  ${f.frameId}${f.isMain ? " main" : ` parent ${f.parentId}`} ${f.url}${f.name ? ` name=${f.name}` : ""}${f.extensionFrameIds?.length ? ` -> ext ${f.extensionFrameIds.join("/")}` : ""}`);
+        lines.push(`  ${f.frameId}${f.isMain ? " main" : ` parent ${f.parentId}`} ${abbreviateUrl(f.url)}${f.name ? ` name=${f.name}` : ""}${f.extensionFrameIds?.length ? ` -> ext ${f.extensionFrameIds.join("/")}` : ""}`);
       }
     }
     lines.push("", Array.isArray(data.warnings) && data.warnings.length > 0 ? "Warnings:" : "No warnings.");
