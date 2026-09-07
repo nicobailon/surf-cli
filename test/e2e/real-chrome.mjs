@@ -151,6 +151,37 @@ function fixturePages(request, { crossOriginBase }) {
 <body><main><h1>Sign in</h1><form><label>Email <input type="email" name="email"></label>
 <label>Password <input type="password" name="password"></label><button type="submit">Sign in</button></form></main></body></html>`;
   }
+  if (url.pathname === "/list") {
+    const empty = url.searchParams.get("empty") === "1";
+    const items = empty
+      ? '<p class="empty-state">No results for this search.</p>'
+      : [1, 2, 3]
+          .map((n) => `<article class="item" data-id="${n}"><h2>Item ${n}</h2><a href="/items/${n}">open</a></article>`)
+          .join("");
+    return `<!doctype html><html><head><title>Surf list fixture</title></head>
+<body><h1>List</h1><label>Tracked <input id="tracked" type="text"></label><output id="mirror"></output>
+<section id="results">${items}</section>
+<script>
+  // Emulates a framework value tracker: an own "value" property on the
+  // instance shadows the native accessor and records what it saw. On
+  // "input" the framework compares its tracked value with the DOM value
+  // and ignores the event when they match, exactly like a controlled input.
+  const tracked = document.querySelector("#tracked");
+  const native = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value");
+  let trackedValue = "";
+  Object.defineProperty(tracked, "value", {
+    configurable: true,
+    get() { return native.get.call(this); },
+    set(next) { trackedValue = String(next); native.set.call(this, next); },
+  });
+  tracked.addEventListener("input", () => {
+    const domValue = native.get.call(tracked);
+    if (domValue === trackedValue) return; // framework sees no change
+    trackedValue = domValue;
+    document.querySelector("#mirror").textContent = domValue;
+  });
+</script></body></html>`;
+  }
   return null;
 }
 
@@ -469,6 +500,18 @@ try {
     throw new Error(`frame.diagnose warnings missing: ${JSON.stringify(diagnosis.warnings)}`);
   }
   await runSurf("tab.close", "--id", String(framesTab.tabId), "--json");
+
+  // --- native value setter -------------------------------------------------
+  const listTab = { tabId: tabIdFromOutput(await runSurf("tab.new", `${baseUrl}/list`)) };
+  await runSurf("wait.element", "#tracked", "--tab-id", String(listTab.tabId), "--json");
+  await runSurf("type", "hello tracker", "--into", "#tracked", "--tab-id", String(listTab.tabId), "--no-screenshot", "--json");
+  const listPage = (await browser.pages()).find((page) => page.url() === `${baseUrl}/list`);
+  if (!listPage) throw new Error("Puppeteer could not find the list fixture page");
+  const mirror = await listPage.evaluate(() => document.querySelector("#mirror")?.textContent);
+  if (mirror !== "hello tracker") {
+    throw new Error(`framework-controlled input did not observe the typed value (mirror=${JSON.stringify(mirror)})`);
+  }
+  await runSurf("tab.close", "--id", String(listTab.tabId), "--json");
 
   await runSurf("screenshot", "--output", screenshotPath);
   const png = readFileSync(screenshotPath);
