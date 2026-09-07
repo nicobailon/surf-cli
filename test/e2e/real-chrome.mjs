@@ -108,6 +108,49 @@ async function runSurf(...args) {
   return result.stdout;
 }
 
+/** tab.new prints "Created tab <id>: <url>" even with --json. */
+function tabIdFromOutput(stdout) {
+  const match = stdout.match(/\btab\s+(\d+)\b/i);
+  if (!match) throw new Error(`tab.new did not report a tab id: ${stdout}`);
+  return Number(match[1]);
+}
+
+function fixturePages(request) {
+  const url = new URL(request.url, "http://127.0.0.1");
+  if (url.pathname === "/list") {
+    const empty = url.searchParams.get("empty") === "1";
+    const items = empty
+      ? '<p class="empty-state">No results for this search.</p>'
+      : [1, 2, 3]
+          .map((n) => `<article class="item" data-id="${n}"><h2>Item ${n}</h2><a href="/items/${n}">open</a></article>`)
+          .join("");
+    return `<!doctype html><html><head><title>Surf list fixture</title></head>
+<body><h1>List</h1><label>Tracked <input id="tracked" type="text"></label><output id="mirror"></output>
+<section id="results">${items}</section>
+<script>
+  // Emulates a framework value tracker: an own "value" property on the
+  // instance shadows the native accessor and records what it saw. On
+  // "input" the framework compares its tracked value with the DOM value
+  // and ignores the event when they match, exactly like a controlled input.
+  const tracked = document.querySelector("#tracked");
+  const native = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value");
+  let trackedValue = "";
+  Object.defineProperty(tracked, "value", {
+    configurable: true,
+    get() { return native.get.call(this); },
+    set(next) { trackedValue = String(next); native.set.call(this, next); },
+  });
+  tracked.addEventListener("input", () => {
+    const domValue = native.get.call(tracked);
+    if (domValue === trackedValue) return; // framework sees no change
+    trackedValue = domValue;
+    document.querySelector("#mirror").textContent = domValue;
+  });
+</script></body></html>`;
+  }
+  return null;
+}
+
 try {
   if (!new Set(["darwin", "linux"]).has(process.platform)) {
     throw new Error(`Real Chrome E2E does not support ${process.platform}`);
@@ -191,6 +234,12 @@ try {
   cpSync(standardManifest, testingManifest);
 
   server = createServer((request, response) => {
+    const extraPage = fixturePages(request);
+    if (extraPage !== null) {
+      response.writeHead(200, { "content-type": "text/html; charset=utf-8" });
+      response.end(extraPage);
+      return;
+    }
     const hasSessionCookie = request.headers.cookie?.includes("surf_session=present") === true;
     response.writeHead(200, {
       "content-type": "text/html; charset=utf-8",
@@ -221,6 +270,7 @@ try {
   const address = server.address();
   const fixtureUrl = `http://127.0.0.1:${address.port}/fixture`;
   const navigationUrl = `${fixtureUrl}?navigated`;
+  const baseUrl = `http://127.0.0.1:${address.port}`;
 
   browser = await puppeteer.launch({
     headless: true,
@@ -336,6 +386,18 @@ try {
     () => fixturePage.evaluate(() => document.querySelector("#pi-agent-glow") !== null),
     "visual indicator",
   );
+
+  // --- native value setter -------------------------------------------------
+  const listTab = { tabId: tabIdFromOutput(await runSurf("tab.new", `${baseUrl}/list`)) };
+  await runSurf("wait.element", "#tracked", "--tab-id", String(listTab.tabId), "--json");
+  await runSurf("type", "hello tracker", "--into", "#tracked", "--tab-id", String(listTab.tabId), "--no-screenshot", "--json");
+  const listPage = (await browser.pages()).find((page) => page.url() === `${baseUrl}/list`);
+  if (!listPage) throw new Error("Puppeteer could not find the list fixture page");
+  const mirror = await listPage.evaluate(() => document.querySelector("#mirror")?.textContent);
+  if (mirror !== "hello tracker") {
+    throw new Error(`framework-controlled input did not observe the typed value (mirror=${JSON.stringify(mirror)})`);
+  }
+  await runSurf("tab.close", "--id", String(listTab.tabId), "--json");
 
   await runSurf("screenshot", "--output", screenshotPath);
   const png = readFileSync(screenshotPath);
