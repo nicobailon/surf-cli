@@ -473,12 +473,24 @@ function codeWithExpressionReturn(code: string): string {
   return `return (\n${code}\n);`;
 }
 
-function scriptParses(code: string): boolean {
+/**
+ * Whether the wrapped statement body parses. The MV3 extension CSP
+ * (`script-src 'self'`) makes `new Function` throw an EvalError inside the
+ * service worker; in that case ask the page's parser through CDP instead,
+ * which compiles without running anything.
+ */
+async function statementBodyParses(tabId: number, body: string): Promise<boolean> {
   try {
-    new Function(code);
+    new Function(body);
     return true;
   } catch (err) {
-    return !(err instanceof SyntaxError);
+    if (err instanceof SyntaxError) return false;
+  }
+  try {
+    const compiled = await cdp.compileScript(tabId, `(async () => { 'use strict'; ${body} })()`);
+    return compiled.parses;
+  } catch {
+    return true;
   }
 }
 
@@ -2234,7 +2246,10 @@ export async function handleMessage(
 
         let result = await cdp.evaluateScript(tabId, expression);
 
-        if (result.exceptionDetails && !scriptParses(body)) {
+        // Statement scripts (declarations, loops, explicit `return`) cannot be
+        // wrapped as an expression; retry them in statement mode when the
+        // expression form failed to parse.
+        if (result.exceptionDetails && !(await statementBodyParses(tabId, body))) {
           result = await cdp.evaluateScript(tabId, `(async () => { 'use strict'; ${message.code} })()`);
         }
 
