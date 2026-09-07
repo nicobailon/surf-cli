@@ -2,6 +2,9 @@
 
 ## [Unreleased]
 
+### Fixed
+- **Readable CDP errors** - `chrome.debugger` failures surfaced as a JSON blob (`{"code":-32000,"message":"Inspected target navigated or closed"}`); the message is now unwrapped and the CDP code and method are kept on the error as `cdpCode`/`cdpMethod`.
+
 ## [2.18.0] - 2026-09-04
 
 ### Highlights
