@@ -108,6 +108,40 @@ async function runSurf(...args) {
   return result.stdout;
 }
 
+/** `--json` with an explicit target wraps the payload as {result, target, notice}. */
+function unwrapJson(stdout) {
+  const parsed = JSON.parse(stdout);
+  return parsed && typeof parsed === "object" && "result" in parsed && "target" in parsed ? parsed.result : parsed;
+}
+
+/** tab.new prints "Created tab <id>: <url>" even with --json. */
+function tabIdFromOutput(stdout) {
+  const match = stdout.match(/\btab\s+(\d+)\b/i);
+  if (!match) throw new Error(`tab.new did not report a tab id: ${stdout}`);
+  return Number(match[1]);
+}
+
+/** Run surf expecting a non-zero exit; returns stdout and stderr. */
+async function runSurfExpectingFailure(...args) {
+  try {
+    const stdout = await runSurf(...args);
+    throw new Error(`Expected \`surf ${args.join(" ")}\` to fail, but it printed: ${stdout}`);
+  } catch (error) {
+    if (typeof error.code !== "number" || error.code === 0) throw error;
+    return { code: error.code, stdout: error.stdout ?? "", stderr: error.stderr ?? "" };
+  }
+}
+
+function fixturePages(request) {
+  const url = new URL(request.url, "http://127.0.0.1");
+  if (url.pathname === "/login") {
+    return `<!doctype html><html><head><title>Sign in - Surf fixture</title></head>
+<body><main><h1>Sign in</h1><form><label>Email <input type="email" name="email"></label>
+<label>Password <input type="password" name="password"></label><button type="submit">Sign in</button></form></main></body></html>`;
+  }
+  return null;
+}
+
 try {
   if (!new Set(["darwin", "linux"]).has(process.platform)) {
     throw new Error(`Real Chrome E2E does not support ${process.platform}`);
@@ -191,6 +225,12 @@ try {
   cpSync(standardManifest, testingManifest);
 
   server = createServer((request, response) => {
+    const extraPage = fixturePages(request);
+    if (extraPage !== null) {
+      response.writeHead(200, { "content-type": "text/html; charset=utf-8" });
+      response.end(extraPage);
+      return;
+    }
     const hasSessionCookie = request.headers.cookie?.includes("surf_session=present") === true;
     response.writeHead(200, {
       "content-type": "text/html; charset=utf-8",
@@ -221,6 +261,7 @@ try {
   const address = server.address();
   const fixtureUrl = `http://127.0.0.1:${address.port}/fixture`;
   const navigationUrl = `${fixtureUrl}?navigated`;
+  const baseUrl = `http://127.0.0.1:${address.port}`;
 
   browser = await puppeteer.launch({
     headless: true,
@@ -337,6 +378,33 @@ try {
     "visual indicator",
   );
 
+  // --- page readiness ---------------------------------------------------
+  const readiness = unwrapJson(await runSurf("page.readiness", "--json", "--tab-id", String(fixtureTab.id)));
+  if (readiness.state !== "ready" || readiness.readyState !== "complete") {
+    throw new Error(`page.readiness did not report ready: ${JSON.stringify(readiness)}`);
+  }
+  const waited = unwrapJson(
+    await runSurf("wait.ready", "--json", "--tab-id", String(fixtureTab.id), "--selector", "#fixture-button", "--text", "Clicked by Surf"),
+  );
+  if (waited.state !== "ready" || typeof waited.polls !== "number" || waited.polls < 1) {
+    throw new Error(`wait.ready did not settle on ready: ${JSON.stringify(waited)}`);
+  }
+
+  const loginTab = { tabId: tabIdFromOutput(await runSurf("tab.new", `${baseUrl}/login`)) };
+  const loginFailure = await runSurfExpectingFailure(
+    "wait.ready", "--tab-id", String(loginTab.tabId), "--url-prefix", `${baseUrl}/fixture`, "--timeout", "5000",
+  );
+  if (!loginFailure.stderr.includes("login") || !loginFailure.stderr.includes("password field")) {
+    throw new Error(`wait.ready did not classify the login bounce: ${JSON.stringify(loginFailure)}`);
+  }
+  const acceptedLogin = unwrapJson(
+    await runSurf("wait.ready", "--json", "--tab-id", String(loginTab.tabId), "--url-prefix", `${baseUrl}/fixture`, "--accept", "login"),
+  );
+  if (acceptedLogin.state !== "login" || acceptedLogin.accepted !== true) {
+    throw new Error(`wait.ready --accept login did not return the state: ${JSON.stringify(acceptedLogin)}`);
+  }
+  await runSurf("tab.close", "--id", String(loginTab.tabId), "--json");
+
   await runSurf("screenshot", "--output", screenshotPath);
   const png = readFileSync(screenshotPath);
   if (png.length < 100 || png.subarray(0, 8).toString("hex") !== "89504e470d0a1a0a") {
@@ -379,6 +447,7 @@ try {
         extensionId,
         platform: process.platform,
         result: "pass",
+        readiness: { fixture: readiness.state, loginAccepted: acceptedLogin.state },
         screenshotBytes: png.length,
         serviceWorker: workerTarget.url(),
       },
