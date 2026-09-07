@@ -139,6 +139,37 @@ function fixturePages(request) {
 <body><main><h1>Sign in</h1><form><label>Email <input type="email" name="email"></label>
 <label>Password <input type="password" name="password"></label><button type="submit">Sign in</button></form></main></body></html>`;
   }
+  if (url.pathname === "/list") {
+    const empty = url.searchParams.get("empty") === "1";
+    const items = empty
+      ? '<p class="empty-state">No results for this search.</p>'
+      : [1, 2, 3]
+          .map((n) => `<article class="item" data-id="${n}"><h2>Item ${n}</h2><a href="/items/${n}">open</a></article>`)
+          .join("");
+    return `<!doctype html><html><head><title>Surf list fixture</title></head>
+<body><h1>List</h1><label>Tracked <input id="tracked" type="text"></label><output id="mirror"></output>
+<section id="results">${items}</section>
+<script>
+  // Emulates a framework value tracker: an own "value" property on the
+  // instance shadows the native accessor and records what it saw. On
+  // "input" the framework compares its tracked value with the DOM value
+  // and ignores the event when they match, exactly like a controlled input.
+  const tracked = document.querySelector("#tracked");
+  const native = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value");
+  let trackedValue = "";
+  Object.defineProperty(tracked, "value", {
+    configurable: true,
+    get() { return native.get.call(this); },
+    set(next) { trackedValue = String(next); native.set.call(this, next); },
+  });
+  tracked.addEventListener("input", () => {
+    const domValue = native.get.call(tracked);
+    if (domValue === trackedValue) return; // framework sees no change
+    trackedValue = domValue;
+    document.querySelector("#mirror").textContent = domValue;
+  });
+</script></body></html>`;
+  }
   return null;
 }
 
@@ -405,6 +436,50 @@ try {
   }
   await runSurf("tab.close", "--id", String(loginTab.tabId), "--json");
 
+  // --- js --file with statements and --options -------------------------------
+  const extractScript = join(repo, "test/e2e/fixtures/list-items.js");
+  const listTabForJs = { tabId: tabIdFromOutput(await runSurf("tab.new", `${baseUrl}/list?q=js`)) };
+  await runSurf("wait.ready", "--json", "--tab-id", String(listTabForJs.tabId), "--selector", ".item");
+  const jsOutput = unwrapJson(
+    await runSurf("js", "--file", extractScript, "--options", '{"limit": 1}', "--tab-id", String(listTabForJs.tabId), "--json"),
+  );
+  if (jsOutput?.query !== "js" || jsOutput?.total !== 1 || jsOutput?.rows?.[0]?.title !== "Item 1") {
+    throw new Error(`js --file with statements and --options did not return the script result: ${JSON.stringify(jsOutput)}`);
+  }
+  await runSurf("tab.close", "--id", String(listTabForJs.tabId), "--json");
+
+  // --- extract -------------------------------------------------------------
+  const extracted = JSON.parse(
+    await runSurf("extract", `${baseUrl}/list?q=surf`, "--file", extractScript, "--options", '{"limit": 2}', "--ready-selector", ".item", "--json"),
+  );
+  if (extracted.rowCount !== 2 || extracted.attempts !== 1 || extracted.data.query !== "surf" || extracted.rows[1].title !== "Item 2") {
+    throw new Error(`extract did not return the fixture rows: ${JSON.stringify(extracted)}`);
+  }
+  const markdown = await runSurf("extract", `${baseUrl}/list?q=surf`, "--file", extractScript, "--ready-selector", ".item");
+  // chrome.debugger returns dictionaries key-sorted, so only check content, not column order.
+  const headerLine = markdown.split("\n").find((line) => line.startsWith("| ") && line.includes("title"));
+  const rowLine = markdown.split("\n").find((line) => line.includes("Item 3"));
+  if (!markdown.includes("3 rows") || !headerLine?.includes("id") || !headerLine.includes("href") || !rowLine?.includes("/items/3")) {
+    throw new Error(`extract Markdown output unexpected: ${markdown}`);
+  }
+  const emptyAccepted = JSON.parse(
+    await runSurf("extract", `${baseUrl}/list?empty=1`, "--file", extractScript, "--empty-text", "No results", "--json"),
+  );
+  if (emptyAccepted.rowCount !== 0 || emptyAccepted.readiness.state !== "empty") {
+    throw new Error(`extract did not accept the explicit empty state: ${JSON.stringify(emptyAccepted)}`);
+  }
+  const emptyRejected = await runSurfExpectingFailure(
+    "extract", `${baseUrl}/list?empty=1`, "--file", extractScript, "--retry", "1", "--retry-delay-ms", "0", "--json",
+  );
+  const emptyError = JSON.parse(emptyRejected.stdout);
+  if (emptyError.error?.code !== "empty_result" || emptyError.error?.details?.attempts !== 2) {
+    throw new Error(`extract did not enforce the zero-rows invariant: ${JSON.stringify(emptyRejected)}`);
+  }
+  const tabsAfterExtract = JSON.parse(await runSurf("tab.list", "--json"));
+  if (tabsAfterExtract.some((tab) => tab.url.includes("/list"))) {
+    throw new Error(`extract leaked an owned tab: ${JSON.stringify(tabsAfterExtract)}`);
+  }
+
   await runSurf("screenshot", "--output", screenshotPath);
   const png = readFileSync(screenshotPath);
   if (png.length < 100 || png.subarray(0, 8).toString("hex") !== "89504e470d0a1a0a") {
@@ -448,6 +523,7 @@ try {
         platform: process.platform,
         result: "pass",
         readiness: { fixture: readiness.state, loginAccepted: acceptedLogin.state },
+        extractRows: extracted.rowCount,
         screenshotBytes: png.length,
         serviceWorker: workerTarget.url(),
       },
