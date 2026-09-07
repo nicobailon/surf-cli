@@ -1771,6 +1771,7 @@ Purpose: control Chrome from shell. Commands are \`surf <command> [args] [option
 Core loop: navigate -> wait/read -> act -> screenshot/read.
 Navigate: surf navigate "https://example.com"    # alias: surf go "..."
 Wait after navigation: surf wait 2                # or wait.load for load complete
+Wait for real content: surf wait.ready --selector ".results"   # fails fast with page_login / page_challenge / page_not_found; --accept login returns the state
 Read DOM/refs: surf page.read --depth 3 --compact # alias: surf read
 Refs: use e1/e2 refs from page.read; prefer refs over CSS when available.
 Click ref: surf click e5
