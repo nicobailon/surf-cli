@@ -2,6 +2,9 @@
 
 ## [Unreleased]
 
+### Fixed
+- **Framework-controlled inputs** - `type --ref`, `type --into` and `form.fill` now write text inputs and textareas through the native value setter, so React, Angular and Vue trackers observe the change instead of reverting it. `piHelpers.setValue(el, value)` exposes the same routine to `surf js` (sets the value through the native setter and dispatches `input`/`change`).
+
 ## [2.18.0] - 2026-09-04
 
 ### Highlights

@@ -575,6 +575,7 @@ surf wait.url "/dashboard"          # Wait for URL pattern
 
 ```bash
 surf js "return document.title"     # Execute JavaScript
+surf js "piHelpers.setValue(document.querySelector('#q'), 'hello')"  # Native value setter + input/change events
 surf record --duration 2000 --fps 10 --output /tmp/anim.gif      # Animated GIF capture
 surf animate-audit --selector ".thing" --duration 2000 --fps 10  # JSON animation timeline
 surf perf-audit --duration 3000 --output /tmp/perf.json           # PerformanceObserver snapshot
