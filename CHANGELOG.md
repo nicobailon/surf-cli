@@ -2,6 +2,9 @@
 
 ## [Unreleased]
 
+### Fixed
+- **`js --file` statement scripts** - Scripts starting with a declaration failed with `SyntaxError: Unexpected token 'const'` in real Chrome because the statement-mode fallback relied on `new Function`, which the extension CSP blocks in the service worker. The fallback now uses CDP `Runtime.compileScript`.
+
 ## [2.18.0] - 2026-09-04
 
 ### Highlights
