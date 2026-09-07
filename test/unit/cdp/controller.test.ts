@@ -1,5 +1,5 @@
 import { vi } from "vitest";
-import { CDPController } from "../../../src/cdp/controller";
+import { CDPController, describeDebuggerError } from "../../../src/cdp/controller";
 
 // Mock chrome.debugger API
 const mockChrome = {
@@ -15,7 +15,42 @@ const mockChrome = {
 // Set global chrome before tests
 vi.stubGlobal("chrome", mockChrome);
 
+describe("describeDebuggerError", () => {
+  it("unwraps the JSON-encoded CDP error chrome.debugger rejects with", () => {
+    const error = describeDebuggerError(
+      new Error('{"code":-32000,"message":"Inspected target navigated or closed"}'),
+      "Runtime.evaluate",
+    );
+    expect(error.message).toBe("Inspected target navigated or closed");
+    expect(error).toMatchObject({ cdpCode: -32000, cdpMethod: "Runtime.evaluate" });
+  });
+
+  it("passes plain errors and non-JSON messages through unchanged", () => {
+    const plain = new Error("Detached while handling command.");
+    expect(describeDebuggerError(plain, "Page.enable")).toBe(plain);
+    expect(describeDebuggerError("{not json", "Page.enable").message).toBe("{not json");
+    expect(describeDebuggerError('{"code":1}', "Page.enable").message).toBe('{"code":1}');
+  });
+});
+
 describe("CDPController", () => {
+  describe("send", () => {
+    it("rethrows CDP failures with the browser's message instead of a JSON blob", async () => {
+      const controller = new CDPController();
+      mockChrome.debugger.attach.mockResolvedValue(undefined);
+      mockChrome.debugger.sendCommand.mockRejectedValue(
+        new Error('{"code":-32000,"message":"Inspected target navigated or closed"}'),
+      );
+      await expect(
+        controller.sendCommand(7, "Runtime.evaluate", { expression: "1" }),
+      ).rejects.toMatchObject({
+        message: "Inspected target navigated or closed",
+        cdpCode: -32000,
+        cdpMethod: "Runtime.evaluate",
+      });
+    });
+  });
+
   beforeEach(() => {
     vi.clearAllMocks();
   });
