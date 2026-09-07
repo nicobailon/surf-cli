@@ -280,6 +280,13 @@ surf locate.role button --action click
 surf frame.main                     # Return to main page
 ```
 
+When a selector never matches, `frame.diagnose` shows the three frame views side by side (DOM `<iframe>` elements, the extension's frames with content-script reachability, and the CDP frame tree) and explains the mismatches: `srcdoc`/`about:blank` frames (matched to their CDP frame by `name`/`id`), sandboxes without `allow-scripts`, cross-origin frames, out-of-process frames that the CDP tree does not list (`frame.js` cannot reach them; `frame.switch` and `page.read` can when the content script answers), and frames still loading. The DOM inventory walks open shadow roots, so frames rendered by custom elements are listed with their `shadowHost` path. The text report abbreviates long frame URLs; `--json` keeps them whole.
+
+```bash
+surf frame.diagnose                 # Human-readable report with warnings
+surf frame.diagnose --json          # Full inventories
+```
+
 ### Interaction
 
 ```bash
@@ -941,7 +948,7 @@ echo '{"type":"tool_request","method":"execute_tool","params":{"tool":"tab.list"
 | `page.*` | `read`, `text`, `state` |
 | `locate.*` | `role`, `text`, `label` |
 | `element.*` | `styles` |
-| `frame.*` | `list`, `switch`, `main`, `js` |
+| `frame.*` | `list`, `diagnose`, `switch`, `main`, `js` |
 | `wait.*` | `element`, `network`, `url`, `dom`, `load` |
 | `cookie` / `cookie.*` | `list`, `get`, `set`, `clear`, `delete` |
 | `bookmark.*` | `add`, `remove`, `list` |

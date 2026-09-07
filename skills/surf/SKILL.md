@@ -321,6 +321,7 @@ surf page.text                 # Plain text content only
 surf page.html --strip-scripts # Rendered HTML without scripts
 surf page.save --selector "#artifact" --strip-scripts --output page.html # Save one static element
 surf page.state                # Modals, loading state, scroll info
+surf frame.diagnose            # Why a selector misses: DOM iframes (incl. open shadow roots) vs extension frames vs CDP tree, with warnings; out-of-process frames need frame.switch, not frame.js
 ```
 
 ### Export Rendered HTML
