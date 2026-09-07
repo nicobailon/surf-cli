@@ -1820,7 +1820,8 @@ Record animation: surf record --duration 2000 --fps 10 --output /tmp/anim.gif
 Video recording: surf video start ./demo.webm --fps 30; surf video stop
 Animation audit: surf animate-audit --selector ".thing" --duration 2000 --fps 10
 Performance audit: surf perf-audit --duration 3000 --trigger "click:.cta" --output /tmp/perf.json
-JavaScript: surf js "return document.title"
+JavaScript: surf js "return document.title"       # --file script.js --options '{"limit":20}' exposes SURF_OPTIONS
+Extract rows (read-only, owned tab): surf extract "https://example.com/list" --file rows.js --ready-selector ".item" --json
 Scroll: surf scroll down 800 | surf scroll up 400 | surf scroll bottom | surf scroll top
 Find by semantics: surf locate.role button --name "Submit" --action click
 Device/viewport: surf emulate.device "iPhone 14" | surf resize 375 812

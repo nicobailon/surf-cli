@@ -401,10 +401,21 @@ surf wait.load                 # Wait for page load complete
 surf wait.ready --selector ".results"                 # Ready, or fail fast: login / challenge / not-found / error
 surf wait.ready --url-prefix "https://app.example.com/" --empty-text "No results"  # empty vs blocked
 surf wait.ready --accept login --json                 # Return the negative state instead of failing
+# js on a background tab can stall for seconds in Brave; run surf tab.switch <id> first, or use extract (owns an active tab).
 surf page.readiness --json     # Classify the current page once (state + evidence)
 ```
 
 Typed readiness states replace "the selector never appeared": exit codes carry `page_login`, `page_challenge`, `page_not_found`, `page_error` or `page_timeout`. Detection uses visible UI (a rendered password field, a login route, the page's wording, a URL outside `--url-prefix`), not site selectors.
+
+## Extraction (owned tab, read-only)
+
+```bash
+surf extract "https://example.com/list" --file rows.js --ready-selector ".item"   # tab.new -> wait.ready -> js -> tab.close
+surf extract "<url>" --file rows.js --options '{"limit": 20}' --empty-text "No results" --json
+surf extract --tab-id 42 --code 'return [...document.querySelectorAll("h2")].map(h => ({ title: h.textContent }))'
+```
+
+Rules: the script must `return` JSON and reads parameters from `SURF_OPTIONS`; zero rows fails unless `--allow-empty` or the page showed its own empty state; transient tab failures and timeouts retry in a fresh tab (`--retry`), login/challenge/not-found never do; only run read-only scripts here (the sequence may replay). Mutations go through `surf js` on an explicit target.
 
 ## Dialog Handling
 

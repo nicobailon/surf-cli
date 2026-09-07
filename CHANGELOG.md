@@ -4,6 +4,8 @@
 
 ### Added
 - **Typed page readiness** - `surf wait.ready` polls with a bounded budget and reports `ready`, `empty`, `login`, `challenge`, `not-found` or `error` instead of timing out silently; negative states exit with `page_login`, `page_challenge`, `page_not_found`, `page_error` or `page_timeout`, and `--accept` returns them to the caller. `surf page.readiness` classifies the page once. Detection uses visible UI state and the caller's expectations (`--selector`, `--text`, `--url-prefix`, `--empty-text`), not site-specific selectors.
+- **`surf extract`** - Runs a read-only page-side script in an owned tab (`tab.new` -> `wait.ready` -> `js` -> `tab.close`) with bounded fresh-tab retry on transient failures, a zero-rows-is-failure invariant (`--allow-empty`, `--empty-text`), a `SURF_OPTIONS` prelude (`--options`) and Markdown or `--json` output. `--tab-id`/`--session` read an existing tab in place without retry.
+- **`surf js --options`** - Exposes a JSON object to `js`/`frame.js` scripts as a frozen `SURF_OPTIONS` constant.
 
 ## [2.18.0] - 2026-09-04
 

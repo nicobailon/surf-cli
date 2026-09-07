@@ -580,10 +580,26 @@ surf wait.ready --url-prefix "https://app.example.com/" --empty-text "No results
 surf wait.ready --accept login --json   # {"state":"login","evidence":[...]} instead of an error
 ```
 
+Note that `js` on a tab that is not the active tab of its window can take many seconds in Brave (background-tab throttling of the DevTools session); `page.read` and `page.readiness` are unaffected because they run in the content script. Switch to the tab first (`surf tab.switch <id>`) or let `extract` open its own tab.
+
+### Extraction
+
+`surf extract` runs a read-only page-side script in a tab it owns: `tab.new -> wait.ready -> js -> tab.close`. Transient target failures, readiness timeouts and zero-row results are retried in a fresh tab (`--retry`, default 1); login bounces, challenges and not-found pages are not, because the next tab would land on the same page. Zero rows is a failure unless `--allow-empty` is set or the page showed its own empty state (`--empty-text`), which separates "no results" from "logged out, blocked, or the selectors missed". The script must `return` JSON (an array, or an object with a `rows`/`items`/`results` array) and reads its parameters from a frozen `SURF_OPTIONS` constant.
+
+```bash
+surf extract "https://example.com/list" --file rows.js --ready-selector ".item"          # Markdown table
+surf extract "https://example.com/search?q=x" --file rows.js --options '{"limit": 20}' \
+  --empty-text "No results" --json                                                         # {data, rows, rowCount, attempts, readiness}
+surf extract --tab-id 42 --code 'return [...document.querySelectorAll("h2")].map(h => ({ title: h.textContent }))'
+```
+
+With `--tab-id` or `--session` the script runs in that tab in place (navigating only when a URL is given), with no retry and no close. The command replays its whole sequence on retry, so scripts that mutate state belong in `surf js` on an explicit target, not in `extract`.
+
 ### Other
 
 ```bash
 surf js "return document.title"     # Execute JavaScript
+surf js --file script.js --options '{"limit": 20}'   # Script reads SURF_OPTIONS.limit
 surf record --duration 2000 --fps 10 --output /tmp/anim.gif      # Animated GIF capture
 surf animate-audit --selector ".thing" --duration 2000 --fps 10  # JSON animation timeline
 surf perf-audit --duration 3000 --output /tmp/perf.json           # PerformanceObserver snapshot
@@ -947,6 +963,7 @@ echo '{"type":"tool_request","method":"execute_tool","params":{"tool":"tab.list"
 | `window.*` | `new`, `list`, `focus`, `close`, `resize` |
 | `tab.*` | `list`, `new`, `switch`, `close`, `name`, `unname`, `named`, `group`, `ungroup`, `groups`, `reload` |
 | `scroll.*` | `top`, `bottom`, `to`, `info` |
+| `extract` | `extract` |
 | `page.*` | `read`, `text`, `state`, `readiness` |
 | `locate.*` | `role`, `text`, `label` |
 | `element.*` | `styles` |
