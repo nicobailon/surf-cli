@@ -236,9 +236,9 @@ try {
   mkdirSync(join(profileDir, "NativeMessagingHosts"), { recursive: true });
   cpSync(standardManifest, testingManifest);
 
-  crossOriginServer = createServer((request, response) => {
+  crossOriginServer = createServer((_request, response) => {
     response.writeHead(200, { "content-type": "text/html; charset=utf-8" });
-    response.end(`<!doctype html><html><head><title>Cross-origin fixture</title></head><body><p>cross-origin ${request.url}</p></body></html>`);
+    response.end("<!doctype html><html><head><title>Cross-origin fixture</title></head><body><p>cross-origin fixture</p></body></html>");
   });
   await new Promise((resolve, reject) => {
     crossOriginServer.once("error", reject);
