@@ -18,6 +18,7 @@ Thanks to [@tryingET](https://github.com/tryingET) for #255.
 Thanks to [@tryingET](https://github.com/tryingET) for #251 and #256.
 Thanks to [@tryingET](https://github.com/tryingET) for #252.
 Thanks to [@tryingET](https://github.com/tryingET) for #253.
+Thanks to [@tryingET](https://github.com/tryingET) for #254.
 
 ## [2.18.0] - 2026-09-04
 
