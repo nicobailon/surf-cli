@@ -83,6 +83,28 @@ describe("readiness handlers", () => {
     expect(result.tabStatus).toBe("loading");
   });
 
+  it("PAGE_READINESS does not accept a stale report during pending navigation", async () => {
+    const handleMessage = await loadHandleMessage();
+    const chrome = (globalThis as any).chrome;
+    chrome.tabs.get.mockResolvedValue({
+      id: 5,
+      url: "https://example.com/old",
+      pendingUrl: "https://example.com/new",
+      status: "loading",
+    });
+    chrome.tabs.sendMessage.mockResolvedValue(report("ready", { href: "https://example.com/old" }));
+
+    const result = await handleMessage({ type: "PAGE_READINESS", tabId: 5 }, {});
+    expect(result).toEqual({
+      state: "loading",
+      evidence: [
+        "navigation to https://example.com/new pending; report is from https://example.com/old",
+      ],
+      href: "https://example.com/old",
+      tabStatus: "loading",
+    });
+  });
+
   it("reports invalid CSS selectors as deterministic caller errors", async () => {
     const handleMessage = await loadHandleMessage();
     const chrome = (globalThis as any).chrome;

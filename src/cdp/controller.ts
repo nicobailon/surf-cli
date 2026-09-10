@@ -34,7 +34,7 @@ export function describeDebuggerError(err: unknown, method?: string): Error {
     try {
       const parsed = JSON.parse(trimmed) as { code?: unknown; message?: unknown };
       if (parsed && typeof parsed.message === "string" && parsed.message.length > 0) {
-        const error = new Error(parsed.message) as DebuggerCommandError;
+        const error = new Error(parsed.message, { cause: err }) as DebuggerCommandError;
         if (typeof parsed.code === "number") error.cdpCode = parsed.code;
         if (method) error.cdpMethod = method;
         return error;
@@ -1413,12 +1413,30 @@ export class CDPController {
     width: number;
     height: number;
   }> {
-    const result = await this.captureScreenshotData(tabId, {
-      format: "png",
-      captureBeyondViewport: false,
+    return this.withScreenshotDeadline(tabId, (async () => {
+      const result = await this.captureScreenshotData(tabId, {
+        format: "png",
+        captureBeyondViewport: false,
+      });
+      const { width, height } = await this.getViewportSize(tabId);
+      return { base64: result.data, width, height };
+    })());
+  }
+
+  private async withScreenshotDeadline<T>(tabId: number, work: Promise<T>): Promise<T> {
+    let timeoutId: ReturnType<typeof setTimeout> | undefined;
+    const timeout = new Promise<never>((_, reject) => {
+      timeoutId = setTimeout(() => reject(new CDPControllerError(
+        "screenshot_timeout",
+        `Screenshot capture timed out after ${CDPController.SCREENSHOT_TIMEOUT_MS}ms`,
+        { tabId, timeoutMs: CDPController.SCREENSHOT_TIMEOUT_MS },
+      )), CDPController.SCREENSHOT_TIMEOUT_MS);
     });
-    const { width, height } = await this.getViewportSize(tabId);
-    return { base64: result.data, width, height };
+    try {
+      return await Promise.race([work, timeout]);
+    } finally {
+      if (timeoutId !== undefined) clearTimeout(timeoutId);
+    }
   }
 
   async captureRegion(tabId: number, x: number, y: number, width: number, height: number): Promise<{
@@ -1436,23 +1454,8 @@ export class CDPController {
   private async captureScreenshotData(
     tabId: number,
     params: { [key: string]: unknown },
-  ): Promise<any> {
-    let timeoutId: ReturnType<typeof setTimeout> | undefined;
-    const timeout = new Promise<never>((_, reject) => {
-      timeoutId = setTimeout(() => reject(new CDPControllerError(
-        "screenshot_timeout",
-        `Screenshot capture timed out after ${CDPController.SCREENSHOT_TIMEOUT_MS}ms`,
-        { tabId, timeoutMs: CDPController.SCREENSHOT_TIMEOUT_MS },
-      )), CDPController.SCREENSHOT_TIMEOUT_MS);
-    });
-    try {
-      return await Promise.race([
-        this.send(tabId, "Page.captureScreenshot", params),
-        timeout,
-      ]);
-    } finally {
-      if (timeoutId !== undefined) clearTimeout(timeoutId);
-    }
+  ): Promise<{ data: string }> {
+    return this.withScreenshotDeadline(tabId, this.send(tabId, "Page.captureScreenshot", params));
   }
 
   private async dispatchMouseEvent(

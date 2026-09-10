@@ -17,12 +17,11 @@ vi.stubGlobal("chrome", mockChrome);
 
 describe("describeDebuggerError", () => {
   it("unwraps the JSON-encoded CDP error chrome.debugger rejects with", () => {
-    const error = describeDebuggerError(
-      new Error('{"code":-32000,"message":"Inspected target navigated or closed"}'),
-      "Runtime.evaluate",
-    );
+    const original = new Error('{"code":-32000,"message":"Inspected target navigated or closed"}');
+    const error = describeDebuggerError(original, "Runtime.evaluate");
     expect(error.message).toBe("Inspected target navigated or closed");
     expect(error).toMatchObject({ cdpCode: -32000, cdpMethod: "Runtime.evaluate" });
+    expect(error.cause).toBe(original);
   });
 
   it("passes plain errors and non-JSON messages through unchanged", () => {
@@ -537,6 +536,19 @@ describe("CDPController", () => {
       });
       await vi.advanceTimersByTimeAsync(5000);
 
+      await rejection;
+    });
+
+    it("rejects when viewport lookup never settles", async () => {
+      vi.useFakeTimers();
+      mockChrome.debugger.sendCommand
+        .mockResolvedValueOnce({})
+        .mockResolvedValueOnce({ data: "base64" })
+        .mockReturnValueOnce(new Promise(() => undefined));
+
+      const capture = controller.captureScreenshot(tabId);
+      const rejection = expect(capture).rejects.toMatchObject({ code: "screenshot_timeout" });
+      await vi.advanceTimersByTimeAsync(5000);
       await rejection;
     });
   });
