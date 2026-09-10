@@ -117,7 +117,6 @@ export function isBlankFrameUrl(url: string): boolean {
   return url === "" || url === "about:blank" || url.startsWith("about:blank?") || url === "about:srcdoc";
 }
 
-/** Sandboxed frames run no scripts unless `allow-scripts` is present. */
 export function sandboxBlocksScripts(sandbox: string | null): boolean {
   if (sandbox === null) return false;
   return !sandbox.split(/\s+/).includes("allow-scripts");
@@ -133,7 +132,6 @@ function short(url: string, max = 80): string {
   return `${url.slice(0, max - 3)}...`;
 }
 
-/** The name CDP reports for a frame is the iframe's `name`, else its `id`. */
 function frameName(iframe: DomIframeEntry): string {
   return iframe.name || iframe.id || "";
 }

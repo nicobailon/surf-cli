@@ -1,16 +1,4 @@
-/**
- * Page extraction intended for read-only/idempotent scripts in an owned tab.
- *
- * Lifecycle per attempt: tab.new -> wait.ready -> js -> parse -> rows
- * invariant -> tab.close. A retry always closes the failed tab and opens
- * a fresh one, so a target whose execution context was invalidated by a
- * navigation is never reused.
- *
- * This runner is for extraction only. It replays the whole sequence on
- * transient failures, so a script that mutates state (submits a form,
- * sends a message, changes a setting) could apply its side effect more
- * than once. Run such scripts through `surf js` on an explicit target.
- */
+/** Retries use fresh tabs, so caller scripts must be read-only or idempotent. */
 
 const { applyOptionsPrelude } = require("./script-options.cjs");
 
@@ -19,7 +7,6 @@ const DEFAULT_RETRY_DELAY_MS = 500;
 const MAX_RETRY_COUNT = 5;
 const ROW_KEY_CANDIDATES = ["rows", "items", "results", "entries", "records", "data"];
 
-/** Error substrings that mean the tab or its execution context went away. */
 const TRANSIENT_TAB_ERROR_MARKERS = [
   "navigated or closed",
   "Detached while handling command",
@@ -31,10 +18,8 @@ const TRANSIENT_TAB_ERROR_MARKERS = [
   "Target closed",
 ];
 
-/** Error codes for which a fresh tab is meaningful. */
 const RETRYABLE_ERROR_CODES = new Set(["empty_result", "page_timeout", "tab_gone", "target_gone"]);
 
-/** Readiness codes where a retry cannot help. */
 const FATAL_READINESS_CODES = new Set(["page_login", "page_challenge", "page_not_found", "page_error"]);
 
 class ExtractError extends Error {
@@ -79,13 +64,11 @@ function isRetryableExtractionError(error) {
   return isTransientTabError(error);
 }
 
-/** Text of a successful tool response, or null. */
 function responseText(response) {
   const text = response?.result?.content?.[0]?.text;
   return typeof text === "string" ? text : null;
 }
 
-/** Turn a `{error}` tool response into an ExtractError, or return null. */
 function responseError(response, stage) {
   if (!response || !response.error) return null;
   const err = response.error;
@@ -93,7 +76,6 @@ function responseError(response, stage) {
   return new ExtractError(code, errorMessageOf(err), { stage, ...(err.details || {}) });
 }
 
-/** Parse what `surf js` printed for the script's return value. */
 function parseExtractionOutput(text) {
   if (text === null || text === undefined || text.trim() === "" || text.trim() === "undefined") {
     throw new ExtractError(
@@ -236,10 +218,6 @@ function cleanReadiness(readiness) {
   return publicReadiness;
 }
 
-/**
- * Run one extraction attempt on `tabId` (already navigated). Shared by the
- * owned-tab and caller-supplied-target modes.
- */
 async function runAttemptOnTab(executeTool, tabId, settings) {
   const readiness = cleanReadiness(
     parseToolJson(await executeTool("wait.ready", readinessArgs(settings.ready), tabId), "wait.ready"),

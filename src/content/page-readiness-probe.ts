@@ -45,7 +45,7 @@ function safeCount(dom: ReadinessProbeDom, selector: string): number {
   }
 }
 
-/** Gather the facts the classifier needs. Caller-provided invalid CSS is rejected. */
+/** Rejects invalid caller-provided CSS. */
 export function collectReadinessSnapshot(
   dom: ReadinessProbeDom,
   expect: ReadinessExpectations = {},
@@ -97,7 +97,6 @@ export interface PageReadinessReport extends ReadinessVerdict {
   snapshot: Omit<ReadinessSnapshot, "bodyTextSample">;
 }
 
-/** Collect and classify in one step; this is what the content script returns. */
 export function probePageReadiness(
   dom: ReadinessProbeDom,
   expect: ReadinessExpectations = {},
