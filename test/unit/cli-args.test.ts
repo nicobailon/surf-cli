@@ -350,20 +350,22 @@ describe("CLI argument parsing", () => {
     );
   });
 
-  it("rejects empty extract options combined with an options file before connecting", async () => {
+  it("rejects conflicting option sources before script-file IO or connection", async () => {
+    const missingRoot = path.join(os.tmpdir(), `surf-extract-missing-${process.pid}`);
     const result = await runCliWithoutSocket([
       "extract",
       "https://example.com/list",
-      "--code",
-      "return []",
+      "--file",
+      path.join(missingRoot, "script.js"),
       "--options",
       "",
       "--options-file",
-      "unused.json",
+      path.join(missingRoot, "options.json"),
     ]);
     expect(result.code).toBe(1);
     expect(result.stdout).toBe("");
     expect(result.stderr).toContain("use either --options or --options-file, not both");
+    expect(result.stderr).not.toContain("ENOENT");
     expect(result.stderr).not.toContain("Socket");
   });
 

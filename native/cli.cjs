@@ -2689,6 +2689,9 @@ if (args[0] === "extract") {
     }
     process.exit(1);
   };
+  if (opts.options !== undefined && opts["options-file"] !== undefined) {
+    fail("usage", "use either --options or --options-file, not both");
+  }
 
   let code = null;
   try {
@@ -2702,9 +2705,6 @@ if (args[0] === "extract") {
 
   let scriptOptions = {};
   try {
-    if (opts.options !== undefined && opts["options-file"] !== undefined) {
-      fail("usage", "use either --options or --options-file, not both");
-    }
     if (opts["options-file"]) scriptOptions = parseScriptOptions(fs.readFileSync(opts["options-file"], "utf8"));
     else scriptOptions = parseScriptOptions(opts.options);
   } catch (error) {
