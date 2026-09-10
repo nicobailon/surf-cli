@@ -190,6 +190,7 @@ async function runCli(args: string[], socketPath: string): Promise<CliResult> {
 type HostHarness = {
   child: ChildProcessLike;
   send(message: NativeMessage): void;
+  sendAll(messages: NativeMessage[]): void;
   socketPath: string;
   remoteCredentialPath?: string;
   remoteStateDir?: string;
@@ -365,6 +366,9 @@ async function startHostHarness(
     remoteStateDir,
     send(message) {
       child.stdin.write(encodeNativeMessage(message));
+    },
+    sendAll(framedMessages) {
+      child.stdin.write(Buffer.concat(framedMessages.map(encodeNativeMessage)));
     },
     socketPath,
     stderr() {
@@ -1665,6 +1669,47 @@ describe("native host protocol integration", () => {
     await new Promise<void>((resolve) => second.once("data", () => resolve()));
     host.send({ id: extensionRequest.id, tabs: [] });
     second.destroy();
+  });
+
+  it("dispatches every coalesced response after draining an abandoned request", async () => {
+    const host = await startHostHarness();
+    const abandoned = net.createConnection(host.socketPath);
+    await new Promise<void>((resolve) => abandoned.once("connect", resolve));
+    remoteTransport.writeFrame(abandoned, {
+      type: "tool_request",
+      method: "execute_tool",
+      params: { tool: "tab.list", args: {} },
+      id: "abandoned-coalesced",
+    });
+    const abandonedRequest = await host.waitForMessage(
+      (message) => message.type === "LIST_TABS",
+      "abandoned coalesced LIST_TABS",
+    );
+    abandoned.destroy();
+
+    const active = net.createConnection(host.socketPath);
+    await new Promise<void>((resolve) => active.once("connect", resolve));
+    remoteTransport.writeFrame(active, {
+      type: "tool_request",
+      method: "execute_tool",
+      params: { tool: "tab.list", args: {} },
+      id: "active-coalesced",
+    });
+    const activeRequest = await host.waitForMessage(
+      (message) => message.type === "LIST_TABS",
+      "active coalesced LIST_TABS",
+    );
+    const activeResponse = new Promise<string>((resolve) =>
+      active.once("data", (chunk: any) => resolve(chunk.toString("utf8"))),
+    );
+
+    host.sendAll([
+      { id: abandonedRequest.id, tabs: [] },
+      { id: activeRequest.id, tabs: [{ id: 7, title: "Handled", url: "https://example.test/" }] },
+    ]);
+
+    expect(await activeResponse).toContain('"id":"active-coalesced"');
+    active.destroy();
   });
 
   it("retains a nested provider tombstone until its late page response", async () => {

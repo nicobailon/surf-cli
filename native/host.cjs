@@ -2919,13 +2919,13 @@ function processInput() {
           if (topLevelResponse && request?.context) {
             completeOwnedRequest(request.context, request.id, "cleanup-settled");
           }
-          return;
+          continue;
         }
         handleFrameContextFailure(pending.request, msg);
         updateFrameContextFromResult(pending.request, pending.tool, msg);
         if (pending.resolve || pending.onComplete) {
           pendingToolRequests.resolve(msg.id, msg);
-          return;
+          continue;
         }
         pendingToolRequests.delete(msg.id);
         {
@@ -3025,7 +3025,7 @@ function processInput() {
                 }
               })
               .catch((error) => failAutoScreenshot(error.message));
-            return;
+            continue;
           } else if (autoScreenshot && pending.autoScreenshotOutput && !msg.error) {
             failAutoScreenshot(tabId ? "screenshot response was invalid" : "no tab available");
           } else if (msg.results && msg.savePath) {

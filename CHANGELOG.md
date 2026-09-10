@@ -5,6 +5,8 @@
 ### Fixed
 - **Native host stalled replies** - The host stopped reading its stdin buffer after an `EXTENSION_HELLO` or `TARGET_EVENT` frame, so a tool reply that arrived in the same chunk sat unread until the next message from the extension (typically the 60 s client timeout on the first request after host start). Every complete frame in a chunk is now processed.
 
+Thanks to [@tryingET](https://github.com/tryingET) for #251.
+
 ## [2.18.0] - 2026-09-04
 
 ### Highlights
