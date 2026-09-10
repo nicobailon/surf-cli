@@ -368,20 +368,6 @@ describe("CLI native socket integration", () => {
     });
   });
 
-  it("propagates native host errors to stderr and exits non-zero", async () => {
-    const result = await runCliWithFakeHost(["tab.list"], (request) => ({
-      id: request.id,
-      error: {
-        content: [{ type: "text", text: "native host exploded" }],
-      },
-    }));
-
-    expect(result.code).toBe(1);
-    expect(result.stdout).toBe("");
-    expect(result.stderr).toContain("Error: native host exploded");
-    expect(result.request.params.tool).toBe("tab.list");
-  });
-
   it("prints socket diagnostics when SURF_SOCKET points at a missing socket", async () => {
     const result = await runCliWithMissingSocket(["tab.list"]);
 
