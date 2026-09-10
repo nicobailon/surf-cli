@@ -507,6 +507,16 @@ describe("formatToolContent", () => {
       });
       expect(JSON.parse(result[0].text)).toEqual({ state: "ready", evidence: [] });
     });
+
+    it("keeps public ids and hints while stripping internal window routing", () => {
+      const result = helpers.formatToolContent({
+        id: 7,
+        windowId: 456,
+        _resolvedWindowId: 456,
+        _hint: "Try another window",
+      });
+      expect(result[0].text).toBe('{"id":7,"windowId":456}\n[hint] Try another window');
+    });
   });
 
   describe("scroll responses", () => {

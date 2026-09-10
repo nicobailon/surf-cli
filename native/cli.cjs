@@ -1835,8 +1835,15 @@ Options:
   --no-wait         Return immediately when the tab/browser is busy
   --json            Output raw JSON including target metadata
   --auto-capture    On error: capture screenshot + console to /tmp
-  --soft-fail       On error: warn and exit 0 (for non-critical commands)
+  --soft-fail       Host tool errors: warn on stderr, exit 0, no JSON error output
   --no-lock         Bypass the legacy lock for compound client-side commands
+
+Host tool-response errors: stderr includes [code] on the first line when supplied;
+--json also writes {"error":{"code":"...","message":"..."}} to stdout; exit 1.
+Host details, when present, are included without redundant code/message fields.
+Missing codes use "error" in JSON. --soft-fail keeps the original warning text.
+This is not a universal error format: local validation, transport and parser
+failures keep their existing output/status; --soft-fail does not mask them.
 
 Remote Credentials (run on the browser host):
   surf remote authorize <label> --output <credential-file>
