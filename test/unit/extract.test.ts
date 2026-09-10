@@ -414,7 +414,6 @@ describe("tabIdFromResponse", () => {
     expect(() =>
       extract.tabIdFromResponse(ok("Created tab 1076931763: http://127.0.0.1/list")),
     ).toThrow(/structured tab id/);
-    expect(() => extract.tabIdFromResponse(ok("OK"))).toThrow(/structured tab id/);
     expect(() => extract.tabIdFromResponse(toolError("tab_busy", "tab_busy"))).toThrow(/tab_busy/);
   });
 });

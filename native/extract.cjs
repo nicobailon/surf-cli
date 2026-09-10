@@ -157,10 +157,6 @@ function cellText(value) {
   return text.replace(/\s+/g, " ").replace(/\|/g, "\\|").trim();
 }
 
-function isPlainRow(row) {
-  return row !== null && typeof row === "object" && !Array.isArray(row);
-}
-
 /** Markdown for humans and LLMs: metadata bullets, then a table of rows. */
 function renderExtractionMarkdown(data, rows, { title = "Extraction" } = {}) {
   const lines = [`# ${title}`, ""];
@@ -177,7 +173,7 @@ function renderExtractionMarkdown(data, rows, { title = "Extraction" } = {}) {
   }
   lines.push(`${rows.length} row${rows.length === 1 ? "" : "s"}`, "");
   if (rows.length === 0) return lines.join("\n").trimEnd();
-  if (!rows.every(isPlainRow)) {
+  if (!rows.every((row) => row !== null && typeof row === "object" && !Array.isArray(row))) {
     for (const row of rows) lines.push(`- ${cellText(row)}`);
     return lines.join("\n");
   }
@@ -376,16 +372,8 @@ async function runExtraction(settings) {
 }
 
 module.exports = {
-  DEFAULT_RETRY_COUNT,
-  DEFAULT_RETRY_DELAY_MS,
   ExtractError,
-  FATAL_READINESS_CODES,
-  MAX_RETRY_COUNT,
-  RETRYABLE_ERROR_CODES,
-  ROW_KEY_CANDIDATES,
-  TRANSIENT_TAB_ERROR_MARKERS,
   enforceRowsInvariant,
-  errorMessageOf,
   isRetryableExtractionError,
   isTransientTabError,
   parseExtractionOutput,
