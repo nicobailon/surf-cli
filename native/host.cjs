@@ -1766,7 +1766,12 @@ function sendToolResponse(socket, id, result, error) {
     }
     if (request?.notice) response.notice = request.notice;
     if (formattedError) response.error = formattedError;
-    else response.result = { content: formatToolContent(output, log, { suppressImages: Boolean(context?.isRemote) }) };
+    else {
+      response.result = { content: formatToolContent(output, log, { suppressImages: Boolean(context?.isRemote) }) };
+      if (request?.tool === "tab.new" && Number.isInteger(output?.tabId) && output.tabId > 0) {
+        response.result.tabId = output.tabId;
+      }
+    }
     if (!context?.closed) await sendSocket(socket, response);
   })().catch((sendError) => log(`Error sending tool_response: ${sendError.message}`));
 }

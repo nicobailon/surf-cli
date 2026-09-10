@@ -910,7 +910,7 @@ const TOOLS = {
     }
   },
   extract: {
-    desc: "Read-only extraction in an owned tab",
+    desc: "Scripted extraction in an owned tab",
     commands: {
       "extract": {
         desc: "Open a URL in a fresh tab, wait until it is ready, run a page-side script that returns JSON, print rows",
@@ -2640,7 +2640,7 @@ if (args[0] === "do") {
   return;
 }
 
-// Handle `surf extract`: a read-only page-side script in an owned tab with a
+// Handle `surf extract`: a page-side script in an owned tab with a
 // readiness gate, bounded fresh-tab retry and the zero-rows invariant.
 if (args[0] === "extract") {
   const extractArgs = args.slice(1);

@@ -3,12 +3,14 @@
 ## [Unreleased]
 
 ### Added
+- **`surf extract`** - Composes `tab.new`, bounded `wait.ready`, page JavaScript and owned-tab cleanup, with bounded fresh-tab retries for documented transient extraction failures, JSON or concise Markdown output, explicit empty-result handling, and existing-tab mode. Intended for read-only/idempotent scripts; retries can replay caller code.
 - **`surf js --options`** - Exposes a JSON object to `js`/`frame.js` scripts as a frozen `SURF_OPTIONS` constant.
 - **Typed page readiness** - `surf wait.ready` polls with a bounded budget and reports `ready`, `empty`, `login`, `challenge`, `not-found` or `error` instead of timing out silently; negative states exit with `page_login`, `page_challenge`, `page_not_found`, `page_error` or `page_timeout`, and `--accept` returns them to the caller. `surf page.readiness` classifies the page once. Detection uses visible UI state and the caller's expectations (`--selector`, `--text`, `--url-prefix`, `--empty-text`), not site-specific selectors.
 - **`surf frame.diagnose`** - DOM `<iframe>` elements (including those inside open shadow roots, reported with their `shadowHost`), extension frames with a content-script reachability check, and the CDP frame tree side by side, correlated by URL and by `name`/`id` for `srcdoc`/`about:blank` frames, with warnings for blank frames, sandboxes without `allow-scripts`, cross-origin frames, out-of-process frames that `frame.js` cannot reach (and which commands still work there), still-loading frames and count mismatches. The text report abbreviates long frame URLs; `--json` keeps them whole.
 
 Thanks to [@tryingET](https://github.com/tryingET) for #255.
 Thanks to [@tryingET](https://github.com/tryingET) for the `js`/`frame.js --options` split from #257.
+Thanks to [@tryingET](https://github.com/tryingET) for the extract work in #257 and extract cleanup in #258.
 
 ### Fixed
 - **Readable CDP errors** - `chrome.debugger` failures surfaced as a JSON blob (`{"code":-32000,"message":"Inspected target navigated or closed"}`); the message is now unwrapped and the CDP code and method are kept on the error as `cdpCode`/`cdpMethod`.

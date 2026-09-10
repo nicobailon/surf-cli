@@ -8,6 +8,9 @@ type Call = { tool: string; args: Record<string, unknown>; tabId?: number };
 function ok(payload: unknown) {
   return {
     result: {
+      ...(payload && typeof payload === "object" && "tabId" in payload
+        ? { tabId: payload.tabId }
+        : {}),
       content: [
         { type: "text", text: typeof payload === "string" ? payload : JSON.stringify(payload) },
       ],
@@ -42,6 +45,10 @@ function scriptedHost(script: Array<{ tool: string; reply: unknown | (() => unkn
 }
 
 const ready = ok({
+  id: 27,
+  _resolvedTabId: 41,
+  _resolvedWindowId: 9,
+  _hint: "internal",
   state: "ready",
   evidence: ["document.readyState is complete"],
   polls: 1,
@@ -80,7 +87,12 @@ describe("runExtraction (owned tab)", () => {
       url: "https://x/",
     });
     expect(result.rows).toHaveLength(2);
-    expect(result.readiness.state).toBe("ready");
+    expect(result.readiness).toEqual({
+      state: "ready",
+      evidence: ["document.readyState is complete"],
+      polls: 1,
+      waited: 12,
+    });
     expect(host.calls.map((call) => [call.tool, call.tabId])).toEqual([
       ["tab.new", undefined],
       ["wait.ready", 41],
@@ -90,7 +102,7 @@ describe("runExtraction (owned tab)", () => {
     expect(host.calls[0].args).toEqual({ url: "https://x/" });
     expect(host.calls[1].args).toEqual({ selector: ".row", timeout: 3000 });
     expect(host.calls[2].args.code).toBe(
-      'const SURF_OPTIONS = Object.freeze({"limit":5});\nreturn SURF_OPTIONS.limit;',
+      'const SURF_OPTIONS = Object.freeze(JSON.parse("{\\"limit\\":5}"));\nreturn SURF_OPTIONS.limit;',
     );
     expect(host.calls[3].args).toEqual({ id: 41 });
     expect(host.remaining()).toBe(0);
@@ -281,6 +293,54 @@ describe("runExtraction (owned tab)", () => {
     expect(host.calls.map((call) => call.tool)).toEqual(["tab.new", "wait.ready", "js"]);
   });
 
+  it("does not replay a successful script when tab cleanup fails", async () => {
+    const host = scriptedHost([
+      { tool: "tab.new", reply: ok({ tabId: 9 }) },
+      { tool: "wait.ready", reply: ready },
+      { tool: "js", reply: rowsResult },
+      { tool: "tab.close", reply: toolError("Target closed") },
+    ]);
+
+    await expect(
+      extract.runExtraction({
+        executeTool: host.executeTool,
+        url: "https://x/",
+        code: "return []",
+        retry: { count: 5 },
+      }),
+    ).rejects.toMatchObject({
+      code: "cleanup_failed",
+      details: { extractionSucceeded: true, attempts: 1, tabId: 9 },
+    });
+    expect(host.calls.map((call) => call.tool)).toEqual([
+      "tab.new",
+      "wait.ready",
+      "js",
+      "tab.close",
+    ]);
+  });
+
+  it("does not open another tab when failed-attempt cleanup fails", async () => {
+    const host = scriptedHost([
+      { tool: "tab.new", reply: ok({ tabId: 9 }) },
+      { tool: "wait.ready", reply: toolError("Page timed out", "page_timeout") },
+      { tool: "tab.close", reply: toolError("close rejected") },
+    ]);
+
+    await expect(
+      extract.runExtraction({
+        executeTool: host.executeTool,
+        url: "https://x/",
+        code: "return []",
+        retry: { count: 5 },
+      }),
+    ).rejects.toMatchObject({
+      code: "cleanup_failed",
+      details: { attempts: 1, tabId: 9, extractionError: { code: "page_timeout" } },
+    });
+    expect(host.calls.map((call) => call.tool)).toEqual(["tab.new", "wait.ready", "tab.close"]);
+  });
+
   it("surfaces a script that returns nothing or non-JSON", async () => {
     const host = scriptedHost([
       { tool: "tab.new", reply: ok({ tabId: 1 }) },
@@ -348,13 +408,13 @@ describe("runExtraction (caller-supplied target)", () => {
 });
 
 describe("tabIdFromResponse", () => {
-  it("reads JSON and the host's text form", () => {
+  it("uses only the stable structured host field, never human prose", () => {
     expect(extract.tabIdFromResponse(ok({ success: true, tabId: 12 }))).toBe(12);
-    expect(extract.tabIdFromResponse(ok({ id: 13 }))).toBe(13);
-    expect(extract.tabIdFromResponse(ok("Created tab 1076931763: http://127.0.0.1/list"))).toBe(
-      1076931763,
-    );
-    expect(() => extract.tabIdFromResponse(ok("OK"))).toThrow(/did not return a tab id/);
+    expect(() => extract.tabIdFromResponse(ok({ id: 13 }))).toThrow(/structured tab id/);
+    expect(() =>
+      extract.tabIdFromResponse(ok("Created tab 1076931763: http://127.0.0.1/list")),
+    ).toThrow(/structured tab id/);
+    expect(() => extract.tabIdFromResponse(ok("OK"))).toThrow(/structured tab id/);
     expect(() => extract.tabIdFromResponse(toolError("tab_busy", "tab_busy"))).toThrow(/tab_busy/);
   });
 });

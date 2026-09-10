@@ -1,5 +1,5 @@
 /**
- * Read-only page extraction in an owned tab.
+ * Page extraction intended for read-only/idempotent scripts in an owned tab.
  *
  * Lifecycle per attempt: tab.new -> wait.ready -> js -> parse -> rows
  * invariant -> tab.close. A retry always closes the failed tab and opens
@@ -212,25 +212,13 @@ function readinessArgs(ready = {}) {
   return args;
 }
 
-/**
- * Tab id from a tab.new response. The host prints "Created tab <id>: <url>"
- * for a single tab; socket clients may also see {tabId} or {id}.
- */
+/** Tab id from the stable structured field on a tab.new host response. */
 function tabIdFromResponse(response) {
   const failure = responseError(response, "tab.new");
   if (failure) throw failure;
-  const text = responseText(response);
-  let parsed = null;
-  try {
-    parsed = text === null ? null : JSON.parse(text);
-  } catch {
-    parsed = null;
-  }
-  const fromJson = Number(parsed?.tabId ?? parsed?.id);
-  if (Number.isInteger(fromJson) && fromJson > 0) return fromJson;
-  const match = typeof text === "string" ? text.match(/\btab\s+(\d+)\b/i) : null;
-  if (match) return Number(match[1]);
-  throw new ExtractError("no_tab", "tab.new did not return a tab id", { response: text ?? response });
+  const tabId = response?.result?.tabId;
+  if (Number.isInteger(tabId) && tabId > 0) return tabId;
+  throw new ExtractError("no_tab", "tab.new did not return a structured tab id");
 }
 
 function parseToolJson(response, stage) {
@@ -245,12 +233,21 @@ function parseToolJson(response, stage) {
   }
 }
 
+/** Drop transport-only fields from the readiness metadata returned to callers. */
+function cleanReadiness(readiness) {
+  if (!readiness || typeof readiness !== "object") return readiness;
+  const { id, _resolvedTabId, _resolvedWindowId, _hint, ...publicReadiness } = readiness;
+  return publicReadiness;
+}
+
 /**
  * Run one extraction attempt on `tabId` (already navigated). Shared by the
  * owned-tab and caller-supplied-target modes.
  */
 async function runAttemptOnTab(executeTool, tabId, settings) {
-  const readiness = parseToolJson(await executeTool("wait.ready", readinessArgs(settings.ready), tabId), "wait.ready");
+  const readiness = cleanReadiness(
+    parseToolJson(await executeTool("wait.ready", readinessArgs(settings.ready), tabId), "wait.ready"),
+  );
   const code = applyOptionsPrelude(settings.code, settings.options);
   const jsResponse = await executeTool("js", { code }, tabId);
   const failure = responseError(jsResponse, "js");
@@ -316,35 +313,60 @@ async function runExtraction(settings) {
     if (attempt > 1) await sleep(retry.delayMs);
     onEvent({ type: "attempt", attempt, of: attempts, mode: "owned-tab" });
     let tabId = null;
+    let result;
     try {
       tabId = tabIdFromResponse(await executeTool("tab.new", { url }));
-      const result = await runAttemptOnTab(executeTool, tabId, settings);
-      if (!keepTab) {
-        const closed = await executeTool("tab.close", { id: tabId }, tabId);
-        const closeFailure = responseError(closed, "tab.close");
-        if (closeFailure) throw closeFailure;
-      }
-      return {
-        ...result,
-        rowCount: Array.isArray(result.rows) ? result.rows.length : null,
-        attempts: attempt,
-        mode: "owned-tab",
-        url,
-        tabId: keepTab ? tabId : null,
-      };
+      result = await runAttemptOnTab(executeTool, tabId, settings);
     } catch (error) {
       lastError = error;
+      let cleanupError = null;
       if (tabId) {
         try {
-          await executeTool("tab.close", { id: tabId }, tabId);
+          const closed = await executeTool("tab.close", { id: tabId }, tabId);
+          const closeFailure = responseError(closed, "tab.close");
+          if (closeFailure) throw closeFailure;
         } catch (closeError) {
+          cleanupError = closeError;
           onEvent({ type: "close-failed", attempt, tabId, error: errorMessageOf(closeError) });
         }
+      }
+      if (cleanupError) {
+        throw new ExtractError("cleanup_failed", `Extraction failed and the owned tab could not be closed: ${errorMessageOf(cleanupError)}`, {
+          stage: "tab.close",
+          tabId,
+          attempts: attempt,
+          extractionError: { code: errorCodeOf(error), message: errorMessageOf(error) },
+        });
       }
       const retryable = attempt < attempts && isRetryable(error);
       onEvent({ type: "attempt-failed", attempt, of: attempts, error: errorMessageOf(error), code: errorCodeOf(error), retryable });
       if (!retryable) break;
+      continue;
     }
+
+    if (!keepTab) {
+      try {
+        const closed = await executeTool("tab.close", { id: tabId }, tabId);
+        const closeFailure = responseError(closed, "tab.close");
+        if (closeFailure) throw closeFailure;
+      } catch (error) {
+        throw new ExtractError("cleanup_failed", `Extraction succeeded but the owned tab could not be closed: ${errorMessageOf(error)}`, {
+          stage: "tab.close",
+          tabId,
+          attempts: attempt,
+          extractionSucceeded: true,
+          rowCount: Array.isArray(result.rows) ? result.rows.length : null,
+        });
+      }
+    }
+    return {
+      ...result,
+      rowCount: Array.isArray(result.rows) ? result.rows.length : null,
+      attempts: attempt,
+      mode: "owned-tab",
+      url,
+      tabId: keepTab ? tabId : null,
+    };
   }
   if (lastError instanceof ExtractError) {
     lastError.details = { ...lastError.details, attempts: attemptsMade };
