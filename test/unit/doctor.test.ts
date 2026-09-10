@@ -385,4 +385,68 @@ describe("surf doctor", () => {
     expect(report.recommendations.join("\n")).toContain("tailscale ping browser.tailnet");
     expect(report.recommendations.join("\n")).toContain("ACLs/grants");
   });
+
+  it("keeps TLS validation failures in the remote-connect phase", async () => {
+    const endpoint = {
+      kind: "remote",
+      host: "browser.example",
+      port: 443,
+      display: "browser.example:443",
+      tls: { enabled: true },
+    };
+    const report = await runDoctor(
+      { endpoint },
+      {
+        platform: "linux",
+        env: {},
+        connectEndpoint: async () => ({
+          ok: false,
+          code: "ERR_TLS_CERT_ALTNAME_INVALID",
+          message: "hostname mismatch",
+        }),
+      },
+    );
+
+    expect(report.checks).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ id: "remote-connect", status: "fail" }),
+        expect.objectContaining({
+          id: "remote-auth",
+          status: "info",
+          message: "Remote authentication was not reached",
+        }),
+      ]),
+    );
+    expect(report.checks.find((check: any) => check.id === "remote-connect").message).toContain(
+      "(TLS)",
+    );
+    expect(report.recommendations.join("\n")).toContain("certificate chain");
+    expect(report.recommendations.join("\n")).toContain("replaces system roots");
+  });
+
+  it("reports successful TLS only after remote authentication", async () => {
+    const report = await runDoctor(
+      {
+        endpoint: {
+          kind: "remote",
+          host: "browser.example",
+          port: 443,
+          display: "browser.example:443",
+          tls: { enabled: true },
+        },
+      },
+      {
+        platform: "linux",
+        env: {},
+        connectEndpoint: async () => ({ ok: true, message: "authenticated" }),
+      },
+    );
+
+    expect(report.checks).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ id: "remote-connect", status: "pass" }),
+        expect.objectContaining({ id: "remote-auth", status: "pass" }),
+      ]),
+    );
+  });
 });

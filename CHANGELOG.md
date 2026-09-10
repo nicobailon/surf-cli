@@ -3,6 +3,7 @@
 ## [Unreleased]
 
 ### Added
+- **Remote TLS** - Opt-in TLS for remote endpoints via `--remote-tls`/`--remote-tls-ca`/`--remote-tls-server-name` (env: `SURF_REMOTE_TLS=1`, `SURF_REMOTE_TLS_CA`, `SURF_REMOTE_TLS_SERVER_NAME`), for TLS-terminating reverse proxies in front of the native host; certificate validation completes before Ed25519 authentication. Thanks to [@marcoatpaladin](https://github.com/marcoatpaladin) for #259.
 - **`surf extract`** - Composes `tab.new`, bounded `wait.ready`, page JavaScript and owned-tab cleanup, with bounded fresh-tab retries for documented transient extraction failures, JSON or concise Markdown output, explicit empty-result handling, and existing-tab mode. Intended for read-only/idempotent scripts; retries can replay caller code.
 - **`surf js --options`** - Exposes a JSON object to `js`/`frame.js` scripts as a frozen `SURF_OPTIONS` constant.
 - **Typed page readiness** - `surf wait.ready` polls with a bounded budget and reports `ready`, `empty`, `login`, `challenge`, `not-found` or `error` instead of timing out silently; negative states exit with `page_login`, `page_challenge`, `page_not_found`, `page_error` or `page_timeout`, and `--accept` returns them to the caller. `surf page.readiness` classifies the page once. Detection uses visible UI state and the caller's expectations (`--selector`, `--text`, `--url-prefix`, `--empty-text`), not site-specific selectors.

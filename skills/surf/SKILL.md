@@ -36,8 +36,17 @@ surf --remote 100.101.102.103:4321 \
   --remote-credential ~/.config/surf/agent-macbook.json \
   page.read
 
+# TLS is client-side and requires a TLS-terminating reverse proxy in front of SURF_LISTEN
+surf --remote surf.example.com:443 --remote-tls \
+  --remote-tls-ca ~/.config/surf/private-ca.pem \
+  --remote-credential ~/.config/surf/agent-macbook.json page.read
+
 surf remote revoke agent-macbook  # Run on the browser host
 ```
+
+Environment equivalents are `SURF_REMOTE_TLS=1`, `SURF_REMOTE_TLS_CA`, and
+`SURF_REMOTE_TLS_SERVER_NAME`. A custom CA replaces system roots; Ed25519 credentials remain
+mandatory after TLS validation.
 
 Remote paths are client-local by default. `local:./file` is explicit client-local syntax; only `remote:/absolute/path` accesses the browser host directly. Remote transfer supports one upload or ChatGPT/Gemini input and one screenshot, network-export, or Gemini image output. Limits are 256 MiB per file, 512 MiB and 32 files per connection, and 256 KiB decoded chunks. `record`, `aistudio.build`, smoke screenshot directories, directories, and multi-file inputs are not supported remotely. Successful action screenshots and failure `--auto-capture` diagnostics are transferred back to client-local paths.
 

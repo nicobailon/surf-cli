@@ -1790,6 +1790,9 @@ More Help:
   --no-wait                 Return tab_busy/browser_busy instead of queueing
   --remote <host>:<port>    Route requests to a remote native host
   --remote-credential <path>  Use a mode-0600 Ed25519 remote credential file
+  --remote-tls             Use TLS through a TLS-terminating reverse proxy
+  --remote-tls-ca <path>   Replace system roots with a custom CA bundle
+  --remote-tls-server-name <name>  Override TLS SNI and certificate identity
   surf remote authorize <label> --output <path>
   surf remote list | surf remote revoke <label>
   surf --help-full           All commands
@@ -1863,6 +1866,9 @@ Playbooks:
 Options:
   --remote <host>:<port>       Route requests to a remote native host
   --remote-credential <path>   Use a mode-0600 Ed25519 remote credential file
+  --remote-tls                 Use TLS through a TLS-terminating reverse proxy
+  --remote-tls-ca <path>       Replace system roots with a custom CA bundle
+  --remote-tls-server-name <name>  Override TLS SNI and certificate identity
   --session <name>  Target a durable named session (or set SURF_SESSION)
   --tab-id <id>     Target specific tab
   --window-id <id>  Target specific window

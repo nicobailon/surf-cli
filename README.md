@@ -135,6 +135,30 @@ SURF_REMOTE_CREDENTIAL=~/.config/surf/agent-macbook.json \
   surf tab.list
 ```
 
+For a TLS-terminating reverse proxy in front of the native host's existing clear-TCP
+listener, opt in on the client:
+
+```bash
+surf --remote surf.example.com:443 --remote-tls \
+  --remote-credential ~/.config/surf/agent-macbook.json tab.list
+
+# Private CA and an IP destination with a DNS certificate identity
+surf --remote 100.101.102.103:443 --remote-tls \
+  --remote-tls-ca ~/.config/surf/private-ca.pem \
+  --remote-tls-server-name surf.example.com \
+  --remote-credential ~/.config/surf/agent-macbook.json tab.list
+```
+
+`--remote-tls-ca` replaces Node's system roots rather than adding to them. DNS endpoints
+use their hostname for SNI and certificate validation; IP endpoints omit SNI and validate
+the certificate's IP SAN unless `--remote-tls-server-name` supplies a DNS identity. TLS
+certificate validation finishes before the mandatory Ed25519 authentication. Surf has no
+insecure mode, downgrade, or plaintext retry. `SURF_REMOTE_TLS=1` is the only accepted
+environment spelling; unset it to disable TLS. There is no CLI negation for env-enabled TLS.
+CLI values override `SURF_REMOTE_TLS_CA` and `SURF_REMOTE_TLS_SERVER_NAME` independently.
+`SURF_LISTEN` remains a plaintext listener behind the reverse proxy; Surf does not terminate
+TLS on the browser host.
+
 Surf performs mutual Ed25519 challenge-response with fresh nonces and checks authorization throughout the connection. A credential grants the same browser and host-file authority as a trusted local Surf user. Give each client its own credential, do not share it, and revoke it immediately if the client or file is lost:
 
 ```bash
@@ -162,7 +186,9 @@ Keep Tailscale policy restrictions as defense in depth. For example:
 }
 ```
 
-Adapt tags and ports to your Tailnet. Surf authentication does not replace Tailnet policy, and Surf does not add a separate TLS or SSH tunnel.
+Adapt tags and ports to your Tailnet. Surf authentication does not replace Tailnet policy.
+Optional outbound remote TLS protects the client-to-proxy connection; Surf does not add an
+SSH tunnel or a TLS listener.
 
 **Operations and troubleshooting**
 
@@ -896,6 +922,9 @@ SURF_SESSION              # Default named browser session for tab-scoped command
 SURF_SOCKET               # Socket path or named pipe (default: /tmp/surf.sock, Windows: //./pipe/surf)
 SURF_REMOTE               # Remote Surf endpoint as host:port (overrides SURF_SOCKET)
 SURF_REMOTE_CREDENTIAL    # Client Ed25519 credential for the selected remote endpoint
+SURF_REMOTE_TLS           # Exactly 1 enables TLS for a selected remote endpoint
+SURF_REMOTE_TLS_CA        # Custom CA bundle that replaces system roots
+SURF_REMOTE_TLS_SERVER_NAME # DNS SNI and certificate identity override
 SURF_REMOTE_STATE_DIR     # Host identity/authorization directory (default: ~/.surf/remote)
 SURF_LISTEN               # Native-host Tailnet bind address as <tailscale-ip>:<port>
 SURF_SOCKET_MODE          # Advanced POSIX local socket mode: 600 (default) or 660
@@ -911,6 +940,9 @@ SURF_EXTENSION_PATH       # Path to extension dist/ directory
 - `SURF_SOCKET`: Advanced socket override. Set it for both the native host and CLI when separate browser/profile instances need hard isolation.
 - `SURF_REMOTE`: Remote client endpoint. `--remote <host>:<port>` overrides it; both override `SURF_SOCKET`.
 - `SURF_REMOTE_CREDENTIAL`: Credential used for mutual remote authentication. `--remote-credential <path>` overrides it.
+- `SURF_REMOTE_TLS`: Set exactly `1` for TLS through a terminating reverse proxy; `--remote-tls` also enables it and cannot negate an env-enabled setting.
+- `SURF_REMOTE_TLS_CA`: CA bundle for remote TLS, replacing system roots. `--remote-tls-ca <path>` overrides it.
+- `SURF_REMOTE_TLS_SERVER_NAME`: DNS SNI and certificate identity override. `--remote-tls-server-name <name>` overrides it.
 - `SURF_REMOTE_STATE_DIR`: Advanced host-side override for the mode-0700 identity and client registry directory.
 - `SURF_LISTEN`: Native-host listener address on the browser machine. Use `surf install ... --listen <tailscale-ip>:<port>` to persist it in that host's wrapper.
 - `SURF_SOCKET_MODE` / `SURF_SOCKET_GROUP`: Advanced POSIX native-host settings. Use `surf install ... --socket-mode 660 --socket-group <group>` to persist group access; mode `660` grants full Surf authority to every member of that group.
