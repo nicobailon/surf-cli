@@ -188,10 +188,12 @@ function readinessExpectationsFrom(input: unknown): ReadinessExpectations {
 async function probeTabReadiness(tabId: number, expect: ReadinessExpectations): Promise<ReadinessProbeResult> {
   let tabStatus: string | undefined;
   let tabUrl: string | undefined;
+  let pendingUrl: string | undefined;
   try {
     const tab = await chrome.tabs.get(tabId);
     tabStatus = tab.status;
-    tabUrl = tab.pendingUrl || tab.url;
+    pendingUrl = tab.pendingUrl;
+    tabUrl = pendingUrl || tab.url;
   } catch {}
   if (!tabUrl || tabUrl === "about:blank") {
     return { state: "loading", evidence: [`tab URL is ${tabUrl || "empty"}`], href: tabUrl, tabStatus };
@@ -207,6 +209,14 @@ async function probeTabReadiness(tabId: number, expect: ReadinessExpectations): 
     return { state: "loading", evidence: [`content script unreachable: ${reason}`], href: tabUrl, tabStatus };
   }
   if (report?.state) {
+    if (pendingUrl && report.href !== pendingUrl) {
+      return {
+        state: "loading",
+        evidence: [`navigation to ${pendingUrl} pending; report is from ${report.href}`],
+        href: report.href,
+        tabStatus,
+      };
+    }
     return { ...report, tabStatus };
   }
   if (report?.code === "invalid_selector") {
@@ -604,12 +614,8 @@ async function statementBodyParses(tabId: number, body: string): Promise<boolean
   } catch (err) {
     if (err instanceof SyntaxError) return false;
   }
-  try {
-    const compiled = await cdp.compileScript(tabId, `(async () => { 'use strict'; ${body} })()`);
-    return compiled.parses;
-  } catch {
-    return true;
-  }
+  const compiled = await cdp.compileScript(tabId, `(async () => { 'use strict'; ${body} })()`);
+  return compiled.parses;
 }
 
 async function captureFullPage(tabId: number, maxHeight: number): Promise<{ base64: string; width: number; height: number }> {

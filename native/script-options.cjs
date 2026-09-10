@@ -32,9 +32,11 @@ function buildOptionsPrelude(options) {
   return `const ${PRELUDE_NAME} = Object.freeze(JSON.parse(${JSON.stringify(JSON.stringify(normalized))}));\n`;
 }
 
-/** Prefix code with the prelude; empty options still defines the constant. */
+/** Add the prelude while preserving a leading strict-mode directive. */
 function applyOptionsPrelude(code, options) {
-  return `${buildOptionsPrelude(options)}${code}`;
+  const strict = code.match(/^\s*(["'])use strict\1\s*;/);
+  if (!strict) return `${buildOptionsPrelude(options)}${code}`;
+  return `${strict[0]}\n${buildOptionsPrelude(options)}${code.slice(strict[0].length)}`;
 }
 
 module.exports = { PRELUDE_NAME, applyOptionsPrelude, buildOptionsPrelude, parseScriptOptions };

@@ -45,4 +45,18 @@ describe("buildOptionsPrelude", () => {
       'const SURF_OPTIONS = Object.freeze(JSON.parse("{}"));\nreturn 1;',
     );
   });
+
+  it("keeps a leading use strict directive before the options prelude", () => {
+    expect(
+      scriptOptions.applyOptionsPrelude('"use strict";\nreturn SURF_OPTIONS;', { ok: true }),
+    ).toBe(
+      '"use strict";\nconst SURF_OPTIONS = Object.freeze(JSON.parse("{\\"ok\\":true}"));\n\nreturn SURF_OPTIONS;',
+    );
+  });
+
+  it("does not hoist a string literal continued as a call", () => {
+    const code = '"use strict"\n(function(){ return this })()';
+    expect(() => new Function(code)()).toThrow(TypeError);
+    expect(() => new Function(scriptOptions.applyOptionsPrelude(code, {}))()).toThrow(TypeError);
+  });
 });
