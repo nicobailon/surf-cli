@@ -97,6 +97,8 @@ describe("buildFrameDiagnosis", () => {
       cdpFrameIds: ["F2"],
     });
     expect(result.extensionFrames[0].isMain).toBe(true);
+    expect(result.extensionFrames[0].switchIndex).toBeNull();
+    expect(result.extensionFrames[1].switchIndex).toBe(0);
     expect(result.extensionFrames[1].crossOrigin).toBe(true);
     expect(result.cdpFrames[1].extensionFrameIds).toEqual([7]);
     expect(result.warnings).toEqual([
@@ -190,6 +192,42 @@ describe("buildFrameDiagnosis", () => {
     ).toHaveLength(2);
   });
 
+  it("reports repeated CDP URLs as ambiguous", () => {
+    const result = buildFrameDiagnosis({
+      mainPage: { href: MAIN, title: "Page" },
+      domIframes: [iframe()],
+      extensionFrames: [mainExt, extFrame()],
+      cdpFrames: [mainCdp, cdpFrame({ frameId: "F2" }), cdpFrame({ frameId: "F3" })],
+    });
+
+    expect(result.domIframes[0].cdpFrameIds).toEqual(["F2", "F3"]);
+    expect(result.warnings).toContain(
+      "iframe 0 (https://widgets.example.net/embed) matches 2 CDP frames (F2, F3); correlation is ambiguous, so frame.js requires an explicit CDP frame id.",
+    );
+  });
+
+  it("correlates by URL when DOM and webNavigation ordering differ", () => {
+    const firstUrl = "https://app.example.com/first";
+    const secondUrl = "https://app.example.com/second";
+    const result = buildFrameDiagnosis({
+      mainPage: { href: MAIN, title: "Page" },
+      domIframes: [iframe({ src: firstUrl }), iframe({ domIndex: 1, src: secondUrl })],
+      extensionFrames: [
+        mainExt,
+        extFrame({ frameId: 8, url: secondUrl }),
+        extFrame({ frameId: 7, url: firstUrl }),
+      ],
+      cdpFrames: [
+        mainCdp,
+        cdpFrame({ frameId: "F2", url: firstUrl }),
+        cdpFrame({ frameId: "F3", url: secondUrl }),
+      ],
+    });
+
+    expect(result.domIframes.map((entry) => entry.extensionFrameIds)).toEqual([[7], [8]]);
+    expect(result.extensionFrames.map((entry) => entry.switchIndex)).toEqual([null, 0, 1]);
+  });
+
   it("reports DOM iframes the extension does not list and count mismatches", () => {
     const result = buildFrameDiagnosis({
       mainPage: { href: MAIN, title: "Page" },
@@ -225,7 +263,7 @@ describe("buildFrameDiagnosis", () => {
     });
     expect(result.domIframes.map((entry) => entry.cdpFrameIds)).toEqual([["F3"], ["F4"], []]);
     expect(result.warnings[0]).toBe(
-      "1 iframe(s) have no URL (about:blank or srcdoc): DOM indexes 2. No CDP frame carries their name or id, so their content cannot be matched; give them a name or id attribute, or use frame.switch --index.",
+      "1 iframe(s) have no URL (about:blank or srcdoc): DOM indexes 2. No CDP frame carries their name or id, so their content cannot be matched; give them a name or id attribute. To try frame.switch --index, use the switch index shown in the extension inventory, not these DOM indexes.",
     );
   });
 

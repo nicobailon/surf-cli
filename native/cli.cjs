@@ -3897,10 +3897,10 @@ async function handleResponse(response) {
       }
     }
     if (Array.isArray(data.extensionFrames) && data.extensionFrames.length > 0) {
-      lines.push("", "Extension frames (frame.switch ids):");
+      lines.push("", "Extension frames (frame.switch indexes, webNavigation ids):");
       for (const f of data.extensionFrames) {
         const reach = f.contentScriptReachable ? "content-script ok" : `content-script unreachable${f.contentScriptError ? ` (${f.contentScriptError})` : ""}`;
-        lines.push(`  #${f.frameId}${f.isMain ? " main" : ` parent ${f.parentFrameId}`} ${abbreviateUrl(f.url)}${f.crossOrigin ? " [cross-origin]" : ""} - ${reach}`);
+        lines.push(`  ${f.isMain ? "main" : `[${f.switchIndex}]`} #${f.frameId}${f.isMain ? "" : ` parent ${f.parentFrameId}`} ${abbreviateUrl(f.url)}${f.crossOrigin ? " [cross-origin]" : ""} - ${reach}`);
       }
     }
     if (Array.isArray(data.cdpFrames) && data.cdpFrames.length > 0) {

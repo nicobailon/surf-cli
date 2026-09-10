@@ -13,7 +13,7 @@ Thanks to [@tryingET](https://github.com/tryingET) for #255.
 - **`js --file` statement scripts** - Scripts starting with a declaration failed with `SyntaxError: Unexpected token 'const'` in real Chrome because the statement-mode fallback relied on `new Function`, which the extension CSP blocks in the service worker. The fallback now uses CDP `Runtime.compileScript`.
 - **Bounded screenshot capture** - Screenshot requests now settle when Chromium stops responding, preserving successful primary output and releasing queued work. Thanks to [@Whamp](https://github.com/Whamp) for #250.
 
-Thanks to [@tryingET](https://github.com/tryingET) for #251.
+Thanks to [@tryingET](https://github.com/tryingET) for #251 and #256.
 Thanks to [@tryingET](https://github.com/tryingET) for #253.
 
 ## [2.18.0] - 2026-09-04
