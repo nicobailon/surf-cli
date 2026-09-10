@@ -3677,7 +3677,25 @@ async function handleResponse(response) {
       socket.end();
       process.exit(0);
     }
-    console.error("Error:", errContent);
+    // Host tool-response errors carry codes separately from their display text.
+    const errorCode = typeof response.error.code === "string" ? response.error.code : null;
+    const [firstLine, ...restLines] = errContent.split("\n");
+    const display = errorCode && !firstLine.includes(`[${errorCode}]`)
+      ? [`${firstLine} [${errorCode}]`, ...restLines].join("\n")
+      : errContent;
+    console.error("Error:", display);
+    if (wantJson) {
+      // details repeats code/message when the error serialises itself; keep the rest.
+      const { code: _code, message: _message, ...details } =
+        response.error.details && typeof response.error.details === "object" ? response.error.details : {};
+      console.log(JSON.stringify({
+        error: {
+          code: errorCode || "error",
+          message: typeof response.error.message === "string" ? response.error.message : firstLine,
+          ...(Object.keys(details).length > 0 ? { details } : {}),
+        },
+      }, null, 2));
+    }
 
     if (autoCapture) {
       await performAutoCapture();
