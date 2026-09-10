@@ -67,6 +67,7 @@ export interface FrameDiagnosisInput {
   domIframes: DomIframeEntry[];
   extensionFrames: ExtensionFrameEntry[];
   cdpFrames: CdpFrameEntry[];
+  cdpFramesAvailable?: boolean;
 }
 
 export interface DiagnosedDomIframe extends DomIframeEntry {
@@ -139,6 +140,7 @@ function frameName(iframe: DomIframeEntry): string {
 
 export function buildFrameDiagnosis(input: FrameDiagnosisInput): FrameDiagnosis {
   const mainOrigin = originOf(input.mainPage.href);
+  const cdpFramesAvailable = input.cdpFramesAvailable !== false;
   const childExtensionFrames = input.extensionFrames.filter((frame) => frame.parentFrameId !== -1);
   const warnings: string[] = [];
 
@@ -164,7 +166,12 @@ export function buildFrameDiagnosis(input: FrameDiagnosisInput): FrameDiagnosis 
       origin,
       crossOrigin: origin !== null && mainOrigin !== null && origin !== mainOrigin,
       extensionFrameIds: childExtensionFrames
-        .filter((candidate) => !isBlankFrameUrl(frame.url) && sameUrl(candidate.url, frame.url))
+        .filter(
+          (candidate) =>
+            frame.parentId !== undefined &&
+            !isBlankFrameUrl(frame.url) &&
+            sameUrl(candidate.url, frame.url),
+        )
         .map((candidate) => candidate.frameId),
     };
   });
@@ -191,7 +198,9 @@ export function buildFrameDiagnosis(input: FrameDiagnosisInput): FrameDiagnosis 
     };
   });
 
-  const unmatchedBlank = domIframes.filter((iframe) => iframe.blank && iframe.cdpFrameIds.length === 0);
+  const unmatchedBlank = cdpFramesAvailable
+    ? domIframes.filter((iframe) => iframe.blank && iframe.cdpFrameIds.length === 0)
+    : [];
   if (unmatchedBlank.length > 0) {
     warnings.push(
       `${unmatchedBlank.length} iframe(s) have no URL (about:blank or srcdoc): DOM indexes ${unmatchedBlank.map((iframe) => iframe.domIndex).join(", ")}. No CDP frame carries their name or id, so their content cannot be matched; give them a name or id. For frame.switch --index, use extension-inventory indexes, not DOM indexes.`,
@@ -214,7 +223,7 @@ export function buildFrameDiagnosis(input: FrameDiagnosisInput): FrameDiagnosis 
     if (iframe.cdpFrameIds.length > 1) {
       warnings.push(`iframe ${iframe.domIndex} (${short(iframe.src)}) matches ${iframe.cdpFrameIds.length} CDP frames (${iframe.cdpFrameIds.join(", ")}); correlation is ambiguous, so frame.js requires an explicit CDP frame id.`);
     }
-    if (!iframe.blank && iframe.extensionFrameIds.length > 0 && iframe.cdpFrameIds.length === 0) {
+    if (cdpFramesAvailable && !iframe.blank && iframe.extensionFrameIds.length > 0 && iframe.cdpFrameIds.length === 0) {
       const reachable = iframe.extensionFrameIds.every(
         (id) => input.extensionFrames.find((frame) => frame.frameId === id)?.contentScriptReachable === true,
       );
@@ -231,6 +240,28 @@ export function buildFrameDiagnosis(input: FrameDiagnosisInput): FrameDiagnosis 
           `iframe ${iframe.domIndex} (${short(iframe.src)}) has an extension frame but no CDP frame: it is still loading, navigated, or runs out of process; retry, or use frame.switch.`,
         );
       }
+    }
+  }
+
+  for (const frame of childExtensionFrames) {
+    const domMatches = domIframes.filter((iframe) => iframe.extensionFrameIds.includes(frame.frameId));
+    if (domMatches.length > 1) {
+      warnings.push(`extension frame ${frame.frameId} (${short(frame.url)}) matches ${domMatches.length} DOM iframes (${domMatches.map((iframe) => iframe.domIndex).join(", ")}); correlation is ambiguous.`);
+    }
+    const cdpMatches = cdpFrames.filter((candidate) => candidate.extensionFrameIds.includes(frame.frameId));
+    if (cdpMatches.length > 1) {
+      warnings.push(`extension frame ${frame.frameId} (${short(frame.url)}) matches ${cdpMatches.length} CDP frames (${cdpMatches.map((candidate) => candidate.frameId).join(", ")}) by URL; correlation is ambiguous.`);
+    }
+  }
+
+  for (const frame of cdpFrames) {
+    if (frame.isMain) continue;
+    const domMatches = domIframes.filter((iframe) => iframe.cdpFrameIds.includes(frame.frameId));
+    if (domMatches.length > 1) {
+      warnings.push(`CDP frame ${frame.frameId} (${short(frame.url)}) matches ${domMatches.length} DOM iframes (${domMatches.map((iframe) => iframe.domIndex).join(", ")}); correlation is ambiguous.`);
+    }
+    if (frame.extensionFrameIds.length > 1) {
+      warnings.push(`CDP frame ${frame.frameId} (${short(frame.url)}) matches ${frame.extensionFrameIds.length} extension frames by URL (${frame.extensionFrameIds.join(", ")}); correlation is ambiguous.`);
     }
   }
 

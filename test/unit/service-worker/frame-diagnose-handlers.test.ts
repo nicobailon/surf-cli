@@ -125,16 +125,36 @@ describe("FRAME_DIAGNOSE", () => {
     mockCdp(chrome, { frameTreeError: "Target closed" });
     chrome.webNavigation.getAllFrames.mockResolvedValue([
       { frameId: 0, parentFrameId: -1, url: "https://app.example.com/page", errorOccurred: false },
+      {
+        frameId: 7,
+        parentFrameId: 0,
+        url: "https://widgets.example.net/embed",
+        errorOccurred: false,
+      },
     ]);
-    chrome.tabs.sendMessage.mockResolvedValue({
-      success: true,
-      href: "https://app.example.com/page",
-      readyState: "complete",
+    chrome.tabs.sendMessage.mockImplementation(async (_tabId: number, _msg: any, opts: any) => {
+      if (opts.frameId === 0) {
+        return {
+          success: true,
+          href: "https://app.example.com/page",
+          readyState: "complete",
+        };
+      }
+      throw new Error("Could not establish connection");
     });
 
     const result = await handleMessage({ type: "FRAME_DIAGNOSE", tabId: 5 }, {});
     expect(result.counts.cdpFrames).toBe(0);
     expect(result.warnings[0]).toBe("CDP frame tree unavailable: Target closed");
+    expect(result.domIframes[0]).toMatchObject({
+      crossOrigin: true,
+      extensionFrameIds: [7],
+      cdpFrameIds: [],
+    });
+    expect(result.warnings.some((line: string) => line.includes("is out-of-process"))).toBe(false);
+    expect(
+      result.warnings.some((line: string) => line.includes("nothing in this tab can drive it")),
+    ).toBe(false);
     expect(chrome.debugger.detach).toHaveBeenCalledTimes(1);
   });
 

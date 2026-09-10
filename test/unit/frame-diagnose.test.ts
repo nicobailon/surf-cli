@@ -206,6 +206,66 @@ describe("buildFrameDiagnosis", () => {
     );
   });
 
+  it("reports extension and CDP candidates claimed by multiple DOM iframes", () => {
+    const result = buildFrameDiagnosis({
+      mainPage: { href: MAIN, title: "Page" },
+      domIframes: [iframe(), iframe({ domIndex: 1 })],
+      extensionFrames: [mainExt, extFrame()],
+      cdpFrames: [mainCdp, cdpFrame()],
+    });
+
+    expect(result.domIframes.map((entry) => entry.extensionFrameIds)).toEqual([[7], [7]]);
+    expect(result.domIframes.map((entry) => entry.cdpFrameIds)).toEqual([["F2"], ["F2"]]);
+    expect(result.warnings).toContain(
+      "extension frame 7 (https://widgets.example.net/embed) matches 2 DOM iframes (0, 1); correlation is ambiguous.",
+    );
+    expect(result.warnings).toContain(
+      "CDP frame F2 (https://widgets.example.net/embed) matches 2 DOM iframes (0, 1); correlation is ambiguous.",
+    );
+  });
+
+  it("reports ambiguous CDP and extension URL links without DOM entries", () => {
+    const otherUrl = "https://widgets.example.net/other";
+    const result = buildFrameDiagnosis({
+      mainPage: { href: MAIN, title: "Page" },
+      domIframes: [],
+      extensionFrames: [
+        mainExt,
+        extFrame({ frameId: 7 }),
+        extFrame({ frameId: 8 }),
+        extFrame({ frameId: 9, url: otherUrl }),
+      ],
+      cdpFrames: [
+        mainCdp,
+        cdpFrame({ frameId: "F2" }),
+        cdpFrame({ frameId: "F3", url: otherUrl }),
+        cdpFrame({ frameId: "F4", url: otherUrl }),
+      ],
+    });
+
+    expect(result.warnings).toContain(
+      "CDP frame F2 (https://widgets.example.net/embed) matches 2 extension frames by URL (7, 8); correlation is ambiguous.",
+    );
+    expect(result.warnings).toContain(
+      "extension frame 9 (https://widgets.example.net/other) matches 2 CDP frames (F3, F4) by URL; correlation is ambiguous.",
+    );
+  });
+
+  it("does not infer CDP absence when the frame inventory is unavailable", () => {
+    const result = buildFrameDiagnosis({
+      mainPage: { href: MAIN, title: "Page" },
+      domIframes: [iframe()],
+      extensionFrames: [mainExt, extFrame({ contentScriptReachable: false })],
+      cdpFrames: [],
+      cdpFramesAvailable: false,
+    });
+
+    expect(result.warnings.some((line) => line.includes("out-of-process"))).toBe(false);
+    expect(result.warnings.some((line) => line.includes("nothing in this tab can drive it"))).toBe(
+      false,
+    );
+  });
+
   it("correlates by URL when DOM and webNavigation ordering differ", () => {
     const firstUrl = "https://app.example.com/first";
     const secondUrl = "https://app.example.com/second";

@@ -2308,6 +2308,7 @@ export async function handleMessage(
       const mainExtensionFrame = extensionFrames.find((frame) => frame.parentFrameId === -1);
       let dom = { href: mainExtensionFrame?.url ?? "", title: "", iframes: [] as DomIframeEntry[] };
       let cdpFrames: CdpFrameEntry[] = [];
+      let cdpFramesAvailable = true;
       const inventoryWarnings: string[] = [];
       const ownedAttachment = !cdp.isAttached(tabId);
       try {
@@ -2317,6 +2318,7 @@ export async function handleMessage(
           } catch (error) {
             const message = error instanceof Error ? error.message : String(error);
             inventoryWarnings.push(`CDP inventories unavailable: ${message}`);
+            cdpFramesAvailable = false;
           }
         }
         if (cdp.isAttached(tabId)) {
@@ -2332,10 +2334,12 @@ export async function handleMessage(
               cdpFrames = cdpResult.frames ?? [];
             } else {
               inventoryWarnings.push(`CDP frame tree unavailable: ${cdpResult.error}`);
+              cdpFramesAvailable = false;
             }
           } catch (error) {
             const message = error instanceof Error ? error.message : String(error);
             inventoryWarnings.push(`CDP frame tree unavailable: ${message}`);
+            cdpFramesAvailable = false;
           }
         }
       } finally {
@@ -2351,6 +2355,7 @@ export async function handleMessage(
         domIframes: dom.iframes,
         extensionFrames,
         cdpFrames,
+        cdpFramesAvailable,
       });
       diagnosis.warnings.unshift(...inventoryWarnings);
       // No `success` key on purpose: formatToolContent renders {success, frames}
