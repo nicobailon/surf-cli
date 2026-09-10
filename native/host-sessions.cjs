@@ -15,6 +15,9 @@ const QUEUE_TIMEOUT_MS = 60000;
 const DEFAULT_DEADLINE_MS = 60000;
 const MAX_DEADLINE_MS = 50 * 60 * 1000;
 const CLEANUP_GRACE_MS = 60000;
+const READINESS_DEFAULT_TIMEOUT_MS = 20000;
+const READINESS_MAX_TIMEOUT_MS = 120000;
+const READINESS_DEADLINE_GRACE_MS = 5000;
 const PROVIDER_DEFAULT_TIMEOUT_SECONDS = {
   ai: 300,
   aistudio: 300,
@@ -29,6 +32,13 @@ const PROVIDER_DEFAULT_TIMEOUT_SECONDS = {
 };
 
 function resolveRequestDeadlineMs(tool, args = {}) {
+  if (tool === "wait.ready") {
+    const requestedMs = Number(args?.timeout);
+    const timeoutMs = Number.isFinite(requestedMs) && requestedMs > 0
+      ? Math.min(requestedMs, READINESS_MAX_TIMEOUT_MS)
+      : READINESS_DEFAULT_TIMEOUT_MS;
+    return timeoutMs + READINESS_DEADLINE_GRACE_MS;
+  }
   const defaultSeconds = PROVIDER_DEFAULT_TIMEOUT_SECONDS[tool];
   if (defaultSeconds === undefined) return DEFAULT_DEADLINE_MS;
   const rawTimeout = tool === "playbook.run" && args && typeof args === "object" && !Array.isArray(args)

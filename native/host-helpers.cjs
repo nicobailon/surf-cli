@@ -470,6 +470,30 @@ function formatToolContent(result, log = () => {}, options = {}) {
 }
 
 /**
+ * Readiness expectations accept both CLI flag spelling (--url-prefix) and
+ * socket API spelling (urlPrefix). Empty values are dropped.
+ */
+function readinessExpectations(a) {
+  const pick = (...keys) => {
+    for (const key of keys) {
+      const value = a[key];
+      if (typeof value === "string" && value.trim() !== "") return value;
+    }
+    return undefined;
+  };
+  const expect = {
+    selector: pick("selector"),
+    text: pick("text"),
+    urlPrefix: pick("urlPrefix", "url-prefix"),
+    emptyText: pick("emptyText", "empty-text"),
+  };
+  for (const key of Object.keys(expect)) {
+    if (expect[key] === undefined) delete expect[key];
+  }
+  return expect;
+}
+
+/**
  * Map computer action to extension message
  */
 function mapComputerAction(args, tabId) {
@@ -871,6 +895,17 @@ function mapToolToMessage(tool, args, tabId) {
       return { type: "WAIT_FOR_URL", pattern: a.pattern || a.url, timeout: a.timeout, ...baseMsg };
     case "wait.dom":
       return { type: "WAIT_FOR_DOM_STABLE", stable: a.stable || 100, timeout: a.timeout || 5000, ...baseMsg };
+    case "wait.ready":
+      return {
+        type: "WAIT_FOR_READY",
+        expect: readinessExpectations(a),
+        timeout: a.timeout,
+        interval: a.interval,
+        accept: a.accept,
+        ...baseMsg,
+      };
+    case "page.readiness":
+      return { type: "PAGE_READINESS", expect: readinessExpectations(a), ...baseMsg };
     case "wait.load":
       return { type: "WAIT_FOR_LOAD", timeout: a.timeout || 30000, ...baseMsg };
     case "frame.list":
@@ -1280,4 +1315,4 @@ function mapToolToMessage(tool, args, tabId) {
   }
 }
 
-module.exports = { mapToolToMessage, mapComputerAction, formatToolContent, formatToolError, buildProviderUploadMessage };
+module.exports = { mapToolToMessage, mapComputerAction, formatToolContent, formatToolError, buildProviderUploadMessage, readinessExpectations };

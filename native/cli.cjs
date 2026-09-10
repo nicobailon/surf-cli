@@ -721,6 +721,17 @@ const TOOLS = {
         examples: [{ cmd: "page.save --output page.html", desc: "Save current document HTML" }],
       },
       "page.state": { desc: "Get page state (modals, loading, etc.)", args: [] },
+      "page.readiness": {
+        desc: "Classify the page once: ready, empty, loading, login, challenge, not-found, error",
+        args: [],
+        opts: {
+          selector: "Visible CSS selector that marks a ready page",
+          text: "Page text that marks a ready page",
+          "url-prefix": "Expected URL prefix",
+          "empty-text": "Text of an explicit no-results render",
+        },
+        examples: [{ cmd: "page.readiness --json", desc: "State plus evidence as JSON" }]
+      },
     }
   },
   locate: {
@@ -824,6 +835,24 @@ const TOOLS = {
       },
       "wait.dom": { desc: "Wait for DOM to stabilize", args: [], opts: { stable: "Stability window in ms (default: 100)", timeout: "Max wait time in ms" } },
       "wait.load": { desc: "Wait for page to fully load", args: [], opts: { timeout: "Max wait time in ms (default: 30000)" } },
+      "wait.ready": {
+        desc: "Wait until the page is ready, or fail fast with a typed state (challenge, login, not-found, error)",
+        args: [],
+        opts: {
+          selector: "Visible CSS selector that marks a ready page",
+          text: "Page text that marks a ready page",
+          "url-prefix": "Expected URL prefix; anything else is a bounce",
+          "empty-text": "Text of an explicit no-results render (reports state 'empty')",
+          accept: "Negative states to return instead of fail (comma list)",
+          timeout: "Max wait time in ms (default: 20000, max: 120000)",
+          interval: "Poll interval in ms (default: 400)",
+        },
+        examples: [
+          { cmd: 'wait.ready --selector ".results"', desc: "Wait for content; fail fast on a login bounce" },
+          { cmd: 'wait.ready --url-prefix "https://app.example.com/" --empty-text "No results"', desc: "Distinguish empty from blocked" },
+          { cmd: "wait.ready --accept login --json", desc: "Return the login state to the caller" },
+        ]
+      },
     }
   },
   input: {
@@ -1614,7 +1643,8 @@ const ALL_SOCKET_TOOLS = [
   "tab.list", "tab.new", "tab.switch", "tab.close", "tab.move", "tab.name", "tab.unname", "tab.named",
   "tab.group", "tab.ungroup", "tab.groups", "tab.reload",
   "scroll.top", "scroll.bottom", "scroll.to", "scroll.info",
-  "wait.element", "wait.network", "wait.url", "wait.dom", "wait.load",
+  "wait.element", "wait.network", "wait.url", "wait.dom", "wait.load", "wait.ready",
+  "page.readiness",
   "click", "hover", "drag",
   "js", "console", "network",
   "network.get", "network.body", "network.curl", "network.origins",
@@ -1668,7 +1698,9 @@ const SEE_ALSO = {
   "animate-audit": ["screenshot", "record", "perf-audit", "js"],
   "perf-audit": ["record", "animate-audit", "perf.metrics", "console"],
   "search": ["locate.text", "page.read"],
-  "wait.element": ["wait.load", "wait.network"],
+  "wait.element": ["wait.load", "wait.network", "wait.ready"],
+  "wait.ready": ["page.readiness", "wait.element", "wait.url"],
+  "page.readiness": ["wait.ready", "page.state"],
   "wait.load": ["wait.element", "wait.network"],
   "wait.network": ["wait.load", "wait.element"],
   "scroll.to": ["click", "page.read"],
@@ -1739,6 +1771,7 @@ Purpose: control Chrome from shell. Commands are \`surf <command> [args] [option
 Core loop: navigate -> wait/read -> act -> screenshot/read.
 Navigate: surf navigate "https://example.com"    # alias: surf go "..."
 Wait after navigation: surf wait 2                # or wait.load for load complete
+Wait for real content: surf wait.ready --selector ".results"   # fails fast with page_login / page_challenge / page_not_found; --accept login returns the state
 Read DOM/refs: surf page.read --depth 3 --compact # alias: surf read
 Refs: use e1/e2 refs from page.read; prefer refs over CSS when available.
 Click ref: surf click e5
@@ -3822,6 +3855,14 @@ async function handleResponse(response) {
     }
     console.log("\nUsage: surf emulate.device \"<device name>\"");
     console.log('Reset:  surf emulate.device "reset"');
+  } else if (tool === "wait.ready" || tool === "page.readiness") {
+    const lines = [`state: ${data?.state ?? "unknown"}`];
+    if (data?.href) lines.push(`url: ${data.href}`);
+    if (data?.title) lines.push(`title: ${data.title}`);
+    if (typeof data?.waited === "number") lines.push(`waited: ${data.waited}ms (${data.polls} poll${data.polls === 1 ? "" : "s"})`);
+    if (data?.accepted) lines.push("accepted: negative state returned because of --accept");
+    for (const item of Array.isArray(data?.evidence) ? data.evidence : []) lines.push(`- ${item}`);
+    console.log(lines.join("\n"));
   } else if (tool === "js") {
     if (data?.result !== undefined) {
       const val = data.result.value ?? data.result;

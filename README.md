@@ -569,6 +569,15 @@ surf wait 2                         # Wait 2 seconds
 surf wait.element ".loaded"         # Wait for element
 surf wait.network                   # Wait for network idle
 surf wait.url "/dashboard"          # Wait for URL pattern
+surf wait.ready --selector ".results"   # Wait for content, fail fast on a bounce
+surf page.readiness --json          # Classify the page once
+```
+
+`wait.ready` polls with a bounded budget and reports a typed state instead of timing out silently: `ready`, `empty` (the page showed its own no-results message, `--empty-text`), or one of the negative states `login`, `challenge` (anti-bot interstitial), `not-found`, `error`. A negative state exits non-zero with codes `page_login`, `page_challenge`, `page_not_found`, `page_error`; `page_timeout` reports the last observed state. Pass `--accept login` to return a state to the caller instead. Detection uses visible UI state (a rendered password field, a login-looking route, the page's own wording, `--url-prefix` bounces), never site-specific selectors.
+
+```bash
+surf wait.ready --url-prefix "https://app.example.com/" --empty-text "No results"
+surf wait.ready --accept login --json   # {"state":"login","evidence":[...]} instead of an error
 ```
 
 ### Other
@@ -938,11 +947,11 @@ echo '{"type":"tool_request","method":"execute_tool","params":{"tool":"tab.list"
 | `window.*` | `new`, `list`, `focus`, `close`, `resize` |
 | `tab.*` | `list`, `new`, `switch`, `close`, `name`, `unname`, `named`, `group`, `ungroup`, `groups`, `reload` |
 | `scroll.*` | `top`, `bottom`, `to`, `info` |
-| `page.*` | `read`, `text`, `state` |
+| `page.*` | `read`, `text`, `state`, `readiness` |
 | `locate.*` | `role`, `text`, `label` |
 | `element.*` | `styles` |
 | `frame.*` | `list`, `switch`, `main`, `js` |
-| `wait.*` | `element`, `network`, `url`, `dom`, `load` |
+| `wait.*` | `element`, `network`, `url`, `dom`, `load`, `ready` |
 | `cookie` / `cookie.*` | `list`, `get`, `set`, `clear`, `delete` |
 | `bookmark.*` | `add`, `remove`, `list` |
 | `history.*` | `list`, `search` |

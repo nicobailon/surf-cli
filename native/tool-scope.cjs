@@ -45,7 +45,7 @@ const TAB_TOOLS = new Set([
   "scroll", "scroll.top", "scroll.bottom", "scroll.to", "scroll.info", "scroll_to_position",
   "search", "locate.role", "locate.text", "locate.label", "element.styles",
   "js", "javascript_tool", "eval",
-  "wait.element", "wait.url", "wait.network", "wait.dom", "wait.load", "health",
+  "wait.element", "wait.url", "wait.network", "wait.dom", "wait.load", "wait.ready", "page.readiness", "health",
   "frame.list", "frame.switch", "frame.main", "frame.js",
   "dialog.accept", "dialog.dismiss", "dialog.info",
   "console", "network", "network.get", "network.body", "network.curl", "network.path",

@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+### Added
+- **Typed page readiness** - `surf wait.ready` polls with a bounded budget and reports `ready`, `empty`, `login`, `challenge`, `not-found` or `error` instead of timing out silently; negative states exit with `page_login`, `page_challenge`, `page_not_found`, `page_error` or `page_timeout`, and `--accept` returns them to the caller. `surf page.readiness` classifies the page once. Detection uses visible UI state and the caller's expectations (`--selector`, `--text`, `--url-prefix`, `--empty-text`), not site-specific selectors.
+
+Thanks to [@tryingET](https://github.com/tryingET) for #255.
+
 ### Fixed
 - **Native host stalled replies** - The host stopped reading its stdin buffer after an `EXTENSION_HELLO` or `TARGET_EVENT` frame, so a tool reply that arrived in the same chunk sat unread until the next message from the extension (typically the 60 s client timeout on the first request after host start). Every complete frame in a chunk is now processed.
 - **`js --file` statement scripts** - Scripts starting with a declaration failed with `SyntaxError: Unexpected token 'const'` in real Chrome because the statement-mode fallback relied on `new Function`, which the extension CSP blocks in the service worker. The fallback now uses CDP `Runtime.compileScript`.
