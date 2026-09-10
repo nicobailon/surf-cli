@@ -2363,7 +2363,6 @@ export async function handleMessage(
       return diagnosis;
     }
 
->>>>>>> 2dde726 (fix(frame): make diagnosis attachment-neutral)
     case "FRAME_SWITCH": {
       if (!tabId) throw new Error("No tabId provided");
       const { selector, name, index } = message;
@@ -2385,7 +2384,7 @@ export async function handleMessage(
         throw new Error("No iframes found on this page");
       }
 
-
+      let targetFrame: chrome.webNavigation.GetAllFrameResultDetails | null = null;
       if (index !== undefined) {
         if (index < 0 || index >= childFrames.length) {
           throw new Error(`Frame index ${index} out of range. Found ${childFrames.length} frame(s).`);
