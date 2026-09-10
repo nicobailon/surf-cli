@@ -2310,7 +2310,6 @@ export async function handleMessage(
       let cdpFrames: CdpFrameEntry[] = [];
       const inventoryWarnings: string[] = [];
       const ownedAttachment = !cdp.isAttached(tabId);
-      let cdpAvailable = true;
       try {
         if (ownedAttachment) {
           try {
@@ -2318,10 +2317,9 @@ export async function handleMessage(
           } catch (error) {
             const message = error instanceof Error ? error.message : String(error);
             inventoryWarnings.push(`CDP inventories unavailable: ${message}`);
-            cdpAvailable = false;
           }
         }
-        if (cdpAvailable) {
+        if (cdp.isAttached(tabId)) {
           try {
             dom = await collectDomIframeInventory(tabId);
           } catch (error) {
