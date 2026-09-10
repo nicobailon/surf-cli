@@ -1,4 +1,4 @@
-import { vi } from "vitest";
+import { afterEach, vi } from "vitest";
 import { CDPController } from "../../../src/cdp/controller";
 
 // Mock chrome.debugger API
@@ -16,6 +16,10 @@ const mockChrome = {
 vi.stubGlobal("chrome", mockChrome);
 
 describe("CDPController", () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
   beforeEach(() => {
     vi.clearAllMocks();
   });
@@ -479,6 +483,26 @@ describe("CDPController", () => {
         "Page.captureScreenshot",
         { format: "png", captureBeyondViewport: false },
       );
+    });
+
+    it("rejects when Page.captureScreenshot never settles", async () => {
+      vi.useFakeTimers();
+      mockChrome.debugger.sendCommand
+        .mockResolvedValueOnce({}) // Page.enable
+        .mockReturnValueOnce(
+          new Promise(() => {
+            /* intentionally pending */
+          }),
+        ); // captureScreenshot
+
+      const capture = controller.captureScreenshot(tabId);
+      const rejection = expect(capture).rejects.toMatchObject({
+        code: "screenshot_timeout",
+        message: "Screenshot capture timed out after 5000ms",
+      });
+      await vi.advanceTimersByTimeAsync(5000);
+
+      await rejection;
     });
   });
 
