@@ -76,7 +76,7 @@ describe("runExtraction (owned tab)", () => {
       url: "https://x/",
       code: "return SURF_OPTIONS.limit;",
       options: { limit: 5 },
-      ready: { selector: ".row", timeout: 3000 },
+      ready: { selector: ".row", timeout: 0, interval: 0 },
     });
 
     expect(result).toMatchObject({
@@ -100,7 +100,7 @@ describe("runExtraction (owned tab)", () => {
       ["tab.close", 41],
     ]);
     expect(host.calls[0].args).toEqual({ url: "https://x/" });
-    expect(host.calls[1].args).toEqual({ selector: ".row", timeout: 3000 });
+    expect(host.calls[1].args).toEqual({ selector: ".row", timeout: 0, interval: 0 });
     expect(host.calls[2].args.code).toBe(
       'const SURF_OPTIONS = Object.freeze(JSON.parse("{\\"limit\\":5}"));\nreturn SURF_OPTIONS.limit;',
     );

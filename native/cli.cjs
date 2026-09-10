@@ -2771,7 +2771,6 @@ if (args[0] === "extract") {
       return 0;
     } catch (error) {
       fail(error.code || "extraction_failed", error.message, error.details);
-      return 1;
     } finally {
       await transport?.close();
     }

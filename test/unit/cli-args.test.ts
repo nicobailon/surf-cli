@@ -210,7 +210,13 @@ function runCli(
   });
 }
 
-function extractFixtureResponse(request: any) {
+type ExtractCliRequest = {
+  id: string;
+  params: { tool: string };
+  session?: string;
+};
+
+function extractFixtureResponse(request: ExtractCliRequest) {
   const tool = request.params.tool;
   if (tool === "js" && request.session === "chosen") {
     return {
@@ -235,11 +241,11 @@ function extractFixtureResponse(request: any) {
 function runExtractCli(
   args: string[],
   extraEnv: Record<string, string | undefined> = {},
-): Promise<{ code: number | null; requests: any[]; stdout: string; stderr: string }> {
+): Promise<{ code: number | null; requests: ExtractCliRequest[]; stdout: string; stderr: string }> {
   return new Promise((resolve, reject) => {
     const socketPath = createSocketPath();
     cleanupSocket(socketPath);
-    const requests: any[] = [];
+    const requests: ExtractCliRequest[] = [];
     let stdout = "";
     let stderr = "";
 
@@ -253,7 +259,7 @@ function runExtractCli(
           if (!line) {
             continue;
           }
-          const request = JSON.parse(line);
+          const request: ExtractCliRequest = JSON.parse(line);
           requests.push(request);
           socket.write(`${JSON.stringify(extractFixtureResponse(request))}\n`);
         }

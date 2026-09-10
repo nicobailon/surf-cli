@@ -207,8 +207,8 @@ function readinessArgs(ready = {}) {
   if (ready.text) args.text = ready.text;
   if (ready.urlPrefix) args.urlPrefix = ready.urlPrefix;
   if (ready.emptyText) args.emptyText = ready.emptyText;
-  if (ready.timeout) args.timeout = ready.timeout;
-  if (ready.interval) args.interval = ready.interval;
+  if (ready.timeout !== undefined) args.timeout = ready.timeout;
+  if (ready.interval !== undefined) args.interval = ready.interval;
   return args;
 }
 
