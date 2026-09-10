@@ -60,9 +60,9 @@ export function parseAcceptStates(input: unknown): ReadinessState[] {
   const states: ReadinessState[] = [];
   for (const entry of raw) {
     const trimmed = typeof entry === "string" ? entry.trim() : "";
-    if (!isReadinessState(trimmed)) {
+    if (!isReadinessState(trimmed) || !NEGATIVE_READINESS_STATES.includes(trimmed)) {
       throw new Error(
-        `Unknown readiness state "${String(entry)}". Expected one of: challenge, login, not-found, error`,
+        `Invalid --accept state "${String(entry)}". Expected one of: challenge, login, not-found, error`,
       );
     }
     if (!states.includes(trimmed)) states.push(trimmed);

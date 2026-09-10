@@ -163,12 +163,14 @@ describe("readiness handlers", () => {
     expect(result.success).toBeUndefined();
   });
 
-  it("WAIT_FOR_READY rejects unknown accept states before polling", async () => {
+  it("WAIT_FOR_READY accepts only negative states before polling", async () => {
     const handleMessage = await loadHandleMessage();
     const chrome = (globalThis as any).chrome;
-    await expect(
-      handleMessage({ type: "WAIT_FOR_READY", tabId: 5, accept: "blocked" }, {}),
-    ).rejects.toThrow(/Unknown readiness state/);
+    for (const state of ["blocked", "ready", "empty", "loading"]) {
+      await expect(
+        handleMessage({ type: "WAIT_FOR_READY", tabId: 5, accept: state }, {}),
+      ).rejects.toThrow(/Invalid --accept state/);
+    }
     expect(chrome.tabs.sendMessage).not.toHaveBeenCalled();
   });
 

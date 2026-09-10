@@ -226,8 +226,11 @@ describe("parseAcceptStates", () => {
     expect(parseAcceptStates(undefined)).toEqual([]);
   });
 
-  it("rejects unknown states", () => {
-    expect(() => parseAcceptStates("blocked")).toThrow(/Unknown readiness state "blocked"/);
+  it("rejects unknown and non-negative states", () => {
+    expect(() => parseAcceptStates("blocked")).toThrow(/Invalid --accept state "blocked"/);
+    for (const state of ["ready", "empty", "loading"]) {
+      expect(() => parseAcceptStates(state)).toThrow(`Invalid --accept state "${state}"`);
+    }
   });
 });
 
