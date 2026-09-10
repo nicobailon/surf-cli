@@ -405,6 +405,14 @@ function buildRecommendations(report) {
 
 function remoteRecommendations(endpoint, code) {
   const base = [`Confirm Surf is listening on ${endpoint.display}; the remote host listener must allow this Tailnet connection.`];
+  const tlsCodes = new Set([
+    "ERR_TLS_CERT_ALTNAME_INVALID", "UNABLE_TO_VERIFY_LEAF_SIGNATURE", "SELF_SIGNED_CERT_IN_CHAIN",
+    "DEPTH_ZERO_SELF_SIGNED_CERT", "UNABLE_TO_GET_ISSUER_CERT", "UNABLE_TO_GET_ISSUER_CERT_LOCALLY",
+    "CERT_HAS_EXPIRED",
+  ]);
+  if (endpoint.tls?.enabled && (code === "ETIMEDOUT" || tlsCodes.has(code))) {
+    return [...base, "Check the reverse-proxy certificate chain and expected server name (or --remote-tls-server-name); a custom CA replaces system roots."];
+  }
   if (code === "ENOTFOUND") return [...base, "Check the Tailnet DNS name, then run `tailscale status` and `tailscale ping <host>`."].map((item) => item.replace("<host>", endpoint.host));
   if (code === "ETIMEDOUT") return [...base, `Run \`tailscale ping ${endpoint.host}\`; check restrictive Tailnet ACLs/grants and host firewall rules.`];
   if (code === "ECONNREFUSED") return [...base, "Verify the host process is running and bound to the requested TCP port; check restrictive Tailnet ACLs/grants."];
@@ -445,9 +453,10 @@ async function runDoctor(rawOptions = {}, deps = {}) {
       socket = connectEndpoint(target, () => finish({ ok: true, message: "authenticated" }));
       socket.once("error", (error) => finish({ ok: false, code: error.code, message: error.message || String(error) }));
     })))(endpoint, options.connectTimeoutMs);
-    const checks = [{ id: "remote-endpoint", status: "info", message: `Remote endpoint: ${endpoint.display}`, endpoint: endpoint.display }, {
+    const tlsMarker = endpoint.tls?.enabled ? " (TLS)" : "";
+    const checks = [{ id: "remote-endpoint", status: "info", message: `Remote endpoint: ${endpoint.display}${tlsMarker}`, endpoint: endpoint.display }, {
       id: "remote-connect", status: connection.ok ? "pass" : "fail",
-      message: connection.ok ? `Connected to remote endpoint ${endpoint.display}` : `Could not connect to remote endpoint ${endpoint.display}: ${connection.message}`,
+      message: connection.ok ? `Connected to remote endpoint ${endpoint.display}${tlsMarker}` : `Could not connect to remote endpoint ${endpoint.display}${tlsMarker}: ${connection.message}`,
       code: connection.code,
     }, {
       id: "remote-auth", status: connection.ok ? "pass" : connection.code === "EAUTH" ? "fail" : "info",

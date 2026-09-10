@@ -5,11 +5,14 @@ declare const process: {
   pid: number;
   platform: string;
 };
+declare const __dirname: string;
 declare const require: (moduleName: string) => any;
 
 const { spawn } = require("node:child_process");
+const nodeCrypto = require("node:crypto");
 const fs = require("node:fs");
 const net = require("node:net");
+const tls = require("node:tls");
 const os = require("node:os");
 const path = require("node:path");
 const remoteAuth = require("../../native/remote-auth.cjs");
@@ -89,6 +92,9 @@ function createCliEnv(socketPath?: string) {
   env.SURF_NO_LOCK = undefined;
   env.SURF_LOCK_TIMEOUT_MS = undefined;
   env.SURF_REMOTE = undefined;
+  env.SURF_REMOTE_TLS = undefined;
+  env.SURF_REMOTE_TLS_CA = undefined;
+  env.SURF_REMOTE_TLS_SERVER_NAME = undefined;
   env.SURF_SESSION = undefined;
 
   if (socketPath) {
@@ -450,6 +456,9 @@ describe("CLI argument parsing", () => {
     expect(stderr).toBe("");
     expect(stdout).toContain("surf --llm-context");
     expect(stdout).toContain("--remote <host>:<port>");
+    expect(stdout).toContain("--remote-tls");
+    expect(stdout).toContain("--remote-tls-ca <path>");
+    expect(stdout).toContain("--remote-tls-server-name <name>");
   });
 
   it("shows page.html command help without a socket", async () => {
@@ -594,6 +603,64 @@ describe("CLI argument parsing", () => {
       expect(requests.every((request) => request.params.args.remote === undefined)).toBe(true);
     } finally {
       fs.rmSync(scriptPath, { force: true });
+      fs.rmSync(credential.stateDir, { recursive: true, force: true });
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+  });
+
+  it("routes one end-to-end CLI request over TLS without forwarding TLS options", async () => {
+    const credential = createRemoteCredential();
+    const fixtureDirectory = path.join(__dirname, "../fixtures/tls");
+    let request: any;
+    const sockets = new Set<any>();
+    const server = tls.createServer(
+      {
+        cert: fs.readFileSync(path.join(fixtureDirectory, "localhost-cert.pem")),
+        key: nodeCrypto
+          .createPrivateKey({
+            key: fs.readFileSync(path.join(fixtureDirectory, "localhost-key.enc.der")),
+            format: "der",
+            type: "pkcs8",
+            passphrase: "surf-test-fixture",
+          })
+          .export({ format: "pem", type: "pkcs8" }),
+      },
+      (socket: any) => {
+        sockets.add(socket);
+        socket.once("close", () => sockets.delete(socket));
+        attachAuthenticatedServer(socket, credential.stateDir, (message: any, client: any) => {
+          request = message;
+          remoteTransport.writeFrame(client, {
+            id: message.id,
+            result: { content: [{ type: "text", text: "OK" }] },
+          });
+        });
+      },
+    );
+    server.on("tlsClientError", () => undefined);
+    await new Promise<void>((resolve, reject) => {
+      server.on("error", reject);
+      server.listen(0, "127.0.0.1", resolve);
+    });
+    const port = (server.address() as any).port;
+    try {
+      const result = await runCliWithoutSocket([
+        "page.read",
+        "--remote-tls-ca",
+        path.join(fixtureDirectory, "ca-cert.pem"),
+        "--remote",
+        `127.0.0.1:${port}`,
+        "--remote-tls",
+        "--remote-credential",
+        credential.credentialPath,
+      ]);
+      expect(result.code).toBe(0);
+      expect(request.params.tool).toBe("page.read");
+      expect(request.params.args["remote-tls"]).toBeUndefined();
+    } finally {
+      for (const socket of sockets) {
+        socket.destroy();
+      }
       fs.rmSync(credential.stateDir, { recursive: true, force: true });
       await new Promise<void>((resolve) => server.close(() => resolve()));
     }
