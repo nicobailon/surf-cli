@@ -70,7 +70,7 @@
     "@types/node": "^26.1.2",
     "@vitest/coverage-v8": "^4.1.9",
     "@vitest/ui": "^4.1.9",
-    "pi-subagents": "^0.58.0",
+    "pi-subagents": "^0.64.0",
     "puppeteer": "25.9.0",
     "typebox": "^1.3.11",
     "typescript": "^7.0.2",
