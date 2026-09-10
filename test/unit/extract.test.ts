@@ -24,8 +24,7 @@ function toolError(text: string, code?: string) {
 
 /**
  * Scripted fake host: each entry answers the next call to `tool`. The
- * recorded call list doubles as the protocol assertion, the same way the
- * Go fork's socket-level retry test worked.
+ * recorded call list doubles as the protocol assertion.
  */
 function scriptedHost(script: Array<{ tool: string; reply: unknown | (() => unknown) }>) {
   const calls: Call[] = [];

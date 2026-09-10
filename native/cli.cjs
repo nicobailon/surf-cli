@@ -925,6 +925,7 @@ const TOOLS = {
           "ready-url-prefix": "wait.ready --url-prefix; a different URL is a bounce",
           "empty-text": "wait.ready --empty-text; lets an explicit no-results page pass the zero-rows check",
           "ready-timeout": "Readiness timeout in ms (default: 20000)",
+          "ready-interval": "Readiness polling interval in ms (default: 400)",
           rows: "Key of the row array in the script result (default: auto)",
           retry: "Fresh-tab retries on transient failures (default: 1, max: 5)",
           "retry-delay-ms": "Delay between attempts (default: 500)",

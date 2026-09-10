@@ -431,7 +431,7 @@ try {
     "visual indicator",
   );
 
-  // --- js --file with a statement script (MV3 CSP) -----------------------
+  // js --file with a statement script (MV3 CSP)
   const statementScript = join(scratch, "statement-script.js");
   writeFileSync(
     statementScript,
@@ -444,7 +444,7 @@ try {
     throw new Error(`js --file with a leading declaration did not run: ${JSON.stringify(statementResult)}`);
   }
 
-  // --- page readiness ---------------------------------------------------
+  // Page readiness
   const readiness = unwrapJson(await runSurf("page.readiness", "--json", "--tab-id", String(fixtureTab.id)));
   if (readiness.state !== "ready" || readiness.readyState !== "complete") {
     throw new Error(`page.readiness did not report ready: ${JSON.stringify(readiness)}`);
@@ -471,7 +471,7 @@ try {
   }
   await runSurf("tab.close", "--id", String(loginTab.tabId), "--json");
 
-  // --- frame.diagnose ----------------------------------------------------
+  // frame.diagnose
   const framesTab = { tabId: tabIdFromOutput(await runSurf("tab.new", `${baseUrl}/frames`)) };
   await runSurf("wait.element", "#sandboxed", "--tab-id", String(framesTab.tabId), "--json");
   await runSurf("wait.dom", "--tab-id", String(framesTab.tabId), "--json");
@@ -501,7 +501,7 @@ try {
   }
   await runSurf("tab.close", "--id", String(framesTab.tabId), "--json");
 
-  // --- native value setter -------------------------------------------------
+  // Native value setter
   const listTab = { tabId: tabIdFromOutput(await runSurf("tab.new", `${baseUrl}/list`)) };
   await runSurf("wait.element", "#tracked", "--tab-id", String(listTab.tabId), "--json");
   await runSurf("type", "hello tracker", "--into", "#tracked", "--tab-id", String(listTab.tabId), "--no-screenshot", "--json");
@@ -513,7 +513,7 @@ try {
   }
   await runSurf("tab.close", "--id", String(listTab.tabId), "--json");
 
-  // --- js --file with statements and --options -------------------------------
+  // js --file with statements and --options
   const optionsScript = join(repo, "test/e2e/fixtures/list-items.js");
   const listTabForJs = { tabId: tabIdFromOutput(await runSurf("tab.new", `${baseUrl}/list?q=js`)) };
   await runSurf("wait.ready", "--json", "--tab-id", String(listTabForJs.tabId), "--selector", ".item");
@@ -555,7 +555,7 @@ try {
   }
   await runSurf("tab.close", "--id", optionsTabId, "--json");
 
-  // --- extract owned lifecycle, options, empty states and bounded cleanup ---
+  // extract owned lifecycle
   const pagesBeforeExtract = (await browser.pages()).length;
   const extracted = JSON.parse(await runSurf(
     "extract", `${baseUrl}/list?q=extract`, "--file", optionsScript,
