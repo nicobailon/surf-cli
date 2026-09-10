@@ -1274,7 +1274,10 @@ export async function handleMessage(
           const screenshot = await cdp.captureScreenshot(tabId);
           return { ...result, screenshot };
         } catch (err) {
-          return { ...result, screenshotError: "Failed to capture screenshot" };
+          return {
+            ...result,
+            screenshotError: err instanceof Error ? err.message : "Failed to capture screenshot",
+          };
         }
       }
       return result;

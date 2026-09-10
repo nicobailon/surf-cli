@@ -1108,6 +1108,54 @@ describe("native host protocol integration", () => {
     }
   });
 
+  it("preserves primary output and releases same-tab admission after an optional screenshot error", async () => {
+    const host = await startHostHarness();
+    const transport = await openClientTransport({
+      kind: "local",
+      connectionOptions: host.socketPath,
+    });
+    try {
+      const primaryResponse = transport.request({
+        type: "tool_request",
+        method: "execute_tool",
+        params: { tool: "click", args: { selector: "#go", autoScreenshot: true } },
+        tabId: 1,
+        id: "auto-screenshot-timeout",
+      });
+      const click = await host.waitForMessage(
+        (message) => message.type === "CLICK_SELECTOR",
+        "timed screenshot primary action",
+      );
+      host.send({ id: click.id, success: true });
+      const screenshot = await host.waitForMessage(
+        (message) => message.type === "EXECUTE_SCREENSHOT",
+        "timed optional screenshot",
+      );
+      host.send({ id: screenshot.id, error: "Screenshot capture timed out after 5000ms" });
+
+      const settled = await primaryResponse;
+      expect(settled.error).toBeUndefined();
+      expect(settled.result.content[0].text).toContain("OK");
+      expect(settled.result.content[0].text).toContain("Screenshot capture timed out after 5000ms");
+
+      const nextResponse = transport.request({
+        type: "tool_request",
+        method: "execute_tool",
+        params: { tool: "page.read", args: {} },
+        tabId: 1,
+        id: "same-tab-after-screenshot-timeout",
+      });
+      const next = await host.waitForMessage(
+        (message) => message.type === "READ_PAGE",
+        "same-tab request after screenshot timeout",
+      );
+      host.send({ id: next.id, pageContent: "next request admitted" });
+      expect((await nextResponse).error).toBeUndefined();
+    } finally {
+      await transport.close();
+    }
+  });
+
   it("fails remote auto-screenshot downloads without hanging or leaking staging", async () => {
     const reservation = net.createServer();
     await new Promise<void>((resolve) => reservation.listen(0, "127.0.0.1", resolve));

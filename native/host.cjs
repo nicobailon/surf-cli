@@ -2934,7 +2934,11 @@ function processInput() {
           const tabId = storedTabId || msg._resolvedTabId;
           const failAutoScreenshot = (message) => pending.autoScreenshotOutput
             ? sendToolResponse(socket, originalId, null, `Auto-screenshot failed: ${message}`)
-            : sendToolResponse(socket, originalId, { ...msg, autoScreenshotError: message }, null);
+            : sendToolResponse(socket, originalId, {
+                ...msg,
+                screenshotError: message,
+                autoScreenshotError: message,
+              }, null);
           
           if (pending.networkExport && Array.isArray(msg.entries)) {
             try {
