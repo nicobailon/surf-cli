@@ -15,6 +15,7 @@ Thanks to [@tryingET](https://github.com/tryingET) for #255.
 - **Bounded screenshot capture** - Screenshot requests now settle when Chromium stops responding, preserving successful primary output and releasing queued work. Thanks to [@Whamp](https://github.com/Whamp) for #250.
 
 Thanks to [@tryingET](https://github.com/tryingET) for #251 and #256.
+Thanks to [@tryingET](https://github.com/tryingET) for #252.
 Thanks to [@tryingET](https://github.com/tryingET) for #253.
 
 ## [2.18.0] - 2026-09-04
