@@ -192,24 +192,24 @@ async function probeTabReadiness(tabId: number, expect: ReadinessExpectations): 
   if (isRestrictedTabUrl(tabUrl)) {
     return { state: "error", evidence: [`restricted browser or extension page ${tabUrl}`], href: tabUrl, tabStatus };
   }
+  let report;
   try {
-    const report = await chrome.tabs.sendMessage(tabId, { type: "PAGE_READINESS", expect }, { frameId: 0 });
-    if (report?.state) {
-      return { ...report, tabStatus };
-    }
-    if (report?.code === "invalid_selector") {
-      throw new BrowserCommandError("invalid_selector", String(report.error || "Invalid CSS selector"), {
-        selector: expect.selector,
-        tabId,
-      });
-    }
-    const reason = report?.error ? String(report.error) : "content script returned no verdict";
-    return { state: "loading", evidence: [reason], href: tabUrl, tabStatus };
+    report = await chrome.tabs.sendMessage(tabId, { type: "PAGE_READINESS", expect }, { frameId: 0 });
   } catch (err) {
-    if (err instanceof BrowserCommandError) throw err;
     const reason = err instanceof Error ? err.message : String(err);
     return { state: "loading", evidence: [`content script unreachable: ${reason}`], href: tabUrl, tabStatus };
   }
+  if (report?.state) {
+    return { ...report, tabStatus };
+  }
+  if (report?.code === "invalid_selector") {
+    throw new BrowserCommandError("invalid_selector", String(report.error || "Invalid CSS selector"), {
+      selector: expect.selector,
+      tabId,
+    });
+  }
+  const reason = report?.error ? String(report.error) : "content script returned no verdict";
+  return { state: "loading", evidence: [reason], href: tabUrl, tabStatus };
 }
 
 function describeReadiness(result: ReadinessProbeResult): string {
