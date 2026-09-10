@@ -49,12 +49,28 @@ describe.each(["js", "frame.js"])("%s script options", (tool) => {
       const request = JSON.parse(result.stdout);
       expect(request.params.tool).toBe(tool);
       expect(request.params.args).toEqual({
-        code: `const SURF_OPTIONS = Object.freeze({"limit":2});\n${code}`,
+        code: `const SURF_OPTIONS = Object.freeze(JSON.parse("{\\"limit\\":2}"));\n${code}`,
         ...(tool === "frame.js" ? { id: "child-frame" } : { autoScreenshot: true }),
       });
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
+  });
+
+  it("preserves own __proto__ keys without inheriting option values", () => {
+    const options =
+      '{"__proto__":{"limit":99},"nested":{"__proto__":{"limit":42}},"text":"quotes: \\"; newline: \\n; slash: \\\\"}';
+    const result = capture([tool, "return SURF_OPTIONS;", ...target, "--options", options]);
+    expect(result.status).toBe(0);
+    const value = new Function(JSON.parse(result.stdout).params.args.code)();
+    expect(value).toEqual(JSON.parse(options));
+    for (const object of [value, value.nested]) {
+      expect(Object.hasOwn(object, "__proto__")).toBe(true);
+      expect(Object.getPrototypeOf(object)).toBe(Object.prototype);
+      expect(object.limit).toBeUndefined();
+    }
+    expect(Object.isFrozen(value)).toBe(true);
+    expect(Object.isFrozen(value.nested)).toBe(false);
   });
 
   it("leaves code unchanged without options", () => {

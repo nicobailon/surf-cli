@@ -26,10 +26,10 @@ function parseScriptOptions(input) {
   return JSON.parse(JSON.stringify(value));
 }
 
-/** `const SURF_OPTIONS = Object.freeze({...});` followed by a newline. */
+/** Parse serialized JSON before freezing to preserve own __proto__ keys. */
 function buildOptionsPrelude(options) {
   const normalized = parseScriptOptions(options);
-  return `const ${PRELUDE_NAME} = Object.freeze(${JSON.stringify(normalized)});\n`;
+  return `const ${PRELUDE_NAME} = Object.freeze(JSON.parse(${JSON.stringify(JSON.stringify(normalized))}));\n`;
 }
 
 /** Prefix code with the prelude; empty options still defines the constant. */

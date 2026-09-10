@@ -34,7 +34,7 @@ describe("parseScriptOptions", () => {
 describe("buildOptionsPrelude", () => {
   it("defines a frozen SURF_OPTIONS constant that is valid JavaScript on its own", () => {
     const prelude = scriptOptions.buildOptionsPrelude({ limit: 3 });
-    expect(prelude).toBe('const SURF_OPTIONS = Object.freeze({"limit":3});\n');
+    expect(prelude).toBe('const SURF_OPTIONS = Object.freeze(JSON.parse("{\\"limit\\":3}"));\n');
     const evaluate = new Function(`${prelude}return SURF_OPTIONS;`);
     expect(evaluate()).toEqual({ limit: 3 });
     expect(Object.isFrozen(evaluate())).toBe(true);
@@ -42,7 +42,7 @@ describe("buildOptionsPrelude", () => {
 
   it("still defines the constant for empty options and prefixes the code", () => {
     expect(scriptOptions.applyOptionsPrelude("return 1;", undefined)).toBe(
-      "const SURF_OPTIONS = Object.freeze({});\nreturn 1;",
+      'const SURF_OPTIONS = Object.freeze(JSON.parse("{}"));\nreturn 1;',
     );
   });
 });
