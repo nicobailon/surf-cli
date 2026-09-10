@@ -33,10 +33,13 @@ const inventory = {
 
 function mockCdp(
   chrome: ReturnType<typeof createChromeMock>,
-  options: { frameTreeError?: string } = {},
+  options: { domInventoryError?: string; frameTreeError?: string } = {},
 ) {
   chrome.debugger.sendCommand.mockImplementation(async (_target: any, method: string) => {
     if (method === "Runtime.evaluate") {
+      if (options.domInventoryError) {
+        throw new Error(options.domInventoryError);
+      }
       return { result: { value: inventory, type: "object" } };
     }
     if (method === "Page.getFrameTree") {
@@ -112,6 +115,8 @@ describe("FRAME_DIAGNOSE", () => {
           line.includes("extension frame 7") && line.includes("no reachable content script"),
       ),
     ).toBe(true);
+    expect(chrome.debugger.attach).toHaveBeenCalledTimes(1);
+    expect(chrome.debugger.detach).toHaveBeenCalledTimes(1);
   });
 
   it("keeps going when the CDP frame tree is unavailable", async () => {
@@ -130,6 +135,80 @@ describe("FRAME_DIAGNOSE", () => {
     const result = await handleMessage({ type: "FRAME_DIAGNOSE", tabId: 5 }, {});
     expect(result.counts.cdpFrames).toBe(0);
     expect(result.warnings[0]).toBe("CDP frame tree unavailable: Target closed");
+    expect(chrome.debugger.detach).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps extension and CDP inventories when DOM evaluation fails", async () => {
+    const handleMessage = await loadHandleMessage();
+    const chrome = (globalThis as any).chrome;
+    mockCdp(chrome, { domInventoryError: "Execution context destroyed" });
+    chrome.webNavigation.getAllFrames.mockResolvedValue([
+      { frameId: 0, parentFrameId: -1, url: "https://app.example.com/page", errorOccurred: false },
+    ]);
+    chrome.tabs.sendMessage.mockResolvedValue({ success: true });
+
+    const result = await handleMessage({ type: "FRAME_DIAGNOSE", tabId: 5 }, {});
+
+    expect(result.counts).toEqual({ domIframes: 0, extensionFrames: 1, cdpFrames: 2 });
+    expect(result.mainPage.href).toBe("https://app.example.com/page");
+    expect(result.warnings[0]).toBe(
+      "DOM iframe inventory unavailable: Execution context destroyed",
+    );
+    expect(chrome.debugger.detach).toHaveBeenCalledTimes(1);
+  });
+
+  it("returns the extension inventory when debugger attachment fails", async () => {
+    const handleMessage = await loadHandleMessage();
+    const chrome = (globalThis as any).chrome;
+    chrome.debugger.attach.mockRejectedValue(new Error("Attach denied"));
+    chrome.webNavigation.getAllFrames.mockResolvedValue([
+      { frameId: 0, parentFrameId: -1, url: "https://app.example.com/page", errorOccurred: false },
+    ]);
+    chrome.tabs.sendMessage.mockResolvedValue({ success: true });
+
+    const result = await handleMessage({ type: "FRAME_DIAGNOSE", tabId: 5 }, {});
+
+    expect(result.counts).toEqual({ domIframes: 0, extensionFrames: 1, cdpFrames: 0 });
+    expect(result.warnings[0]).toContain("CDP inventories unavailable: Failed to attach debugger");
+    expect(chrome.debugger.attach).toHaveBeenCalledTimes(1);
+    expect(chrome.debugger.detach).not.toHaveBeenCalled();
+  });
+
+  it("reports detach failures after returning all inventories", async () => {
+    const handleMessage = await loadHandleMessage();
+    const chrome = (globalThis as any).chrome;
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {
+      // Expected for this failure-path assertion.
+    });
+    mockCdp(chrome);
+    chrome.debugger.detach.mockRejectedValue(new Error("Detach denied"));
+    chrome.webNavigation.getAllFrames.mockResolvedValue([
+      { frameId: 0, parentFrameId: -1, url: "https://app.example.com/page", errorOccurred: false },
+    ]);
+    chrome.tabs.sendMessage.mockResolvedValue({ success: true });
+
+    const result = await handleMessage({ type: "FRAME_DIAGNOSE", tabId: 5 }, {});
+
+    expect(result.counts).toEqual({ domIframes: 1, extensionFrames: 1, cdpFrames: 2 });
+    expect(result.warnings[0]).toBe("CDP detach failed: Detach denied");
+    expect(warn).toHaveBeenCalledWith("[CDPController] Error detaching:", expect.any(Error));
+    warn.mockRestore();
+  });
+
+  it("does not detach a pre-existing Surf debugger attachment", async () => {
+    const handleMessage = await loadHandleMessage();
+    const chrome = (globalThis as any).chrome;
+    mockCdp(chrome);
+    chrome.webNavigation.getAllFrames.mockResolvedValue([
+      { frameId: 0, parentFrameId: -1, url: "https://app.example.com/page", errorOccurred: false },
+    ]);
+    chrome.tabs.sendMessage.mockResolvedValue({ success: true });
+    await handleMessage({ type: "GET_FRAMES", tabId: 5 }, {});
+
+    await handleMessage({ type: "FRAME_DIAGNOSE", tabId: 5 }, {});
+
+    expect(chrome.debugger.attach).toHaveBeenCalledTimes(1);
+    expect(chrome.debugger.detach).not.toHaveBeenCalled();
   });
 
   it("requires a tab id", async () => {

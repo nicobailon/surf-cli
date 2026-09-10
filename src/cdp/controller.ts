@@ -217,12 +217,18 @@ export class CDPController {
     } catch (e) {}
   }
 
-  async detach(tabId: number): Promise<void> {
+  isAttached(tabId: number): boolean {
+    return this.targets.has(tabId);
+  }
+
+  async detach(tabId: number): Promise<{ success: boolean; error?: string }> {
     const target = this.targets.get(tabId);
+    let error: string | undefined;
     if (target) {
       try {
         await chrome.debugger.detach(target);
       } catch (e) {
+        error = e instanceof Error ? e.message : String(e);
         console.warn("[CDPController] Error detaching:", e);
       }
       this.targets.delete(tabId);
@@ -243,6 +249,7 @@ export class CDPController {
       this.clearRequestStartTimes(tabId);
       this.detachReasons.delete(tabId);
     }
+    return error ? { success: false, error } : { success: true };
   }
 
   async detachAll(): Promise<void> {

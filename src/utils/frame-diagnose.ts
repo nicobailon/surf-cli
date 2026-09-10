@@ -194,7 +194,7 @@ export function buildFrameDiagnosis(input: FrameDiagnosisInput): FrameDiagnosis 
   const unmatchedBlank = domIframes.filter((iframe) => iframe.blank && iframe.cdpFrameIds.length === 0);
   if (unmatchedBlank.length > 0) {
     warnings.push(
-      `${unmatchedBlank.length} iframe(s) have no URL (about:blank or srcdoc): DOM indexes ${unmatchedBlank.map((iframe) => iframe.domIndex).join(", ")}. No CDP frame carries their name or id, so their content cannot be matched; give them a name or id attribute. To try frame.switch --index, use the switch index shown in the extension inventory, not these DOM indexes.`,
+      `${unmatchedBlank.length} iframe(s) have no URL (about:blank or srcdoc): DOM indexes ${unmatchedBlank.map((iframe) => iframe.domIndex).join(", ")}. No CDP frame carries their name or id, so their content cannot be matched; give them a name or id. For frame.switch --index, use extension-inventory indexes, not DOM indexes.`,
     );
   }
 

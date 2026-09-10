@@ -263,7 +263,7 @@ describe("buildFrameDiagnosis", () => {
     });
     expect(result.domIframes.map((entry) => entry.cdpFrameIds)).toEqual([["F3"], ["F4"], []]);
     expect(result.warnings[0]).toBe(
-      "1 iframe(s) have no URL (about:blank or srcdoc): DOM indexes 2. No CDP frame carries their name or id, so their content cannot be matched; give them a name or id attribute. To try frame.switch --index, use the switch index shown in the extension inventory, not these DOM indexes.",
+      "1 iframe(s) have no URL (about:blank or srcdoc): DOM indexes 2. No CDP frame carries their name or id, so their content cannot be matched; give them a name or id. For frame.switch --index, use extension-inventory indexes, not DOM indexes.",
     );
   });
 
