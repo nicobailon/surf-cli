@@ -910,6 +910,8 @@ function mapToolToMessage(tool, args, tabId) {
       return { type: "WAIT_FOR_LOAD", timeout: a.timeout || 30000, ...baseMsg };
     case "frame.list":
       return { type: "GET_FRAMES", ...baseMsg };
+    case "frame.diagnose":
+      return { type: "FRAME_DIAGNOSE", ...baseMsg };
     case "frame.switch":
       return { 
         type: "FRAME_SWITCH", 

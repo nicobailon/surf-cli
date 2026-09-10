@@ -1,5 +1,12 @@
 import { CDPController } from "../cdp/controller";
 import { debugLog } from "../utils/debug";
+import {
+  type CdpFrameEntry,
+  DOM_IFRAME_INVENTORY_EXPRESSION,
+  type DomIframeEntry,
+  type ExtensionFrameEntry,
+  buildFrameDiagnosis,
+} from "../utils/frame-diagnose";
 import type { ReadinessExpectations } from "../utils/page-readiness";
 import {
   type ReadinessProbeResult,
@@ -216,6 +223,52 @@ function describeReadiness(result: ReadinessProbeResult): string {
   const where = result.href ? ` at ${result.href}` : "";
   const evidence = result.evidence.length > 0 ? ` (${result.evidence.join("; ")})` : "";
   return `${result.state}${where}${evidence}`;
+}
+
+async function collectDomIframeInventory(
+  tabId: number,
+): Promise<{ href: string; title: string; iframes: DomIframeEntry[] }> {
+  const result = await cdp.evaluateScript(tabId, DOM_IFRAME_INVENTORY_EXPRESSION);
+  if (result.exceptionDetails) {
+    throw new Error(
+      result.exceptionDetails.exception?.description ||
+        result.exceptionDetails.text ||
+        "Failed to collect the DOM iframe inventory",
+    );
+  }
+  const value = result.result?.value;
+  if (!value || typeof value !== "object" || !Array.isArray(value.iframes)) {
+    throw new Error("Unexpected DOM iframe inventory result shape");
+  }
+  return value as { href: string; title: string; iframes: DomIframeEntry[] };
+}
+
+/** webNavigation frames plus a content-script PING per frame. */
+async function collectExtensionFrames(tabId: number): Promise<ExtensionFrameEntry[]> {
+  const frames = (await chrome.webNavigation.getAllFrames({ tabId })) ?? [];
+  const entries: ExtensionFrameEntry[] = [];
+  for (const frame of frames) {
+    const entry: ExtensionFrameEntry = {
+      frameId: frame.frameId,
+      parentFrameId: frame.parentFrameId,
+      url: frame.url,
+      errorOccurred: frame.errorOccurred === true,
+      contentScriptReachable: false,
+    };
+    try {
+      const ping = await chrome.tabs.sendMessage(tabId, { type: "PING" }, { frameId: frame.frameId });
+      if (ping?.success) {
+        entry.contentScriptReachable = true;
+        entry.contentScript = { href: ping.href, readyState: ping.readyState };
+      } else {
+        entry.contentScriptError = ping?.error ? String(ping.error) : "no response";
+      }
+    } catch (err) {
+      entry.contentScriptError = err instanceof Error ? err.message : String(err);
+    }
+    entries.push(entry);
+  }
+  return entries;
 }
 
 const screenshotCache = new Map<string, { base64: string; width: number; height: number }>();
@@ -2249,6 +2302,67 @@ export async function handleMessage(
       return { success: true, frames: result.frames };
     }
 
+    case "FRAME_DIAGNOSE": {
+      if (!tabId) throw new Error("No tabId provided");
+      const extensionFrames = await collectExtensionFrames(tabId);
+      const mainExtensionFrame = extensionFrames.find((frame) => frame.parentFrameId === -1);
+      let dom = { href: mainExtensionFrame?.url ?? "", title: "", iframes: [] as DomIframeEntry[] };
+      let cdpFrames: CdpFrameEntry[] = [];
+      let cdpFramesAvailable = true;
+      const inventoryWarnings: string[] = [];
+      const ownedAttachment = !cdp.isAttached(tabId);
+      try {
+        if (ownedAttachment) {
+          try {
+            await cdp.attach(tabId);
+          } catch (error) {
+            const message = error instanceof Error ? error.message : String(error);
+            inventoryWarnings.push(`CDP inventories unavailable: ${message}`);
+            cdpFramesAvailable = false;
+          }
+        }
+        if (cdp.isAttached(tabId)) {
+          try {
+            dom = await collectDomIframeInventory(tabId);
+          } catch (error) {
+            const message = error instanceof Error ? error.message : String(error);
+            inventoryWarnings.push(`DOM iframe inventory unavailable: ${message}`);
+          }
+          try {
+            const cdpResult = await cdp.getFrames(tabId);
+            if (cdpResult.success) {
+              cdpFrames = cdpResult.frames ?? [];
+            } else {
+              inventoryWarnings.push(`CDP frame tree unavailable: ${cdpResult.error}`);
+              cdpFramesAvailable = false;
+            }
+          } catch (error) {
+            const message = error instanceof Error ? error.message : String(error);
+            inventoryWarnings.push(`CDP frame tree unavailable: ${message}`);
+            cdpFramesAvailable = false;
+          }
+        }
+      } finally {
+        if (ownedAttachment && cdp.isAttached(tabId)) {
+          const detachResult = await cdp.detach(tabId);
+          if (!detachResult.success) {
+            inventoryWarnings.push(`CDP detach failed: ${detachResult.error}`);
+          }
+        }
+      }
+      const diagnosis = buildFrameDiagnosis({
+        mainPage: { href: dom.href, title: dom.title },
+        domIframes: dom.iframes,
+        extensionFrames,
+        cdpFrames,
+        cdpFramesAvailable,
+      });
+      diagnosis.warnings.unshift(...inventoryWarnings);
+      // No `success` key on purpose: formatToolContent renders {success, frames}
+      // as the bare frame list.
+      return diagnosis;
+    }
+
     case "FRAME_SWITCH": {
       if (!tabId) throw new Error("No tabId provided");
       const { selector, name, index } = message;
@@ -2271,7 +2385,6 @@ export async function handleMessage(
       }
 
       let targetFrame: chrome.webNavigation.GetAllFrameResultDetails | null = null;
-
       if (index !== undefined) {
         if (index < 0 || index >= childFrames.length) {
           throw new Error(`Frame index ${index} out of range. Found ${childFrames.length} frame(s).`);

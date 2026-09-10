@@ -1784,6 +1784,7 @@ Video recording: surf video start ./demo.webm --fps 30; surf video stop
 Animation audit: surf animate-audit --selector ".thing" --duration 2000 --fps 10
 Performance audit: surf perf-audit --duration 3000 --trigger "click:.cta" --output /tmp/perf.json
 JavaScript: surf js "return document.title"
+Frames: surf frame.list | surf frame.diagnose      # diagnose explains why a selector misses inside iframes (shadow roots, srcdoc, out-of-process)
 Scroll: surf scroll down 800 | surf scroll up 400 | surf scroll bottom | surf scroll top
 Find by semantics: surf locate.role button --name "Submit" --action click
 Device/viewport: surf emulate.device "iPhone 14" | surf resize 375 812
@@ -3862,6 +3863,54 @@ async function handleResponse(response) {
     if (typeof data?.waited === "number") lines.push(`waited: ${data.waited}ms (${data.polls} poll${data.polls === 1 ? "" : "s"})`);
     if (data?.accepted) lines.push("accepted: negative state returned because of --accept");
     for (const item of Array.isArray(data?.evidence) ? data.evidence : []) lines.push(`- ${item}`);
+    console.log(lines.join("\n"));
+  } else if (tool === "frame.diagnose" && data?.counts) {
+    // Keep frame URLs readable: embed runners carry kilobyte-long state
+    // parameters that bury the report (use --json for the full URLs).
+    const abbreviateUrl = (url, max = 100) => {
+      if (typeof url !== "string" || url.length <= max) return url;
+      try {
+        const parsed = new URL(url);
+        const base = `${parsed.origin}${parsed.pathname}`;
+        const trailing = url.length - base.length;
+        if (trailing > 0 && base.length <= max - 12) return `${base}?...(+${trailing} chars)`;
+      } catch {}
+      return `${url.slice(0, max - 3)}...`;
+    };
+    const lines = [];
+    lines.push(`Frame diagnosis for ${data.mainPage?.href ?? "?"}${data.mainPage?.title ? ` (${data.mainPage.title})` : ""}`);
+    lines.push(`DOM iframes: ${data.counts.domIframes}, extension frames: ${data.counts.extensionFrames} (incl. main), CDP frames: ${data.counts.cdpFrames}`);
+    if (Array.isArray(data.domIframes) && data.domIframes.length > 0) {
+      lines.push("", "DOM iframes:");
+      for (const f of data.domIframes) {
+        const flags = [
+          f.blank ? "blank" : null,
+          f.crossOrigin ? "cross-origin" : null,
+          f.scriptsBlocked ? "scripts-blocked" : null,
+          f.zeroSize ? "0-size" : null,
+        ].filter(Boolean).join(",");
+        const links = [
+          f.extensionFrameIds?.length ? `ext ${f.extensionFrameIds.join("/")}` : "ext -",
+          f.cdpFrameIds?.length ? `cdp ${f.cdpFrameIds.join("/")}` : "cdp -",
+        ].join(", ");
+        lines.push(`  [${f.domIndex}] ${f.srcdoc ? "srcdoc" : abbreviateUrl(f.src || "about:blank")} ${Math.round(f.rect?.width ?? 0)}x${Math.round(f.rect?.height ?? 0)}${f.name ? ` name=${f.name}` : f.id ? ` id=${f.id}` : ""}${f.sandbox !== null && f.sandbox !== undefined ? ` sandbox="${f.sandbox}"` : ""}${f.shadowHost ? ` in shadow root of ${f.shadowHost}` : ""}${flags ? ` [${flags}]` : ""} -> ${links}`);
+      }
+    }
+    if (Array.isArray(data.extensionFrames) && data.extensionFrames.length > 0) {
+      lines.push("", "Extension frames (frame.switch indexes, webNavigation ids):");
+      for (const f of data.extensionFrames) {
+        const reach = f.contentScriptReachable ? "content-script ok" : `content-script unreachable${f.contentScriptError ? ` (${f.contentScriptError})` : ""}`;
+        lines.push(`  ${f.isMain ? "main" : `[${f.switchIndex}]`} #${f.frameId}${f.isMain ? "" : ` parent ${f.parentFrameId}`} ${abbreviateUrl(f.url)}${f.crossOrigin ? " [cross-origin]" : ""} - ${reach}`);
+      }
+    }
+    if (Array.isArray(data.cdpFrames) && data.cdpFrames.length > 0) {
+      lines.push("", "CDP frames (frame.js ids):");
+      for (const f of data.cdpFrames) {
+        lines.push(`  ${f.frameId}${f.isMain ? " main" : ` parent ${f.parentId}`} ${abbreviateUrl(f.url)}${f.name ? ` name=${f.name}` : ""}${f.extensionFrameIds?.length ? ` -> ext ${f.extensionFrameIds.join("/")}` : ""}`);
+      }
+    }
+    lines.push("", Array.isArray(data.warnings) && data.warnings.length > 0 ? "Warnings:" : "No warnings.");
+    for (const w of Array.isArray(data.warnings) ? data.warnings : []) lines.push(`  - ${w}`);
     console.log(lines.join("\n"));
   } else if (tool === "js") {
     if (data?.result !== undefined) {

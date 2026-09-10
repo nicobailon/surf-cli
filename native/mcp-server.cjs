@@ -263,6 +263,10 @@ const TOOL_SCHEMAS = {
     desc: "List all frames in page",
     schema: {}
   },
+  "frame.diagnose": {
+    desc: "Compare DOM iframes, extension frames (with content-script reachability) and the CDP frame tree, with warnings",
+    schema: {}
+  },
   "frame.js": {
     desc: "Execute JS in specific frame",
     schema: {

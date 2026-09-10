@@ -4,6 +4,7 @@
 
 ### Added
 - **Typed page readiness** - `surf wait.ready` polls with a bounded budget and reports `ready`, `empty`, `login`, `challenge`, `not-found` or `error` instead of timing out silently; negative states exit with `page_login`, `page_challenge`, `page_not_found`, `page_error` or `page_timeout`, and `--accept` returns them to the caller. `surf page.readiness` classifies the page once. Detection uses visible UI state and the caller's expectations (`--selector`, `--text`, `--url-prefix`, `--empty-text`), not site-specific selectors.
+- **`surf frame.diagnose`** - DOM `<iframe>` elements (including those inside open shadow roots, reported with their `shadowHost`), extension frames with a content-script reachability check, and the CDP frame tree side by side, correlated by URL and by `name`/`id` for `srcdoc`/`about:blank` frames, with warnings for blank frames, sandboxes without `allow-scripts`, cross-origin frames, out-of-process frames that `frame.js` cannot reach (and which commands still work there), still-loading frames and count mismatches. The text report abbreviates long frame URLs; `--json` keeps them whole.
 
 Thanks to [@tryingET](https://github.com/tryingET) for #255.
 
@@ -12,7 +13,7 @@ Thanks to [@tryingET](https://github.com/tryingET) for #255.
 - **`js --file` statement scripts** - Scripts starting with a declaration failed with `SyntaxError: Unexpected token 'const'` in real Chrome because the statement-mode fallback relied on `new Function`, which the extension CSP blocks in the service worker. The fallback now uses CDP `Runtime.compileScript`.
 - **Bounded screenshot capture** - Screenshot requests now settle when Chromium stops responding, preserving successful primary output and releasing queued work. Thanks to [@Whamp](https://github.com/Whamp) for #250.
 
-Thanks to [@tryingET](https://github.com/tryingET) for #251.
+Thanks to [@tryingET](https://github.com/tryingET) for #251 and #256.
 Thanks to [@tryingET](https://github.com/tryingET) for #253.
 
 ## [2.18.0] - 2026-09-04

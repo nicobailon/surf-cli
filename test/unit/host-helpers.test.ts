@@ -544,6 +544,15 @@ describe("formatToolContent", () => {
   });
 });
 
+describe("frame.diagnose", () => {
+  it("maps to FRAME_DIAGNOSE with the tab id", () => {
+    expect(helpers.mapToolToMessage("frame.diagnose", {}, 9)).toEqual({
+      type: "FRAME_DIAGNOSE",
+      tabId: 9,
+    });
+  });
+});
+
 describe("readiness tools", () => {
   it("maps wait.ready with CLI flag spelling", () => {
     const msg = helpers.mapToolToMessage(
