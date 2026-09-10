@@ -34,7 +34,7 @@ function buildOptionsPrelude(options) {
 
 /** Add the prelude while preserving a leading strict-mode directive. */
 function applyOptionsPrelude(code, options) {
-  const strict = code.match(/^\s*(["'])use strict\1\s*;?/);
+  const strict = code.match(/^\s*(["'])use strict\1\s*;/);
   if (!strict) return `${buildOptionsPrelude(options)}${code}`;
   return `${strict[0]}\n${buildOptionsPrelude(options)}${code.slice(strict[0].length)}`;
 }

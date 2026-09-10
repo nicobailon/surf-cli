@@ -53,4 +53,10 @@ describe("buildOptionsPrelude", () => {
       '"use strict";\nconst SURF_OPTIONS = Object.freeze(JSON.parse("{\\"ok\\":true}"));\n\nreturn SURF_OPTIONS;',
     );
   });
+
+  it("does not hoist a string literal continued as a call", () => {
+    const code = '"use strict"\n(function(){ return this })()';
+    expect(() => new Function(code)()).toThrow(TypeError);
+    expect(() => new Function(scriptOptions.applyOptionsPrelude(code, {}))()).toThrow(TypeError);
+  });
 });
