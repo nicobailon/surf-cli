@@ -587,6 +587,32 @@ surf wait.ready --url-prefix "https://app.example.com/" --empty-text "No results
 surf wait.ready --accept login --json   # {"state":"login","evidence":[...]} instead of an error
 ```
 
+### Extracting structured data
+
+`surf extract` composes existing client-side tools: it opens an owned tab,
+waits for explicit readiness, runs a page script, validates its JSON result,
+and closes the tab. It prints concise Markdown by default or structured JSON
+with `--json`. Return an array, or an object containing a conventional row key
+such as `rows`, `items`, or `results`; use `--rows <key>` for another key.
+
+```bash
+surf extract "https://example.com/list" --file rows.js --ready-selector ".item"
+surf extract "https://example.com/search" --file rows.js --options '{"limit":20}' --empty-text "No results" --json
+surf extract --tab-id 42 --code 'return [...document.querySelectorAll("h2")].map(h => ({title: h.textContent}))'
+```
+
+Owned-tab failures always attempt cleanup. Zero rows retry unless
+`--allow-empty` is set or `--empty-text` identifies the page's accepted empty
+state. Fresh-tab retries are bounded (`--retry`, default 1, maximum 5) and are
+limited to readiness timeouts, zero rows, and lost tab/execution-context
+failures. Login, challenge, not-found, page-error, script/output, and cleanup
+failures do not retry. `--tab-id` and `--session` target an existing page and
+never retry or close it; `--keep-tab` preserves a successfully owned tab.
+
+Extract is intended for read-only or otherwise idempotent caller scripts.
+JavaScript is not inherently read-only: a retry can replay the script, so avoid
+mutations or make them idempotent.
+
 ### Other
 
 `js` and `frame.js` accept `--options '{"limit": 20}'` with inline code or

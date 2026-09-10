@@ -555,6 +555,34 @@ try {
   }
   await runSurf("tab.close", "--id", optionsTabId, "--json");
 
+  // --- extract owned lifecycle, options, empty states and bounded cleanup ---
+  const pagesBeforeExtract = (await browser.pages()).length;
+  const extracted = JSON.parse(await runSurf(
+    "extract", `${baseUrl}/list?q=extract`, "--file", optionsScript,
+    "--options", '{"limit":2}', "--ready-selector", ".item", "--json",
+  ));
+  if (extracted.rowCount !== 2 || extracted.data?.query !== "extract" || extracted.rows?.[1]?.title !== "Item 2") {
+    throw new Error(`extract success contract failed: ${JSON.stringify(extracted)}`);
+  }
+  const acceptedEmpty = JSON.parse(await runSurf(
+    "extract", `${baseUrl}/list?empty=1`, "--file", optionsScript,
+    "--empty-text", "No results for this search.", "--json",
+  ));
+  if (acceptedEmpty.rowCount !== 0 || acceptedEmpty.readiness?.state !== "empty") {
+    throw new Error(`extract accepted-empty contract failed: ${JSON.stringify(acceptedEmpty)}`);
+  }
+  const rejectedEmpty = await runSurfExpectingFailure(
+    "extract", `${baseUrl}/list?empty=1`, "--file", optionsScript,
+    "--retry", "1", "--retry-delay-ms", "0", "--json",
+  );
+  const emptyError = JSON.parse(rejectedEmpty.stdout).error;
+  if (emptyError?.code !== "empty_result" || emptyError?.details?.attempts !== 2) {
+    throw new Error(`extract rejected-empty contract failed: ${JSON.stringify(emptyError)}`);
+  }
+  if ((await browser.pages()).length !== pagesBeforeExtract) {
+    throw new Error("extract leaked an owned tab");
+  }
+
   await runSurf("screenshot", "--output", screenshotPath);
   const png = readFileSync(screenshotPath);
   if (png.length < 100 || png.subarray(0, 8).toString("hex") !== "89504e470d0a1a0a") {
