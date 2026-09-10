@@ -13,28 +13,52 @@ async function loadHandleMessage() {
   return mod.handleMessage;
 }
 
-function mockRuntimeEvaluate(chrome: ReturnType<typeof createChromeMock>) {
+function exceptionDetails(error: unknown) {
+  const text = error instanceof Error ? error.message : String(error);
+  const description = error instanceof Error ? error.toString() : String(error);
+  return { exceptionDetails: { text, exception: { description } } };
+}
+
+/** Page-side parser check (Runtime.compileScript): compile without running. */
+function compileWith(FunctionImpl: FunctionConstructor, expression: string) {
+  try {
+    new FunctionImpl(expression);
+    return {};
+  } catch (error) {
+    return exceptionDetails(error);
+  }
+}
+
+async function evaluateWith(FunctionImpl: FunctionConstructor, expression: string) {
+  if (expression.includes("if(!window.piHelpers)")) {
+    return { result: { value: undefined, type: "undefined" } };
+  }
+  try {
+    const value = await new FunctionImpl(`return (${expression});`)();
+    return { result: { value, type: typeof value } };
+  } catch (error) {
+    return exceptionDetails(error);
+  }
+}
+
+/**
+ * Emulate the page runtime. `FunctionImpl` is the constructor used for the
+ * page side, so a test can block the service worker's global `Function`
+ * (as the extension CSP does) while the page keeps parsing and evaluating.
+ */
+function mockRuntimeEvaluate(
+  chrome: ReturnType<typeof createChromeMock>,
+  FunctionImpl: FunctionConstructor = Function,
+) {
   chrome.debugger.sendCommand.mockImplementation(
     async (_target: any, method: string, params?: any) => {
-      if (method !== "Runtime.evaluate") {
-        return {};
+      if (method === "Runtime.compileScript") {
+        return compileWith(FunctionImpl, params.expression);
       }
-      if (params.expression.includes("if(!window.piHelpers)")) {
-        return { result: { value: undefined, type: "undefined" } };
+      if (method === "Runtime.evaluate") {
+        return evaluateWith(FunctionImpl, params.expression);
       }
-
-      try {
-        const evaluateExpression = new Function(`return (${params.expression});`);
-        const value = await evaluateExpression();
-        return { result: { value, type: typeof value } };
-      } catch (error) {
-        return {
-          exceptionDetails: {
-            text: error instanceof Error ? error.message : String(error),
-            exception: { description: error instanceof Error ? error.toString() : String(error) },
-          },
-        };
-      }
+      return {};
     },
   );
 }
@@ -42,6 +66,32 @@ function mockRuntimeEvaluate(chrome: ReturnType<typeof createChromeMock>) {
 describe("JavaScript command handlers", () => {
   beforeEach(() => {
     resetChromeMock();
+  });
+
+  it("falls back to statement mode when the extension CSP blocks new Function", async () => {
+    const handleMessage = await loadHandleMessage();
+    const chrome = (globalThis as any).chrome;
+    // The page parser is available even when the service worker cannot eval.
+    mockRuntimeEvaluate(chrome, Function);
+    // Emulate `script-src 'self'`: any attempt to compile a string throws an EvalError.
+    vi.stubGlobal("Function", function BlockedFunction() {
+      throw new EvalError(
+        "Refused to evaluate a string as JavaScript because 'unsafe-eval' is not an allowed source",
+      );
+    });
+    try {
+      const result = await handleMessage(
+        {
+          type: "EXECUTE_JAVASCRIPT",
+          tabId: 1,
+          code: "const a = 40;\nconst b = 2;\nreturn a + b;",
+        },
+        {},
+      );
+      expect(result).toEqual({ output: "42" });
+    } finally {
+      vi.unstubAllGlobals();
+    }
   });
 
   it("returns final expression values", async () => {

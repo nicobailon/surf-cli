@@ -4,8 +4,10 @@
 
 ### Fixed
 - **Native host stalled replies** - The host stopped reading its stdin buffer after an `EXTENSION_HELLO` or `TARGET_EVENT` frame, so a tool reply that arrived in the same chunk sat unread until the next message from the extension (typically the 60 s client timeout on the first request after host start). Every complete frame in a chunk is now processed.
+- **`js --file` statement scripts** - Scripts starting with a declaration failed with `SyntaxError: Unexpected token 'const'` in real Chrome because the statement-mode fallback relied on `new Function`, which the extension CSP blocks in the service worker. The fallback now uses CDP `Runtime.compileScript`.
 
 Thanks to [@tryingET](https://github.com/tryingET) for #251.
+Thanks to [@tryingET](https://github.com/tryingET) for #253.
 
 ## [2.18.0] - 2026-09-04
 

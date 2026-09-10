@@ -108,6 +108,12 @@ async function runSurf(...args) {
   return result.stdout;
 }
 
+/** `--json` with an explicit target wraps the payload as {result, target, notice}. */
+function unwrapJson(stdout) {
+  const parsed = JSON.parse(stdout);
+  return parsed && typeof parsed === "object" && "result" in parsed && "target" in parsed ? parsed.result : parsed;
+}
+
 try {
   if (!new Set(["darwin", "linux"]).has(process.platform)) {
     throw new Error(`Real Chrome E2E does not support ${process.platform}`);
@@ -336,6 +342,19 @@ try {
     () => fixturePage.evaluate(() => document.querySelector("#pi-agent-glow") !== null),
     "visual indicator",
   );
+
+  // --- js --file with a statement script (MV3 CSP) -----------------------
+  const statementScript = join(scratch, "statement-script.js");
+  writeFileSync(
+    statementScript,
+    'const heading = document.querySelector("h1")?.textContent ?? "";\nreturn { title: document.title, heading };\n',
+  );
+  const statementResult = unwrapJson(
+    await runSurf("js", "--file", statementScript, "--tab-id", String(fixtureTab.id), "--json"),
+  );
+  if (statementResult?.title !== "Surf real Chrome fixture" || statementResult?.heading !== "Surf real Chrome fixture") {
+    throw new Error(`js --file with a leading declaration did not run: ${JSON.stringify(statementResult)}`);
+  }
 
   await runSurf("screenshot", "--output", screenshotPath);
   const png = readFileSync(screenshotPath);
