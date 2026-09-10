@@ -7,6 +7,8 @@ description: Control Chrome browser via CLI for testing, automation, and debuggi
 
 Control Chrome browser via CLI or Unix socket.
 
+Ordinary socket-backed CLI commands report top-level host tool-response errors on stderr with a supplied `[code]` on the first line and exit 1. `--json` additionally writes `{error:{code,message,details?}}` on stdout (missing code becomes `"error"`). `--soft-fail` instead keeps the original stderr warning, empty stdout and exit 0, even with `--json`. This does not cover local validation, transport/parser failures or compound-command errors: do not assume every failure produces JSON. Connection failures remain stderr-only and exit 1, including with `--soft-fail`.
+
 ## Native Host / Socket Notes
 
 For WSL2 with Windows Chrome, run `surf install <extension-id>` inside WSL2. Surf detects WSL2 and writes the Windows-side native messaging manifest plus a wrapper that launches the WSL host. Use `surf install <extension-id> --target linux` only for Linux browsers running inside WSLg.

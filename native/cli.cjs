@@ -1835,8 +1835,15 @@ Options:
   --no-wait         Return immediately when the tab/browser is busy
   --json            Output raw JSON including target metadata
   --auto-capture    On error: capture screenshot + console to /tmp
-  --soft-fail       On error: warn and exit 0 (for non-critical commands)
+  --soft-fail       Host tool errors: warn on stderr, exit 0, no JSON error output
   --no-lock         Bypass the legacy lock for compound client-side commands
+
+Host tool-response errors: stderr includes [code] on the first line when supplied;
+--json also writes {"error":{"code":"...","message":"..."}} to stdout; exit 1.
+Host details, when present, are included without redundant code/message fields.
+Missing codes use "error" in JSON. --soft-fail keeps the original warning text.
+This is not a universal error format: local validation, transport and parser
+failures keep their existing output/status; --soft-fail does not mask them.
 
 Remote Credentials (run on the browser host):
   surf remote authorize <label> --output <credential-file>
@@ -3677,7 +3684,25 @@ async function handleResponse(response) {
       socket.end();
       process.exit(0);
     }
-    console.error("Error:", errContent);
+    // Host tool-response errors carry codes separately from their display text.
+    const errorCode = typeof response.error.code === "string" ? response.error.code : null;
+    const [firstLine, ...restLines] = errContent.split("\n");
+    const display = errorCode && !firstLine.includes(`[${errorCode}]`)
+      ? [`${firstLine} [${errorCode}]`, ...restLines].join("\n")
+      : errContent;
+    console.error("Error:", display);
+    if (wantJson) {
+      // details repeats code/message when the error serialises itself; keep the rest.
+      const { code: _code, message: _message, ...details } =
+        response.error.details && typeof response.error.details === "object" ? response.error.details : {};
+      console.log(JSON.stringify({
+        error: {
+          code: errorCode || "error",
+          message: typeof response.error.message === "string" ? response.error.message : firstLine,
+          ...(Object.keys(details).length > 0 ? { details } : {}),
+        },
+      }, null, 2));
+    }
 
     if (autoCapture) {
       await performAutoCapture();

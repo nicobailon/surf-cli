@@ -835,11 +835,31 @@ Generated manifests declare provenance and authentication environment inputs. Su
 --window-id <id>   # Target a specific window
 --no-wait          # Return tab_busy/browser_busy instead of queueing
 --json             # Raw JSON including resolved target metadata
---soft-fail        # Warn instead of error (exit 0) on restricted pages
+--soft-fail        # Host tool errors: stderr warning, exit 0, no JSON error output
 --no-lock          # Bypass the legacy lock for compound client-side commands
 --no-screenshot    # Skip auto-screenshot after actions
 --full             # Full resolution screenshots (skip resize)
 ```
+
+### Host tool-response errors
+
+For ordinary socket-backed commands, a host response with a top-level `error`
+exits 1 and prints `Error: ...` on stderr. A supplied code is appended as `[code]`
+to the first line unless already present there; subsequent recovery lines are
+preserved. Without a code, no suffix is added.
+
+`--json` additionally writes `{"error":{"code":"...","message":"...","details":{...}}}`
+to stdout, while retaining stderr and exit 1. The JSON code defaults to `"error"`;
+the message uses the host's message, or the first display line if absent. Optional
+details retain the host's fields except redundant `code` and `message` fields.
+
+`--soft-fail` takes precedence: the original host display text is printed as a
+stderr warning, without adding a code, stdout stays empty even with `--json`,
+and the command exits 0. This is **not a universal JSON error envelope**: local
+validation, transport/parser failures, compound commands and errors embedded in
+successful result payloads retain their existing behavior. In particular, a
+connection failure still prints stderr, leaves stdout empty and exits 1 with
+`--json`, even with `--soft-fail`.
 
 ## Environment Variables
 
