@@ -589,9 +589,16 @@ surf wait.ready --accept login --json   # {"state":"login","evidence":[...]} ins
 
 ### Other
 
+`js` and `frame.js` accept `--options '{"limit": 20}'` with inline code or
+`--file`. This defines `SURF_OPTIONS` by parsing the JSON and freezing the
+result; use an explicit `return` for the script's result. The freeze is shallow.
+Invalid JSON and non-object values are rejected before sending a request;
+`--options ''` defines an empty object. Without `--options`, code is unchanged.
+
 ```bash
 surf js "return document.title"     # Execute JavaScript
 surf js "piHelpers.setValue(document.querySelector('#q'), 'hello')"  # Native value setter + input/change events
+surf js --file script.js --options '{"limit": 20}'   # Script reads SURF_OPTIONS.limit
 surf record --duration 2000 --fps 10 --output /tmp/anim.gif      # Animated GIF capture
 surf animate-audit --selector ".thing" --duration 2000 --fps 10  # JSON animation timeline
 surf perf-audit --duration 3000 --output /tmp/perf.json           # PerformanceObserver snapshot

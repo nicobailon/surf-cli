@@ -513,6 +513,48 @@ try {
   }
   await runSurf("tab.close", "--id", String(listTab.tabId), "--json");
 
+  // --- js --file with statements and --options -------------------------------
+  const optionsScript = join(repo, "test/e2e/fixtures/list-items.js");
+  const listTabForJs = { tabId: tabIdFromOutput(await runSurf("tab.new", `${baseUrl}/list?q=js`)) };
+  await runSurf("wait.ready", "--json", "--tab-id", String(listTabForJs.tabId), "--selector", ".item");
+  const jsOutput = unwrapJson(
+    await runSurf("js", "--file", optionsScript, "--options", '{"limit": 1}', "--tab-id", String(listTabForJs.tabId), "--json"),
+  );
+  if (jsOutput?.query !== "js" || jsOutput?.total !== 1 || jsOutput?.rows?.[0]?.title !== "Item 1") {
+    throw new Error(`js --file with statements and --options did not return the script result: ${JSON.stringify(jsOutput)}`);
+  }
+  const optionsTabId = String(listTabForJs.tabId);
+  const inlineOptions = unwrapJson(await runSurf(
+    "js", "return {limit: SURF_OPTIONS.limit, frozen: Object.isFrozen(SURF_OPTIONS)};",
+    "--options", '{"limit":2}', "--tab-id", optionsTabId, "--json",
+  ));
+  if (inlineOptions.limit !== 2 || inlineOptions.frozen !== true) {
+    throw new Error(`js inline options failed: ${JSON.stringify(inlineOptions)}`);
+  }
+  await runSurf("js", `const frame = document.createElement('iframe'); frame.src = '${baseUrl}/list?q=frame'; document.body.append(frame);`, "--tab-id", optionsTabId);
+  let childFrame;
+  await waitFor(async () => {
+    const result = unwrapJson(await runSurf("frame.list", "--tab-id", optionsTabId, "--json"));
+    childFrame = result.find((frame) => frame.url === `${baseUrl}/list?q=frame`);
+    return Boolean(childFrame);
+  }, "options child frame");
+  const frameOutput = unwrapJson(await runSurf(
+    "frame.js", "--id", childFrame.frameId, "--file", optionsScript,
+    "--options", '{"limit":2}', "--tab-id", optionsTabId, "--json",
+  ));
+  if (frameOutput.query !== "frame" || frameOutput.total !== 2 || frameOutput.rows[1].title !== "Item 2") {
+    throw new Error(`frame.js file options failed: ${JSON.stringify(frameOutput)}`);
+  }
+  const frameInline = unwrapJson(await runSurf(
+    "frame.js", "--id", childFrame.frameId,
+    "return {query: new URL(location.href).searchParams.get('q'), frozen: Object.isFrozen(SURF_OPTIONS), limit: SURF_OPTIONS.limit};",
+    "--options", '{"limit":3}', "--tab-id", optionsTabId, "--json",
+  ));
+  if (frameInline.query !== "frame" || frameInline.frozen !== true || frameInline.limit !== 3) {
+    throw new Error(`frame.js inline options failed: ${JSON.stringify(frameInline)}`);
+  }
+  await runSurf("tab.close", "--id", optionsTabId, "--json");
+
   await runSurf("screenshot", "--output", screenshotPath);
   const png = readFileSync(screenshotPath);
   if (png.length < 100 || png.subarray(0, 8).toString("hex") !== "89504e470d0a1a0a") {
@@ -557,6 +599,7 @@ try {
         result: "pass",
         readiness: { fixture: readiness.state, loginAccepted: acceptedLogin.state },
         frameDiagnoseWarnings: diagnosis.warnings.length,
+        scriptOptions: { js: jsOutput.total, frameJs: frameOutput.total, frozen: frameInline.frozen },
         screenshotBytes: png.length,
         serviceWorker: workerTarget.url(),
       },
