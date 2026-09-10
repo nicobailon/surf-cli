@@ -91,7 +91,7 @@ class FakeElement extends FakeNode {
     this.clicked = true;
   }
 
-  dispatchEvent(): boolean {
+  dispatchEvent(_event: Event): boolean {
     return true;
   }
 
@@ -266,6 +266,105 @@ describe("accessibility tree", () => {
     expect(input.focused).toBe(true);
     expect(input.value).toBe("hello");
     expect(response).toEqual({ success: true, contentEditable: false });
+  });
+
+  it.each([
+    ["SMART_TYPE", "input"],
+    ["SMART_TYPE", "textarea"],
+    ["FORM_INPUT", "input"],
+    ["FORM_INPUT", "textarea"],
+    ["FORM_FILL", "input"],
+    ["FORM_FILL", "textarea"],
+  ])("%s updates framework-observed %s state", (type, tag) => {
+    const field = tag === "input" ? new FakeInputElement(tag) : new FakeTextAreaElement(tag);
+    let domValue = "old";
+    let trackedValue = "old";
+    let mirror = "old";
+    // Model a DOM prototype accessor shadowed by a framework's own tracker.
+    const prototype = Object.create(Object.getPrototypeOf(field));
+    Object.defineProperty(prototype, "value", {
+      get: () => domValue,
+      set: (value: string) => {
+        domValue = value;
+      },
+    });
+    Object.setPrototypeOf(field, prototype);
+    Object.defineProperty(field, "value", {
+      configurable: true,
+      get: () => domValue,
+      set: (value: string) => {
+        domValue = value;
+        trackedValue = value;
+      },
+    });
+    const events: string[] = [];
+    field.dispatchEvent = vi.fn((event: Event) => {
+      events.push(event.type);
+      if (event.type === "input" && domValue !== trackedValue) {
+        mirror = domValue;
+        trackedValue = domValue;
+      }
+      return true;
+    });
+    (document as any).querySelector = () => field;
+    window.__piElementMap = {
+      target: { element: new WeakRef(field as unknown as Element), role: "textbox", name: "" },
+    };
+
+    let response: any;
+    messageHandler?.(
+      {
+        type,
+        selector: "#target",
+        text: "hello",
+        ref: "target",
+        value: "hello",
+        data: [{ ref: "target", value: "hello" }],
+      },
+      {},
+      (result) => {
+        response = result;
+      },
+    );
+
+    expect(response.success).toBe(true);
+    expect(field.value).toBe("hello");
+    expect(mirror).toBe("hello");
+    expect(events).toEqual(["input", "change"]);
+  });
+
+  it.each(["FORM_INPUT", "FORM_FILL"])("%s preserves checkbox and select behavior", (type) => {
+    const checkbox = new FakeInputElement("input");
+    checkbox.setAttribute("type", "checkbox");
+    const select = new FakeSelectElement("select");
+    const option = new FakeElement("option");
+    option.value = "chosen";
+    select.options = [option];
+    for (const [field, value] of [
+      [checkbox, true],
+      [select, "chosen"],
+    ] as const) {
+      const events: string[] = [];
+      field.dispatchEvent = vi.fn((event: Event) => {
+        events.push(event.type);
+        return true;
+      });
+      window.__piElementMap = {
+        target: { element: new WeakRef(field as unknown as Element), role: "", name: "" },
+      };
+      let response: any;
+      messageHandler?.(
+        { type, ref: "target", value, data: [{ ref: "target", value }] },
+        {},
+        (result) => {
+          response = result;
+        },
+      );
+      expect(response.success).toBe(true);
+      expect(events).toEqual(["change"]);
+    }
+    expect(checkbox.checked).toBe(true);
+    expect(select.value).toBe("chosen");
   });
 
   it("truncates multi-byte utf-8 text on a byte boundary, not a surrogate", () => {
