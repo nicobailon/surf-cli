@@ -2661,7 +2661,9 @@ if (args[0] === "extract") {
       const key = arg.slice(2);
       if (boolFlags.has(key)) opts[key] = true;
       else if (valueFlags.has(key)) {
-        opts[key] = flagValue(extractArgs, arg);
+        opts[key] = key === "options" && extractArgs[i + 1] === ""
+          ? ""
+          : flagValue(extractArgs, arg);
         i++;
       } else {
         console.error(`Error: unknown extract option --${key}`);
@@ -2700,7 +2702,9 @@ if (args[0] === "extract") {
 
   let scriptOptions = {};
   try {
-    if (opts.options && opts["options-file"]) fail("usage", "use either --options or --options-file, not both");
+    if (opts.options !== undefined && opts["options-file"] !== undefined) {
+      fail("usage", "use either --options or --options-file, not both");
+    }
     if (opts["options-file"]) scriptOptions = parseScriptOptions(fs.readFileSync(opts["options-file"], "utf8"));
     else scriptOptions = parseScriptOptions(opts.options);
   } catch (error) {

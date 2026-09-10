@@ -212,7 +212,7 @@ function runCli(
 
 type ExtractCliRequest = {
   id: string;
-  params: { tool: string };
+  params: { tool: string; args: Record<string, unknown> };
   session?: string;
 };
 
@@ -333,6 +333,40 @@ function waitFor<T>(promise: Promise<T>, ms: number, label: string): Promise<T> 
 }
 
 describe("CLI argument parsing", () => {
+  it("passes empty extract options to js as an empty SURF_OPTIONS object", async () => {
+    const result = await runExtractCli([
+      "extract",
+      "https://example.com/list",
+      "--code",
+      "return []",
+      "--options",
+      "",
+      "--json",
+    ]);
+    expect(result.code).toBe(0);
+    const jsRequest = result.requests.find((request) => request.params.tool === "js");
+    expect(jsRequest?.params.args.code).toBe(
+      'const SURF_OPTIONS = Object.freeze(JSON.parse("{}"));\nreturn []',
+    );
+  });
+
+  it("rejects empty extract options combined with an options file before connecting", async () => {
+    const result = await runCliWithoutSocket([
+      "extract",
+      "https://example.com/list",
+      "--code",
+      "return []",
+      "--options",
+      "",
+      "--options-file",
+      "unused.json",
+    ]);
+    expect(result.code).toBe(1);
+    expect(result.stdout).toBe("");
+    expect(result.stderr).toContain("use either --options or --options-file, not both");
+    expect(result.stderr).not.toContain("Socket");
+  });
+
   it("keeps URL extraction owned despite ambient SURF_SESSION and targets explicit sessions in place", async () => {
     const ambient = await runExtractCli(
       ["extract", "https://example.com/list", "--code", "return [{title: 'A'}]", "--json"],
