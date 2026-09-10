@@ -75,7 +75,7 @@ function positiveIdFlag(argv, flag) {
   return parsed;
 }
 
-function resolveEarlyTargetOptions(argv, { allowWindow = true } = {}) {
+function resolveEarlyTargetOptions(argv, { allowWindow = true, allowEnvironmentSession = true } = {}) {
   const explicitSession = flagValue(argv, "--session");
   const tabId = positiveIdFlag(argv, "--tab-id");
   const windowId = allowWindow ? positiveIdFlag(argv, "--window-id") : undefined;
@@ -84,7 +84,7 @@ function resolveEarlyTargetOptions(argv, { allowWindow = true } = {}) {
     process.exit(1);
   }
   const environmentSession = process.env.SURF_SESSION;
-  const session = explicitSession || (!tabId && !windowId ? environmentSession : undefined);
+  const session = explicitSession || (allowEnvironmentSession && !tabId && !windowId ? environmentSession : undefined);
   return {
     ...(session ? { session, sessionSource: explicitSession ? "explicit" : "environment" } : {}),
     ...(tabId ? { tabId } : {}),
@@ -2647,20 +2647,23 @@ if (args[0] === "extract") {
   const valueFlags = new Set([
     "file", "code", "options", "options-file", "ready-selector", "ready-text", "ready-url-prefix",
     "ready-timeout", "ready-interval", "empty-text", "rows", "retry", "retry-delay-ms",
-    "tab-id", "window-id", "session",
+    "tab-id", "session",
   ]);
-  const boolFlags = new Set(["allow-empty", "keep-tab", "json", "markdown", "no-wait", "no-lock", "help"]);
+  const boolFlags = new Set(["allow-empty", "keep-tab", "json", "no-wait", "help"]);
   const opts = {};
   let url = null;
   for (let i = 0; i < extractArgs.length; i++) {
     const arg = extractArgs[i];
     if (arg === "-f") {
-      opts.file = extractArgs[++i];
+      opts.file = flagValue(extractArgs, arg);
+      i++;
     } else if (arg.startsWith("--")) {
       const key = arg.slice(2);
       if (boolFlags.has(key)) opts[key] = true;
-      else if (valueFlags.has(key)) opts[key] = extractArgs[++i];
-      else {
+      else if (valueFlags.has(key)) {
+        opts[key] = flagValue(extractArgs, arg);
+        i++;
+      } else {
         console.error(`Error: unknown extract option --${key}`);
         process.exit(1);
       }
@@ -2706,14 +2709,19 @@ if (args[0] === "extract") {
 
   const toInt = (key, fallback) => {
     if (opts[key] === undefined) return fallback;
-    const parsed = parseInt(opts[key], 10);
-    if (Number.isNaN(parsed) || parsed < 0) fail("usage", `--${key} must be a non-negative integer`);
+    const parsed = Number(opts[key]);
+    if (!/^\d+$/.test(opts[key]) || !Number.isSafeInteger(parsed)) {
+      fail("usage", `--${key} must be a non-negative integer`);
+    }
     return parsed;
   };
 
-  const targetOptions = resolveEarlyTargetOptions(extractArgs);
-  const hasTarget = Boolean(targetOptions.tabId || targetOptions.windowId || targetOptions.session);
-  if (!hasTarget && !url) fail("usage", "a URL is required unless --tab-id, --window-id or --session names the page to read");
+  const targetOptions = resolveEarlyTargetOptions(extractArgs, {
+    allowWindow: false,
+    allowEnvironmentSession: false,
+  });
+  const hasTarget = Boolean(targetOptions.tabId || targetOptions.session);
+  if (!hasTarget && !url) fail("usage", "a URL is required unless --tab-id or --session names the page to read");
 
   const settings = {
     code,
