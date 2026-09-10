@@ -1414,7 +1414,7 @@ export class CDPController {
     height: number;
   }> {
     return this.withScreenshotDeadline(tabId, (async () => {
-      const result = await this.captureScreenshotData(tabId, {
+      const result: { data: string } = await this.send(tabId, "Page.captureScreenshot", {
         format: "png",
         captureBeyondViewport: false,
       });
@@ -1444,18 +1444,14 @@ export class CDPController {
     width: number;
     height: number;
   }> {
-    const result = await this.captureScreenshotData(tabId, {
-      format: "png",
-      clip: { x, y, width, height, scale: 1 },
-    });
+    const result: { data: string } = await this.withScreenshotDeadline(
+      tabId,
+      this.send(tabId, "Page.captureScreenshot", {
+        format: "png",
+        clip: { x, y, width, height, scale: 1 },
+      }),
+    );
     return { base64: result.data, width, height };
-  }
-
-  private async captureScreenshotData(
-    tabId: number,
-    params: { [key: string]: unknown },
-  ): Promise<{ data: string }> {
-    return this.withScreenshotDeadline(tabId, this.send(tabId, "Page.captureScreenshot", params));
   }
 
   private async dispatchMouseEvent(

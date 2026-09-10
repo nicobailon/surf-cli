@@ -30,13 +30,4 @@ function takeFrames(buffer) {
   return { frames, rest: offset === 0 ? buffer : buffer.subarray(offset) };
 }
 
-/** Encode one message the way the extension does, for tests and tools. */
-function encodeFrame(message) {
-  const json = Buffer.from(typeof message === "string" ? message : JSON.stringify(message), "utf8");
-  const frame = Buffer.alloc(HEADER_BYTES + json.length);
-  frame.writeUInt32LE(json.length, 0);
-  json.copy(frame, HEADER_BYTES);
-  return frame;
-}
-
-module.exports = { HEADER_BYTES, encodeFrame, takeFrames };
+module.exports = { takeFrames };

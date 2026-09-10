@@ -1,10 +1,16 @@
 import { describe, expect, it } from "vitest";
 
 const Buffer: any = require("node:buffer").Buffer;
-const { encodeFrame, takeFrames } = require("../../native/stdin-frames.cjs") as {
-  encodeFrame(message: unknown): any;
+const { takeFrames } = require("../../native/stdin-frames.cjs") as {
   takeFrames(buffer: any): { frames: string[]; rest: any };
 };
+
+function encodeFrame(message: unknown) {
+  const body = Buffer.from(JSON.stringify(message));
+  const header = Buffer.alloc(4);
+  header.writeUInt32LE(body.length);
+  return Buffer.concat([header, body]);
+}
 
 describe("takeFrames", () => {
   it("returns nothing for an empty or header-only buffer", () => {

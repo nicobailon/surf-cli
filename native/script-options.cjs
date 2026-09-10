@@ -1,13 +1,9 @@
-/** Options prelude for page-side scripts run through js or frame.js. */
-const PRELUDE_NAME = "SURF_OPTIONS";
-
 function isPlainObject(value) {
   if (value === null || typeof value !== "object" || Array.isArray(value)) return false;
   const proto = Object.getPrototypeOf(value);
   return proto === Object.prototype || proto === null;
 }
 
-/** Accept an object or JSON string; missing input defaults to an empty object. */
 function parseScriptOptions(input) {
   if (input === undefined || input === null || input === "") return {};
   if (input === true) throw new Error("--options needs a JSON object value");
@@ -26,17 +22,12 @@ function parseScriptOptions(input) {
   return JSON.parse(JSON.stringify(value));
 }
 
-/** Parse serialized JSON before freezing to preserve own __proto__ keys. */
-function buildOptionsPrelude(options) {
-  const normalized = parseScriptOptions(options);
-  return `const ${PRELUDE_NAME} = Object.freeze(JSON.parse(${JSON.stringify(JSON.stringify(normalized))}));\n`;
-}
-
-/** Add the prelude while preserving a leading strict-mode directive. */
 function applyOptionsPrelude(code, options) {
+  const normalized = parseScriptOptions(options);
+  const prelude = `const SURF_OPTIONS = Object.freeze(JSON.parse(${JSON.stringify(JSON.stringify(normalized))}));\n`;
   const strict = code.match(/^\s*(["'])use strict\1\s*;/);
-  if (!strict) return `${buildOptionsPrelude(options)}${code}`;
-  return `${strict[0]}\n${buildOptionsPrelude(options)}${code.slice(strict[0].length)}`;
+  if (!strict) return `${prelude}${code}`;
+  return `${strict[0]}\n${prelude}${code.slice(strict[0].length)}`;
 }
 
-module.exports = { PRELUDE_NAME, applyOptionsPrelude, buildOptionsPrelude, parseScriptOptions };
+module.exports = { applyOptionsPrelude, parseScriptOptions };

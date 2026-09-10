@@ -31,11 +31,10 @@ describe("parseScriptOptions", () => {
   });
 });
 
-describe("buildOptionsPrelude", () => {
-  it("defines a frozen SURF_OPTIONS constant that is valid JavaScript on its own", () => {
-    const prelude = scriptOptions.buildOptionsPrelude({ limit: 3 });
-    expect(prelude).toBe('const SURF_OPTIONS = Object.freeze(JSON.parse("{\\"limit\\":3}"));\n');
-    const evaluate = new Function(`${prelude}return SURF_OPTIONS;`);
+describe("applyOptionsPrelude", () => {
+  it("defines a frozen SURF_OPTIONS constant", () => {
+    const code = scriptOptions.applyOptionsPrelude("return SURF_OPTIONS;", { limit: 3 });
+    const evaluate = new Function(code);
     expect(evaluate()).toEqual({ limit: 3 });
     expect(Object.isFrozen(evaluate())).toBe(true);
   });

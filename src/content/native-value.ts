@@ -41,11 +41,6 @@ export function findNativeValueSetter(element: object): ((value: string) => void
   return null;
 }
 
-function createValueEvent(name: ValueEventName): Event {
-  // `blur` does not bubble in the DOM; the other two do.
-  return new Event(name, { bubbles: name !== "blur" });
-}
-
 /**
  * Set `value` on a text-like input or textarea so both plain pages and
  * framework-controlled forms observe the change, then dispatch `events` in
@@ -63,7 +58,7 @@ export function setNativeValue(
     element.value = value;
   }
   for (const name of events) {
-    element.dispatchEvent(createValueEvent(name));
+    element.dispatchEvent(new Event(name, { bubbles: name !== "blur" }));
   }
   return { method: setter ? "native-setter" : "assignment", events: [...events] };
 }

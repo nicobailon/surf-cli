@@ -14,7 +14,6 @@ export type ReadinessState =
   | "not-found"
   | "error";
 
-/** States that mean "stop waiting, the page will not become ready". */
 export const NEGATIVE_READINESS_STATES: readonly ReadinessState[] = [
   "challenge",
   "login",
@@ -22,10 +21,8 @@ export const NEGATIVE_READINESS_STATES: readonly ReadinessState[] = [
   "error",
 ];
 
-/** States that mean "the page has settled and can be read". */
 export const SETTLED_READINESS_STATES: readonly ReadinessState[] = ["ready", "empty"];
 
-/** Error code for a negative state, or null for states that are not errors. */
 export function readinessErrorCode(state: ReadinessState): string | null {
   switch (state) {
     case "challenge":
@@ -50,7 +47,6 @@ export function isReadinessState(value: unknown): value is ReadinessState {
   );
 }
 
-/** Parse `--accept login,challenge` style input into a state list. */
 export function parseAcceptStates(input: unknown): ReadinessState[] {
   const raw: unknown[] = Array.isArray(input)
     ? input
@@ -70,7 +66,6 @@ export function parseAcceptStates(input: unknown): ReadinessState[] {
   return states;
 }
 
-/** What one probe of the page reports. */
 export interface ReadinessProbeResult {
   state: ReadinessState;
   evidence: string[];
@@ -90,7 +85,6 @@ export const MAX_READINESS_TIMEOUT_MS = 120_000;
 export const DEFAULT_READINESS_INTERVAL_MS = 400;
 export const MIN_READINESS_INTERVAL_MS = 50;
 
-/** Clamp caller-supplied numbers into a bounded polling budget. */
 export function clampReadinessBudget(input: { timeoutMs?: unknown; intervalMs?: unknown }): ReadinessBudget {
   const timeoutRaw = Number(input.timeoutMs);
   const intervalRaw = Number(input.intervalMs);
