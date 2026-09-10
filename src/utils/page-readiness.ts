@@ -139,14 +139,14 @@ function classifyError(snapshot: ReadinessSnapshot): ReadinessVerdict | null {
 
 function classifyChallenge(snapshot: ReadinessSnapshot): ReadinessVerdict | null {
   const evidence: string[] = [];
-  if (snapshot.challengeMarkers.length > 0) {
+  const shortPage = snapshot.bodyTextLength < SHORT_PAGE_TEXT_LENGTH;
+  if (shortPage && snapshot.challengeMarkers.length > 0) {
     evidence.push(`challenge markup present: ${snapshot.challengeMarkers.join(", ")}`);
   }
   const titleMatch = snapshot.title.match(CHALLENGE_TITLE_PATTERN);
   if (titleMatch) {
     evidence.push(`title "${snapshot.title}" matches challenge wording`);
   }
-  const shortPage = snapshot.bodyTextLength < SHORT_PAGE_TEXT_LENGTH;
   if (shortPage) {
     const headingMatch = snapshot.headings.find((heading) => CHALLENGE_TITLE_PATTERN.test(heading));
     if (headingMatch) {

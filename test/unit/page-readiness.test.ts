@@ -94,6 +94,19 @@ describe("classifyReadiness", () => {
     expect(verdict.state).toBe("ready");
   });
 
+  it("does not let generic challenge markup override matched content on an ordinary page", () => {
+    const body = "Project challenge form documentation and examples. ".repeat(30);
+    const verdict = classifyReadiness(
+      snapshot({
+        bodyTextSample: body,
+        bodyTextLength: body.length,
+        challengeMarkers: ["#challenge-form"],
+        selector: { expected: "#article", matched: true },
+      }),
+    );
+    expect(verdict.state).toBe("ready");
+  });
+
   it("detects not-found pages by title or heading", () => {
     expect(classifyReadiness(snapshot({ title: "404 Not Found" })).state).toBe("not-found");
     expect(classifyReadiness(snapshot({ headings: ["This page doesn't exist"] })).state).toBe(
@@ -252,7 +265,7 @@ describe("collectReadinessSnapshot", () => {
     expect(result.bodyTextLength).toBe("Projects Alpha Beta No results found".length);
   });
 
-  it("evaluates expectations case-insensitively and never throws on bad selectors", () => {
+  it("evaluates expectations case-insensitively and rejects bad caller selectors", () => {
     const dom = fakeDom({
       counts: { ".card": 2 },
       countVisible: (selector) => {
@@ -272,10 +285,9 @@ describe("collectReadinessSnapshot", () => {
     expect(result.text).toEqual({ expected: "no RESULTS found", matched: true });
     expect(result.urlPrefix).toEqual({ expected: "https://app.example.com/", matched: true });
     expect(result.emptyText).toEqual({ expected: "  no results  ", matched: true });
-    expect(collectReadinessSnapshot(dom, { selector: "!!bad" }).selector).toEqual({
-      expected: "!!bad",
-      matched: false,
-    });
+    expect(() => collectReadinessSnapshot(dom, { selector: "!!bad" })).toThrow(
+      'Invalid CSS selector "!!bad": invalid selector',
+    );
   });
 
   it("omits expectation fields that were not requested", () => {

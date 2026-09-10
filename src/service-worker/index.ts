@@ -197,9 +197,16 @@ async function probeTabReadiness(tabId: number, expect: ReadinessExpectations): 
     if (report?.state) {
       return { ...report, tabStatus };
     }
+    if (report?.code === "invalid_selector") {
+      throw new BrowserCommandError("invalid_selector", String(report.error || "Invalid CSS selector"), {
+        selector: expect.selector,
+        tabId,
+      });
+    }
     const reason = report?.error ? String(report.error) : "content script returned no verdict";
     return { state: "loading", evidence: [reason], href: tabUrl, tabStatus };
   } catch (err) {
+    if (err instanceof BrowserCommandError) throw err;
     const reason = err instanceof Error ? err.message : String(err);
     return { state: "loading", evidence: [`content script unreachable: ${reason}`], href: tabUrl, tabStatus };
   }

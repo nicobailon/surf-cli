@@ -29,6 +29,14 @@ export const BODY_TEXT_SAMPLE_LENGTH = 4000;
 const TEXT_INPUT_SELECTOR =
   "input:not([type]), input[type='text'], input[type='email'], input[type='tel'], input[type='search'], input[type='url'], textarea";
 
+export class InvalidReadinessSelectorError extends Error {
+  constructor(selector: string, cause: unknown) {
+    const reason = cause instanceof Error ? cause.message : String(cause);
+    super(`Invalid CSS selector "${selector}": ${reason}`);
+    this.name = "InvalidReadinessSelectorError";
+  }
+}
+
 function safeCount(dom: ReadinessProbeDom, selector: string): number {
   try {
     return dom.countVisible(selector);
@@ -37,7 +45,7 @@ function safeCount(dom: ReadinessProbeDom, selector: string): number {
   }
 }
 
-/** Gather the facts the classifier needs. Never throws on a bad selector. */
+/** Gather the facts the classifier needs. Caller-provided invalid CSS is rejected. */
 export function collectReadinessSnapshot(
   dom: ReadinessProbeDom,
   expect: ReadinessExpectations = {},
@@ -58,7 +66,11 @@ export function collectReadinessSnapshot(
   };
 
   if (expect.selector) {
-    snapshot.selector = { expected: expect.selector, matched: safeCount(dom, expect.selector) > 0 };
+    try {
+      snapshot.selector = { expected: expect.selector, matched: dom.countVisible(expect.selector) > 0 };
+    } catch (error) {
+      throw new InvalidReadinessSelectorError(expect.selector, error);
+    }
   }
   if (expect.text) {
     snapshot.text = {

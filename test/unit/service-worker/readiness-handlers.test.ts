@@ -83,6 +83,25 @@ describe("readiness handlers", () => {
     expect(result.tabStatus).toBe("loading");
   });
 
+  it("reports invalid CSS selectors as deterministic caller errors", async () => {
+    const handleMessage = await loadHandleMessage();
+    const chrome = (globalThis as any).chrome;
+    chrome.tabs.get.mockResolvedValue({ id: 5, url: "https://example.com/", status: "complete" });
+    chrome.tabs.sendMessage.mockResolvedValue({
+      code: "invalid_selector",
+      error: 'Invalid CSS selector "[": invalid selector',
+    });
+
+    await expect(
+      handleMessage({ type: "WAIT_FOR_READY", tabId: 5, expect: { selector: "[" } }, {}),
+    ).rejects.toMatchObject({
+      code: "invalid_selector",
+      message: expect.stringContaining('Invalid CSS selector "["'),
+      details: { selector: "[", tabId: 5 },
+    });
+    expect(chrome.tabs.sendMessage).toHaveBeenCalledTimes(1);
+  });
+
   it("WAIT_FOR_READY polls until the page is ready", async () => {
     const handleMessage = await loadHandleMessage();
     const chrome = (globalThis as any).chrome;
