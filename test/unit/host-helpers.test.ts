@@ -480,6 +480,36 @@ describe("formatToolContent", () => {
     });
   });
 
+  describe("network.body responses", () => {
+    it("returns the response body instead of OK", () => {
+      const body = JSON.stringify({ spans: [{ id: "a" }] });
+      const result = helpers.formatToolContent({ success: true, body, base64Encoded: false });
+      expect(result[0].text).toBe(body);
+    });
+
+    it("returns an empty body verbatim", () => {
+      const result = helpers.formatToolContent({ success: true, body: "", base64Encoded: false });
+      expect(result[0].text).toBe("");
+    });
+
+    it("keeps base64 bodies encoded", () => {
+      const result = helpers.formatToolContent({
+        success: true,
+        body: "iVBORw0KGgo=",
+        base64Encoded: true,
+      });
+      expect(result[0].text).toBe("iVBORw0KGgo=");
+    });
+
+    it("reports body retrieval failures", () => {
+      const result = helpers.formatToolContent({
+        success: false,
+        error: "No resource with given identifier found",
+      });
+      expect(result[0].text).toContain("No resource with given identifier found");
+    });
+  });
+
   describe("hint handling", () => {
     it("appends _hint to output", () => {
       const result = helpers.formatToolContent({

@@ -2,6 +2,9 @@
 
 ## [Unreleased]
 
+### Fixed
+- **`network.body` output** - `surf network.body <id>` now prints the captured response body instead of `OK`. The native host formatter previously dropped the `body` field of the `Network.getResponseBody` result. Base64 bodies are printed as received.
+
 ## [2.19.0] - 2026-09-10
 
 ### Highlights

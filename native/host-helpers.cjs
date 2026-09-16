@@ -451,6 +451,10 @@ function formatToolContent(result, log = () => {}, options = {}) {
     if (result.readyState) {
       return text(`Page loaded (readyState: ${result.readyState})`);
     }
+    // network.body: Network.getResponseBody result
+    if (typeof result.body === "string" && Object.hasOwn(result, "base64Encoded")) {
+      return text(result.body);
+    }
     // Include _hint handling here instead of unreachable code below
     let msg = "OK";
     if (result._hint) msg += `\n[hint] ${result._hint}`;
