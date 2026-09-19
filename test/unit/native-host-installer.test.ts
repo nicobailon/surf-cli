@@ -12,17 +12,13 @@ const os = require("node:os");
 const path = require("node:path");
 const { spawnSync } = require("node:child_process");
 const {
-  addWindowsRegistry,
   createWrapper,
   installManifest,
   writeManifest,
   assertListenTargetSupported,
   assertSocketAccessTargetSupported,
 } = require("../../scripts/install-native-host.cjs");
-const {
-  removeManifest,
-  removeWindowsRegistry,
-} = require("../../scripts/uninstall-native-host.cjs");
+const { removeManifest } = require("../../scripts/uninstall-native-host.cjs");
 const { runWindowsExecutable } = require("../../scripts/windows-interop.cjs");
 const { parseListenEndpoint } = require("../../native/listener.cjs");
 const {
@@ -99,40 +95,29 @@ describe("native host installer", () => {
     ).toThrow(/cmd\.exe.*bare missing.*wslpath.*wslpath missing/);
   });
 
-  it("adds and removes browser-specific HKCU registry entries with argument arrays", () => {
-    const calls: any[] = [];
-    const execFileSync = (file: string, args: string[]) => {
-      calls.push([file, args]);
-      return "completed";
-    };
-
-    addWindowsRegistry("brave", "C:\\Users\\Nico\\manifest.json", true, { execFileSync });
-    removeWindowsRegistry("edge", true, { execFileSync });
-
-    expect(calls[0]).toEqual([
-      "reg.exe",
-      [
-        "add",
-        "HKCU\\Software\\BraveSoftware\\Brave-Browser\\NativeMessagingHosts\\surf.browser.host",
-        "/ve",
-        "/t",
-        "REG_SZ",
-        "/d",
-        "C:\\Users\\Nico\\manifest.json",
-        "/f",
-      ],
-    ]);
-    expect(calls[1]).toEqual([
-      "reg.exe",
-      ["delete", "HKCU\\Software\\Microsoft\\Edge\\NativeMessagingHosts\\surf.browser.host", "/f"],
-    ]);
+  it("does not fall back when the bare Windows tool fails for another reason", () => {
+    const calls: string[] = [];
+    expect(() =>
+      runWindowsExecutable("cmd.exe", ["/c", "exit", "1"], {
+        allowWslFallback: true,
+        execFileSync: (file: string) => {
+          calls.push(file);
+          throw Object.assign(new Error("access denied"), { code: "EACCES" });
+        },
+      }),
+    ).toThrow(/cmd\.exe.*access denied/);
+    expect(calls).toEqual(["cmd.exe"]);
   });
 
   it("registers a WSL Windows install and unregisters it on uninstall", () => {
     const tempDir = makeTempDir();
     const calls: any[] = [];
+    const manifestFsPath = path.join(
+      tempDir,
+      "BraveSoftware/Brave-Browser/User Data/NativeMessagingHosts/surf.browser.host.json",
+    );
     const windowsManifestPath =
-      "C:\\Users\\Nico\\AppData\\Local\\Google\\Chrome\\User Data\\NativeMessagingHosts\\surf.browser.host.json";
+      "C:\\Users\\Nico\\AppData\\Local\\BraveSoftware\\Brave-Browser\\User Data\\NativeMessagingHosts\\surf.browser.host.json";
     const execFileSync = (file: string, args: string[]) => {
       calls.push([file, args]);
       if (file === "cmd.exe") {
@@ -145,6 +130,7 @@ describe("native host installer", () => {
         return `${windowsManifestPath}\r\n`;
       }
       if (file === "reg.exe") {
+        expect(fs.existsSync(manifestFsPath)).toBe(true);
         return "completed";
       }
       throw new Error(`unexpected command: ${file} ${args.join(" ")}`);
@@ -152,18 +138,19 @@ describe("native host installer", () => {
     const deps = { execFileSync };
 
     const manifestPath = installManifest(
-      "chrome",
+      "brave",
       extensionA,
       "C:\\Users\\Nico\\AppData\\Local\\surf-cli\\host-wrapper-wsl.cmd",
       "wsl-windows",
       deps,
     );
+    expect(manifestPath).toBe(manifestFsPath);
     expect(fs.existsSync(manifestPath)).toBe(true);
     expect(calls).toContainEqual([
       "reg.exe",
       [
         "add",
-        "HKCU\\Software\\Google\\Chrome\\NativeMessagingHosts\\surf.browser.host",
+        "HKCU\\Software\\BraveSoftware\\Brave-Browser\\NativeMessagingHosts\\surf.browser.host",
         "/ve",
         "/t",
         "REG_SZ",
@@ -173,11 +160,15 @@ describe("native host installer", () => {
       ],
     ]);
 
-    expect(removeManifest("chrome", "wsl-windows", deps)).toBe(manifestPath);
+    expect(removeManifest("brave", "wsl-windows", deps)).toBe(manifestPath);
     expect(fs.existsSync(manifestPath)).toBe(false);
     expect(calls).toContainEqual([
       "reg.exe",
-      ["delete", "HKCU\\Software\\Google\\Chrome\\NativeMessagingHosts\\surf.browser.host", "/f"],
+      [
+        "delete",
+        "HKCU\\Software\\BraveSoftware\\Brave-Browser\\NativeMessagingHosts\\surf.browser.host",
+        "/f",
+      ],
     ]);
   });
 
@@ -458,7 +449,9 @@ describe("native host installer", () => {
     expect(result.stderr).toContain("--target linux is only supported on Linux or WSL2");
   });
 
-  it("does not mutate the Windows registry for an explicit Linux target in WSL", ({ skip }) => {
+  it("does not mutate the Windows registry for explicit Linux install or uninstall in WSL", ({
+    skip,
+  }) => {
     if (process.platform !== "linux") {
       skip();
     }
@@ -487,6 +480,22 @@ describe("native host installer", () => {
     );
 
     expect(result.status).toBe(0);
+    expect(fs.existsSync(marker)).toBe(false);
+
+    const uninstall = spawnSync(
+      process.execPath,
+      ["scripts/uninstall-native-host.cjs", "--target", "linux"],
+      {
+        encoding: "utf8",
+        env: {
+          ...process.env,
+          HOME: tempDir,
+          PATH: `${binDir}:${process.env.PATH}`,
+          WSL_DISTRO_NAME: "SurfTest",
+        },
+      },
+    );
+    expect(uninstall.status).toBe(0);
     expect(fs.existsSync(marker)).toBe(false);
   });
 

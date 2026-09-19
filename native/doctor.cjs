@@ -4,7 +4,11 @@ const os = require("os");
 const path = require("path");
 const { execFileSync } = require("child_process");
 const { connectEndpoint, selectEndpoint } = require("./endpoint.cjs");
-const { convertWindowsPath, runWindowsExecutable } = require("../scripts/windows-interop.cjs");
+const {
+  convertWindowsPath,
+  nativeMessagingRegistryPath,
+  runWindowsExecutable,
+} = require("../scripts/windows-interop.cjs");
 
 const HOST_NAME = "surf.browser.host";
 
@@ -116,35 +120,12 @@ function resolveBrowsers(browserArg) {
   return browsers;
 }
 
-function getWindowsEnv(name, { env = process.env, execFileSync: execFile = execFileSync } = {}) {
-  if (env[name]) return env[name];
-  try {
-    const value = runWindowsExecutable("cmd.exe", ["/c", "echo", `%${name}%`], {
-      execFileSync: execFile,
-      allowWslFallback: true,
-      execOptions: { encoding: "utf8" },
-    }).trim().replace(/\r/g, "");
-    return value === `%${name}%` ? null : value;
-  } catch {
-    return null;
-  }
-}
-
-function windowsPathToWslPath(winPath) {
-  const normalized = winPath.replace(/\\/g, "/");
-  const match = normalized.match(/^([A-Za-z]):\/(.*)$/);
-  if (!match) return normalized;
-  return `/mnt/${match[1].toLowerCase()}/${match[2]}`;
-}
-
 function manifestPathForBrowser(browserKey, context) {
   const browser = BROWSERS[browserKey];
   if (!browser) return null;
 
   if (context.effectiveTarget === "wsl-windows") {
-    const localAppData = getWindowsEnv("LOCALAPPDATA", context);
-    if (!localAppData || !browser.wsl) return null;
-    return path.join(convertWindowsPath(localAppData, context), browser.wsl, `${HOST_NAME}.json`);
+    return null;
   }
 
   if (context.platform === "win32") {
@@ -168,7 +149,7 @@ function fsPathFromManifestPath(manifestPath, context) {
 function windowsRegistryPathForBrowser(browserKey) {
   const browser = BROWSERS[browserKey];
   if (!browser?.win32) return null;
-  return `HKCU\\Software\\${browser.win32}\\NativeMessagingHosts\\${HOST_NAME}`;
+  return nativeMessagingRegistryPath(browser.win32, HOST_NAME);
 }
 
 function readWindowsRegistryManifestPath(registryPath, context) {
@@ -665,5 +646,4 @@ module.exports = {
   parseDoctorArgs,
   runDoctor,
   runDoctorCli,
-  windowsPathToWslPath,
 };

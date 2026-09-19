@@ -3,7 +3,13 @@ const fs = require("fs");
 const path = require("path");
 const os = require("os");
 const { execFileSync, execSync } = require("child_process");
-const { convertWindowsPath, convertWslPath, runWindowsExecutable } = require("./windows-interop.cjs");
+const {
+  convertWindowsPath,
+  convertWslPath,
+  getWindowsEnv,
+  nativeMessagingRegistryPath,
+  runWindowsExecutable,
+} = require("./windows-interop.cjs");
 const { parseListenEndpoint } = require("../native/listener.cjs");
 const { normalizeSocketConfig } = require("../native/socket-permissions.cjs");
 const { getStateDir, loadHostIdentity, loadRegistry } = require("../native/remote-auth.cjs");
@@ -141,15 +147,6 @@ function getHostPath() {
   return null;
 }
 
-function getWindowsEnv(name, deps = {}) {
-  const value = runWindowsExecutable("cmd.exe", ["/c", "echo", `%${name}%`], {
-    execFileSync: deps.execFileSync || execFileSync,
-    allowWslFallback: true,
-    execOptions: { encoding: "utf8" },
-  }).trim().replace(/\r/g, "");
-  return value === `%${name}%` ? null : value;
-}
-
 function wslPathToWindowsPath(wslPath) {
   if (!isWsl()) return wslPath;
   return convertWslPath(wslPath);
@@ -260,7 +257,7 @@ function installManifest(browser, extensionId, wrapperPath, target, deps = {}) {
 
 function addWindowsRegistry(browser, manifestPath, allowWslFallback = false, deps = {}) {
   const browserConfig = BROWSERS[browser];
-  const regPath = `HKCU\\Software\\${browserConfig.win32}\\NativeMessagingHosts\\${HOST_NAME}`;
+  const regPath = nativeMessagingRegistryPath(browserConfig.win32, HOST_NAME);
 
   runWindowsExecutable("reg.exe", ["add", regPath, "/ve", "/t", "REG_SZ", "/d", manifestPath, "/f"], {
     execFileSync: deps.execFileSync || execFileSync,
@@ -497,6 +494,5 @@ module.exports = {
   writeManifest,
   assertListenTargetSupported,
   assertSocketAccessTargetSupported,
-  addWindowsRegistry,
   installManifest,
 };

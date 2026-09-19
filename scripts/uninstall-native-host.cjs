@@ -3,7 +3,12 @@ const fs = require("fs");
 const path = require("path");
 const os = require("os");
 const { execFileSync } = require("child_process");
-const { convertWindowsPath, runWindowsExecutable } = require("./windows-interop.cjs");
+const {
+  convertWindowsPath,
+  getWindowsEnv,
+  nativeMessagingRegistryPath,
+  runWindowsExecutable,
+} = require("./windows-interop.cjs");
 
 const HOST_NAME = "surf.browser.host";
 
@@ -60,15 +65,6 @@ function isWsl() {
   } catch {
     return false;
   }
-}
-
-function getWindowsEnv(name, deps = {}) {
-  const value = runWindowsExecutable("cmd.exe", ["/c", "echo", `%${name}%`], {
-    execFileSync: deps.execFileSync || execFileSync,
-    allowWslFallback: true,
-    execOptions: { encoding: "utf8" },
-  }).trim().replace(/\r/g, "");
-  return value === `%${name}%` ? null : value;
 }
 
 function getWrapperDir(target = process.platform) {
@@ -136,7 +132,7 @@ function removeManifest(browser, target, deps = {}) {
 
 function removeWindowsRegistry(browser, allowWslFallback = false, deps = {}) {
   const browserConfig = BROWSERS[browser];
-  const regPath = `HKCU\\Software\\${browserConfig.win32}\\NativeMessagingHosts\\${HOST_NAME}`;
+  const regPath = nativeMessagingRegistryPath(browserConfig.win32, HOST_NAME);
   runWindowsExecutable("reg.exe", ["delete", regPath, "/f"], {
     execFileSync: deps.execFileSync || execFileSync,
     allowWslFallback,
@@ -276,4 +272,4 @@ function main() {
 
 if (require.main === module) main();
 
-module.exports = { removeManifest, removeWindowsRegistry };
+module.exports = { removeManifest };

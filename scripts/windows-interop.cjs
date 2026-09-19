@@ -45,6 +45,19 @@ function runWindowsExecutable(executable, args, options = {}) {
   }
 }
 
+function getWindowsEnv(name, options = {}) {
+  const value = runWindowsExecutable("cmd.exe", ["/c", "echo", `%${name}%`], {
+    execFileSync: options.execFileSync || execFileSync,
+    allowWslFallback: true,
+    execOptions: { encoding: "utf8" },
+  }).trim().replace(/\r/g, "");
+  return value === `%${name}%` ? null : value;
+}
+
+function nativeMessagingRegistryPath(browserRegistryRoot, hostName) {
+  return `HKCU\\Software\\${browserRegistryRoot}\\NativeMessagingHosts\\${hostName}`;
+}
+
 function convertWindowsPath(windowsPath, options = {}) {
   const execFile = options.execFileSync || execFileSync;
   try {
@@ -70,5 +83,7 @@ function convertWslPath(wslPath, options = {}) {
 module.exports = {
   convertWindowsPath,
   convertWslPath,
+  getWindowsEnv,
+  nativeMessagingRegistryPath,
   runWindowsExecutable,
 };

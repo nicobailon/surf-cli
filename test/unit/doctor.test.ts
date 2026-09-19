@@ -13,7 +13,7 @@ const os = require("node:os");
 const path = require("node:path");
 const net = require("node:net");
 const { spawnSync } = require("node:child_process");
-const { parseDoctorArgs, runDoctor, windowsPathToWslPath } = require("../../native/doctor.cjs");
+const { parseDoctorArgs, runDoctor } = require("../../native/doctor.cjs");
 const remoteAuth = require("../../native/remote-auth.cjs");
 
 function makeTempDir() {
@@ -427,12 +427,6 @@ describe("surf doctor", () => {
       expect.arrayContaining([
         expect.objectContaining({ id: "manifest-supported", status: "fail", browser: "arc" }),
       ]),
-    );
-  });
-
-  it("converts Windows paths for WSL manifest checks", () => {
-    expect(windowsPathToWslPath("C:\\Users\\Nico\\AppData\\Local")).toBe(
-      "/mnt/c/Users/Nico/AppData/Local",
     );
   });
 
