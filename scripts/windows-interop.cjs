@@ -6,10 +6,6 @@ function errorDetail(error) {
   return stderr || error.message || String(error);
 }
 
-function isCommandMissing(error) {
-  return error?.code === "ENOENT";
-}
-
 function runWindowsExecutable(executable, args, options = {}) {
   const execFile = options.execFileSync || execFileSync;
   const execOptions = options.execOptions || { encoding: "utf8" };
@@ -17,7 +13,7 @@ function runWindowsExecutable(executable, args, options = {}) {
   try {
     return execFile(executable, args, execOptions);
   } catch (directError) {
-    if (!options.allowWslFallback || !isCommandMissing(directError)) {
+    if (!options.allowWslFallback || directError?.code !== "ENOENT") {
       throw new Error(`Failed to run ${executable}: ${errorDetail(directError)}`);
     }
 
@@ -51,7 +47,12 @@ function getWindowsEnv(name, options = {}) {
     allowWslFallback: true,
     execOptions: { encoding: "utf8" },
   }).trim().replace(/\r/g, "");
-  return value === `%${name}%` ? null : value;
+  if (!value || value === `%${name}%`) {
+    throw new Error(
+      `Windows environment variable ${name} is unavailable (cmd.exe returned ${JSON.stringify(value)})`,
+    );
+  }
+  return value;
 }
 
 function nativeMessagingRegistryPath(browserRegistryRoot, hostName) {

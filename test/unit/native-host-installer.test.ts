@@ -194,6 +194,19 @@ describe("native host installer", () => {
     ).toThrow(/reg\.exe.*registry access denied/);
   });
 
+  it("reports an unavailable Windows manifest base directory", () => {
+    expect(() =>
+      installManifest("chrome", extensionA, "C:\\wrapper.cmd", "wsl-windows", {
+        execFileSync: (file: string) => {
+          if (file === "cmd.exe") {
+            return "%LOCALAPPDATA%\r\n";
+          }
+          throw new Error(`unexpected command: ${file}`);
+        },
+      }),
+    ).toThrow(/LOCALAPPDATA.*%LOCALAPPDATA%/);
+  });
+
   it("documents the Tailnet-only listener option", () => {
     const result = spawnSync(process.execPath, ["scripts/install-native-host.cjs", "--help"], {
       encoding: "utf8",

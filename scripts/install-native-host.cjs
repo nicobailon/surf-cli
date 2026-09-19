@@ -118,7 +118,6 @@ function getWrapperDir(target = process.platform) {
   const home = os.homedir();
   if (target === "wsl-windows") {
     const localAppData = getWindowsEnv("LOCALAPPDATA");
-    if (!localAppData) return null;
     return path.join(convertWindowsPath(localAppData), "surf-cli");
   }
   switch (process.platform) {
@@ -224,8 +223,8 @@ function writeManifest(manifestPath, extensionId, wrapperPath) {
 }
 
 function getWslWindowsManifestDir(browserConfig, deps = {}) {
+  if (!browserConfig.wsl) return null;
   const localAppData = getWindowsEnv("LOCALAPPDATA", deps);
-  if (!localAppData || !browserConfig.wsl) return null;
   return path.join(convertWindowsPath(localAppData, deps), browserConfig.wsl);
 }
 
