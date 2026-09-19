@@ -70,6 +70,9 @@ const net = require("node:net") as {
 };
 const os = require("node:os") as { tmpdir(): string };
 const path = require("node:path") as { join(...paths: string[]): string };
+const hostHelpers = require("../../native/host-helpers.cjs") as {
+  formatToolContent(result: Record<string, unknown>): Array<{ type: string; text: string }>;
+};
 
 const tempDirs: string[] = [];
 
@@ -366,6 +369,35 @@ describe("CLI native socket integration", () => {
         args: { url: "https://example.test/path" },
       },
     });
+  });
+
+  it.each([
+    ["plain text", "hello from CDP"],
+    ["JSON object text", '{"answer":42}'],
+    ["JSON string text", '"quoted"'],
+    ["a nested body key", '{"body":"nested"}'],
+    ["an empty body", ""],
+  ])("prints %s exactly and keeps --json structured", async (_label, body) => {
+    const createBodyResponse = (request: CliRequest): HostResponse => ({
+      id: request.id,
+      result: {
+        content: hostHelpers.formatToolContent({ success: true, body, base64Encoded: false }),
+      },
+    });
+
+    const textResult = await runCliWithFakeHost(["network.body", "r_001"], createBodyResponse);
+    expect(textResult.code).toBe(0);
+    expect(textResult.stderr).toBe("");
+    expect(textResult.stdout).toBe(body);
+    expect(textResult.request.params).toEqual({ tool: "network.body", args: { id: "r_001" } });
+
+    const jsonResult = await runCliWithFakeHost(
+      ["network.body", "r_001", "--json"],
+      createBodyResponse,
+    );
+    expect(jsonResult.code).toBe(0);
+    expect(jsonResult.stderr).toBe("");
+    expect(JSON.parse(jsonResult.stdout)).toEqual({ success: true, body, base64Encoded: false });
   });
 
   it("prints socket diagnostics when SURF_SOCKET points at a missing socket", async () => {

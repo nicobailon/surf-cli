@@ -442,6 +442,11 @@ function formatToolContent(result, log = () => {}, options = {}) {
 
   // Bug fix: Handle success with metrics/frames/readyState/hint in one block
   if (result.success) {
+    // Keep the response envelope intact so the CLI can print body bytes verbatim
+    // for text output while still producing structured output under --json.
+    if (typeof result.body === "string" && Object.hasOwn(result, "base64Encoded")) {
+      return text(JSON.stringify(result));
+    }
     if (result.metrics) {
       return text(JSON.stringify(result.metrics, null, 2));
     }
