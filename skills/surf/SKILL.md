@@ -13,7 +13,7 @@ Ordinary socket-backed CLI commands report top-level host tool-response errors o
 
 For WSL2 with Windows Chrome, run `surf install <extension-id>` inside WSL2. Surf detects WSL2 and writes the Windows-side native messaging manifest plus a wrapper that launches the WSL host. Use `surf install <extension-id> --target linux` only for Linux browsers running inside WSLg.
 
-On macOS, Chrome reads the native messaging manifest at `~/Library/Application Support/Google/Chrome/NativeMessagingHosts/surf.browser.host.json`. If native messaging fails, confirm that file exists, its `allowed_origins` extension ID matches `chrome://extensions`, then rerun `surf install <extension-id>`, restart Chrome, reload the extension, and inspect the extension service-worker console.
+On macOS, Chrome reads the native messaging manifest at `~/Library/Application Support/Google/Chrome/NativeMessagingHosts/surf.browser.host.json`. If native messaging fails, confirm that file exists, its `allowed_origins` extension ID matches `chrome://extensions`, then rerun `surf install <extension-id>`, restart Chrome, and reload the extension. Open Surf's service-worker console from `chrome://extensions`; in **Details > Extension options**, enable **Debug Mode**, reproduce the failure, then disable it when finished.
 
 If a command reports `Socket connect failed`, run `surf doctor` first, then check the `Attempted socket:` line. Default sockets are `/tmp/surf.sock` on macOS/Linux/WSL2 and `//./pipe/surf` on Windows. If `SURF_SOCKET` is set, the browser-launched host and the shell running `surf` must use the same value.
 

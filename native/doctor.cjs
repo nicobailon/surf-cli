@@ -374,6 +374,19 @@ function summarize(checks) {
 function buildRecommendations(report) {
   const recommendations = [];
   const failedIds = new Set(report.checks.filter((check) => check.status === "fail").map((check) => check.id));
+  const debugRelevantIds = new Set([
+    "windows-registry",
+    "manifest-file",
+    "manifest-json",
+    "manifest-shape",
+    "manifest-name",
+    "manifest-type",
+    "manifest-origins",
+    "manifest-path",
+    "manifest-path-executable",
+    "socket-file",
+    "socket-connect",
+  ]);
 
   if (failedIds.has("windows-registry")) {
     recommendations.push("Run `surf install <extension-id> --browser <browser>` so Windows registers the native messaging host, then restart the browser.");
@@ -392,6 +405,9 @@ function buildRecommendations(report) {
   }
   if (failedIds.has("socket-file") || failedIds.has("socket-connect")) {
     recommendations.push("Make sure the browser is running with the Surf extension enabled, then restart the browser after install changes.");
+  }
+  if ([...failedIds].some((id) => debugRelevantIds.has(id))) {
+    recommendations.push("Open chrome://extensions and inspect Surf's service worker console. In Surf's Details > Extension options, enable Debug Mode, reproduce the failure, then disable Debug Mode when finished.");
   }
   if (report.environment.surfSocketSet) {
     recommendations.push("SURF_SOCKET is set; make sure Chrome launches the native host with the same socket value.");

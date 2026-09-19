@@ -129,6 +129,9 @@ describe("surf doctor", () => {
     );
     expect(report.recommendations.join("\n")).toContain("surf install <extension-id>");
     expect(report.recommendations.join("\n")).toContain("restart the browser");
+    expect(report.recommendations.join("\n")).toContain("service worker console");
+    expect(report.recommendations.join("\n")).toContain("Details > Extension options");
+    expect(report.recommendations.join("\n")).toContain("disable Debug Mode when finished");
   });
 
   it("passes when the socket connects and Chrome manifest points to an executable wrapper", async () => {
@@ -162,6 +165,7 @@ describe("surf doctor", () => {
 
     expect(report.ok).toBe(true);
     expect(report.summary.fail).toBe(0);
+    expect(report.recommendations.join("\n")).not.toContain("Debug Mode");
     expect(report.checks).toEqual(
       expect.arrayContaining([
         expect.objectContaining({ id: "manifest-file", status: "pass", browser: "chrome" }),
@@ -423,6 +427,7 @@ describe("surf doctor", () => {
     );
 
     expect(report.ok).toBe(false);
+    expect(report.recommendations.join("\n")).not.toContain("Debug Mode");
     expect(report.checks).toEqual(
       expect.arrayContaining([
         expect.objectContaining({ id: "manifest-supported", status: "fail", browser: "arc" }),

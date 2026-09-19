@@ -981,7 +981,7 @@ macOS checklist:
 - Confirm the manifest `allowed_origins` entry uses the same extension ID shown on `chrome://extensions` for the Surf extension.
 - Reinstall the manifest with `surf install <extension-id>` after copying a fresh extension build or if the extension ID changed.
 - Fully restart Chrome, then reload the Surf extension on `chrome://extensions`.
-- Open the extension service worker from `chrome://extensions` and check its console for native messaging or socket errors.
+- Open Surf's service worker console from `chrome://extensions`. In Surf's **Details > Extension options**, enable **Debug Mode**, reproduce the failure, then disable **Debug Mode** when finished.
 - If `SURF_SOCKET` is set in your shell, make sure Chrome launches the native host with the same value; otherwise both sides should use `/tmp/surf.sock`.
 - Run a simple CLI command such as `surf tab.list`; if it fails, compare its `Attempted socket:` line with the socket expected by the native host.
 
