@@ -2,6 +2,9 @@
 
 ## [Unreleased]
 
+### Fixed
+- **`frame.diagnose` help** - Command-specific help now describes the diagnostic options and related frame commands without contacting Chrome. Thanks to [@gimbo](https://github.com/gimbo) for [#280](https://github.com/nicobailon/surf-cli/issues/280).
+
 ## [2.19.0] - 2026-09-10
 
 ### Highlights

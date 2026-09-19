@@ -469,6 +469,19 @@ describe("CLI argument parsing", () => {
     expect(stdout).toContain("page.html - Print rendered document HTML");
   });
 
+  it("shows frame.diagnose command help without a socket", async () => {
+    const { code, stdout, stderr } = await runCliWithoutSocket(["frame.diagnose", "--help"]);
+
+    expect(code).toBe(0);
+    expect(stderr).toBe("");
+    expect(stdout).toContain(
+      "frame.diagnose - Compare DOM iframes, extension reachability, and the Chrome DevTools frame tree",
+    );
+    expect(stdout).toContain("--tab-id");
+    expect(stdout).toContain("--json");
+    expect(stdout).toContain("See also: frame.list, frame.switch, frame.js");
+  });
+
   it("keeps remote credential management local when remote routing is configured", async () => {
     const credential = createRemoteCredential();
     const result = await runCliWithoutSocket(["remote", "list"], {

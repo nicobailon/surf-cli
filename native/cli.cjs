@@ -1200,6 +1200,15 @@ const TOOLS = {
         args: [],
         examples: [{ cmd: "frame.list", desc: "Show frame tree" }]
       },
+      "frame.diagnose": {
+        desc: "Compare DOM iframes, extension reachability, and the Chrome DevTools frame tree",
+        args: [],
+        opts: {
+          "tab-id": "Target tab ID",
+          json: "Print full frame inventories as JSON"
+        },
+        examples: [{ cmd: "frame.diagnose", desc: "Explain iframe access and count mismatches" }]
+      },
       "frame.switch": {
         desc: "Switch to iframe context",
         args: [],
@@ -1691,7 +1700,7 @@ const ALL_SOCKET_TOOLS = [
   "form.fill",
   "perf.start", "perf.stop", "perf.metrics",
   "upload",
-  "frame.list", "frame.switch", "frame.main", "frame.js",
+  "frame.list", "frame.diagnose", "frame.switch", "frame.main", "frame.js",
   "cookie.list", "cookie.get", "cookie.set", "cookie.clear",
   "search", "batch",
   "zoom", "resize",
@@ -1714,6 +1723,7 @@ const SEE_ALSO = {
   "window.new": ["window.list"],
   "window.list": ["tab.list"],
   "frame.list": ["frame.switch", "frame.main"],
+  "frame.diagnose": ["frame.list", "frame.switch", "frame.js"],
   "frame.switch": ["frame.list", "frame.main", "frame.js"],
   "frame.main": ["frame.list", "frame.switch"],
   "frame.js": ["frame.switch", "js"],
