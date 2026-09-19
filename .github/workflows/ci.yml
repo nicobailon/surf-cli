@@ -44,6 +44,9 @@ jobs:
       - name: Run tests
         run: npm test
 
+      - name: Verify package artifact
+        run: npm run test:package
+
   typecheck:
     runs-on: ubuntu-latest
     steps:

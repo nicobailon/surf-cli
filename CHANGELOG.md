@@ -5,6 +5,7 @@
 ### Fixed
 - **`frame.diagnose` help** - Command-specific help now describes the diagnostic options and related frame commands without contacting Chrome. Thanks to [@gimbo](https://github.com/gimbo) for [#280](https://github.com/nicobailon/surf-cli/issues/280).
 - **`network.body` output** - `surf network.body <id>` now prints the captured CDP response body exactly, including empty and JSON-shaped text, while `--json` remains structured. Thanks to [@Ananasiy](https://github.com/Ananasiy) for [#291](https://github.com/nicobailon/surf-cli/pull/291).
+- **Published extension freshness** - npm packages now rebuild the extension before packing and CI verifies the packed runtime matches that build. Thanks to [@gimbo](https://github.com/gimbo) for [#279](https://github.com/nicobailon/surf-cli/issues/279) and [@hongyuatcufe](https://github.com/hongyuatcufe) for confirming the published artifact evidence.
 
 ## [2.19.0] - 2026-09-10
 
