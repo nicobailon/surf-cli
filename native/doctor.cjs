@@ -186,19 +186,6 @@ function readWindowsRegistryManifestPath(registryPath, context) {
   }
 }
 
-function expectedWindowsManifestPath(browserKey, context) {
-  const browser = BROWSERS[browserKey];
-  if (!browser?.wsl) return null;
-  const localAppData = getWindowsEnv("LOCALAPPDATA", context);
-  return localAppData
-    ? path.win32.join(localAppData, browser.wsl.replace(/\//g, "\\"), `${HOST_NAME}.json`)
-    : null;
-}
-
-function normalizeWindowsPath(value) {
-  return value.replace(/\//g, "\\").replace(/\\+$/, "").toLowerCase();
-}
-
 function checkWindowsRegistry(browserKey, context) {
   const registryPath = windowsRegistryPathForBrowser(browserKey);
   if (!registryPath) {
@@ -215,25 +202,16 @@ function checkWindowsRegistry(browserKey, context) {
 
   const registry = readWindowsRegistryManifestPath(registryPath, context);
   const manifestPath = registry.manifestPath;
-  const expectedPath = context.effectiveTarget === "wsl-windows"
-    ? expectedWindowsManifestPath(browserKey, context)
-    : null;
-  const matchesExpected = !manifestPath || !expectedPath
-    ? true
-    : normalizeWindowsPath(manifestPath) === normalizeWindowsPath(expectedPath);
   return {
     check: {
       id: "windows-registry",
-      status: manifestPath && matchesExpected ? "pass" : "fail",
+      status: manifestPath ? "pass" : "fail",
       browser: browserKey,
       message: !manifestPath
         ? `Windows native messaging registry entry not found: ${registryPath}${registry.error ? ` (${registry.error})` : ""}`
-        : matchesExpected
-          ? `Windows native messaging registry points to ${manifestPath}`
-          : `Windows native messaging registry points to ${manifestPath}; expected ${expectedPath}`,
+        : `Windows native messaging registry points to ${manifestPath}`,
       registryPath,
       path: manifestPath,
-      expectedPath,
     },
     manifestPath,
   };
@@ -537,15 +515,17 @@ async function runDoctor(rawOptions = {}, deps = {}) {
   for (const browserKey of browsers) {
     const browser = BROWSERS[browserKey];
     const browserChecks = [];
-    let manifestPath = manifestPathForBrowser(browserKey, context);
     const usesWindowsRegistry =
       (context.platform === "win32" || context.effectiveTarget === "wsl-windows") &&
       Boolean(browser.win32);
+    let manifestPath = null;
 
     if (usesWindowsRegistry) {
       const registry = checkWindowsRegistry(browserKey, context);
       browserChecks.push(registry.check);
       manifestPath = registry.manifestPath;
+    } else {
+      manifestPath = manifestPathForBrowser(browserKey, context);
     }
 
     if (!manifestPath && !usesWindowsRegistry) {

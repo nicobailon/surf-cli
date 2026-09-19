@@ -308,14 +308,14 @@ describe("surf doctor", () => {
   });
 
   it.each([
-    { name: "passes", registryPath: "expected", registryStatus: "pass", ok: true },
+    { name: "passes", registryPath: "expected", manifestStatus: "pass", ok: true },
     {
-      name: "fails a mismatched value",
+      name: "fails a registry path without its manifest",
       registryPath: "mismatch",
-      registryStatus: "fail",
+      manifestStatus: "fail",
       ok: false,
     },
-  ])("$name for a WSL Windows registry manifest", async ({ registryPath, registryStatus, ok }) => {
+  ])("$name for a WSL Windows registry manifest", async ({ registryPath, manifestStatus, ok }) => {
     const tempDir = makeTempDir();
     const socketPath = path.join(tempDir, "surf.sock");
     const manifestFsPath = path.join(
@@ -327,6 +327,8 @@ describe("surf doctor", () => {
       "C:\\Users\\Nico\\AppData\\Local\\Google\\Chrome\\User Data\\NativeMessagingHosts\\surf.browser.host.json";
     const registeredWindowsPath =
       registryPath === "expected" ? expectedWindowsPath : "D:\\Other\\surf.browser.host.json";
+    const registeredFsPath =
+      registryPath === "expected" ? manifestFsPath : path.join(tempDir, "missing-manifest.json");
     fs.mkdirSync(path.dirname(wrapperFsPath), { recursive: true });
     fs.writeFileSync(wrapperFsPath, "@echo off\r\n");
     writeManifest(
@@ -339,7 +341,7 @@ describe("surf doctor", () => {
       {
         platform: "linux",
         homeDir: tempDir,
-        env: { WSL_DISTRO_NAME: "Ubuntu", LOCALAPPDATA: "C:\\Users\\Nico\\AppData\\Local" },
+        env: { WSL_DISTRO_NAME: "Ubuntu" },
         fs: {
           existsSync: (filePath: string) => filePath === socketPath || fs.existsSync(filePath),
           statSync: (filePath: string) =>
@@ -350,7 +352,7 @@ describe("surf doctor", () => {
         execFileSync: wslRegistryExec(
           tempDir,
           registeredWindowsPath,
-          manifestFsPath,
+          registeredFsPath,
           wrapperFsPath,
         ),
       },
@@ -361,10 +363,14 @@ describe("surf doctor", () => {
       expect.arrayContaining([
         expect.objectContaining({
           id: "windows-registry",
-          status: registryStatus,
+          status: "pass",
           browser: "chrome",
         }),
-        expect.objectContaining({ id: "manifest-file", status: "pass", browser: "chrome" }),
+        expect.objectContaining({
+          id: "manifest-file",
+          status: manifestStatus,
+          browser: "chrome",
+        }),
       ]),
     );
     expect(report.manifests[0].path).toBe(registeredWindowsPath);
