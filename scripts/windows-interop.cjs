@@ -1,7 +1,6 @@
 const { execFileSync } = require("child_process");
 
 function errorDetail(error) {
-  if (!error) return "unknown error";
   const stderr = typeof error.stderr === "string" ? error.stderr.trim() : "";
   return stderr || error.message || String(error);
 }
@@ -46,7 +45,7 @@ function getWindowsEnv(name, options = {}) {
     execFileSync: options.execFileSync || execFileSync,
     allowWslFallback: true,
     execOptions: { encoding: "utf8" },
-  }).trim().replace(/\r/g, "");
+  }).trim();
   if (!value || value === `%${name}%`) {
     throw new Error(
       `Windows environment variable ${name} is unavailable (cmd.exe returned ${JSON.stringify(value)})`,
@@ -75,7 +74,7 @@ function convertWslPath(wslPath, options = {}) {
   try {
     const converted = execFile("wslpath", ["-w", wslPath], { encoding: "utf8" }).trim();
     if (!converted) throw new Error("wslpath returned an empty path");
-    return converted.replace(/\r/g, "");
+    return converted;
   } catch (error) {
     throw new Error(`Could not convert WSL path ${wslPath}: ${errorDetail(error)}`);
   }

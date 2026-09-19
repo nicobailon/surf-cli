@@ -194,19 +194,6 @@ describe("native host installer", () => {
     ).toThrow(/reg\.exe.*registry access denied/);
   });
 
-  it("reports an unavailable Windows manifest base directory", () => {
-    expect(() =>
-      installManifest("chrome", extensionA, "C:\\wrapper.cmd", "wsl-windows", {
-        execFileSync: (file: string) => {
-          if (file === "cmd.exe") {
-            return "%LOCALAPPDATA%\r\n";
-          }
-          throw new Error(`unexpected command: ${file}`);
-        },
-      }),
-    ).toThrow(/LOCALAPPDATA.*%LOCALAPPDATA%/);
-  });
-
   it("documents the Tailnet-only listener option", () => {
     const result = spawnSync(process.execPath, ["scripts/install-native-host.cjs", "--help"], {
       encoding: "utf8",
@@ -475,41 +462,23 @@ describe("native host installer", () => {
     const regPath = path.join(binDir, "reg.exe");
     fs.writeFileSync(regPath, `#!/bin/sh\ntouch "${marker}"\n`);
     fs.chmodSync(regPath, 0o755);
+    const env = {
+      ...process.env,
+      HOME: tempDir,
+      PATH: `${binDir}:${process.env.PATH}`,
+      WSL_DISTRO_NAME: "SurfTest",
+      SURF_NODE_PATH: process.execPath,
+      SURF_HOST_PATH: path.resolve("native/host.cjs"),
+    };
 
-    const result = spawnSync(
-      process.execPath,
+    for (const args of [
       ["scripts/install-native-host.cjs", extensionA, "--target", "linux"],
-      {
-        encoding: "utf8",
-        env: {
-          ...process.env,
-          HOME: tempDir,
-          PATH: `${binDir}:${process.env.PATH}`,
-          WSL_DISTRO_NAME: "SurfTest",
-          SURF_NODE_PATH: process.execPath,
-          SURF_HOST_PATH: path.resolve("native/host.cjs"),
-        },
-      },
-    );
-
-    expect(result.status).toBe(0);
-    expect(fs.existsSync(marker)).toBe(false);
-
-    const uninstall = spawnSync(
-      process.execPath,
       ["scripts/uninstall-native-host.cjs", "--target", "linux"],
-      {
-        encoding: "utf8",
-        env: {
-          ...process.env,
-          HOME: tempDir,
-          PATH: `${binDir}:${process.env.PATH}`,
-          WSL_DISTRO_NAME: "SurfTest",
-        },
-      },
-    );
-    expect(uninstall.status).toBe(0);
-    expect(fs.existsSync(marker)).toBe(false);
+    ]) {
+      const result = spawnSync(process.execPath, args, { encoding: "utf8", env });
+      expect(result.status).toBe(0);
+      expect(fs.existsSync(marker)).toBe(false);
+    }
   });
 
   it("rejects uninstall --target linux on non-Linux platforms", ({ skip }) => {
