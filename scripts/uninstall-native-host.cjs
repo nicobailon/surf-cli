@@ -133,11 +133,16 @@ function removeManifest(browser, target, deps = {}) {
 function removeWindowsRegistry(browser, allowWslFallback = false, deps = {}) {
   const browserConfig = BROWSERS[browser];
   const regPath = nativeMessagingRegistryPath(browserConfig.win32, HOST_NAME);
-  runWindowsExecutable("reg.exe", ["delete", regPath, "/f"], {
-    execFileSync: deps.execFileSync || execFileSync,
-    allowWslFallback,
-    execOptions: { stdio: "pipe", encoding: "utf8" },
-  });
+  try {
+    runWindowsExecutable("reg.exe", ["delete", regPath, "/f"], {
+      execFileSync: deps.execFileSync || execFileSync,
+      allowWslFallback,
+      execOptions: { stdio: "pipe", encoding: "utf8" },
+    });
+  } catch (error) {
+    if (/unable to find the specified registry key or value/i.test(error.message)) return null;
+    throw error;
+  }
   return regPath;
 }
 

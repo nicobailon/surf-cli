@@ -42,6 +42,27 @@ function envWithoutPersistedSettings() {
   return env;
 }
 
+function writeWslManifest(tempDir: string, relativeDir: string) {
+  const manifestPath = path.join(tempDir, relativeDir, "surf.browser.host.json");
+  fs.mkdirSync(path.dirname(manifestPath), { recursive: true });
+  fs.writeFileSync(manifestPath, "{}");
+  return manifestPath;
+}
+
+function wslRegistryFailure(tempDir: string, stderr: string) {
+  return {
+    execFileSync: (file: string, args: string[]) => {
+      if (file === "cmd.exe") {
+        return "C:\\Users\\Test\\AppData\\Local\r\n";
+      }
+      if (file === "wslpath" && args[0] === "-u") {
+        return `${tempDir}\n`;
+      }
+      throw Object.assign(new Error("reg delete failed"), { stderr });
+    },
+  };
+}
+
 describe("native host installer", () => {
   it("uses a bare Windows tool when it is available", () => {
     const calls: any[] = [];
@@ -170,6 +191,29 @@ describe("native host installer", () => {
         "/f",
       ],
     ]);
+  });
+
+  it("removes a pre-fix WSL manifest when its registry key is already absent", () => {
+    const tempDir = makeTempDir();
+    const manifestPath = writeWslManifest(tempDir, "Google/Chrome/User Data/NativeMessagingHosts");
+    const deps = wslRegistryFailure(
+      tempDir,
+      "ERROR: The system was unable to find the specified registry key or value.\r\n",
+    );
+    const result = removeManifest("chrome", "wsl-windows", deps);
+
+    expect(result).toBe(manifestPath);
+    expect(fs.existsSync(manifestPath)).toBe(false);
+  });
+
+  it("keeps the WSL manifest when registry deletion is denied", () => {
+    const tempDir = makeTempDir();
+    const manifestPath = writeWslManifest(tempDir, "Google/Chrome/User Data/NativeMessagingHosts");
+    const deps = wslRegistryFailure(tempDir, "ERROR: Access is denied.\r\n");
+    const remove = () => removeManifest("chrome", "wsl-windows", deps);
+
+    expect(remove).toThrow(/reg\.exe.*Access is denied/);
+    expect(fs.existsSync(manifestPath)).toBe(true);
   });
 
   it("fails a WSL Windows install when registry registration fails", () => {
@@ -479,6 +523,56 @@ describe("native host installer", () => {
       expect(result.status).toBe(0);
       expect(fs.existsSync(marker)).toBe(false);
     }
+  });
+
+  it("continues WSL --all cleanup when one browser registry key is already absent", ({ skip }) => {
+    if (process.platform !== "linux") {
+      skip();
+    }
+    const tempDir = makeTempDir();
+    const binDir = path.join(tempDir, "bin");
+    const wrapperDir = path.join(tempDir, "surf-cli");
+    const chromeManifest = writeWslManifest(
+      tempDir,
+      "Google/Chrome/User Data/NativeMessagingHosts",
+    );
+    const braveManifest = writeWslManifest(
+      tempDir,
+      "BraveSoftware/Brave-Browser/User Data/NativeMessagingHosts",
+    );
+    fs.mkdirSync(binDir);
+    fs.mkdirSync(wrapperDir);
+    fs.writeFileSync(path.join(wrapperDir, "host-wrapper-wsl.cmd"), "@echo off\r\n");
+    fs.writeFileSync(
+      path.join(binDir, "cmd.exe"),
+      "#!/bin/sh\nprintf '%s\\r\\n' 'C:\\Users\\Test\\AppData\\Local'\n",
+    );
+    fs.writeFileSync(path.join(binDir, "wslpath"), `#!/bin/sh\nprintf '%s\\n' '${tempDir}'\n`);
+    fs.writeFileSync(
+      path.join(binDir, "reg.exe"),
+      "#!/bin/sh\ncase \"$*\" in *'Google\\Chrome'*) echo 'ERROR: The system was unable to find the specified registry key or value.' >&2; exit 1;; esac\n",
+    );
+    for (const file of ["cmd.exe", "wslpath", "reg.exe"]) {
+      fs.chmodSync(path.join(binDir, file), 0o755);
+    }
+
+    const result = spawnSync(
+      process.execPath,
+      ["scripts/uninstall-native-host.cjs", "--all", "--target", "windows"],
+      {
+        encoding: "utf8",
+        env: {
+          ...process.env,
+          PATH: `${binDir}:${process.env.PATH}`,
+          WSL_DISTRO_NAME: "SurfTest",
+        },
+      },
+    );
+
+    expect(result.status).toBe(0);
+    expect(fs.existsSync(chromeManifest)).toBe(false);
+    expect(fs.existsSync(braveManifest)).toBe(false);
+    expect(fs.existsSync(wrapperDir)).toBe(false);
   });
 
   it("rejects uninstall --target linux on non-Linux platforms", ({ skip }) => {
