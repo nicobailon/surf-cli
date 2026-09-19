@@ -2,7 +2,8 @@
 const fs = require("fs");
 const path = require("path");
 const os = require("os");
-const { execFileSync, execSync } = require("child_process");
+const { execFileSync } = require("child_process");
+const { convertWindowsPath, runWindowsExecutable } = require("./windows-interop.cjs");
 
 const HOST_NAME = "surf.browser.host";
 
@@ -61,21 +62,13 @@ function isWsl() {
   }
 }
 
-function getWindowsEnv(name) {
-  try {
-    return execFileSync("cmd.exe", ["/c", "echo", `%${name}%`], { encoding: "utf8" })
-      .trim()
-      .replace(/\r/g, "");
-  } catch {
-    return null;
-  }
-}
-
-function windowsPathToWslPath(winPath) {
-  const normalized = winPath.replace(/\\/g, "/");
-  const match = normalized.match(/^([A-Za-z]):\/(.*)$/);
-  if (!match) return normalized;
-  return `/mnt/${match[1].toLowerCase()}/${match[2]}`;
+function getWindowsEnv(name, deps = {}) {
+  const value = runWindowsExecutable("cmd.exe", ["/c", "echo", `%${name}%`], {
+    execFileSync: deps.execFileSync || execFileSync,
+    allowWslFallback: true,
+    execOptions: { encoding: "utf8" },
+  }).trim().replace(/\r/g, "");
+  return value === `%${name}%` ? null : value;
 }
 
 function getWrapperDir(target = process.platform) {
@@ -83,7 +76,7 @@ function getWrapperDir(target = process.platform) {
   if (target === "wsl-windows") {
     const localAppData = getWindowsEnv("LOCALAPPDATA");
     if (!localAppData) return null;
-    return path.join(windowsPathToWslPath(localAppData), "surf-cli");
+    return path.join(convertWindowsPath(localAppData), "surf-cli");
   }
   switch (process.platform) {
     case "darwin":
@@ -97,22 +90,23 @@ function getWrapperDir(target = process.platform) {
   }
 }
 
-function getWslWindowsManifestPath(browserConfig) {
-  const localAppData = getWindowsEnv("LOCALAPPDATA");
+function getWslWindowsManifestPath(browserConfig, deps = {}) {
+  const localAppData = getWindowsEnv("LOCALAPPDATA", deps);
   if (!localAppData || !browserConfig.wsl) return null;
-  return path.join(windowsPathToWslPath(localAppData), browserConfig.wsl, `${HOST_NAME}.json`);
+  return path.join(convertWindowsPath(localAppData, deps), browserConfig.wsl, `${HOST_NAME}.json`);
 }
 
-function removeManifest(browser, target) {
+function removeManifest(browser, target, deps = {}) {
   const browserConfig = BROWSERS[browser];
 
   if (!browserConfig) return null;
 
   if (target === "wsl-windows") {
-    const manifestPath = getWslWindowsManifestPath(browserConfig);
+    const manifestPath = getWslWindowsManifestPath(browserConfig, deps);
     if (!manifestPath) return null;
+    removeWindowsRegistry(browser, true, deps);
     try {
-      fs.unlinkSync(manifestPath);
+      (deps.fs || fs).unlinkSync(manifestPath);
       return manifestPath;
     } catch {
       return null;
@@ -140,16 +134,15 @@ function removeManifest(browser, target) {
   }
 }
 
-function removeWindowsRegistry(browser) {
+function removeWindowsRegistry(browser, allowWslFallback = false, deps = {}) {
   const browserConfig = BROWSERS[browser];
   const regPath = `HKCU\\Software\\${browserConfig.win32}\\NativeMessagingHosts\\${HOST_NAME}`;
-
-  try {
-    execSync(`reg delete "${regPath}" /f`, { stdio: "pipe" });
-    return regPath;
-  } catch {
-    return null;
-  }
+  runWindowsExecutable("reg.exe", ["delete", regPath, "/f"], {
+    execFileSync: deps.execFileSync || execFileSync,
+    allowWslFallback,
+    execOptions: { stdio: "pipe", encoding: "utf8" },
+  });
+  return regPath;
 }
 
 function removeWrapperDir(target) {
@@ -246,7 +239,13 @@ function main() {
       continue;
     }
 
-    const result = removeManifest(browser, effectiveTarget);
+    let result;
+    try {
+      result = removeManifest(browser, effectiveTarget);
+    } catch (error) {
+      console.error(`Error: Failed to uninstall ${BROWSERS[browser].name}: ${error.message}`);
+      process.exit(1);
+    }
     if (result) {
       removed.push({ browser: BROWSERS[browser].name, path: result });
     } else {
@@ -275,4 +274,6 @@ function main() {
   console.log("\nDone!");
 }
 
-main();
+if (require.main === module) main();
+
+module.exports = { removeManifest, removeWindowsRegistry };

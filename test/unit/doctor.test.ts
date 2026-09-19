@@ -47,6 +47,29 @@ function writeManifest(manifestPath: string, wrapperPath: string) {
   );
 }
 
+function wslRegistryExec(
+  tempDir: string,
+  registeredWindowsPath: string,
+  manifestFsPath: string,
+  wrapperFsPath: string,
+) {
+  const convertedPaths = new Map([
+    ["C:\\Users\\Nico\\AppData\\Local", tempDir],
+    [registeredWindowsPath, manifestFsPath],
+    ["C:\\Users\\Nico\\AppData\\Local\\surf-cli\\host-wrapper-wsl.cmd", wrapperFsPath],
+  ]);
+  return (file: string, args: string[]) => {
+    if (file === "reg.exe") {
+      return `HKEY_CURRENT_USER\\Software\\Google\\Chrome\\NativeMessagingHosts\\surf.browser.host\r\n    (Default)    REG_SZ    ${registeredWindowsPath}\r\n`;
+    }
+    const converted = file === "wslpath" ? convertedPaths.get(args[1]) : undefined;
+    if (converted) {
+      return `${converted}\n`;
+    }
+    throw new Error(`unexpected command: ${file} ${args.join(" ")}`);
+  };
+}
+
 describe("surf doctor", () => {
   it("parses scoped doctor options", () => {
     expect(
@@ -281,6 +304,104 @@ describe("surf doctor", () => {
     );
     expect(report.recommendations.join("\n")).toContain(
       "Windows registers the native messaging host",
+    );
+  });
+
+  it.each([
+    { name: "passes", registryPath: "expected", registryStatus: "pass", ok: true },
+    {
+      name: "fails a mismatched value",
+      registryPath: "mismatch",
+      registryStatus: "fail",
+      ok: false,
+    },
+  ])("$name for a WSL Windows registry manifest", async ({ registryPath, registryStatus, ok }) => {
+    const tempDir = makeTempDir();
+    const socketPath = path.join(tempDir, "surf.sock");
+    const manifestFsPath = path.join(
+      tempDir,
+      "Google/Chrome/User Data/NativeMessagingHosts/surf.browser.host.json",
+    );
+    const wrapperFsPath = path.join(tempDir, "surf-cli/host-wrapper-wsl.cmd");
+    const expectedWindowsPath =
+      "C:\\Users\\Nico\\AppData\\Local\\Google\\Chrome\\User Data\\NativeMessagingHosts\\surf.browser.host.json";
+    const registeredWindowsPath =
+      registryPath === "expected" ? expectedWindowsPath : "D:\\Other\\surf.browser.host.json";
+    fs.mkdirSync(path.dirname(wrapperFsPath), { recursive: true });
+    fs.writeFileSync(wrapperFsPath, "@echo off\r\n");
+    writeManifest(
+      manifestFsPath,
+      "C:\\Users\\Nico\\AppData\\Local\\surf-cli\\host-wrapper-wsl.cmd",
+    );
+
+    const report = await runDoctor(
+      { browser: "chrome", socket: socketPath },
+      {
+        platform: "linux",
+        homeDir: tempDir,
+        env: { WSL_DISTRO_NAME: "Ubuntu", LOCALAPPDATA: "C:\\Users\\Nico\\AppData\\Local" },
+        fs: {
+          existsSync: (filePath: string) => filePath === socketPath || fs.existsSync(filePath),
+          statSync: (filePath: string) =>
+            filePath === socketPath ? { isSocket: () => true } : fs.statSync(filePath),
+          readFileSync: fs.readFileSync,
+        },
+        connectSocket: async () => ({ ok: true, message: "connected" }),
+        execFileSync: wslRegistryExec(
+          tempDir,
+          registeredWindowsPath,
+          manifestFsPath,
+          wrapperFsPath,
+        ),
+      },
+    );
+
+    expect(report.ok).toBe(ok);
+    expect(report.checks).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          id: "windows-registry",
+          status: registryStatus,
+          browser: "chrome",
+        }),
+        expect.objectContaining({ id: "manifest-file", status: "pass", browser: "chrome" }),
+      ]),
+    );
+    expect(report.manifests[0].path).toBe(registeredWindowsPath);
+  });
+
+  it("fails WSL Windows doctor when the registry entry is missing", async () => {
+    const tempDir = makeTempDir();
+    const socketPath = path.join(tempDir, "surf.sock");
+    const report = await runDoctor(
+      { browser: "chrome", socket: socketPath },
+      {
+        platform: "linux",
+        homeDir: tempDir,
+        env: { WSL_DISTRO_NAME: "Ubuntu", LOCALAPPDATA: "C:\\Users\\Nico\\AppData\\Local" },
+        fs: {
+          existsSync: (filePath: string) => filePath === socketPath,
+          statSync: () => ({ isSocket: () => true }),
+          readFileSync: fs.readFileSync,
+        },
+        connectSocket: async () => ({ ok: true, message: "connected" }),
+        execFileSync: (file: string, args: string[]) => {
+          if (file === "wslpath") {
+            return `${tempDir}\n`;
+          }
+          throw new Error(`registry missing: ${file} ${args.join(" ")}`);
+        },
+      },
+    );
+
+    expect(report.ok).toBe(false);
+    expect(report.checks).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ id: "windows-registry", status: "fail", browser: "chrome" }),
+      ]),
+    );
+    expect(report.checks.find((check: any) => check.id === "windows-registry").message).toContain(
+      "registry missing",
     );
   });
 

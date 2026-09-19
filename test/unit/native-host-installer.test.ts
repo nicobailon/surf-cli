@@ -12,11 +12,18 @@ const os = require("node:os");
 const path = require("node:path");
 const { spawnSync } = require("node:child_process");
 const {
+  addWindowsRegistry,
   createWrapper,
+  installManifest,
   writeManifest,
   assertListenTargetSupported,
   assertSocketAccessTargetSupported,
 } = require("../../scripts/install-native-host.cjs");
+const {
+  removeManifest,
+  removeWindowsRegistry,
+} = require("../../scripts/uninstall-native-host.cjs");
+const { runWindowsExecutable } = require("../../scripts/windows-interop.cjs");
 const { parseListenEndpoint } = require("../../native/listener.cjs");
 const {
   normalizeSocketConfig,
@@ -40,6 +47,162 @@ function envWithoutPersistedSettings() {
 }
 
 describe("native host installer", () => {
+  it("uses a bare Windows tool when it is available", () => {
+    const calls: any[] = [];
+    const output = runWindowsExecutable("cmd.exe", ["/c", "echo", "ok"], {
+      allowWslFallback: true,
+      execFileSync: (file: string, args: string[]) => {
+        calls.push([file, args]);
+        return "ok\r\n";
+      },
+    });
+
+    expect(output).toBe("ok\r\n");
+    expect(calls).toEqual([["cmd.exe", ["/c", "echo", "ok"]]]);
+  });
+
+  it("resolves a missing bare Windows tool through wslpath", () => {
+    const calls: any[] = [];
+    const output = runWindowsExecutable("cmd.exe", ["/c", "echo", "ok"], {
+      allowWslFallback: true,
+      execFileSync: (file: string, args: string[]) => {
+        calls.push([file, args]);
+        if (file === "cmd.exe") {
+          throw Object.assign(new Error("spawn cmd.exe ENOENT"), { code: "ENOENT" });
+        }
+        if (file === "wslpath") {
+          return "/windows/System32/cmd.exe\n";
+        }
+        return "ok\r\n";
+      },
+    });
+
+    expect(output).toBe("ok\r\n");
+    expect(calls.map(([file]) => file)).toEqual([
+      "cmd.exe",
+      "wslpath",
+      "/windows/System32/cmd.exe",
+    ]);
+  });
+
+  it("reports both bare and fallback Windows tool lookup failures", () => {
+    expect(() =>
+      runWindowsExecutable("cmd.exe", ["/c", "echo", "ok"], {
+        allowWslFallback: true,
+        execFileSync: (file: string) => {
+          if (file === "cmd.exe") {
+            throw Object.assign(new Error("bare missing"), { code: "ENOENT" });
+          }
+          throw new Error("wslpath missing");
+        },
+      }),
+    ).toThrow(/cmd\.exe.*bare missing.*wslpath.*wslpath missing/);
+  });
+
+  it("adds and removes browser-specific HKCU registry entries with argument arrays", () => {
+    const calls: any[] = [];
+    const execFileSync = (file: string, args: string[]) => {
+      calls.push([file, args]);
+      return "completed";
+    };
+
+    addWindowsRegistry("brave", "C:\\Users\\Nico\\manifest.json", true, { execFileSync });
+    removeWindowsRegistry("edge", true, { execFileSync });
+
+    expect(calls[0]).toEqual([
+      "reg.exe",
+      [
+        "add",
+        "HKCU\\Software\\BraveSoftware\\Brave-Browser\\NativeMessagingHosts\\surf.browser.host",
+        "/ve",
+        "/t",
+        "REG_SZ",
+        "/d",
+        "C:\\Users\\Nico\\manifest.json",
+        "/f",
+      ],
+    ]);
+    expect(calls[1]).toEqual([
+      "reg.exe",
+      ["delete", "HKCU\\Software\\Microsoft\\Edge\\NativeMessagingHosts\\surf.browser.host", "/f"],
+    ]);
+  });
+
+  it("registers a WSL Windows install and unregisters it on uninstall", () => {
+    const tempDir = makeTempDir();
+    const calls: any[] = [];
+    const windowsManifestPath =
+      "C:\\Users\\Nico\\AppData\\Local\\Google\\Chrome\\User Data\\NativeMessagingHosts\\surf.browser.host.json";
+    const execFileSync = (file: string, args: string[]) => {
+      calls.push([file, args]);
+      if (file === "cmd.exe") {
+        return "C:\\Users\\Nico\\AppData\\Local\r\n";
+      }
+      if (file === "wslpath" && args[0] === "-u") {
+        return `${tempDir}\n`;
+      }
+      if (file === "wslpath" && args[0] === "-w") {
+        return `${windowsManifestPath}\r\n`;
+      }
+      if (file === "reg.exe") {
+        return "completed";
+      }
+      throw new Error(`unexpected command: ${file} ${args.join(" ")}`);
+    };
+    const deps = { execFileSync };
+
+    const manifestPath = installManifest(
+      "chrome",
+      extensionA,
+      "C:\\Users\\Nico\\AppData\\Local\\surf-cli\\host-wrapper-wsl.cmd",
+      "wsl-windows",
+      deps,
+    );
+    expect(fs.existsSync(manifestPath)).toBe(true);
+    expect(calls).toContainEqual([
+      "reg.exe",
+      [
+        "add",
+        "HKCU\\Software\\Google\\Chrome\\NativeMessagingHosts\\surf.browser.host",
+        "/ve",
+        "/t",
+        "REG_SZ",
+        "/d",
+        windowsManifestPath,
+        "/f",
+      ],
+    ]);
+
+    expect(removeManifest("chrome", "wsl-windows", deps)).toBe(manifestPath);
+    expect(fs.existsSync(manifestPath)).toBe(false);
+    expect(calls).toContainEqual([
+      "reg.exe",
+      ["delete", "HKCU\\Software\\Google\\Chrome\\NativeMessagingHosts\\surf.browser.host", "/f"],
+    ]);
+  });
+
+  it("fails a WSL Windows install when registry registration fails", () => {
+    const tempDir = makeTempDir();
+    const execFileSync = (file: string, args: string[]) => {
+      if (file === "cmd.exe") {
+        return "C:\\Users\\Nico\\AppData\\Local\r\n";
+      }
+      if (file === "wslpath" && args[0] === "-u") {
+        return `${tempDir}\n`;
+      }
+      if (file === "wslpath" && args[0] === "-w") {
+        return "C:\\manifest.json\r\n";
+      }
+      throw new Error("registry access denied");
+    };
+
+    expect(() =>
+      installManifest("chrome", extensionA, "C:\\wrapper.cmd", "wsl-windows", {
+        execFileSync,
+      }),
+    ).toThrow(/reg\.exe.*registry access denied/);
+  });
+
   it("documents the Tailnet-only listener option", () => {
     const result = spawnSync(process.execPath, ["scripts/install-native-host.cjs", "--help"], {
       encoding: "utf8",
@@ -293,6 +456,38 @@ describe("native host installer", () => {
 
     expect(result.status).toBe(1);
     expect(result.stderr).toContain("--target linux is only supported on Linux or WSL2");
+  });
+
+  it("does not mutate the Windows registry for an explicit Linux target in WSL", ({ skip }) => {
+    if (process.platform !== "linux") {
+      skip();
+    }
+    const tempDir = makeTempDir();
+    const binDir = path.join(tempDir, "bin");
+    const marker = path.join(tempDir, "registry-called");
+    fs.mkdirSync(binDir);
+    const regPath = path.join(binDir, "reg.exe");
+    fs.writeFileSync(regPath, `#!/bin/sh\ntouch "${marker}"\n`);
+    fs.chmodSync(regPath, 0o755);
+
+    const result = spawnSync(
+      process.execPath,
+      ["scripts/install-native-host.cjs", extensionA, "--target", "linux"],
+      {
+        encoding: "utf8",
+        env: {
+          ...process.env,
+          HOME: tempDir,
+          PATH: `${binDir}:${process.env.PATH}`,
+          WSL_DISTRO_NAME: "SurfTest",
+          SURF_NODE_PATH: process.execPath,
+          SURF_HOST_PATH: path.resolve("native/host.cjs"),
+        },
+      },
+    );
+
+    expect(result.status).toBe(0);
+    expect(fs.existsSync(marker)).toBe(false);
   });
 
   it("rejects uninstall --target linux on non-Linux platforms", ({ skip }) => {
