@@ -58,6 +58,7 @@ describe("semantic decision core", () => {
       limits: {
         stateBytes: 24 * 1024,
         candidates: 64,
+        actionChoices: 70,
         chunks: 48,
         questions: 50,
         filterTop: 12,

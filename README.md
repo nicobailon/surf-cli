@@ -958,7 +958,11 @@ high-impact submit, purchase, delete, send, and publish controls; repeat
 `--allow-ref <ref>` to narrow authorization to exact current refs. Fill values
 come only from named `--input name=value` slots and are never sent to TypeSafe or
 included in traces. Actions are freshness-guarded and uncertain writes are not
-replayed. Page text remains adversarial data; model output never grants authority.
+replayed. Each provider choice is capped at 70 actions: six fixed scroll/wait
+actions plus at least one action for each of the 64 observed refs explicitly
+authorized with `--allow-ref`; additional variants are omitted deterministically.
+An oversized mandatory authorized set fails before provider selection. Page text
+remains adversarial data; model output never grants authority.
 
 The real-Jev evaluation harness is opt-in and excluded from CI:
 `SURF_REAL_JEV=1 TYPESAFE_API_KEY=... npm run eval:jev`.

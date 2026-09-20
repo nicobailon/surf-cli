@@ -17,6 +17,9 @@ class FakeElement extends FakeNode {
   parentElement: FakeElement | null = null;
   offsetWidth = 10;
   offsetHeight = 10;
+  clientHeight = 0;
+  scrollHeight = 0;
+  scrollTop = 0;
   selectedIndex = -1;
   options: FakeElement[] = [];
   value = "";
@@ -368,6 +371,89 @@ describe("accessibility tree", () => {
     expect(scrollBy).not.toHaveBeenCalled();
     expect(scrollTo).not.toHaveBeenCalled();
   });
+
+  it.each([
+    { type: "SCROLL_TO_POSITION", position: "top" },
+    { type: "SCROLL_TO_POSITION", position: "bottom" },
+    { type: "SEMANTIC_SCROLL", position: "top" },
+    { type: "SEMANTIC_SCROLL", position: "bottom" },
+  ])("$type $position uses the largest scrollable container", ({ type, position }) => {
+    const viewport = new FakeElement("html");
+    viewport.clientHeight = 768;
+    viewport.scrollHeight = 768;
+    const overflow = new FakeElement("main");
+    overflow.clientHeight = 400;
+    overflow.scrollHeight = 2_000;
+    overflow.scrollTop = position === "top" ? 800 : 0;
+    (overflow as any).style = { overflow: "auto" };
+    (document as any).documentElement = viewport;
+    (document as any).querySelectorAll = () => [viewport, overflow];
+
+    let observation: any;
+    messageHandler?.(
+      {
+        type: "GENERATE_ACCESSIBILITY_TREE",
+        options: { filter: "interactive", semanticObservation: true },
+      },
+      {},
+      (result) => {
+        observation = result.semanticObservation;
+      },
+    );
+
+    let response: any;
+    messageHandler?.(
+      {
+        type,
+        position,
+        ...(type === "SEMANTIC_SCROLL" ? { expectedIdentity: observation.identity } : {}),
+      },
+      {},
+      (result) => {
+        response = result;
+      },
+    );
+
+    expect(overflow.scrollTop).toBe(position === "top" ? 0 : overflow.scrollHeight);
+    expect(response).toMatchObject({
+      scrollTop: overflow.scrollTop,
+      scrollHeight: 2_000,
+      clientHeight: 400,
+    });
+    expect(viewport.scrollTop).toBe(0);
+  });
+
+  it.each(["top", "bottom"])(
+    "stale guarded semantic scroll.%s does not mutate the selected container",
+    (position) => {
+      const overflow = new FakeElement("main");
+      overflow.clientHeight = 400;
+      overflow.scrollHeight = 2_000;
+      overflow.scrollTop = 500;
+      const querySelectorAll = vi.fn(() => [overflow]);
+      (document as any).querySelectorAll = querySelectorAll;
+
+      let response: any;
+      messageHandler?.(
+        {
+          type: "SEMANTIC_SCROLL",
+          position,
+          expectedIdentity: {
+            fullUrl: "https://example.test/replaced",
+            documentToken: "old-document",
+          },
+        },
+        {},
+        (result) => {
+          response = result;
+        },
+      );
+
+      expect(response).toEqual({ error: "stale_observation", code: "stale_observation" });
+      expect(overflow.scrollTop).toBe(500);
+      expect(querySelectorAll).not.toHaveBeenCalled();
+    },
+  );
 
   it("caps visible text in compact mode", () => {
     (document.body as unknown as FakeElement).append(text("abcdef"));

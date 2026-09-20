@@ -1,4 +1,8 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
+
+const { SEMANTIC_POLICY } = require("../../native/semantic-core.cjs") as {
+  SEMANTIC_POLICY: { limits: { actionChoices: number } };
+};
 
 const semantic = require("../../native/semantic-cli.cjs") as {
   buildActions(
@@ -245,8 +249,8 @@ describe("semantic CLI", () => {
     expect(result.trace).toHaveLength(1);
   });
 
-  it("reserves fixed actions and late narrowed refs at the action cap", () => {
-    const candidates = Array.from({ length: 10 }, (_, index) => ({
+  it("reserves fixed actions and every narrowed ref at the 64-candidate boundary", () => {
+    const candidates = Array.from({ length: 64 }, (_, index) => ({
       ref: `e${index + 1}`,
       role: "textbox",
       name: `Field ${index + 1}`,
@@ -262,7 +266,8 @@ describe("semantic CLI", () => {
       true,
       candidates.map((candidate) => candidate.ref),
     );
-    expect(actions).toHaveLength(64);
+    expect(actions).toHaveLength(SEMANTIC_POLICY.limits.actionChoices);
+    expect(actions.length).toBeLessThanOrEqual(SEMANTIC_POLICY.limits.actionChoices);
     expect(actions).toEqual(
       expect.arrayContaining([
         expect.objectContaining({ id: "scroll:down_600" }),
@@ -271,12 +276,50 @@ describe("semantic CLI", () => {
         expect.objectContaining({ id: "scroll:bottom" }),
         expect.objectContaining({ id: "wait:500" }),
         expect.objectContaining({ id: "wait:1500" }),
-        expect.objectContaining({ id: "click:e9" }),
-        expect.objectContaining({ id: "click:e10" }),
-        expect.objectContaining({ id: "fill:e9:slot3" }),
-        expect.objectContaining({ id: "fill:e10:slot3" }),
+        expect.objectContaining({ id: "click:e1" }),
+        expect.objectContaining({ id: "click:e64" }),
       ]),
     );
+    expect(
+      candidates.every((candidate) =>
+        actions.some(
+          (action) =>
+            action.ref === candidate.ref && (action.kind === "click" || action.kind === "fill"),
+        ),
+      ),
+    ).toBe(true);
+  });
+
+  it("fails explicitly before provider selection when mandatory authorized actions exceed the hard bound", async () => {
+    const candidates = Array.from({ length: 65 }, (_, index) => ({
+      ref: `e${index + 1}`,
+      role: "button",
+      name: `Button ${index + 1}`,
+      type: "button",
+      nearbyText: "Actions",
+    }));
+    const evaluate = vi.fn();
+    await expect(
+      semantic.runBrowserSemantic(
+        {
+          command: "semantic.act",
+          goal: "choose an action",
+          allowWrite: true,
+          allowRefs: candidates.map((candidate) => candidate.ref),
+          inputs: {},
+          maxSteps: 1,
+        },
+        {
+          request: async () => response({ semanticObservation: { ...observation, candidates } }),
+          evaluate,
+          now: () => 0,
+        },
+      ),
+    ).rejects.toMatchObject({
+      code: "semantic_invalid_request",
+      message: `explicitly authorized actions exceed the limit of ${SEMANTIC_POLICY.limits.actionChoices}`,
+    });
+    expect(evaluate).not.toHaveBeenCalled();
   });
 
   it("filter returns only refs associated with selected chunks", async () => {

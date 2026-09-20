@@ -8,6 +8,7 @@ const SEMANTIC_POLICY = Object.freeze({
   limits: Object.freeze({
     stateBytes: 24 * 1024,
     candidates: 64,
+    actionChoices: 70, // Six fixed controls plus one action for every observed candidate.
     chunks: 48,
     questions: 50,
     filterTop: 12,
@@ -252,7 +253,7 @@ function validateAction(action, options) {
 
 async function chooseAction({ state, goal, actions, origin, allowWrite = false, allowRefs = [], inputSlots = [], evaluate }) {
   goal = validateGoal(goal);
-  assertUniqueItems(actions, SEMANTIC_POLICY.limits.candidates, "actions");
+  assertUniqueItems(actions, SEMANTIC_POLICY.limits.actionChoices, "actions");
   if (!Array.isArray(allowRefs)) fail("allowRefs must be an array");
   if (!Array.isArray(inputSlots) || inputSlots.length > SEMANTIC_POLICY.limits.inputSlots) fail("inputSlots exceeds policy limits");
   for (const value of [...allowRefs, ...inputSlots]) assertOpaqueId(value, "authorization identifier");

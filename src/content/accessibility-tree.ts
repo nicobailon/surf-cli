@@ -5,6 +5,7 @@ import {
   probePageReadiness,
 } from "./page-readiness-probe";
 import type { VisualIndicatorMessageType } from "./visual-indicator.ts";
+import { scrollToPosition } from "../utils/scroll-position";
 
 export {};
 
@@ -1710,12 +1711,16 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         break;
       }
       if (message.position === "top" || message.position === "bottom") {
-        const top = message.position === "top" ? 0 : document.documentElement.scrollHeight;
-        window.scrollTo(0, top);
+        sendResponse(scrollToPosition(message.position));
+        break;
       } else {
         window.scrollBy(message.deltaX || 0, message.deltaY || 0);
       }
       sendResponse({ success: true, scrollX: window.scrollX, scrollY: window.scrollY });
+      break;
+    }
+    case "SCROLL_TO_POSITION": {
+      sendResponse(scrollToPosition(message.position, message.selector || null));
       break;
     }
     case "CLICK_ELEMENT": {

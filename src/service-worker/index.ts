@@ -1489,6 +1489,14 @@ export async function handleMessage(
         }, { frameId: getFrameIdForTab(tabId, message) });
       }
 
+      try {
+        return await chrome.tabs.sendMessage(tabId, {
+          type: "SCROLL_TO_POSITION",
+          position,
+          selector,
+        }, { frameId: getFrameIdForTab(tabId, message) });
+      } catch {}
+
       const scrollScript = (pos: string | number, sel: string | null) => {
         const findScrollable = (): Element => {
           const candidates = [...document.querySelectorAll("*")].filter(el =>

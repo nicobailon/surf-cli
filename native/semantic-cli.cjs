@@ -1,7 +1,7 @@
 const crypto = require("node:crypto");
 const { performance } = require("node:perf_hooks");
 const { openClientTransport } = require("./client-transport.cjs");
-const { SEMANTIC_POLICY, chooseAction, filter, find, verify } = require("./semantic-core.cjs");
+const { SEMANTIC_POLICY, SemanticError, chooseAction, filter, find, verify } = require("./semantic-core.cjs");
 const { createJevEvaluator } = require("./semantic-provider.cjs");
 const {
   clearStoredTypeSafeCredential,
@@ -137,6 +137,12 @@ function buildActions(observation, inputs, allowWrite, allowRefs = []) {
     for (const candidate of writeCandidates) {
       actions.push({ id: `click:${candidate.ref}`, kind: "click", ref: candidate.ref });
     }
+    if (actions.length > SEMANTIC_POLICY.limits.actionChoices) {
+      throw new SemanticError(
+        "semantic_invalid_request",
+        `explicitly authorized actions exceed the limit of ${SEMANTIC_POLICY.limits.actionChoices}`,
+      );
+    }
     const fillCandidates = writeCandidates.filter(
       (candidate) => FIELD_ROLES.has(candidate.role) || ["input", "textarea", "select"].includes(candidate.type),
     );
@@ -164,7 +170,7 @@ function buildActions(observation, inputs, allowWrite, allowRefs = []) {
       }
     }
   }
-  return actions.slice(0, SEMANTIC_POLICY.limits.candidates);
+  return actions.slice(0, SEMANTIC_POLICY.limits.actionChoices);
 }
 
 function expectedIdentity(observation, candidate) {

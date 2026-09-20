@@ -252,6 +252,16 @@ describe("browser session handlers", () => {
       { type: "SEMANTIC_SCROLL", deltaX: 0, deltaY: 600, expectedIdentity: identity },
       { frameId: 4 },
     );
+
+    await handleMessage(
+      { type: "SCROLL_TO_POSITION", tabId: 71, frameId: 4, position: "bottom" },
+      {},
+    );
+    expect(chrome.tabs.sendMessage).toHaveBeenLastCalledWith(
+      71,
+      { type: "SCROLL_TO_POSITION", position: "bottom", selector: undefined },
+      { frameId: 4 },
+    );
   });
 
   it("uses only an explicit host-provided frame context", async () => {
