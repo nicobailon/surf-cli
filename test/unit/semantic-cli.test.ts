@@ -221,6 +221,9 @@ describe("semantic CLI", () => {
       { request, evaluate, now: () => 0 },
     );
     expect(result).toMatchObject({ status: "complete", stopReason: "complete" });
+    expect(result.trace).toEqual([
+      expect.objectContaining({ kind: "fill", appliedThreshold: 0.65, result: "executed" }),
+    ]);
     expect(requests.filter((item) => item.tool === "form.fill")).toHaveLength(1);
     expect(requests.filter((item) => item.tool === "page.read")).toHaveLength(2);
     expect(JSON.stringify(result)).not.toContain("unique-secret");
@@ -330,6 +333,12 @@ describe("semantic CLI", () => {
 
     expect(result).toMatchObject({ status: "complete", stopReason: "complete" });
     expect(mutations).toEqual(["fill:user", "fill:pass", "click:login"]);
+    expect(result.trace).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ kind: "fill", appliedThreshold: 0.95 }),
+        expect.objectContaining({ kind: "click", appliedThreshold: 0.95 }),
+      ]),
+    );
     expect(offered[1]).not.toContain("fill:user:username");
     expect(offered[1]).not.toContain("fill:user:password");
     expect(offered[2]).not.toContain("fill:pass:username");

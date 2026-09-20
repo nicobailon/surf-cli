@@ -54,6 +54,7 @@ describe("semantic decision core", () => {
         verifyPositive: 0.85,
         verifyNegative: 0.85,
         write: 0.95,
+        exactRefWrite: 0.65,
       },
       limits: {
         stateBytes: 24 * 1024,
@@ -170,7 +171,7 @@ describe("semantic decision core", () => {
     expect(result).toMatchObject({ status: "selected", action: actions[0] });
   });
 
-  it("requires the write threshold and supports allow-ref narrowing", async () => {
+  it("applies the exact-ref write threshold at its 0.64/0.65 boundary", async () => {
     const action = { id: "fill", kind: "fill", ref: "ref.2", slot: "email" };
     const below = await chooseAction({
       state: {},
@@ -180,7 +181,7 @@ describe("semantic decision core", () => {
       allowWrite: true,
       allowRefs: ["ref.2"],
       inputSlots: ["email"],
-      evaluate: evaluateWith({ action: "fill" }, 0.94),
+      evaluate: evaluateWith({ action: "fill" }, 0.64),
     });
     const selected = await chooseAction({
       state: {},
@@ -190,10 +191,63 @@ describe("semantic decision core", () => {
       allowWrite: true,
       allowRefs: ["ref.2"],
       inputSlots: ["email"],
-      evaluate: evaluateWith({ action: "fill" }, 0.96),
+      evaluate: evaluateWith({ action: "fill" }, 0.65),
     });
-    expect(below.status).toBe("uncertain");
-    expect(selected).toMatchObject({ status: "selected", action });
+    expect(below).toMatchObject({ status: "uncertain", appliedThreshold: 0.65 });
+    expect(selected).toMatchObject({ status: "selected", action, appliedThreshold: 0.65 });
+  });
+
+  it.each([
+    {
+      name: "broad authorization",
+      actions: [{ id: "click", kind: "click", ref: "ref.1" }],
+      allowRefs: [],
+      inputSlots: [],
+      selected: "click",
+    },
+    {
+      name: "multiple allowed refs",
+      actions: [
+        { id: "click-1", kind: "click", ref: "ref.1" },
+        { id: "click-2", kind: "click", ref: "ref.2" },
+      ],
+      allowRefs: ["ref.1", "ref.2"],
+      inputSlots: [],
+      selected: "click-1",
+    },
+    {
+      name: "multiple fill slots",
+      actions: [
+        { id: "fill-email", kind: "fill", ref: "ref.1", slot: "email" },
+        { id: "fill-backup", kind: "fill", ref: "ref.1", slot: "backup" },
+      ],
+      allowRefs: ["ref.1"],
+      inputSlots: ["email", "backup"],
+      selected: "fill-email",
+    },
+  ])("retains the 0.95 write threshold for $name", async (testCase) => {
+    const below = await chooseAction({
+      state: {},
+      goal: "write",
+      actions: testCase.actions,
+      origin: "https://example.test",
+      allowWrite: true,
+      allowRefs: testCase.allowRefs,
+      inputSlots: testCase.inputSlots,
+      evaluate: evaluateWith({ action: testCase.selected }, 0.94),
+    });
+    const selected = await chooseAction({
+      state: {},
+      goal: "write",
+      actions: testCase.actions,
+      origin: "https://example.test",
+      allowWrite: true,
+      allowRefs: testCase.allowRefs,
+      inputSlots: testCase.inputSlots,
+      evaluate: evaluateWith({ action: testCase.selected }, 0.95),
+    });
+    expect(below).toMatchObject({ status: "uncertain", appliedThreshold: 0.95 });
+    expect(selected).toMatchObject({ status: "selected", appliedThreshold: 0.95 });
   });
 
   it("rejects unsafe navigation and malformed provider output", async () => {

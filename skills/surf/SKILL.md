@@ -110,6 +110,8 @@ surf semantic auth clear
 ```
 
 Every click/fill requires `--allow-write`; repeat `--allow-ref` to narrow it.
+Broad writes use threshold `0.95`; exactly one allowed ref with one applicable
+write uses `0.65`. The applied threshold is included in decision/trace output.
 `TYPESAFE_API_KEY` is the ephemeral/CI override.
 The shared credential schema is `{"version":1,"apiKey":"..."}` at
 `${XDG_CONFIG_HOME:-~/.config}/typesafe/credentials.json` (Unix/macOS) or

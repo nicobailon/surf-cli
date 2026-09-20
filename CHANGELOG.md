@@ -3,7 +3,7 @@
 ## [Unreleased]
 
 ### Added
-- **Optional Jev semantic browser actions** - `semantic.find`, `semantic.verify`, `semantic.filter`, and bounded `semantic.act` use compact value-free observations and confidence-gated TypeSafe decisions. Writes require explicit `--allow-write`, can be narrowed with repeatable `--allow-ref`, and are guarded against stale DOM identity. TypeSafe credentials use its shared user store with an environment override; existing commands remain provider-free.
+- **Optional Jev semantic browser actions** - `semantic.find`, `semantic.verify`, `semantic.filter`, and bounded `semantic.act` use compact value-free observations and confidence-gated TypeSafe decisions. Writes require explicit `--allow-write`, can be narrowed with repeatable `--allow-ref`, and are guarded against stale DOM identity. Broad writes retain the `0.95` threshold; an exact single-ref, single-action write uses the recorded `0.65` threshold. TypeSafe credentials use its shared user store with an environment override; existing commands remain provider-free.
 
 ### Fixed
 - **Native connection troubleshooting** - Failed local `surf doctor` socket and native-host checks now explain how to enable extension Debug Mode and inspect the service-worker console.

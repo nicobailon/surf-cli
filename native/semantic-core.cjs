@@ -4,7 +4,7 @@ const SEMANTIC_POLICY = Object.freeze({
   model: "jev-1.13.0",
   timeoutMs: 5_000,
   probabilitySumTolerance: 0.01,
-  thresholds: Object.freeze({ find: 0.7, filter: 0.65, verifyPositive: 0.85, verifyNegative: 0.85, write: 0.95 }),
+  thresholds: Object.freeze({ find: 0.7, filter: 0.65, verifyPositive: 0.85, verifyNegative: 0.85, write: 0.95, exactRefWrite: 0.65 }),
   limits: Object.freeze({
     stateBytes: 24 * 1024,
     candidates: 64,
@@ -266,11 +266,14 @@ async function chooseAction({ state, goal, actions, origin, allowWrite = false, 
   });
   const decision = response.decisions.action;
   const action = eligible.find((item) => item.id === decision.label) || null;
-  const threshold = action && (action.kind === "click" || action.kind === "fill")
-    ? SEMANTIC_POLICY.thresholds.write
+  const writeActions = eligible.filter((item) => item.kind === "click" || item.kind === "fill");
+  const exactRefWrite = action && (action.kind === "click" || action.kind === "fill") &&
+    allowRefs.length === 1 && writeActions.length === 1 && writeActions[0].ref === allowRefs[0];
+  const appliedThreshold = action && (action.kind === "click" || action.kind === "fill")
+    ? exactRefWrite ? SEMANTIC_POLICY.thresholds.exactRefWrite : SEMANTIC_POLICY.thresholds.write
     : SEMANTIC_POLICY.thresholds.find;
-  const selected = action && decision.probability >= threshold ? action : null;
-  return { status: selected ? "selected" : "uncertain", action: selected, decision, model: response.model, usage: response.usage };
+  const selected = action && decision.probability >= appliedThreshold ? action : null;
+  return { status: selected ? "selected" : "uncertain", action: selected, appliedThreshold, decision, model: response.model, usage: response.usage };
 }
 
 module.exports = { SEMANTIC_POLICY, SemanticError, chooseAction, filter, find, verify };

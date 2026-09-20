@@ -290,13 +290,13 @@ async function runBrowserSemantic(options, { request, evaluate, now = () => perf
     if (remaining() < 1) return { status: "stopped", stopReason: "time_budget", trace, providerCalls };
     const actions = buildActions(observation, options.inputs, options.allowWrite, options.allowRefs, spentWrites);
     const choice = await chooseAction({ state, goal: options.goal, actions, origin: state.origin, allowWrite: options.allowWrite, allowRefs: options.allowRefs, inputSlots: Object.keys(options.inputs), evaluate: evaluator });
-    if (choice.status !== "selected") return { status: "stopped", stopReason: "uncertain", trace, providerCalls, decision: choice.decision, model: choice.model, usage: choice.usage };
+    if (choice.status !== "selected") return { status: "stopped", stopReason: "uncertain", trace, providerCalls, appliedThreshold: choice.appliedThreshold, decision: choice.decision, model: choice.model, usage: choice.usage };
     const action = choice.action;
     const actionCandidate = observation.candidates.find((item) => item.ref === action.ref);
     const writeIdentity = action.kind === "click" || action.kind === "fill"
       ? logicalWriteIdentity(observation, action, actionCandidate)
       : null;
-    const traceAction = { step, kind: action.kind, ...(action.ref ? { ref: action.ref } : {}), ...(action.slot ? { slot: action.slot } : {}), ...(action.direction ? { direction: action.direction } : {}), ...(action.durationMs ? { durationMs: action.durationMs } : {}) };
+    const traceAction = { step, kind: action.kind, appliedThreshold: choice.appliedThreshold, ...(action.ref ? { ref: action.ref } : {}), ...(action.slot ? { slot: action.slot } : {}), ...(action.direction ? { direction: action.direction } : {}), ...(action.durationMs ? { durationMs: action.durationMs } : {}) };
     try { confirmedActionResponse(await executeAction(request, observation, action, options.inputs, remaining(), designatedIdentity)); }
     catch (error) {
       trace.push({ ...traceAction, result: error.code === "stale_observation" ? "stale" : "failed" });
