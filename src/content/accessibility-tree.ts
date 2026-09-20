@@ -113,6 +113,12 @@ function buildSemanticObservation() {
       type: semanticElementType(element),
       href: element.tagName.toLowerCase() === "a" ? boundedText(element.getAttribute("href"), 2048) || undefined : undefined,
       download: element.tagName.toLowerCase() === "a" && element.hasAttribute("download") || undefined,
+      safeNavigation: element.tagName.toLowerCase() === "a"
+        ? role === "link" &&
+          !element.hasAttribute("download") &&
+          !Array.from(element.attributes).some((attribute) => attribute.name.toLowerCase().startsWith("on")) &&
+          !["aria-checked", "aria-pressed", "aria-selected"].some((attribute) => element.hasAttribute(attribute))
+        : undefined,
       nearbyText: parent ? collectValueFreeText(parent, 240) : "",
     }];
   });

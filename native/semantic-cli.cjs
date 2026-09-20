@@ -94,6 +94,65 @@ function providerState(observation) {
   };
 }
 
+function safeSameOriginNavigation(candidate, fullUrl) {
+  if (!candidate.href || candidate.download === true || candidate.safeNavigation === false || candidate.role !== "link" || candidate.type !== "a") return null;
+  try {
+    const url = new URL(candidate.href, fullUrl);
+    const page = new URL(fullUrl);
+    if (!/^https?:$/.test(url.protocol) || url.username || url.password || url.origin !== page.origin) return null;
+    return url.href;
+  } catch { return null; }
+}
+
+function stableLogicalId(identity, prefix = "target") {
+  return `${prefix}:${crypto.createHash("sha256").update(identity).digest("hex").slice(0, 56)}`;
+}
+
+function concreteCandidateOrder(left, right) {
+  const leftNamed = typeof left.name === "string" && left.name.trim() ? 1 : 0;
+  const rightNamed = typeof right.name === "string" && right.name.trim() ? 1 : 0;
+  return rightNamed - leftNamed || left.index - right.index;
+}
+
+function buildLogicalCandidates(observation, candidates = providerState(observation).candidates) {
+  const groups = [];
+  const navigationGroups = new Map();
+  for (const [index, observed] of observation.candidates.entries()) {
+    const candidate = candidates[index];
+    const destination = safeSameOriginNavigation(observed, observation.identity.fullUrl);
+    if (!destination) {
+      const logicalIdentity = stableLogicalId(`control:${candidate.id}:${candidate.role || ""}:${candidate.type || ""}:${candidate.name || ""}:${candidate.text || ""}`);
+      groups.push({
+        ...candidate,
+        logicalIdentity,
+        concreteCandidates: [{ ...candidate, index }],
+      });
+      continue;
+    }
+    let group = navigationGroups.get(destination);
+    if (!group) {
+      group = {
+        id: stableLogicalId(`navigation:${destination}`),
+        logicalIdentity: stableLogicalId(`navigation:${destination}`),
+        role: "link",
+        name: "",
+        text: "",
+        concreteCandidates: [],
+      };
+      navigationGroups.set(destination, group);
+      groups.push(group);
+    }
+    group.concreteCandidates.push({ ...candidate, index });
+  }
+  for (const group of groups) {
+    group.concreteCandidates.sort(concreteCandidateOrder);
+    const representative = group.concreteCandidates[0];
+    if (!group.name) group.name = representative.name;
+    if (!group.text) group.text = representative.text;
+  }
+  return groups;
+}
+
 function unwrapResponse(response) {
   if (response?.error) {
     const error = new Error(response.error.message || response.error.content?.[0]?.text || "browser request failed");
@@ -168,14 +227,30 @@ function buildActions(observation, inputs, allowWrite, allowRefs = [], spentWrit
     ...SEMANTIC_POLICY.scrolls.map((direction) => ({ id: `scroll:${direction}`, kind: "scroll", direction })),
     ...SEMANTIC_POLICY.waitsMs.map((durationMs) => ({ id: `wait:${durationMs}`, kind: "wait", durationMs })),
   ];
-  const origin = new URL(observation.identity.fullUrl).origin;
   const narrowed = allowRefs.length ? new Set(allowRefs) : null;
   const writeCandidates = allowWrite
     ? observation.candidates.filter((candidate) => !narrowed || narrowed.has(candidate.ref))
     : [];
+  const navigationGroups = new Map();
+  for (const [index, candidate] of observation.candidates.entries()) {
+    const url = safeSameOriginNavigation(candidate, observation.identity.fullUrl);
+    if (!url) continue;
+    const current = navigationGroups.get(url);
+    const ranked = { ...candidate, index };
+    if (!current || concreteCandidateOrder(ranked, current) < 0) navigationGroups.set(url, ranked);
+  }
+  for (const [url, candidate] of navigationGroups) {
+    actions.push({
+      id: `nav:${candidate.ref}`,
+      kind: "navigate",
+      url,
+      concreteRef: candidate.ref,
+      logicalIdentity: stableLogicalId(`navigation:${url}`, "action"),
+    });
+  }
   if (narrowed) {
     for (const candidate of writeCandidates) {
-      if (CLICK_ROLES.has(candidate.role)) {
+      if (CLICK_ROLES.has(candidate.role) && !safeSameOriginNavigation(candidate, observation.identity.fullUrl)) {
         const action = { id: `click:${candidate.ref}`, kind: "click", ref: candidate.ref };
         if (!spentWrites.has(logicalWriteIdentity(observation, action, candidate))) actions.push(action);
       } else if (isEditable(candidate)) {
@@ -202,16 +277,8 @@ function buildActions(observation, inputs, allowWrite, allowRefs = [], spentWrit
     }
   }
   for (const candidate of observation.candidates) {
-    if (candidate.href && candidate.download !== true) {
-      try {
-        const url = new URL(candidate.href, observation.identity.fullUrl);
-        if (/^https?:$/.test(url.protocol) && !url.username && !url.password && url.origin === origin) {
-          actions.push({ id: `nav:${candidate.ref}`, kind: "navigate", url: url.href });
-        }
-      } catch {}
-    }
     if (allowWrite && !narrowed) {
-      if (CLICK_ROLES.has(candidate.role)) {
+      if (CLICK_ROLES.has(candidate.role) && !safeSameOriginNavigation(candidate, observation.identity.fullUrl)) {
         const action = { id: `click:${candidate.ref}`, kind: "click", ref: candidate.ref };
         if (!spentWrites.has(logicalWriteIdentity(observation, action, candidate))) actions.push(action);
       }
@@ -273,7 +340,31 @@ async function runBrowserSemantic(options, { request, evaluate, now = () => perf
   };
   let observation = await observe();
   let state = providerState(observation);
-  if (options.command === "semantic.find") return find({ state, goal: options.goal, candidates: state.candidates, evaluate: evaluator });
+  if (options.command === "semantic.find") {
+    const logicalCandidates = buildLogicalCandidates(observation, state.candidates);
+    const logicalState = {
+      ...state,
+      candidates: logicalCandidates.map(({ id, role, name, type, text }) => ({ id, role, name, type, text })),
+    };
+    const result = await find({ state: logicalState, goal: options.goal, candidates: logicalCandidates, evaluate: evaluator });
+    const logicalCandidate = result.candidate;
+    const concrete = logicalCandidate?.concreteCandidates?.[0] || null;
+    return {
+      ...result,
+      candidate: concrete ? Object.fromEntries(Object.entries(concrete).filter(([key]) => key !== "index")) : null,
+      logicalCandidate: logicalCandidate ? {
+        id: logicalCandidate.id,
+        identity: logicalCandidate.logicalIdentity,
+        refs: logicalCandidate.concreteCandidates.map((candidate) => candidate.id),
+        probability: result.decision.probability,
+      } : null,
+      concreteDecision: concrete ? {
+        ref: concrete.id,
+        identity: `${concrete.role || ""}:${concrete.type || ""}:${concrete.name || ""}`.slice(0, 1_024),
+        probability: result.decision.probability,
+      } : null,
+    };
+  }
   if (options.command === "semantic.verify") return verify({ state, outcome: options.goal, evidence: state.chunks, evaluate: evaluator });
   if (options.command === "semantic.filter") {
     const result = await filter({ state, goal: options.goal, chunks: state.chunks, top: options.top, evaluate: evaluator });
@@ -290,13 +381,13 @@ async function runBrowserSemantic(options, { request, evaluate, now = () => perf
     if (remaining() < 1) return { status: "stopped", stopReason: "time_budget", trace, providerCalls };
     const actions = buildActions(observation, options.inputs, options.allowWrite, options.allowRefs, spentWrites);
     const choice = await chooseAction({ state, goal: options.goal, actions, origin: state.origin, allowWrite: options.allowWrite, allowRefs: options.allowRefs, inputSlots: Object.keys(options.inputs), evaluate: evaluator });
-    if (choice.status !== "selected") return { status: "stopped", stopReason: "uncertain", trace, providerCalls, appliedThreshold: choice.appliedThreshold, decision: choice.decision, model: choice.model, usage: choice.usage };
+    if (choice.status !== "selected") return { status: "stopped", stopReason: "uncertain", trace, providerCalls, appliedThreshold: choice.appliedThreshold, decision: choice.decision, logicalDecision: choice.logicalDecision, concreteDecision: choice.concreteDecision, model: choice.model, usage: choice.usage };
     const action = choice.action;
     const actionCandidate = observation.candidates.find((item) => item.ref === action.ref);
     const writeIdentity = action.kind === "click" || action.kind === "fill"
       ? logicalWriteIdentity(observation, action, actionCandidate)
       : null;
-    const traceAction = { step, kind: action.kind, appliedThreshold: choice.appliedThreshold, ...(action.ref ? { ref: action.ref } : {}), ...(action.slot ? { slot: action.slot } : {}), ...(action.direction ? { direction: action.direction } : {}), ...(action.durationMs ? { durationMs: action.durationMs } : {}) };
+    const traceAction = { step, kind: action.kind, appliedThreshold: choice.appliedThreshold, logicalProbability: choice.decision.probability, ...(action.logicalIdentity ? { logicalIdentity: action.logicalIdentity } : {}), ...(action.ref ? { ref: action.ref } : {}), ...(action.concreteRef ? { concreteRef: action.concreteRef, concreteProbability: choice.decision.probability } : {}), ...(action.slot ? { slot: action.slot } : {}), ...(action.direction ? { direction: action.direction } : {}), ...(action.durationMs ? { durationMs: action.durationMs } : {}) };
     try { confirmedActionResponse(await executeAction(request, observation, action, options.inputs, remaining(), designatedIdentity)); }
     catch (error) {
       trace.push({ ...traceAction, result: error.code === "stale_observation" ? "stale" : "failed" });
@@ -378,4 +469,4 @@ function formatSemanticOutput(result) {
   return JSON.stringify(result.value, null, 2);
 }
 
-module.exports = { buildActions, formatSemanticOutput, handleSemanticCli, normalizeSemanticArgs, parseSemanticArgs, providerState, runBrowserSemantic };
+module.exports = { buildActions, buildLogicalCandidates, formatSemanticOutput, handleSemanticCli, normalizeSemanticArgs, parseSemanticArgs, providerState, runBrowserSemantic };

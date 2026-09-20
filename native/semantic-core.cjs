@@ -273,7 +273,24 @@ async function chooseAction({ state, goal, actions, origin, allowWrite = false, 
     ? exactRefWrite ? SEMANTIC_POLICY.thresholds.exactRefWrite : SEMANTIC_POLICY.thresholds.write
     : SEMANTIC_POLICY.thresholds.find;
   const selected = action && decision.probability >= appliedThreshold ? action : null;
-  return { status: selected ? "selected" : "uncertain", action: selected, appliedThreshold, decision, model: response.model, usage: response.usage };
+  return {
+    status: selected ? "selected" : "uncertain",
+    action: selected,
+    appliedThreshold,
+    decision,
+    logicalDecision: action ? {
+      id: action.id,
+      identity: action.logicalIdentity || action.id,
+      probability: decision.probability,
+    } : null,
+    concreteDecision: action ? {
+      id: action.id,
+      ...(action.ref || action.concreteRef ? { ref: action.ref || action.concreteRef } : {}),
+      probability: decision.probability,
+    } : null,
+    model: response.model,
+    usage: response.usage,
+  };
 }
 
 module.exports = { SEMANTIC_POLICY, SemanticError, chooseAction, filter, find, verify };
