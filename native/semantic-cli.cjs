@@ -104,6 +104,31 @@ function unwrapResponse(response) {
   return text;
 }
 
+function confirmedActionResponse(response) {
+  const text = unwrapResponse(response);
+  if (typeof text !== "string") {
+    const error = new Error("browser returned an unknown action outcome");
+    error.code = "action_outcome_unknown";
+    throw error;
+  }
+  if (
+    text === "OK" ||
+    /^OK\n(?:\[hint\] |Screenshot (?:\(|saved:)|\[Screenshot failed:)/.test(text) ||
+    /^Scrolled to Y:-?\d+(?:\.\d+)?(?: \(page height: \d+(?:\.\d+)?\))?$/.test(text)
+  ) return;
+  let outcome;
+  try { outcome = JSON.parse(text); } catch {}
+  if (outcome?.success === false || typeof outcome?.error === "string") {
+    const error = new Error(outcome.error || "browser action failed");
+    error.code = outcome.code || "action_failed";
+    throw error;
+  }
+  if (outcome?.success === true) return;
+  const error = new Error("browser returned an unknown action outcome");
+  error.code = "action_outcome_unknown";
+  throw error;
+}
+
 function semanticObservationFrom(response) {
   const text = unwrapResponse(response);
   let envelope;
@@ -272,13 +297,16 @@ async function runBrowserSemantic(options, { request, evaluate, now = () => perf
       ? logicalWriteIdentity(observation, action, actionCandidate)
       : null;
     const traceAction = { step, kind: action.kind, ...(action.ref ? { ref: action.ref } : {}), ...(action.slot ? { slot: action.slot } : {}), ...(action.direction ? { direction: action.direction } : {}), ...(action.durationMs ? { durationMs: action.durationMs } : {}) };
-    try { unwrapResponse(await executeAction(request, observation, action, options.inputs, remaining(), designatedIdentity)); }
+    try { confirmedActionResponse(await executeAction(request, observation, action, options.inputs, remaining(), designatedIdentity)); }
     catch (error) {
       trace.push({ ...traceAction, result: error.code === "stale_observation" ? "stale" : "failed" });
       if (error.code === "stale_observation" && staleRefreshes++ < SEMANTIC_POLICY.limits.staleRefreshes) {
         observation = await observe(); state = providerState(observation); continue;
       }
-      return { status: "stopped", stopReason: error.code === "stale_observation" ? "stale_observation" : "action_failed", trace, providerCalls };
+      const stopReason = error.code === "stale_observation"
+        ? "stale_observation"
+        : error.code === "action_outcome_unknown" ? "outcome_unknown" : "action_failed";
+      return { status: "stopped", stopReason, trace, providerCalls };
     }
     trace.push({ ...traceAction, result: "executed" });
     try {

@@ -66,6 +66,10 @@ function response(value: unknown) {
   return { result: { content: [{ type: "text", text: JSON.stringify(value) }] } };
 }
 
+function actionResponse(text: string) {
+  return { result: { content: [{ type: "text", text }] } };
+}
+
 function choice(answer: string, labels: string[]) {
   const probabilities = Object.fromEntries(
     labels.map((label) => [label, label === answer ? 0.99 : 0.01 / (labels.length - 1)]),
@@ -185,7 +189,9 @@ describe("semantic CLI", () => {
       designatedIdentity?: Record<string, any>,
     ) => {
       requests.push({ tool, args, designatedIdentity });
-      return tool === "page.read" ? response({ semanticObservation: observation }) : response("OK");
+      return tool === "page.read"
+        ? response({ semanticObservation: observation })
+        : actionResponse("OK");
     };
     let call = 0;
     const evaluate = async (_state: unknown, questions: Record<string, any>) => {
@@ -243,7 +249,7 @@ describe("semantic CLI", () => {
       if (tool === "click") {
         mutations++;
       }
-      return response("OK");
+      return actionResponse("OK");
     };
     const evaluate = async (_state: unknown, questions: Record<string, any>) => {
       if (questions.action) {
@@ -304,7 +310,7 @@ describe("semantic CLI", () => {
             return response({ semanticObservation: loginObservation });
           }
           mutations.push(tool === "form.fill" ? `fill:${args.data[0].ref}` : `click:${args.ref}`);
-          return response("OK");
+          return actionResponse("OK");
         },
         evaluate: async (_state: unknown, questions: Record<string, any>) => {
           if (questions.action) {
@@ -350,7 +356,7 @@ describe("semantic CLI", () => {
             return response({ semanticObservation: reads++ ? second : first });
           }
           writes++;
-          return response("OK");
+          return actionResponse("OK");
         },
         evaluate: async (_state: unknown, questions: Record<string, any>) => {
           if (questions.action) {
@@ -380,7 +386,7 @@ describe("semantic CLI", () => {
             return response({ semanticObservation: observation });
           }
           writes++;
-          return response("OK");
+          return actionResponse("OK");
         },
         evaluate: async (_state: unknown, questions: Record<string, any>) => {
           if (!questions.action) {
@@ -395,17 +401,25 @@ describe("semantic CLI", () => {
     expect(writes).toBe(1);
   });
 
-  it("treats a failed write request as an unknown mutation outcome and never retries it", async () => {
+  it("stops on a resolved host-serialized write failure without spending or retrying it", async () => {
     let attempts = 0;
+    let reads = 0;
     const result = await semantic.runBrowserSemantic(
       { command: "semantic.act", goal: "saved", allowWrite: true, inputs: {}, maxSteps: 3 },
       {
         request: async (tool: string) => {
           if (tool === "page.read") {
+            reads++;
             return response({ semanticObservation: observation });
           }
           attempts++;
-          throw new Error("request timed out");
+          return actionResponse(
+            JSON.stringify({
+              success: false,
+              error: "Element is not fillable",
+              code: "fill_failed",
+            }),
+          );
         },
         evaluate: async (_state: unknown, questions: Record<string, any>) =>
           provider({ action: choice("click:e2", Object.keys(questions.action.criteria)) }),
@@ -414,40 +428,85 @@ describe("semantic CLI", () => {
     );
     expect(result).toMatchObject({ status: "stopped", stopReason: "action_failed" });
     expect(attempts).toBe(1);
+    expect(reads).toBe(1);
+  });
+
+  it.each([
+    ["missing success", { filled: 1, failed: 0, results: [{ ref: "e1", success: true }] }],
+    ["malformed text", "not-json-or-a-success-marker"],
+  ])("stops on a resolved host-serialized %s action outcome", async (_name, outcome) => {
+    let attempts = 0;
+    let verificationCalls = 0;
+    const result = await semantic.runBrowserSemantic(
+      { command: "semantic.act", goal: "saved", allowWrite: true, inputs: {}, maxSteps: 3 },
+      {
+        request: async (tool: string) => {
+          if (tool === "page.read") {
+            return response({ semanticObservation: observation });
+          }
+          attempts++;
+          return actionResponse(typeof outcome === "string" ? outcome : JSON.stringify(outcome));
+        },
+        evaluate: async (_state: unknown, questions: Record<string, any>) => {
+          if (!questions.action) {
+            verificationCalls++;
+          }
+          return provider({ action: choice("click:e2", Object.keys(questions.action.criteria)) });
+        },
+        now: () => 0,
+      },
+    );
+    expect(result).toMatchObject({ status: "stopped", stopReason: "outcome_unknown" });
+    expect(attempts).toBe(1);
+    expect(verificationCalls).toBe(0);
   });
 
   it("refreshes a stale pre-execution identity with zero mutation", async () => {
     let reads = 0;
     let mutationCount = 0;
     let selections = 0;
-    const withoutButton = {
+    const withoutField = {
       ...observation,
-      candidates: observation.candidates.filter((item) => item.ref !== "e2"),
+      candidates: observation.candidates.filter((item) => item.ref !== "e1"),
     };
     const result = await semantic.runBrowserSemantic(
-      { command: "semantic.act", goal: "saved", allowWrite: true, inputs: {}, maxSteps: 2 },
+      {
+        command: "semantic.act",
+        goal: "saved",
+        allowWrite: true,
+        inputs: { email: "local-only" },
+        maxSteps: 2,
+      },
       {
         request: async (tool: string) => {
           if (tool === "page.read") {
-            return response({ semanticObservation: reads++ ? withoutButton : observation });
+            return response({ semanticObservation: reads++ ? withoutField : observation });
           }
-          const error = new Error("stale_observation") as Error & { code: string };
-          error.code = "stale_observation";
-          if (tool !== "click") {
+          if (tool !== "form.fill") {
             mutationCount++;
           }
-          throw error;
+          return actionResponse(
+            JSON.stringify({
+              success: false,
+              error: "stale_observation",
+              code: "stale_observation",
+              filled: 0,
+              failed: 1,
+              results: [],
+            }),
+          );
         },
         evaluate: async (_state: unknown, questions: Record<string, any>) => {
           const labels = Object.keys(questions.action.criteria);
-          return provider({ action: choice(selections++ ? "stop" : "click:e2", labels) });
+          return provider({ action: choice(selections++ ? "stop" : "fill:e1:email", labels) });
         },
         now: () => 0,
       },
     );
     expect(result.status).toBe("stopped");
-    expect(result.trace).toEqual([expect.objectContaining({ kind: "click", result: "stale" })]);
+    expect(result.trace).toEqual([expect.objectContaining({ kind: "fill", result: "stale" })]);
     expect(mutationCount).toBe(0);
+    expect(reads).toBe(2);
   });
 
   it("reserves fixed actions and every narrowed ref at the 64-candidate boundary", () => {
