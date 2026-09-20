@@ -11,6 +11,7 @@ const {
 } = require("./semantic-credentials.cjs");
 
 const FIELD_ROLES = new Set(["textbox", "searchbox", "combobox", "spinbutton"]);
+const CLICK_ROLES = new Set(["button", "link", "checkbox", "radio"]);
 
 const SEMANTIC_HELP = `Usage:
   surf semantic.find <goal> [--session <name> | --tab-id <id>] [--json]
@@ -123,7 +124,21 @@ function semanticObservationFrom(response) {
   return observation;
 }
 
-function buildActions(observation, inputs, allowWrite, allowRefs = []) {
+function logicalWriteIdentity(observation, action, candidate) {
+  return JSON.stringify([
+    action.kind,
+    observation.identity.fullUrl,
+    candidate.ref,
+    candidate.role,
+    candidate.name,
+  ]);
+}
+
+function isEditable(candidate) {
+  return FIELD_ROLES.has(candidate.role) || ["textarea", "select"].includes(candidate.type);
+}
+
+function buildActions(observation, inputs, allowWrite, allowRefs = [], spentWrites = new Set()) {
   const actions = [
     ...SEMANTIC_POLICY.scrolls.map((direction) => ({ id: `scroll:${direction}`, kind: "scroll", direction })),
     ...SEMANTIC_POLICY.waitsMs.map((durationMs) => ({ id: `wait:${durationMs}`, kind: "wait", durationMs })),
@@ -135,7 +150,16 @@ function buildActions(observation, inputs, allowWrite, allowRefs = []) {
     : [];
   if (narrowed) {
     for (const candidate of writeCandidates) {
-      actions.push({ id: `click:${candidate.ref}`, kind: "click", ref: candidate.ref });
+      if (CLICK_ROLES.has(candidate.role)) {
+        const action = { id: `click:${candidate.ref}`, kind: "click", ref: candidate.ref };
+        if (!spentWrites.has(logicalWriteIdentity(observation, action, candidate))) actions.push(action);
+      } else if (isEditable(candidate)) {
+        const slot = Object.keys(inputs)[0];
+        if (slot) {
+          const action = { id: `fill:${candidate.ref}:${slot}`, kind: "fill", ref: candidate.ref, slot };
+          if (!spentWrites.has(logicalWriteIdentity(observation, action, candidate))) actions.push(action);
+        }
+      }
     }
     if (actions.length > SEMANTIC_POLICY.limits.actionChoices) {
       throw new SemanticError(
@@ -143,12 +167,12 @@ function buildActions(observation, inputs, allowWrite, allowRefs = []) {
         `explicitly authorized actions exceed the limit of ${SEMANTIC_POLICY.limits.actionChoices}`,
       );
     }
-    const fillCandidates = writeCandidates.filter(
-      (candidate) => FIELD_ROLES.has(candidate.role) || ["input", "textarea", "select"].includes(candidate.type),
-    );
+    const fillCandidates = writeCandidates.filter(isEditable);
     for (const slot of Object.keys(inputs)) {
       for (const candidate of fillCandidates) {
-        actions.push({ id: `fill:${candidate.ref}:${slot}`, kind: "fill", ref: candidate.ref, slot });
+        if (actions.some((action) => action.kind === "fill" && action.ref === candidate.ref && action.slot === slot)) continue;
+        const action = { id: `fill:${candidate.ref}:${slot}`, kind: "fill", ref: candidate.ref, slot };
+        if (!spentWrites.has(logicalWriteIdentity(observation, action, candidate))) actions.push(action);
       }
     }
   }
@@ -162,10 +186,14 @@ function buildActions(observation, inputs, allowWrite, allowRefs = []) {
       } catch {}
     }
     if (allowWrite && !narrowed) {
-      actions.push({ id: `click:${candidate.ref}`, kind: "click", ref: candidate.ref });
-      if (FIELD_ROLES.has(candidate.role) || ["input", "textarea", "select"].includes(candidate.type)) {
+      if (CLICK_ROLES.has(candidate.role)) {
+        const action = { id: `click:${candidate.ref}`, kind: "click", ref: candidate.ref };
+        if (!spentWrites.has(logicalWriteIdentity(observation, action, candidate))) actions.push(action);
+      }
+      if (isEditable(candidate)) {
         for (const slot of Object.keys(inputs)) {
-          actions.push({ id: `fill:${candidate.ref}:${slot}`, kind: "fill", ref: candidate.ref, slot });
+          const action = { id: `fill:${candidate.ref}:${slot}`, kind: "fill", ref: candidate.ref, slot };
+          if (!spentWrites.has(logicalWriteIdentity(observation, action, candidate))) actions.push(action);
         }
       }
     }
@@ -230,14 +258,19 @@ async function runBrowserSemantic(options, { request, evaluate, now = () => perf
 
   const trace = [];
   let staleRefreshes = 0;
+  const spentWrites = new Set();
   let identical = 0;
   let previousHash = crypto.createHash("sha256").update(JSON.stringify(state)).digest("hex");
   for (let step = 1; step <= options.maxSteps; step++) {
     if (remaining() < 1) return { status: "stopped", stopReason: "time_budget", trace, providerCalls };
-    const actions = buildActions(observation, options.inputs, options.allowWrite, options.allowRefs);
+    const actions = buildActions(observation, options.inputs, options.allowWrite, options.allowRefs, spentWrites);
     const choice = await chooseAction({ state, goal: options.goal, actions, origin: state.origin, allowWrite: options.allowWrite, allowRefs: options.allowRefs, inputSlots: Object.keys(options.inputs), evaluate: evaluator });
     if (choice.status !== "selected") return { status: "stopped", stopReason: "uncertain", trace, providerCalls, decision: choice.decision, model: choice.model, usage: choice.usage };
     const action = choice.action;
+    const actionCandidate = observation.candidates.find((item) => item.ref === action.ref);
+    const writeIdentity = action.kind === "click" || action.kind === "fill"
+      ? logicalWriteIdentity(observation, action, actionCandidate)
+      : null;
     const traceAction = { step, kind: action.kind, ...(action.ref ? { ref: action.ref } : {}), ...(action.slot ? { slot: action.slot } : {}), ...(action.direction ? { direction: action.direction } : {}), ...(action.durationMs ? { durationMs: action.durationMs } : {}) };
     try { unwrapResponse(await executeAction(request, observation, action, options.inputs, remaining(), designatedIdentity)); }
     catch (error) {
@@ -248,12 +281,25 @@ async function runBrowserSemantic(options, { request, evaluate, now = () => perf
       return { status: "stopped", stopReason: error.code === "stale_observation" ? "stale_observation" : "action_failed", trace, providerCalls };
     }
     trace.push({ ...traceAction, result: "executed" });
-    observation = await observe();
-    state = providerState(observation);
-    const outcome = await verify({ state, outcome: options.goal, evidence: state.chunks, evaluate: evaluator });
+    try {
+      observation = await observe();
+      state = providerState(observation);
+    } catch {
+      return { status: "stopped", stopReason: "outcome_unknown", trace, providerCalls };
+    }
+    let outcome;
+    try {
+      outcome = await verify({ state, outcome: options.goal, evidence: state.chunks, evaluate: evaluator });
+    } catch {
+      return { status: "stopped", stopReason: "verification_failed", trace, providerCalls };
+    }
     if (outcome.status === "satisfied") return { status: "complete", stopReason: "complete", trace, verification: outcome, providerCalls };
     if (action.kind === "click" || action.kind === "fill") {
-      return { status: "stopped", stopReason: outcome.status === "not_satisfied" ? "blocked" : "uncertain", trace, verification: outcome, providerCalls };
+      if (outcome.status !== "not_satisfied") {
+        return { status: "stopped", stopReason: "uncertain", trace, verification: outcome, providerCalls };
+      }
+      spentWrites.add(writeIdentity);
+      continue;
     }
     const hash = crypto.createHash("sha256").update(JSON.stringify(state)).digest("hex");
     identical = hash === previousHash ? identical + 1 : 0;
