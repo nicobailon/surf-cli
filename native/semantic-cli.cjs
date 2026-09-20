@@ -12,8 +12,7 @@ const {
 
 const FIELD_ROLES = new Set(["textbox", "searchbox", "combobox", "spinbutton"]);
 
-function semanticHelp() {
-  return `Usage:
+const SEMANTIC_HELP = `Usage:
   surf semantic.find <goal> [--session <name> | --tab-id <id>] [--json]
   surf semantic.verify <outcome> [--session <name> | --tab-id <id>] [--json]
   surf semantic.filter <goal> [--top <1-12>] [--session <name> | --tab-id <id>] [--json]
@@ -21,7 +20,6 @@ function semanticHelp() {
   surf semantic auth set|status|clear
 
 Semantic commands send a bounded, value-free page observation to TypeSafe. semantic.act allows only same-origin navigation, fixed scroll/wait actions, and (with --allow-write) clicks/fills. --allow-write authorizes mutation-capable clicks, including submit/purchase/delete/send/publish; repeatable --allow-ref narrows this authority.`;
-}
 
 function normalizeSemanticArgs(argv) {
   if (argv[0] !== "semantic") return argv;
@@ -170,12 +168,11 @@ async function runBrowserSemantic(options, { request, evaluate, now = () => perf
   const observe = async () => semanticObservationFrom(await request("page.read", { semanticObservation: true }, remaining()));
   let observation = await observe();
   let state = providerState(observation);
-  const candidates = state.candidates;
-  if (options.command === "semantic.find") return find({ state, goal: options.goal, candidates, evaluate: evaluator });
+  if (options.command === "semantic.find") return find({ state, goal: options.goal, candidates: state.candidates, evaluate: evaluator });
   if (options.command === "semantic.verify") return verify({ state, outcome: options.goal, evidence: state.chunks, evaluate: evaluator });
   if (options.command === "semantic.filter") {
     const result = await filter({ state, goal: options.goal, chunks: state.chunks, top: options.top, evaluate: evaluator });
-    return { ...result, page: { origin: state.origin, title: state.title, readyState: state.readyState, modals: state.modals }, candidates, omitted: observation.omitted };
+    return { ...result, page: { origin: state.origin, title: state.title, readyState: state.readyState, modals: state.modals }, candidates: state.candidates, omitted: observation.omitted };
   }
 
   const trace = [];
@@ -214,7 +211,7 @@ async function runBrowserSemantic(options, { request, evaluate, now = () => perf
 async function handleSemanticCli(argv, { endpoint, env = process.env, input = process.stdin, output = process.stderr, openTransport = openClientTransport } = {}) {
   const options = parseSemanticArgs(argv);
   if (!options) return { handled: false };
-  if (options.command === "help") return { handled: true, value: semanticHelp(), raw: true };
+  if (options.command === "help") return { handled: true, value: SEMANTIC_HELP, raw: true };
   if (options.command === "semantic.auth.set") return { handled: true, value: await setTypeSafeCredentialFromInput({ input, output, env }), json: options.json };
   if (options.command === "semantic.auth.status") return { handled: true, value: credentialStatus(env), json: options.json };
   if (options.command === "semantic.auth.clear") return { handled: true, value: { cleared: clearStoredTypeSafeCredential(env), status: credentialStatus(env) }, json: options.json };
@@ -244,4 +241,4 @@ function formatSemanticOutput(result) {
   return JSON.stringify(result.value, null, 2);
 }
 
-module.exports = { buildActions, formatSemanticOutput, handleSemanticCli, normalizeSemanticArgs, parseSemanticArgs, providerState, runBrowserSemantic, semanticHelp };
+module.exports = { buildActions, formatSemanticOutput, handleSemanticCli, normalizeSemanticArgs, parseSemanticArgs, providerState, runBrowserSemantic };

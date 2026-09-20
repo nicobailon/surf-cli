@@ -88,7 +88,7 @@ function clearStoredTypeSafeCredential(env = process.env) {
   return removePrivateFile(filePath, { root });
 }
 
-function readNonInteractiveLine(input, maxBytes) {
+function readNonInteractiveLine(input) {
   return new Promise((resolve, reject) => {
     const chunks = [];
     let bytes = 0;
@@ -104,9 +104,9 @@ function readNonInteractiveLine(input, maxBytes) {
     const onData = (chunk) => {
       const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
       bytes += buffer.length;
-      if (bytes > maxBytes + 2) {
+      if (bytes > MAX_API_KEY_BYTES + 2) {
         input.pause?.();
-        fail(new Error(`TypeSafe API key input exceeds ${maxBytes} bytes`));
+        fail(new Error(`TypeSafe API key input exceeds ${MAX_API_KEY_BYTES} bytes`));
         return;
       }
       chunks.push(buffer);
@@ -134,7 +134,7 @@ function readNonInteractiveLine(input, maxBytes) {
   });
 }
 
-function readHiddenTtyLine(input, output, maxBytes, signalSource = process) {
+function readHiddenTtyLine(input, output, signalSource = process) {
   return new Promise((resolve, reject) => {
     let value = "";
     let settled = false;
@@ -163,8 +163,8 @@ function readHiddenTtyLine(input, output, maxBytes, signalSource = process) {
         if (character === "\r" || character === "\n") return finish();
         if (character === "\u007f" || character === "\b") value = value.slice(0, -1);
         else value += character;
-        if (Buffer.byteLength(value, "utf8") > maxBytes) {
-          return finish(new Error(`TypeSafe API key input exceeds ${maxBytes} bytes`));
+        if (Buffer.byteLength(value, "utf8") > MAX_API_KEY_BYTES) {
+          return finish(new Error(`TypeSafe API key input exceeds ${MAX_API_KEY_BYTES} bytes`));
         }
       }
     };
@@ -183,9 +183,9 @@ function readTypeSafeApiKey(options = {}) {
     if (typeof input.setRawMode !== "function") {
       return Promise.reject(new Error("hidden TypeSafe API key input is unavailable on this terminal"));
     }
-    return readHiddenTtyLine(input, output, MAX_API_KEY_BYTES, signalSource);
+    return readHiddenTtyLine(input, output, signalSource);
   }
-  return readNonInteractiveLine(input, MAX_API_KEY_BYTES);
+  return readNonInteractiveLine(input);
 }
 
 async function setTypeSafeCredentialFromInput(options = {}) {

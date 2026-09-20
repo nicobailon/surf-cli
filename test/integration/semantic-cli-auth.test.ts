@@ -8,7 +8,7 @@ const { spawnSync } = require("node:child_process");
 const roots: string[] = [];
 const cli = path.join(process.cwd(), "native", "cli.cjs");
 
-function environment(extra: Record<string, string> = {}) {
+function environment() {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "surf-semantic-auth-cli-"));
   roots.push(root);
   const { TYPESAFE_API_KEY: _ignored, ...baseEnvironment } = process.env;
@@ -16,7 +16,6 @@ function environment(extra: Record<string, string> = {}) {
     ...baseEnvironment,
     XDG_CONFIG_HOME: path.join(root, "config"),
     SURF_SOCKET: path.join(root, "missing.sock"),
-    ...extra,
   };
   return env;
 }

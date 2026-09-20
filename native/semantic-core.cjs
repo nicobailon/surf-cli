@@ -41,10 +41,6 @@ function providerInvalid(message) {
   throw new SemanticError("provider_invalid_response", message);
 }
 
-function assertPlainObject(value, message) {
-  if (!value || typeof value !== "object" || Array.isArray(value)) fail(message);
-}
-
 function assertOpaqueId(value, field) {
   if (typeof value !== "string" || !/^[A-Za-z0-9][A-Za-z0-9_.:-]{0,63}$/.test(value)) {
     fail(`${field} must be a bounded opaque identifier`);
@@ -55,7 +51,7 @@ function assertUniqueItems(items, maximum, label) {
   if (!Array.isArray(items) || items.length > maximum) fail(`${label} exceeds its limit of ${maximum}`);
   const ids = new Set();
   for (const item of items) {
-    assertPlainObject(item, `${label} entries must be objects`);
+    if (!item || typeof item !== "object" || Array.isArray(item)) fail(`${label} entries must be objects`);
     assertOpaqueId(item.id, `${label} id`);
     if (ids.has(item.id)) fail(`${label} ids must be unique`);
     ids.add(item.id);

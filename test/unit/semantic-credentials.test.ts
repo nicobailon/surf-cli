@@ -10,6 +10,22 @@ const credentials = require("../../native/semantic-credentials.cjs");
 
 const roots: string[] = [];
 
+class FakeTty extends EventEmitter {
+  isTTY = true;
+  isRaw = false;
+  rawCalls: boolean[] = [];
+  setRawMode(value: boolean) {
+    this.isRaw = value;
+    this.rawCalls.push(value);
+  }
+  resume() {
+    /* EventEmitter test double. */
+  }
+  pause() {
+    /* EventEmitter test double. */
+  }
+}
+
 function testEnv(extra: Record<string, string> = {}) {
   const parent = fs.mkdtempSync(path.join(os.tmpdir(), "surf-semantic-credentials-"));
   roots.push(parent);
@@ -162,21 +178,6 @@ describe("TypeSafe credential input", () => {
   });
 
   it("uses raw TTY input, handles editing, and never echoes the key", async () => {
-    class FakeTty extends EventEmitter {
-      isTTY = true;
-      isRaw = false;
-      rawCalls: boolean[] = [];
-      setRawMode(value: boolean) {
-        this.isRaw = value;
-        this.rawCalls.push(value);
-      }
-      resume() {
-        /* EventEmitter test double. */
-      }
-      pause() {
-        /* EventEmitter test double. */
-      }
-    }
     const input = new FakeTty();
     let written = "";
     const output = {
@@ -195,21 +196,6 @@ describe("TypeSafe credential input", () => {
   });
 
   it("restores raw mode and removes every temporary signal listener when interrupted", async () => {
-    class FakeTty extends EventEmitter {
-      isTTY = true;
-      isRaw = false;
-      rawCalls: boolean[] = [];
-      setRawMode(value: boolean) {
-        this.isRaw = value;
-        this.rawCalls.push(value);
-      }
-      resume() {
-        /* EventEmitter test double. */
-      }
-      pause() {
-        /* EventEmitter test double. */
-      }
-    }
     const input = new FakeTty();
     const signalSource = new EventEmitter();
     const pending = credentials.readTypeSafeApiKey({

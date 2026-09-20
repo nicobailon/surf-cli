@@ -30,7 +30,7 @@ function assertWithin(root, targetPath) {
   return resolvedTarget;
 }
 
-function assertPrivatePath(targetPath, root = getPrivateStateRoot(), allowMissing = true) {
+function assertPrivatePath(targetPath, root, allowMissing) {
   const resolvedRoot = path.resolve(root);
   const resolvedTarget = assertWithin(resolvedRoot, targetPath);
   const relative = path.relative(resolvedRoot, resolvedTarget);
@@ -167,7 +167,6 @@ function readPrivateJson(filePath, fallback = null, options = {}) {
 module.exports = {
   appendPrivateJsonLine,
   assertNotSymlink,
-  assertPrivatePath,
   assertWithin,
   atomicWriteFile,
   atomicWriteJson,
