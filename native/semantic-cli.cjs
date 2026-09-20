@@ -238,8 +238,23 @@ function isEditable(candidate) {
   return FIELD_ROLES.has(candidate.role) || ["textarea", "select"].includes(candidate.type);
 }
 
+function takeActionVariants(groups, capacity) {
+  const variants = groups.filter((group) => group.length);
+  const selected = [];
+  for (let index = 0; selected.length < capacity && variants.length; index = (index + 1) % variants.length) {
+    const action = variants[index].shift();
+    if (action) selected.push(action);
+    if (!variants[index].length) {
+      variants.splice(index, 1);
+      if (!variants.length) break;
+      index = (index - 1 + variants.length) % variants.length;
+    }
+  }
+  return selected;
+}
+
 function buildActions(observation, inputs, allowWrite, allowRefs = [], spentWrites = new Set()) {
-  const actions = [
+  const fixedActions = [
     ...SEMANTIC_POLICY.scrolls.map((direction) => ({ id: `scroll:${direction}`, kind: "scroll", direction })),
     ...SEMANTIC_POLICY.waitsMs.map((durationMs) => ({ id: `wait:${durationMs}`, kind: "wait", durationMs })),
   ];
@@ -255,29 +270,29 @@ function buildActions(observation, inputs, allowWrite, allowRefs = [], spentWrit
     const ranked = { ...candidate, index };
     if (!current || concreteCandidateOrder(ranked, current) < 0) navigationGroups.set(url, ranked);
   }
-  for (const [url, candidate] of navigationGroups) {
-    actions.push({
+  const navigationActions = Array.from(navigationGroups, ([url, candidate]) => ({
       id: `nav:${candidate.ref}`,
       kind: "navigate",
       url,
       concreteRef: candidate.ref,
       logicalIdentity: stableLogicalId(`navigation:${url}`, "action"),
-    });
-  }
+    }));
   if (narrowed) {
+    const mandatoryWrites = [];
+    const additionalFills = [];
     for (const candidate of writeCandidates) {
       if (CLICK_ROLES.has(candidate.role)) {
         const action = { id: `click:${candidate.ref}`, kind: "click", ref: candidate.ref };
-        if (!spentWrites.has(logicalWriteIdentity(observation, action, candidate))) actions.push(action);
+        if (!spentWrites.has(logicalWriteIdentity(observation, action, candidate))) mandatoryWrites.push(action);
       } else if (isEditable(candidate)) {
         const slot = Object.keys(inputs)[0];
         if (slot) {
           const action = { id: `fill:${candidate.ref}:${slot}`, kind: "fill", ref: candidate.ref, slot };
-          if (!spentWrites.has(logicalWriteIdentity(observation, action, candidate))) actions.push(action);
+          if (!spentWrites.has(logicalWriteIdentity(observation, action, candidate))) mandatoryWrites.push(action);
         }
       }
     }
-    if (actions.length > SEMANTIC_POLICY.limits.actionChoices) {
+    if (fixedActions.length + mandatoryWrites.length > SEMANTIC_POLICY.limits.actionChoices) {
       throw new SemanticError(
         "semantic_invalid_request",
         `explicitly authorized actions exceed the limit of ${SEMANTIC_POLICY.limits.actionChoices}`,
@@ -286,27 +301,49 @@ function buildActions(observation, inputs, allowWrite, allowRefs = [], spentWrit
     const fillCandidates = writeCandidates.filter(isEditable);
     for (const slot of Object.keys(inputs)) {
       for (const candidate of fillCandidates) {
-        if (actions.some((action) => action.kind === "fill" && action.ref === candidate.ref && action.slot === slot)) continue;
+        if (mandatoryWrites.some((action) => action.kind === "fill" && action.ref === candidate.ref && action.slot === slot)) continue;
         const action = { id: `fill:${candidate.ref}:${slot}`, kind: "fill", ref: candidate.ref, slot };
-        if (!spentWrites.has(logicalWriteIdentity(observation, action, candidate))) actions.push(action);
+        if (!spentWrites.has(logicalWriteIdentity(observation, action, candidate))) additionalFills.push(action);
       }
     }
+    const required = [...fixedActions, ...mandatoryWrites];
+    return [
+      ...required,
+      ...takeActionVariants(
+        [navigationActions, additionalFills],
+        SEMANTIC_POLICY.limits.actionChoices - required.length,
+      ),
+    ];
   }
+  const navigationClickActions = [];
+  const controlClickActions = [];
+  const fillActions = [];
   for (const candidate of observation.candidates) {
-    if (allowWrite && !narrowed) {
+    if (allowWrite) {
       if (CLICK_ROLES.has(candidate.role)) {
         const action = { id: `click:${candidate.ref}`, kind: "click", ref: candidate.ref };
-        if (!spentWrites.has(logicalWriteIdentity(observation, action, candidate))) actions.push(action);
+        if (!spentWrites.has(logicalWriteIdentity(observation, action, candidate))) {
+          const group = canonicalSameOriginDestination(candidate, observation.identity.fullUrl)
+            ? navigationClickActions
+            : controlClickActions;
+          group.push(action);
+        }
       }
       if (isEditable(candidate)) {
         for (const slot of Object.keys(inputs)) {
           const action = { id: `fill:${candidate.ref}:${slot}`, kind: "fill", ref: candidate.ref, slot };
-          if (!spentWrites.has(logicalWriteIdentity(observation, action, candidate))) actions.push(action);
+          if (!spentWrites.has(logicalWriteIdentity(observation, action, candidate))) fillActions.push(action);
         }
       }
     }
   }
-  return actions.slice(0, SEMANTIC_POLICY.limits.actionChoices);
+  return [
+    ...fixedActions,
+    ...takeActionVariants(
+      [navigationActions, navigationClickActions, controlClickActions, fillActions],
+      SEMANTIC_POLICY.limits.actionChoices - fixedActions.length,
+    ),
+  ];
 }
 
 function expectedIdentity(observation, candidate) {
