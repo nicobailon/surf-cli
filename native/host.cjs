@@ -844,7 +844,7 @@ function currentFrameContext(request) {
 function applyFrameContextToMessage(request, extensionMessage) {
   if (!extensionMessage || !FRAME_CONTEXT_MESSAGE_TYPES.has(extensionMessage.type)) return;
   const context = currentFrameContext(request);
-  if (context) extensionMessage.frameId = context.frameId;
+  if (context && !Number.isInteger(extensionMessage.frameId)) extensionMessage.frameId = context.frameId;
 }
 
 function persistFrameContext(request, frameId, url) {

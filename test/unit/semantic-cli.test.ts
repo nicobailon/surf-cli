@@ -5,6 +5,7 @@ const semantic = require("../../native/semantic-cli.cjs") as {
     observation: Record<string, any>,
     inputs: Record<string, string>,
     allowWrite: boolean,
+    allowRefs?: string[],
   ): Record<string, any>[];
   normalizeSemanticArgs(args: string[]): string[];
   parseSemanticArgs(args: string[]): Record<string, any> | null;
@@ -52,7 +53,7 @@ const observation = {
       href: "https://evil.test/",
     },
   ],
-  chunks: [{ id: "c1", text: "Account settings" }],
+  chunks: [{ id: "c1", text: "Account settings", refs: ["e1", "e2"] }],
   omitted: { candidates: 0, chunks: 0 },
 };
 
@@ -144,9 +145,18 @@ describe("semantic CLI", () => {
   });
 
   it("executes an authorized write once, refreshes, verifies, and redacts the local value from its trace", async () => {
-    const requests: Array<{ tool: string; args: Record<string, any> }> = [];
-    const request = async (tool: string, args: Record<string, any>) => {
-      requests.push({ tool, args });
+    const requests: Array<{
+      tool: string;
+      args: Record<string, any>;
+      designatedIdentity?: Record<string, any>;
+    }> = [];
+    const request = async (
+      tool: string,
+      args: Record<string, any>,
+      _timeout: number,
+      designatedIdentity?: Record<string, any>,
+    ) => {
+      requests.push({ tool, args, designatedIdentity });
       return tool === "page.read" ? response({ semanticObservation: observation }) : response("OK");
     };
     let call = 0;
@@ -183,6 +193,111 @@ describe("semantic CLI", () => {
     expect(
       requests.find((item) => item.tool === "form.fill")?.args.semanticExpectedIdentity,
     ).toMatchObject({ tabId: 7, ref: "e1", documentToken: "doc" });
+    expect(
+      requests.filter((item) => item.tool === "page.read")[1].designatedIdentity,
+    ).toMatchObject({
+      tabId: 7,
+      frameId: 0,
+    });
+    expect(requests.find((item) => item.tool === "form.fill")?.designatedIdentity).toMatchObject({
+      tabId: 7,
+      frameId: 0,
+    });
     expect(call).toBe(2);
+  });
+
+  it("never replays a write when verification is not satisfied", async () => {
+    let mutations = 0;
+    const request = async (tool: string) => {
+      if (tool === "page.read") {
+        return response({ semanticObservation: observation });
+      }
+      if (tool === "click") {
+        mutations++;
+      }
+      return response("OK");
+    };
+    const evaluate = async (_state: unknown, questions: Record<string, any>) => {
+      if (questions.action) {
+        return provider({ action: choice("click:e2", Object.keys(questions.action.criteria)) });
+      }
+      const answers: Record<string, any> = {
+        verdict: choice("not_satisfied", ["satisfied", "not_satisfied"]),
+      };
+      if (questions.evidence) {
+        answers.evidence = choice("c1", Object.keys(questions.evidence.criteria));
+      }
+      return provider(answers);
+    };
+    const result = await semantic.runBrowserSemantic(
+      {
+        command: "semantic.act",
+        goal: "delete account",
+        allowWrite: true,
+        allowRefs: ["e2"],
+        inputs: {},
+        maxSteps: 3,
+      },
+      { request, evaluate, now: () => 0 },
+    );
+    expect(result).toMatchObject({ status: "stopped", stopReason: "blocked" });
+    expect(mutations).toBe(1);
+    expect(result.trace).toHaveLength(1);
+  });
+
+  it("reserves fixed actions and late narrowed refs at the action cap", () => {
+    const candidates = Array.from({ length: 10 }, (_, index) => ({
+      ref: `e${index + 1}`,
+      role: "textbox",
+      name: `Field ${index + 1}`,
+      type: "input",
+      nearbyText: "Form",
+    }));
+    const inputs = Object.fromEntries(
+      Array.from({ length: 16 }, (_, index) => [`slot${index}`, "value"]),
+    );
+    const actions = semantic.buildActions(
+      { ...observation, candidates },
+      inputs,
+      true,
+      candidates.map((candidate) => candidate.ref),
+    );
+    expect(actions).toHaveLength(64);
+    expect(actions).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ id: "scroll:down_600" }),
+        expect.objectContaining({ id: "scroll:up_600" }),
+        expect.objectContaining({ id: "scroll:top" }),
+        expect.objectContaining({ id: "scroll:bottom" }),
+        expect.objectContaining({ id: "wait:500" }),
+        expect.objectContaining({ id: "wait:1500" }),
+        expect.objectContaining({ id: "click:e9" }),
+        expect.objectContaining({ id: "click:e10" }),
+        expect.objectContaining({ id: "fill:e9:slot3" }),
+        expect.objectContaining({ id: "fill:e10:slot3" }),
+      ]),
+    );
+  });
+
+  it("filter returns only refs associated with selected chunks", async () => {
+    const filteredObservation = {
+      ...observation,
+      chunks: [
+        { id: "c1", text: "Profile settings", refs: ["e3"] },
+        { id: "c2", text: "Danger zone", refs: ["e2"] },
+      ],
+    };
+    const request = async () => response({ semanticObservation: filteredObservation });
+    const evaluate = async (_state: unknown, questions: Record<string, any>) =>
+      provider({
+        chunk_0: choice("relevant", Object.keys(questions.chunk_0.criteria)),
+        chunk_1: choice("not_relevant", Object.keys(questions.chunk_1.criteria)),
+      });
+    const result = await semantic.runBrowserSemantic(
+      { command: "semantic.filter", goal: "profile", top: 1 },
+      { request, evaluate },
+    );
+    expect(result.chunks).toHaveLength(1);
+    expect(result.candidates.map((candidate: { id: string }) => candidate.id)).toEqual(["e3"]);
   });
 });

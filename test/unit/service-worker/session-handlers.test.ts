@@ -219,6 +219,39 @@ describe("browser session handlers", () => {
       { type: "CLICK_ELEMENT", ref: "e1", button: "left", expectedIdentity: identity },
       { frameId: 4 },
     );
+
+    await handleMessage(
+      {
+        type: "EXECUTE_NAVIGATE",
+        tabId: 71,
+        frameId: 4,
+        url: "https://example.test/next",
+        expectedIdentity: identity,
+      },
+      {},
+    );
+    expect(chrome.tabs.sendMessage).toHaveBeenLastCalledWith(
+      71,
+      { type: "SEMANTIC_NAVIGATE", url: "https://example.test/next", expectedIdentity: identity },
+      { frameId: 4 },
+    );
+
+    await handleMessage(
+      {
+        type: "EXECUTE_SCROLL",
+        tabId: 71,
+        frameId: 4,
+        deltaX: 0,
+        deltaY: 600,
+        expectedIdentity: identity,
+      },
+      {},
+    );
+    expect(chrome.tabs.sendMessage).toHaveBeenLastCalledWith(
+      71,
+      { type: "SEMANTIC_SCROLL", deltaX: 0, deltaY: 600, expectedIdentity: identity },
+      { frameId: 4 },
+    );
   });
 
   it("uses only an explicit host-provided frame context", async () => {

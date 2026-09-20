@@ -514,7 +514,7 @@ function mapComputerAction(args, tabId) {
   const { action, text, scroll_direction, scroll_amount, 
           start_coordinate, ref, duration, modifiers } = a;
   const coordinate = a.coordinate || (a.x !== undefined && a.y !== undefined ? [a.x, a.y] : undefined);
-  const baseMsg = { tabId };
+  const baseMsg = { tabId, ...(Number.isInteger(a.semanticFrameId) ? { frameId: a.semanticFrameId } : {}) };
   
   if (!action) {
     return { type: "UNSUPPORTED_ACTION", action: null, message: "No action specified for computer tool" };
@@ -583,7 +583,7 @@ function mapComputerAction(args, tabId) {
         right: { deltaX: amount, deltaY: 0 },
       };
       const { deltaX, deltaY } = deltas[direction] || { deltaX: 0, deltaY: 0 };
-      return { type: "EXECUTE_SCROLL", deltaX, deltaY, x: coordinate?.[0], y: coordinate?.[1], ...baseMsg };
+      return { type: "EXECUTE_SCROLL", deltaX, deltaY, x: coordinate?.[0], y: coordinate?.[1], expectedIdentity: a.semanticExpectedIdentity, ...baseMsg };
     }
     
     case "scroll_to":
@@ -622,14 +622,14 @@ function mapComputerAction(args, tabId) {
  * Map tool name and args to extension message
  */
 function mapToolToMessage(tool, args, tabId) {
-  const baseMsg = { tabId };
   const a = args || {};
+  const baseMsg = { tabId, ...(Number.isInteger(a.semanticFrameId) ? { frameId: a.semanticFrameId } : {}) };
   
   switch (tool) {
     case "computer":
       return mapComputerAction(args, tabId);
     case "navigate":
-      return { type: "EXECUTE_NAVIGATE", url: a.url, ...baseMsg };
+      return { type: "EXECUTE_NAVIGATE", url: a.url, expectedIdentity: a.semanticExpectedIdentity, ...baseMsg };
     case "read_page":
       return { 
         type: "READ_PAGE", 
@@ -893,9 +893,9 @@ function mapToolToMessage(tool, args, tabId) {
     case "js":
       return { type: "EXECUTE_JAVASCRIPT", code: a.code, ...baseMsg };
     case "scroll.top":
-      return { type: "SCROLL_TO_POSITION", position: "top", selector: a.selector, ...baseMsg };
+      return { type: "SCROLL_TO_POSITION", position: "top", selector: a.selector, expectedIdentity: a.semanticExpectedIdentity, ...baseMsg };
     case "scroll.bottom":
-      return { type: "SCROLL_TO_POSITION", position: "bottom", selector: a.selector, ...baseMsg };
+      return { type: "SCROLL_TO_POSITION", position: "bottom", selector: a.selector, expectedIdentity: a.semanticExpectedIdentity, ...baseMsg };
     case "scroll.info":
       return { type: "GET_SCROLL_INFO", selector: a.selector, ...baseMsg };
     case "scroll.to":
@@ -1339,10 +1339,12 @@ function applySemanticExpectedIdentity(request, extensionMessage, args) {
   };
   const expected = args?.semanticExpectedIdentity;
   if (expected === undefined) return;
-  if (!extensionMessage || !["CLICK_REF", "FORM_FILL"].includes(extensionMessage.type)) {
-    fail("invalid_expected_identity", "semantic expected identity is only valid for ref clicks and fills");
+  const guardedTypes = ["CLICK_REF", "FORM_FILL", "EXECUTE_NAVIGATE", "EXECUTE_SCROLL", "SCROLL_TO_POSITION"];
+  if (!extensionMessage || !guardedTypes.includes(extensionMessage.type)) {
+    fail("invalid_expected_identity", "semantic expected identity is not valid for this action");
   }
-  const stringFields = ["browserEpoch", "fullUrl", "documentToken", "ref", "role", "name", "type"];
+  const domAction = extensionMessage.type === "CLICK_REF" || extensionMessage.type === "FORM_FILL";
+  const stringFields = ["browserEpoch", "fullUrl", "documentToken", ...(domAction ? ["ref", "role", "name", "type"] : [])];
   if (!expected || typeof expected !== "object" || stringFields.some((field) => typeof expected[field] !== "string")) {
     fail("invalid_expected_identity", "invalid semantic expected identity");
   }
@@ -1354,7 +1356,7 @@ function applySemanticExpectedIdentity(request, extensionMessage, args) {
     request?.browserIdentity?.browserEpoch !== expected.browserEpoch ||
     request?.target?.tabId !== expected.tabId ||
     actualFrameId !== expected.frameId ||
-    extensionMessage.ref && extensionMessage.ref !== expected.ref ||
+    domAction && extensionMessage.ref && extensionMessage.ref !== expected.ref ||
     extensionMessage.type === "FORM_FILL" &&
       (!Array.isArray(extensionMessage.data) || extensionMessage.data.length !== 1 || extensionMessage.data[0]?.ref !== expected.ref)
   ) {
@@ -1363,10 +1365,7 @@ function applySemanticExpectedIdentity(request, extensionMessage, args) {
   extensionMessage.expectedIdentity = {
     fullUrl: expected.fullUrl,
     documentToken: expected.documentToken,
-    ref: expected.ref,
-    role: expected.role,
-    name: expected.name,
-    type: expected.type,
+    ...(domAction ? { ref: expected.ref, role: expected.role, name: expected.name, type: expected.type } : {}),
   };
 }
 

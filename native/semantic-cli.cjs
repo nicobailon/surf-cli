@@ -89,7 +89,7 @@ function providerState(observation) {
     readyState: observation.page.readyState,
     modals: observation.page.modals,
     candidates: observation.candidates.map(({ ref, role, name, type, nearbyText }) => ({ id: ref, role, name, type, text: nearbyText })),
-    chunks: observation.chunks.map(({ id, text }) => ({ id, text })),
+    chunks: observation.chunks.map(({ id, text, refs = [] }) => ({ id, text, refs })),
   };
 }
 
@@ -107,15 +107,45 @@ function semanticObservationFrom(response) {
   const text = unwrapResponse(response);
   let envelope;
   try { envelope = JSON.parse(text); } catch { throw new Error("browser returned an invalid semantic observation"); }
-  if (!envelope?.semanticObservation?.identity || !Array.isArray(envelope.semanticObservation.candidates) || !Array.isArray(envelope.semanticObservation.chunks)) {
+  const observation = envelope?.semanticObservation;
+  const identity = observation?.identity;
+  if (
+    typeof identity?.browserEpoch !== "string" ||
+    !Number.isInteger(identity.tabId) ||
+    !Number.isInteger(identity.frameId) ||
+    typeof identity.fullUrl !== "string" ||
+    typeof identity.documentToken !== "string" ||
+    !Array.isArray(observation.candidates) ||
+    !Array.isArray(observation.chunks)
+  ) {
     throw new Error("browser returned an invalid semantic observation");
   }
-  return envelope.semanticObservation;
+  return observation;
 }
 
-function buildActions(observation, inputs, allowWrite) {
-  const actions = [];
+function buildActions(observation, inputs, allowWrite, allowRefs = []) {
+  const actions = [
+    ...SEMANTIC_POLICY.scrolls.map((direction) => ({ id: `scroll:${direction}`, kind: "scroll", direction })),
+    ...SEMANTIC_POLICY.waitsMs.map((durationMs) => ({ id: `wait:${durationMs}`, kind: "wait", durationMs })),
+  ];
   const origin = new URL(observation.identity.fullUrl).origin;
+  const narrowed = allowRefs.length ? new Set(allowRefs) : null;
+  const writeCandidates = allowWrite
+    ? observation.candidates.filter((candidate) => !narrowed || narrowed.has(candidate.ref))
+    : [];
+  if (narrowed) {
+    for (const candidate of writeCandidates) {
+      actions.push({ id: `click:${candidate.ref}`, kind: "click", ref: candidate.ref });
+    }
+    const fillCandidates = writeCandidates.filter(
+      (candidate) => FIELD_ROLES.has(candidate.role) || ["input", "textarea", "select"].includes(candidate.type),
+    );
+    for (const slot of Object.keys(inputs)) {
+      for (const candidate of fillCandidates) {
+        actions.push({ id: `fill:${candidate.ref}:${slot}`, kind: "fill", ref: candidate.ref, slot });
+      }
+    }
+  }
   for (const candidate of observation.candidates) {
     if (candidate.href && candidate.download !== true) {
       try {
@@ -125,15 +155,15 @@ function buildActions(observation, inputs, allowWrite) {
         }
       } catch {}
     }
-    if (allowWrite) actions.push({ id: `click:${candidate.ref}`, kind: "click", ref: candidate.ref });
-    if (allowWrite && (FIELD_ROLES.has(candidate.role) || ["input", "textarea", "select"].includes(candidate.type))) {
-      for (const slot of Object.keys(inputs)) actions.push({ id: `fill:${candidate.ref}:${slot}`, kind: "fill", ref: candidate.ref, slot });
+    if (allowWrite && !narrowed) {
+      actions.push({ id: `click:${candidate.ref}`, kind: "click", ref: candidate.ref });
+      if (FIELD_ROLES.has(candidate.role) || ["input", "textarea", "select"].includes(candidate.type)) {
+        for (const slot of Object.keys(inputs)) {
+          actions.push({ id: `fill:${candidate.ref}:${slot}`, kind: "fill", ref: candidate.ref, slot });
+        }
+      }
     }
   }
-  actions.push(
-    ...SEMANTIC_POLICY.scrolls.map((direction) => ({ id: `scroll:${direction}`, kind: "scroll", direction })),
-    ...SEMANTIC_POLICY.waitsMs.map((durationMs) => ({ id: `wait:${durationMs}`, kind: "wait", durationMs })),
-  );
   return actions.slice(0, SEMANTIC_POLICY.limits.candidates);
 }
 
@@ -141,16 +171,17 @@ function expectedIdentity(observation, candidate) {
   return { ...observation.identity, ref: candidate.ref, role: candidate.role, name: candidate.name, type: candidate.type };
 }
 
-async function executeAction(request, observation, action, inputs, timeoutMs) {
+async function executeAction(request, observation, action, inputs, timeoutMs, designatedIdentity) {
   const candidate = observation.candidates.find((item) => item.ref === action.ref);
-  if (action.kind === "navigate") return request("navigate", { url: action.url }, timeoutMs);
-  if (action.kind === "click") return request("click", { ref: action.ref, semanticExpectedIdentity: expectedIdentity(observation, candidate) }, timeoutMs);
-  if (action.kind === "fill") return request("form.fill", { data: [{ ref: action.ref, value: inputs[action.slot] }], semanticExpectedIdentity: expectedIdentity(observation, candidate) }, timeoutMs);
+  const guardedRequest = (tool, args) => request(tool, { ...args, semanticExpectedIdentity: observation.identity }, timeoutMs, designatedIdentity);
+  if (action.kind === "navigate") return guardedRequest("navigate", { url: action.url });
+  if (action.kind === "click") return request("click", { ref: action.ref, semanticExpectedIdentity: expectedIdentity(observation, candidate) }, timeoutMs, designatedIdentity);
+  if (action.kind === "fill") return request("form.fill", { data: [{ ref: action.ref, value: inputs[action.slot] }], semanticExpectedIdentity: expectedIdentity(observation, candidate) }, timeoutMs, designatedIdentity);
   if (action.kind === "scroll") {
-    if (action.direction === "top" || action.direction === "bottom") return request(`scroll.${action.direction}`, {}, timeoutMs);
-    return request("scroll", { direction: action.direction.startsWith("up") ? "up" : "down", scroll_pixels: 600 }, timeoutMs);
+    if (action.direction === "top" || action.direction === "bottom") return guardedRequest(`scroll.${action.direction}`, {});
+    return guardedRequest("scroll", { direction: action.direction.startsWith("up") ? "up" : "down", scroll_pixels: 600 });
   }
-  return request("wait", { duration: action.durationMs / 1000 }, timeoutMs);
+  return request("wait", { duration: action.durationMs / 1000 }, timeoutMs, designatedIdentity);
 }
 
 async function runBrowserSemantic(options, { request, evaluate, now = () => performance.now() }) {
@@ -165,14 +196,30 @@ async function runBrowserSemantic(options, { request, evaluate, now = () => perf
     try { return await evaluate(state, questions, { ...providerOptions, signal: controller.signal }); }
     finally { clearTimeout(timer); }
   };
-  const observe = async () => semanticObservationFrom(await request("page.read", { semanticObservation: true }, remaining()));
+  let designatedIdentity;
+  const observe = async () => {
+    const observation = semanticObservationFrom(await request("page.read", { semanticObservation: true }, remaining(), designatedIdentity));
+    if (!designatedIdentity) {
+      designatedIdentity = observation.identity;
+    } else if (
+      observation.identity.browserEpoch !== designatedIdentity.browserEpoch ||
+      observation.identity.tabId !== designatedIdentity.tabId ||
+      observation.identity.frameId !== designatedIdentity.frameId
+    ) {
+      const error = new Error("stale_observation");
+      error.code = "stale_observation";
+      throw error;
+    }
+    return observation;
+  };
   let observation = await observe();
   let state = providerState(observation);
   if (options.command === "semantic.find") return find({ state, goal: options.goal, candidates: state.candidates, evaluate: evaluator });
   if (options.command === "semantic.verify") return verify({ state, outcome: options.goal, evidence: state.chunks, evaluate: evaluator });
   if (options.command === "semantic.filter") {
     const result = await filter({ state, goal: options.goal, chunks: state.chunks, top: options.top, evaluate: evaluator });
-    return { ...result, page: { origin: state.origin, title: state.title, readyState: state.readyState, modals: state.modals }, candidates: state.candidates, omitted: observation.omitted };
+    const relevantRefs = new Set(result.chunks.flatMap((chunk) => chunk.refs || []));
+    return { ...result, page: { origin: state.origin, title: state.title, readyState: state.readyState, modals: state.modals }, candidates: state.candidates.filter((candidate) => relevantRefs.has(candidate.id)), omitted: observation.omitted };
   }
 
   const trace = [];
@@ -181,12 +228,12 @@ async function runBrowserSemantic(options, { request, evaluate, now = () => perf
   let previousHash = crypto.createHash("sha256").update(JSON.stringify(state)).digest("hex");
   for (let step = 1; step <= options.maxSteps; step++) {
     if (remaining() < 1) return { status: "stopped", stopReason: "time_budget", trace, providerCalls };
-    const actions = buildActions(observation, options.inputs, options.allowWrite);
+    const actions = buildActions(observation, options.inputs, options.allowWrite, options.allowRefs);
     const choice = await chooseAction({ state, goal: options.goal, actions, origin: state.origin, allowWrite: options.allowWrite, allowRefs: options.allowRefs, inputSlots: Object.keys(options.inputs), evaluate: evaluator });
     if (choice.status !== "selected") return { status: "stopped", stopReason: "uncertain", trace, providerCalls, decision: choice.decision, model: choice.model, usage: choice.usage };
     const action = choice.action;
     const traceAction = { step, kind: action.kind, ...(action.ref ? { ref: action.ref } : {}), ...(action.slot ? { slot: action.slot } : {}), ...(action.direction ? { direction: action.direction } : {}), ...(action.durationMs ? { durationMs: action.durationMs } : {}) };
-    try { unwrapResponse(await executeAction(request, observation, action, options.inputs, remaining())); }
+    try { unwrapResponse(await executeAction(request, observation, action, options.inputs, remaining(), designatedIdentity)); }
     catch (error) {
       trace.push({ ...traceAction, result: error.code === "stale_observation" ? "stale" : "failed" });
       if (error.code === "stale_observation" && staleRefreshes++ < SEMANTIC_POLICY.limits.staleRefreshes) {
@@ -199,7 +246,9 @@ async function runBrowserSemantic(options, { request, evaluate, now = () => perf
     state = providerState(observation);
     const outcome = await verify({ state, outcome: options.goal, evidence: state.chunks, evaluate: evaluator });
     if (outcome.status === "satisfied") return { status: "complete", stopReason: "complete", trace, verification: outcome, providerCalls };
-    if ((action.kind === "click" || action.kind === "fill") && outcome.status === "uncertain") return { status: "stopped", stopReason: "uncertain", trace, verification: outcome, providerCalls };
+    if (action.kind === "click" || action.kind === "fill") {
+      return { status: "stopped", stopReason: outcome.status === "not_satisfied" ? "blocked" : "uncertain", trace, verification: outcome, providerCalls };
+    }
     const hash = crypto.createHash("sha256").update(JSON.stringify(state)).digest("hex");
     identical = hash === previousHash ? identical + 1 : 0;
     previousHash = hash;
@@ -227,7 +276,15 @@ async function handleSemanticCli(argv, { endpoint, env = process.env, input = pr
     ...(options.noWait ? { admission: { wait: false } } : {}),
   };
   try {
-    const request = (tool, args, timeoutMs = SEMANTIC_POLICY.limits.maxWallMs) => transport.request({ type: "tool_request", method: "execute_tool", params: { tool, args }, id: `semantic-${++id}`, ...target }, Math.max(1, timeoutMs));
+    const request = (tool, args, timeoutMs = SEMANTIC_POLICY.limits.maxWallMs, designatedIdentity) => transport.request({
+      type: "tool_request",
+      method: "execute_tool",
+      params: { tool, args: designatedIdentity ? { ...args, semanticFrameId: designatedIdentity.frameId } : args },
+      id: `semantic-${++id}`,
+      ...(designatedIdentity
+        ? { tabId: designatedIdentity.tabId, ...(target.admission ? { admission: target.admission } : {}) }
+        : target),
+    }, Math.max(1, timeoutMs));
     const value = await runBrowserSemantic(options, { request, evaluate: createJevEvaluator({ apiKey: credential.apiKey, env }) });
     return { handled: true, value, json: options.json };
   } finally { await transport.close(); }

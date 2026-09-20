@@ -258,6 +258,14 @@ describe("accessibility tree", () => {
         expect.objectContaining({ role: "button", name: "Continue", type: "button" }),
       ]),
     );
+    const observedRefs = response.semanticObservation.candidates.map(
+      (candidate: any) => candidate.ref,
+    );
+    expect(response.semanticObservation.chunks).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ refs: expect.arrayContaining(observedRefs) }),
+      ]),
+    );
     expect(JSON.stringify(response.semanticObservation)).not.toContain("unique-password-sentinel");
     expect(
       new TextEncoder().encode(JSON.stringify(response.semanticObservation)).length,
@@ -331,6 +339,34 @@ describe("accessibility tree", () => {
 
     expect(response).toMatchObject({ success: false, code: "stale_observation", filled: 0 });
     expect(input.value).toBe("original");
+  });
+
+  it.each([
+    { type: "SEMANTIC_NAVIGATE", url: "https://example.test/next" },
+    { type: "SEMANTIC_SCROLL", deltaX: 0, deltaY: 600 },
+  ])("rejects stale guarded $type without acting on a replacement document", (message) => {
+    const scrollBy = vi.fn();
+    const scrollTo = vi.fn();
+    (window as any).scrollBy = scrollBy;
+    (window as any).scrollTo = scrollTo;
+    let response: any;
+    messageHandler?.(
+      {
+        ...message,
+        expectedIdentity: {
+          fullUrl: "https://example.test/replaced",
+          documentToken: "old-document",
+        },
+      },
+      {},
+      (result) => {
+        response = result;
+      },
+    );
+    expect(response).toEqual({ error: "stale_observation", code: "stale_observation" });
+    expect(window.location.href).toBe("https://example.test/page");
+    expect(scrollBy).not.toHaveBeenCalled();
+    expect(scrollTo).not.toHaveBeenCalled();
   });
 
   it("caps visible text in compact mode", () => {

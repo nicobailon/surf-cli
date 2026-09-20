@@ -117,9 +117,20 @@ function buildSemanticObservation() {
   });
   const candidates = allCandidates.slice(0, SEMANTIC_MAX_CANDIDATES);
 
+  const associatedText = new Map<string, string[]>();
+  for (const candidate of candidates) {
+    if (!candidate.nearbyText) continue;
+    const refs = associatedText.get(candidate.nearbyText) || [];
+    refs.push(candidate.ref);
+    associatedText.set(candidate.nearbyText, refs);
+  }
   const text = document.body ? collectValueFreeText(document.body, 12 * 1024) : "";
-  const rawChunks = text.match(/.{1,400}(?:\s|$)/g)?.map((chunk) => boundedText(chunk, 400)).filter(Boolean) || [];
-  const chunks = rawChunks.slice(0, SEMANTIC_MAX_CHUNKS).map((content, index) => ({ id: `c${index + 1}`, text: content }));
+  const pageChunks = text.match(/.{1,400}(?:\s|$)/g)?.map((chunk) => boundedText(chunk, 400)).filter(Boolean) || [];
+  const rawChunks = [
+    ...Array.from(associatedText, ([text, refs]) => ({ text, refs })),
+    ...pageChunks.filter((text) => !associatedText.has(text)).map((text) => ({ text, refs: [] as string[] })),
+  ];
+  const chunks = rawChunks.slice(0, SEMANTIC_MAX_CHUNKS).map(({ text, refs }, index) => ({ id: `c${index + 1}`, text, refs }));
   const observation = {
     version: 1,
     identity: {
@@ -149,9 +160,10 @@ function buildSemanticObservation() {
   return observation;
 }
 
-function semanticGuardError(element: Element | undefined, expected: any): string | null {
+function semanticGuardError(element: Element | undefined, expected: any, requireElement = true): string | null {
   if (!expected || typeof expected !== "object") return null;
   if (window.location.href !== expected.fullUrl || semanticDocumentToken !== expected.documentToken) return "stale_observation";
+  if (!requireElement) return null;
   if (!element || ("isConnected" in element && element.isConnected === false)) return "stale_observation";
   if (
     expected.ref !== undefined &&
@@ -1679,6 +1691,31 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     case "GET_ELEMENT_COORDINATES": {
       const result = getElementCoordinates(message.ref);
       sendResponse(result);
+      break;
+    }
+    case "SEMANTIC_NAVIGATE": {
+      const guardError = semanticGuardError(undefined, message.expectedIdentity, false);
+      if (guardError) {
+        sendResponse({ error: guardError, code: guardError });
+        break;
+      }
+      window.location.href = message.url;
+      sendResponse({ success: true });
+      break;
+    }
+    case "SEMANTIC_SCROLL": {
+      const guardError = semanticGuardError(undefined, message.expectedIdentity, false);
+      if (guardError) {
+        sendResponse({ error: guardError, code: guardError });
+        break;
+      }
+      if (message.position === "top" || message.position === "bottom") {
+        const top = message.position === "top" ? 0 : document.documentElement.scrollHeight;
+        window.scrollTo(0, top);
+      } else {
+        window.scrollBy(message.deltaX || 0, message.deltaY || 0);
+      }
+      sendResponse({ success: true, scrollX: window.scrollX, scrollY: window.scrollY });
       break;
     }
     case "CLICK_ELEMENT": {

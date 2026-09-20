@@ -200,6 +200,16 @@ describe("mapToolToMessage", () => {
       ).toBe(true);
     });
 
+    it("pins internal semantic reads to the designated frame", () => {
+      expect(
+        helpers.mapToolToMessage(
+          "page.read",
+          { semanticObservation: true, semanticFrameId: 4 },
+          71,
+        ),
+      ).toMatchObject({ type: "READ_PAGE", tabId: 71, frameId: 4 });
+    });
+
     it("throws when max-bytes is not a positive integer", () => {
       for (const bad of ["abc", "0", "-5", "12abc", "1.5", " ", ""]) {
         expect(() => helpers.mapToolToMessage("page.read", { "max-bytes": bad })).toThrow(
@@ -474,6 +484,37 @@ describe("applySemanticExpectedIdentity", () => {
       ),
     ).toThrow("stale_observation");
   });
+
+  it.each(["EXECUTE_NAVIGATE", "EXECUTE_SCROLL", "SCROLL_TO_POSITION"])(
+    "forwards document identity for guarded %s",
+    (type) => {
+      const message: any = { type, frameId: 3 };
+      helpers.applySemanticExpectedIdentity(
+        { browserIdentity: { browserEpoch: "epoch-1" }, target: { tabId: 7 } },
+        message,
+        { semanticExpectedIdentity: expected },
+      );
+      expect(message.expectedIdentity).toEqual({
+        fullUrl: expected.fullUrl,
+        documentToken: expected.documentToken,
+      });
+    },
+  );
+
+  it.each(["EXECUTE_NAVIGATE", "EXECUTE_SCROLL", "SCROLL_TO_POSITION"])(
+    "rejects %s on a replacement target before extension dispatch",
+    (type) => {
+      const message: any = { type, frameId: 3 };
+      expect(() =>
+        helpers.applySemanticExpectedIdentity(
+          { browserIdentity: { browserEpoch: "epoch-1" }, target: { tabId: 8 } },
+          message,
+          { semanticExpectedIdentity: expected },
+        ),
+      ).toThrow("stale_observation");
+      expect(message.expectedIdentity).toBeUndefined();
+    },
+  );
 });
 
 describe("formatToolError", () => {
