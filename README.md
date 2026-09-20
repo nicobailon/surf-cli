@@ -927,7 +927,7 @@ surf semantic.act "Open notification settings" --max-steps 5
 surf semantic.act "Fill the email field" --input email="$EMAIL" --allow-write
 surf semantic auth set       # hidden prompt, or exactly one stdin line
 surf semantic auth status    # source and redacted fingerprint only
-surf semantic auth clear     # removes only the stored credential
+surf semantic auth clear     # removes the shared credential for all clients
 
 # Ephemeral/CI override (highest precedence; does not modify the stored key)
 TYPESAFE_API_KEY="$CI_TYPESAFE_KEY" surf semantic.find "the checkout link"
@@ -960,10 +960,8 @@ come only from named `--input name=value` slots and are never sent to TypeSafe o
 included in traces. Actions are freshness-guarded and uncertain writes are not
 replayed. Page text remains adversarial data; model output never grants authority.
 
-Maintainers can run the non-CI evaluation harness with
-`SURF_REAL_JEV=1 TYPESAFE_API_KEY=... npm run eval:jev`; it reports target
-accuracy, abstention outcomes, latency, tokens, and leaves cost unestimated unless
-current provider pricing is supplied externally.
+The real-Jev evaluation harness is opt-in and excluded from CI:
+`SURF_REAL_JEV=1 TYPESAFE_API_KEY=... npm run eval:jev`.
 
 ## Environment Variables
 
@@ -984,7 +982,7 @@ SURF_SOCKET_GROUP         # Group name or numeric gid required with mode 660
 SURF_NODE_PATH            # Path to node binary (for native host wrapper)
 SURF_HOST_PATH            # Path to native/host.cjs (for native host wrapper)
 SURF_EXTENSION_PATH       # Path to extension dist/ directory
-TYPESAFE_API_KEY          # Optional semantic-command credential; overrides private storage
+TYPESAFE_API_KEY          # Optional semantic-command credential; overrides the shared store
 SURF_JEV_MODEL            # Optional observable Jev model override (default: jev-1.13.0)
 XDG_CONFIG_HOME           # Unix/macOS base for shared TypeSafe credentials (default: ~/.config)
 ```

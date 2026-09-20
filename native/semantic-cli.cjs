@@ -27,8 +27,7 @@ function normalizeSemanticArgs(argv) {
   if (argv[0] !== "semantic") return argv;
   if (!argv[1] || argv[1].startsWith("-")) return argv;
   if (argv[1] === "auth" && argv[2]) return [`semantic.auth.${argv[2]}`, ...argv.slice(3)];
-  if (argv[1]) return [`semantic.${argv[1]}`, ...argv.slice(2)];
-  return argv;
+  return [`semantic.${argv[1]}`, ...argv.slice(2)];
 }
 
 function parseSemanticArgs(argv) {
@@ -124,13 +123,13 @@ function buildActions(observation, inputs, allowWrite) {
       try {
         const url = new URL(candidate.href, observation.identity.fullUrl);
         if (/^https?:$/.test(url.protocol) && !url.username && !url.password && url.origin === origin) {
-          actions.push({ id: `nav:${candidate.ref}`, kind: "navigate", url: url.href, ref: candidate.ref, description: `${candidate.role} | ${candidate.name}` });
+          actions.push({ id: `nav:${candidate.ref}`, kind: "navigate", url: url.href });
         }
       } catch {}
     }
-    if (allowWrite) actions.push({ id: `click:${candidate.ref}`, kind: "click", ref: candidate.ref, description: `${candidate.role} | ${candidate.name}` });
+    if (allowWrite) actions.push({ id: `click:${candidate.ref}`, kind: "click", ref: candidate.ref });
     if (allowWrite && (FIELD_ROLES.has(candidate.role) || ["input", "textarea", "select"].includes(candidate.type))) {
-      for (const slot of Object.keys(inputs)) actions.push({ id: `fill:${candidate.ref}:${slot}`, kind: "fill", ref: candidate.ref, slot, description: `${candidate.role} | ${candidate.name} | slot ${slot}` });
+      for (const slot of Object.keys(inputs)) actions.push({ id: `fill:${candidate.ref}:${slot}`, kind: "fill", ref: candidate.ref, slot });
     }
   }
   actions.push(
@@ -157,8 +156,7 @@ async function executeAction(request, observation, action, inputs, timeoutMs) {
 }
 
 async function runBrowserSemantic(options, { request, evaluate, now = () => performance.now() }) {
-  const started = now();
-  const deadline = started + SEMANTIC_POLICY.limits.defaultWallMs;
+  const deadline = now() + SEMANTIC_POLICY.limits.defaultWallMs;
   const remaining = () => Math.max(0, Math.floor(deadline - now()));
   let providerCalls = 0;
   const evaluator = async (state, questions, providerOptions = {}) => {

@@ -1,5 +1,4 @@
 #!/usr/bin/env node
-// Opt-in evaluation only: SURF_REAL_JEV=1 TYPESAFE_API_KEY=... node test/eval/real-jev.mjs
 import { createRequire } from "node:module";
 import { performance } from "node:perf_hooks";
 

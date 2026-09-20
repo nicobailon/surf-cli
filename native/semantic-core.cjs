@@ -162,14 +162,14 @@ function candidateDescription(candidate) {
 }
 
 async function find({ state, goal, candidates, evaluate }) {
-  validateGoal(goal);
+  goal = validateGoal(goal);
   assertUniqueItems(candidates, SEMANTIC_POLICY.limits.candidates, "candidates");
   const labels = [...candidates.map((candidate) => candidate.id), "none"];
   const criteria = Object.fromEntries(candidates.map((candidate) => [candidate.id, candidateDescription(candidate)]));
   criteria.none = "No supplied candidate matches the goal";
   const response = await evaluatedChoices({
     state,
-    questions: { target: { type: "choice", instructions: `Select the supplied candidate that matches this goal: ${goal.trim()}`, criteria } },
+    questions: { target: { type: "choice", instructions: `Select the supplied candidate that matches this goal: ${goal}`, criteria } },
     evaluate,
   });
   const decision = response.decisions.target;
@@ -184,10 +184,10 @@ async function find({ state, goal, candidates, evaluate }) {
 }
 
 async function verify({ state, outcome, evidence = [], evaluate }) {
-  validateGoal(outcome);
+  outcome = validateGoal(outcome);
   assertUniqueItems(evidence, SEMANTIC_POLICY.limits.chunks, "evidence");
   const questions = {
-    verdict: choiceQuestion(`Does the supplied page state show this outcome: ${outcome.trim()}`, ["satisfied", "not_satisfied"]),
+    verdict: choiceQuestion(`Does the supplied page state show this outcome: ${outcome}`, ["satisfied", "not_satisfied"]),
   };
   if (evidence.length) {
     questions.evidence = choiceQuestion("Select the supplied evidence ID most relevant to the verdict", [
@@ -208,13 +208,13 @@ async function verify({ state, outcome, evidence = [], evaluate }) {
 }
 
 async function filter({ state, goal, chunks, top = SEMANTIC_POLICY.limits.filterTop, evaluate }) {
-  validateGoal(goal);
+  goal = validateGoal(goal);
   assertUniqueItems(chunks, SEMANTIC_POLICY.limits.chunks, "chunks");
   if (!Number.isInteger(top) || top < 1 || top > SEMANTIC_POLICY.limits.filterTop) fail(`top must be between 1 and ${SEMANTIC_POLICY.limits.filterTop}`);
   if (!chunks.length) return { status: "uncertain", chunks: [], omittedCount: 0, decisions: {}, model: null, usage: null };
   const questions = Object.fromEntries(chunks.map((chunk, index) => [
     `chunk_${index}`,
-    choiceQuestion(`Is chunk ${chunk.id} relevant to this goal: ${goal.trim()}`, ["relevant", "not_relevant"]),
+    choiceQuestion(`Is chunk ${chunk.id} relevant to this goal: ${goal}`, ["relevant", "not_relevant"]),
   ]));
   const response = await evaluatedChoices({ state, questions, evaluate });
   const ranked = chunks
@@ -255,7 +255,7 @@ function validateAction(action, options) {
 }
 
 async function chooseAction({ state, goal, actions, origin, allowWrite = false, allowRefs = [], inputSlots = [], evaluate }) {
-  validateGoal(goal);
+  goal = validateGoal(goal);
   assertUniqueItems(actions, SEMANTIC_POLICY.limits.candidates, "actions");
   if (!Array.isArray(allowRefs)) fail("allowRefs must be an array");
   if (!Array.isArray(inputSlots) || inputSlots.length > SEMANTIC_POLICY.limits.inputSlots) fail("inputSlots exceeds policy limits");
@@ -264,7 +264,7 @@ async function chooseAction({ state, goal, actions, origin, allowWrite = false, 
   const labels = [...eligible.map((action) => action.id), "stop"];
   const response = await evaluatedChoices({
     state,
-    questions: { action: choiceQuestion(`Select one supplied action for this goal, or stop: ${goal.trim()}`, labels) },
+    questions: { action: choiceQuestion(`Select one supplied action for this goal, or stop: ${goal}`, labels) },
     evaluate,
   });
   const decision = response.decisions.action;

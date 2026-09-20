@@ -10,6 +10,7 @@ const {
 const CREDENTIAL_VERSION = 1;
 const MAX_API_KEY_BYTES = 16 * 1024;
 const FINGERPRINT_LENGTH = 12;
+const TTY_SIGNALS = ["SIGINT", "SIGTERM", "SIGHUP"];
 
 function credentialLocation(env = process.env, { platform = process.platform, homeDir = os.homedir() } = {}) {
   const windows = platform === "win32";
@@ -143,7 +144,7 @@ function readHiddenTtyLine(input, output, maxBytes, signalSource = process) {
       settled = true;
       input.off("data", onData);
       input.off("error", onError);
-      for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"]) signalSource.off(signal, signalHandlers[signal]);
+      for (const signal of TTY_SIGNALS) signalSource.off(signal, signalHandlers[signal]);
       try { input.setRawMode(previousRaw); } catch {}
       input.pause?.();
       output.write("\n");
@@ -153,7 +154,7 @@ function readHiddenTtyLine(input, output, maxBytes, signalSource = process) {
       }
     };
     const signalHandlers = Object.fromEntries(
-      ["SIGINT", "SIGTERM", "SIGHUP"].map((signal) => [signal, () => finish(new Error(`TypeSafe API key input interrupted by ${signal}`))]),
+      TTY_SIGNALS.map((signal) => [signal, () => finish(new Error(`TypeSafe API key input interrupted by ${signal}`))]),
     );
     const onError = (error) => finish(error);
     const onData = (chunk) => {
@@ -171,7 +172,7 @@ function readHiddenTtyLine(input, output, maxBytes, signalSource = process) {
     input.setRawMode(true);
     input.on("data", onData);
     input.once("error", onError);
-    for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"]) signalSource.once(signal, signalHandlers[signal]);
+    for (const signal of TTY_SIGNALS) signalSource.once(signal, signalHandlers[signal]);
     input.resume?.();
   });
 }
