@@ -6,6 +6,7 @@
 - **Optional Jev semantic browser actions** - `semantic.find`, `semantic.verify`, `semantic.filter`, and bounded `semantic.act` use compact value-free observations and confidence-gated TypeSafe decisions. Writes require explicit `--allow-write`, can be narrowed with repeatable `--allow-ref`, and are guarded against stale DOM identity. Broad writes retain the `0.95` threshold; an exact single-ref, single-action write uses the recorded `0.65` threshold. TypeSafe credentials use its shared user store with an environment override; existing commands remain provider-free.
 
 ### Fixed
+- **Semantic candidate confidence** - Equivalent navigation controls now share one logical choice without merging controls from different contexts. Direct navigation and explicitly authorized clicks remain distinct, bounded actions.
 - **Native connection troubleshooting** - Failed local `surf doctor` socket and native-host checks now explain how to enable extension Debug Mode and inspect the service-worker console.
 - **`frame.diagnose` help** - Command-specific help now describes the diagnostic options and related frame commands without contacting Chrome. Thanks to [@gimbo](https://github.com/gimbo) for [#280](https://github.com/nicobailon/surf-cli/issues/280).
 - **`network.body` output** - `surf network.body <id>` now prints the captured CDP response body exactly, including empty and JSON-shaped text, while `--json` remains structured. Thanks to [@Ananasiy](https://github.com/Ananasiy) for [#291](https://github.com/nicobailon/surf-cli/pull/291).
