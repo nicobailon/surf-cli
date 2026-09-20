@@ -94,8 +94,8 @@ function providerState(observation) {
   };
 }
 
-function safeSameOriginNavigation(candidate, fullUrl) {
-  if (!candidate.href || candidate.download === true || candidate.safeNavigation === false || candidate.role !== "link" || candidate.type !== "a") return null;
+function canonicalSameOriginDestination(candidate, fullUrl) {
+  if (!candidate.href || candidate.download === true || candidate.role !== "link" || candidate.type !== "a") return null;
   try {
     const url = new URL(candidate.href, fullUrl);
     const page = new URL(fullUrl);
@@ -109,9 +109,15 @@ function stableLogicalId(identity, prefix = "target") {
 }
 
 function concreteCandidateOrder(left, right) {
+  const leftText = left.representation === "text" ? 1 : 0;
+  const rightText = right.representation === "text" ? 1 : 0;
   const leftNamed = typeof left.name === "string" && left.name.trim() ? 1 : 0;
   const rightNamed = typeof right.name === "string" && right.name.trim() ? 1 : 0;
-  return rightNamed - leftNamed || left.index - right.index;
+  return rightText - leftText || rightNamed - leftNamed || left.index - right.index;
+}
+
+function normalizedSemanticPart(value) {
+  return typeof value === "string" ? value.normalize("NFKC").replace(/\s+/g, " ").trim().toLocaleLowerCase() : "";
 }
 
 function buildLogicalCandidates(observation, candidates = providerState(observation).candidates) {
@@ -119,30 +125,40 @@ function buildLogicalCandidates(observation, candidates = providerState(observat
   const navigationGroups = new Map();
   for (const [index, observed] of observation.candidates.entries()) {
     const candidate = candidates[index];
-    const destination = safeSameOriginNavigation(observed, observation.identity.fullUrl);
-    if (!destination) {
+    const destination = canonicalSameOriginDestination(observed, observation.identity.fullUrl);
+    const normalizedName = normalizedSemanticPart(candidate.name);
+    const normalizedContext = normalizedSemanticPart(candidate.text);
+    const hasDistinctContext = normalizedContext && normalizedContext !== normalizedName;
+    if (!destination || !normalizedName || !hasDistinctContext) {
       const logicalIdentity = stableLogicalId(`control:${candidate.id}:${candidate.role || ""}:${candidate.type || ""}:${candidate.name || ""}:${candidate.text || ""}`);
       groups.push({
         ...candidate,
         logicalIdentity,
-        concreteCandidates: [{ ...candidate, index }],
+        concreteCandidates: [{ ...candidate, representation: observed.representation, index }],
       });
       continue;
     }
-    let group = navigationGroups.get(destination);
+    const semanticIdentity = [
+      normalizedSemanticPart(candidate.role),
+      normalizedSemanticPart(candidate.type),
+      normalizedName,
+      normalizedContext,
+    ].join("\u001f");
+    const groupingIdentity = `${destination}\u001e${semanticIdentity}`;
+    let group = navigationGroups.get(groupingIdentity);
     if (!group) {
       group = {
-        id: stableLogicalId(`navigation:${destination}`),
-        logicalIdentity: stableLogicalId(`navigation:${destination}`),
+        id: stableLogicalId(`navigation:${groupingIdentity}`),
+        logicalIdentity: stableLogicalId(`navigation:${groupingIdentity}`),
         role: "link",
         name: "",
         text: "",
         concreteCandidates: [],
       };
-      navigationGroups.set(destination, group);
+      navigationGroups.set(groupingIdentity, group);
       groups.push(group);
     }
-    group.concreteCandidates.push({ ...candidate, index });
+    group.concreteCandidates.push({ ...candidate, representation: observed.representation, index });
   }
   for (const group of groups) {
     group.concreteCandidates.sort(concreteCandidateOrder);
@@ -233,7 +249,7 @@ function buildActions(observation, inputs, allowWrite, allowRefs = [], spentWrit
     : [];
   const navigationGroups = new Map();
   for (const [index, candidate] of observation.candidates.entries()) {
-    const url = safeSameOriginNavigation(candidate, observation.identity.fullUrl);
+    const url = canonicalSameOriginDestination(candidate, observation.identity.fullUrl);
     if (!url) continue;
     const current = navigationGroups.get(url);
     const ranked = { ...candidate, index };
@@ -250,7 +266,7 @@ function buildActions(observation, inputs, allowWrite, allowRefs = [], spentWrit
   }
   if (narrowed) {
     for (const candidate of writeCandidates) {
-      if (CLICK_ROLES.has(candidate.role) && !safeSameOriginNavigation(candidate, observation.identity.fullUrl)) {
+      if (CLICK_ROLES.has(candidate.role)) {
         const action = { id: `click:${candidate.ref}`, kind: "click", ref: candidate.ref };
         if (!spentWrites.has(logicalWriteIdentity(observation, action, candidate))) actions.push(action);
       } else if (isEditable(candidate)) {
@@ -278,7 +294,7 @@ function buildActions(observation, inputs, allowWrite, allowRefs = [], spentWrit
   }
   for (const candidate of observation.candidates) {
     if (allowWrite && !narrowed) {
-      if (CLICK_ROLES.has(candidate.role) && !safeSameOriginNavigation(candidate, observation.identity.fullUrl)) {
+      if (CLICK_ROLES.has(candidate.role)) {
         const action = { id: `click:${candidate.ref}`, kind: "click", ref: candidate.ref };
         if (!spentWrites.has(logicalWriteIdentity(observation, action, candidate))) actions.push(action);
       }

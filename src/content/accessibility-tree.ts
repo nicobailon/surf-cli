@@ -65,7 +65,17 @@ function getValueFreeSemanticName(element: Element): string {
     if (text) return text;
   }
   const tag = element.tagName.toLowerCase();
-  if (["button", "a", "summary"].includes(tag)) return boundedText(element.textContent, 160);
+  if (["button", "a", "summary"].includes(tag)) {
+    const text = boundedText(element.textContent, 160);
+    if (text) return text;
+    if (tag === "a") {
+      const image = element.querySelector("img");
+      for (const attribute of ["aria-label", "alt", "title"]) {
+        const label = boundedText(image?.getAttribute(attribute), 160);
+        if (label) return label;
+      }
+    }
+  }
   return "";
 }
 
@@ -99,27 +109,37 @@ function collectValueFreeText(root: Element, maxLength: number): string {
   return boundedText(parts.join(" "), maxLength);
 }
 
+function semanticNearbyContext(element: Element, name: string): string {
+  const normalizedName = boundedText(name, 160).toLocaleLowerCase();
+  let fallback = "";
+  let ancestor = element.parentElement;
+  for (let depth = 0; ancestor && depth < 4; depth++, ancestor = ancestor.parentElement) {
+    const text = collectValueFreeText(ancestor, 240);
+    if (!text) continue;
+    fallback = text;
+    if (text.toLocaleLowerCase() !== normalizedName) return text;
+  }
+  return fallback;
+}
+
 function buildSemanticObservation() {
   const allCandidates = Object.entries(getElementMap()).flatMap(([ref, entry]) => {
     const element = entry.element.deref();
     if (!element || ("isConnected" in element && element.isConnected === false) || !isVisibleSemanticElement(element)) return [];
     const role = getResolvedRole(element);
     if (!isFocusable(element) && role === "generic") return [];
-    const parent = element.parentElement;
+    const name = getValueFreeSemanticName(element);
     return [{
       ref,
       role: boundedText(role, 40),
-      name: getValueFreeSemanticName(element),
+      name,
       type: semanticElementType(element),
+      representation: element.tagName.toLowerCase() === "a"
+        ? boundedText(element.textContent, 160) ? "text" : element.querySelector("img") ? "image" : "other"
+        : undefined,
       href: element.tagName.toLowerCase() === "a" ? boundedText(element.getAttribute("href"), 2048) || undefined : undefined,
       download: element.tagName.toLowerCase() === "a" && element.hasAttribute("download") || undefined,
-      safeNavigation: element.tagName.toLowerCase() === "a"
-        ? role === "link" &&
-          !element.hasAttribute("download") &&
-          !Array.from(element.attributes).some((attribute) => attribute.name.toLowerCase().startsWith("on")) &&
-          !["aria-checked", "aria-pressed", "aria-selected"].some((attribute) => element.hasAttribute(attribute))
-        : undefined,
-      nearbyText: parent ? collectValueFreeText(parent, 240) : "",
+      nearbyText: semanticNearbyContext(element, name),
     }];
   });
   const candidates = allCandidates.slice(0, SEMANTIC_MAX_CANDIDATES);

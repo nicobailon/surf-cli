@@ -195,20 +195,20 @@ describe("semantic CLI", () => {
         {
           ref: "image",
           role: "link",
-          name: "",
+          name: "Sauce Labs Backpack",
           type: "a",
-          nearbyText: "",
+          nearbyText: "Sauce Labs Backpack product card",
+          representation: "image",
           href: "/item/4",
-          safeNavigation: true,
         },
         {
           ref: "title",
           role: "link",
           name: "Sauce Labs Backpack",
           type: "a",
-          nearbyText: "Sauce Labs Backpack",
+          nearbyText: "Sauce Labs Backpack product card",
+          representation: "text",
           href: "https://example.test/item/4",
-          safeNavigation: true,
         },
         {
           ref: "other",
@@ -217,7 +217,6 @@ describe("semantic CLI", () => {
           type: "a",
           nearbyText: "Featured",
           href: "/item/5",
-          safeNavigation: true,
         },
       ],
     };
@@ -256,7 +255,6 @@ describe("semantic CLI", () => {
         type: "a",
         nearbyText: "First",
         href: "/one",
-        safeNavigation: true,
       },
       {
         ref: "four",
@@ -265,28 +263,42 @@ describe("semantic CLI", () => {
         type: "a",
         nearbyText: "First",
         href: "/two",
-        safeNavigation: true,
+      },
+      {
+        ref: "header",
+        role: "link",
+        name: "Account",
+        type: "a",
+        nearbyText: "Header account shortcut",
+        href: "/account",
+      },
+      {
+        ref: "danger",
+        role: "link",
+        name: "Account",
+        type: "a",
+        nearbyText: "Danger-zone account action",
+        href: "/account",
       },
     ];
     const groups = semantic.buildLogicalCandidates({ ...observation, candidates });
-    expect(groups).toHaveLength(4);
+    expect(groups).toHaveLength(6);
     expect(
       groups.map((group) =>
         group.concreteCandidates.map((candidate: Record<string, any>) => candidate.id),
       ),
-    ).toEqual([["one"], ["two"], ["three"], ["four"]]);
+    ).toEqual([["one"], ["two"], ["three"], ["four"], ["header"], ["danger"]]);
   });
 
-  it("canonicalizes safe duplicate navigation actions without converting mutation controls", () => {
+  it("canonicalizes only duplicate direct navigation actions and preserves authorized clicks", () => {
     const candidates = [
-      { ref: "image", role: "link", name: "", type: "a", href: "/item/4", safeNavigation: true },
+      { ref: "image", role: "link", name: "", type: "a", href: "/item/4" },
       {
         ref: "title",
         role: "link",
         name: "Backpack",
         type: "a",
         href: "/item/4",
-        safeNavigation: true,
       },
       {
         ref: "mutate",
@@ -294,7 +306,6 @@ describe("semantic CLI", () => {
         name: "Add Backpack",
         type: "a",
         href: "/item/4",
-        safeNavigation: false,
       },
     ];
     const readonly = semantic.buildActions({ ...observation, candidates }, {}, false);
@@ -303,9 +314,8 @@ describe("semantic CLI", () => {
     ]);
     const writable = semantic.buildActions({ ...observation, candidates }, {}, true);
     expect(writable.filter((action) => action.kind === "navigate")).toHaveLength(1);
-    expect(writable.some((action) => action.kind === "click" && action.ref === "image")).toBe(
-      false,
-    );
+    expect(writable).toContainEqual(expect.objectContaining({ kind: "click", ref: "image" }));
+    expect(writable).toContainEqual(expect.objectContaining({ kind: "click", ref: "title" }));
     expect(writable).toContainEqual(expect.objectContaining({ kind: "click", ref: "mutate" }));
   });
 

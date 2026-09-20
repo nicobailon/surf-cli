@@ -28,6 +28,7 @@ class FakeElement extends FakeNode {
   checked = false;
   focused = false;
   clicked = false;
+  listeners = new Map<string, Array<() => void>>();
   isContentEditable = false;
 
   private attrs = new Map<string, string>();
@@ -96,6 +97,12 @@ class FakeElement extends FakeNode {
 
   dispatchEvent(_event: Event): boolean {
     return true;
+  }
+
+  addEventListener(type: string, listener: () => void): void {
+    const listeners = this.listeners.get(type) || [];
+    listeners.push(listener);
+    this.listeners.set(type, listeners);
   }
 
   getBoundingClientRect(): { top: number; bottom: number; left: number; right: number } {
@@ -182,6 +189,47 @@ describe("accessibility tree", () => {
     expect(listenerResult).toBe(false);
     expect(visualIndicatorHandler).toHaveBeenCalledWith("SHOW_AGENT_INDICATORS");
     expect(response).toEqual({ success: true });
+  });
+
+  it("does not classify listener-backed anchors as mutation-safe or suppress authorized clicks", () => {
+    const anchor = element("a", { href: "/account" });
+    anchor.append(text("Account"));
+    anchor.addEventListener("click", () => {
+      anchor.clicked = true;
+    });
+    (document.body as unknown as FakeElement).append(anchor);
+    window.__piElementMap = {
+      account: {
+        element: new WeakRef(anchor as unknown as Element),
+        role: "link",
+        name: "Account",
+      },
+    };
+
+    let response: any;
+    messageHandler?.(
+      {
+        type: "GENERATE_ACCESSIBILITY_TREE",
+        options: { filter: "interactive", semanticObservation: true },
+      },
+      {},
+      (result) => {
+        response = result;
+      },
+    );
+
+    const candidate = response.semanticObservation.candidates.find(
+      (item: Record<string, any>) => item.ref === "account",
+    );
+    expect(candidate).toMatchObject({ role: "link", href: "/account" });
+    expect(candidate).not.toHaveProperty("safeNavigation");
+
+    const { buildActions } = require("../../native/semantic-cli.cjs");
+    const readonly = buildActions(response.semanticObservation, {}, false);
+    const writable = buildActions(response.semanticObservation, {}, true);
+    expect(readonly).toContainEqual(expect.objectContaining({ kind: "navigate" }));
+    expect(readonly.some((action: Record<string, any>) => action.kind === "click")).toBe(false);
+    expect(writable).toContainEqual(expect.objectContaining({ kind: "click", ref: "account" }));
   });
 
   it("reports when the visual indicator content script is not loaded", () => {
