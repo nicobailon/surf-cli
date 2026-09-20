@@ -186,6 +186,41 @@ describe("browser session handlers", () => {
     });
   });
 
+  it("adds tab/frame identity to semantic observations and forwards guarded actions", async () => {
+    const handleMessage = await loadHandleMessage();
+    const chrome = (globalThis as any).chrome;
+    const identity = {
+      fullUrl: "https://example.test/frame",
+      documentToken: "doc-1",
+      ref: "e1",
+      role: "button",
+      name: "Continue",
+      type: "button",
+    };
+    chrome.tabs.sendMessage.mockImplementation((_tabId: number, message: { type: string }) => {
+      if (message.type === "GENERATE_ACCESSIBILITY_TREE") {
+        return Promise.resolve({ semanticObservation: { identity }, pageContent: "ordinary" });
+      }
+      return Promise.resolve({ success: true });
+    });
+
+    const read: any = await handleMessage(
+      { type: "READ_PAGE", tabId: 71, frameId: 4, options: { semanticObservation: true } },
+      {},
+    );
+    expect(read.semanticObservation.identity).toMatchObject({ tabId: 71, frameId: 4 });
+
+    await handleMessage(
+      { type: "CLICK_REF", tabId: 71, frameId: 4, ref: "e1", expectedIdentity: identity },
+      {},
+    );
+    expect(chrome.tabs.sendMessage).toHaveBeenLastCalledWith(
+      71,
+      { type: "CLICK_ELEMENT", ref: "e1", button: "left", expectedIdentity: identity },
+      { frameId: 4 },
+    );
+  });
+
   it("uses only an explicit host-provided frame context", async () => {
     const handleMessage = await loadHandleMessage();
     const chrome = (globalThis as any).chrome;

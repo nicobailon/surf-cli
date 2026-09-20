@@ -1404,6 +1404,10 @@ export async function handleMessage(
           };
         }
       }
+      if (result?.semanticObservation?.identity) {
+        result.semanticObservation.identity.tabId = tabId;
+        result.semanticObservation.identity.frameId = readFrameId;
+      }
       return result;
     }
 
@@ -1742,8 +1746,9 @@ export async function handleMessage(
           type: "CLICK_ELEMENT",
           ref: message.ref,
           button: message.button || "left",
+          expectedIdentity: message.expectedIdentity,
         }, { frameId: getFrameIdForTab(tabId, message) });
-        if (result.error) return { error: result.error };
+        if (result.error) return { error: result.error, code: result.code };
         return { success: true };
       } catch (err) {
         return { error: "Content script not loaded. Try refreshing the page." };
@@ -2255,6 +2260,7 @@ export async function handleMessage(
       const response = await chrome.tabs.sendMessage(tabId, {
         type: "FORM_FILL",
         data: message.data,
+        expectedIdentity: message.expectedIdentity,
       }, { frameId: getFrameIdForTab(tabId, message) });
       return response;
     }

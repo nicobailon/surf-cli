@@ -190,6 +190,16 @@ describe("mapToolToMessage", () => {
       });
     });
 
+    it("enables structured semantic observation only through the internal flag", () => {
+      expect(helpers.mapToolToMessage("page.read", {}).options).not.toHaveProperty(
+        "semanticObservation",
+      );
+      expect(
+        helpers.mapToolToMessage("page.read", { semanticObservation: true }).options
+          .semanticObservation,
+      ).toBe(true);
+    });
+
     it("throws when max-bytes is not a positive integer", () => {
       for (const bad of ["abc", "0", "-5", "12abc", "1.5", " ", ""]) {
         expect(() => helpers.mapToolToMessage("page.read", { "max-bytes": bad })).toThrow(
@@ -413,6 +423,59 @@ describe("mapToolToMessage", () => {
   });
 });
 
+describe("applySemanticExpectedIdentity", () => {
+  const expected = {
+    browserEpoch: "epoch-1",
+    tabId: 7,
+    frameId: 3,
+    fullUrl: "https://example.test/page",
+    documentToken: "document-1",
+    ref: "e4",
+    role: "button",
+    name: "Continue",
+    type: "button",
+  };
+
+  it("attaches only the DOM portion after host identity validation", () => {
+    const message: any = { type: "CLICK_REF", ref: "e4", frameId: 3 };
+    helpers.applySemanticExpectedIdentity(
+      { browserIdentity: { browserEpoch: "epoch-1" }, target: { tabId: 7 } },
+      message,
+      { semanticExpectedIdentity: expected },
+    );
+    expect(message.expectedIdentity).toEqual({
+      fullUrl: expected.fullUrl,
+      documentToken: expected.documentToken,
+      ref: expected.ref,
+      role: expected.role,
+      name: expected.name,
+      type: expected.type,
+    });
+  });
+
+  it("rejects stale epochs, tabs, frames, and refs before extension dispatch", () => {
+    for (const message of [
+      { type: "CLICK_REF", ref: "other", frameId: 3 },
+      { type: "CLICK_REF", ref: "e4", frameId: 2 },
+    ]) {
+      expect(() =>
+        helpers.applySemanticExpectedIdentity(
+          { browserIdentity: { browserEpoch: "epoch-1" }, target: { tabId: 7 } },
+          message,
+          { semanticExpectedIdentity: expected },
+        ),
+      ).toThrow("stale_observation");
+    }
+    expect(() =>
+      helpers.applySemanticExpectedIdentity(
+        { browserIdentity: { browserEpoch: "new-epoch" }, target: { tabId: 7 } },
+        { type: "CLICK_REF", ref: "e4", frameId: 3 },
+        { semanticExpectedIdentity: expected },
+      ),
+    ).toThrow("stale_observation");
+  });
+});
+
 describe("formatToolError", () => {
   it("preserves structured codes and job ids", () => {
     const error = Object.assign(new Error("capacity reached"), {
@@ -446,6 +509,25 @@ describe("formatToolError", () => {
 });
 
 describe("formatToolContent", () => {
+  it("preserves the internal structured semantic observation envelope", () => {
+    const observation = {
+      version: 1,
+      identity: { documentToken: "doc-1" },
+      candidates: [],
+      chunks: [],
+    };
+    const content = helpers.formatToolContent({
+      pageContent: "legacy text",
+      viewport: { width: 800, height: 600 },
+      semanticObservation: observation,
+    });
+    expect(JSON.parse(content[0].text)).toEqual({
+      pageContent: "legacy text",
+      viewport: { width: 800, height: 600 },
+      semanticObservation: observation,
+    });
+  });
+
   it("preserves browser session results as reviewable JSON", () => {
     const result = helpers.formatToolContent({
       session: { name: "research", tabId: 10, queue: { active: false } },

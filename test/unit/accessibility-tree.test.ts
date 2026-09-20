@@ -218,6 +218,121 @@ describe("accessibility tree", () => {
     expect(response.pageContent).toContain('button "Save changes"');
   });
 
+  it("returns a bounded value-free semantic observation only when requested", () => {
+    const password = new FakeInputElement("input");
+    password.setAttribute("type", "password");
+    password.setAttribute("aria-label", "Account password");
+    password.value = "unique-password-sentinel";
+    const button = new FakeButtonElement("button");
+    button.append(text("Continue"));
+    (document.body as unknown as FakeElement).append(password, button, text("Public nearby copy"));
+
+    let ordinary: any;
+    messageHandler?.(
+      { type: "GENERATE_ACCESSIBILITY_TREE", options: { filter: "interactive" } },
+      {},
+      (result) => {
+        ordinary = result;
+      },
+    );
+    expect(ordinary.semanticObservation).toBeUndefined();
+
+    let response: any;
+    messageHandler?.(
+      {
+        type: "GENERATE_ACCESSIBILITY_TREE",
+        options: { filter: "interactive", semanticObservation: true },
+      },
+      {},
+      (result) => {
+        response = result;
+      },
+    );
+
+    expect(response.semanticObservation.identity).toMatchObject({
+      fullUrl: "https://example.test/page",
+    });
+    expect(response.semanticObservation.candidates).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ role: "textbox", name: "Account password", type: "password" }),
+        expect.objectContaining({ role: "button", name: "Continue", type: "button" }),
+      ]),
+    );
+    expect(JSON.stringify(response.semanticObservation)).not.toContain("unique-password-sentinel");
+    expect(
+      new TextEncoder().encode(JSON.stringify(response.semanticObservation)).length,
+    ).toBeLessThanOrEqual(24 * 1024);
+  });
+
+  it("rejects stale guarded clicks without executing the action", () => {
+    const button = new FakeButtonElement("button");
+    button.append(text("Continue"));
+    window.__piElementMap = {
+      target: {
+        element: new WeakRef(button as unknown as Element),
+        role: "button",
+        name: "Continue",
+      },
+    };
+
+    let response: any;
+    messageHandler?.(
+      {
+        type: "CLICK_ELEMENT",
+        ref: "target",
+        button: "left",
+        expectedIdentity: {
+          fullUrl: "https://example.test/old",
+          documentToken: "old-document",
+          ref: "target",
+          role: "button",
+          name: "Continue",
+          type: "button",
+        },
+      },
+      {},
+      (result) => {
+        response = result;
+      },
+    );
+
+    expect(response).toEqual({ error: "stale_observation", code: "stale_observation" });
+    expect(button.clicked).toBe(false);
+  });
+
+  it("rejects stale guarded fills without changing the control value", () => {
+    const input = new FakeInputElement("input");
+    input.setAttribute("type", "email");
+    input.setAttribute("aria-label", "Email");
+    input.value = "original";
+    window.__piElementMap = {
+      target: { element: new WeakRef(input as unknown as Element), role: "textbox", name: "Email" },
+    };
+
+    let response: any;
+    messageHandler?.(
+      {
+        type: "FORM_FILL",
+        data: [{ ref: "target", value: "replacement" }],
+        expectedIdentity: {
+          fullUrl: "https://example.test/page",
+          documentToken: "stale-document",
+          ref: "target",
+          role: "textbox",
+          name: "Email",
+          type: "email",
+        },
+      },
+      {},
+      (result) => {
+        response = result;
+      },
+    );
+
+    expect(response).toMatchObject({ success: false, code: "stale_observation", filled: 0 });
+    expect(input.value).toBe("original");
+  });
+
   it("caps visible text in compact mode", () => {
     (document.body as unknown as FakeElement).append(text("abcdef"));
 

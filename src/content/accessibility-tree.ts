@@ -24,6 +24,143 @@ interface ModalState {
   clearedBy: string;
 }
 
+const SEMANTIC_MAX_CANDIDATES = 64;
+const SEMANTIC_MAX_CHUNKS = 48;
+const SEMANTIC_MAX_BYTES = 24 * 1024;
+const semanticDocumentToken = (() => {
+  try {
+    return globalThis.crypto?.randomUUID?.() || `doc-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+  } catch {
+    return `doc-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+  }
+})();
+
+function boundedText(value: string | null | undefined, maxLength: number): string {
+  return (value || "").replace(/\s+/g, " ").trim().slice(0, maxLength);
+}
+
+function semanticElementType(element: Element): string {
+  const tag = element.tagName.toLowerCase();
+  if (tag === "input") return boundedText(element.getAttribute("type") || "text", 32).toLowerCase();
+  return tag;
+}
+
+// Accessible labels are deliberately rebuilt here rather than copied from the
+// ordinary read tree: the latter preserves legacy behavior that can use an
+// input's current value as its name.
+function getValueFreeSemanticName(element: Element): string {
+  const labelledBy = element.getAttribute("aria-labelledby");
+  if (labelledBy) {
+    const label = labelledBy.split(/\s+/).map((id) => document.getElementById(id)?.textContent || "").join(" ");
+    if (boundedText(label, 160)) return boundedText(label, 160);
+  }
+  for (const attribute of ["aria-label", "placeholder", "title", "alt"]) {
+    const label = boundedText(element.getAttribute(attribute), 160);
+    if (label) return label;
+  }
+  if (element.id) {
+    const label = document.querySelector(`label[for="${element.id}"]`);
+    const text = boundedText(label?.textContent, 160);
+    if (text) return text;
+  }
+  const tag = element.tagName.toLowerCase();
+  if (["button", "a", "summary"].includes(tag)) return boundedText(element.textContent, 160);
+  return "";
+}
+
+function isSemanticControl(element: Element): boolean {
+  const tag = element.tagName.toLowerCase();
+  return ["input", "textarea", "select", "option", "button"].includes(tag) || element.getAttribute("contenteditable") === "true";
+}
+
+function isVisibleSemanticElement(element: Element): boolean {
+  const style = window.getComputedStyle(element);
+  const rect = element.getBoundingClientRect();
+  return style.display !== "none" && style.visibility !== "hidden" && style.opacity !== "0" &&
+    rect.top < window.innerHeight && rect.bottom > 0 && rect.left < window.innerWidth && rect.right > 0;
+}
+
+function collectValueFreeText(root: Element, maxLength: number): string {
+  const parts: string[] = [];
+  const visit = (node: Node): void => {
+    if (parts.join(" ").length >= maxLength) return;
+    if (node.nodeType === Node.TEXT_NODE) {
+      const value = boundedText(node.textContent, maxLength);
+      if (value) parts.push(value);
+      return;
+    }
+    if (!(node instanceof Element) || isSemanticControl(node)) return;
+    const tag = node.tagName.toLowerCase();
+    if (["script", "style", "noscript", "template"].includes(tag)) return;
+    for (const child of Array.from(node.childNodes)) visit(child);
+  };
+  visit(root);
+  return boundedText(parts.join(" "), maxLength);
+}
+
+function buildSemanticObservation() {
+  const allCandidates = Object.entries(getElementMap()).flatMap(([ref, entry]) => {
+    const element = entry.element.deref();
+    if (!element || ("isConnected" in element && element.isConnected === false) || !isVisibleSemanticElement(element)) return [];
+    const role = getResolvedRole(element);
+    if (!isFocusable(element) && role === "generic") return [];
+    const parent = element.parentElement;
+    return [{
+      ref,
+      role: boundedText(role, 40),
+      name: getValueFreeSemanticName(element),
+      type: semanticElementType(element),
+      href: element.tagName.toLowerCase() === "a" ? boundedText(element.getAttribute("href"), 2048) || undefined : undefined,
+      nearbyText: parent ? collectValueFreeText(parent, 240) : "",
+    }];
+  });
+  const candidates = allCandidates.slice(0, SEMANTIC_MAX_CANDIDATES);
+
+  const text = document.body ? collectValueFreeText(document.body, 12 * 1024) : "";
+  const rawChunks = text.match(/.{1,400}(?:\s|$)/g)?.map((chunk) => boundedText(chunk, 400)).filter(Boolean) || [];
+  const chunks = rawChunks.slice(0, SEMANTIC_MAX_CHUNKS).map((content, index) => ({ id: `c${index + 1}`, text: content }));
+  const observation = {
+    version: 1,
+    identity: {
+      fullUrl: window.location.href,
+      documentToken: semanticDocumentToken,
+    },
+    page: {
+      title: boundedText(document.title, 300),
+      readyState: document.readyState,
+      modals: detectModalStates().slice(0, 8),
+    },
+    candidates,
+    chunks,
+    omitted: {
+      candidates: Math.max(0, allCandidates.length - candidates.length),
+      chunks: Math.max(0, rawChunks.length - chunks.length),
+    },
+  };
+  while (new TextEncoder().encode(JSON.stringify(observation)).length > SEMANTIC_MAX_BYTES && observation.chunks.length) {
+    observation.chunks.pop();
+    observation.omitted.chunks++;
+  }
+  while (new TextEncoder().encode(JSON.stringify(observation)).length > SEMANTIC_MAX_BYTES && observation.candidates.length) {
+    observation.candidates.pop();
+    observation.omitted.candidates++;
+  }
+  return observation;
+}
+
+function semanticGuardError(element: Element | undefined, expected: any): string | null {
+  if (!expected || typeof expected !== "object") return null;
+  if (window.location.href !== expected.fullUrl || semanticDocumentToken !== expected.documentToken) return "stale_observation";
+  if (!element || ("isConnected" in element && element.isConnected === false)) return "stale_observation";
+  if (
+    expected.ref !== undefined &&
+    (getResolvedRole(element) !== expected.role ||
+      getValueFreeSemanticName(element) !== expected.name ||
+      semanticElementType(element) !== expected.type)
+  ) return "stale_observation";
+  return null;
+}
+
 const VALID_ARIA_ROLES = new Set([
   "alert", "alertdialog", "application", "article", "banner", "blockquote",
   "button", "caption", "cell", "checkbox", "code", "columnheader", "combobox",
@@ -1531,6 +1668,9 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           options.forceFullSnapshot ?? false,
           options.compact ?? false
         );
+        if (options.semanticObservation === true && !result.error) {
+          (result as typeof result & { semanticObservation: ReturnType<typeof buildSemanticObservation> }).semanticObservation = buildSemanticObservation();
+        }
         sendResponse(result);
       }
       break;
@@ -1553,6 +1693,11 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       }
       if (!element) {
         sendResponse({ error: `Element ${message.ref} not found. Use read_page to get current elements.` });
+        break;
+      }
+      const guardError = semanticGuardError(element, message.expectedIdentity);
+      if (guardError) {
+        sendResponse({ error: guardError, code: guardError });
         break;
       }
       if (message.button === "triple") {
@@ -2240,6 +2385,10 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         sendResponse({ error: "data must be an array of {ref, value} pairs" });
         return true;
       }
+      if (message.expectedIdentity && data.length !== 1) {
+        sendResponse({ error: "guarded fill requires exactly one field", code: "stale_observation" });
+        return true;
+      }
       const elementMap = getElementMap();
       const results: { ref: string; success: boolean; error?: string }[] = [];
       for (const item of data) {
@@ -2258,6 +2407,11 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           delete elementMap[ref];
           results.push({ ref, success: false, error: "Element no longer exists" });
           continue;
+        }
+        const guardError = semanticGuardError(el, message.expectedIdentity);
+        if (guardError) {
+          sendResponse({ success: false, error: guardError, code: guardError, filled: 0, failed: 1, results: [] });
+          return true;
         }
         try {
           if (el instanceof HTMLInputElement) {

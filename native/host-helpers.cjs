@@ -228,6 +228,14 @@ function formatToolContent(result, log = () => {}, options = {}) {
     ];
   }
   
+  if (result.semanticObservation !== undefined) {
+    return text(JSON.stringify({
+      pageContent: result.pageContent,
+      viewport: result.viewport,
+      semanticObservation: result.semanticObservation,
+    }));
+  }
+
   if (result.pageContent !== undefined) {
     const content = result.pageContent || "No content";
     let output = '';
@@ -517,7 +525,7 @@ function mapComputerAction(args, tabId) {
       return { type: "EXECUTE_SCREENSHOT", ...baseMsg };
     
     case "left_click":
-      if (ref) return { type: "CLICK_REF", ref, button: "left", ...baseMsg };
+      if (ref) return { type: "CLICK_REF", ref, button: "left", expectedIdentity: a.semanticExpectedIdentity, ...baseMsg };
       if (a.selector) return { type: "CLICK_SELECTOR", selector: a.selector, index: a.index || 0, button: "left", ...baseMsg };
       return { type: "EXECUTE_CLICK", x: coordinate?.[0], y: coordinate?.[1], modifiers, ...baseMsg };
     
@@ -535,7 +543,7 @@ function mapComputerAction(args, tabId) {
     
     case "type": {
       if (ref) {
-        return { type: "FORM_FILL", data: [{ ref, value: text }], ...baseMsg };
+        return { type: "FORM_FILL", data: [{ ref, value: text }], expectedIdentity: a.semanticExpectedIdentity, ...baseMsg };
       }
       const typeSelector = a.selector || a.into;
       if (typeSelector) {
@@ -971,7 +979,7 @@ function mapToolToMessage(tool, args, tabId) {
       if (typeof fillData === "string") {
         try { fillData = JSON.parse(fillData); } catch (e) { throw new Error("invalid --data JSON"); }
       }
-      return { type: "FORM_FILL", data: fillData, ...baseMsg };
+      return { type: "FORM_FILL", data: fillData, expectedIdentity: a.semanticExpectedIdentity, ...baseMsg };
     case "perf.start":
       return { type: "PERF_START", categories: a.categories ? a.categories.split(",") : undefined, ...baseMsg };
     case "perf.stop":
@@ -1003,6 +1011,7 @@ function mapToolToMessage(tool, args, tabId) {
           compact: a.compact || false,
           maxBytes,
           forceFullSnapshot: a.compact === true || maxBytes !== undefined,
+          ...(a.semanticObservation === true ? { semanticObservation: true } : {}),
         },
         ...baseMsg
       };
@@ -1322,4 +1331,43 @@ function mapToolToMessage(tool, args, tabId) {
   }
 }
 
-module.exports = { mapToolToMessage, mapComputerAction, formatToolContent, formatToolError, buildProviderUploadMessage, readinessExpectations };
+function applySemanticExpectedIdentity(request, extensionMessage, args) {
+  const fail = (code, message) => {
+    const error = new Error(message);
+    error.code = code;
+    throw error;
+  };
+  const expected = args?.semanticExpectedIdentity;
+  if (expected === undefined) return;
+  if (!extensionMessage || !["CLICK_REF", "FORM_FILL"].includes(extensionMessage.type)) {
+    fail("invalid_expected_identity", "semantic expected identity is only valid for ref clicks and fills");
+  }
+  const stringFields = ["browserEpoch", "fullUrl", "documentToken", "ref", "role", "name", "type"];
+  if (!expected || typeof expected !== "object" || stringFields.some((field) => typeof expected[field] !== "string")) {
+    fail("invalid_expected_identity", "invalid semantic expected identity");
+  }
+  if (!Number.isInteger(expected.tabId) || !Number.isInteger(expected.frameId)) {
+    fail("invalid_expected_identity", "invalid semantic expected identity");
+  }
+  const actualFrameId = Number.isInteger(extensionMessage.frameId) ? extensionMessage.frameId : 0;
+  if (
+    request?.browserIdentity?.browserEpoch !== expected.browserEpoch ||
+    request?.target?.tabId !== expected.tabId ||
+    actualFrameId !== expected.frameId ||
+    extensionMessage.ref && extensionMessage.ref !== expected.ref ||
+    extensionMessage.type === "FORM_FILL" &&
+      (!Array.isArray(extensionMessage.data) || extensionMessage.data.length !== 1 || extensionMessage.data[0]?.ref !== expected.ref)
+  ) {
+    fail("stale_observation", "stale_observation");
+  }
+  extensionMessage.expectedIdentity = {
+    fullUrl: expected.fullUrl,
+    documentToken: expected.documentToken,
+    ref: expected.ref,
+    role: expected.role,
+    name: expected.name,
+    type: expected.type,
+  };
+}
+
+module.exports = { mapToolToMessage, mapComputerAction, formatToolContent, formatToolError, buildProviderUploadMessage, readinessExpectations, applySemanticExpectedIdentity };
