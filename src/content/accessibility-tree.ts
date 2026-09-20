@@ -111,6 +111,7 @@ function buildSemanticObservation() {
       name: getValueFreeSemanticName(element),
       type: semanticElementType(element),
       href: element.tagName.toLowerCase() === "a" ? boundedText(element.getAttribute("href"), 2048) || undefined : undefined,
+      download: element.tagName.toLowerCase() === "a" && element.hasAttribute("download") || undefined,
       nearbyText: parent ? collectValueFreeText(parent, 240) : "",
     }];
   });

@@ -2,6 +2,9 @@
 
 ## [Unreleased]
 
+### Added
+- **Optional Jev semantic browser actions** - `semantic.find`, `semantic.verify`, `semantic.filter`, and bounded `semantic.act` use compact value-free observations and confidence-gated TypeSafe decisions. Writes require explicit `--allow-write`, can be narrowed with repeatable `--allow-ref`, and are guarded against stale DOM identity. TypeSafe credentials are stored privately with environment override support; all existing commands remain provider-free.
+
 ### Fixed
 - **Native connection troubleshooting** - Failed local `surf doctor` socket and native-host checks now explain how to enable extension Debug Mode and inspect the service-worker console.
 - **`frame.diagnose` help** - Command-specific help now describes the diagnostic options and related frame commands without contacting Chrome. Thanks to [@gimbo](https://github.com/gimbo) for [#280](https://github.com/nicobailon/surf-cli/issues/280).

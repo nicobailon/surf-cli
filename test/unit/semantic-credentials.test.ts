@@ -13,7 +13,11 @@ const roots: string[] = [];
 function testEnv(extra: Record<string, string> = {}) {
   const parent = fs.mkdtempSync(path.join(os.tmpdir(), "surf-semantic-credentials-"));
   roots.push(parent);
-  return { SURF_STATE_DIR: path.join(parent, "state"), ...extra };
+  return {
+    XDG_CONFIG_HOME: path.join(parent, "config"),
+    SURF_STATE_DIR: path.join(parent, "unrelated-surf-state"),
+    ...extra,
+  };
 }
 
 afterEach(() => {
@@ -38,13 +42,13 @@ describe("TypeSafe credential store", () => {
     expect(JSON.stringify(status)).not.toContain("environment-secret");
   });
 
-  it("falls back from a blank environment value to the private store", () => {
+  it("falls back from a blank environment value to the shared store", () => {
     const env = testEnv({ TYPESAFE_API_KEY: " \t " });
     const stored = credentials.storeTypeSafeCredential("stored-secret", env);
 
     expect(credentials.resolveTypeSafeCredential(env)).toEqual({
       apiKey: "stored-secret",
-      source: "private-store",
+      source: "shared-store",
       fingerprint: stored.fingerprint,
     });
   });
@@ -60,7 +64,6 @@ describe("TypeSafe credential store", () => {
       apiKey: "second-secret",
     });
     expect(fs.statSync(root).mode & 0o777).toBe(0o700);
-    expect(fs.statSync(path.dirname(filePath)).mode & 0o777).toBe(0o700);
     expect(fs.statSync(filePath).mode & 0o777).toBe(0o600);
     expect(
       fs.readdirSync(path.dirname(filePath)).filter((name: string) => name.endsWith(".tmp")),
@@ -82,12 +85,39 @@ describe("TypeSafe credential store", () => {
     expect(fs.existsSync(root)).toBe(false);
 
     credentials.storeTypeSafeCredential("stored-secret", env);
-    const sibling = path.join(root, "credentials", "other.json");
+    const sibling = path.join(root, "other.json");
     fs.writeFileSync(sibling, "keep", { mode: 0o600 });
     expect(credentials.clearStoredTypeSafeCredential(env)).toBe(true);
     expect(fs.existsSync(filePath)).toBe(false);
     expect(fs.readFileSync(sibling, "utf8")).toBe("keep");
     expect(credentials.credentialStatus(env).source).toBe("environment");
+  });
+
+  it("resolves the provider-neutral shared path independently of Surf state", () => {
+    expect(
+      credentials.credentialLocation(
+        { XDG_CONFIG_HOME: "/xdg", SURF_STATE_DIR: "/surf" },
+        { platform: "linux", homeDir: "/home/test" },
+      ),
+    ).toEqual({ root: "/xdg/typesafe", filePath: "/xdg/typesafe/credentials.json" });
+    expect(
+      credentials.credentialLocation(
+        { SURF_STATE_DIR: "/surf" },
+        { platform: "darwin", homeDir: "/Users/test" },
+      ),
+    ).toEqual({
+      root: "/Users/test/.config/typesafe",
+      filePath: "/Users/test/.config/typesafe/credentials.json",
+    });
+    expect(
+      credentials.credentialLocation(
+        { APPDATA: "C:\\Users\\test\\AppData\\Roaming", SURF_STATE_DIR: "C:\\surf" },
+        { platform: "win32", homeDir: "C:\\Users\\test" },
+      ),
+    ).toEqual({
+      root: "C:\\Users\\test\\AppData\\Roaming\\TypeSafe",
+      filePath: "C:\\Users\\test\\AppData\\Roaming\\TypeSafe\\credentials.json",
+    });
   });
 
   it("returns not-configured without creating state and rejects malformed or public files", () => {
@@ -162,5 +192,39 @@ describe("TypeSafe credential input", () => {
     expect(input.rawCalls).toEqual([true, false]);
     expect(written).toBe("TypeSafe API key: \n");
     expect(written).not.toContain("secret");
+  });
+
+  it("restores raw mode and removes every temporary signal listener when interrupted", async () => {
+    class FakeTty extends EventEmitter {
+      isTTY = true;
+      isRaw = false;
+      rawCalls: boolean[] = [];
+      setRawMode(value: boolean) {
+        this.isRaw = value;
+        this.rawCalls.push(value);
+      }
+      resume() {
+        /* EventEmitter test double. */
+      }
+      pause() {
+        /* EventEmitter test double. */
+      }
+    }
+    const input = new FakeTty();
+    const signalSource = new EventEmitter();
+    const pending = credentials.readTypeSafeApiKey({
+      input,
+      output: { write: () => true },
+      signalSource,
+    });
+    expect(
+      ["SIGINT", "SIGTERM", "SIGHUP"].map((signal) => signalSource.listenerCount(signal)),
+    ).toEqual([1, 1, 1]);
+    signalSource.emit("SIGTERM");
+    await expect(pending).rejects.toThrow("interrupted by SIGTERM");
+    expect(input.rawCalls).toEqual([true, false]);
+    expect(
+      ["SIGINT", "SIGTERM", "SIGHUP"].map((signal) => signalSource.listenerCount(signal)),
+    ).toEqual([0, 0, 0]);
   });
 });

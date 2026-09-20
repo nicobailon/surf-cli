@@ -202,6 +202,22 @@ try {
   process.exit(1);
 }
 
+if (args[0] === "semantic" || args[0]?.startsWith("semantic.")) {
+  const { formatSemanticOutput, handleSemanticCli } = require("./semantic-cli.cjs");
+  handleSemanticCli(args, { endpoint })
+    .then((result) => {
+      if (!result.handled) throw new Error("Semantic command was not handled");
+      if (result.value !== undefined) console.log(formatSemanticOutput(result));
+      process.exit(0);
+    })
+    .catch((error) => {
+      const code = error?.code ? ` [${error.code}]` : "";
+      console.error(`Error: ${error?.message || String(error)}${code}`);
+      process.exit(1);
+    });
+  return;
+}
+
 if (args[0] === "oracle") {
   if (args[1] === "ask" || args[1] === "follow") {
     console.error("[surf] Oracle requires exclusive browser access while dispatching; other sessions will queue.");
@@ -1593,8 +1609,19 @@ Tips:
   - Use window.new --incognito for isolated cookies`
   },
   semantic: {
-    title: "Semantic Locators",
-    content: `Find elements by role, text, or label instead of refs or selectors.
+    title: "Semantic browser decisions and locators",
+    content: `Optional Jev commands (page-derived text is sent to TypeSafe only for these commands):
+  semantic.find "the notification control"
+  semantic.verify "Notification preferences were saved"
+  semantic.filter "notification preferences"
+  semantic.act "Open notification settings" --max-steps 5
+  semantic.act "Fill email" --input email="$EMAIL" --allow-write
+  semantic auth set|status|clear
+
+Every click/fill requires --allow-write. This broadly authorizes even high-impact controls;
+repeat --allow-ref <ref> to narrow authorization to exact observed refs.
+
+Local semantic locators find elements by role, text, or label instead of refs or selectors.
 
 By ARIA role:
   locate.role button --name "Submit" --action click
@@ -1777,6 +1804,8 @@ Common Commands:
   animate-audit      JSON timeline of element animation/style samples
   perf-audit         PerformanceObserver snapshot for motion/jank debugging
   page.read          Get page accessibility tree (alias: read)
+  semantic.find      Optional Jev-powered candidate selection
+  semantic.act       Bounded semantic browser action controller
   locate.role <role> Find element by ARIA role
   search <term>      Search for text in page (alias: find)
   window.new <url>   Create isolated browser window
@@ -1853,6 +1882,11 @@ const showFullHelp = () => {
   console.log(`surf v${VERSION} - Browser automation CLI
 
 Usage: surf <command> [args] [options]
+
+Semantic (optional TypeSafe/Jev):
+  surf semantic.find|verify|filter <goal> [--json]
+  surf semantic.act <goal> [--allow-write] [--allow-ref <ref>] [--input <name=value>]
+  surf semantic auth <set|status|clear>
 
 Oracle:
   surf oracle <ask|status|result|follow|list>

@@ -80,6 +80,17 @@ surf navigate "https://example.com"
 # 2. Read page to get element refs
 surf page.read
 
+# Optional remote semantic decisions (sends bounded value-free page text to TypeSafe)
+surf semantic.find "the settings control"
+surf semantic.verify "Settings were saved" --json
+surf semantic.filter "settings"
+surf semantic.act "Open settings" --max-steps 5
+# Every click/fill needs broad write authorization; narrow it with repeatable refs.
+surf semantic.act "Fill email" --input email="$EMAIL" --allow-write --allow-ref e3
+surf semantic auth set|status|clear
+# TYPESAFE_API_KEY is the ephemeral/CI override. Persisted setup accepts one stdin line:
+printf '%s\n' "$TYPESAFE_KEY" | surf semantic auth set
+
 # 3. Click by ref or coordinates
 surf click --ref "e1"
 surf click --x 100 --y 200
@@ -93,6 +104,13 @@ surf screenshot --full-page --output /tmp/shot.png
 # Inspect animation/style changes as JSON
 surf animate-audit --selector ".thing" --duration 2000 --fps 10
 ```
+
+The shared credential schema is `{"version":1,"apiKey":"..."}` at
+`${XDG_CONFIG_HOME:-~/.config}/typesafe/credentials.json` (Unix/macOS) or
+`%APPDATA%\TypeSafe\credentials.json` (Windows), independent of Surf state and
+the project. POSIX directories/files use `0700`/`0600`; Windows relies on the
+current user's profile ACL. `TYPESAFE_API_KEY` wins. Status reveals only source
+and fingerprint; clear affects all clients using the shared file.
 
 ## AI Assistants (No API Keys)
 

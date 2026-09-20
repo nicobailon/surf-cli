@@ -913,11 +913,63 @@ successful result payloads retain their existing behavior. In particular, a
 connection failure still prints stderr, leaves stdout empty and exits 1 with
 `--json`, even with `--soft-fail`.
 
+## Optional Jev semantic commands
+
+Semantic commands are an explicit remote-AI boundary: only `surf semantic.*`
+sends a bounded, value-free current-page observation to TypeSafe. Existing Surf
+commands do not read a TypeSafe credential, load the SDK, or make provider calls.
+
+```bash
+surf semantic.find "the control for notification preferences"
+surf semantic.verify "Notification preferences were saved" --json
+surf semantic.filter "notification preferences" --top 6
+surf semantic.act "Open notification settings" --max-steps 5
+surf semantic.act "Fill the email field" --input email="$EMAIL" --allow-write
+surf semantic auth set       # hidden prompt, or exactly one stdin line
+surf semantic auth status    # source and redacted fingerprint only
+surf semantic auth clear     # removes only the stored credential
+
+# Ephemeral/CI override (highest precedence; does not modify the stored key)
+TYPESAFE_API_KEY="$CI_TYPESAFE_KEY" surf semantic.find "the checkout link"
+
+# Non-interactive persisted setup (exactly one bounded line on stdin)
+printf '%s\n' "$TYPESAFE_KEY" | surf semantic auth set
+```
+
+The provider-neutral shared schema is `{"version":1,"apiKey":"..."}`. Persisted
+setup lives at `${XDG_CONFIG_HOME:-~/.config}/typesafe/credentials.json` on
+Unix/macOS and `%APPDATA%\TypeSafe\credentials.json` on Windows, independent of
+`SURF_STATE_DIR`, project, and cwd. On POSIX, directories use mode `0700` and the
+file mode `0600`; writes are atomic and symlinked paths are rejected. Windows
+uses the current user's profile and ACL semantics. A nonblank `TYPESAFE_API_KEY`
+always wins over the shared file; `auth status` prints only `environment`,
+`shared-store`, or `not-configured` plus a short fingerprint. `auth clear`
+removes the shared file for every client that uses it while an environment
+override remains effective. Keys are never accepted on argv or from
+`surf.json`, project config, or auto-loaded `.env` files, and are never sent to
+the host/extension or included in logs, errors, or JSON output. Install,
+configuration, doctor, startup, and non-semantic commands never prompt for a key
+or load the TypeSafe SDK.
+
+`semantic.act` is bounded to observed same-origin HTTP(S) links, fixed scrolling
+and waits, and observed refs. Every DOM click and fill is mutation-capable and is
+excluded unless `--allow-write` is present. That flag intentionally permits
+high-impact submit, purchase, delete, send, and publish controls; repeat
+`--allow-ref <ref>` to narrow authorization to exact current refs. Fill values
+come only from named `--input name=value` slots and are never sent to TypeSafe or
+included in traces. Actions are freshness-guarded and uncertain writes are not
+replayed. Page text remains adversarial data; model output never grants authority.
+
+Maintainers can run the non-CI evaluation harness with
+`SURF_REAL_JEV=1 TYPESAFE_API_KEY=... npm run eval:jev`; it reports target
+accuracy, abstention outcomes, latency, tokens, and leaves cost unestimated unless
+current provider pricing is supplied externally.
+
 ## Environment Variables
 
 ```bash
 SURF_NETWORK_PATH         # Native-host network state root (default: ~/.surf/state/network)
-SURF_STATE_DIR            # Private Surf state root, including browser sessions (default: ~/.surf/state)
+SURF_STATE_DIR            # Private Surf state root; does not affect shared TypeSafe credentials
 SURF_SESSION              # Default named browser session for tab-scoped commands
 SURF_SOCKET               # Socket path or named pipe (default: /tmp/surf.sock, Windows: //./pipe/surf)
 SURF_REMOTE               # Remote Surf endpoint as host:port (overrides SURF_SOCKET)
@@ -932,6 +984,9 @@ SURF_SOCKET_GROUP         # Group name or numeric gid required with mode 660
 SURF_NODE_PATH            # Path to node binary (for native host wrapper)
 SURF_HOST_PATH            # Path to native/host.cjs (for native host wrapper)
 SURF_EXTENSION_PATH       # Path to extension dist/ directory
+TYPESAFE_API_KEY          # Optional semantic-command credential; overrides private storage
+SURF_JEV_MODEL            # Optional observable Jev model override (default: jev-1.13.0)
+XDG_CONFIG_HOME           # Unix/macOS base for shared TypeSafe credentials (default: ~/.config)
 ```
 
 **Use cases:**
@@ -948,6 +1003,8 @@ SURF_EXTENSION_PATH       # Path to extension dist/ directory
 - `SURF_SOCKET_MODE` / `SURF_SOCKET_GROUP`: Advanced POSIX native-host settings. Use `surf install ... --socket-mode 660 --socket-group <group>` to persist group access; mode `660` grants full Surf authority to every member of that group.
 - `SURF_NODE_PATH` / `SURF_HOST_PATH`: Package manager installs (e.g., Nix) that store binaries in non-standard locations
 - `SURF_EXTENSION_PATH`: Package managers that create stable symlinks instead of changing paths on reinstall
+- `TYPESAFE_API_KEY`: Used only by explicit `semantic.*` networked commands. Otherwise use `surf semantic auth set` for the provider-neutral shared store.
+- `SURF_JEV_MODEL`: Explicit model override for semantic commands; Surf otherwise pins `jev-1.13.0`.
 
 **Example (Nix):**
 ```bash

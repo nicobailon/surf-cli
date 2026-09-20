@@ -1,8 +1,8 @@
 const crypto = require("crypto");
+const os = require("os");
 const path = require("path");
 const {
   atomicWriteJson,
-  getPrivateStateRoot,
   readPrivateJson,
   removePrivateFile,
 } = require("./private-state.cjs");
@@ -11,11 +11,16 @@ const CREDENTIAL_VERSION = 1;
 const MAX_API_KEY_BYTES = 16 * 1024;
 const FINGERPRINT_LENGTH = 12;
 
-function credentialLocation(env = process.env) {
-  const root = getPrivateStateRoot(env);
+function credentialLocation(env = process.env, { platform = process.platform, homeDir = os.homedir() } = {}) {
+  const windows = platform === "win32";
+  const pathApi = windows ? path.win32 : path;
+  const configRoot = windows
+    ? (typeof env.APPDATA === "string" && env.APPDATA.trim() ? env.APPDATA.trim() : pathApi.join(homeDir, "AppData", "Roaming"))
+    : (typeof env.XDG_CONFIG_HOME === "string" && env.XDG_CONFIG_HOME.trim() ? env.XDG_CONFIG_HOME.trim() : pathApi.join(homeDir, ".config"));
+  const root = pathApi.join(configRoot, windows ? "TypeSafe" : "typesafe");
   return {
     root,
-    filePath: path.join(root, "credentials", "typesafe.json"),
+    filePath: pathApi.join(root, "credentials.json"),
   };
 }
 
@@ -61,7 +66,7 @@ function resolveTypeSafeCredential(env = process.env) {
   }
   const apiKey = readStoredApiKey(env);
   if (apiKey === null) return null;
-  return { apiKey, source: "private-store", fingerprint: fingerprintApiKey(apiKey) };
+  return { apiKey, source: "shared-store", fingerprint: fingerprintApiKey(apiKey) };
 }
 
 function credentialStatus(env = process.env) {
@@ -74,7 +79,7 @@ function storeTypeSafeCredential(apiKey, env = process.env) {
   const validated = requireApiKey(apiKey);
   const { root, filePath } = credentialLocation(env);
   atomicWriteJson(filePath, { version: CREDENTIAL_VERSION, apiKey: validated }, { root });
-  return { source: "private-store", fingerprint: fingerprintApiKey(validated) };
+  return { source: "shared-store", fingerprint: fingerprintApiKey(validated) };
 }
 
 function clearStoredTypeSafeCredential(env = process.env) {
@@ -128,7 +133,7 @@ function readNonInteractiveLine(input, maxBytes) {
   });
 }
 
-function readHiddenTtyLine(input, output, maxBytes) {
+function readHiddenTtyLine(input, output, maxBytes, signalSource = process) {
   return new Promise((resolve, reject) => {
     let value = "";
     let settled = false;
@@ -138,6 +143,7 @@ function readHiddenTtyLine(input, output, maxBytes) {
       settled = true;
       input.off("data", onData);
       input.off("error", onError);
+      for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"]) signalSource.off(signal, signalHandlers[signal]);
       try { input.setRawMode(previousRaw); } catch {}
       input.pause?.();
       output.write("\n");
@@ -146,6 +152,9 @@ function readHiddenTtyLine(input, output, maxBytes) {
         try { resolve(requireApiKey(value)); } catch (validationError) { reject(validationError); }
       }
     };
+    const signalHandlers = Object.fromEntries(
+      ["SIGINT", "SIGTERM", "SIGHUP"].map((signal) => [signal, () => finish(new Error(`TypeSafe API key input interrupted by ${signal}`))]),
+    );
     const onError = (error) => finish(error);
     const onData = (chunk) => {
       for (const character of chunk.toString("utf8")) {
@@ -162,16 +171,18 @@ function readHiddenTtyLine(input, output, maxBytes) {
     input.setRawMode(true);
     input.on("data", onData);
     input.once("error", onError);
+    for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"]) signalSource.once(signal, signalHandlers[signal]);
     input.resume?.();
   });
 }
 
-function readTypeSafeApiKey({ input = process.stdin, output = process.stderr } = {}) {
+function readTypeSafeApiKey(options = {}) {
+  const { input = process.stdin, output = process.stderr, signalSource = process } = options;
   if (input.isTTY) {
     if (typeof input.setRawMode !== "function") {
       return Promise.reject(new Error("hidden TypeSafe API key input is unavailable on this terminal"));
     }
-    return readHiddenTtyLine(input, output, MAX_API_KEY_BYTES);
+    return readHiddenTtyLine(input, output, MAX_API_KEY_BYTES, signalSource);
   }
   return readNonInteractiveLine(input, MAX_API_KEY_BYTES);
 }
