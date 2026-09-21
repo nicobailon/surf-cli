@@ -88,6 +88,11 @@ describe("semantic workflow integration seam", () => {
     );
 
     expect(result.status).toBe("completed");
+    expect(result.semantic).toMatchObject({
+      stepId: "find",
+      usage: { providerCalls: 1, inputTokens: 2, outputTokens: 1 },
+      limits: { maxProviderCalls: 32, maxSearchObservations: 32 },
+    });
     expect(result.vars.product.binding).toMatchObject({
       handle: "product",
       role: "link",

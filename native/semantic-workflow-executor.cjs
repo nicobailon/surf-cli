@@ -38,6 +38,17 @@ function createConcreteSemanticExecutor({ request, workflow, inputs = {}, env = 
     if (result.kind !== "success") failed = true;
     return {
       ...result,
+      semantic: {
+        runId: context.runId,
+        stepId: step.id,
+        checkpoint: context.runId,
+        ...(context.model ? { model: context.model } : {}),
+        ...(result.reason ? { reason: result.reason } : {}),
+        ...(result.write ? { write: result.write } : {}),
+        ...(result.coverage ? { coverage: result.coverage } : {}),
+        usage: { ...context.usage },
+        limits: context.limits,
+      },
       ...(result.binding || result.coverage || result.probability !== undefined
         ? { publicResult: { binding: result.binding, coverage: result.coverage, probability: result.probability } }
         : {}),

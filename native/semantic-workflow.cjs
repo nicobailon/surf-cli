@@ -64,6 +64,7 @@ function createSemanticWorkflowRuntime(dependencies) {
     return {
       runId, workflowDigest,
       deadline: now() + deadlineMs, maxProviderCalls, bindings: new Map(), inputs,
+      limits: { deadlineMs, maxProviderCalls, maxSearchObservations: WORKFLOW_POLICY.maxSearchObservations },
       pinned: null, acquired: false, steps: 0, completedSteps: [],
       attemptStore: attemptStore || createAttemptStore?.({ runId, workflowDigest }),
       usage: { providerCalls: 0, inputTokens: 0, outputTokens: 0, partial: false, browserCommands: 0, semanticDecisions: 0, observations: 0 },
@@ -92,6 +93,7 @@ function createSemanticWorkflowRuntime(dependencies) {
     const timer = setTimeout(() => controller.abort(), timeoutMs);
     try {
       const response = await evaluate(state, questions, { ...options, signal: controller.signal, timeoutMs });
+      context.model = response.model;
       context.usage.inputTokens += response.usage?.input_tokens || 0;
       context.usage.outputTokens += response.usage?.output_tokens || 0;
       return response;
@@ -102,9 +104,20 @@ function createSemanticWorkflowRuntime(dependencies) {
       clearTimeout(timer);
     }
   }
-  async function decide(context, observation, query) {
+  async function decide(context, observation, query, target, binding) {
     const state = providerState(observation);
-    return find({ state, goal: query, candidates: state.candidates, evaluate: (s, q, o) => evaluator(context, s, q, o) });
+    const eligibleRefs = new Set(observation.candidates.filter((candidate) => {
+      if ((target.role && candidate.role !== target.role) || (target.type && candidate.type !== target.type)) return false;
+      if (!binding) return true;
+      return candidate.role === binding.candidate.role &&
+        candidate.type === binding.candidate.type &&
+        candidate.name === binding.candidate.name &&
+        canonicalSameOriginDestination(candidate, observation.identity.fullUrl) ===
+          canonicalSameOriginDestination(binding.candidate, binding.fullUrl);
+    }).map((candidate) => candidate.ref));
+    const candidates = state.candidates.filter((candidate) => eligibleRefs.has(candidate.id));
+    if (!candidates.length) return null;
+    return find({ state: { ...state, candidates }, goal: query, candidates, evaluate: (s, q, o) => evaluator(context, s, q, o) });
   }
   async function scrollGeometry(context, action, scopeToken, identity) {
     const value = parseBoundary(await browser(context, "semantic.scrollScope", {
@@ -132,8 +145,10 @@ function createSemanticWorkflowRuntime(dependencies) {
       truncated ||= Number(observation.omitted?.candidates || 0) + Number(observation.omitted?.chunks || 0) > 0;
       const geometry = scope.geometry;
       intervals.push({ start: geometry.intervalStart, end: geometry.intervalEnd });
-      const decision = await decide(context, observation, query);
-      if (decision.candidate && (!target.role || decision.candidate.role === target.role)) {
+      const decision = await decide(context, observation, query, target, binding);
+      if (decision?.candidate &&
+          (!target.role || decision.candidate.role === target.role) &&
+          (!target.type || decision.candidate.type === target.type)) {
         if (!write || decision.decision.probability >= SEMANTIC_POLICY.thresholds.write) {
           const concrete = observation.candidates.find((item) => item.ref === decision.candidate.id);
           if (binding) {
@@ -225,7 +240,13 @@ function createSemanticWorkflowRuntime(dependencies) {
       catch { return failure("checkpoint_failure", { write: { state: "dispatch_unknown", replayAllowed: false } }); }
       return failure("outcome_unknown", { write: { state: "dispatch_unknown", replayAllowed: false } });
     }
-    const verified = predicate ? await verifyExpectation(context, resolved, predicate) : false;
+    let verified;
+    try { verified = predicate ? await verifyExpectation(context, resolved, predicate) : false; }
+    catch (error) {
+      try { await storeCall(context, "terminal", attempt.attemptId, "acknowledged_unverified"); }
+      catch { return failure("checkpoint_failure", { write: { state: "acknowledged_unverified", replayAllowed: false } }); }
+      return failure(error.code || "verification_failed", { write: { state: "acknowledged_unverified", replayAllowed: false } });
+    }
     try { await storeCall(context, "terminal", attempt.attemptId, verified ? "verified" : "acknowledged_unverified"); }
     catch { return failure("checkpoint_failure", { write: { state: verified ? "acknowledged_verified" : "acknowledged_unverified", replayAllowed: false } }); }
     return verified ? success("verified", { write: { state: "acknowledged_verified", replayAllowed: false } }) : failure("assertion_mismatch", { write: { state: "acknowledged_unverified", replayAllowed: false } });
@@ -246,7 +267,7 @@ function createSemanticWorkflowRuntime(dependencies) {
         return success("completed", { binding: publicBinding(binding), coverage: resolved.coverage, probability: resolved.decision.decision.probability });
       }
       if (step.op === "open") {
-        const resolved = await resolve(context, step.target, false, { maxObservations: 1 });
+        const resolved = await resolve(context, step.target, false);
         if (resolved.error) return resolved.error;
         const url = canonicalSameOriginDestination(resolved.candidate, resolved.observation.identity.fullUrl);
         if (!url) return failure("unsupported_control");
@@ -272,7 +293,7 @@ function createSemanticWorkflowRuntime(dependencies) {
         const comparison = await compare(context, resolved.observation, resolved.candidate, predicate);
         if (comparison?.success !== true) return failure(comparison?.reason || "unsupported_control");
         if (comparison.matches === true) return success("skipped_already_satisfied");
-        return mutate(context, step, resolved, "click", predicate);
+        return await mutate(context, step, resolved, "click", predicate);
       }
       if (step.op === "fill") {
         if (!Object.hasOwn(context.inputs, step.input)) return failure("validation_failure");
@@ -281,11 +302,11 @@ function createSemanticWorkflowRuntime(dependencies) {
         const comparison = await compare(context, resolved.observation, resolved.candidate, predicate);
         if (comparison?.success !== true) return failure(comparison?.reason || "unsupported_control");
         if (comparison.matches === true) return success("skipped_already_satisfied");
-        return mutate(context, step, resolved, "fill", predicate, value);
+        return await mutate(context, step, resolved, "fill", predicate, value);
       }
       if (step.op === "click") {
         if (!step.expect) return failure("validation_failure");
-        return mutate(context, step, resolved, "click", step.expect);
+        return await mutate(context, step, resolved, "click", step.expect);
       }
       return failure("validation_failure");
     } catch (error) {

@@ -84,6 +84,22 @@ function semanticFailure(result) {
   return `semantic step did not succeed (status: ${String(result.status || "missing")})`;
 }
 
+function semanticDetail(result, step) {
+  if (result?.semantic) return result.semantic;
+  if (!result || typeof result !== "object") return undefined;
+  const detail = {
+    ...(result.runId ? { runId: result.runId } : {}),
+    ...(step.id ? { stepId: step.id } : {}),
+    ...(result.reason ? { reason: result.reason } : {}),
+    ...(result.write ? { write: result.write } : {}),
+    ...(result.coverage ? { coverage: result.coverage } : {}),
+    ...(result.checkpoint ? { checkpoint: result.checkpoint } : {}),
+    ...(result.usage ? { usage: result.usage } : {}),
+    ...(result.limits ? { limits: result.limits } : {}),
+  };
+  return Object.keys(detail).length ? detail : undefined;
+}
+
 async function executeSemanticStep(step, semanticContext, options) {
   const { executeSemanticStep: executor, onEvent = () => {}, signal } = options;
   if (typeof executor !== "function") throw new Error("semantic.step requires an injected semantic executor");
@@ -97,11 +113,13 @@ async function executeSemanticStep(step, semanticContext, options) {
     if (!SEMANTIC_SUCCESS_STATUSES.has(result?.status)) {
       const error = semanticFailure(result);
       onEvent({ type: "tool.failed", ...baseEvent, endedAt: new Date().toISOString(), resultSummary: error });
-      return { success: false, error };
+      const semantic = semanticDetail(result, step);
+      return { success: false, error, ...(semantic ? { semantic } : {}) };
     }
     const output = result.publicResult;
+    const semantic = semanticDetail(result, step);
     onEvent({ type: "tool.completed", ...baseEvent, endedAt: new Date().toISOString(), resultSummary: result.status });
-    return { success: true, ...(output !== undefined ? { output } : {}) };
+    return { success: true, ...(output !== undefined ? { output } : {}), ...(semantic ? { semantic } : {}) };
   } catch (error) {
     const message = error?.message || String(error);
     onEvent({ type: "tool.failed", ...baseEvent, endedAt: new Date().toISOString(), resultSummary: message });
@@ -225,6 +243,7 @@ async function executeWorkflow(steps, options = {}) {
   const executionOptions = semanticEnabled ? { ...options, semanticContext } : options;
   const results = [];
   let failed = 0;
+  let semantic;
   let stepsExecuted = 0;
   const startTotal = Date.now();
   for (let index = 0; index < steps.length; index++) {
@@ -239,20 +258,21 @@ async function executeWorkflow(steps, options = {}) {
       result = { success: false, error: error?.message || String(error), stepsExecuted: 0 };
     }
     const ms = Date.now() - startTime;
+    if (result.semantic) semantic = result.semantic;
     stepsExecuted += type === "loop" ? result.stepsExecuted || 0 : 1;
     if (!result.success) {
       failed++;
-      results.push({ step: index + 1, ...(type === "loop" ? { type: "loop" } : { cmd: step.cmd }), status: "error", error: result.error, ms });
+      results.push({ step: index + 1, ...(type === "loop" ? { type: "loop" } : { cmd: step.cmd }), status: "error", error: result.error, ...(result.semantic ? { semantic: result.semantic } : {}), ms });
       options.onProgress?.({ phase: "fail", index, total: steps.length, step, type, ms, error: result.error });
       if ((options.onError || "stop") === "stop") {
-        return { status: "failed", completedSteps: type === "loop" ? stepsExecuted : stepsExecuted - 1, totalSteps: steps.length, results, error: result.error, totalMs: Date.now() - startTotal, vars };
+        return { status: "failed", completedSteps: type === "loop" ? stepsExecuted : stepsExecuted - 1, totalSteps: steps.length, results, error: result.error, ...(semantic ? { semantic } : {}), totalMs: Date.now() - startTotal, vars };
       }
     } else {
-      results.push({ step: index + 1, ...(type === "loop" ? { type: "loop", stepsExecuted: result.stepsExecuted } : { cmd: step.cmd }), status: "ok", ms });
+      results.push({ step: index + 1, ...(type === "loop" ? { type: "loop", stepsExecuted: result.stepsExecuted } : { cmd: step.cmd }), status: "ok", ...(result.semantic ? { semantic: result.semantic } : {}), ms });
       options.onProgress?.({ phase: "ok", index, total: steps.length, step, type, ms, stepsExecuted: result.stepsExecuted });
     }
   }
-  return { status: failed > 0 ? "partial" : "completed", completedSteps: stepsExecuted, totalSteps: steps.length, results, failed, totalMs: Date.now() - startTotal, vars };
+  return { status: failed > 0 ? "partial" : "completed", completedSteps: stepsExecuted, totalSteps: steps.length, results, failed, ...(semantic ? { semantic } : {}), totalMs: Date.now() - startTotal, vars };
 }
 
 module.exports = {

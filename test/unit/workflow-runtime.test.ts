@@ -86,6 +86,33 @@ describe("workflow runtime characterization", () => {
     },
   );
 
+  it("preserves redacted semantic failure detail in workflow JSON", async () => {
+    const result = await runtime.executeWorkflow(
+      [{ id: "add", cmd: "semantic.step", args: { op: "click" } }],
+      {
+        executeTool: vi.fn(),
+        executeSemanticStep: vi.fn(async () => ({
+          status: "blocked",
+          reason: "outcome_unknown",
+          runId: "run-1",
+          write: { state: "dispatch_unknown", replayAllowed: false },
+          usage: { providerCalls: 3, partial: true },
+        })),
+      },
+    );
+    expect(result).toMatchObject({
+      status: "failed",
+      error: "outcome_unknown",
+      semantic: {
+        runId: "run-1",
+        stepId: "add",
+        reason: "outcome_unknown",
+        write: { state: "dispatch_unknown", replayAllowed: false },
+        usage: { providerCalls: 3, partial: true },
+      },
+    });
+  });
+
   it("keeps one semantic context private and exposes only an explicit public result", async () => {
     const contexts: object[] = [];
     const events: Array<Record<string, unknown>> = [];

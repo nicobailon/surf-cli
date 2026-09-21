@@ -8,6 +8,7 @@ const { createSemanticWorkflowRuntime, WORKFLOW_POLICY } =
         step: Record<string, any>,
         context: Record<string, any>,
       ): Promise<Record<string, any>>;
+      closeContext(context: Record<string, any>, terminal?: Record<string, any>): Promise<void>;
     };
     WORKFLOW_POLICY: Record<string, number>;
   };
@@ -65,6 +66,8 @@ function store() {
     reserve: vi.fn(async () => ({ attemptId: "attempt" })),
     dispatchIntent: vi.fn(),
     terminal: vi.fn(),
+    checkpoint: vi.fn(),
+    release: vi.fn(),
   };
 }
 
@@ -72,20 +75,33 @@ function boundary(
   options: {
     positions?: number[];
     candidate?: (top: number) => string;
-    compare?: boolean;
+    compare?: boolean | (() => unknown);
     action?: () => unknown;
   } = {},
 ) {
   const positions = options.positions || [0];
   let index = 0;
-  const read = () =>
-    envelope(observation(options.candidate?.(positions[index]) || "e1", positions[index]));
+  let currentUrl = "https://example.test/shop";
+  const read = () => {
+    const value = observation(options.candidate?.(positions[index]) || "e1", positions[index]);
+    value.semanticObservation.identity.fullUrl = currentUrl;
+    return envelope(value);
+  };
   const compare = () =>
-    envelope({ success: true, matches: options.compare ?? true, reason: "compared", identity: {} });
+    typeof options.compare === "function"
+      ? options.compare()
+      : envelope({
+          success: true,
+          matches: options.compare ?? true,
+          reason: "compared",
+          identity: {},
+        });
   const action = () => (options.action ? options.action() : envelope({ success: true }));
   return vi.fn(async (tool: string, args: Record<string, any>) => {
     if (tool === "semantic.scrollScope") {
-      if (args.action === "advance") {
+      if (args.action === "top") {
+        index = 0;
+      } else if (args.action === "advance") {
         index = Math.min(index + 1, positions.length - 1);
       }
       const top = positions[index];
@@ -103,12 +119,15 @@ function boundary(
         },
       });
     }
+    if (tool === "navigate") {
+      currentUrl = args.url;
+      return action();
+    }
     const handlers: Record<string, () => unknown> = {
       "page.read": read,
       "semantic.localCompare": compare,
       click: action,
       "form.fill": action,
-      navigate: action,
     };
     if (handlers[tool]) {
       return handlers[tool]();
@@ -187,7 +206,12 @@ describe("bounded semantic workflow runtime", () => {
       attemptStore: store(),
     });
     const result = await runtime.executeStep(
-      { id: "add", op: "click", target: { query: "Add" }, expect: { kind: "visible" } },
+      {
+        id: "add",
+        op: "click",
+        target: { query: "Add", type: "button" },
+        expect: { kind: "visible" },
+      },
       runtime.createContext(),
     );
     expect(result).toMatchObject({
@@ -197,6 +221,42 @@ describe("bounded semantic workflow runtime", () => {
       appliedThreshold: 0.95,
     });
     expect(request.mock.calls.some(([tool]) => tool === "click")).toBe(false);
+  });
+
+  it("does not dispatch a model-derived write outside the declared target type", async () => {
+    const request = boundary();
+    const runtime = createSemanticWorkflowRuntime({
+      request,
+      evaluate: provider(),
+      attemptStore: store(),
+    });
+    const result = await runtime.executeStep(
+      { id: "add", op: "click", target: { query: "Add", type: "a" }, expect: { kind: "visible" } },
+      runtime.createContext(),
+    );
+    expect(result.kind).toBe("failure");
+    expect(request.mock.calls.some(([tool]) => tool === "click")).toBe(false);
+  });
+
+  it("re-resolves a below-fold binding before opening its same-origin destination", async () => {
+    const request = boundary({
+      positions: [0, 750],
+      candidate: (top) => (top === 750 ? "e2" : "e1"),
+    });
+    const runtime = createSemanticWorkflowRuntime({ request, evaluate: provider("e2") });
+    const context = runtime.createContext();
+    expect(
+      await runtime.executeStep(
+        { id: "find", as: "product", op: "find", target: { query: "Bottle", role: "link" } },
+        context,
+      ),
+    ).toMatchObject({ kind: "success" });
+    const openResult = await runtime.executeStep(
+      { id: "open", op: "open", target: { binding: "product" } },
+      context,
+    );
+    expect(openResult).toMatchObject({ kind: "success", status: "verified" });
+    expect(request.mock.calls.filter(([tool]) => tool === "navigate")).toHaveLength(1);
   });
 
   it("skips a satisfied fill without reserving or dispatching and keeps values out of provider payloads", async () => {
@@ -230,7 +290,12 @@ describe("bounded semantic workflow runtime", () => {
     });
     const runtime = createSemanticWorkflowRuntime({ request, evaluate: provider(), attemptStore });
     const result = await runtime.executeStep(
-      { id: "add", op: "click", target: { query: "Add" }, expect: { kind: "visible" } },
+      {
+        id: "add",
+        op: "click",
+        target: { query: "Add", type: "button" },
+        expect: { kind: "visible" },
+      },
       runtime.createContext(),
     );
     expect(result).toMatchObject({
@@ -261,6 +326,48 @@ describe("bounded semantic workflow runtime", () => {
     );
     expect(result).toMatchObject({ kind: "failure", reason: "checkpoint_failure" });
   });
+
+  it.each(["local", "semantic"])(
+    "persists acknowledged-unverified when %s verification throws",
+    async (mode) => {
+      const attemptStore = store();
+      let providerCalls = 0;
+      const baseProvider = provider();
+      const evaluate = vi.fn(async (state: unknown, questions: Record<string, any>) => {
+        providerCalls++;
+        if (mode === "semantic" && providerCalls > 1) {
+          throw new Error("verification unavailable");
+        }
+        return baseProvider(state, questions);
+      });
+      const request = boundary({
+        compare:
+          mode === "local"
+            ? () => {
+                throw new Error("comparison unavailable");
+              }
+            : false,
+      });
+      const runtime = createSemanticWorkflowRuntime({ request, evaluate, attemptStore });
+      const context = runtime.createContext();
+      const expectValue =
+        mode === "semantic" ? { mode: "semantic", claim: "Cart is open" } : { kind: "visible" };
+      const result = await runtime.executeStep(
+        { id: "add", op: "click", target: { query: "Add" }, expect: expectValue },
+        context,
+      );
+      expect(result).toMatchObject({
+        kind: "failure",
+        write: { state: "acknowledged_unverified", replayAllowed: false },
+      });
+      expect(attemptStore.terminal).toHaveBeenCalledWith("attempt", "acknowledged_unverified");
+      await runtime.closeContext(context, { state: "failed" });
+      expect(attemptStore.release).toHaveBeenCalledWith(
+        expect.objectContaining({ state: "failed" }),
+      );
+      expect(request.mock.calls.filter(([tool]) => tool === "click")).toHaveLength(1);
+    },
+  );
 
   it("requires click expectations and returns only discriminated outcomes", async () => {
     const runtime = createSemanticWorkflowRuntime({

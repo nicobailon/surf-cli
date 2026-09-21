@@ -75,7 +75,7 @@ function clippedGeometry(container: Element): SemanticScrollGeometry | null {
     intervalStart,
     intervalEnd,
     atTop: scrollTop <= 0,
-    atBottom: scrollTop + rawClientHeight >= scrollHeight,
+    atBottom: intervalEnd >= scrollHeight,
   };
 }
 
