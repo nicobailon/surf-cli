@@ -978,39 +978,41 @@ connection failure still prints stderr, leaves stdout empty and exits 1 with
 
 ## Optional Jev semantic commands
 
-Jev is most useful when the agent does not yet know a site's structure or happy
-path. Instead of repeatedly reading the page, comparing candidate elements, and
-selecting refs, the agent can give Surf a goal and let Jev resolve it into
-bounded actions. Once the path is known and stable, deterministic Surf commands
-are usually faster and more reliable for repeated execution.
+`semantic.act` is a bounded, goal-driven website controller. Give it an outcome
+and it repeatedly observes the current page, asks Jev to select the next action
+from Surf's allowed menu, validates and executes that action, then checks whether
+the overall goal is complete. It stops when the goal is satisfied, a decision is
+uncertain, or a step, provider-call, or time budget is exhausted.
 
 ```text
-unfamiliar page -> Jev discovers controls -> agent confirms outcome
-                                              |
-                                              +-> stable path -> deterministic workflow
+agent goal
+    |
+    v
+Surf observes -> Jev selects -> Surf validates + acts -> Jev checks goal
+    ^                                                        |
+    +---------------- goal incomplete -----------------------+
+                                                             |
+                                      complete / uncertain / budget reached
+                                                             |
+                                                             v
+                                                        return result
 ```
 
-Jev reduces the browser work between an agent's intent and its final
-verification:
+The other semantic commands expose individual parts of that loop:
 
 ```text
-Without Jev                         With Jev
------------                         --------
-Agent reads page                    Agent states goal
-      |                                   |
-Agent compares candidates           Jev finds and selects controls
-      |                                   |
-Agent chooses refs                  Surf validates and acts
-      |                                   |
-Agent acts                          Agent reads final state
-      |                                   |
-Agent reads final state             Agent confirms outcome
-      |
-Agent confirms outcome
+semantic.find     select one control matching a goal
+semantic.filter   rank the page regions relevant to a goal
+semantic.verify   check whether one outcome is visible
+semantic.act      run the bounded observe/choose/act/verify loop
 ```
 
-The agent owns the goal and final confirmation. Jev handles semantic selection;
-Surf enforces permissions, confidence thresholds, and element freshness.
+This is most useful when the agent does not yet know a site's structure or happy
+path: Jev handles next-action selection and goal verification while Surf builds
+the allowed action menu and enforces permissions, confidence thresholds, and
+element freshness. The agent owns the goal and final confirmation. Once the path
+is known and stable, deterministic Surf commands are usually faster and more
+reliable for repeated execution.
 
 Semantic commands are an explicit remote-AI boundary: only `surf semantic.*`
 sends a bounded, value-free current-page observation to TypeSafe. Existing Surf

@@ -96,17 +96,24 @@ surf animate-audit --selector ".thing" --duration 2000 --fps 10
 
 ## Optional semantic decisions
 
-Use Jev when the page or happy path is unfamiliar and the goal would otherwise
-require repeated page reads, candidate comparison, and ref selection. Once the
-path is known and stable, prefer deterministic Surf commands for repeated runs.
+`semantic.act` is a bounded, goal-driven website controller. It repeatedly
+observes the page, lets Jev select the next action from Surf's allowed menu,
+validates and executes that action, and checks the overall goal:
 
 ```text
-unfamiliar page -> Jev selects -> Surf validates + acts -> agent confirms -> stable workflow
+goal -> observe -> choose -> validate + act -> verify
+           ^                              |
+           +-------- incomplete ----------+
 ```
 
-The agent owns the goal and final confirmation. Jev handles semantic selection;
-Surf retains execution authority. Only `semantic.*` sends bounded, value-free
-page text to TypeSafe.
+It returns when the goal is complete, a decision is uncertain, or a configured
+budget is exhausted. Use `semantic.find` for one control, `semantic.filter` for
+relevant page regions, and
+`semantic.verify` for one outcome. Use Jev when the page or happy path is
+unfamiliar; once the path is stable, prefer deterministic Surf commands for
+repeated runs. The agent owns the goal and final confirmation, while Surf retains
+execution authority. Only `semantic.*` sends bounded, value-free page text to
+TypeSafe.
 
 ```bash
 surf semantic.find "the settings control"
