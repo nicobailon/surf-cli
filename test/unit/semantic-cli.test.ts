@@ -136,6 +136,16 @@ describe("semantic CLI", () => {
   it("keeps provider state value-free and constructs no click/fill candidates without write authorization", () => {
     const state = semantic.providerState(observation);
     expect(JSON.stringify(state)).not.toContain("secret-value");
+    const stateful = semantic.providerState({
+      ...observation,
+      candidates: [{
+        ...observation.candidates[1],
+        value: "secret-value",
+        state: { checked: true, selected: false, value: "secret-value" },
+      }],
+    });
+    expect(stateful.candidates[0].state).toEqual({ checked: true, selected: false });
+    expect(JSON.stringify(stateful)).not.toContain("secret-value");
     const readonly = semantic.buildActions(observation, { email: "secret-value" }, false);
     expect(readonly.some((action) => action.kind === "click" || action.kind === "fill")).toBe(
       false,
@@ -446,6 +456,64 @@ describe("semantic CLI", () => {
     expect(verificationState?.chunks).toEqual([
       expect.objectContaining({ id: "cart", text: expect.stringContaining("My cart (1)") }),
     ]);
+    expect({ reads, writes, waits, verifications }).toEqual({
+      reads: 3,
+      writes: 1,
+      waits: 1,
+      verifications: 1,
+    });
+  });
+
+  it("settles delayed checked candidate state before verifying a confirmed write once", async () => {
+    const checked = {
+      ...observation,
+      candidates: observation.candidates.map((candidate) =>
+        candidate.ref === "e2" ? { ...candidate, state: { checked: true } } : candidate,
+      ),
+    };
+    let reads = 0;
+    let writes = 0;
+    let waits = 0;
+    let verifications = 0;
+    let verificationState: Record<string, any> | undefined;
+    const result = await semantic.runBrowserSemantic(
+      {
+        command: "semantic.act",
+        goal: "the option is checked",
+        allowWrite: true,
+        allowRefs: ["e2"],
+        inputs: {},
+        maxSteps: 1,
+      },
+      {
+        request: async (tool: string) => {
+          if (tool === "page.read") {
+            const current = reads++ < 2 ? observation : checked;
+            return response({ semanticObservation: current });
+          }
+          if (tool === "click") writes++;
+          if (tool === "wait") waits++;
+          return actionResponse("OK");
+        },
+        evaluate: async (state: Record<string, any>, questions: Record<string, any>) => {
+          if (questions.action) {
+            return provider({ action: choice("click:e2", Object.keys(questions.action.criteria)) });
+          }
+          verifications++;
+          verificationState = state;
+          return provider({
+            verdict: choice("satisfied", ["satisfied", "not_satisfied"]),
+            evidence: choice("c1", Object.keys(questions.evidence.criteria)),
+          });
+        },
+        now: () => 0,
+      },
+    );
+
+    expect(result).toMatchObject({ status: "complete", stopReason: "complete" });
+    expect(verificationState?.candidates).toContainEqual(
+      expect.objectContaining({ id: "e2", state: { checked: true } }),
+    );
     expect({ reads, writes, waits, verifications }).toEqual({
       reads: 3,
       writes: 1,

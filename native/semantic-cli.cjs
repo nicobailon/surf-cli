@@ -91,7 +91,12 @@ function providerState(observation) {
     title: observation.page.title,
     readyState: observation.page.readyState,
     modals: observation.page.modals,
-    candidates: observation.candidates.map(({ ref, role, name, type, nearbyText }) => ({ id: ref, role, name, type, text: nearbyText })),
+    candidates: observation.candidates.map(({ ref, role, name, type, nearbyText, state }) => {
+      const interactiveState = {};
+      if (state?.checked === true || state?.checked === false || state?.checked === "mixed") interactiveState.checked = state.checked;
+      if (state?.selected === true || state?.selected === false) interactiveState.selected = state.selected;
+      return { id: ref, role, name, type, text: nearbyText, ...(Object.keys(interactiveState).length ? { state: interactiveState } : {}) };
+    }),
     chunks: observation.chunks.map(({ id, text, refs = [] }) => ({ id, text, refs })),
   };
 }
