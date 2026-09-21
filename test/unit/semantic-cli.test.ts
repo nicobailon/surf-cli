@@ -133,6 +133,63 @@ describe("semantic CLI", () => {
     ).toThrow("duplicate");
   });
 
+  it("parses only applicable per-run semantic threshold overrides", () => {
+    expect(
+      semantic.parseSemanticArgs([
+        "semantic.act",
+        "complete checkout",
+        "--allow-write",
+        "--threshold",
+        "find=0.6",
+        "--threshold",
+        "write=0.85",
+        "--threshold",
+        "exact-ref-write=0.7",
+        "--threshold",
+        "verify-positive=0.8",
+        "--threshold",
+        "verify-negative=1.0",
+      ]),
+    ).toMatchObject({
+      thresholds: {
+        find: 0.6,
+        write: 0.85,
+        exactRefWrite: 0.7,
+        verifyPositive: 0.8,
+        verifyNegative: 1,
+      },
+    });
+    expect(
+      semantic.parseSemanticArgs(["semantic.find", "target", "--threshold", "find=0"]),
+    ).toMatchObject({ thresholds: { find: 0 } });
+    expect(
+      semantic.parseSemanticArgs(["semantic.filter", "target", "--threshold", "filter=1"]),
+    ).toMatchObject({ thresholds: { filter: 1 } });
+    expect(
+      semantic.parseSemanticArgs([
+        "semantic.verify",
+        "done",
+        "--threshold",
+        "verify-positive=0.8",
+        "--threshold",
+        "verify-negative=0.9",
+      ]),
+    ).toMatchObject({ thresholds: { verifyPositive: 0.8, verifyNegative: 0.9 } });
+
+    for (const args of [
+      ["semantic.act", "goal", "--threshold", "unknown=0.5"],
+      ["semantic.act", "goal", "--threshold", "write=.85"],
+      ["semantic.act", "goal", "--threshold", "write=1.1"],
+      ["semantic.act", "goal", "--threshold", "write=NaN"],
+      ["semantic.act", "goal", "--threshold", "write=0.8", "--threshold", "write=0.9"],
+      ["semantic.find", "goal", "--threshold", "write=0.8"],
+      ["semantic.act", "goal", "--threshold", "filter=0.8"],
+      ["semantic.verify", "goal", "--threshold", "find=0.8"],
+    ]) {
+      expect(() => semantic.parseSemanticArgs(args)).toThrow();
+    }
+  });
+
   it("keeps provider state value-free and constructs no click/fill candidates without write authorization", () => {
     const state = semantic.providerState(observation);
     expect(JSON.stringify(state)).not.toContain("secret-value");
@@ -423,28 +480,35 @@ describe("semantic CLI", () => {
     const waitDurations: number[] = [];
     let verifications = 0;
     let verificationState: Record<string, any> | undefined;
+    const options = semantic.parseSemanticArgs([
+      "semantic.act",
+      "one Alpha jacket is in the cart",
+      "--allow-write",
+      "--threshold",
+      "write=0.85",
+      "--max-steps",
+      "1",
+    ]);
+    if (!options) throw new Error("expected semantic options");
     const result = await semantic.runBrowserSemantic(
-      {
-        command: "semantic.act",
-        goal: "one Alpha jacket is in the cart",
-        allowWrite: true,
-        allowRefs: ["e2"],
-        inputs: {},
-        maxSteps: 1,
-      },
+      options,
       {
         request: async (tool: string, args: Record<string, any>) => {
           if (tool === "page.read") {
             const current = observations[Math.min(reads++, observations.length - 1)];
             return response({ semanticObservation: current });
           }
-          if (tool === "click") writes++;
-          if (tool === "wait") waitDurations.push(args.duration);
+          if (tool === "click") {
+            writes++;
+          }
+          if (tool === "wait") {
+            waitDurations.push(args.duration);
+          }
           return actionResponse("OK");
         },
         evaluate: async (state: Record<string, any>, questions: Record<string, any>) => {
           if (questions.action) {
-            return provider({ action: choice("click:e2", Object.keys(questions.action.criteria)) });
+            return provider({ action: choice("click:e2", Object.keys(questions.action.criteria), 0.85) });
           }
           verifications++;
           verificationState = state;
@@ -457,7 +521,12 @@ describe("semantic CLI", () => {
       },
     );
 
-    expect(result).toMatchObject({ status: "complete", stopReason: "complete" });
+    expect(result).toMatchObject({
+      status: "complete",
+      stopReason: "complete",
+      trace: [expect.objectContaining({ appliedThreshold: 0.85 })],
+      verification: expect.objectContaining({ appliedThreshold: 0.85 }),
+    });
     expect(verificationState?.chunks).toEqual([
       expect.objectContaining({ id: "cart", text: expect.stringContaining("My cart (1)") }),
     ]);

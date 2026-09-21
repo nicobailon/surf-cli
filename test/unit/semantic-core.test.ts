@@ -90,14 +90,23 @@ describe("semantic decision core", () => {
       candidates,
       evaluate: evaluateWith({ target: "ref.1" }, 0.69),
     });
+    const overridden = await find({
+      state: {},
+      goal: "preferences",
+      candidates,
+      thresholds: { find: 0.69 },
+      evaluate: evaluateWith({ target: "ref.1" }, 0.69),
+    });
 
     expect(found).toMatchObject({
       status: "found",
       candidate: candidates[0],
+      appliedThreshold: 0.7,
       model: "jev-response-model",
       decision: { confidence: 0.42 },
     });
     expect(uncertain).toMatchObject({ status: "uncertain", candidate: null });
+    expect(overridden).toMatchObject({ status: "found", appliedThreshold: 0.69 });
   });
 
   it("verify gates positive and negative labels independently and selects only verbatim evidence", async () => {
@@ -109,7 +118,11 @@ describe("semantic decision core", () => {
       evaluate: evaluateWith({ verdict: "satisfied", evidence: "line.2" }, 0.9),
     });
 
-    expect(result).toMatchObject({ status: "satisfied", evidence: evidence[0] });
+    expect(result).toMatchObject({
+      status: "satisfied",
+      appliedThreshold: 0.85,
+      evidence: evidence[0],
+    });
     expect(result.evidence.text).toBe("Saved");
   });
 
@@ -130,13 +143,23 @@ describe("semantic decision core", () => {
       top: 1,
       evaluate,
     });
+    const overridden = await filter({
+      state: { origin: "https://example.test" },
+      goal: "settings",
+      chunks,
+      top: 1,
+      thresholds: { filter: 0.81 },
+      evaluate,
+    });
 
     expect(Object.keys(evaluate.mock.calls[0][1])).toEqual(["chunk_0", "chunk_1"]);
     expect(result).toMatchObject({
       status: "filtered",
+      appliedThreshold: 0.65,
       omittedCount: 1,
       chunks: [{ id: "c2", text: "second" }],
     });
+    expect(overridden).toMatchObject({ status: "uncertain", appliedThreshold: 0.81, chunks: [] });
   });
 
   it("returns uncertain filtering instead of masquerading as an empty page", async () => {
@@ -195,6 +218,63 @@ describe("semantic decision core", () => {
     });
     expect(below).toMatchObject({ status: "uncertain", appliedThreshold: 0.65 });
     expect(selected).toMatchObject({ status: "selected", action, appliedThreshold: 0.65 });
+  });
+
+  it("applies per-call write thresholds without changing defaults or exact-ref thresholds", async () => {
+    const broadAction = { id: "click", kind: "click", ref: "ref.1" };
+    const broadOptions = {
+      state: {},
+      goal: "add to cart",
+      actions: [broadAction],
+      origin: "https://example.test",
+      allowWrite: true,
+      allowRefs: [],
+      inputSlots: [],
+      evaluate: evaluateWith({ action: "click" }, 0.85),
+    };
+    const defaultResult = await chooseAction(broadOptions);
+    const overridden = await chooseAction({ ...broadOptions, thresholds: { write: 0.85 } });
+    expect(defaultResult).toMatchObject({ status: "uncertain", appliedThreshold: 0.95 });
+    expect(overridden).toMatchObject({
+      status: "selected",
+      action: broadAction,
+      appliedThreshold: 0.85,
+    });
+    expect(SEMANTIC_POLICY.thresholds.write).toBe(0.95);
+
+    const exactOptions = {
+      ...broadOptions,
+      allowRefs: ["ref.1"],
+      evaluate: evaluateWith({ action: "click" }, 0.6),
+    };
+    const broadOnly = await chooseAction({ ...exactOptions, thresholds: { write: 0.5 } });
+    const exactOverride = await chooseAction({
+      ...exactOptions,
+      thresholds: { exactRefWrite: 0.6 },
+    });
+    expect(broadOnly).toMatchObject({ status: "uncertain", appliedThreshold: 0.65 });
+    expect(exactOverride).toMatchObject({ status: "selected", appliedThreshold: 0.6 });
+  });
+
+  it("applies positive and negative verification overrides independently", async () => {
+    const options = { state: {}, outcome: "saved", evidence: [] };
+    const positiveDefault = await verify({
+      ...options,
+      evaluate: evaluateWith({ verdict: "satisfied" }, 0.8),
+    });
+    const positiveOverride = await verify({
+      ...options,
+      thresholds: { verifyPositive: 0.8 },
+      evaluate: evaluateWith({ verdict: "satisfied" }, 0.8),
+    });
+    const negativeOverride = await verify({
+      ...options,
+      thresholds: { verifyNegative: 0.8 },
+      evaluate: evaluateWith({ verdict: "not_satisfied" }, 0.8),
+    });
+    expect(positiveDefault).toMatchObject({ status: "uncertain", appliedThreshold: 0.85 });
+    expect(positiveOverride).toMatchObject({ status: "satisfied", appliedThreshold: 0.8 });
+    expect(negativeOverride).toMatchObject({ status: "not_satisfied", appliedThreshold: 0.8 });
   });
 
   it.each([

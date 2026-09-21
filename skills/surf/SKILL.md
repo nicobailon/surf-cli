@@ -121,6 +121,7 @@ surf semantic.verify "Settings were saved" --json
 surf semantic.filter "settings"
 surf semantic.act "Open settings" --max-steps 5
 surf semantic.act "Fill email" --input email="$EMAIL" --allow-write --allow-ref e3
+surf semantic.act 'Add the selected item to the cart' --allow-write --threshold write=0.85
 printf '%s\n' "$TYPESAFE_KEY" | surf semantic auth set
 surf semantic auth status
 surf semantic auth clear
@@ -160,6 +161,8 @@ from it instead of inventing fields.
 Every click/fill requires `--allow-write`; repeat `--allow-ref` to narrow it.
 Broad writes use threshold `0.95`; exactly one allowed ref with one applicable
 write uses `0.65`. The applied threshold is included in decision/trace output.
+Repeatable `--threshold name=value` overrides applicable confidence thresholds
+for one run only; defaults remain safer, and overrides never grant write authority.
 `TYPESAFE_API_KEY` is the ephemeral/CI override.
 The shared credential schema is `{"version":1,"apiKey":"..."}` at
 `${XDG_CONFIG_HOME:-~/.config}/typesafe/credentials.json` (Unix/macOS) or

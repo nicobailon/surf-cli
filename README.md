@@ -1024,6 +1024,7 @@ surf semantic.verify "Notification preferences were saved" --json
 surf semantic.filter "notification preferences" --top 6
 surf semantic.act "Open notification settings" --max-steps 5
 surf semantic.act "Fill the email field" --input email="$EMAIL" --allow-write
+surf semantic.act 'Add the selected item to the cart' --allow-write --threshold write=0.85
 surf semantic auth set       # hidden prompt, or exactly one stdin line
 surf semantic auth status    # source and redacted fingerprint only
 surf semantic auth clear     # removes the shared credential for all clients
@@ -1059,7 +1060,10 @@ come only from named `--input name=value` slots and are never sent to TypeSafe o
 included in traces. Broad and ambiguous writes require probability `0.95`. The
 threshold is `0.65` only when exactly one `--allow-ref` names exactly one
 applicable click, or one fill with one input slot; the applied threshold appears
-in decision/trace output and never grants authority. Actions are
+in decision/trace output and never grants authority. Repeatable
+`--threshold name=value` overrides applicable confidence thresholds for one run
+only; defaults remain safer, and overrides never replace `--allow-write` or
+`--allow-ref` authority. Actions are
 freshness-guarded and uncertain writes are not replayed. Each provider choice is
 capped at 70 actions: six fixed scroll/wait
 actions plus at least one action for each of the 64 observed refs explicitly

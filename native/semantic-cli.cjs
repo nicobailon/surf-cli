@@ -13,15 +13,29 @@ const {
 const FIELD_ROLES = new Set(["textbox", "searchbox", "combobox", "spinbutton"]);
 const CLICK_ROLES = new Set(["button", "link", "checkbox", "radio"]);
 const POST_WRITE_SETTLE_WAITS_MS = Object.freeze([500, 1_000, 2_000, 4_000, 2_000]);
+const THRESHOLD_KEYS = Object.freeze({
+  find: "find",
+  filter: "filter",
+  "verify-positive": "verifyPositive",
+  "verify-negative": "verifyNegative",
+  write: "write",
+  "exact-ref-write": "exactRefWrite",
+});
+const COMMAND_THRESHOLD_KEYS = Object.freeze({
+  "semantic.find": new Set(["find"]),
+  "semantic.filter": new Set(["filter"]),
+  "semantic.verify": new Set(["verify-positive", "verify-negative"]),
+  "semantic.act": new Set(["find", "write", "exact-ref-write", "verify-positive", "verify-negative"]),
+});
 
 const SEMANTIC_HELP = `Usage:
-  surf semantic.find <goal> [--session <name> | --tab-id <id>] [--json]
-  surf semantic.verify <outcome> [--session <name> | --tab-id <id>] [--json]
-  surf semantic.filter <goal> [--top <1-12>] [--session <name> | --tab-id <id>] [--json]
-  surf semantic.act <goal> [--max-steps <1-8>] [--allow-write] [--allow-ref <ref>...] [--input <name=value>...] [--session <name> | --tab-id <id>] [--json]
+  surf semantic.find <goal> [--threshold find=<0-1>] [--session <name> | --tab-id <id>] [--json]
+  surf semantic.verify <outcome> [--threshold verify-positive=<0-1>] [--threshold verify-negative=<0-1>] [--session <name> | --tab-id <id>] [--json]
+  surf semantic.filter <goal> [--top <1-12>] [--threshold filter=<0-1>] [--session <name> | --tab-id <id>] [--json]
+  surf semantic.act <goal> [--max-steps <1-8>] [--allow-write] [--allow-ref <ref>...] [--input <name=value>...] [--threshold <name=value>...] [--session <name> | --tab-id <id>] [--json]
   surf semantic auth set|status|clear
 
-Semantic commands send a bounded, value-free page observation to TypeSafe. semantic.act allows only same-origin navigation, fixed scroll/wait actions, and (with --allow-write) clicks/fills. --allow-write authorizes mutation-capable clicks, including submit/purchase/delete/send/publish; repeatable --allow-ref narrows this authority.`;
+Semantic commands send a bounded, value-free page observation to TypeSafe. semantic.act allows only same-origin navigation, fixed scroll/wait actions, and (with --allow-write) clicks/fills. --allow-write authorizes mutation-capable clicks, including submit/purchase/delete/send/publish; repeatable --allow-ref narrows this authority. Repeatable --threshold overrides applicable confidence thresholds for this run only; defaults remain safer and write authority is unchanged. Names: find, filter, verify-positive, verify-negative, write, exact-ref-write.`;
 
 function normalizeSemanticArgs(argv) {
   if (argv[0] !== "semantic") return argv;
@@ -40,14 +54,14 @@ function parseSemanticArgs(argv) {
     return { command, json: args.includes("--json") };
   }
   if (!["semantic.find", "semantic.verify", "semantic.filter", "semantic.act"].includes(command)) throw new Error(`unknown semantic command: ${command}`);
-  const result = { command, json: false, allowWrite: false, allowRefs: [], inputs: {}, maxSteps: SEMANTIC_POLICY.limits.defaultSteps };
+  const result = { command, json: false, allowWrite: false, allowRefs: [], inputs: {}, thresholds: {}, maxSteps: SEMANTIC_POLICY.limits.defaultSteps };
   const positionals = [];
   for (let i = 1; i < args.length; i++) {
     const arg = args[i];
     if (arg === "--json") result.json = true;
     else if (arg === "--no-wait") result.noWait = true;
     else if (arg === "--allow-write") result.allowWrite = true;
-    else if (["--session", "--tab-id", "--top", "--max-steps", "--allow-ref", "--input"].includes(arg)) {
+    else if (["--session", "--tab-id", "--top", "--max-steps", "--allow-ref", "--input", "--threshold"].includes(arg)) {
       const value = args[++i];
       if (!value || value.startsWith("--")) throw new Error(`${arg} requires a value`);
       if (arg === "--session") result.session = value;
@@ -55,6 +69,16 @@ function parseSemanticArgs(argv) {
       if (arg === "--top") result.top = positiveInteger(value, arg);
       if (arg === "--max-steps") result.maxSteps = positiveInteger(value, arg);
       if (arg === "--allow-ref") result.allowRefs.push(value);
+      if (arg === "--threshold") {
+        const separator = value.indexOf("=");
+        const name = separator > 0 ? value.slice(0, separator) : "";
+        const thresholdValue = separator > 0 ? value.slice(separator + 1) : "";
+        const key = THRESHOLD_KEYS[name];
+        if (!key) throw new Error(`unknown semantic threshold: ${name || value}`);
+        if (!/^(?:0(?:\.\d+)?|1(?:\.0+)?)$/.test(thresholdValue)) throw new Error(`--threshold ${name} must be a decimal between 0 and 1`);
+        if (Object.hasOwn(result.thresholds, key)) throw new Error(`duplicate --threshold: ${name}`);
+        result.thresholds[key] = Number(thresholdValue);
+      }
       if (arg === "--input") {
         const separator = value.indexOf("=");
         const name = separator > 0 ? value.slice(0, separator) : "";
@@ -72,6 +96,11 @@ function parseSemanticArgs(argv) {
   if (result.maxSteps > SEMANTIC_POLICY.limits.maxSteps) throw new Error(`--max-steps must not exceed ${SEMANTIC_POLICY.limits.maxSteps}`);
   if (Object.keys(result.inputs).length > SEMANTIC_POLICY.limits.inputSlots) throw new Error(`--input supports at most ${SEMANTIC_POLICY.limits.inputSlots} slots`);
   if (result.allowRefs.length && !result.allowWrite) throw new Error("--allow-ref requires --allow-write");
+  for (const name of Object.keys(THRESHOLD_KEYS)) {
+    if (Object.hasOwn(result.thresholds, THRESHOLD_KEYS[name]) && !COMMAND_THRESHOLD_KEYS[command].has(name)) {
+      throw new Error(`--threshold ${name} does not apply to ${command}`);
+    }
+  }
   result.goal = positionals[0].trim();
   return result;
 }
@@ -421,7 +450,7 @@ async function runBrowserSemantic(options, { request, evaluate, now = () => perf
       ...state,
       candidates: logicalCandidates.map(({ id, role, name, type, text }) => ({ id, role, name, type, text })),
     };
-    const result = await find({ state: logicalState, goal: options.goal, candidates: logicalCandidates, evaluate: evaluator });
+    const result = await find({ state: logicalState, goal: options.goal, candidates: logicalCandidates, thresholds: options.thresholds, evaluate: evaluator });
     const logicalCandidate = result.candidate;
     const concrete = logicalCandidate?.concreteCandidates?.[0] || null;
     return {
@@ -440,9 +469,9 @@ async function runBrowserSemantic(options, { request, evaluate, now = () => perf
       } : null,
     };
   }
-  if (options.command === "semantic.verify") return verify({ state, outcome: options.goal, evidence: state.chunks, evaluate: evaluator });
+  if (options.command === "semantic.verify") return verify({ state, outcome: options.goal, evidence: state.chunks, thresholds: options.thresholds, evaluate: evaluator });
   if (options.command === "semantic.filter") {
-    const result = await filter({ state, goal: options.goal, chunks: state.chunks, top: options.top, evaluate: evaluator });
+    const result = await filter({ state, goal: options.goal, chunks: state.chunks, top: options.top, thresholds: options.thresholds, evaluate: evaluator });
     const relevantRefs = new Set(result.chunks.flatMap((chunk) => chunk.refs || []));
     return { ...result, page: { origin: state.origin, title: state.title, readyState: state.readyState, modals: state.modals }, candidates: state.candidates.filter((candidate) => relevantRefs.has(candidate.id)), omitted: observation.omitted };
   }
@@ -455,7 +484,7 @@ async function runBrowserSemantic(options, { request, evaluate, now = () => perf
   for (let step = 1; step <= options.maxSteps; step++) {
     if (remaining() < 1) return { status: "stopped", stopReason: "time_budget", trace, providerCalls };
     const actions = buildActions(observation, options.inputs, options.allowWrite, options.allowRefs, spentWrites);
-    const choice = await chooseAction({ state, goal: options.goal, actions, origin: state.origin, allowWrite: options.allowWrite, allowRefs: options.allowRefs, inputSlots: Object.keys(options.inputs), evaluate: evaluator });
+    const choice = await chooseAction({ state, goal: options.goal, actions, origin: state.origin, allowWrite: options.allowWrite, allowRefs: options.allowRefs, inputSlots: Object.keys(options.inputs), thresholds: options.thresholds, evaluate: evaluator });
     if (choice.status !== "selected") return { status: "stopped", stopReason: "uncertain", trace, providerCalls, appliedThreshold: choice.appliedThreshold, decision: choice.decision, logicalDecision: choice.logicalDecision, concreteDecision: choice.concreteDecision, model: choice.model, usage: choice.usage };
     const action = choice.action;
     const actionCandidate = observation.candidates.find((item) => item.ref === action.ref);
@@ -487,7 +516,7 @@ async function runBrowserSemantic(options, { request, evaluate, now = () => perf
     }
     let outcome;
     try {
-      outcome = await verify({ state, outcome: options.goal, evidence: state.chunks, evaluate: evaluator });
+      outcome = await verify({ state, outcome: options.goal, evidence: state.chunks, thresholds: options.thresholds, evaluate: evaluator });
     } catch {
       return { status: "stopped", stopReason: "verification_failed", trace, providerCalls };
     }

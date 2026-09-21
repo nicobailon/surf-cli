@@ -158,7 +158,7 @@ function candidateDescription(candidate) {
   return parts.join(" | ").slice(0, 1_024) || null;
 }
 
-async function find({ state, goal, candidates, evaluate }) {
+async function find({ state, goal, candidates, thresholds = {}, evaluate }) {
   goal = validateGoal(goal);
   assertUniqueItems(candidates, SEMANTIC_POLICY.limits.candidates, "candidates");
   const labels = [...candidates.map((candidate) => candidate.id), "none"];
@@ -170,17 +170,19 @@ async function find({ state, goal, candidates, evaluate }) {
     evaluate,
   });
   const decision = response.decisions.target;
-  const found = decision.label !== "none" && decision.probability >= SEMANTIC_POLICY.thresholds.find;
+  const appliedThreshold = thresholds.find ?? SEMANTIC_POLICY.thresholds.find;
+  const found = decision.label !== "none" && decision.probability >= appliedThreshold;
   return {
     status: found ? "found" : "uncertain",
     candidate: found ? candidates.find((item) => item.id === decision.label) : null,
+    appliedThreshold,
     decision,
     model: response.model,
     usage: response.usage,
   };
 }
 
-async function verify({ state, outcome, evidence = [], evaluate }) {
+async function verify({ state, outcome, evidence = [], thresholds = {}, evaluate }) {
   outcome = validateGoal(outcome);
   assertUniqueItems(evidence, SEMANTIC_POLICY.limits.chunks, "evidence");
   const questions = {
@@ -194,21 +196,25 @@ async function verify({ state, outcome, evidence = [], evaluate }) {
   }
   const response = await evaluatedChoices({ state, questions, evaluate });
   const verdict = response.decisions.verdict;
+  const verifyPositive = thresholds.verifyPositive ?? SEMANTIC_POLICY.thresholds.verifyPositive;
+  const verifyNegative = thresholds.verifyNegative ?? SEMANTIC_POLICY.thresholds.verifyNegative;
+  const appliedThreshold = verdict.label === "satisfied" ? verifyPositive : verifyNegative;
   let status = "uncertain";
-  if (verdict.label === "satisfied" && verdict.probability >= SEMANTIC_POLICY.thresholds.verifyPositive) status = "satisfied";
-  if (verdict.label === "not_satisfied" && verdict.probability >= SEMANTIC_POLICY.thresholds.verifyNegative) status = "not_satisfied";
+  if (verdict.label === "satisfied" && verdict.probability >= verifyPositive) status = "satisfied";
+  if (verdict.label === "not_satisfied" && verdict.probability >= verifyNegative) status = "not_satisfied";
   const evidenceDecision = response.decisions.evidence;
   const evidenceItem = evidenceDecision && evidenceDecision.label !== "none"
     ? evidence.find((item) => item.id === evidenceDecision.label)
     : null;
-  return { status, decision: verdict, evidence: evidenceItem || null, evidenceDecision: evidenceDecision || null, model: response.model, usage: response.usage };
+  return { status, appliedThreshold, decision: verdict, evidence: evidenceItem || null, evidenceDecision: evidenceDecision || null, model: response.model, usage: response.usage };
 }
 
-async function filter({ state, goal, chunks, top = SEMANTIC_POLICY.limits.filterTop, evaluate }) {
+async function filter({ state, goal, chunks, top = SEMANTIC_POLICY.limits.filterTop, thresholds = {}, evaluate }) {
   goal = validateGoal(goal);
   assertUniqueItems(chunks, SEMANTIC_POLICY.limits.chunks, "chunks");
   if (!Number.isInteger(top) || top < 1 || top > SEMANTIC_POLICY.limits.filterTop) fail(`top must be between 1 and ${SEMANTIC_POLICY.limits.filterTop}`);
-  if (!chunks.length) return { status: "uncertain", chunks: [], omittedCount: 0, decisions: {}, model: null, usage: null };
+  const appliedThreshold = thresholds.filter ?? SEMANTIC_POLICY.thresholds.filter;
+  if (!chunks.length) return { status: "uncertain", appliedThreshold, chunks: [], omittedCount: 0, decisions: {}, model: null, usage: null };
   const questions = Object.fromEntries(chunks.map((chunk, index) => [
     `chunk_${index}`,
     choiceQuestion(`Is chunk ${chunk.id} relevant to this goal: ${goal}`, ["relevant", "not_relevant"]),
@@ -216,11 +222,12 @@ async function filter({ state, goal, chunks, top = SEMANTIC_POLICY.limits.filter
   const response = await evaluatedChoices({ state, questions, evaluate });
   const ranked = chunks
     .map((chunk, index) => ({ chunk, decision: response.decisions[`chunk_${index}`], index }))
-    .filter((entry) => entry.decision.label === "relevant" && entry.decision.probability >= SEMANTIC_POLICY.thresholds.filter)
+    .filter((entry) => entry.decision.label === "relevant" && entry.decision.probability >= appliedThreshold)
     .sort((left, right) => right.decision.probability - left.decision.probability || left.index - right.index)
     .slice(0, top);
   return {
     status: ranked.length ? "filtered" : "uncertain",
+    appliedThreshold,
     chunks: ranked.map(({ chunk, decision }) => ({ ...chunk, relevance: decision })),
     omittedCount: chunks.length - ranked.length,
     decisions: response.decisions,
@@ -251,7 +258,7 @@ function validateAction(action, options) {
   return true;
 }
 
-async function chooseAction({ state, goal, actions, origin, allowWrite = false, allowRefs = [], inputSlots = [], evaluate }) {
+async function chooseAction({ state, goal, actions, origin, allowWrite = false, allowRefs = [], inputSlots = [], thresholds = {}, evaluate }) {
   goal = validateGoal(goal);
   assertUniqueItems(actions, SEMANTIC_POLICY.limits.actionChoices, "actions");
   if (!Array.isArray(allowRefs)) fail("allowRefs must be an array");
@@ -270,8 +277,8 @@ async function chooseAction({ state, goal, actions, origin, allowWrite = false, 
   const exactRefWrite = action && (action.kind === "click" || action.kind === "fill") &&
     allowRefs.length === 1 && writeActions.length === 1 && writeActions[0].ref === allowRefs[0];
   const appliedThreshold = action && (action.kind === "click" || action.kind === "fill")
-    ? exactRefWrite ? SEMANTIC_POLICY.thresholds.exactRefWrite : SEMANTIC_POLICY.thresholds.write
-    : SEMANTIC_POLICY.thresholds.find;
+    ? exactRefWrite ? thresholds.exactRefWrite ?? SEMANTIC_POLICY.thresholds.exactRefWrite : thresholds.write ?? SEMANTIC_POLICY.thresholds.write
+    : thresholds.find ?? SEMANTIC_POLICY.thresholds.find;
   const selected = action && decision.probability >= appliedThreshold ? action : null;
   return {
     status: selected ? "selected" : "uncertain",
