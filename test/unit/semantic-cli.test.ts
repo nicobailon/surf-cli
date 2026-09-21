@@ -408,6 +408,23 @@ describe("semantic CLI", () => {
     expect(writable).toContainEqual(expect.objectContaining({ kind: "click", ref: "mutate" }));
   });
 
+  it("omits exact self-navigation while preserving distinct paths, queries, fragments, and clicks", () => {
+    const candidates = [
+      { ref: "self", role: "link", name: "Current", type: "a", href: "/settings" },
+      { ref: "path", role: "link", name: "Profile", type: "a", href: "/profile" },
+      { ref: "query", role: "link", name: "Filtered", type: "a", href: "/settings?view=all" },
+      { ref: "fragment", role: "link", name: "Details", type: "a", href: "/settings#details" },
+    ];
+    const readonly = semantic.buildActions({ ...observation, candidates }, {}, false);
+    expect(readonly.filter((action) => action.kind === "navigate").map((action) => action.url)).toEqual([
+      "https://example.test/profile",
+      "https://example.test/settings?view=all",
+      "https://example.test/settings#details",
+    ]);
+    const writable = semantic.buildActions({ ...observation, candidates }, {}, true);
+    expect(writable).toContainEqual(expect.objectContaining({ kind: "click", ref: "self" }));
+  });
+
   it("executes an authorized write once, refreshes, verifies, and redacts the local value from its trace", async () => {
     const requests: Array<{
       tool: string;
@@ -740,6 +757,93 @@ describe("semantic CLI", () => {
     expect(verifications).toBe(2);
     expect(result.trace).toHaveLength(2);
     expect(result.verification).toMatchObject({ status: "satisfied", evidence: { id: "cart" } });
+  });
+
+  it("navigates to a product once before selecting a size and adding it", async () => {
+    const productUrl = "https://example.test/shop/alpha-jacket";
+    const category = {
+      ...observation,
+      identity: { ...observation.identity, fullUrl: "https://example.test/shop/jackets", documentToken: "category" },
+      candidates: [{ ref: "product", role: "link", name: "Alpha Jacket", type: "a", href: productUrl }],
+      chunks: [{ id: "category", text: "Jackets Alpha Jacket", refs: ["product"] }],
+    };
+    const product = {
+      ...observation,
+      identity: { ...observation.identity, fullUrl: productUrl, documentToken: "product" },
+      candidates: [
+        { ref: "self", role: "link", name: "Alpha Jacket", type: "a", href: productUrl },
+        { ref: "size-m", role: "radio", name: "M", type: "radio", nearbyText: "Select size", state: { checked: false } },
+        { ref: "add", role: "button", name: "Add to cart", type: "button", nearbyText: "Alpha Jacket M" },
+      ],
+      chunks: [{ id: "product", text: "Alpha Jacket Select size Add to cart", refs: ["self", "size-m", "add"] }],
+    };
+    let current: Record<string, any> = category;
+    let nowMs = 0;
+    let cartWrite = false;
+    let actionIndex = 0;
+    let verificationIndex = 0;
+    const navigations: string[] = [];
+    const writes: string[] = [];
+    const requestedActions = ["nav:product", "click:size-m", "click:add"];
+    const result = await semantic.runBrowserSemantic(
+      {
+        command: "semantic.act",
+        goal: "open the Alpha Jacket, select M, and add it to the cart",
+        allowWrite: true,
+        allowRefs: [],
+        inputs: {},
+        thresholds: { find: 0.6, write: 0.85, verifyNegative: 0.8, verifyPositive: 0.7 },
+        maxSteps: 3,
+      },
+      {
+        request: async (tool: string, args: Record<string, any>) => {
+          if (tool === "page.read") return response({ semanticObservation: current });
+          if (tool === "navigate") {
+            navigations.push(args.url);
+            current = product;
+          }
+          if (tool === "click") {
+            writes.push(args.ref);
+            if (args.ref === "size-m") {
+              current = {
+                ...current,
+                candidates: current.candidates.map((candidate: Record<string, any>) =>
+                  candidate.ref === "size-m" ? { ...candidate, state: { checked: true } } : candidate,
+                ),
+              };
+            } else {
+              cartWrite = true;
+            }
+          }
+          if (tool === "wait") {
+            nowMs += args.duration * 1_000;
+            if (cartWrite && nowMs >= 9_500) {
+              current = { ...current, chunks: [{ id: "cart", text: "Shopping Bag 1 Alpha Jacket M", refs: ["add"] }] };
+            }
+          }
+          return actionResponse("OK");
+        },
+        evaluate: async (_state: Record<string, any>, questions: Record<string, any>) => {
+          if (questions.action) {
+            const requested = requestedActions[actionIndex++];
+            expect(Object.keys(questions.action.criteria)).toContain(requested);
+            if (actionIndex === 2) expect(Object.keys(questions.action.criteria)).not.toContain("nav:self");
+            return provider({ action: choice(requested, Object.keys(questions.action.criteria), 0.9) });
+          }
+          const verdict = verificationIndex++ < 2 ? "not_satisfied" : "satisfied";
+          return provider({
+            verdict: choice(verdict, ["satisfied", "not_satisfied"], 0.9),
+            evidence: choice(verdict === "satisfied" ? "cart" : current.chunks[0].id, Object.keys(questions.evidence.criteria)),
+          });
+        },
+        now: () => nowMs,
+      },
+    );
+
+    expect(result).toMatchObject({ status: "complete", stopReason: "complete", providerCalls: 6 });
+    expect(navigations).toEqual([productUrl]);
+    expect(writes).toEqual(["size-m", "add"]);
+    expect(result.trace.map((entry: Record<string, any>) => entry.kind)).toEqual(["navigate", "click", "click"]);
   });
 
   it("bounds no-change settling, verifies once, and never replays the write", async () => {

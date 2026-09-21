@@ -351,7 +351,7 @@ function buildActions(observation, inputs, allowWrite, allowRefs = [], spentWrit
   const navigationGroups = new Map();
   for (const [index, candidate] of observation.candidates.entries()) {
     const url = canonicalSameOriginDestination(candidate, observation.identity.fullUrl);
-    if (!url) continue;
+    if (!url || url === observation.identity.fullUrl) continue;
     const current = navigationGroups.get(url);
     const ranked = { ...candidate, index };
     if (!current || concreteCandidateOrder(ranked, current) < 0) navigationGroups.set(url, ranked);
