@@ -325,6 +325,31 @@ describe("accessibility tree", () => {
     ).toBeLessThanOrEqual(24 * 1024);
   });
 
+  it("emits one semantic candidate when repeated reads assigned multiple refs to one element", () => {
+    const quantity = new FakeInputElement("input");
+    quantity.setAttribute("type", "number");
+    (document.body as unknown as FakeElement).append(quantity);
+    window.__piElementMap = {
+      old: { element: new WeakRef(quantity as unknown as Element), role: "spinbutton", name: "" },
+      fresh: { element: new WeakRef(quantity as unknown as Element), role: "spinbutton", name: "" },
+    };
+
+    let response: any;
+    messageHandler?.(
+      { type: "GENERATE_ACCESSIBILITY_TREE", options: { semanticObservation: true } },
+      {},
+      (result) => {
+        response = result;
+      },
+    );
+
+    expect(
+      response.semanticObservation.candidates.filter(
+        (candidate: any) => candidate.role === "spinbutton",
+      ),
+    ).toHaveLength(1);
+  });
+
   it("rejects stale guarded clicks without executing the action", () => {
     const button = new FakeButtonElement("button");
     button.append(text("Continue"));

@@ -127,9 +127,11 @@ function semanticNearbyContext(element: Element, name: string): string {
 }
 
 function buildSemanticObservation() {
+  const seenElements = new Set<Element>();
   const allCandidates = Object.entries(getElementMap()).flatMap(([ref, entry]) => {
     const element = entry.element.deref();
-    if (!element || ("isConnected" in element && element.isConnected === false) || !isVisibleSemanticElement(element)) return [];
+    if (!element || seenElements.has(element) || ("isConnected" in element && element.isConnected === false) || !isVisibleSemanticElement(element)) return [];
+    seenElements.add(element);
     const role = getResolvedRole(element);
     if (!isFocusable(element) && role === "generic") return [];
     const name = getValueFreeSemanticName(element);
