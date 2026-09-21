@@ -281,10 +281,18 @@ function logicalWriteIdentity(observation, action, candidate) {
   return JSON.stringify([
     action.kind,
     observation.identity.fullUrl,
-    candidate.ref,
     candidate.role,
+    candidate.type,
     candidate.name,
+    action.url || canonicalSameOriginDestination(candidate, observation.identity.fullUrl),
+    action.kind === "fill" ? action.slot : null,
   ]);
+}
+
+function semanticErrorCode(error, fallback) {
+  return typeof error?.code === "string" && /^[A-Za-z0-9_]{1,64}$/.test(error.code)
+    ? error.code
+    : fallback;
 }
 
 function isEditable(candidate) {
@@ -500,8 +508,13 @@ async function runBrowserSemantic(options, { request, evaluate, now = () => perf
   let previousHash = semanticProjectionHash(state);
   for (let step = 1; step <= options.maxSteps; step++) {
     if (remaining() < 1) return { status: "stopped", stopReason: "time_budget", trace, providerCalls };
-    const actions = buildActions(observation, options.inputs, options.allowWrite, options.allowRefs, spentWrites);
-    const choice = await chooseAction({ state, goal: options.goal, actions, origin: state.origin, allowWrite: options.allowWrite, allowRefs: options.allowRefs, inputSlots: Object.keys(options.inputs), thresholds: options.thresholds, evaluate: evaluator });
+    let choice;
+    try {
+      const actions = buildActions(observation, options.inputs, options.allowWrite, options.allowRefs, spentWrites);
+      choice = await chooseAction({ state, goal: options.goal, actions, origin: state.origin, allowWrite: options.allowWrite, allowRefs: options.allowRefs, inputSlots: Object.keys(options.inputs), thresholds: options.thresholds, evaluate: evaluator });
+    } catch (error) {
+      return { status: "stopped", stopReason: "decision_failed", errorCode: semanticErrorCode(error, "decision_failed"), trace, providerCalls };
+    }
     if (choice.status !== "selected") return { status: "stopped", stopReason: "uncertain", trace, providerCalls, appliedThreshold: choice.appliedThreshold, decision: choice.decision, logicalDecision: choice.logicalDecision, concreteDecision: choice.concreteDecision, model: choice.model, usage: choice.usage };
     const action = choice.action;
     const actionCandidate = observation.candidates.find((item) => item.ref === action.ref);
@@ -538,8 +551,8 @@ async function runBrowserSemantic(options, { request, evaluate, now = () => perf
     let outcome;
     try {
       outcome = await verify({ state, outcome: options.goal, evidence: state.chunks, thresholds: options.thresholds, evaluate: evaluator });
-    } catch {
-      return { status: "stopped", stopReason: "verification_failed", trace, providerCalls };
+    } catch (error) {
+      return { status: "stopped", stopReason: "verification_failed", errorCode: semanticErrorCode(error, "verification_failed"), trace, providerCalls };
     }
     if (outcome.status === "satisfied") return { status: "complete", stopReason: "complete", trace, verification: outcome, providerCalls };
     if (action.kind === "click" || action.kind === "fill") {
