@@ -96,7 +96,16 @@ surf animate-audit --selector ".thing" --duration 2000 --fps 10
 
 ## Optional semantic decisions
 
-Only `semantic.*` sends bounded, value-free page text to TypeSafe.
+Use Jev when a browser goal would otherwise require repeated page reads,
+candidate comparison, and ref selection:
+
+```text
+goal -> Jev selects -> Surf validates and acts -> agent confirms final state
+```
+
+The agent owns the goal and final confirmation. Jev handles semantic selection;
+Surf retains execution authority. Only `semantic.*` sends bounded, value-free
+page text to TypeSafe.
 
 ```bash
 surf semantic.find "the settings control"

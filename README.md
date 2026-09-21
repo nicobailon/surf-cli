@@ -957,6 +957,30 @@ connection failure still prints stderr, leaves stdout empty and exits 1 with
 
 ## Optional Jev semantic commands
 
+Jev reduces the browser work between an agent's intent and its final
+verification. Instead of repeatedly reading the page, comparing candidate
+elements, and selecting refs, the agent can give Surf a goal and let Jev resolve
+it into bounded actions:
+
+```text
+Without Jev                         With Jev
+-----------                         --------
+Agent reads page                    Agent states goal
+      |                                   |
+Agent compares candidates           Jev finds and selects controls
+      |                                   |
+Agent chooses refs                  Surf validates and acts
+      |                                   |
+Agent acts                          Agent reads final state
+      |                                   |
+Agent reads final state             Agent confirms outcome
+      |
+Agent confirms outcome
+```
+
+The agent owns the goal and final confirmation. Jev handles semantic selection;
+Surf enforces permissions, confidence thresholds, and element freshness.
+
 Semantic commands are an explicit remote-AI boundary: only `surf semantic.*`
 sends a bounded, value-free current-page observation to TypeSafe. Existing Surf
 commands do not read a TypeSafe credential, load the SDK, or make provider calls.
