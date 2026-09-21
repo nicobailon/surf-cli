@@ -972,7 +972,45 @@ describe("semantic CLI", () => {
     expect(result.trace).toHaveLength(1);
   });
 
-  it("retains trace and suppresses the same write after its ref changes", async () => {
+  it("retries one invalid pre-action decision and executes the intended action once", async () => {
+    let actionDecisions = 0;
+    let reads = 0;
+    let readsAtWrite = 0;
+    let writes = 0;
+    const result = await semantic.runBrowserSemantic(
+      { command: "semantic.act", goal: "delete account", allowWrite: true, allowRefs: ["e2"], inputs: {}, maxSteps: 1 },
+      {
+        request: async (tool: string) => {
+          if (tool === "page.read") {
+            reads++;
+            return response({ semanticObservation: observation });
+          }
+          if (tool === "click") {
+            readsAtWrite = reads;
+            writes++;
+          }
+          return actionResponse("OK");
+        },
+        evaluate: async (_state: unknown, questions: Record<string, any>) => {
+          if (questions.action) {
+            const labels = Object.keys(questions.action.criteria);
+            if (actionDecisions++ === 0) return invalidProviderChoice("action", labels);
+            return provider({ action: choice("click:e2", labels) });
+          }
+          return provider({
+            verdict: choice("satisfied", ["satisfied", "not_satisfied"]),
+            evidence: choice("c1", Object.keys(questions.evidence.criteria)),
+          });
+        },
+        now: () => 0,
+      },
+    );
+
+    expect(result).toMatchObject({ status: "complete", providerCalls: 3 });
+    expect({ actionDecisions, readsAtWrite, writes }).toEqual({ actionDecisions: 2, readsAtWrite: 1, writes: 1 });
+  });
+
+  it("retains trace and suppresses the same write after two invalid next-step decisions", async () => {
     const original = { ...observation.candidates[1], ref: "add-old", name: "Add to cart" };
     const rerendered = { ...original, ref: "add-new" };
     let current = { ...observation, candidates: [original] };
@@ -1010,11 +1048,53 @@ describe("semantic CLI", () => {
       status: "stopped",
       stopReason: "decision_failed",
       errorCode: "provider_invalid_response",
-      providerCalls: 3,
+      providerCalls: 4,
       trace: [expect.objectContaining({ ref: "add-old", result: "executed" })],
     });
     expect(offeredAfterWrite).not.toContain("click:add-new");
     expect(writes).toBe(1);
+  });
+
+  it("retries an invalid next-step decision without reoffering the spent write", async () => {
+    const alpha = { ...observation.candidates[1], ref: "alpha", name: "Add to cart", nearbyText: "Alpha product" };
+    const beta = { ...alpha, ref: "beta", nearbyText: "Beta product" };
+    const current = { ...observation, candidates: [alpha, beta] };
+    let actionDecisions = 0;
+    let verifications = 0;
+    const retryMenus: string[][] = [];
+    const writes: string[] = [];
+    const result = await semantic.runBrowserSemantic(
+      { command: "semantic.act", goal: "add Alpha then Beta", allowWrite: true, inputs: {}, maxSteps: 2 },
+      {
+        request: async (tool: string, args: Record<string, any>) => {
+          if (tool === "page.read") return response({ semanticObservation: current });
+          if (tool === "click") writes.push(args.ref);
+          return actionResponse("OK");
+        },
+        evaluate: async (_state: unknown, questions: Record<string, any>) => {
+          if (questions.action) {
+            const labels = Object.keys(questions.action.criteria);
+            if (actionDecisions++ === 0) return provider({ action: choice("click:alpha", labels) });
+            retryMenus.push(labels);
+            if (actionDecisions === 2) return invalidProviderChoice("action", labels);
+            return provider({ action: choice("click:beta", labels) });
+          }
+          const verdict = verifications++ === 0 ? "not_satisfied" : "satisfied";
+          return provider({
+            verdict: choice(verdict, ["satisfied", "not_satisfied"]),
+            evidence: choice("c1", Object.keys(questions.evidence.criteria)),
+          });
+        },
+        now: () => 0,
+      },
+    );
+
+    expect(result).toMatchObject({ status: "complete", providerCalls: 5 });
+    expect(retryMenus).toHaveLength(2);
+    expect(retryMenus[0]).toEqual(retryMenus[1]);
+    expect(retryMenus[0]).not.toContain("click:alpha");
+    expect(retryMenus[0]).toContain("click:beta");
+    expect(writes).toEqual(["alpha", "beta"]);
   });
 
   it("keeps a distinct same-name control eligible when spent context remains unambiguous", async () => {
@@ -1099,11 +1179,15 @@ describe("semantic CLI", () => {
     },
   );
 
-  it("returns a structured decision failure before any action", async () => {
+  it("returns a structured decision failure after two invalid decisions before any action", async () => {
+    let writes = 0;
     const result = await semantic.runBrowserSemantic(
       { command: "semantic.act", goal: "stop safely", allowWrite: true, inputs: {}, maxSteps: 1 },
       {
-        request: async () => response({ semanticObservation: observation }),
+        request: async (tool: string) => {
+          if (tool === "click") writes++;
+          return response({ semanticObservation: observation });
+        },
         evaluate: async (_state: unknown, questions: Record<string, any>) =>
           invalidProviderChoice("action", Object.keys(questions.action.criteria)),
         now: () => 0,
@@ -1114,8 +1198,32 @@ describe("semantic CLI", () => {
       stopReason: "decision_failed",
       errorCode: "provider_invalid_response",
       trace: [],
+      providerCalls: 2,
+    });
+    expect(writes).toBe(0);
+  });
+
+  it("does not retry other action-selection failures", async () => {
+    let decisions = 0;
+    const result = await semantic.runBrowserSemantic(
+      { command: "semantic.act", goal: "stop safely", allowWrite: false, inputs: {}, maxSteps: 1 },
+      {
+        request: async () => response({ semanticObservation: observation }),
+        evaluate: async () => {
+          decisions++;
+          throw Object.assign(new Error("provider unavailable"), { code: "provider_unavailable" });
+        },
+        now: () => 0,
+      },
+    );
+    expect(result).toEqual({
+      status: "stopped",
+      stopReason: "decision_failed",
+      errorCode: "provider_unavailable",
+      trace: [],
       providerCalls: 1,
     });
+    expect(decisions).toBe(1);
   });
 
   it("allows a same-ref write when its stable name is genuinely different", async () => {
@@ -1279,7 +1387,7 @@ describe("semantic CLI", () => {
         now: () => 0,
       },
     );
-    expect(result).toMatchObject({ status: "stopped", stopReason: "verification_failed" });
+    expect(result).toMatchObject({ status: "stopped", stopReason: "verification_failed", providerCalls: 2 });
     expect(writes).toBe(1);
   });
 

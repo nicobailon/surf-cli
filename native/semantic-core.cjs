@@ -19,6 +19,7 @@ const SEMANTIC_POLICY = Object.freeze({
     defaultWallMs: 30_000,
     maxWallMs: 60_000,
     providerCalls: 17,
+    invalidActionDecisionRetries: 1,
     staleRefreshes: 2,
     identicalObservationHashes: 2,
   }),

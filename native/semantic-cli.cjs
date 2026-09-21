@@ -536,7 +536,14 @@ async function runBrowserSemantic(options, { request, evaluate, now = () => perf
     let choice;
     try {
       const actions = buildActions(observation, options.inputs, options.allowWrite, options.allowRefs, spentWrites);
-      choice = await chooseAction({ state, goal: options.goal, actions, origin: state.origin, allowWrite: options.allowWrite, allowRefs: options.allowRefs, inputSlots: Object.keys(options.inputs), thresholds: options.thresholds, evaluate: evaluator });
+      for (let retries = 0; ; retries++) {
+        try {
+          choice = await chooseAction({ state, goal: options.goal, actions, origin: state.origin, allowWrite: options.allowWrite, allowRefs: options.allowRefs, inputSlots: Object.keys(options.inputs), thresholds: options.thresholds, evaluate: evaluator });
+          break;
+        } catch (error) {
+          if (error?.code !== "provider_invalid_response" || retries >= SEMANTIC_POLICY.limits.invalidActionDecisionRetries) throw error;
+        }
+      }
     } catch (error) {
       return { status: "stopped", stopReason: "decision_failed", errorCode: semanticErrorCode(error, "decision_failed"), trace, providerCalls };
     }
