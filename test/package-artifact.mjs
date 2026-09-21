@@ -72,6 +72,16 @@ try {
   for (const file of requiredFiles) {
     assert.ok(builtFiles.includes(file), `packed extension is missing ${file}`);
   }
+  for (const file of [
+    "native/semantic-workflow.cjs",
+    "native/semantic-workflow-executor.cjs",
+    "native/semantic-workflow-state.cjs",
+  ]) {
+    assert.ok(
+      filesUnder(join(temporaryDirectory, "package")).includes(file),
+      `packed package is missing ${file}`
+    );
+  }
 
   const serviceWorker = readFileSync(
     join(packedDist, "service-worker/index.js"),

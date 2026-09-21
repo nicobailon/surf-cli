@@ -1333,7 +1333,10 @@ const TOOLS = {
           "on-error": "stop (default) | continue",
           "no-auto-wait": "Disable automatic waits between steps",
           "step-delay": "Delay between steps in ms (default: 100)",
-          "dry-run": "Parse and validate without executing"
+          "dry-run": "Parse and validate without executing",
+          "allow-semantic": "Allow bounded TypeSafe semantic decisions",
+          "allow-write": "Allow declared semantic fill/check/click steps",
+          "inputs-stdin": "Read bounded private input slots as one JSON object from stdin",
         },
         examples: [
           { cmd: 'do \'go "https://example.com" | click e5 | screenshot\'', desc: "Inline workflow" },
@@ -2451,9 +2454,12 @@ if (args[0] === "do") {
   let windowId = undefined;
   let explicitSession = undefined;
   let noWait = false;
+  let allowSemantic = false;
+  let allowWrite = false;
+  let inputsStdin = false;
 
   // Reserved flags that aren't workflow args
-  const reservedFlags = ['file', 'f', 'dry-run', 'on-error', 'no-auto-wait', 'step-delay', 'json', 'tab-id', 'window-id', 'session', 'no-lock', 'no-wait'];
+  const reservedFlags = ['file', 'f', 'dry-run', 'on-error', 'no-auto-wait', 'step-delay', 'json', 'tab-id', 'window-id', 'session', 'no-lock', 'no-wait', 'allow-semantic', 'allow-write', 'inputs-stdin'];
 
   // Workflow-specific args (collected for variable substitution)
   const workflowArgs = {};
@@ -2493,6 +2499,12 @@ if (args[0] === "do") {
       i++;
     } else if (arg === "--no-wait") {
       noWait = true;
+    } else if (arg === "--allow-semantic") {
+      allowSemantic = true;
+    } else if (arg === "--allow-write") {
+      allowWrite = true;
+    } else if (arg === "--inputs-stdin") {
+      inputsStdin = true;
     } else if (arg.startsWith("--")) {
       // Workflow-specific arg (e.g., --email, --password)
       const key = arg.slice(2);
@@ -2617,6 +2629,26 @@ if (args[0] === "do") {
 
   // Apply arg defaults
   const vars = workflow ? applyArgDefaults(workflow, workflowArgs) : workflowArgs;
+  let privateInputs = {};
+  if (inputsStdin) {
+    try {
+      const input = fs.readFileSync(0, "utf8");
+      if (Buffer.byteLength(input, "utf8") > 262144) throw new Error("input JSON exceeds 256 KiB");
+      privateInputs = JSON.parse(input);
+      if (!privateInputs || typeof privateInputs !== "object" || Array.isArray(privateInputs)) throw new Error("input JSON must be an object");
+      const entries = Object.entries(privateInputs);
+      if (entries.length > 16) throw new Error("input JSON supports at most 16 slots");
+      for (const [name, value] of entries) {
+        if (!/^[a-zA-Z0-9][a-zA-Z0-9._-]{0,63}$/.test(name)) throw new Error("input JSON contains an invalid slot name");
+        if (!["string", "number", "boolean"].includes(typeof value)) throw new Error(`input slot '${name}' must be a string, number, or boolean`);
+        if (Buffer.byteLength(String(value), "utf8") > 16384) throw new Error(`input slot '${name}' exceeds 16 KiB`);
+        if (Object.hasOwn(vars, name)) throw new Error(`input slot '${name}' was supplied more than once`);
+      }
+    } catch (error) {
+      console.error(`Error: Invalid --inputs-stdin JSON: ${error.message}`);
+      process.exit(1);
+    }
+  }
 
   // Validate with --dry-run
   if (dryRun) {
@@ -2635,6 +2667,21 @@ if (args[0] === "do") {
       }
     }
     process.exit(0);
+  }
+
+  const semanticEnabled = Boolean(workflow?.semantic);
+  if (semanticEnabled && !allowSemantic) {
+    console.error("Error: semantic workflows require --allow-semantic");
+    process.exit(1);
+  }
+  if (semanticEnabled && onError === "continue") {
+    console.error("Error: semantic workflows do not support --on-error continue");
+    process.exit(1);
+  }
+  const writeOps = new Set(["ensureChecked", "fill", "click"]);
+  if (semanticEnabled && steps.some((step) => writeOps.has(step.args?.op)) && !allowWrite) {
+    console.error("Error: mutation-capable semantic steps require --allow-write");
+    process.exit(1);
   }
 
   if (!wantJson) {
@@ -2664,6 +2711,16 @@ if (args[0] === "do") {
         endpoint,
         transport,
       },
+      ...(semanticEnabled ? {
+        createSemanticExecutor: async ({ context }) => {
+          const { createConcreteSemanticExecutor } = require("./semantic-workflow-executor.cjs");
+          return createConcreteSemanticExecutor({
+            workflow,
+            inputs: { ...vars, ...privateInputs },
+            request: (tool, toolArgs) => sendDoRequest(tool, toolArgs, context),
+          });
+        },
+      } : {}),
       });
 
     // Print summary

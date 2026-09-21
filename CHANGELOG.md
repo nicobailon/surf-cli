@@ -3,6 +3,7 @@
 ## [Unreleased]
 
 ### Added
+- **Bounded semantic workflow steps** - Semantic v1 workflow files can use closed `find`, same-origin `open`, `ensureChecked`, `fill`, one-shot `click`, and `assert` steps. Execution requires `--allow-semantic`, mutations additionally require `--allow-write`, and bounded private fill inputs can be read with `--inputs-stdin`. Validation and dry-run remain offline; model-derived writes retain the 0.95 gate, guarded identity, private attempt records, and no-replay-on-unknown behavior.
 - **Optional Jev semantic browser actions** - `semantic.find`, `semantic.verify`, `semantic.filter`, and bounded `semantic.act` use compact value-free observations and confidence-gated TypeSafe decisions. Writes require explicit `--allow-write`, can be narrowed with repeatable `--allow-ref`, and are guarded against stale DOM identity. Broad writes retain the `0.95` threshold; an exact single-ref, single-action write uses the recorded `0.65` threshold. TypeSafe credentials use its shared user store with an environment override; existing commands remain provider-free.
 
 ### Fixed

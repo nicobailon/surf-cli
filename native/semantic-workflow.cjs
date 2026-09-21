@@ -123,7 +123,8 @@ function createSemanticWorkflowRuntime(dependencies) {
     const maximum = search.maxObservations ?? WORKFLOW_POLICY.defaultSearchObservations;
     if (!Number.isInteger(maximum) || maximum < 1 || maximum > WORKFLOW_POLICY.maxSearchObservations) return { error: failure("validation_failure") };
     let observation = await observe(context);
-    let scope = await scrollGeometry(context, "top", null, observation.identity);
+    let scope = await scrollGeometry(context, "inspect", undefined, observation.identity);
+    scope = await scrollGeometry(context, "top", scope.scopeToken, observation.identity);
     const intervals = [];
     let noProgress = 0;
     let truncated = false;
@@ -162,7 +163,18 @@ function createSemanticWorkflowRuntime(dependencies) {
       ref: candidate.ref, predicate, semanticExpectedIdentity: expectedIdentity(observation, candidate),
     }), "local comparison");
   }
+  function localPredicate(context, predicate) {
+    if (!predicate || typeof predicate !== "object") return predicate;
+    const kinds = { textExact: "textEquals" };
+    let expected = predicate.equals ?? predicate.contains;
+    if (predicate.input !== undefined) expected = context.inputs[predicate.input];
+    return {
+      kind: kinds[predicate.kind] || predicate.kind,
+      ...(expected !== undefined ? { expected: predicate.kind === "checkedEquals" ? Boolean(expected) : String(expected) } : {}),
+    };
+  }
   async function verifyPredicate(context, observation, candidate, predicate) {
+    predicate = localPredicate(context, predicate);
     const until = Math.min(context.deadline, now() + WORKFLOW_POLICY.verificationMs);
     do {
       const result = await compare(context, observation, candidate, predicate);
@@ -186,11 +198,12 @@ function createSemanticWorkflowRuntime(dependencies) {
     }
     if (expectation?.kind === "urlPath") {
       const observation = await observe(context);
-      const result = parseBoundary(await browser(context, "semantic.localCompare", {
-        predicate: expectation,
-        semanticExpectedIdentity: observation.identity,
-      }), "local comparison");
-      return result?.success === true && result.matches === true;
+      return new URL(observation.identity.fullUrl).pathname === expectation.equals;
+    }
+    if (expectation?.target) {
+      const expectedTarget = await resolve(context, expectation.target, false, { maxObservations: 1 });
+      if (expectedTarget.error) return false;
+      return verifyPredicate(context, expectedTarget.observation, expectedTarget.candidate, expectation);
     }
     return verifyPredicate(context, resolved.observation, resolved.candidate, expectation);
   }
@@ -248,14 +261,14 @@ function createSemanticWorkflowRuntime(dependencies) {
         return result.status === "satisfied" ? success("verified", { probability: result.decision.probability }) : failure("assertion_mismatch", { semanticStatus: result.status });
       }
       if (step.op === "assert") {
-        const resolved = await resolve(context, step.target, false, { maxObservations: 1 });
+        const resolved = await resolve(context, step.target || step.predicate?.target, false, { maxObservations: 1 });
         if (resolved.error) return resolved.error;
         return await verifyPredicate(context, resolved.observation, resolved.candidate, step.predicate) ? success("verified") : failure("assertion_mismatch");
       }
       const resolved = await resolve(context, step.target, true, step.search);
       if (resolved.error) return resolved.error;
       if (step.op === "ensureChecked") {
-        const predicate = { kind: "checkedEquals", equals: step.checked };
+        const predicate = { kind: "checkedEquals", expected: step.checked };
         const comparison = await compare(context, resolved.observation, resolved.candidate, predicate);
         if (comparison?.success !== true) return failure(comparison?.reason || "unsupported_control");
         if (comparison.matches === true) return success("skipped_already_satisfied");
@@ -264,7 +277,7 @@ function createSemanticWorkflowRuntime(dependencies) {
       if (step.op === "fill") {
         if (!Object.hasOwn(context.inputs, step.input)) return failure("validation_failure");
         const value = String(context.inputs[step.input]);
-        const predicate = { kind: "valueEquals", equals: value };
+        const predicate = { kind: "valueEquals", expected: value };
         const comparison = await compare(context, resolved.observation, resolved.candidate, predicate);
         if (comparison?.success !== true) return failure(comparison?.reason || "unsupported_control");
         if (comparison.matches === true) return success("skipped_already_satisfied");
@@ -292,7 +305,11 @@ function createSemanticWorkflowRuntime(dependencies) {
         });
       }
     } finally {
-      if (attemptStore.release) await attemptStore.release({ runId: context.runId });
+      if (attemptStore.release) await attemptStore.release({
+        runId: context.runId,
+        state: terminal.state || (terminal.reason ? "failed" : "completed"),
+        reason: terminal.reason,
+      });
       context.acquired = false;
     }
   }

@@ -109,6 +109,23 @@ surf semantic auth status
 surf semantic auth clear
 ```
 
+For reusable bounded recipes, put only linear `semantic.step` operations in a
+workflow with `"semantic":{"version":1}`. Check it offline with
+`surf workflow.validate flow.json` or `surf do --file flow.json --dry-run`, then
+run with `--allow-semantic`; declared fill/check/click operations also require
+`--allow-write`. Supply private fill slots as a bounded JSON object on stdin:
+
+```bash
+printf '%s' '{"quantity":"2"}' | SURF_SESSION=shopping surf do --file flow.json \
+  --inputs-stdin --allow-semantic --allow-write --json
+```
+
+The closed operations are `find`, same-origin direct `open`, `ensureChecked`,
+`fill`, one-shot `click` with an explicit expectation, and `assert`. Search is
+bounded overlapping coverage, not global ranking. Unknown write outcomes stop
+without replay; a later new run can still repeat an external effect. Input
+values never enter provider state, workflow variables, events, or checkpoints.
+
 Every click/fill requires `--allow-write`; repeat `--allow-ref` to narrow it.
 Broad writes use threshold `0.95`; exactly one allowed ref with one applicable
 write uses `0.65`. The applied threshold is included in decision/trace output.

@@ -76,15 +76,19 @@ async function executeDoSteps(steps, options = {}) {
       return semanticExecutor(step, semanticContext, executionOptions);
     }
     : undefined;
-  return runtime.executeWorkflow(steps, {
-    ...options,
-    executeTool: options.executeTool || ((tool, args) => sendDoRequest(tool, args, context)),
-    ...(executeSemanticStep ? { executeSemanticStep } : {}),
-    onProgress: options.quiet ? options.onProgress : (event) => {
-      printProgress(event);
-      options.onProgress?.(event);
-    },
-  });
+  try {
+    return await runtime.executeWorkflow(steps, {
+      ...options,
+      executeTool: options.executeTool || ((tool, args) => sendDoRequest(tool, args, context)),
+      ...(executeSemanticStep ? { executeSemanticStep } : {}),
+      onProgress: options.quiet ? options.onProgress : (event) => {
+        printProgress(event);
+        options.onProgress?.(event);
+      },
+    });
+  } finally {
+    await semanticExecutor?.close?.();
+  }
 }
 
 module.exports = {

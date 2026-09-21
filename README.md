@@ -726,6 +726,9 @@ surf do 'go "url" | click e5 | screenshot' --dry-run
 - `--step-delay <ms>` - Delay between steps (default: 100, use 0 to disable)
 - `--no-auto-wait` - Disable automatic waits between steps
 - `--json` - Output structured JSON result
+- `--allow-semantic` - Opt in to bounded TypeSafe decisions for a semantic workflow
+- `--allow-write` - Additionally authorize declared `fill`, `ensureChecked`, and `click` steps
+- `--inputs-stdin` - Read one bounded JSON object of private local input slots from stdin
 - `--<arg> <value>` - Pass arguments to workflow (e.g., `--url "..."`)
 
 **Auto-waits:** Commands that trigger page changes automatically wait for completion:
@@ -820,7 +823,46 @@ surf workflow.info my-workflow
 surf workflow.validate ./my-workflow.json
 ```
 
-**Supported commands:** All surf commands work in workflows. Use aliases (`go`, `snap`, `read`) or full names (`navigate`, `screenshot`, `page.read`).
+#### Bounded semantic workflow steps
+
+Semantic workflow files declare `"semantic": { "version": 1 }` and use only
+linear `semantic.step` operations: `find`, `open`, `ensureChecked`, `fill`,
+`click`, and `assert`. Validate or dry-run them offline, then opt in explicitly:
+
+```bash
+surf workflow.validate ./product.json
+surf do --file product.json --dry-run
+printf '%s' '{"quantity":"2"}' | SURF_SESSION=shopping surf do \
+  --file product.json --inputs-stdin --allow-semantic --allow-write --json
+```
+
+```json
+{
+  "name": "open-matching-product",
+  "semantic": { "version": 1, "deadlineMs": 60000, "maxProviderCalls": 32 },
+  "steps": [
+    { "id": "find-product", "tool": "semantic.step", "as": "product", "args": {
+      "op": "find", "target": { "query": "The in-stock blue insulated bottle", "role": "link" },
+      "search": { "mode": "scroll", "maxObservations": 12 }
+    } },
+    { "id": "open-product", "tool": "semantic.step", "args": {
+      "op": "open", "target": { "binding": "product" }
+    } }
+  ]
+}
+```
+
+`open` performs freshly validated same-origin HTTP(S) navigation; it never falls
+back to a click. Model-derived writes retain the `0.95` gate, dispatch at most
+once in a run, and require local/read-only verification. A stopped or uncertain
+step fails the workflow. Search reports bounded overlapping coverage and does
+not prove global ranking or absence outside that scope. Local input values are
+sent only to their browser fill/compare operation, not to TypeSafe, workflow
+variables, events, output, or checkpoints. A new run can repeat an external
+effect: Surf does not claim exactly-once server behavior or automatic resume.
+
+**Supported commands:** Ordinary workflows support all Surf commands. Semantic
+v1 workflows intentionally support only the six closed operations above.
 
 ### Playbooks
 

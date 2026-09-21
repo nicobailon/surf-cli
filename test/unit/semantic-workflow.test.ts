@@ -159,7 +159,7 @@ describe("bounded semantic workflow runtime", () => {
       },
     });
     expect(
-      request.mock.calls.filter(([tool]) => tool === "semantic.scrollScope")[1][1],
+      request.mock.calls.filter(([tool]) => tool === "semantic.scrollScope")[2][1],
     ).toMatchObject({ action: "advance", maxFraction: 0.75 });
   });
 
