@@ -5,7 +5,11 @@ import {
   probePageReadiness,
 } from "./page-readiness-probe";
 import type { VisualIndicatorMessageType } from "./visual-indicator.ts";
-import { scrollToPosition } from "../utils/scroll-position";
+import {
+  inspectSemanticScrollScope,
+  moveSemanticScrollScope,
+  scrollToPosition,
+} from "../utils/scroll-position";
 
 export {};
 
@@ -199,6 +203,80 @@ function semanticGuardError(element: Element | undefined, expected: any, require
       semanticElementType(element) !== expected.type)
   ) return "stale_observation";
   return null;
+}
+
+function semanticElementIdentity(element?: Element, ref?: string) {
+  return {
+    fullUrl: window.location.href,
+    documentToken: semanticDocumentToken,
+    ...(element && ref ? {
+      ref,
+      role: getResolvedRole(element),
+      name: getValueFreeSemanticName(element),
+      type: semanticElementType(element),
+    } : {}),
+  };
+}
+
+function compareSemanticElement(element: Element, predicate: any): { success: boolean; matches: boolean; reason: string } {
+  if (!predicate || typeof predicate !== "object" || typeof predicate.kind !== "string") {
+    return { success: false, matches: false, reason: "unsupported_predicate" };
+  }
+  switch (predicate.kind) {
+    case "visible":
+      return { success: true, matches: isVisibleSemanticElement(element), reason: "compared" };
+    case "checkedEquals": { // Actual state is deliberately never included in the response.
+      if (typeof predicate.expected !== "boolean") {
+        return { success: false, matches: false, reason: "unsupported_predicate" };
+      }
+      const tag = element.tagName.toLowerCase();
+      const type = semanticElementType(element);
+      if (tag === "input" && (type === "checkbox" || type === "radio")) {
+        const control = element as HTMLInputElement;
+        if (control.indeterminate) return { success: true, matches: false, reason: "indeterminate" };
+        return { success: true, matches: control.checked === predicate.expected, reason: "compared" };
+      }
+      const role = getResolvedRole(element);
+      if (["checkbox", "radio", "switch", "menuitemcheckbox", "menuitemradio"].includes(role)) {
+        const state = element.getAttribute("aria-checked");
+        if (state !== "true" && state !== "false") {
+          return { success: false, matches: false, reason: "unsupported_control" };
+        }
+        return { success: true, matches: (state === "true") === predicate.expected, reason: "compared" };
+      }
+      return { success: false, matches: false, reason: "unsupported_control" };
+    }
+    case "valueEquals": {
+      if (typeof predicate.expected !== "string") {
+        return { success: false, matches: false, reason: "unsupported_predicate" };
+      }
+      const tag = element.tagName.toLowerCase();
+      if (!["input", "textarea", "select"].includes(tag) ||
+          tag === "input" && semanticElementType(element) === "file") {
+        return { success: false, matches: false, reason: "unsupported_control" };
+      }
+      return {
+        success: true,
+        matches: (element as HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement).value === predicate.expected,
+        reason: "compared",
+      };
+    }
+    case "textEquals":
+    case "textContains": {
+      if (typeof predicate.expected !== "string") {
+        return { success: false, matches: false, reason: "unsupported_predicate" };
+      }
+      const actual = boundedText(element.textContent, 16 * 1024);
+      const expected = boundedText(predicate.expected, 16 * 1024);
+      return {
+        success: true,
+        matches: predicate.kind === "textEquals" ? actual === expected : actual.includes(expected),
+        reason: "compared",
+      };
+    }
+    default:
+      return { success: false, matches: false, reason: "unsupported_predicate" };
+  }
 }
 
 const VALID_ARIA_ROLES = new Set([
@@ -1728,6 +1806,39 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       }
       window.location.href = message.url;
       sendResponse({ success: true });
+      break;
+    }
+    case "SEMANTIC_LOCAL_COMPARE": {
+      const element = getElementMap()[message.ref]?.element.deref();
+      const identity = semanticElementIdentity(element, message.ref);
+      if (!message.expectedIdentity) {
+        sendResponse({ success: false, matches: false, reason: "invalid_expected_identity", identity });
+        break;
+      }
+      const guardError = semanticGuardError(element, message.expectedIdentity);
+      if (guardError) {
+        sendResponse({ success: false, matches: false, reason: guardError, identity });
+        break;
+      }
+      const result = compareSemanticElement(element!, message.predicate);
+      sendResponse({ ...result, identity });
+      break;
+    }
+    case "SEMANTIC_SCROLL_SCOPE": {
+      if (!message.expectedIdentity) {
+        sendResponse({ success: false, reason: "invalid_expected_identity" });
+        break;
+      }
+      const guardError = semanticGuardError(undefined, message.expectedIdentity, false);
+      if (guardError) {
+        sendResponse({ success: false, reason: guardError });
+        break;
+      }
+      if (message.action === "inspect") {
+        sendResponse(inspectSemanticScrollScope(semanticDocumentToken));
+      } else {
+        sendResponse(moveSemanticScrollScope(message.action, message.scopeToken, semanticDocumentToken));
+      }
       break;
     }
     case "SEMANTIC_SCROLL": {

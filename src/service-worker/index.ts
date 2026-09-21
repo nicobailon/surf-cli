@@ -1273,6 +1273,26 @@ export async function handleMessage(
       return stateResult.result?.value || { error: "Failed to get page state" };
     }
 
+    case "SEMANTIC_LOCAL_COMPARE": {
+      if (!tabId) throw new Error("No tabId provided");
+      return await chrome.tabs.sendMessage(tabId, {
+        type: "SEMANTIC_LOCAL_COMPARE",
+        ref: message.ref,
+        predicate: message.predicate,
+        expectedIdentity: message.expectedIdentity,
+      }, { frameId: getFrameIdForTab(tabId, message) });
+    }
+
+    case "SEMANTIC_SCROLL_SCOPE": {
+      if (!tabId) throw new Error("No tabId provided");
+      return await chrome.tabs.sendMessage(tabId, {
+        type: "SEMANTIC_SCROLL_SCOPE",
+        action: message.action,
+        scopeToken: message.scopeToken,
+        expectedIdentity: message.expectedIdentity,
+      }, { frameId: getFrameIdForTab(tabId, message) });
+    }
+
     case "EXECUTE_SCROLL": {
       if (!tabId) throw new Error("No tabId provided");
       const deltaX = message.deltaX || 0;

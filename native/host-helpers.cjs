@@ -236,6 +236,13 @@ function formatToolContent(result, log = () => {}, options = {}) {
     }));
   }
 
+  if (
+    result.identity !== undefined && result.matches !== undefined ||
+    result.scopeToken !== undefined && result.geometry !== undefined
+  ) {
+    return text(JSON.stringify(result));
+  }
+
   if (result.pageContent !== undefined) {
     const content = result.pageContent || "No content";
     let output = '';
@@ -1016,6 +1023,25 @@ function mapToolToMessage(tool, args, tabId) {
         ...baseMsg
       };
     }
+    case "semantic.localCompare":
+      return {
+        type: "SEMANTIC_LOCAL_COMPARE",
+        ref: a.ref,
+        predicate: a.predicate,
+        expectedIdentity: a.semanticExpectedIdentity,
+        ...baseMsg,
+      };
+    case "semantic.scrollScope":
+      if (!["inspect", "top", "advance"].includes(a.action)) {
+        throw new Error("semantic scroll scope action must be inspect, top, or advance");
+      }
+      return {
+        type: "SEMANTIC_SCROLL_SCOPE",
+        action: a.action,
+        scopeToken: a.scopeToken,
+        expectedIdentity: a.semanticExpectedIdentity,
+        ...baseMsg,
+      };
     case "page.text":
       return { type: "GET_PAGE_TEXT", ...baseMsg };
     case "page.html":
@@ -1338,12 +1364,19 @@ function applySemanticExpectedIdentity(request, extensionMessage, args) {
     throw error;
   };
   const expected = args?.semanticExpectedIdentity;
-  if (expected === undefined) return;
-  const guardedTypes = ["CLICK_REF", "FORM_FILL", "EXECUTE_NAVIGATE", "EXECUTE_SCROLL", "SCROLL_TO_POSITION"];
+  const identityRequired = ["SEMANTIC_LOCAL_COMPARE", "SEMANTIC_SCROLL_SCOPE"].includes(extensionMessage?.type);
+  if (expected === undefined) {
+    if (identityRequired) fail("invalid_expected_identity", "semantic expected identity is required for this action");
+    return;
+  }
+  const guardedTypes = [
+    "CLICK_REF", "FORM_FILL", "EXECUTE_NAVIGATE", "EXECUTE_SCROLL", "SCROLL_TO_POSITION",
+    "SEMANTIC_LOCAL_COMPARE", "SEMANTIC_SCROLL_SCOPE",
+  ];
   if (!extensionMessage || !guardedTypes.includes(extensionMessage.type)) {
     fail("invalid_expected_identity", "semantic expected identity is not valid for this action");
   }
-  const domAction = extensionMessage.type === "CLICK_REF" || extensionMessage.type === "FORM_FILL";
+  const domAction = ["CLICK_REF", "FORM_FILL", "SEMANTIC_LOCAL_COMPARE"].includes(extensionMessage.type);
   const stringFields = ["browserEpoch", "fullUrl", "documentToken", ...(domAction ? ["ref", "role", "name", "type"] : [])];
   if (!expected || typeof expected !== "object" || stringFields.some((field) => typeof expected[field] !== "string")) {
     fail("invalid_expected_identity", "invalid semantic expected identity");

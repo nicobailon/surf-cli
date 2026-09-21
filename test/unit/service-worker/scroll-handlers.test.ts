@@ -127,3 +127,41 @@ describe("EXECUTE_SCROLL handler", () => {
     expect(capturedExpression).toContain("0");
   });
 });
+
+describe("semantic browser operation routing", () => {
+  beforeEach(() => {
+    (globalThis as any).chrome = createChromeMock();
+  });
+
+  afterEach(() => {
+    resetChromeMock();
+  });
+
+  it.each([
+    {
+      request: {
+        type: "SEMANTIC_LOCAL_COMPARE", tabId: 123, frameId: 4, ref: "e1",
+        predicate: { kind: "visible" }, expectedIdentity: { documentToken: "doc" },
+      },
+      forwarded: {
+        type: "SEMANTIC_LOCAL_COMPARE", ref: "e1", predicate: { kind: "visible" },
+        expectedIdentity: { documentToken: "doc" },
+      },
+    },
+    {
+      request: {
+        type: "SEMANTIC_SCROLL_SCOPE", tabId: 123, frameId: 4, action: "advance",
+        scopeToken: "opaque", expectedIdentity: { documentToken: "doc" },
+      },
+      forwarded: {
+        type: "SEMANTIC_SCROLL_SCOPE", action: "advance", scopeToken: "opaque",
+        expectedIdentity: { documentToken: "doc" },
+      },
+    },
+  ])("routes $request.type to the pinned frame", async ({ request, forwarded }) => {
+    const chrome = (globalThis as any).chrome;
+    chrome.tabs.sendMessage.mockResolvedValue({ success: true });
+    await expect(handleMessage(request, {})).resolves.toEqual({ success: true });
+    expect(chrome.tabs.sendMessage).toHaveBeenCalledWith(123, forwarded, { frameId: 4 });
+  });
+});
