@@ -389,8 +389,8 @@ describe("semantic CLI", () => {
       expect.objectContaining({ kind: "fill", appliedThreshold: 0.65, result: "executed" }),
     ]);
     expect(requests.filter((item) => item.tool === "form.fill")).toHaveLength(1);
-    expect(requests.filter((item) => item.tool === "page.read")).toHaveLength(5);
-    expect(requests.filter((item) => item.tool === "wait")).toHaveLength(3);
+    expect(requests.filter((item) => item.tool === "page.read")).toHaveLength(7);
+    expect(requests.filter((item) => item.tool === "wait")).toHaveLength(5);
     expect(JSON.stringify(result)).not.toContain("unique-secret");
     expect(
       requests.find((item) => item.tool === "form.fill")?.args.semanticExpectedIdentity,
@@ -408,14 +408,19 @@ describe("semantic CLI", () => {
     expect(call).toBe(2);
   });
 
-  it("settles delayed cart-like evidence before verifying a confirmed write once", async () => {
+  it("settles past an early delta to delayed cart-like evidence before verifying once", async () => {
+    const earlyDelta = {
+      ...observation,
+      page: { ...observation.page, title: "Adding item" },
+    };
     const hydrated = {
       ...observation,
       chunks: [{ id: "cart", text: "My cart (1) Alpha jacket size M", refs: ["e2"] }],
     };
+    const observations = [observation, observation, earlyDelta, earlyDelta, earlyDelta, hydrated, hydrated];
     let reads = 0;
     let writes = 0;
-    let waits = 0;
+    const waitDurations: number[] = [];
     let verifications = 0;
     let verificationState: Record<string, any> | undefined;
     const result = await semantic.runBrowserSemantic(
@@ -428,13 +433,13 @@ describe("semantic CLI", () => {
         maxSteps: 1,
       },
       {
-        request: async (tool: string) => {
+        request: async (tool: string, args: Record<string, any>) => {
           if (tool === "page.read") {
-            const current = reads++ < 2 ? observation : hydrated;
+            const current = observations[Math.min(reads++, observations.length - 1)];
             return response({ semanticObservation: current });
           }
           if (tool === "click") writes++;
-          if (tool === "wait") waits++;
+          if (tool === "wait") waitDurations.push(args.duration);
           return actionResponse("OK");
         },
         evaluate: async (state: Record<string, any>, questions: Record<string, any>) => {
@@ -456,12 +461,12 @@ describe("semantic CLI", () => {
     expect(verificationState?.chunks).toEqual([
       expect.objectContaining({ id: "cart", text: expect.stringContaining("My cart (1)") }),
     ]);
-    expect({ reads, writes, waits, verifications }).toEqual({
-      reads: 3,
+    expect({ reads, writes, verifications }).toEqual({
+      reads: 7,
       writes: 1,
-      waits: 1,
       verifications: 1,
     });
+    expect(waitDurations).toEqual([0.5, 1, 2, 4, 2]);
   });
 
   it("settles delayed checked candidate state before verifying a confirmed write once", async () => {
@@ -515,9 +520,9 @@ describe("semantic CLI", () => {
       expect.objectContaining({ id: "e2", state: { checked: true } }),
     );
     expect({ reads, writes, waits, verifications }).toEqual({
-      reads: 3,
+      reads: 7,
       writes: 1,
-      waits: 1,
+      waits: 5,
       verifications: 1,
     });
   });
@@ -563,9 +568,9 @@ describe("semantic CLI", () => {
 
     expect(result).toMatchObject({ status: "stopped", stopReason: "uncertain" });
     expect({ reads, writes, waits, verifications }).toEqual({
-      reads: 5,
+      reads: 7,
       writes: 1,
-      waits: 3,
+      waits: 5,
       verifications: 1,
     });
   });
@@ -1050,7 +1055,7 @@ describe("semantic CLI", () => {
       status: "complete",
       trace: [expect.objectContaining({ ref: "e63", appliedThreshold: 0.65 })],
     });
-    expect(reads).toBe(5);
+    expect(reads).toBe(7);
   });
 
   it("fails explicitly before provider selection when mandatory authorized actions exceed the hard bound", async () => {

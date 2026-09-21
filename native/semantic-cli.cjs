@@ -12,8 +12,7 @@ const {
 
 const FIELD_ROLES = new Set(["textbox", "searchbox", "combobox", "spinbutton"]);
 const CLICK_ROLES = new Set(["button", "link", "checkbox", "radio"]);
-const POST_WRITE_SETTLE_OBSERVATIONS = 4;
-const POST_WRITE_SETTLE_WAIT_MS = 500;
+const POST_WRITE_SETTLE_WAITS_MS = Object.freeze([500, 1_000, 2_000, 4_000, 2_000]);
 
 const SEMANTIC_HELP = `Usage:
   surf semantic.find <goal> [--session <name> | --tab-id <id>] [--json]
@@ -401,15 +400,16 @@ async function runBrowserSemantic(options, { request, evaluate, now = () => perf
     }
     return observation;
   };
-  const settleAfterWrite = async (preWriteHash) => {
-    let settledObservation;
-    let settledState;
-    for (let attempt = 0; attempt < POST_WRITE_SETTLE_OBSERVATIONS; attempt++) {
+  const settleAfterWrite = async () => {
+    let settledObservation = await observe();
+    let settledState = providerState(settledObservation);
+    for (const waitMs of POST_WRITE_SETTLE_WAITS_MS) {
+      const timeoutMs = remaining();
+      if (timeoutMs < 1) break;
+      await request("wait", { duration: Math.min(waitMs, timeoutMs) / 1_000 }, timeoutMs, designatedIdentity);
+      if (remaining() < 1) break;
       settledObservation = await observe();
       settledState = providerState(settledObservation);
-      if (semanticProjectionHash(settledState) !== preWriteHash) break;
-      if (attempt + 1 >= POST_WRITE_SETTLE_OBSERVATIONS || remaining() < 1) break;
-      await request("wait", { duration: POST_WRITE_SETTLE_WAIT_MS / 1_000 }, remaining(), designatedIdentity);
     }
     return { observation: settledObservation, state: settledState };
   };
@@ -477,7 +477,7 @@ async function runBrowserSemantic(options, { request, evaluate, now = () => perf
     trace.push({ ...traceAction, result: "executed" });
     try {
       if (writeIdentity) {
-        ({ observation, state } = await settleAfterWrite(semanticProjectionHash(state)));
+        ({ observation, state } = await settleAfterWrite());
       } else {
         observation = await observe();
         state = providerState(observation);
