@@ -50,6 +50,45 @@ function semanticElementType(element: Element): string {
   return tag;
 }
 
+type SemanticInteractiveState = {
+  checked?: boolean | "mixed";
+  selected?: boolean;
+};
+
+function semanticInteractiveState(element: Element): SemanticInteractiveState | undefined {
+  const state: SemanticInteractiveState = {};
+  const checked = element.getAttribute("aria-checked");
+  if (checked === "true" || checked === "false" || checked === "mixed") {
+    state.checked = checked === "mixed" ? "mixed" : checked === "true";
+  } else if (element instanceof HTMLInputElement && (element.type === "checkbox" || element.type === "radio")) {
+    state.checked = element.type === "checkbox" && element.indeterminate ? "mixed" : element.checked;
+  }
+  const selected = element.getAttribute("aria-selected");
+  if (selected === "true" || selected === "false") {
+    state.selected = selected === "true";
+  } else if (element.tagName.toLowerCase() === "option") {
+    state.selected = (element as HTMLOptionElement).selected;
+  }
+  return Object.keys(state).length ? state : undefined;
+}
+
+function semanticStateEvidence(candidate: {
+  role: string;
+  name: string;
+  state?: SemanticInteractiveState;
+}): string {
+  if (!candidate.state) return "";
+  const labels: string[] = [];
+  if (candidate.state.checked !== undefined) {
+    labels.push(candidate.state.checked === "mixed" ? "[checked=mixed]" : candidate.state.checked ? "[checked]" : "[unchecked]");
+  }
+  if (candidate.state.selected !== undefined) {
+    labels.push(candidate.state.selected ? "[selected]" : "[not-selected]");
+  }
+  const name = candidate.name ? ` "${candidate.name.replace(/"/g, '\\"')}"` : "";
+  return boundedText(`${candidate.role}${name} ${labels.join(" ")}`, 240);
+}
+
 // Accessible labels are deliberately rebuilt here rather than copied from the
 // ordinary read tree: the latter preserves legacy behavior that can use an
 // input's current value as its name.
@@ -140,6 +179,7 @@ function buildSemanticObservation() {
       role: boundedText(role, 40),
       name,
       type: semanticElementType(element),
+      state: semanticInteractiveState(element),
       representation: element.tagName.toLowerCase() === "a"
         ? boundedText(element.textContent, 160) ? "text" : element.querySelector("img") ? "image" : "other"
         : undefined,
@@ -150,6 +190,10 @@ function buildSemanticObservation() {
   });
   const candidates = allCandidates.slice(0, SEMANTIC_MAX_CANDIDATES);
 
+  const stateChunks = candidates.flatMap((candidate) => {
+    const text = semanticStateEvidence(candidate);
+    return text ? [{ text, refs: [candidate.ref] }] : [];
+  });
   const associatedText = new Map<string, string[]>();
   for (const candidate of candidates) {
     if (!candidate.nearbyText) continue;
@@ -160,6 +204,7 @@ function buildSemanticObservation() {
   const text = document.body ? collectValueFreeText(document.body, 12 * 1024) : "";
   const pageChunks = text.match(/.{1,400}(?:\s|$)/g)?.map((chunk) => boundedText(chunk, 400)).filter(Boolean) || [];
   const rawChunks = [
+    ...stateChunks,
     ...Array.from(associatedText, ([text, refs]) => ({ text, refs })),
     ...pageChunks.filter((text) => !associatedText.has(text)).map((text) => ({ text, refs: [] as string[] })),
   ];
