@@ -435,20 +435,44 @@ describe("mapToolToMessage", () => {
   describe("internal semantic browser operations", () => {
     it("maps local compare and pinned scroll scope without public fallbacks", () => {
       const identity = { fullUrl: "https://example.test", documentToken: "doc" };
-      expect(helpers.mapToolToMessage("semantic.localCompare", {
-        ref: "e4", predicate: { kind: "visible" }, semanticExpectedIdentity: identity,
-        semanticFrameId: 2,
-      }, 7)).toEqual({
-        type: "SEMANTIC_LOCAL_COMPARE", tabId: 7, frameId: 2, ref: "e4",
-        predicate: { kind: "visible" }, expectedIdentity: identity,
+      expect(
+        helpers.mapToolToMessage(
+          "semantic.localCompare",
+          {
+            ref: "e4",
+            predicate: { kind: "visible" },
+            semanticExpectedIdentity: identity,
+            semanticFrameId: 2,
+          },
+          7,
+        ),
+      ).toEqual({
+        type: "SEMANTIC_LOCAL_COMPARE",
+        tabId: 7,
+        frameId: 2,
+        ref: "e4",
+        predicate: { kind: "visible" },
+        expectedIdentity: identity,
       });
-      expect(helpers.mapToolToMessage("semantic.scrollScope", {
-        action: "advance", scopeToken: "opaque", semanticExpectedIdentity: identity,
-      }, 7)).toMatchObject({
-        type: "SEMANTIC_SCROLL_SCOPE", tabId: 7, action: "advance", scopeToken: "opaque",
+      expect(
+        helpers.mapToolToMessage(
+          "semantic.scrollScope",
+          {
+            action: "advance",
+            scopeToken: "opaque",
+            semanticExpectedIdentity: identity,
+          },
+          7,
+        ),
+      ).toMatchObject({
+        type: "SEMANTIC_SCROLL_SCOPE",
+        tabId: 7,
+        action: "advance",
+        scopeToken: "opaque",
       });
-      expect(() => helpers.mapToolToMessage("semantic.scrollScope", { action: "bottom" }, 7))
-        .toThrow("inspect, top, or advance");
+      expect(() =>
+        helpers.mapToolToMessage("semantic.scrollScope", { action: "bottom" }, 7),
+      ).toThrow("inspect, top, or advance");
     });
   });
 });
@@ -554,11 +578,13 @@ describe("applySemanticExpectedIdentity", () => {
   it.each(["SEMANTIC_LOCAL_COMPARE", "SEMANTIC_SCROLL_SCOPE"])(
     "requires host identity for internal %s dispatch",
     (type) => {
-      expect(() => helpers.applySemanticExpectedIdentity(
-        { browserIdentity: { browserEpoch: "epoch-1" }, target: { tabId: 7 } },
-        { type, ref: "e4", frameId: 3 },
-        {},
-      )).toThrow("semantic expected identity is required");
+      expect(() =>
+        helpers.applySemanticExpectedIdentity(
+          { browserIdentity: { browserEpoch: "epoch-1" }, target: { tabId: 7 } },
+          { type, ref: "e4", frameId: 3 },
+          {},
+        ),
+      ).toThrow("semantic expected identity is required");
     },
   );
 

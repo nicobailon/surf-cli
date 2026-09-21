@@ -140,21 +140,33 @@ describe("semantic browser operation routing", () => {
   it.each([
     {
       request: {
-        type: "SEMANTIC_LOCAL_COMPARE", tabId: 123, frameId: 4, ref: "e1",
-        predicate: { kind: "visible" }, expectedIdentity: { documentToken: "doc" },
+        type: "SEMANTIC_LOCAL_COMPARE",
+        tabId: 123,
+        frameId: 4,
+        ref: "e1",
+        predicate: { kind: "visible" },
+        expectedIdentity: { documentToken: "doc" },
       },
       forwarded: {
-        type: "SEMANTIC_LOCAL_COMPARE", ref: "e1", predicate: { kind: "visible" },
+        type: "SEMANTIC_LOCAL_COMPARE",
+        ref: "e1",
+        predicate: { kind: "visible" },
         expectedIdentity: { documentToken: "doc" },
       },
     },
     {
       request: {
-        type: "SEMANTIC_SCROLL_SCOPE", tabId: 123, frameId: 4, action: "advance",
-        scopeToken: "opaque", expectedIdentity: { documentToken: "doc" },
+        type: "SEMANTIC_SCROLL_SCOPE",
+        tabId: 123,
+        frameId: 4,
+        action: "advance",
+        scopeToken: "opaque",
+        expectedIdentity: { documentToken: "doc" },
       },
       forwarded: {
-        type: "SEMANTIC_SCROLL_SCOPE", action: "advance", scopeToken: "opaque",
+        type: "SEMANTIC_SCROLL_SCOPE",
+        action: "advance",
+        scopeToken: "opaque",
         expectedIdentity: { documentToken: "doc" },
       },
     },

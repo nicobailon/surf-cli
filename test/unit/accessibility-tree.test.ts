@@ -515,29 +515,48 @@ describe("accessibility tree", () => {
     checkbox.setAttribute("aria-label", "Remember");
     checkbox.checked = true;
     window.__piElementMap = {
-      secret: { element: new WeakRef(input as unknown as Element), role: "textbox", name: "Secret" },
-      remember: { element: new WeakRef(checkbox as unknown as Element), role: "checkbox", name: "Remember" },
+      secret: {
+        element: new WeakRef(input as unknown as Element),
+        role: "textbox",
+        name: "Secret",
+      },
+      remember: {
+        element: new WeakRef(checkbox as unknown as Element),
+        role: "checkbox",
+        name: "Remember",
+      },
     };
 
     let observation: any;
     messageHandler?.(
       { type: "GENERATE_ACCESSIBILITY_TREE", options: { semanticObservation: true } },
       {},
-      (result) => { observation = result.semanticObservation; },
+      (result) => {
+        observation = result.semanticObservation;
+      },
     );
     const compare = (ref: string, predicate: any) => {
       const candidate = observation.candidates.find((item: any) => item.ref === ref);
       let response: any;
-      messageHandler?.({
-        type: "SEMANTIC_LOCAL_COMPARE",
-        ref,
-        predicate,
-        expectedIdentity: { ...observation.identity, ...candidate },
-      }, {}, (result) => { response = result; });
+      messageHandler?.(
+        {
+          type: "SEMANTIC_LOCAL_COMPARE",
+          ref,
+          predicate,
+          expectedIdentity: { ...observation.identity, ...candidate },
+        },
+        {},
+        (result) => {
+          response = result;
+        },
+      );
       return response;
     };
 
-    const valueResult = compare("secret", { kind: "valueEquals", expected: "private-value-sentinel" });
+    const valueResult = compare("secret", {
+      kind: "valueEquals",
+      expected: "private-value-sentinel",
+    });
     expect(valueResult).toMatchObject({ success: true, matches: true, reason: "compared" });
     expect(JSON.stringify(valueResult)).not.toContain("private-value-sentinel");
     const checkedResult = compare("remember", { kind: "checkedEquals", expected: true });
@@ -553,27 +572,47 @@ describe("accessibility tree", () => {
     };
     const request = (expectedIdentity: any, predicate: any) => {
       let response: any;
-      messageHandler?.({ type: "SEMANTIC_LOCAL_COMPARE", ref: "save", expectedIdentity, predicate }, {},
-        (result) => { response = result; });
+      messageHandler?.(
+        { type: "SEMANTIC_LOCAL_COMPARE", ref: "save", expectedIdentity, predicate },
+        {},
+        (result) => {
+          response = result;
+        },
+      );
       return response;
     };
     const identity = {
-      fullUrl: "https://example.test/page", documentToken: "stale", ref: "save",
-      role: "button", name: "Save", type: "button",
+      fullUrl: "https://example.test/page",
+      documentToken: "stale",
+      ref: "save",
+      role: "button",
+      name: "Save",
+      type: "button",
     };
     expect(request(identity, { kind: "visible" })).toMatchObject({
-      success: false, matches: false, reason: "stale_observation",
+      success: false,
+      matches: false,
+      reason: "stale_observation",
     });
 
     let observation: any;
-    messageHandler?.({ type: "GENERATE_ACCESSIBILITY_TREE", options: { semanticObservation: true } }, {},
-      (result) => { observation = result.semanticObservation; });
+    messageHandler?.(
+      { type: "GENERATE_ACCESSIBILITY_TREE", options: { semanticObservation: true } },
+      {},
+      (result) => {
+        observation = result.semanticObservation;
+      },
+    );
     const freshIdentity = { ...observation.identity, ...observation.candidates[0] };
-    expect(request(freshIdentity, {
-      kind: "checkedEquals", expected: true,
-    })).toMatchObject({ success: false, reason: "unsupported_control" });
-    expect(request(freshIdentity, { kind: "computedStyleEquals", expected: "block" }))
-      .toMatchObject({ success: false, reason: "unsupported_predicate" });
+    expect(
+      request(freshIdentity, {
+        kind: "checkedEquals",
+        expected: true,
+      }),
+    ).toMatchObject({ success: false, reason: "unsupported_control" });
+    expect(
+      request(freshIdentity, { kind: "computedStyleEquals", expected: "block" }),
+    ).toMatchObject({ success: false, reason: "unsupported_predicate" });
   });
 
   it("pins nested scroll scope, overlaps seam targets, and recomputes stride after resize", () => {
@@ -588,21 +627,40 @@ describe("accessibility tree", () => {
     (document as any).querySelectorAll = () => [viewport, overflow];
 
     let observation: any;
-    messageHandler?.({ type: "GENERATE_ACCESSIBILITY_TREE", options: { semanticObservation: true } }, {},
-      (result) => { observation = result.semanticObservation; });
+    messageHandler?.(
+      { type: "GENERATE_ACCESSIBILITY_TREE", options: { semanticObservation: true } },
+      {},
+      (result) => {
+        observation = result.semanticObservation;
+      },
+    );
     const send = (action: string, scopeToken?: string) => {
       let response: any;
-      messageHandler?.({
-        type: "SEMANTIC_SCROLL_SCOPE", action, scopeToken,
-        expectedIdentity: observation.identity,
-      }, {}, (result) => { response = result; });
+      messageHandler?.(
+        {
+          type: "SEMANTIC_SCROLL_SCOPE",
+          action,
+          scopeToken,
+          expectedIdentity: observation.identity,
+        },
+        {},
+        (result) => {
+          response = result;
+        },
+      );
       return response;
     };
 
     const inspected = send("inspect");
-    expect(inspected).toMatchObject({ success: true, geometry: {
-      scrollTop: 0, clientHeight: 400, intervalStart: 0, intervalEnd: 400,
-    } });
+    expect(inspected).toMatchObject({
+      success: true,
+      geometry: {
+        scrollTop: 0,
+        clientHeight: 400,
+        intervalStart: 0,
+        intervalEnd: 400,
+      },
+    });
     const first = send("advance", inspected.scopeToken);
     expect(first.geometry).toMatchObject({ scrollTop: 300, intervalStart: 300, intervalEnd: 700 });
     expect(first.geometry.intervalStart).toBeLessThan(inspected.geometry.intervalEnd);
@@ -614,7 +672,11 @@ describe("accessibility tree", () => {
 
     overflow.scrollTop = 1_900;
     const clamped = send("advance", inspected.scopeToken);
-    expect(clamped.geometry).toMatchObject({ scrollTop: 1_800, intervalEnd: 2_000, atBottom: true });
+    expect(clamped.geometry).toMatchObject({
+      scrollTop: 1_800,
+      intervalEnd: 2_000,
+      atBottom: true,
+    });
 
     overflow.clientHeight = 1_000;
     overflow.rect = { top: 0, bottom: 500, left: 0, right: 800 };
@@ -649,25 +711,51 @@ describe("accessibility tree", () => {
     (document as any).documentElement = new FakeElement("html");
     (document as any).querySelectorAll = () => [overflow];
     let observation: any;
-    messageHandler?.({ type: "GENERATE_ACCESSIBILITY_TREE", options: { semanticObservation: true } }, {},
-      (result) => { observation = result.semanticObservation; });
+    messageHandler?.(
+      { type: "GENERATE_ACCESSIBILITY_TREE", options: { semanticObservation: true } },
+      {},
+      (result) => {
+        observation = result.semanticObservation;
+      },
+    );
     let inspected: any;
-    messageHandler?.({ type: "SEMANTIC_SCROLL_SCOPE", action: "inspect", expectedIdentity: observation.identity }, {},
-      (result) => { inspected = result; });
+    messageHandler?.(
+      { type: "SEMANTIC_SCROLL_SCOPE", action: "inspect", expectedIdentity: observation.identity },
+      {},
+      (result) => {
+        inspected = result;
+      },
+    );
 
     let staleDocument: any;
-    messageHandler?.({
-      type: "SEMANTIC_SCROLL_SCOPE", action: "advance", scopeToken: inspected.scopeToken,
-      expectedIdentity: { ...observation.identity, fullUrl: "https://example.test/replaced" },
-    }, {}, (result) => { staleDocument = result; });
+    messageHandler?.(
+      {
+        type: "SEMANTIC_SCROLL_SCOPE",
+        action: "advance",
+        scopeToken: inspected.scopeToken,
+        expectedIdentity: { ...observation.identity, fullUrl: "https://example.test/replaced" },
+      },
+      {},
+      (result) => {
+        staleDocument = result;
+      },
+    );
     expect(staleDocument).toMatchObject({ success: false, reason: "stale_observation" });
 
     overflow.isConnected = false;
     let staleScope: any;
-    messageHandler?.({
-      type: "SEMANTIC_SCROLL_SCOPE", action: "advance", scopeToken: inspected.scopeToken,
-      expectedIdentity: observation.identity,
-    }, {}, (result) => { staleScope = result; });
+    messageHandler?.(
+      {
+        type: "SEMANTIC_SCROLL_SCOPE",
+        action: "advance",
+        scopeToken: inspected.scopeToken,
+        expectedIdentity: observation.identity,
+      },
+      {},
+      (result) => {
+        staleScope = result;
+      },
+    );
     expect(staleScope).toMatchObject({ success: false, reason: "stale_scroll_scope" });
   });
 
