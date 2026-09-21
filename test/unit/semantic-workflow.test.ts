@@ -104,7 +104,15 @@ function boundary(
     positions?: number[];
     geometries?: Geometry[];
     candidate?: (top: number) => string;
-    candidateIdentity?: Record<string, string>;
+    candidateIdentity?: Record<string, string> | (() => Record<string, string>);
+    additionalCandidates?: () => Array<{
+      ref: string;
+      role: string;
+      name: string;
+      type: string;
+      nearbyText: string;
+      href?: string;
+    }>;
     compare?: boolean | ((args: Record<string, any>) => unknown);
     action?: () => unknown;
   } = {},
@@ -116,8 +124,11 @@ function boundary(
     const value = observation(
       options.candidate?.(positions[index]) || "e1",
       positions[index],
-      options.candidateIdentity,
+      typeof options.candidateIdentity === "function"
+        ? options.candidateIdentity()
+        : options.candidateIdentity,
     );
+    value.semanticObservation.candidates.push(...(options.additionalCandidates?.() || []));
     value.semanticObservation.identity.fullUrl = currentUrl;
     return envelope(value);
   };
@@ -383,6 +394,7 @@ describe("bounded semantic workflow runtime", () => {
 
   it("re-resolves a locally verified control after a write replaces its DOM node", async () => {
     const attemptStore = store();
+    const evaluate = provider();
     let ref = "e1";
     const request = boundary({
       candidate: () => ref,
@@ -394,14 +406,70 @@ describe("bounded semantic workflow runtime", () => {
         return envelope({ success: true });
       },
     });
-    const runtime = createSemanticWorkflowRuntime({ request, evaluate: provider(), attemptStore });
+    const runtime = createSemanticWorkflowRuntime({ request, evaluate, attemptStore });
     const result = await runtime.executeStep(
       { id: "fill", op: "fill", target: { query: "Quantity" }, input: "quantity" },
-      runtime.createContext({ inputs: { quantity: "2" } }),
+      runtime.createContext({ inputs: { quantity: "replacement-secret-value" } }),
     );
     expect(result).toMatchObject({ kind: "success", status: "verified" });
     expect(request.mock.calls.filter(([tool]) => tool === "form.fill")).toHaveLength(1);
     expect(request.mock.calls.filter(([tool]) => tool === "page.read")).toHaveLength(2);
+    expect(JSON.stringify(evaluate.mock.calls)).not.toContain("replacement-secret-value");
+  });
+
+  it("rejects a replacement control with a different value-free identity", async () => {
+    let replaced = false;
+    const request = boundary({
+      candidate: () => (replaced ? "e9" : "e1"),
+      candidateIdentity: () => ({
+        role: "spinbutton",
+        name: replaced ? "Other quantity" : "Quantity",
+        type: "number",
+      }),
+      compare: () => envelope({ success: true, matches: false, reason: "compared", identity: {} }),
+      action: () => {
+        replaced = true;
+        return envelope({ success: true });
+      },
+    });
+    const runtime = createSemanticWorkflowRuntime({
+      request,
+      evaluate: provider(),
+      attemptStore: store(),
+    });
+    const result = await runtime.executeStep(
+      { id: "fill", op: "fill", target: { query: "Quantity" }, input: "quantity" },
+      runtime.createContext({ inputs: { quantity: "2" } }),
+    );
+    expect(result).toMatchObject({ kind: "failure", reason: "assertion_mismatch" });
+    expect(request.mock.calls.filter(([tool]) => tool === "form.fill")).toHaveLength(1);
+  });
+
+  it("rejects an ambiguous replacement without replaying the write", async () => {
+    let replaced = false;
+    const identity = { role: "spinbutton", name: "Quantity", type: "number" };
+    const request = boundary({
+      candidate: () => (replaced ? "e9" : "e1"),
+      candidateIdentity: identity,
+      additionalCandidates: () =>
+        replaced ? [{ ref: "e10", ...identity, nearbyText: "Second quantity" }] : [],
+      compare: () => envelope({ success: true, matches: false, reason: "compared", identity: {} }),
+      action: () => {
+        replaced = true;
+        return envelope({ success: true });
+      },
+    });
+    const runtime = createSemanticWorkflowRuntime({
+      request,
+      evaluate: provider(),
+      attemptStore: store(),
+    });
+    const result = await runtime.executeStep(
+      { id: "fill", op: "fill", target: { query: "Quantity" }, input: "quantity" },
+      runtime.createContext({ inputs: { quantity: "2" } }),
+    );
+    expect(result).toMatchObject({ kind: "failure", reason: "assertion_mismatch" });
+    expect(request.mock.calls.filter(([tool]) => tool === "form.fill")).toHaveLength(1);
   });
 
   it("persists intent and dispatches only once when the reply is lost", async () => {

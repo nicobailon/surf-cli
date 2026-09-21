@@ -132,20 +132,27 @@ describe("AUTO_WAIT_MAP", () => {
 });
 
 describe("do executor semantic dispatch", () => {
-  it("pins semantic follow-up requests to the observed tab and remaining deadline", () => {
-    expect(
-      executor.semanticRequestContext(
-        { session: "checkout", windowId: 8, transport: "shared" },
-        1_234,
-        { tabId: 42 },
-      ),
-    ).toEqual({
+  it("pins semantic follow-up requests while preserving admission and the shared transport", async () => {
+    const transport = { request: vi.fn(async () => ({ result: { content: [] } })) };
+    const context = executor.semanticRequestContext(
+      { session: "checkout", windowId: 8, transport, admission: { wait: false } },
+      1_234,
+      { tabId: 42 },
+    );
+    expect(context).toEqual({
       session: undefined,
       windowId: undefined,
       tabId: 42,
       timeoutMs: 1_234,
-      transport: "shared",
+      admission: { wait: false },
+      transport,
     });
+    await executor.sendDoRequest("page.read", {}, context);
+    expect(transport.request).toHaveBeenCalledWith(
+      expect.objectContaining({ tabId: 42, admission: { wait: false } }),
+      1_234,
+      expect.anything(),
+    );
   });
 
   it("lazily creates the semantic executor and never forwards semantic.step to executeTool", async () => {
