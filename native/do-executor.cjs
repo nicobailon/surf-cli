@@ -63,9 +63,23 @@ function printProgress(event) {
 
 async function executeDoSteps(steps, options = {}) {
   const context = options.context || {};
+  let semanticExecutor;
+  const executeSemanticStep = steps.some((step) => step.cmd === "semantic.step")
+    ? async (step, semanticContext, executionOptions) => {
+      if (!semanticExecutor) {
+        semanticExecutor = options.executeSemanticStep;
+        if (!semanticExecutor && typeof options.createSemanticExecutor === "function") {
+          semanticExecutor = await options.createSemanticExecutor({ context });
+        }
+        if (typeof semanticExecutor !== "function") throw new Error("semantic.step requires an injected semantic executor");
+      }
+      return semanticExecutor(step, semanticContext, executionOptions);
+    }
+    : undefined;
   return runtime.executeWorkflow(steps, {
     ...options,
     executeTool: options.executeTool || ((tool, args) => sendDoRequest(tool, args, context)),
+    ...(executeSemanticStep ? { executeSemanticStep } : {}),
     onProgress: options.quiet ? options.onProgress : (event) => {
       printProgress(event);
       options.onProgress?.(event);

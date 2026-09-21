@@ -66,4 +66,95 @@ describe("workflow runtime characterization", () => {
     expect(result).toMatchObject({ status: "failed", error: "cancelled" });
     expect(executeTool).not.toHaveBeenCalled();
   });
+
+  it.each(["blocked", "uncertain", "failed", "stopped"])(
+    "treats semantic status %s as failure and does not execute later steps",
+    async (status) => {
+      const executeTool = vi.fn();
+      const executeSemanticStep = vi.fn(async () => ({ status, reason: "not complete" }));
+      const result = await runtime.executeWorkflow(
+        [
+          { id: "semantic", cmd: "semantic.step", args: { op: "find", target: { query: "x" } } },
+          { cmd: "later", args: {} },
+        ],
+        { executeTool, executeSemanticStep, stepDelay: 0 },
+      );
+
+      expect(result).toMatchObject({ status: "failed", completedSteps: 0, error: "not complete" });
+      expect(executeSemanticStep).toHaveBeenCalledOnce();
+      expect(executeTool).not.toHaveBeenCalled();
+    },
+  );
+
+  it("keeps one semantic context private and exposes only an explicit public result", async () => {
+    const contexts: object[] = [];
+    const events: Array<Record<string, unknown>> = [];
+    const result = await runtime.executeWorkflow(
+      [
+        {
+          id: "one",
+          cmd: "semantic.step",
+          as: "first",
+          args: { op: "find", target: { query: "x" } },
+        },
+        { id: "two", cmd: "semantic.step", args: { op: "open", target: { binding: "first" } } },
+      ],
+      {
+        executeTool: vi.fn(),
+        executeSemanticStep: vi.fn(async (_step: unknown, context: Record<string, unknown>) => {
+          contexts.push(context);
+          context.privateBinding = "private-handle-sentinel";
+          return {
+            status: "completed",
+            publicResult: { label: "public metadata" },
+            privateBinding: "private-handle-sentinel",
+          };
+        }),
+        onEvent: (event: Record<string, unknown>) => events.push(event),
+      },
+    );
+
+    expect(result.status).toBe("completed");
+    expect(contexts[0]).toBe(contexts[1]);
+    expect(result.vars).toEqual({ first: { label: "public metadata" } });
+    expect(JSON.stringify({ result, events })).not.toContain("private-handle-sentinel");
+  });
+
+  it("does not substitute public variables into semantic arguments", async () => {
+    const executeSemanticStep = vi.fn(async (step) => {
+      expect(step.args.target.query).toBe("%{privateSlot}");
+      return { status: "verified" };
+    });
+    await runtime.executeWorkflow(
+      [
+        {
+          id: "one",
+          cmd: "semantic.step",
+          args: { op: "find", target: { query: "%{privateSlot}" } },
+        },
+      ],
+      {
+        vars: { privateSlot: "private-value-sentinel" },
+        executeTool: vi.fn(),
+        executeSemanticStep,
+      },
+    );
+    expect(executeSemanticStep).toHaveBeenCalledOnce();
+  });
+
+  it("rejects continue-on-error semantic execution before either executor runs", async () => {
+    const executeTool = vi.fn();
+    const executeSemanticStep = vi.fn();
+    const result = await runtime.executeWorkflow(
+      [{ id: "one", cmd: "semantic.step", args: { op: "find", target: { query: "x" } } }],
+      { onError: "continue", executeTool, executeSemanticStep },
+    );
+    expect(result).toMatchObject({
+      status: "failed",
+      completedSteps: 0,
+      error: "semantic workflows require onError='stop'",
+    });
+    expect(executeTool).not.toHaveBeenCalled();
+    expect(executeSemanticStep).not.toHaveBeenCalled();
+  });
 });

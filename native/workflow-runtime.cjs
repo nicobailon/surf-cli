@@ -75,6 +75,40 @@ function assertNotAborted(signal) {
   if (message) throw new Error(message);
 }
 
+const SEMANTIC_SUCCESS_STATUSES = new Set(["completed", "verified", "skipped_already_satisfied"]);
+
+function semanticFailure(result) {
+  if (!result || typeof result !== "object") return "semantic executor returned an invalid result";
+  if (typeof result.error === "string" && result.error) return result.error;
+  if (typeof result.reason === "string" && result.reason) return result.reason;
+  return `semantic step did not succeed (status: ${String(result.status || "missing")})`;
+}
+
+async function executeSemanticStep(step, semanticContext, options) {
+  const { executeSemanticStep: executor, onEvent = () => {}, signal } = options;
+  if (typeof executor !== "function") throw new Error("semantic.step requires an injected semantic executor");
+  const startedAt = new Date().toISOString();
+  const baseEvent = { command: step.cmd, argsRedacted: redactCommandArgs(step.cmd, step.args || {}, false), startedAt };
+  onEvent({ type: "tool.started", ...baseEvent });
+  try {
+    assertNotAborted(signal);
+    const result = await executor(step, semanticContext, { signal });
+    assertNotAborted(signal);
+    if (!SEMANTIC_SUCCESS_STATUSES.has(result?.status)) {
+      const error = semanticFailure(result);
+      onEvent({ type: "tool.failed", ...baseEvent, endedAt: new Date().toISOString(), resultSummary: error });
+      return { success: false, error };
+    }
+    const output = result.publicResult;
+    onEvent({ type: "tool.completed", ...baseEvent, endedAt: new Date().toISOString(), resultSummary: result.status });
+    return { success: true, ...(output !== undefined ? { output } : {}) };
+  } catch (error) {
+    const message = error?.message || String(error);
+    onEvent({ type: "tool.failed", ...baseEvent, endedAt: new Date().toISOString(), resultSummary: message });
+    return { success: false, error: message };
+  }
+}
+
 async function executeSingleStep(step, vars, options) {
   const {
     autoWait = true,
@@ -126,6 +160,11 @@ async function executeSingleStep(step, vars, options) {
 async function executeStep(step, vars, options) {
   const { onError = "stop" } = options;
   assertNotAborted(options.signal);
+  if (step.cmd === "semantic.step") {
+    const result = await executeSemanticStep(step, options.semanticContext, options);
+    if (result.success && step.as && result.output !== undefined) vars[step.as] = result.output;
+    return { ...result, stepsExecuted: 1 };
+  }
   if (step.repeat !== undefined) {
     let max = resolveVar(step.repeat, vars);
     if (typeof max === "string") max = Number.parseInt(max, 10);
@@ -177,7 +216,13 @@ function copyCapturedVars(steps, source, target) {
 }
 
 async function executeWorkflow(steps, options = {}) {
+  const semanticEnabled = steps.some((step) => step.cmd === "semantic.step");
+  if (semanticEnabled && (options.onError || "stop") !== "stop") {
+    return { status: "failed", completedSteps: 0, totalSteps: steps.length, results: [], error: "semantic workflows require onError='stop'", totalMs: 0, vars: { ...(options.vars || {}), ...(options.context?.vars || {}) } };
+  }
   const vars = { ...(options.vars || {}), ...(options.context?.vars || {}) };
+  const semanticContext = semanticEnabled ? (options.createSemanticContext?.() || Object.create(null)) : undefined;
+  const executionOptions = semanticEnabled ? { ...options, semanticContext } : options;
   const results = [];
   let failed = 0;
   let stepsExecuted = 0;
@@ -189,7 +234,7 @@ async function executeWorkflow(steps, options = {}) {
     options.onProgress?.({ phase: "start", index, total: steps.length, step, type });
     let result;
     try {
-      result = await executeStep(step, vars, options);
+      result = await executeStep(step, vars, executionOptions);
     } catch (error) {
       result = { success: false, error: error?.message || String(error), stepsExecuted: 0 };
     }
@@ -215,6 +260,7 @@ module.exports = {
   AUTO_WAIT_MAP,
   MAX_LOOP_ITERATIONS,
   executeSingleStep,
+  executeSemanticStep,
   executeStep,
   executeWorkflow,
   extractStepOutput,

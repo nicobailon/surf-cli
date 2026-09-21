@@ -280,7 +280,127 @@ function normalizeStep(step) {
   }
   const cmd = step.tool || step.cmd;
   if (typeof cmd !== "string" || !cmd) throw new Error("workflow step must have a 'tool' field");
-  return { cmd: ALIASES[cmd] || cmd, args: step.args || {}, ...(step.as ? { as: step.as } : {}) };
+  return { cmd: ALIASES[cmd] || cmd, args: step.args || {}, ...(step.id ? { id: step.id } : {}), ...(step.as ? { as: step.as } : {}) };
+}
+
+const SEMANTIC_OPS = new Set(["find", "open", "ensureChecked", "fill", "click", "assert"]);
+const SEMANTIC_ID = /^[a-zA-Z0-9][a-zA-Z0-9._-]{0,63}$/;
+const SEMANTIC_STEP_FIELDS = new Set(["id", "tool", "args", "as"]);
+const SEMANTIC_ARG_FIELDS = {
+  find: new Set(["op", "target", "search"]),
+  open: new Set(["op", "target", "expect"]),
+  ensureChecked: new Set(["op", "target", "checked", "expect"]),
+  fill: new Set(["op", "target", "input", "expect"]),
+  click: new Set(["op", "target", "expect"]),
+  assert: new Set(["op", "mode", "claim", "bindings", "target", "predicate"]),
+};
+
+function assertClosedObject(value, allowed, path) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error(`${path} must be an object`);
+  for (const key of Object.keys(value)) {
+    if (!allowed.has(key)) throw new Error(`${path}.${key} is not allowed`);
+  }
+}
+
+function assertSemanticName(value, path) {
+  if (typeof value !== "string" || !SEMANTIC_ID.test(value)) {
+    throw new Error(`${path} must be a 1-64 character identifier`);
+  }
+}
+
+function validateTarget(target, path, { queryOnly = false } = {}) {
+  assertClosedObject(target, new Set(["query", "role", "type", "binding"]), path);
+  const hasQuery = typeof target.query === "string" && target.query.length > 0;
+  const hasBinding = typeof target.binding === "string" && target.binding.length > 0;
+  if (hasQuery === hasBinding || (queryOnly && !hasQuery)) {
+    throw new Error(`${path} must contain exactly one of 'query' or 'binding'${queryOnly ? " (query required)" : ""}`);
+  }
+  if (hasBinding && (target.role !== undefined || target.type !== undefined)) {
+    throw new Error(`${path} binding cannot include role or type`);
+  }
+  if (target.role !== undefined && (typeof target.role !== "string" || !target.role)) throw new Error(`${path}.role must be a non-empty string`);
+  if (target.type !== undefined && (typeof target.type !== "string" || !target.type)) throw new Error(`${path}.type must be a non-empty string`);
+}
+
+function validateExpectation(value, path) {
+  assertClosedObject(value, new Set(["kind", "mode", "target", "equals", "contains", "input", "binding", "claim"]), path);
+  const kinds = new Set(["urlPath", "visible", "checkedEquals", "valueEquals", "textExact", "textContains"]);
+  if (value.mode === "semantic") {
+    if (typeof value.claim !== "string" || !value.claim) throw new Error(`${path}.claim must be a non-empty string`);
+  } else if (!kinds.has(value.kind)) throw new Error(`${path}.kind is invalid`);
+  if (value.target !== undefined) validateTarget(value.target, `${path}.target`);
+}
+
+function validateSemanticStep(step, index, priorBindings, ids, outputs) {
+  const path = `steps[${index}]`;
+  assertClosedObject(step, SEMANTIC_STEP_FIELDS, path);
+  if (step.tool !== "semantic.step") throw new Error(`${path}.tool must be 'semantic.step'`);
+  assertSemanticName(step.id, `${path}.id`);
+  if (ids.has(step.id)) throw new Error(`${path}.id must be unique`);
+  ids.add(step.id);
+  if (step.as !== undefined) {
+    assertSemanticName(step.as, `${path}.as`);
+    if (outputs.has(step.as)) throw new Error(`${path}.as must be unique`);
+  }
+  assertClosedObject(step.args, new Set(Object.keys(step.args || {})), `${path}.args`);
+  const op = step.args.op;
+  if (!SEMANTIC_OPS.has(op)) throw new Error(`${path}.args.op is invalid`);
+  assertClosedObject(step.args, SEMANTIC_ARG_FIELDS[op], `${path}.args`);
+
+  if (op === "find") {
+    validateTarget(step.args.target, `${path}.args.target`, { queryOnly: true });
+    if (step.args.search !== undefined) {
+      assertClosedObject(step.args.search, new Set(["mode", "maxObservations"]), `${path}.args.search`);
+      if (step.args.search.mode !== "scroll") throw new Error(`${path}.args.search.mode must be 'scroll'`);
+      if (step.args.search.maxObservations !== undefined && (!Number.isInteger(step.args.search.maxObservations) || step.args.search.maxObservations < 1 || step.args.search.maxObservations > 32)) {
+        throw new Error(`${path}.args.search.maxObservations must be an integer from 1 to 32`);
+      }
+    }
+  } else if (op !== "assert") validateTarget(step.args.target, `${path}.args.target`);
+
+  if (op === "ensureChecked" && typeof step.args.checked !== "boolean") throw new Error(`${path}.args.checked must be a boolean`);
+  if (op === "fill") assertSemanticName(step.args.input, `${path}.args.input`);
+  if (op === "click" && step.args.expect === undefined) throw new Error(`${path}.args.expect is required`);
+  if (step.args.expect !== undefined) validateExpectation(step.args.expect, `${path}.args.expect`);
+  if (op === "assert") {
+    if (step.args.mode !== "local" && step.args.mode !== "semantic") throw new Error(`${path}.args.mode must be 'local' or 'semantic'`);
+    if (step.args.mode === "semantic" && (typeof step.args.claim !== "string" || !step.args.claim)) throw new Error(`${path}.args.claim must be a non-empty string`);
+    if (step.args.mode === "local") validateExpectation(step.args.predicate, `${path}.args.predicate`);
+    if (step.args.target !== undefined) validateTarget(step.args.target, `${path}.args.target`);
+  }
+
+  const references = [];
+  if (step.args.target?.binding) references.push(step.args.target.binding);
+  if (step.args.expect?.target?.binding) references.push(step.args.expect.target.binding);
+  if (step.args.expect?.binding) references.push(step.args.expect.binding);
+  if (step.args.predicate?.target?.binding) references.push(step.args.predicate.target.binding);
+  if (step.args.predicate?.binding) references.push(step.args.predicate.binding);
+  if (Array.isArray(step.args.bindings)) references.push(...step.args.bindings);
+  else if (step.args.bindings !== undefined) throw new Error(`${path}.args.bindings must be an array`);
+  for (const binding of references) {
+    assertSemanticName(binding, `${path} binding`);
+    if (!priorBindings.has(binding)) throw new Error(`${path} binding '${binding}' must refer to a prior step output`);
+  }
+  if (step.as !== undefined) {
+    outputs.add(step.as);
+    priorBindings.add(step.as);
+  }
+}
+
+function validateSemanticWorkflow(workflow) {
+  assertClosedObject(workflow.semantic, new Set(["version", "deadlineMs", "maxProviderCalls"]), "semantic");
+  if (workflow.semantic.version !== 1) throw new Error("semantic.version must equal 1");
+  if (workflow.steps.length > 32) throw new Error("semantic workflows support at most 32 steps");
+  if (workflow.semantic.deadlineMs !== undefined && (!Number.isInteger(workflow.semantic.deadlineMs) || workflow.semantic.deadlineMs < 1 || workflow.semantic.deadlineMs > 120000)) {
+    throw new Error("semantic.deadlineMs must be an integer from 1 to 120000");
+  }
+  if (workflow.semantic.maxProviderCalls !== undefined && (!Number.isInteger(workflow.semantic.maxProviderCalls) || workflow.semantic.maxProviderCalls < 1 || workflow.semantic.maxProviderCalls > 64)) {
+    throw new Error("semantic.maxProviderCalls must be an integer from 1 to 64");
+  }
+  const priorBindings = new Set();
+  const ids = new Set();
+  const outputs = new Set();
+  workflow.steps.forEach((step, index) => validateSemanticStep(step, index, priorBindings, ids, outputs));
 }
 
 function normalizeWorkflow(workflow) {
@@ -289,6 +409,11 @@ function normalizeWorkflow(workflow) {
   if (workflow.steps.length === 0) throw new Error("Workflow has no steps");
   if (workflow.args !== undefined && (!workflow.args || typeof workflow.args !== "object" || Array.isArray(workflow.args))) {
     throw new Error("'args' must be an object");
+  }
+  const hasSemanticSteps = workflow.steps.some((step) => step?.tool === "semantic.step" || step?.cmd === "semantic.step");
+  if (workflow.semantic !== undefined || hasSemanticSteps) {
+    if (workflow.semantic === undefined) throw new Error("semantic workflows require semantic.version=1");
+    validateSemanticWorkflow(workflow);
   }
   return { ...workflow, args: workflow.args || {}, steps: workflow.steps.map(normalizeStep) };
 }
@@ -379,4 +504,5 @@ module.exports = {
   tokenize,
   validateWorkflowArgs,
   validateWorkflowFile,
+  validateSemanticWorkflow,
 };
