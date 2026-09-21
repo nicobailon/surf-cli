@@ -522,4 +522,17 @@ function formatSemanticOutput(result) {
   return JSON.stringify(result.value, null, 2);
 }
 
-module.exports = { buildActions, buildLogicalCandidates, formatSemanticOutput, handleSemanticCli, normalizeSemanticArgs, parseSemanticArgs, providerState, runBrowserSemantic };
+module.exports = {
+  buildActions,
+  buildLogicalCandidates,
+  canonicalSameOriginDestination,
+  confirmedActionResponse,
+  expectedIdentity,
+  formatSemanticOutput,
+  handleSemanticCli,
+  normalizeSemanticArgs,
+  parseSemanticArgs,
+  providerState,
+  runBrowserSemantic,
+  semanticObservationFrom,
+};
