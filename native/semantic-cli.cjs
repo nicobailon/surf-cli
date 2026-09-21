@@ -140,6 +140,7 @@ function semanticProjectionHash(state) {
 
 function observedCandidateStateTransition(observation, before) {
   if (!before) return false;
+  if (observation.identity.fullUrl !== before.fullUrl || observation.identity.documentToken !== before.documentToken) return false;
   const candidate = observation.candidates.find((item) =>
     item.ref === before.ref && item.role === before.role && item.name === before.name && item.type === before.type);
   const after = interactiveCandidateState(candidate?.state);
@@ -278,15 +279,39 @@ function semanticObservationFrom(response) {
 }
 
 function logicalWriteIdentity(observation, action, candidate) {
-  return JSON.stringify([
-    action.kind,
-    observation.identity.fullUrl,
-    candidate.role,
-    candidate.type,
-    candidate.name,
-    action.url || canonicalSameOriginDestination(candidate, observation.identity.fullUrl),
-    action.kind === "fill" ? action.slot : null,
-  ]);
+  return {
+    base: JSON.stringify([
+      action.kind,
+      observation.identity.fullUrl,
+      candidate.role,
+      candidate.type,
+      candidate.name,
+      action.url || canonicalSameOriginDestination(candidate, observation.identity.fullUrl),
+      action.kind === "fill" ? action.slot : null,
+    ]),
+    context: normalizedSemanticPart(candidate.nearbyText).slice(0, 240),
+  };
+}
+
+function writeWasSpent(observation, action, candidate, spentWrites) {
+  const identity = logicalWriteIdentity(observation, action, candidate);
+  const spent = spentWrites.filter((item) => item.base === identity.base);
+  if (!spent.length) return false;
+  if (spent.some((item) => item.context === identity.context)) return true;
+  const currentContexts = observation.candidates
+    .filter((item) => {
+      if (action.kind === "click" && !CLICK_ROLES.has(item.role)) return false;
+      if (action.kind === "fill" && !isEditable(item)) return false;
+      return logicalWriteIdentity(observation, { ...action, ref: item.ref }, item).base === identity.base;
+    })
+    .map((item) => normalizedSemanticPart(item.nearbyText).slice(0, 240));
+  return spent.some((item) => currentContexts.filter((context) => context === item.context).length !== 1);
+}
+
+function spendWrite(spentWrites, identity) {
+  if (!spentWrites.some((item) => item.base === identity.base && item.context === identity.context)) {
+    spentWrites.push(identity);
+  }
 }
 
 function semanticErrorCode(error, fallback) {
@@ -314,7 +339,7 @@ function takeActionVariants(groups, capacity) {
   return selected;
 }
 
-function buildActions(observation, inputs, allowWrite, allowRefs = [], spentWrites = new Set()) {
+function buildActions(observation, inputs, allowWrite, allowRefs = [], spentWrites = []) {
   const fixedActions = [
     ...SEMANTIC_POLICY.scrolls.map((direction) => ({ id: `scroll:${direction}`, kind: "scroll", direction })),
     ...SEMANTIC_POLICY.waitsMs.map((durationMs) => ({ id: `wait:${durationMs}`, kind: "wait", durationMs })),
@@ -344,12 +369,12 @@ function buildActions(observation, inputs, allowWrite, allowRefs = [], spentWrit
     for (const candidate of writeCandidates) {
       if (CLICK_ROLES.has(candidate.role)) {
         const action = { id: `click:${candidate.ref}`, kind: "click", ref: candidate.ref };
-        if (!spentWrites.has(logicalWriteIdentity(observation, action, candidate))) mandatoryWrites.push(action);
+        if (!writeWasSpent(observation, action, candidate, spentWrites)) mandatoryWrites.push(action);
       } else if (isEditable(candidate)) {
         const slot = Object.keys(inputs)[0];
         if (slot) {
           const action = { id: `fill:${candidate.ref}:${slot}`, kind: "fill", ref: candidate.ref, slot };
-          if (!spentWrites.has(logicalWriteIdentity(observation, action, candidate))) mandatoryWrites.push(action);
+          if (!writeWasSpent(observation, action, candidate, spentWrites)) mandatoryWrites.push(action);
         }
       }
     }
@@ -364,7 +389,7 @@ function buildActions(observation, inputs, allowWrite, allowRefs = [], spentWrit
       for (const candidate of fillCandidates) {
         if (mandatoryWrites.some((action) => action.kind === "fill" && action.ref === candidate.ref && action.slot === slot)) continue;
         const action = { id: `fill:${candidate.ref}:${slot}`, kind: "fill", ref: candidate.ref, slot };
-        if (!spentWrites.has(logicalWriteIdentity(observation, action, candidate))) additionalFills.push(action);
+        if (!writeWasSpent(observation, action, candidate, spentWrites)) additionalFills.push(action);
       }
     }
     const required = [...fixedActions, ...mandatoryWrites];
@@ -383,7 +408,7 @@ function buildActions(observation, inputs, allowWrite, allowRefs = [], spentWrit
     if (allowWrite) {
       if (CLICK_ROLES.has(candidate.role)) {
         const action = { id: `click:${candidate.ref}`, kind: "click", ref: candidate.ref };
-        if (!spentWrites.has(logicalWriteIdentity(observation, action, candidate))) {
+        if (!writeWasSpent(observation, action, candidate, spentWrites)) {
           const group = canonicalSameOriginDestination(candidate, observation.identity.fullUrl)
             ? navigationClickActions
             : controlClickActions;
@@ -393,7 +418,7 @@ function buildActions(observation, inputs, allowWrite, allowRefs = [], spentWrit
       if (isEditable(candidate)) {
         for (const slot of Object.keys(inputs)) {
           const action = { id: `fill:${candidate.ref}:${slot}`, kind: "fill", ref: candidate.ref, slot };
-          if (!spentWrites.has(logicalWriteIdentity(observation, action, candidate))) fillActions.push(action);
+          if (!writeWasSpent(observation, action, candidate, spentWrites)) fillActions.push(action);
         }
       }
     }
@@ -503,7 +528,7 @@ async function runBrowserSemantic(options, { request, evaluate, now = () => perf
 
   const trace = [];
   let staleRefreshes = 0;
-  const spentWrites = new Set();
+  const spentWrites = [];
   let identical = 0;
   let previousHash = semanticProjectionHash(state);
   for (let step = 1; step <= options.maxSteps; step++) {
@@ -523,7 +548,15 @@ async function runBrowserSemantic(options, { request, evaluate, now = () => perf
       : null;
     const preWriteState = action.kind === "click" ? interactiveCandidateState(actionCandidate?.state) : undefined;
     const stateTransition = preWriteState
-      ? { ref: actionCandidate.ref, role: actionCandidate.role, name: actionCandidate.name, type: actionCandidate.type, state: preWriteState }
+      ? {
+          fullUrl: observation.identity.fullUrl,
+          documentToken: observation.identity.documentToken,
+          ref: actionCandidate.ref,
+          role: actionCandidate.role,
+          name: actionCandidate.name,
+          type: actionCandidate.type,
+          state: preWriteState,
+        }
       : null;
     const traceAction = { step, kind: action.kind, appliedThreshold: choice.appliedThreshold, logicalProbability: choice.decision.probability, ...(action.logicalIdentity ? { logicalIdentity: action.logicalIdentity } : {}), ...(action.ref ? { ref: action.ref } : {}), ...(action.concreteRef ? { concreteRef: action.concreteRef, concreteProbability: choice.decision.probability } : {}), ...(action.slot ? { slot: action.slot } : {}), ...(action.direction ? { direction: action.direction } : {}), ...(action.durationMs ? { durationMs: action.durationMs } : {}) };
     try { confirmedActionResponse(await executeAction(request, observation, action, options.inputs, remaining(), designatedIdentity)); }
@@ -559,7 +592,7 @@ async function runBrowserSemantic(options, { request, evaluate, now = () => perf
       if (outcome.status !== "not_satisfied") {
         return { status: "stopped", stopReason: "uncertain", trace, verification: outcome, providerCalls };
       }
-      spentWrites.add(writeIdentity);
+      spendWrite(spentWrites, writeIdentity);
       continue;
     }
     const hash = semanticProjectionHash(state);
