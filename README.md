@@ -838,7 +838,7 @@ printf '%s' '{"quantity":"2"}' | SURF_SESSION=shopping surf do \
 
 ```json
 {
-  "name": "open-matching-product",
+  "name": "configure-matching-product",
   "semantic": { "version": 1, "deadlineMs": 60000, "maxProviderCalls": 32 },
   "steps": [
     { "id": "find-product", "tool": "semantic.step", "as": "product", "args": {
@@ -847,10 +847,31 @@ printf '%s' '{"quantity":"2"}' | SURF_SESSION=shopping surf do \
     } },
     { "id": "open-product", "tool": "semantic.step", "args": {
       "op": "open", "target": { "binding": "product" }
+    } },
+    { "id": "select-gift-wrap", "tool": "semantic.step", "args": {
+      "op": "ensureChecked", "target": { "query": "Gift wrap", "role": "checkbox" },
+      "checked": true
+    } },
+    { "id": "set-quantity", "tool": "semantic.step", "args": {
+      "op": "fill", "target": { "query": "Quantity", "role": "spinbutton" },
+      "input": "quantity"
+    } },
+    { "id": "add-to-cart", "tool": "semantic.step", "args": {
+      "op": "click", "target": { "query": "Add to cart", "role": "button" },
+      "expect": { "kind": "visible", "target": { "query": "Remove from cart", "role": "button" } }
+    } },
+    { "id": "verify-cart", "tool": "semantic.step", "args": {
+      "op": "assert", "mode": "semantic",
+      "claim": "The cart contains the selected product with gift wrap enabled",
+      "bindings": ["product"]
     } }
   ]
 }
 ```
+
+This example includes every supported operation and the required `claim` for a
+semantic `assert`. Use it as a valid starting shape, then remove steps the task
+does not need.
 
 `open` performs freshly validated same-origin HTTP(S) navigation; it never falls
 back to a click. Model-derived writes retain the `0.95` gate, dispatch at most
@@ -957,10 +978,20 @@ connection failure still prints stderr, leaves stdout empty and exits 1 with
 
 ## Optional Jev semantic commands
 
+Jev is most useful when the agent does not yet know a site's structure or happy
+path. Instead of repeatedly reading the page, comparing candidate elements, and
+selecting refs, the agent can give Surf a goal and let Jev resolve it into
+bounded actions. Once the path is known and stable, deterministic Surf commands
+are usually faster and more reliable for repeated execution.
+
+```text
+unfamiliar page -> Jev discovers controls -> agent confirms outcome
+                                              |
+                                              +-> stable path -> deterministic workflow
+```
+
 Jev reduces the browser work between an agent's intent and its final
-verification. Instead of repeatedly reading the page, comparing candidate
-elements, and selecting refs, the agent can give Surf a goal and let Jev resolve
-it into bounded actions:
+verification:
 
 ```text
 Without Jev                         With Jev

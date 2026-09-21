@@ -96,11 +96,12 @@ surf animate-audit --selector ".thing" --duration 2000 --fps 10
 
 ## Optional semantic decisions
 
-Use Jev when a browser goal would otherwise require repeated page reads,
-candidate comparison, and ref selection:
+Use Jev when the page or happy path is unfamiliar and the goal would otherwise
+require repeated page reads, candidate comparison, and ref selection. Once the
+path is known and stable, prefer deterministic Surf commands for repeated runs.
 
 ```text
-goal -> Jev selects -> Surf validates and acts -> agent confirms final state
+unfamiliar page -> Jev selects -> Surf validates + acts -> agent confirms -> stable workflow
 ```
 
 The agent owns the goal and final confirmation. Jev handles semantic selection;
@@ -134,6 +135,20 @@ The closed operations are `find`, same-origin direct `open`, `ensureChecked`,
 bounded overlapping coverage, not global ranking. Unknown write outcomes stop
 without replay; a later new run can still repeat an external effect. Input
 values never enter provider state, workflow variables, events, or checkpoints.
+
+Required argument shapes:
+
+```text
+find           target (+ optional search), usually save with "as"
+open           target
+ensureChecked  target + checked
+fill           target + input
+click          target + expect
+assert         mode + claim (semantic) or predicate (local)
+```
+
+The complete valid six-operation example in the README uses these shapes; start
+from it instead of inventing fields.
 
 Every click/fill requires `--allow-write`; repeat `--allow-ref` to narrow it.
 Broad writes use threshold `0.95`; exactly one allowed ref with one applicable
