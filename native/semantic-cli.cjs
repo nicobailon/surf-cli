@@ -111,6 +111,13 @@ function positiveInteger(value, flag) {
   return parsed;
 }
 
+function interactiveCandidateState(state) {
+  const projected = {};
+  if (state?.checked === true || state?.checked === false || state?.checked === "mixed") projected.checked = state.checked;
+  if (state?.selected === true || state?.selected === false) projected.selected = state.selected;
+  return Object.keys(projected).length ? projected : undefined;
+}
+
 function providerState(observation) {
   let origin;
   try { origin = new URL(observation.identity.fullUrl).origin; } catch { throw new Error("semantic observation has an invalid page URL"); }
@@ -120,10 +127,8 @@ function providerState(observation) {
     readyState: observation.page.readyState,
     modals: observation.page.modals,
     candidates: observation.candidates.map(({ ref, role, name, type, nearbyText, state }) => {
-      const interactiveState = {};
-      if (state?.checked === true || state?.checked === false || state?.checked === "mixed") interactiveState.checked = state.checked;
-      if (state?.selected === true || state?.selected === false) interactiveState.selected = state.selected;
-      return { id: ref, role, name, type, text: nearbyText, ...(Object.keys(interactiveState).length ? { state: interactiveState } : {}) };
+      const interactiveState = interactiveCandidateState(state);
+      return { id: ref, role, name, type, text: nearbyText, ...(interactiveState ? { state: interactiveState } : {}) };
     }),
     chunks: observation.chunks.map(({ id, text, refs = [] }) => ({ id, text, refs })),
   };
@@ -131,6 +136,16 @@ function providerState(observation) {
 
 function semanticProjectionHash(state) {
   return crypto.createHash("sha256").update(JSON.stringify(state)).digest("hex");
+}
+
+function observedCandidateStateTransition(observation, before) {
+  if (!before) return false;
+  const candidate = observation.candidates.find((item) =>
+    item.ref === before.ref && item.role === before.role && item.name === before.name && item.type === before.type);
+  const after = interactiveCandidateState(candidate?.state);
+  if (!after) return false;
+  return (before.state.checked !== undefined && after.checked !== undefined && before.state.checked !== after.checked) ||
+    (before.state.selected !== undefined && after.selected !== undefined && before.state.selected !== after.selected);
 }
 
 function canonicalSameOriginDestination(candidate, fullUrl) {
@@ -429,9 +444,10 @@ async function runBrowserSemantic(options, { request, evaluate, now = () => perf
     }
     return observation;
   };
-  const settleAfterWrite = async () => {
+  const settleAfterWrite = async (stateTransition) => {
     let settledObservation = await observe();
     let settledState = providerState(settledObservation);
+    if (observedCandidateStateTransition(settledObservation, stateTransition)) return { observation: settledObservation, state: settledState };
     for (const waitMs of POST_WRITE_SETTLE_WAITS_MS) {
       const timeoutMs = remaining();
       if (timeoutMs < 1) break;
@@ -439,6 +455,7 @@ async function runBrowserSemantic(options, { request, evaluate, now = () => perf
       if (remaining() < 1) break;
       settledObservation = await observe();
       settledState = providerState(settledObservation);
+      if (observedCandidateStateTransition(settledObservation, stateTransition)) break;
     }
     return { observation: settledObservation, state: settledState };
   };
@@ -491,6 +508,10 @@ async function runBrowserSemantic(options, { request, evaluate, now = () => perf
     const writeIdentity = action.kind === "click" || action.kind === "fill"
       ? logicalWriteIdentity(observation, action, actionCandidate)
       : null;
+    const preWriteState = action.kind === "click" ? interactiveCandidateState(actionCandidate?.state) : undefined;
+    const stateTransition = preWriteState
+      ? { ref: actionCandidate.ref, role: actionCandidate.role, name: actionCandidate.name, type: actionCandidate.type, state: preWriteState }
+      : null;
     const traceAction = { step, kind: action.kind, appliedThreshold: choice.appliedThreshold, logicalProbability: choice.decision.probability, ...(action.logicalIdentity ? { logicalIdentity: action.logicalIdentity } : {}), ...(action.ref ? { ref: action.ref } : {}), ...(action.concreteRef ? { concreteRef: action.concreteRef, concreteProbability: choice.decision.probability } : {}), ...(action.slot ? { slot: action.slot } : {}), ...(action.direction ? { direction: action.direction } : {}), ...(action.durationMs ? { durationMs: action.durationMs } : {}) };
     try { confirmedActionResponse(await executeAction(request, observation, action, options.inputs, remaining(), designatedIdentity)); }
     catch (error) {
@@ -506,7 +527,7 @@ async function runBrowserSemantic(options, { request, evaluate, now = () => perf
     trace.push({ ...traceAction, result: "executed" });
     try {
       if (writeIdentity) {
-        ({ observation, state } = await settleAfterWrite());
+        ({ observation, state } = await settleAfterWrite(stateTransition));
       } else {
         observation = await observe();
         state = providerState(observation);

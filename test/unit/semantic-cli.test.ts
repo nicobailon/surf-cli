@@ -465,10 +465,11 @@ describe("semantic CLI", () => {
     expect(call).toBe(2);
   });
 
-  it("settles past an early delta to delayed cart-like evidence before verifying once", async () => {
+  it("settles past an early delta and target disappearance to delayed cart evidence", async () => {
     const earlyDelta = {
       ...observation,
       page: { ...observation.page, title: "Adding item" },
+      candidates: observation.candidates.filter((candidate) => candidate.ref !== "e2"),
     };
     const hydrated = {
       ...observation,
@@ -539,9 +540,17 @@ describe("semantic CLI", () => {
   });
 
   it("settles delayed checked candidate state before verifying a confirmed write once", async () => {
-    const checked = {
+    const unchecked = {
       ...observation,
       candidates: observation.candidates.map((candidate) =>
+        candidate.ref === "e2"
+          ? { ...candidate, role: "radio", name: "M", type: "radio", state: { checked: false } }
+          : candidate,
+      ),
+    };
+    const checked = {
+      ...unchecked,
+      candidates: unchecked.candidates.map((candidate) =>
         candidate.ref === "e2" ? { ...candidate, state: { checked: true } } : candidate,
       ),
     };
@@ -562,7 +571,7 @@ describe("semantic CLI", () => {
       {
         request: async (tool: string) => {
           if (tool === "page.read") {
-            const current = reads++ < 2 ? observation : checked;
+            const current = reads++ < 2 ? unchecked : checked;
             return response({ semanticObservation: current });
           }
           if (tool === "click") writes++;
@@ -589,11 +598,92 @@ describe("semantic CLI", () => {
       expect.objectContaining({ id: "e2", state: { checked: true } }),
     );
     expect({ reads, writes, waits, verifications }).toEqual({
-      reads: 7,
+      reads: 3,
       writes: 1,
-      waits: 5,
+      waits: 1,
       verifications: 1,
     });
+  });
+
+  it("uses an observed radio transition to preserve budget for a second hydrated write", async () => {
+    const radio = {
+      ref: "size-m",
+      role: "radio",
+      name: "M",
+      type: "radio",
+      state: { checked: false },
+    };
+    let current: Record<string, any> = { ...observation, candidates: [...observation.candidates, radio] };
+    let nowMs = 0;
+    let cartWrite = false;
+    let actionIndex = 0;
+    let verifications = 0;
+    let waits = 0;
+    const writes: string[] = [];
+    const requestedActions = ["click:size-m", "click:e2"];
+    const result = await semantic.runBrowserSemantic(
+      {
+        command: "semantic.act",
+        goal: "select M and add the jacket",
+        allowWrite: true,
+        allowRefs: [],
+        inputs: {},
+        thresholds: { write: 0.85, verifyNegative: 0.8 },
+        maxSteps: 2,
+      },
+      {
+        request: async (tool: string, args: Record<string, any>) => {
+          if (tool === "page.read") {
+            return response({ semanticObservation: current });
+          }
+          if (tool === "click") {
+            writes.push(args.ref);
+            if (args.ref === "size-m") {
+              current = {
+                ...current,
+                candidates: current.candidates.map((candidate) =>
+                  candidate.ref === "size-m" ? { ...candidate, state: { checked: true } } : candidate,
+                ),
+              };
+            } else {
+              cartWrite = true;
+            }
+          }
+          if (tool === "wait") {
+            waits++;
+            nowMs += args.duration * 1_000;
+            if (cartWrite && nowMs >= 9_500) {
+              current = { ...current, chunks: [{ id: "cart", text: "Shopping Bag 1 Alpha jacket M", refs: ["e2"] }] };
+            }
+          }
+          return actionResponse("OK");
+        },
+        evaluate: async (_state: Record<string, any>, questions: Record<string, any>) => {
+          if (questions.action) {
+            const probability = actionIndex === 0 ? 0.9 : 0.97;
+            return provider({
+              action: choice(requestedActions[actionIndex++], Object.keys(questions.action.criteria), probability),
+            });
+          }
+          const verification = verifications++;
+          const verdict = verification === 0 ? "not_satisfied" : "satisfied";
+          const evidence = verification === 0 ? "c1" : "cart";
+          return provider({
+            verdict: choice(verdict, ["satisfied", "not_satisfied"], 0.9),
+            evidence: choice(evidence, Object.keys(questions.evidence.criteria)),
+          });
+        },
+        now: () => nowMs,
+      },
+    );
+
+    expect(result).toMatchObject({ status: "complete", stopReason: "complete", providerCalls: 4 });
+    expect(writes).toEqual(["size-m", "e2"]);
+    expect(waits).toBe(5);
+    expect(nowMs).toBe(9_500);
+    expect(verifications).toBe(2);
+    expect(result.trace).toHaveLength(2);
+    expect(result.verification).toMatchObject({ status: "satisfied", evidence: { id: "cart" } });
   });
 
   it("bounds no-change settling, verifies once, and never replays the write", async () => {
