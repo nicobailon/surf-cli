@@ -41,10 +41,6 @@ function samePinnedScope(left, right) {
   return left.browserEpoch === right.browserEpoch && left.tabId === right.tabId && left.frameId === right.frameId;
 }
 
-function omitted(observation) {
-  return Number(observation.omitted?.candidates || 0) + Number(observation.omitted?.chunks || 0) > 0;
-}
-
 function publicBinding(binding) {
   return { handle: binding.handle, role: binding.candidate.role || null, name: binding.candidate.name || null, type: binding.candidate.type || null };
 }
@@ -133,7 +129,7 @@ function createSemanticWorkflowRuntime(dependencies) {
     let truncated = false;
     for (let index = 0; index < maximum; index++) {
       if (index || scope.geometry.atTop) observation = await observe(context);
-      truncated ||= omitted(observation);
+      truncated ||= Number(observation.omitted?.candidates || 0) + Number(observation.omitted?.chunks || 0) > 0;
       const geometry = scope.geometry;
       intervals.push({ start: geometry.intervalStart, end: geometry.intervalEnd });
       const decision = await decide(context, observation, query);
@@ -168,11 +164,10 @@ function createSemanticWorkflowRuntime(dependencies) {
   }
   function localPredicate(context, predicate) {
     if (!predicate || typeof predicate !== "object") return predicate;
-    const kinds = { textExact: "textEquals" };
     let expected = predicate.equals ?? predicate.contains;
     if (predicate.input !== undefined) expected = context.inputs[predicate.input];
     return {
-      kind: kinds[predicate.kind] || predicate.kind,
+      kind: predicate.kind === "textExact" ? "textEquals" : predicate.kind,
       ...(expected !== undefined ? { expected: predicate.kind === "checkedEquals" ? Boolean(expected) : String(expected) } : {}),
     };
   }
@@ -225,12 +220,14 @@ function createSemanticWorkflowRuntime(dependencies) {
         : { ref: resolved.candidate.ref, semanticExpectedIdentity: expectedIdentity(resolved.observation, resolved.candidate) };
       const response = await browser(context, action === "fill" ? "form.fill" : "click", args);
       confirmedActionResponse(response);
-    } catch (error) {
-      await storeCall(context, "terminal", attempt.attemptId, "outcome_unknown").catch(() => {});
+    } catch {
+      try { await storeCall(context, "terminal", attempt.attemptId, "outcome_unknown"); }
+      catch { return failure("checkpoint_failure", { write: { state: "dispatch_unknown", replayAllowed: false } }); }
       return failure("outcome_unknown", { write: { state: "dispatch_unknown", replayAllowed: false } });
     }
     const verified = predicate ? await verifyExpectation(context, resolved, predicate) : false;
-    await storeCall(context, "terminal", attempt.attemptId, verified ? "verified" : "acknowledged_unverified").catch(() => {});
+    try { await storeCall(context, "terminal", attempt.attemptId, verified ? "verified" : "acknowledged_unverified"); }
+    catch { return failure("checkpoint_failure", { write: { state: verified ? "acknowledged_verified" : "acknowledged_unverified", replayAllowed: false } }); }
     return verified ? success("verified", { write: { state: "acknowledged_verified", replayAllowed: false } }) : failure("assertion_mismatch", { write: { state: "acknowledged_unverified", replayAllowed: false } });
   }
 
@@ -238,7 +235,7 @@ function createSemanticWorkflowRuntime(dependencies) {
     if (!context || !(context.bindings instanceof Map)) throw new TypeError("invalid semantic workflow context");
     if (++context.steps > WORKFLOW_POLICY.maxSteps) return failure("budget_exhaustion");
     if (remaining(context) < 1) return failure("budget_exhaustion");
-    if (!context.acquired && context.attemptStore?.acquire) { await context.attemptStore.acquire(); context.acquired = true; }
+    if (!context.acquired && context.attemptStore) { await context.attemptStore.acquire(); context.acquired = true; }
     try {
       if (step.op === "find") {
         const resolved = await resolve(context, step.target, false, step.search);
@@ -303,15 +300,13 @@ function createSemanticWorkflowRuntime(dependencies) {
   async function closeContext(context, terminal = {}) {
     if (!context?.acquired || !context.attemptStore) return;
     try {
-      if (context.attemptStore.checkpoint) {
-        await context.attemptStore.checkpoint({
-          completedSteps: context.completedSteps,
-          reason: terminal.reason || null,
-          budgets: { remainingMs: remaining(context) },
-        });
-      }
+      await context.attemptStore.checkpoint({
+        completedSteps: context.completedSteps,
+        reason: terminal.reason || null,
+        budgets: { remainingMs: remaining(context) },
+      });
     } finally {
-      if (context.attemptStore.release) await context.attemptStore.release({
+      await context.attemptStore.release({
         state: terminal.state || (terminal.reason ? "failed" : "completed"),
         reason: terminal.reason,
       });

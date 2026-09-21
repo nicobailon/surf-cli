@@ -17,15 +17,13 @@ function createConcreteSemanticExecutor({ request, workflow, inputs = {}, env = 
     evaluate = createJevEvaluator({ apiKey: credential.apiKey, env });
   }
   const digest = crypto.createHash("sha256").update(JSON.stringify(workflow)).digest("hex");
+  const createAttemptStore = attemptStore ? undefined : ({ runId, workflowDigest }) =>
+    createSemanticWorkflowStateStore({ root: getPrivateStateRoot(env), clock, runId, workflowDigest });
   const runtime = createSemanticWorkflowRuntime({
     request,
     evaluate,
     attemptStore,
-    ...(!attemptStore ? {
-      createAttemptStore: ({ runId, workflowDigest }) => createSemanticWorkflowStateStore({
-        root: getPrivateStateRoot(env), clock, runId, workflowDigest,
-      }),
-    } : {}),
+    createAttemptStore,
     now: clock,
   });
   const context = runtime.createContext({

@@ -243,6 +243,25 @@ describe("bounded semantic workflow runtime", () => {
     expect(attemptStore.terminal).toHaveBeenCalledWith("attempt", "outcome_unknown");
   });
 
+  it("fails closed when an unknown write outcome cannot be persisted", async () => {
+    const attemptStore = store();
+    attemptStore.terminal.mockRejectedValue(new Error("state unavailable"));
+    const runtime = createSemanticWorkflowRuntime({
+      request: boundary({
+        action: () => {
+          throw new Error("lost reply");
+        },
+      }),
+      evaluate: provider(),
+      attemptStore,
+    });
+    const result = await runtime.executeStep(
+      { id: "add", op: "click", target: { query: "Add" }, expect: { kind: "visible" } },
+      runtime.createContext(),
+    );
+    expect(result).toMatchObject({ kind: "failure", reason: "checkpoint_failure" });
+  });
+
   it("requires click expectations and returns only discriminated outcomes", async () => {
     const runtime = createSemanticWorkflowRuntime({
       request: boundary(),
