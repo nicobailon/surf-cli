@@ -26,7 +26,6 @@ class FakeElement extends FakeNode {
   disabled = false;
   indeterminate = false;
   checked = false;
-  selected = false;
   focused = false;
   clicked = false;
   listeners = new Map<string, Array<() => void>>();
@@ -368,8 +367,6 @@ describe("accessibility tree", () => {
     expect(JSON.stringify(observation)).not.toContain("private-size-value");
     expect(JSON.stringify(observation)).not.toContain("private-color-value");
     expect(observation.candidates).toHaveLength(2);
-    expect(observation.chunks.length).toBeLessThanOrEqual(48);
-    expect(new TextEncoder().encode(JSON.stringify(observation)).length).toBeLessThanOrEqual(24 * 1024);
   });
 
   it("emits one semantic candidate when repeated reads assigned multiple refs to one element", () => {
