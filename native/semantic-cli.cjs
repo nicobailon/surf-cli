@@ -12,6 +12,8 @@ const {
 
 const FIELD_ROLES = new Set(["textbox", "searchbox", "combobox", "spinbutton"]);
 const CLICK_ROLES = new Set(["button", "link", "checkbox", "radio"]);
+const POST_WRITE_SETTLE_OBSERVATIONS = 4;
+const POST_WRITE_SETTLE_WAIT_MS = 500;
 
 const SEMANTIC_HELP = `Usage:
   surf semantic.find <goal> [--session <name> | --tab-id <id>] [--json]
@@ -92,6 +94,10 @@ function providerState(observation) {
     candidates: observation.candidates.map(({ ref, role, name, type, nearbyText }) => ({ id: ref, role, name, type, text: nearbyText })),
     chunks: observation.chunks.map(({ id, text, refs = [] }) => ({ id, text, refs })),
   };
+}
+
+function semanticProjectionHash(state) {
+  return crypto.createHash("sha256").update(JSON.stringify(state)).digest("hex");
 }
 
 function canonicalSameOriginDestination(candidate, fullUrl) {
@@ -390,6 +396,18 @@ async function runBrowserSemantic(options, { request, evaluate, now = () => perf
     }
     return observation;
   };
+  const settleAfterWrite = async (preWriteHash) => {
+    let settledObservation;
+    let settledState;
+    for (let attempt = 0; attempt < POST_WRITE_SETTLE_OBSERVATIONS; attempt++) {
+      settledObservation = await observe();
+      settledState = providerState(settledObservation);
+      if (semanticProjectionHash(settledState) !== preWriteHash) break;
+      if (attempt + 1 >= POST_WRITE_SETTLE_OBSERVATIONS || remaining() < 1) break;
+      await request("wait", { duration: POST_WRITE_SETTLE_WAIT_MS / 1_000 }, remaining(), designatedIdentity);
+    }
+    return { observation: settledObservation, state: settledState };
+  };
   let observation = await observe();
   let state = providerState(observation);
   if (options.command === "semantic.find") {
@@ -428,7 +446,7 @@ async function runBrowserSemantic(options, { request, evaluate, now = () => perf
   let staleRefreshes = 0;
   const spentWrites = new Set();
   let identical = 0;
-  let previousHash = crypto.createHash("sha256").update(JSON.stringify(state)).digest("hex");
+  let previousHash = semanticProjectionHash(state);
   for (let step = 1; step <= options.maxSteps; step++) {
     if (remaining() < 1) return { status: "stopped", stopReason: "time_budget", trace, providerCalls };
     const actions = buildActions(observation, options.inputs, options.allowWrite, options.allowRefs, spentWrites);
@@ -453,8 +471,12 @@ async function runBrowserSemantic(options, { request, evaluate, now = () => perf
     }
     trace.push({ ...traceAction, result: "executed" });
     try {
-      observation = await observe();
-      state = providerState(observation);
+      if (writeIdentity) {
+        ({ observation, state } = await settleAfterWrite(semanticProjectionHash(state)));
+      } else {
+        observation = await observe();
+        state = providerState(observation);
+      }
     } catch {
       return { status: "stopped", stopReason: "outcome_unknown", trace, providerCalls };
     }
@@ -472,7 +494,7 @@ async function runBrowserSemantic(options, { request, evaluate, now = () => perf
       spentWrites.add(writeIdentity);
       continue;
     }
-    const hash = crypto.createHash("sha256").update(JSON.stringify(state)).digest("hex");
+    const hash = semanticProjectionHash(state);
     identical = hash === previousHash ? identical + 1 : 0;
     previousHash = hash;
     if (identical >= SEMANTIC_POLICY.limits.identicalObservationHashes) return { status: "stopped", stopReason: "no_progress", trace, providerCalls };

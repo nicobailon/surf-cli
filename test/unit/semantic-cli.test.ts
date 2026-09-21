@@ -379,7 +379,8 @@ describe("semantic CLI", () => {
       expect.objectContaining({ kind: "fill", appliedThreshold: 0.65, result: "executed" }),
     ]);
     expect(requests.filter((item) => item.tool === "form.fill")).toHaveLength(1);
-    expect(requests.filter((item) => item.tool === "page.read")).toHaveLength(2);
+    expect(requests.filter((item) => item.tool === "page.read")).toHaveLength(5);
+    expect(requests.filter((item) => item.tool === "wait")).toHaveLength(3);
     expect(JSON.stringify(result)).not.toContain("unique-secret");
     expect(
       requests.find((item) => item.tool === "form.fill")?.args.semanticExpectedIdentity,
@@ -395,6 +396,146 @@ describe("semantic CLI", () => {
       frameId: 0,
     });
     expect(call).toBe(2);
+  });
+
+  it("settles delayed cart-like evidence before verifying a confirmed write once", async () => {
+    const hydrated = {
+      ...observation,
+      chunks: [{ id: "cart", text: "My cart (1) Alpha jacket size M", refs: ["e2"] }],
+    };
+    let reads = 0;
+    let writes = 0;
+    let waits = 0;
+    let verifications = 0;
+    let verificationState: Record<string, any> | undefined;
+    const result = await semantic.runBrowserSemantic(
+      {
+        command: "semantic.act",
+        goal: "one Alpha jacket is in the cart",
+        allowWrite: true,
+        allowRefs: ["e2"],
+        inputs: {},
+        maxSteps: 1,
+      },
+      {
+        request: async (tool: string) => {
+          if (tool === "page.read") {
+            const current = reads++ < 2 ? observation : hydrated;
+            return response({ semanticObservation: current });
+          }
+          if (tool === "click") writes++;
+          if (tool === "wait") waits++;
+          return actionResponse("OK");
+        },
+        evaluate: async (state: Record<string, any>, questions: Record<string, any>) => {
+          if (questions.action) {
+            return provider({ action: choice("click:e2", Object.keys(questions.action.criteria)) });
+          }
+          verifications++;
+          verificationState = state;
+          return provider({
+            verdict: choice("satisfied", ["satisfied", "not_satisfied"]),
+            evidence: choice("cart", Object.keys(questions.evidence.criteria)),
+          });
+        },
+        now: () => 0,
+      },
+    );
+
+    expect(result).toMatchObject({ status: "complete", stopReason: "complete" });
+    expect(verificationState?.chunks).toEqual([
+      expect.objectContaining({ id: "cart", text: expect.stringContaining("My cart (1)") }),
+    ]);
+    expect({ reads, writes, waits, verifications }).toEqual({
+      reads: 3,
+      writes: 1,
+      waits: 1,
+      verifications: 1,
+    });
+  });
+
+  it("bounds no-change settling, verifies once, and never replays the write", async () => {
+    let reads = 0;
+    let writes = 0;
+    let waits = 0;
+    let verifications = 0;
+    const result = await semantic.runBrowserSemantic(
+      {
+        command: "semantic.act",
+        goal: "cart changed",
+        allowWrite: true,
+        allowRefs: ["e2"],
+        inputs: {},
+        maxSteps: 3,
+      },
+      {
+        request: async (tool: string) => {
+          if (tool === "page.read") {
+            reads++;
+            return response({ semanticObservation: observation });
+          }
+          if (tool === "click") writes++;
+          if (tool === "wait") waits++;
+          return actionResponse("OK");
+        },
+        evaluate: async (_state: unknown, questions: Record<string, any>) => {
+          if (questions.action) {
+            const labels = Object.keys(questions.action.criteria);
+            return provider({ action: choice(labels.includes("click:e2") ? "click:e2" : "stop", labels) });
+          }
+          verifications++;
+          return provider({
+            verdict: choice("satisfied", ["satisfied", "not_satisfied"], 0.5),
+            evidence: choice("c1", Object.keys(questions.evidence.criteria)),
+          });
+        },
+        now: () => 0,
+      },
+    );
+
+    expect(result).toMatchObject({ status: "stopped", stopReason: "uncertain" });
+    expect({ reads, writes, waits, verifications }).toEqual({
+      reads: 5,
+      writes: 1,
+      waits: 3,
+      verifications: 1,
+    });
+  });
+
+  it.each([
+    ["malformed read", () => actionResponse("not-json")],
+    [
+      "identity-mismatched read",
+      () =>
+        response({
+          semanticObservation: {
+            ...observation,
+            identity: { ...observation.identity, tabId: 99 },
+          },
+        }),
+    ],
+  ])("stops outcome_unknown on a post-write %s without verification or replay", async (_name, postWriteResponse) => {
+    let reads = 0;
+    let writes = 0;
+    let verifications = 0;
+    const result = await semantic.runBrowserSemantic(
+      { command: "semantic.act", goal: "saved", allowWrite: true, allowRefs: ["e2"], inputs: {}, maxSteps: 2 },
+      {
+        request: async (tool: string) => {
+          if (tool === "page.read") return reads++ ? postWriteResponse() : response({ semanticObservation: observation });
+          if (tool === "click") writes++;
+          return actionResponse("OK");
+        },
+        evaluate: async (_state: unknown, questions: Record<string, any>) => {
+          if (!questions.action) verifications++;
+          return provider({ action: choice("click:e2", Object.keys(questions.action.criteria)) });
+        },
+        now: () => 0,
+      },
+    );
+
+    expect(result).toMatchObject({ status: "stopped", stopReason: "outcome_unknown" });
+    expect({ reads, writes, verifications }).toEqual({ reads: 2, writes: 1, verifications: 0 });
   });
 
   it("never reoffers or replays a write when verification is not satisfied", async () => {
@@ -466,7 +607,8 @@ describe("semantic CLI", () => {
           if (tool === "page.read") {
             return response({ semanticObservation: loginObservation });
           }
-          mutations.push(tool === "form.fill" ? `fill:${args.data[0].ref}` : `click:${args.ref}`);
+          if (tool === "form.fill") mutations.push(`fill:${args.data[0].ref}`);
+          if (tool === "click") mutations.push(`click:${args.ref}`);
           return actionResponse("OK");
         },
         evaluate: async (_state: unknown, questions: Record<string, any>) => {
@@ -518,7 +660,7 @@ describe("semantic CLI", () => {
           if (tool === "page.read") {
             return response({ semanticObservation: reads++ ? second : first });
           }
-          writes++;
+          if (tool === "click") writes++;
           return actionResponse("OK");
         },
         evaluate: async (_state: unknown, questions: Record<string, any>) => {
@@ -548,7 +690,7 @@ describe("semantic CLI", () => {
           if (tool === "page.read") {
             return response({ semanticObservation: observation });
           }
-          writes++;
+          if (tool === "click") writes++;
           return actionResponse("OK");
         },
         evaluate: async (_state: unknown, questions: Record<string, any>) => {
@@ -840,7 +982,7 @@ describe("semantic CLI", () => {
       status: "complete",
       trace: [expect.objectContaining({ ref: "e63", appliedThreshold: 0.65 })],
     });
-    expect(reads).toBe(2);
+    expect(reads).toBe(5);
   });
 
   it("fails explicitly before provider selection when mandatory authorized actions exceed the hard bound", async () => {
