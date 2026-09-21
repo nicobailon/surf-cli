@@ -206,7 +206,7 @@ describe("semantic CLI", () => {
         {
           ref: "image",
           role: "link",
-          name: "Sauce Labs Backpack",
+          name: "View Sauce Labs Backpack",
           type: "a",
           nearbyText: "Sauce Labs Backpack product card",
           representation: "image",

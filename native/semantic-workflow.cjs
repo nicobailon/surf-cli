@@ -1,6 +1,7 @@
 const crypto = require("node:crypto");
 const { SEMANTIC_POLICY, find, verify } = require("./semantic-core.cjs");
 const {
+  buildLogicalCandidates,
   canonicalSameOriginDestination,
   confirmedActionResponse,
   expectedIdentity,
@@ -132,9 +133,24 @@ function createSemanticWorkflowRuntime(dependencies) {
         canonicalSameOriginDestination(candidate, observation.identity.fullUrl) ===
           canonicalSameOriginDestination(binding.candidate, binding.fullUrl);
     }).map((candidate) => candidate.ref));
-    const candidates = state.candidates.filter((candidate) => eligibleRefs.has(candidate.id));
+    const candidates = buildLogicalCandidates(observation, state.candidates).flatMap((candidate) => {
+      const concreteCandidates = candidate.concreteCandidates.filter((item) => eligibleRefs.has(item.id));
+      return concreteCandidates.length ? [{ ...candidate, concreteCandidates }] : [];
+    });
     if (!candidates.length) return null;
-    return find({ state: { ...state, candidates }, goal: query, candidates, evaluate: (s, q, o) => evaluator(context, s, q, o) });
+    const result = await find({
+      state: {
+        ...state,
+        candidates: candidates.map(({ id, role, name, type, text }) => ({ id, role, name, type, text })),
+      },
+      goal: query,
+      candidates,
+      evaluate: (s, q, o) => evaluator(context, s, q, o),
+    });
+    return {
+      ...result,
+      candidate: result.candidate?.concreteCandidates[0] || null,
+    };
   }
   async function scrollGeometry(context, action, scopeToken, identity) {
     const value = parseBoundary(await browser(context, "semantic.scrollScope", {
@@ -205,7 +221,7 @@ function createSemanticWorkflowRuntime(dependencies) {
   }
   function localPredicate(context, predicate) {
     if (!predicate || typeof predicate !== "object") return predicate;
-    let expected = predicate.equals ?? predicate.contains;
+    let expected = predicate.expected ?? predicate.equals ?? predicate.contains;
     if (predicate.input !== undefined) expected = context.inputs[predicate.input];
     return {
       kind: predicate.kind === "textExact" ? "textEquals" : predicate.kind,

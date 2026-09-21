@@ -141,7 +141,6 @@ function buildLogicalCandidates(observation, candidates = providerState(observat
     const semanticIdentity = [
       normalizedSemanticPart(candidate.role),
       normalizedSemanticPart(candidate.type),
-      normalizedName,
       normalizedContext,
     ].join("\u001f");
     const groupingIdentity = `${destination}\u001e${semanticIdentity}`;

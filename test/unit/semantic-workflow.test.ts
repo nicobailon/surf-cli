@@ -112,6 +112,7 @@ function boundary(
       type: string;
       nearbyText: string;
       href?: string;
+      representation?: string;
     }>;
     compare?: boolean | ((args: Record<string, any>) => unknown);
     action?: () => unknown;
@@ -225,6 +226,45 @@ describe("bounded semantic workflow runtime", () => {
     expect(
       request.mock.calls.filter(([tool]) => tool === "semantic.scrollScope")[2][1],
     ).toMatchObject({ action: "advance", maxFraction: 0.75 });
+  });
+
+  it("groups image and title links to one destination before confidence gating", async () => {
+    const baseProvider = provider();
+    const evaluate = vi.fn(async (state: Record<string, any>, questions: Record<string, any>) => {
+      expect(state.candidates).toHaveLength(1);
+      expect(Object.keys(questions.target.criteria)).toHaveLength(2);
+      return baseProvider(state, questions);
+    });
+    const request = boundary({
+      candidateIdentity: {
+        role: "link",
+        name: "View Bottle",
+        type: "a",
+        href: "/bottle",
+        nearbyText: "Bottle product card",
+        representation: "image",
+      },
+      additionalCandidates: () => [
+        {
+          ref: "e2",
+          role: "link",
+          name: "Bottle",
+          type: "a",
+          href: "/bottle",
+          nearbyText: "Bottle product card",
+          representation: "text",
+        },
+      ],
+    });
+    const runtime = createSemanticWorkflowRuntime({ request, evaluate });
+    const result = await runtime.executeStep(
+      { id: "find", op: "find", target: { query: "Bottle", role: "link" } },
+      runtime.createContext(),
+    );
+    expect(result).toMatchObject({
+      kind: "success",
+      binding: { role: "link", name: "Bottle", type: "a" },
+    });
   });
 
   it("stops incomplete scans at the observation budget", async () => {
@@ -400,7 +440,12 @@ describe("bounded semantic workflow runtime", () => {
       candidate: () => ref,
       candidateIdentity: { role: "spinbutton", name: "", type: "number" },
       compare: (args) =>
-        envelope({ success: true, matches: args.ref === "e9", reason: "compared", identity: {} }),
+        envelope({
+          success: true,
+          matches: args.ref === "e9" && args.predicate.expected === "replacement-secret-value",
+          reason: "compared",
+          identity: {},
+        }),
       action: () => {
         ref = "e9";
         return envelope({ success: true });
