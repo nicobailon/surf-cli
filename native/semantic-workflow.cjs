@@ -50,7 +50,7 @@ function publicBinding(binding) {
 }
 
 function createSemanticWorkflowRuntime(dependencies) {
-  const { request, evaluate, attemptStore = null, now = () => Date.now(), sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms)) } = dependencies;
+  const { request, evaluate, attemptStore = null, createAttemptStore, now = () => Date.now(), sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms)) } = dependencies;
   if (typeof request !== "function" || typeof evaluate !== "function") throw new TypeError("semantic workflow requires request and evaluate boundaries");
 
   function createContext(options = {}) {
@@ -63,10 +63,13 @@ function createSemanticWorkflowRuntime(dependencies) {
     for (const value of Object.values(inputs)) {
       if (Buffer.byteLength(String(value), "utf8") > SEMANTIC_POLICY.limits.inputValueBytes) throw new Error("semantic input value exceeds its byte limit");
     }
+    const runId = options.runId || crypto.randomUUID();
+    const workflowDigest = options.workflowDigest || "unknown";
     return {
-      runId: options.runId || crypto.randomUUID(), workflowDigest: options.workflowDigest || "unknown",
+      runId, workflowDigest,
       deadline: now() + deadlineMs, maxProviderCalls, bindings: new Map(), inputs,
-      pinned: null, acquired: false, steps: 0,
+      pinned: null, acquired: false, steps: 0, completedSteps: [],
+      attemptStore: attemptStore || createAttemptStore?.({ runId, workflowDigest }),
       usage: { providerCalls: 0, inputTokens: 0, outputTokens: 0, partial: false, browserCommands: 0, semanticDecisions: 0, observations: 0 },
     };
   }
@@ -207,14 +210,14 @@ function createSemanticWorkflowRuntime(dependencies) {
     }
     return verifyPredicate(context, resolved.observation, resolved.candidate, expectation);
   }
-  async function storeCall(name, ...args) {
-    if (!attemptStore?.[name]) throw new Error(`attempt store does not implement ${name}`);
-    return attemptStore[name](...args);
+  async function storeCall(context, name, ...args) {
+    if (!context.attemptStore?.[name]) throw new Error(`attempt store does not implement ${name}`);
+    return context.attemptStore[name](...args);
   }
   async function mutate(context, step, resolved, action, predicate, value) {
-    const record = { runId: context.runId, stepId: step.id, operation: step.op, target: { role: resolved.candidate.role, name: resolved.candidate.name }, remainingMs: remaining(context) };
+    const record = { stepId: step.id, operation: step.op, target: { role: resolved.candidate.role, name: resolved.candidate.name }, budgets: { remainingMs: remaining(context) } };
     let attempt;
-    try { attempt = await storeCall("reserve", record); await storeCall("markDispatchIntent", attempt); }
+    try { attempt = await storeCall(context, "reserve", record); await storeCall(context, "dispatchIntent", attempt.attemptId); }
     catch { return failure("checkpoint_failure", { write: { state: "not_dispatched", replayAllowed: false } }); }
     try {
       const args = action === "fill"
@@ -223,25 +226,25 @@ function createSemanticWorkflowRuntime(dependencies) {
       const response = await browser(context, action === "fill" ? "form.fill" : "click", args);
       confirmedActionResponse(response);
     } catch (error) {
-      await storeCall("markTerminal", attempt, { state: "outcome_unknown" }).catch(() => {});
+      await storeCall(context, "terminal", attempt.attemptId, "outcome_unknown").catch(() => {});
       return failure("outcome_unknown", { write: { state: "dispatch_unknown", replayAllowed: false } });
     }
     const verified = predicate ? await verifyExpectation(context, resolved, predicate) : false;
-    await storeCall("markTerminal", attempt, { state: verified ? "acknowledged_verified" : "acknowledged_unverified" }).catch(() => {});
+    await storeCall(context, "terminal", attempt.attemptId, verified ? "verified" : "acknowledged_unverified").catch(() => {});
     return verified ? success("verified", { write: { state: "acknowledged_verified", replayAllowed: false } }) : failure("assertion_mismatch", { write: { state: "acknowledged_unverified", replayAllowed: false } });
   }
 
-  async function executeStep(step, context) {
+  async function executeStepInner(step, context) {
     if (!context || !(context.bindings instanceof Map)) throw new TypeError("invalid semantic workflow context");
     if (++context.steps > WORKFLOW_POLICY.maxSteps) return failure("budget_exhaustion");
     if (remaining(context) < 1) return failure("budget_exhaustion");
-    if (!context.acquired && attemptStore?.acquire) { await attemptStore.acquire({ runId: context.runId, workflowDigest: context.workflowDigest }); context.acquired = true; }
+    if (!context.acquired && context.attemptStore?.acquire) { await context.attemptStore.acquire(); context.acquired = true; }
     try {
       if (step.op === "find") {
         const resolved = await resolve(context, step.target, false, step.search);
         if (resolved.error) return resolved.error;
         const handle = step.as || step.id;
-        const binding = { handle, query: resolved.query, candidate: resolved.candidate, fullUrl: resolved.observation.identity.fullUrl, origin: new URL(resolved.observation.identity.fullUrl).origin };
+        const binding = { handle, query: resolved.query, candidate: resolved.candidate, fullUrl: resolved.observation.identity.fullUrl };
         context.bindings.set(handle, binding);
         return success("completed", { binding: publicBinding(binding), coverage: resolved.coverage, probability: resolved.decision.decision.probability });
       }
@@ -292,21 +295,23 @@ function createSemanticWorkflowRuntime(dependencies) {
       return failure(error.code === "budget_exhausted" ? "budget_exhaustion" : (error.code || "provider_error"));
     }
   }
+  async function executeStep(step, context) {
+    const result = await executeStepInner(step, context);
+    if (result.kind === "success") context.completedSteps.push(step.id);
+    return result;
+  }
   async function closeContext(context, terminal = {}) {
-    if (!context?.acquired || !attemptStore) return;
+    if (!context?.acquired || !context.attemptStore) return;
     try {
-      if (attemptStore.checkpoint) {
-        await attemptStore.checkpoint({
-          runId: context.runId,
-          workflowDigest: context.workflowDigest,
-          completedSteps: context.steps,
+      if (context.attemptStore.checkpoint) {
+        await context.attemptStore.checkpoint({
+          completedSteps: context.completedSteps,
           reason: terminal.reason || null,
-          remainingMs: remaining(context),
+          budgets: { remainingMs: remaining(context) },
         });
       }
     } finally {
-      if (attemptStore.release) await attemptStore.release({
-        runId: context.runId,
+      if (context.attemptStore.release) await context.attemptStore.release({
         state: terminal.state || (terminal.reason ? "failed" : "completed"),
         reason: terminal.reason,
       });

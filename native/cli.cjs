@@ -2632,16 +2632,17 @@ if (args[0] === "do") {
   let privateInputs = {};
   if (inputsStdin) {
     try {
+      const { SEMANTIC_POLICY } = require("./semantic-core.cjs");
       const input = fs.readFileSync(0, "utf8");
       if (Buffer.byteLength(input, "utf8") > 262144) throw new Error("input JSON exceeds 256 KiB");
       privateInputs = JSON.parse(input);
       if (!privateInputs || typeof privateInputs !== "object" || Array.isArray(privateInputs)) throw new Error("input JSON must be an object");
       const entries = Object.entries(privateInputs);
-      if (entries.length > 16) throw new Error("input JSON supports at most 16 slots");
+      if (entries.length > SEMANTIC_POLICY.limits.inputSlots) throw new Error(`input JSON supports at most ${SEMANTIC_POLICY.limits.inputSlots} slots`);
       for (const [name, value] of entries) {
         if (!/^[a-zA-Z0-9][a-zA-Z0-9._-]{0,63}$/.test(name)) throw new Error("input JSON contains an invalid slot name");
         if (!["string", "number", "boolean"].includes(typeof value)) throw new Error(`input slot '${name}' must be a string, number, or boolean`);
-        if (Buffer.byteLength(String(value), "utf8") > 16384) throw new Error(`input slot '${name}' exceeds 16 KiB`);
+        if (Buffer.byteLength(String(value), "utf8") > SEMANTIC_POLICY.limits.inputValueBytes) throw new Error(`input slot '${name}' exceeds ${SEMANTIC_POLICY.limits.inputValueBytes / 1024} KiB`);
         if (Object.hasOwn(vars, name)) throw new Error(`input slot '${name}' was supplied more than once`);
       }
     } catch (error) {

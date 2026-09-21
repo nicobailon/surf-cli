@@ -1,12 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 
-const { mkdtempSync, rmSync } = require("node:fs");
-const { tmpdir } = require("node:os");
-const { join } = require("node:path");
-const {
-  createAttemptStoreAdapter,
-  createConcreteSemanticExecutor,
-} = require("../../native/semantic-workflow-executor.cjs");
+const { createConcreteSemanticExecutor } = require("../../native/semantic-workflow-executor.cjs");
 const { executeDoSteps } = require("../../native/do-executor.cjs");
 
 const identity = {
@@ -21,29 +15,6 @@ const envelope = (value: unknown) => ({
 });
 
 describe("semantic workflow integration seam", () => {
-  it("adapts runtime write transitions to the private attempt store", async () => {
-    const root = mkdtempSync(join(tmpdir(), "surf-semantic-integration-"));
-    try {
-      const store = createAttemptStoreAdapter({
-        root,
-        clock: () => new Date("2026-01-01T00:00:00Z"),
-      });
-      await store.acquire({ runId: "run-1", workflowDigest: "digest" });
-      const attempt = await store.reserve({
-        stepId: "fill-quantity",
-        operation: "fill",
-        target: { role: "spinbutton", name: "Quantity" },
-        remainingMs: 1000,
-      });
-      await store.markDispatchIntent(attempt);
-      await store.markTerminal(attempt, { state: "acknowledged_verified" });
-      await store.release({ state: "completed" });
-      expect(attempt.state).toBe("reserved");
-    } finally {
-      rmSync(root, { recursive: true, force: true });
-    }
-  });
-
   it("runs one semantic find through the workflow adapter and injected browser/provider boundaries", async () => {
     const request = vi.fn(async (tool: string, _args: Record<string, unknown>) => {
       if (tool === "page.read") {

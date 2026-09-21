@@ -5,45 +5,6 @@ const { createJevEvaluator } = require("./semantic-provider.cjs");
 const { createSemanticWorkflowRuntime } = require("./semantic-workflow.cjs");
 const { createSemanticWorkflowStateStore } = require("./semantic-workflow-state.cjs");
 
-function createAttemptStoreAdapter({ root, clock }) {
-  let store;
-  return {
-    acquire({ runId, workflowDigest }) {
-      store = createSemanticWorkflowStateStore({ root, clock, runId, workflowDigest });
-      return store.acquire();
-    },
-    reserve(record) {
-      return store.reserve({
-        stepId: record.stepId,
-        operation: record.operation,
-        target: record.target,
-        budgets: { remainingMs: record.remainingMs },
-      });
-    },
-    markDispatchIntent(attempt) {
-      return store.dispatchIntent(attempt.attemptId);
-    },
-    markTerminal(attempt, terminal) {
-      const states = {
-        acknowledged_verified: "verified",
-        acknowledged_unverified: "acknowledged_unverified",
-        outcome_unknown: "outcome_unknown",
-      };
-      return store.terminal(attempt.attemptId, states[terminal.state] || terminal.state);
-    },
-    checkpoint(summary) {
-      return store.checkpoint({
-        completedSteps: [],
-        budgets: { remainingMs: summary.remainingMs },
-        reason: summary.reason,
-      });
-    },
-    release({ state = "completed", reason } = {}) {
-      return store.release({ state, reason });
-    },
-  };
-}
-
 function createConcreteSemanticExecutor({ request, workflow, inputs = {}, env = process.env, clock = () => Date.now(), evaluate, attemptStore }) {
   if (typeof request !== "function") throw new TypeError("semantic workflow browser request is required");
   if (!evaluate) {
@@ -56,14 +17,15 @@ function createConcreteSemanticExecutor({ request, workflow, inputs = {}, env = 
     evaluate = createJevEvaluator({ apiKey: credential.apiKey, env });
   }
   const digest = crypto.createHash("sha256").update(JSON.stringify(workflow)).digest("hex");
-  attemptStore ||= createAttemptStoreAdapter({
-    root: getPrivateStateRoot(env),
-    clock,
-  });
   const runtime = createSemanticWorkflowRuntime({
     request,
     evaluate,
     attemptStore,
+    ...(!attemptStore ? {
+      createAttemptStore: ({ runId, workflowDigest }) => createSemanticWorkflowStateStore({
+        root: getPrivateStateRoot(env), clock, runId, workflowDigest,
+      }),
+    } : {}),
     now: clock,
   });
   const context = runtime.createContext({
@@ -87,4 +49,4 @@ function createConcreteSemanticExecutor({ request, workflow, inputs = {}, env = 
   return execute;
 }
 
-module.exports = { createAttemptStoreAdapter, createConcreteSemanticExecutor };
+module.exports = { createConcreteSemanticExecutor };

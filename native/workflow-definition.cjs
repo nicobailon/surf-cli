@@ -331,7 +331,7 @@ function validateExpectation(value, path) {
   if (value.target !== undefined) validateTarget(value.target, `${path}.target`);
 }
 
-function validateSemanticStep(step, index, priorBindings, ids, outputs) {
+function validateSemanticStep(step, index, priorBindings, ids, policy) {
   const path = `steps[${index}]`;
   assertClosedObject(step, SEMANTIC_STEP_FIELDS, path);
   if (step.tool !== "semantic.step") throw new Error(`${path}.tool must be 'semantic.step'`);
@@ -340,9 +340,9 @@ function validateSemanticStep(step, index, priorBindings, ids, outputs) {
   ids.add(step.id);
   if (step.as !== undefined) {
     assertSemanticName(step.as, `${path}.as`);
-    if (outputs.has(step.as)) throw new Error(`${path}.as must be unique`);
+    if (priorBindings.has(step.as)) throw new Error(`${path}.as must be unique`);
   }
-  assertClosedObject(step.args, new Set(Object.keys(step.args || {})), `${path}.args`);
+  if (!step.args || typeof step.args !== "object" || Array.isArray(step.args)) throw new Error(`${path}.args must be an object`);
   const op = step.args.op;
   if (!SEMANTIC_OPS.has(op)) throw new Error(`${path}.args.op is invalid`);
   assertClosedObject(step.args, SEMANTIC_ARG_FIELDS[op], `${path}.args`);
@@ -352,8 +352,8 @@ function validateSemanticStep(step, index, priorBindings, ids, outputs) {
     if (step.args.search !== undefined) {
       assertClosedObject(step.args.search, new Set(["mode", "maxObservations"]), `${path}.args.search`);
       if (step.args.search.mode !== "scroll") throw new Error(`${path}.args.search.mode must be 'scroll'`);
-      if (step.args.search.maxObservations !== undefined && (!Number.isInteger(step.args.search.maxObservations) || step.args.search.maxObservations < 1 || step.args.search.maxObservations > 32)) {
-        throw new Error(`${path}.args.search.maxObservations must be an integer from 1 to 32`);
+      if (step.args.search.maxObservations !== undefined && (!Number.isInteger(step.args.search.maxObservations) || step.args.search.maxObservations < 1 || step.args.search.maxObservations > policy.maxSearchObservations)) {
+        throw new Error(`${path}.args.search.maxObservations must be an integer from 1 to ${policy.maxSearchObservations}`);
       }
     }
   } else if (op !== "assert") validateTarget(step.args.target, `${path}.args.target`);
@@ -382,25 +382,24 @@ function validateSemanticStep(step, index, priorBindings, ids, outputs) {
     if (!priorBindings.has(binding)) throw new Error(`${path} binding '${binding}' must refer to a prior step output`);
   }
   if (step.as !== undefined) {
-    outputs.add(step.as);
     priorBindings.add(step.as);
   }
 }
 
 function validateSemanticWorkflow(workflow) {
+  const { WORKFLOW_POLICY } = require("./semantic-workflow.cjs");
   assertClosedObject(workflow.semantic, new Set(["version", "deadlineMs", "maxProviderCalls"]), "semantic");
   if (workflow.semantic.version !== 1) throw new Error("semantic.version must equal 1");
-  if (workflow.steps.length > 32) throw new Error("semantic workflows support at most 32 steps");
-  if (workflow.semantic.deadlineMs !== undefined && (!Number.isInteger(workflow.semantic.deadlineMs) || workflow.semantic.deadlineMs < 1 || workflow.semantic.deadlineMs > 120000)) {
-    throw new Error("semantic.deadlineMs must be an integer from 1 to 120000");
+  if (workflow.steps.length > WORKFLOW_POLICY.maxSteps) throw new Error(`semantic workflows support at most ${WORKFLOW_POLICY.maxSteps} steps`);
+  if (workflow.semantic.deadlineMs !== undefined && (!Number.isInteger(workflow.semantic.deadlineMs) || workflow.semantic.deadlineMs < 1 || workflow.semantic.deadlineMs > WORKFLOW_POLICY.maxDeadlineMs)) {
+    throw new Error(`semantic.deadlineMs must be an integer from 1 to ${WORKFLOW_POLICY.maxDeadlineMs}`);
   }
-  if (workflow.semantic.maxProviderCalls !== undefined && (!Number.isInteger(workflow.semantic.maxProviderCalls) || workflow.semantic.maxProviderCalls < 1 || workflow.semantic.maxProviderCalls > 64)) {
-    throw new Error("semantic.maxProviderCalls must be an integer from 1 to 64");
+  if (workflow.semantic.maxProviderCalls !== undefined && (!Number.isInteger(workflow.semantic.maxProviderCalls) || workflow.semantic.maxProviderCalls < 1 || workflow.semantic.maxProviderCalls > WORKFLOW_POLICY.maxProviderCalls)) {
+    throw new Error(`semantic.maxProviderCalls must be an integer from 1 to ${WORKFLOW_POLICY.maxProviderCalls}`);
   }
   const priorBindings = new Set();
   const ids = new Set();
-  const outputs = new Set();
-  workflow.steps.forEach((step, index) => validateSemanticStep(step, index, priorBindings, ids, outputs));
+  workflow.steps.forEach((step, index) => validateSemanticStep(step, index, priorBindings, ids, WORKFLOW_POLICY));
 }
 
 function normalizeWorkflow(workflow) {
@@ -504,5 +503,4 @@ module.exports = {
   tokenize,
   validateWorkflowArgs,
   validateWorkflowFile,
-  validateSemanticWorkflow,
 };

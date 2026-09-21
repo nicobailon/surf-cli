@@ -62,9 +62,9 @@ function provider(selected = "e1", probability = 0.99) {
 function store() {
   return {
     acquire: vi.fn(),
-    reserve: vi.fn(async () => "attempt"),
-    markDispatchIntent: vi.fn(),
-    markTerminal: vi.fn(),
+    reserve: vi.fn(async () => ({ attemptId: "attempt" })),
+    dispatchIntent: vi.fn(),
+    terminal: vi.fn(),
   };
 }
 
@@ -238,9 +238,9 @@ describe("bounded semantic workflow runtime", () => {
       reason: "outcome_unknown",
       write: { state: "dispatch_unknown", replayAllowed: false },
     });
-    expect(attemptStore.markDispatchIntent).toHaveBeenCalledTimes(1);
+    expect(attemptStore.dispatchIntent).toHaveBeenCalledTimes(1);
     expect(request.mock.calls.filter(([tool]) => tool === "click")).toHaveLength(1);
-    expect(attemptStore.markTerminal).toHaveBeenCalledWith("attempt", { state: "outcome_unknown" });
+    expect(attemptStore.terminal).toHaveBeenCalledWith("attempt", "outcome_unknown");
   });
 
   it("requires click expectations and returns only discriminated outcomes", async () => {
