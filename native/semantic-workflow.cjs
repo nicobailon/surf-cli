@@ -45,6 +45,23 @@ function publicBinding(binding) {
   return { handle: binding.handle, role: binding.candidate.role || null, name: binding.candidate.name || null, type: binding.candidate.type || null };
 }
 
+function scanCoverage(intervals, scrollHeight, truncated, invalidated = false) {
+  const validHeight = Number.isFinite(scrollHeight) && scrollHeight >= 0;
+  const validIntervals = validHeight && intervals.every(({ start, end }) =>
+    Number.isFinite(start) && Number.isFinite(end) && start >= 0 && start <= end && end <= scrollHeight);
+  const merged = [];
+  if (validIntervals) {
+    for (const interval of [...intervals].sort((left, right) => left.start - right.start || left.end - right.end)) {
+      const previous = merged.at(-1);
+      if (previous && interval.start <= previous.end) previous.end = Math.max(previous.end, interval.end);
+      else merged.push({ ...interval });
+    }
+  }
+  const atBottom = validIntervals && intervals.some(({ end }) => end >= scrollHeight);
+  const spansScope = merged.length === 1 && merged[0].start === 0 && merged[0].end >= scrollHeight;
+  return { intervals, atBottom, complete: atBottom && spansScope && !truncated && !invalidated, truncated };
+}
+
 function createSemanticWorkflowRuntime(dependencies) {
   const { request, evaluate, attemptStore = null, createAttemptStore, now = () => Date.now(), sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms)) } = dependencies;
   if (typeof request !== "function" || typeof evaluate !== "function") throw new TypeError("semantic workflow requires request and evaluate boundaries");
@@ -64,7 +81,7 @@ function createSemanticWorkflowRuntime(dependencies) {
     return {
       runId, workflowDigest,
       deadline: now() + deadlineMs, maxProviderCalls, bindings: new Map(), inputs,
-      limits: { deadlineMs, maxProviderCalls, maxSearchObservations: WORKFLOW_POLICY.maxSearchObservations },
+      limits: { deadlineMs, maxProviderCalls },
       pinned: null, acquired: false, steps: 0, completedSteps: [],
       attemptStore: attemptStore || createAttemptStore?.({ runId, workflowDigest }),
       usage: { providerCalls: 0, inputTokens: 0, outputTokens: 0, partial: false, browserCommands: 0, semanticDecisions: 0, observations: 0 },
@@ -125,6 +142,7 @@ function createSemanticWorkflowRuntime(dependencies) {
       ...(action === "advance" ? { maxFraction: 0.75 } : {}),
     }), "scroll scope");
     if (value?.success !== true || !value.geometry || typeof value.scopeToken !== "string") throw Object.assign(new Error(value?.reason || "scroll scope unavailable"), { code: value?.reason || "unsupported_control" });
+    if (scopeToken && value.scopeToken !== scopeToken) throw Object.assign(new Error("scroll scope changed"), { code: "stale_scroll_scope" });
     return value;
   }
   async function resolve(context, target, write, search = {}) {
@@ -136,15 +154,23 @@ function createSemanticWorkflowRuntime(dependencies) {
     if (!Number.isInteger(maximum) || maximum < 1 || maximum > WORKFLOW_POLICY.maxSearchObservations) return { error: failure("validation_failure") };
     let observation = await observe(context);
     let scope = await scrollGeometry(context, "inspect", undefined, observation.identity);
+    const inspectedGeometry = scope.geometry;
     scope = await scrollGeometry(context, "top", scope.scopeToken, observation.identity);
+    const initialObservationStillVisible = inspectedGeometry.intervalStart === scope.geometry.intervalStart &&
+      inspectedGeometry.intervalEnd === scope.geometry.intervalEnd &&
+      inspectedGeometry.scrollHeight === scope.geometry.scrollHeight;
     const intervals = [];
+    const scopedScrollHeight = scope.geometry.scrollHeight;
     let noProgress = 0;
     let truncated = false;
+    let invalidated = false;
     for (let index = 0; index < maximum; index++) {
-      if (index || scope.geometry.atTop) observation = await observe(context);
+      if (index || !initialObservationStillVisible) observation = await observe(context);
       truncated ||= Number(observation.omitted?.candidates || 0) + Number(observation.omitted?.chunks || 0) > 0;
       const geometry = scope.geometry;
       intervals.push({ start: geometry.intervalStart, end: geometry.intervalEnd });
+      invalidated ||= geometry.scrollHeight !== scopedScrollHeight;
+      const coverage = scanCoverage(intervals, geometry.scrollHeight, truncated, invalidated);
       const decision = await decide(context, observation, query, target, binding);
       if (decision?.candidate &&
           (!target.role || decision.candidate.role === target.role) &&
@@ -158,16 +184,16 @@ function createSemanticWorkflowRuntime(dependencies) {
               return { error: failure("ambiguous_target") };
             }
           }
-          return { observation, candidate: concrete, query, decision, coverage: { intervals, atBottom: geometry.atBottom, complete: geometry.atBottom && !truncated, truncated } };
+          return { observation, candidate: concrete, query, decision, coverage };
         }
         return { error: failure("low_confidence", { probability: decision.decision.probability, appliedThreshold: SEMANTIC_POLICY.thresholds.write }) };
       }
-      if (geometry.atBottom) return { error: failure("target_not_found", { coverage: { intervals, atBottom: true, complete: !truncated, truncated } }) };
-      if (index + 1 === maximum) return { error: failure("incomplete_search", { coverage: { intervals, atBottom: false, complete: false, truncated } }) };
+      if (coverage.atBottom) return { error: failure(coverage.complete ? "target_not_found" : "incomplete_search", { coverage }) };
+      if (index + 1 === maximum) return { error: failure("incomplete_search", { coverage }) };
       const next = await scrollGeometry(context, "advance", scope.scopeToken, observation.identity);
       const progressed = next.geometry.intervalStart > geometry.intervalStart && next.geometry.intervalStart <= geometry.intervalEnd;
       noProgress = progressed ? 0 : noProgress + 1;
-      if (noProgress >= WORKFLOW_POLICY.noProgressObservations) return { error: failure("no_progress", { coverage: { intervals, atBottom: false, complete: false, truncated } }) };
+      if (noProgress >= WORKFLOW_POLICY.noProgressObservations) return { error: failure("no_progress", { coverage }) };
       scope = next;
     }
     return { error: failure("incomplete_search") };

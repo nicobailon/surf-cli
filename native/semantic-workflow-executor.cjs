@@ -2,7 +2,7 @@ const crypto = require("node:crypto");
 const { getPrivateStateRoot } = require("./private-state.cjs");
 const { resolveTypeSafeCredential } = require("./semantic-credentials.cjs");
 const { createJevEvaluator } = require("./semantic-provider.cjs");
-const { createSemanticWorkflowRuntime } = require("./semantic-workflow.cjs");
+const { createSemanticWorkflowRuntime, WORKFLOW_POLICY } = require("./semantic-workflow.cjs");
 const { createSemanticWorkflowStateStore } = require("./semantic-workflow-state.cjs");
 
 function createConcreteSemanticExecutor({ request, workflow, inputs = {}, env = process.env, clock = () => Date.now(), evaluate, attemptStore }) {
@@ -47,7 +47,11 @@ function createConcreteSemanticExecutor({ request, workflow, inputs = {}, env = 
         ...(result.write ? { write: result.write } : {}),
         ...(result.coverage ? { coverage: result.coverage } : {}),
         usage: { ...context.usage },
-        limits: context.limits,
+        limits: {
+          ...context.limits,
+          maxSearchObservations: step.args.search?.maxObservations ?? WORKFLOW_POLICY.defaultSearchObservations,
+          maxSearchObservationsCeiling: WORKFLOW_POLICY.maxSearchObservations,
+        },
       },
       ...(result.binding || result.coverage || result.probability !== undefined
         ? { publicResult: { binding: result.binding, coverage: result.coverage, probability: result.probability } }

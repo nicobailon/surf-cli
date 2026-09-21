@@ -71,9 +71,37 @@ function store() {
   };
 }
 
+type Geometry = {
+  scrollTop: number;
+  scrollHeight: number;
+  clientHeight: number;
+  intervalStart: number;
+  intervalEnd: number;
+  atTop: boolean;
+  atBottom: boolean;
+};
+
+function geometry(
+  intervalStart: number,
+  intervalEnd: number,
+  overrides: Partial<Geometry> = {},
+): Geometry {
+  return {
+    scrollTop: intervalStart,
+    scrollHeight: 1_000,
+    clientHeight: intervalEnd - intervalStart,
+    intervalStart,
+    intervalEnd,
+    atTop: intervalStart === 0,
+    atBottom: intervalEnd === 1_000,
+    ...overrides,
+  };
+}
+
 function boundary(
   options: {
     positions?: number[];
+    geometries?: Geometry[];
     candidate?: (top: number) => string;
     compare?: boolean | (() => unknown);
     action?: () => unknown;
@@ -108,7 +136,7 @@ function boundary(
       return envelope({
         success: true,
         scopeToken: "scope",
-        geometry: {
+        geometry: options.geometries?.[index] || {
           scrollTop: top,
           scrollHeight: 1900,
           clientHeight: 1000,
@@ -197,6 +225,54 @@ describe("bounded semantic workflow runtime", () => {
       coverage: { complete: false, atBottom: false },
     });
   });
+
+  it.each([
+    {
+      case: "top-clipped scope",
+      geometries: [geometry(500, 1_000, { scrollTop: 0, atTop: true })],
+      complete: false,
+    },
+    {
+      case: "bottom-clipped scope",
+      geometries: [geometry(0, 500, { atBottom: true })],
+      complete: false,
+    },
+    {
+      case: "contiguous full scope",
+      geometries: [geometry(0, 600), geometry(400, 1_000)],
+      complete: true,
+    },
+    {
+      case: "gapped full-height scope",
+      geometries: [geometry(0, 400), geometry(600, 1_000)],
+      complete: false,
+    },
+  ])(
+    "derives $case completeness from the observed interval union",
+    async ({ geometries, complete }) => {
+      const runtime = createSemanticWorkflowRuntime({
+        request: boundary({
+          positions: geometries.map((item) => item.scrollTop),
+          geometries,
+        }),
+        evaluate: provider("none"),
+      });
+      const result = await runtime.executeStep(
+        {
+          id: "find",
+          op: "find",
+          target: { query: "Missing" },
+          search: { maxObservations: geometries.length },
+        },
+        runtime.createContext(),
+      );
+      expect(result).toMatchObject({
+        kind: "failure",
+        reason: complete ? "target_not_found" : "incomplete_search",
+        coverage: { complete },
+      });
+    },
+  );
 
   it("gates model-derived writes on chosen probability rather than confidence", async () => {
     const request = boundary();

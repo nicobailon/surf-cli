@@ -626,6 +626,19 @@ describe("accessibility tree", () => {
       intervalEnd: 1_500,
       atBottom: false,
     });
+
+    overflow.clientHeight = 1_000;
+    overflow.rect = { top: -500, bottom: 500, left: 0, right: 800 };
+    overflow.scrollTop = 0;
+    const topClipped = send("inspect");
+    expect(topClipped.geometry).toMatchObject({
+      scrollTop: 0,
+      clientHeight: 500,
+      intervalStart: 500,
+      intervalEnd: 1_000,
+      atTop: false,
+      atBottom: false,
+    });
   });
 
   it("rejects stale scroll documents and disappeared pinned containers", () => {

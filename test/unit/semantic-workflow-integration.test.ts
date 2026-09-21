@@ -15,7 +15,10 @@ const envelope = (value: unknown) => ({
 });
 
 describe("semantic workflow integration seam", () => {
-  it("runs one semantic find through the workflow adapter and injected browser/provider boundaries", async () => {
+  it.each([
+    { label: "default", search: undefined, observationLimit: 12 },
+    { label: "declared override", search: { maxObservations: 2 }, observationLimit: 2 },
+  ])("reports the $label per-step observation limit", async ({ search, observationLimit }) => {
     const request = vi.fn(async (tool: string, _args: Record<string, unknown>) => {
       if (tool === "page.read") {
         return envelope({
@@ -69,7 +72,11 @@ describe("semantic workflow integration seam", () => {
           id: "find",
           tool: "semantic.step",
           as: "product",
-          args: { op: "find", target: { query: "Blue bottle", role: "link" } },
+          args: {
+            op: "find",
+            target: { query: "Blue bottle", role: "link" },
+            ...(search ? { search } : {}),
+          },
         },
       ],
     };
@@ -91,7 +98,11 @@ describe("semantic workflow integration seam", () => {
     expect(result.semantic).toMatchObject({
       stepId: "find",
       usage: { providerCalls: 1, inputTokens: 2, outputTokens: 1 },
-      limits: { maxProviderCalls: 32, maxSearchObservations: 32 },
+      limits: {
+        maxProviderCalls: 32,
+        maxSearchObservations: observationLimit,
+        maxSearchObservationsCeiling: 32,
+      },
     });
     expect(result.vars.product.binding).toMatchObject({
       handle: "product",
