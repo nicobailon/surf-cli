@@ -43,6 +43,7 @@ const TAB_TOOLS = new Set([
   "click", "left_click", "right_click", "double_click", "triple_click", "drag", "hover", "key", "submit",
   "type", "smart_type", "find_and_type", "form_input", "form.fill", "select", "upload", "upload_image",
   "scroll", "scroll.top", "scroll.bottom", "scroll.to", "scroll.info", "scroll_to_position",
+  "semantic.localCompare", "semantic.scrollScope",
   "search", "locate.role", "locate.text", "locate.label", "element.styles",
   "js", "javascript_tool", "eval",
   "wait.element", "wait.url", "wait.network", "wait.dom", "wait.load", "wait.ready", "page.readiness", "health",

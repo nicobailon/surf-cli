@@ -23,6 +23,14 @@ describe("tool scope classification", () => {
 
   it("keeps tab operations independent and provider browser flows exclusive", () => {
     expect(classifyTool("page.read")).toMatchObject({ scope: "tab", targetUse: "default-tab" });
+    expect(classifyTool("semantic.localCompare")).toMatchObject({
+      scope: "tab",
+      targetUse: "default-tab",
+    });
+    expect(classifyTool("semantic.scrollScope")).toMatchObject({
+      scope: "tab",
+      targetUse: "default-tab",
+    });
     expect(classifyTool("chatgpt")).toMatchObject({ scope: "provider", targetUse: "default-tab" });
     expect(classifyTool("oracle.result")).toMatchObject({ scope: "host", targetUse: "host" });
   });

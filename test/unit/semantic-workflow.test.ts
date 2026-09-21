@@ -16,7 +16,7 @@ const { createSemanticWorkflowRuntime, WORKFLOW_POLICY } =
 function envelope(value: unknown) {
   return { result: { content: [{ type: "text", text: JSON.stringify(value) }] } };
 }
-function observation(ref = "e1", top = 0) {
+function observation(ref = "e1", top = 0, candidateIdentity: Record<string, string> = {}) {
   return {
     semanticObservation: {
       identity: {
@@ -35,6 +35,7 @@ function observation(ref = "e1", top = 0) {
           type: ref === "e1" ? "button" : "a",
           nearbyText: "Blue bottle",
           ...(ref !== "e1" ? { href: "/bottle" } : {}),
+          ...candidateIdentity,
         },
       ],
       chunks: [{ id: `c${top}`, text: "Public product text", refs: [ref] }],
@@ -103,7 +104,8 @@ function boundary(
     positions?: number[];
     geometries?: Geometry[];
     candidate?: (top: number) => string;
-    compare?: boolean | (() => unknown);
+    candidateIdentity?: Record<string, string>;
+    compare?: boolean | ((args: Record<string, any>) => unknown);
     action?: () => unknown;
   } = {},
 ) {
@@ -111,13 +113,17 @@ function boundary(
   let index = 0;
   let currentUrl = "https://example.test/shop";
   const read = () => {
-    const value = observation(options.candidate?.(positions[index]) || "e1", positions[index]);
+    const value = observation(
+      options.candidate?.(positions[index]) || "e1",
+      positions[index],
+      options.candidateIdentity,
+    );
     value.semanticObservation.identity.fullUrl = currentUrl;
     return envelope(value);
   };
-  const compare = () =>
+  const compare = (args: Record<string, any>) =>
     typeof options.compare === "function"
-      ? options.compare()
+      ? options.compare(args)
       : envelope({
           success: true,
           matches: options.compare ?? true,
@@ -153,7 +159,7 @@ function boundary(
     }
     const handlers: Record<string, () => unknown> = {
       "page.read": read,
-      "semantic.localCompare": compare,
+      "semantic.localCompare": () => compare(args),
       click: action,
       "form.fill": action,
     };
@@ -354,6 +360,48 @@ describe("bounded semantic workflow runtime", () => {
       inputTokens: 3,
       outputTokens: 2,
     });
+  });
+
+  it("persists a write attempt when the matched control has no accessible name", async () => {
+    const attemptStore = store();
+    let comparisons = 0;
+    const request = boundary({
+      candidateIdentity: { role: "spinbutton", name: "", type: "number" },
+      compare: () =>
+        envelope({ success: true, matches: comparisons++ > 0, reason: "compared", identity: {} }),
+    });
+    const runtime = createSemanticWorkflowRuntime({ request, evaluate: provider(), attemptStore });
+    const result = await runtime.executeStep(
+      { id: "fill", op: "fill", target: { query: "Quantity" }, input: "quantity" },
+      runtime.createContext({ inputs: { quantity: "2" } }),
+    );
+    expect(result).toMatchObject({ kind: "success", status: "verified" });
+    expect(attemptStore.reserve).toHaveBeenCalledWith(
+      expect.objectContaining({ target: { role: "spinbutton" } }),
+    );
+  });
+
+  it("re-resolves a locally verified control after a write replaces its DOM node", async () => {
+    const attemptStore = store();
+    let ref = "e1";
+    const request = boundary({
+      candidate: () => ref,
+      candidateIdentity: { role: "spinbutton", name: "", type: "number" },
+      compare: (args) =>
+        envelope({ success: true, matches: args.ref === "e9", reason: "compared", identity: {} }),
+      action: () => {
+        ref = "e9";
+        return envelope({ success: true });
+      },
+    });
+    const runtime = createSemanticWorkflowRuntime({ request, evaluate: provider(), attemptStore });
+    const result = await runtime.executeStep(
+      { id: "fill", op: "fill", target: { query: "Quantity" }, input: "quantity" },
+      runtime.createContext({ inputs: { quantity: "2" } }),
+    );
+    expect(result).toMatchObject({ kind: "success", status: "verified" });
+    expect(request.mock.calls.filter(([tool]) => tool === "form.fill")).toHaveLength(1);
+    expect(request.mock.calls.filter(([tool]) => tool === "page.read")).toHaveLength(2);
   });
 
   it("persists intent and dispatches only once when the reply is lost", async () => {

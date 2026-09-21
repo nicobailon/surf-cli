@@ -215,11 +215,19 @@ function createSemanticWorkflowRuntime(dependencies) {
   async function verifyPredicate(context, observation, candidate, predicate) {
     predicate = localPredicate(context, predicate);
     const until = Math.min(context.deadline, now() + WORKFLOW_POLICY.verificationMs);
+    const fullUrl = observation.identity.fullUrl;
     do {
       const result = await compare(context, observation, candidate, predicate);
       if (result?.success === true && result.matches === true) return true;
       if (now() >= until) return false;
       await sleep(Math.min(100, until - now()));
+      const refreshed = await observe(context);
+      if (refreshed.identity.fullUrl !== fullUrl) return false;
+      const matching = refreshed.candidates.filter((item) =>
+        item.role === candidate.role && item.type === candidate.type && item.name === candidate.name);
+      if (matching.length !== 1) return false;
+      observation = refreshed;
+      candidate = matching[0];
     } while (remaining(context) > 0);
     return false;
   }
@@ -251,7 +259,15 @@ function createSemanticWorkflowRuntime(dependencies) {
     return context.attemptStore[name](...args);
   }
   async function mutate(context, step, resolved, action, predicate, value) {
-    const record = { stepId: step.id, operation: step.op, target: { role: resolved.candidate.role, name: resolved.candidate.name }, budgets: { remainingMs: remaining(context) } };
+    const record = {
+      stepId: step.id,
+      operation: step.op,
+      target: {
+        role: resolved.candidate.role,
+        ...(resolved.candidate.name ? { name: resolved.candidate.name } : {}),
+      },
+      budgets: { remainingMs: remaining(context) },
+    };
     let attempt;
     try { attempt = await storeCall(context, "reserve", record); await storeCall(context, "dispatchIntent", attempt.attemptId); }
     catch { return failure("checkpoint_failure", { write: { state: "not_dispatched", replayAllowed: false } }); }

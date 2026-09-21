@@ -35,6 +35,14 @@ function sendDoRequest(toolName, toolArgs, context = {}) {
   })();
 }
 
+function semanticRequestContext(context, timeoutMs, identity) {
+  return {
+    ...context,
+    timeoutMs,
+    ...(identity ? { tabId: identity.tabId, windowId: undefined, session: undefined } : {}),
+  };
+}
+
 function summarizeArgs(step) {
   return Object.entries(step.args || {})
     .map(([key, value]) => typeof value === "string" && value.length > 40 ? `${key}="${value.slice(0, 37)}..."` : `${key}=${JSON.stringify(value)}`)
@@ -101,6 +109,7 @@ module.exports = {
   extractStepOutput: runtime.extractStepOutput,
   getAutoWaitCommand: runtime.getAutoWaitCommand,
   resolveVar: runtime.resolveVar,
+  semanticRequestContext,
   sendDoRequest,
   shouldAutoWait: runtime.shouldAutoWait,
   substituteVars: runtime.substituteVars,

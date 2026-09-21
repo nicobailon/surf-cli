@@ -16,7 +16,7 @@ const {
   validateWorkflowArgs,
   validateWorkflowFile,
 } = require("./workflow-definition.cjs");
-const { executeDoSteps, sendDoRequest } = require("./do-executor.cjs");
+const { executeDoSteps, semanticRequestContext, sendDoRequest } = require("./do-executor.cjs");
 const { runExtraction, renderExtractionMarkdown } = require("./extract.cjs");
 const { applyOptionsPrelude, parseScriptOptions } = require("./script-options.cjs");
 const { openClientTransport } = require("./client-transport.cjs");
@@ -2718,7 +2718,8 @@ if (args[0] === "do") {
           return createConcreteSemanticExecutor({
             workflow,
             inputs: { ...vars, ...privateInputs },
-            request: (tool, toolArgs) => sendDoRequest(tool, toolArgs, context),
+            request: (tool, toolArgs, timeoutMs, identity) =>
+              sendDoRequest(tool, toolArgs, semanticRequestContext(context, timeoutMs, identity)),
           });
         },
       } : {}),

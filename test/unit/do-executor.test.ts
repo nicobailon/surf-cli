@@ -132,6 +132,22 @@ describe("AUTO_WAIT_MAP", () => {
 });
 
 describe("do executor semantic dispatch", () => {
+  it("pins semantic follow-up requests to the observed tab and remaining deadline", () => {
+    expect(
+      executor.semanticRequestContext(
+        { session: "checkout", windowId: 8, transport: "shared" },
+        1_234,
+        { tabId: 42 },
+      ),
+    ).toEqual({
+      session: undefined,
+      windowId: undefined,
+      tabId: 42,
+      timeoutMs: 1_234,
+      transport: "shared",
+    });
+  });
+
   it("lazily creates the semantic executor and never forwards semantic.step to executeTool", async () => {
     const executeTool = vi.fn();
     const semanticExecutor = vi.fn(async () => ({ status: "completed" }));
