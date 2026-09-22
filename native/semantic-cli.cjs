@@ -641,6 +641,7 @@ async function runBrowserSemantic(options, { request, evaluate, now = () => perf
       model: choice.model,
       usage: choice.usage,
     };
+    if (remaining() < 1) return { status: "stopped", stopReason: "time_budget", trace, providerCalls };
     const action = choice.action;
     const actionCandidate = observation.candidates.find((item) => item.ref === action.ref);
     const writeIdentity = action.kind === "click" || action.kind === "fill"

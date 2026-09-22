@@ -1246,6 +1246,41 @@ describe("semantic CLI", () => {
     expect({ actualEvaluateCalls, writes }).toEqual({ actualEvaluateCalls: 1, writes: 0 });
   });
 
+  it("does not execute a selected write after action selection exhausts wall time", async () => {
+    let nowMs = 0;
+    let writes = 0;
+    const result = await semantic.runBrowserSemantic(
+      {
+        command: "semantic.act",
+        goal: "delete the account",
+        allowWrite: true,
+        allowRefs: ["e2"],
+        inputs: {},
+        maxSteps: 1,
+      },
+      {
+        request: async (tool: string) => {
+          if (tool === "page.read") return response({ semanticObservation: observation });
+          if (tool === "click") writes++;
+          return actionResponse("OK");
+        },
+        evaluate: async (_state: unknown, questions: Record<string, any>) => {
+          nowMs = 30_000;
+          return actionProvider(questions, "click:e2");
+        },
+        now: () => nowMs,
+      },
+    );
+
+    expect(result).toEqual({
+      status: "stopped",
+      stopReason: "time_budget",
+      trace: [],
+      providerCalls: 1,
+    });
+    expect(writes).toBe(0);
+  });
+
   it("retains trace and suppresses the same write after two invalid next-step decisions", async () => {
     const original = { ...observation.candidates[1], ref: "add-old", name: "Add to cart" };
     const rerendered = { ...original, ref: "add-new" };
