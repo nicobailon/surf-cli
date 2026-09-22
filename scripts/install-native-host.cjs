@@ -155,15 +155,16 @@ function wslPathToWindowsPath(wslPath) {
   return convertWslPath(wslPath);
 }
 
-function createWrapper(wrapperDir, nodePath, hostPath, target = process.platform, listen, socketMode, socketGroup, distro = process.env.WSL_DISTRO_NAME) {
+function createWrapper(wrapperDir, nodePath, hostPath, target = process.platform, listen, socketMode, socketGroup, distro = process.env.WSL_DISTRO_NAME, convertPath = wslPathToWindowsPath) {
   const socketConfig = normalizeSocketConfig(socketMode, socketGroup);
   assertSocketAccessTargetSupported(socketConfig.mode, socketConfig.group, target);
   fs.mkdirSync(wrapperDir, { recursive: true });
 
   if (target === "wsl-windows") {
     const cmdPath = path.join(wrapperDir, "host-wrapper-wsl.cmd");
+    const windowsPath = convertPath(cmdPath);
     fs.writeFileSync(cmdPath, renderWslWrapper(nodePath, hostPath, distro));
-    return wslPathToWindowsPath(cmdPath);
+    return windowsPath;
   }
 
   if (process.platform === "win32") {

@@ -451,6 +451,28 @@ describe("native host installer", () => {
     ]);
   });
 
+  it("preserves an installed wrapper when its Windows path cannot be resolved", () => {
+    const wrapperDir = makeTempDir();
+    const wrapperFsPath = path.join(wrapperDir, "host-wrapper-wsl.cmd");
+    fs.writeFileSync(wrapperFsPath, "existing working wrapper");
+    expect(() =>
+      createWrapper(
+        wrapperDir,
+        "/usr/bin/node",
+        "/home/surf/native/host.cjs",
+        "wsl-windows",
+        undefined,
+        undefined,
+        undefined,
+        "Ubuntu",
+        () => {
+          throw new Error("wslpath conversion failed");
+        },
+      ),
+    ).toThrow("wslpath conversion failed");
+    expect(fs.readFileSync(wrapperFsPath, "utf8")).toBe("existing working wrapper");
+  });
+
   it("reports failed, timed out, and malformed WSL wrapper probes", () => {
     expect(() =>
       probeWindowsWrapper("C:\\surf\\host-wrapper-wsl.cmd", {
