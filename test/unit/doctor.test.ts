@@ -59,6 +59,9 @@ function wslRegistryExec(
     ["C:\\Users\\Nico\\AppData\\Local\\surf-cli\\host-wrapper-wsl.cmd", wrapperFsPath],
   ]);
   return (file: string, args: string[]) => {
+    if (file === "cmd.exe" && args.includes("%LOCALAPPDATA%")) {
+      return "C:\\Users\\Nico\\AppData\\Local\r\n";
+    }
     if (file === "reg.exe") {
       return `HKEY_CURRENT_USER\\Software\\Google\\Chrome\\NativeMessagingHosts\\surf.browser.host\r\n    (Default)    REG_SZ    ${registeredWindowsPath}\r\n`;
     }
@@ -67,6 +70,59 @@ function wslRegistryExec(
       return `${converted}\n`;
     }
     throw new Error(`unexpected command: ${file} ${args.join(" ")}`);
+  };
+}
+
+function createWslDoctorFixture(
+  wrapperWindowsPath = "C:\\Users\\Nico\\AppData\\Local\\surf-cli\\host-wrapper-wsl.cmd",
+  wrapperContent = "@echo off\r\nrem SURF_NATIVE_HOST_LAUNCH_PROBE_V1\r\n",
+) {
+  const tempDir = makeTempDir();
+  const socketPath = path.join(tempDir, "surf.sock");
+  const manifestFsPath = path.join(tempDir, "surf.browser.host.json");
+  const wrapperFsPath = path.join(tempDir, "host-wrapper-wsl.cmd");
+  const manifestWindowsPath =
+    "C:\\Users\\Nico\\AppData\\Local\\Google\\Chrome\\User Data\\NativeMessagingHosts\\surf.browser.host.json";
+  fs.writeFileSync(wrapperFsPath, wrapperContent);
+  writeManifest(manifestFsPath, wrapperWindowsPath);
+
+  const convertedPaths = new Map([
+    [manifestWindowsPath, manifestFsPath],
+    [wrapperWindowsPath, wrapperFsPath],
+    ["C:\\Users\\Nico\\AppData\\Local\\surf-cli\\host-wrapper-wsl.cmd", wrapperFsPath],
+  ]);
+  const execFileSync = (file: string, args: string[]) => {
+    if (file === "cmd.exe" && args.includes("%LOCALAPPDATA%")) {
+      return "C:\\Users\\Nico\\AppData\\Local\r\n";
+    }
+    if (file === "reg.exe") {
+      return `HKEY_CURRENT_USER\\Software\\Google\\Chrome\\NativeMessagingHosts\\surf.browser.host\r\n    (Default)    REG_SZ    ${manifestWindowsPath}\r\n`;
+    }
+    if (file === "wslpath") {
+      const converted = convertedPaths.get(args[1]);
+      if (converted) {
+        return `${converted}\n`;
+      }
+    }
+    throw new Error(`unexpected command: ${file} ${args.join(" ")}`);
+  };
+
+  return {
+    socketPath,
+    wrapperWindowsPath,
+    deps: {
+      platform: "linux",
+      homeDir: tempDir,
+      env: { WSL_DISTRO_NAME: "Ubuntu" },
+      fs: {
+        existsSync: (filePath: string) => filePath === socketPath || fs.existsSync(filePath),
+        statSync: (filePath: string) =>
+          filePath === socketPath ? { isSocket: () => true } : fs.statSync(filePath),
+        readFileSync: fs.readFileSync,
+      },
+      connectSocket: async () => ({ ok: true, message: "connected" }),
+      execFileSync,
+    },
   };
 }
 
@@ -378,6 +434,110 @@ describe("surf doctor", () => {
       ]),
     );
     expect(report.manifests[0].path).toBe(registeredWindowsPath);
+  });
+
+  it("passes the trusted probe-aware WSL wrapper launch check", async () => {
+    const fixture = createWslDoctorFixture(
+      "c:/users/nico/appdata/local/surf-cli/host-wrapper-wsl.cmd",
+    );
+    const probedPaths: string[] = [];
+    const report = await runDoctor(
+      { browser: "chrome", socket: fixture.socketPath },
+      {
+        ...fixture.deps,
+        probeWindowsWrapper: (wrapperPath: string) => {
+          probedPaths.push(wrapperPath);
+        },
+      },
+    );
+
+    expect(report.ok).toBe(true);
+    expect(probedPaths).toEqual([
+      "C:\\Users\\Nico\\AppData\\Local\\surf-cli\\host-wrapper-wsl.cmd",
+    ]);
+    expect(report.checks).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ id: "wrapper-launch", status: "pass", browser: "chrome" }),
+        expect.objectContaining({ id: "socket-connect", status: "pass" }),
+      ]),
+    );
+  });
+
+  it("fails doctor when the trusted WSL wrapper returns the wrong probe marker", async () => {
+    const fixture = createWslDoctorFixture();
+    const report = await runDoctor(
+      { browser: "chrome", socket: fixture.socketPath },
+      {
+        ...fixture.deps,
+        probeWindowsWrapper: () => {
+          throw new Error(
+            "Native host wrapper launch probe failed: host returned unexpected output",
+          );
+        },
+      },
+    );
+
+    expect(report.ok).toBe(false);
+    expect(report.checks).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ id: "wrapper-launch", status: "fail", browser: "chrome" }),
+        expect.objectContaining({ id: "socket-connect", status: "pass" }),
+      ]),
+    );
+    expect(report.checks.find((check: any) => check.id === "wrapper-launch").message).toContain(
+      "unexpected output",
+    );
+    expect(report.recommendations.join("\n")).toContain("same WSL distro");
+  });
+
+  it("warns without executing a legacy managed WSL wrapper", async () => {
+    const fixture = createWslDoctorFixture(undefined, "@echo off\r\n");
+    let probeCalls = 0;
+    const report = await runDoctor(
+      { browser: "chrome", socket: fixture.socketPath },
+      {
+        ...fixture.deps,
+        probeWindowsWrapper: () => {
+          probeCalls++;
+        },
+      },
+    );
+
+    expect(report.ok).toBe(true);
+    expect(probeCalls).toBe(0);
+    expect(report.checks).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ id: "wrapper-launch", status: "warn", browser: "chrome" }),
+      ]),
+    );
+    expect(report.checks.find((check: any) => check.id === "wrapper-launch").message).toContain(
+      "surf install <extension-id>",
+    );
+  });
+
+  it("warns without executing a noncanonical WSL wrapper", async () => {
+    const fixture = createWslDoctorFixture("D:\\Other\\host-wrapper-wsl.cmd");
+    let probeCalls = 0;
+    const report = await runDoctor(
+      { browser: "chrome", socket: fixture.socketPath },
+      {
+        ...fixture.deps,
+        probeWindowsWrapper: () => {
+          probeCalls++;
+        },
+      },
+    );
+
+    expect(report.ok).toBe(true);
+    expect(probeCalls).toBe(0);
+    expect(report.checks).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ id: "wrapper-launch", status: "warn", browser: "chrome" }),
+      ]),
+    );
+    expect(report.checks.find((check: any) => check.id === "wrapper-launch").message).toContain(
+      "does not point to Surf's managed WSL wrapper",
+    );
   });
 
   it("fails WSL Windows doctor when the registry entry is missing", async () => {

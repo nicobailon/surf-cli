@@ -13,11 +13,12 @@ const {
 const { parseListenEndpoint } = require("../native/listener.cjs");
 const { normalizeSocketConfig } = require("../native/socket-permissions.cjs");
 const { getStateDir, loadHostIdentity, loadRegistry } = require("../native/remote-auth.cjs");
+const {
+  WRAPPER_PROBE_CAPABILITY_MARKER,
+  probeWindowsWrapper,
+} = require("../native/native-host-launch-probe.cjs");
 
 const HOST_NAME = "surf.browser.host";
-const LAUNCH_PROBE_ARGUMENT = "--surf-native-host-launch-probe";
-const LAUNCH_PROBE_MARKER = "SURF_NATIVE_HOST_LAUNCH_PROBE_OK";
-const LAUNCH_PROBE_TIMEOUT_MS = 5000;
 
 const BROWSERS = {
   chrome: {
@@ -162,7 +163,7 @@ function createWrapper(wrapperDir, nodePath, hostPath, target = process.platform
   if (target === "wsl-windows") {
     const cmdPath = path.join(wrapperDir, "host-wrapper-wsl.cmd");
     const distroArg = process.env.WSL_DISTRO_NAME ? ` -d "${process.env.WSL_DISTRO_NAME}"` : "";
-    const content = `@echo off\r\nwsl.exe${distroArg} --cd "${path.dirname(hostPath)}" --exec "${nodePath}" "${hostPath}" %*\r\n`;
+    const content = `@echo off\r\n${WRAPPER_PROBE_CAPABILITY_MARKER}\r\nwsl.exe${distroArg} --cd "${path.dirname(hostPath)}" --exec "${nodePath}" "${hostPath}" %*\r\n`;
     fs.writeFileSync(cmdPath, content);
     return wslPathToWindowsPath(cmdPath);
   }
@@ -189,36 +190,14 @@ ${listen ? `: "\${SURF_LISTEN:=${listen}}"\nexport SURF_LISTEN\n` : ""}${socketE
   return shPath;
 }
 
-function probeWindowsWrapper(wrapperPath, deps = {}) {
-  let output;
-  try {
-    output = runWindowsExecutable(
-      "cmd.exe",
-      ["/d", "/s", "/c", wrapperPath, LAUNCH_PROBE_ARGUMENT],
-      {
-        execFileSync: deps.execFileSync || execFileSync,
-        allowWslFallback: true,
-        execOptions: {
-          encoding: "utf8",
-          timeout: deps.timeoutMs ?? LAUNCH_PROBE_TIMEOUT_MS,
-          maxBuffer: 64 * 1024,
-          windowsHide: true,
-        },
-      },
-    );
-  } catch (error) {
-    throw new Error(`WSL wrapper launch probe failed before registration: ${error.message}`);
-  }
-
-  if (String(output).trim() !== LAUNCH_PROBE_MARKER) {
-    throw new Error(
-      "WSL wrapper launch probe failed before registration: host returned unexpected output",
-    );
-  }
-}
-
 function installWithValidatedWrapper(wrapperPath, target, install, deps = {}) {
-  if (target === "wsl-windows") probeWindowsWrapper(wrapperPath, deps);
+  if (target === "wsl-windows") {
+    try {
+      probeWindowsWrapper(wrapperPath, deps);
+    } catch (error) {
+      throw new Error(`WSL wrapper validation failed before registration: ${error.message}`);
+    }
+  }
   return install();
 }
 

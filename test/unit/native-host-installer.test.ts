@@ -416,7 +416,7 @@ describe("native host installer", () => {
     try {
       const cmdPath = createWrapper(tempDir, nodePath, hostPath, "wsl-windows");
       expect(fs.readFileSync(path.join(tempDir, "host-wrapper-wsl.cmd"), "utf8")).toBe(
-        `@echo off\r\nwsl.exe -d "Ubuntu-24.04" --cd "${path.dirname(hostPath)}" --exec "${nodePath}" "${hostPath}" %*\r\n`,
+        `@echo off\r\nrem SURF_NATIVE_HOST_LAUNCH_PROBE_V1\r\nwsl.exe -d "Ubuntu-24.04" --cd "${path.dirname(hostPath)}" --exec "${nodePath}" "${hostPath}" %*\r\n`,
       );
       expect(cmdPath).toBeTruthy();
     } finally {
@@ -461,13 +461,13 @@ describe("native host installer", () => {
           });
         },
       }),
-    ).toThrow(/before registration.*wsl\.exe could not start the distro/);
+    ).toThrow(/launch probe failed.*wsl\.exe could not start the distro/);
 
     expect(() =>
       probeWindowsWrapper("C:\\surf\\host-wrapper-wsl.cmd", {
         execFileSync: () => "not the probe marker\n",
       }),
-    ).toThrow(/before registration.*unexpected output/);
+    ).toThrow(/launch probe failed.*unexpected output/);
 
     expect(() =>
       probeWindowsWrapper("C:\\surf\\host-wrapper-wsl.cmd", {
@@ -477,7 +477,7 @@ describe("native host installer", () => {
           throw Object.assign(new Error("spawnSync cmd.exe ETIMEDOUT"), { code: "ETIMEDOUT" });
         },
       }),
-    ).toThrow(/before registration.*ETIMEDOUT/);
+    ).toThrow(/launch probe failed.*ETIMEDOUT/);
   });
 
   it("does not register a WSL wrapper when its launch probe fails", () => {

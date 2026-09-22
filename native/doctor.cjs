@@ -6,9 +6,14 @@ const { execFileSync } = require("child_process");
 const { connectEndpoint, selectEndpoint } = require("./endpoint.cjs");
 const {
   convertWindowsPath,
+  getWindowsEnv,
   nativeMessagingRegistryPath,
   runWindowsExecutable,
 } = require("../scripts/windows-interop.cjs");
+const {
+  hasLaunchProbeCapability,
+  probeWindowsWrapper,
+} = require("./native-host-launch-probe.cjs");
 
 const HOST_NAME = "surf.browser.host";
 
@@ -291,6 +296,109 @@ function checkManifest(manifestPath, context) {
   return { checks, manifest };
 }
 
+function normalizeWindowsPath(filePath) {
+  return path.win32.normalize(filePath).replace(/[\\/]+$/, "").toLowerCase();
+}
+
+function checkWslWrapperLaunch(manifest, context) {
+  if (!manifest || typeof manifest.path !== "string" || manifest.path.length === 0) {
+    return null;
+  }
+
+  let canonicalWindowsPath;
+  try {
+    const localAppData = getWindowsEnv("LOCALAPPDATA", { execFileSync: context.execFileSync });
+    canonicalWindowsPath = path.win32.join(
+      localAppData,
+      "surf-cli",
+      "host-wrapper-wsl.cmd",
+    );
+  } catch (error) {
+    return {
+      id: "wrapper-launch",
+      status: "fail",
+      message: `Could not resolve Surf's managed Windows wrapper path: ${error.message}`,
+    };
+  }
+
+  if (normalizeWindowsPath(manifest.path) !== normalizeWindowsPath(canonicalWindowsPath)) {
+    return {
+      id: "wrapper-launch",
+      status: "warn",
+      message:
+        "Skipped launch probe because the manifest does not point to Surf's managed WSL wrapper. Run `surf install <extension-id>` to restore the managed wrapper.",
+      path: manifest.path,
+    };
+  }
+
+  let wrapperFsPath;
+  try {
+    wrapperFsPath = fsPathFromManifestPath(canonicalWindowsPath, context);
+  } catch (error) {
+    return {
+      id: "wrapper-launch",
+      status: "fail",
+      message: `Could not resolve Surf's managed WSL wrapper: ${error.message}`,
+      path: canonicalWindowsPath,
+    };
+  }
+
+  if (!context.fs.existsSync(wrapperFsPath)) {
+    return {
+      id: "wrapper-launch",
+      status: "fail",
+      message: `Surf's managed WSL wrapper does not exist: ${canonicalWindowsPath}`,
+      path: canonicalWindowsPath,
+      fsPath: wrapperFsPath,
+    };
+  }
+
+  let wrapperContent;
+  try {
+    wrapperContent = context.fs.readFileSync(wrapperFsPath, "utf8");
+  } catch (error) {
+    return {
+      id: "wrapper-launch",
+      status: "fail",
+      message: `Could not read Surf's managed WSL wrapper: ${error.message}`,
+      path: canonicalWindowsPath,
+      fsPath: wrapperFsPath,
+    };
+  }
+
+  if (!hasLaunchProbeCapability(wrapperContent)) {
+    return {
+      id: "wrapper-launch",
+      status: "warn",
+      message:
+        "Surf's managed WSL wrapper predates safe launch probes, so it was not executed. Run `surf install <extension-id>` to replace it.",
+      path: canonicalWindowsPath,
+      fsPath: wrapperFsPath,
+    };
+  }
+
+  try {
+    context.probeWindowsWrapper(canonicalWindowsPath, {
+      execFileSync: context.execFileSync,
+    });
+    return {
+      id: "wrapper-launch",
+      status: "pass",
+      message: "Surf's managed WSL wrapper completed its launch probe",
+      path: canonicalWindowsPath,
+      fsPath: wrapperFsPath,
+    };
+  } catch (error) {
+    return {
+      id: "wrapper-launch",
+      status: "fail",
+      message: `Surf's managed WSL wrapper failed validation: ${error.message}`,
+      path: canonicalWindowsPath,
+      fsPath: wrapperFsPath,
+    };
+  }
+}
+
 async function checkSocket(socketPath, context) {
   const checks = [];
   if (context.platform !== "win32") {
@@ -384,6 +492,7 @@ function buildRecommendations(report) {
     "manifest-origins",
     "manifest-path",
     "manifest-path-executable",
+    "wrapper-launch",
     "socket-file",
     "socket-connect",
   ]);
@@ -399,6 +508,9 @@ function buildRecommendations(report) {
   }
   if (failedIds.has("manifest-path") || failedIds.has("manifest-path-executable")) {
     recommendations.push("Reinstall the native host so the manifest path points at the current Surf wrapper.");
+  }
+  if (failedIds.has("wrapper-launch")) {
+    recommendations.push("Rerun `surf install <extension-id>` from the same WSL distro so Surf can replace and validate the Windows wrapper.");
   }
   if (failedIds.has("manifest-supported")) {
     recommendations.push("Choose a browser supported for this target, or rerun with `--browser all` to inspect every supported setup.");
@@ -497,6 +609,7 @@ async function runDoctor(rawOptions = {}, deps = {}) {
     effectiveTarget,
     fs: deps.fs || fs,
     execFileSync: deps.execFileSync || execFileSync,
+    probeWindowsWrapper: deps.probeWindowsWrapper || probeWindowsWrapper,
     connectSocket: deps.connectSocket || connectSocket,
     connectTimeoutMs: options.connectTimeoutMs,
   };
@@ -540,6 +653,10 @@ async function runDoctor(rawOptions = {}, deps = {}) {
 
     const result = checkManifest(manifestPath, context);
     browserChecks.push(...result.checks.map((check) => ({ ...check, browser: browserKey })));
+    if (context.effectiveTarget === "wsl-windows" && result.manifest) {
+      const wrapperLaunch = checkWslWrapperLaunch(result.manifest, context);
+      if (wrapperLaunch) browserChecks.push({ ...wrapperLaunch, browser: browserKey });
+    }
     checks.push(...browserChecks);
     manifests.push({
       browser: browserKey,
