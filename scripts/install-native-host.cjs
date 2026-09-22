@@ -15,6 +15,9 @@ const { normalizeSocketConfig } = require("../native/socket-permissions.cjs");
 const { getStateDir, loadHostIdentity, loadRegistry } = require("../native/remote-auth.cjs");
 
 const HOST_NAME = "surf.browser.host";
+const LAUNCH_PROBE_ARGUMENT = "--surf-native-host-launch-probe";
+const LAUNCH_PROBE_MARKER = "SURF_NATIVE_HOST_LAUNCH_PROBE_OK";
+const LAUNCH_PROBE_TIMEOUT_MS = 5000;
 
 const BROWSERS = {
   chrome: {
@@ -184,6 +187,39 @@ ${listen ? `: "\${SURF_LISTEN:=${listen}}"\nexport SURF_LISTEN\n` : ""}${socketE
   fs.writeFileSync(shPath, content);
   fs.chmodSync(shPath, "755");
   return shPath;
+}
+
+function probeWindowsWrapper(wrapperPath, deps = {}) {
+  let output;
+  try {
+    output = runWindowsExecutable(
+      "cmd.exe",
+      ["/d", "/s", "/c", wrapperPath, LAUNCH_PROBE_ARGUMENT],
+      {
+        execFileSync: deps.execFileSync || execFileSync,
+        allowWslFallback: true,
+        execOptions: {
+          encoding: "utf8",
+          timeout: deps.timeoutMs ?? LAUNCH_PROBE_TIMEOUT_MS,
+          maxBuffer: 64 * 1024,
+          windowsHide: true,
+        },
+      },
+    );
+  } catch (error) {
+    throw new Error(`WSL wrapper launch probe failed before registration: ${error.message}`);
+  }
+
+  if (String(output).trim() !== LAUNCH_PROBE_MARKER) {
+    throw new Error(
+      "WSL wrapper launch probe failed before registration: host returned unexpected output",
+    );
+  }
+}
+
+function installWithValidatedWrapper(wrapperPath, target, install, deps = {}) {
+  if (target === "wsl-windows") probeWindowsWrapper(wrapperPath, deps);
+  return install();
 }
 
 function assertListenTargetSupported(listen, target) {
@@ -450,24 +486,30 @@ function main() {
   const installed = [];
   const skipped = [];
 
-  for (const browser of browsers) {
-    if (!BROWSERS[browser]) {
-      console.error(`Unknown browser: ${browser}`);
-      continue;
-    }
+  try {
+    installWithValidatedWrapper(wrapperPath, effectiveTarget, () => {
+      for (const browser of browsers) {
+        if (!BROWSERS[browser]) {
+          console.error(`Unknown browser: ${browser}`);
+          continue;
+        }
 
-    let result;
-    try {
-      result = installManifest(browser, extensionId, wrapperPath, effectiveTarget);
-    } catch (error) {
-      console.error(`Error: Failed to install ${BROWSERS[browser].name}: ${error.message}`);
-      process.exit(1);
-    }
-    if (result) {
-      installed.push({ browser: BROWSERS[browser].name, path: result });
-    } else {
-      skipped.push(BROWSERS[browser].name);
-    }
+        let result;
+        try {
+          result = installManifest(browser, extensionId, wrapperPath, effectiveTarget);
+        } catch (error) {
+          throw new Error(`Failed to install ${BROWSERS[browser].name}: ${error.message}`);
+        }
+        if (result) {
+          installed.push({ browser: BROWSERS[browser].name, path: result });
+        } else {
+          skipped.push(BROWSERS[browser].name);
+        }
+      }
+    });
+  } catch (error) {
+    console.error(`Error: ${error.message}`);
+    process.exit(1);
   }
 
   if (installed.length > 0) {
@@ -490,6 +532,8 @@ if (require.main === module) {
 
 module.exports = {
   createWrapper,
+  probeWindowsWrapper,
+  installWithValidatedWrapper,
   writeManifest,
   assertListenTargetSupported,
   assertSocketAccessTargetSupported,
