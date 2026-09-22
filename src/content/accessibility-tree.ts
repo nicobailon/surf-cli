@@ -85,7 +85,7 @@ function semanticStateEvidence(candidate: {
   if (candidate.state.selected !== undefined) {
     labels.push(candidate.state.selected ? "[selected]" : "[not-selected]");
   }
-  const name = candidate.name ? ` "${candidate.name.replace(/"/g, '\\"')}"` : "";
+  const name = candidate.name ? ` "${candidate.name.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"` : "";
   return boundedText(`${candidate.role}${name} ${labels.join(" ")}`, 240);
 }
 

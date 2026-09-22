@@ -328,7 +328,7 @@ describe("accessibility tree", () => {
   it("associates value-free checked and selected state with semantic refs and evidence", () => {
     const size = new FakeInputElement("input");
     size.setAttribute("type", "radio");
-    size.setAttribute("aria-label", "M");
+    size.setAttribute("aria-label", 'M \\ "Tall"');
     size.value = "private-size-value";
     size.checked = true;
     const color = element("button", {
@@ -360,7 +360,7 @@ describe("accessibility tree", () => {
     );
     expect(observation.chunks).toEqual(
       expect.arrayContaining([
-        expect.objectContaining({ text: 'radio "M" [checked]', refs: ["size"] }),
+        expect.objectContaining({ text: 'radio "M \\\\ \\"Tall\\"" [checked]', refs: ["size"] }),
         expect.objectContaining({ text: 'option "Black" [not-selected]', refs: ["color"] }),
       ]),
     );
