@@ -454,11 +454,14 @@ async function runBrowserSemantic(options, { request, evaluate, now = () => perf
   const remaining = () => Math.max(0, Math.floor(deadline - now()));
   let providerCalls = 0;
   const evaluator = async (state, questions, providerOptions = {}) => {
-    if (++providerCalls > SEMANTIC_POLICY.limits.providerCalls) throw new Error("semantic provider-call budget exhausted");
-    if (remaining() < 1) throw new Error("semantic wall-clock budget exhausted");
+    if (providerCalls >= SEMANTIC_POLICY.limits.providerCalls) throw new SemanticError("provider_call_budget_exhausted", "semantic provider-call budget exhausted");
+    if (remaining() < 1) throw new SemanticError("wall_time_budget_exhausted", "semantic wall-clock budget exhausted");
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), Math.min(SEMANTIC_POLICY.timeoutMs, remaining()));
-    try { return await evaluate(state, questions, { ...providerOptions, signal: controller.signal }); }
+    try {
+      providerCalls++;
+      return await evaluate(state, questions, { ...providerOptions, signal: controller.signal });
+    }
     finally { clearTimeout(timer); }
   };
   let designatedIdentity;

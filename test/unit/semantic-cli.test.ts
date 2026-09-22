@@ -1010,6 +1010,87 @@ describe("semantic CLI", () => {
     expect({ actionDecisions, readsAtWrite, writes }).toEqual({ actionDecisions: 2, readsAtWrite: 1, writes: 1 });
   });
 
+  it("does not exceed the provider-call budget when call 17 returns an invalid action decision", async () => {
+    const candidates = Array.from({ length: 7 }, (_, index) => ({
+      ref: `write-${index + 1}`,
+      role: "button",
+      name: `Write ${index + 1}`,
+      type: "button",
+      nearbyText: `Distinct write ${index + 1}`,
+    }));
+    const current = { ...observation, candidates };
+    const actionAttempts = Array.from({ length: 7 }, () => 0);
+    const writes: string[] = [];
+    let actualEvaluateCalls = 0;
+    const result = await semantic.runBrowserSemantic(
+      { command: "semantic.act", goal: "perform bounded writes", allowWrite: true, inputs: {}, maxSteps: 7 },
+      {
+        request: async (tool: string, args: Record<string, any>) => {
+          if (tool === "page.read") return response({ semanticObservation: current });
+          if (tool === "click") writes.push(args.ref);
+          return actionResponse("OK");
+        },
+        evaluate: async (_state: unknown, questions: Record<string, any>) => {
+          actualEvaluateCalls++;
+          if (questions.action) {
+            const writeIndex = writes.length;
+            const labels = Object.keys(questions.action.criteria);
+            const attempt = actionAttempts[writeIndex]++;
+            if ((writeIndex < 4 && attempt === 0) || writeIndex === 6) {
+              return invalidProviderChoice("action", labels);
+            }
+            return provider({ action: choice(`click:write-${writeIndex + 1}`, labels) });
+          }
+          return provider({
+            verdict: choice("not_satisfied", ["satisfied", "not_satisfied"]),
+            evidence: choice("c1", Object.keys(questions.evidence.criteria)),
+          });
+        },
+        now: () => 0,
+      },
+    );
+
+    expect(result).toMatchObject({
+      status: "stopped",
+      stopReason: "decision_failed",
+      errorCode: "provider_call_budget_exhausted",
+      providerCalls: 17,
+    });
+    expect(result.trace).toHaveLength(6);
+    expect(actualEvaluateCalls).toBe(17);
+    expect(writes).toEqual(candidates.slice(0, 6).map((candidate) => candidate.ref));
+  });
+
+  it("does not count a malformed-decision retry blocked by wall-time exhaustion", async () => {
+    let nowMs = 0;
+    let actualEvaluateCalls = 0;
+    let writes = 0;
+    const result = await semantic.runBrowserSemantic(
+      { command: "semantic.act", goal: "stop safely", allowWrite: true, inputs: {}, maxSteps: 1 },
+      {
+        request: async (tool: string) => {
+          if (tool === "click") writes++;
+          return response({ semanticObservation: observation });
+        },
+        evaluate: async (_state: unknown, questions: Record<string, any>) => {
+          actualEvaluateCalls++;
+          nowMs = 30_000;
+          return invalidProviderChoice("action", Object.keys(questions.action.criteria));
+        },
+        now: () => nowMs,
+      },
+    );
+
+    expect(result).toEqual({
+      status: "stopped",
+      stopReason: "decision_failed",
+      errorCode: "wall_time_budget_exhausted",
+      trace: [],
+      providerCalls: 1,
+    });
+    expect({ actualEvaluateCalls, writes }).toEqual({ actualEvaluateCalls: 1, writes: 0 });
+  });
+
   it("retains trace and suppresses the same write after two invalid next-step decisions", async () => {
     const original = { ...observation.candidates[1], ref: "add-old", name: "Add to cart" };
     const rerendered = { ...original, ref: "add-new" };
