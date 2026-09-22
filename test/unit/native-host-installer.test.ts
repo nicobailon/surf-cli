@@ -411,21 +411,21 @@ describe("native host installer", () => {
       });
     }
 
-    const previousDistro = process.env.WSL_DISTRO_NAME;
-    process.env.WSL_DISTRO_NAME = "Ubuntu-24.04";
-    try {
-      const cmdPath = createWrapper(tempDir, nodePath, hostPath, "wsl-windows");
-      expect(fs.readFileSync(path.join(tempDir, "host-wrapper-wsl.cmd"), "utf8")).toBe(
-        `@echo off\r\nrem SURF_NATIVE_HOST_LAUNCH_PROBE_V1\r\nwsl.exe -d "Ubuntu-24.04" --cd "${path.dirname(hostPath)}" --exec "${nodePath}" "${hostPath}" %*\r\n`,
-      );
-      expect(cmdPath).toBeTruthy();
-    } finally {
-      if (previousDistro === undefined) {
-        delete process.env.WSL_DISTRO_NAME;
-      } else {
-        process.env.WSL_DISTRO_NAME = previousDistro;
-      }
-    }
+    const cmdPath = createWrapper(
+      tempDir,
+      nodePath,
+      hostPath,
+      "wsl-windows",
+      undefined,
+      undefined,
+      undefined,
+      "Ubuntu-24.04",
+      () => "C:\\Users\\Test\\surf-cli\\host-wrapper-wsl.cmd",
+    );
+    expect(fs.readFileSync(path.join(tempDir, "host-wrapper-wsl.cmd"), "utf8")).toBe(
+      `@echo off\r\nrem SURF_NATIVE_HOST_LAUNCH_PROBE_V1\r\nwsl.exe -d "Ubuntu-24.04" --cd "${path.dirname(hostPath)}" --exec "${nodePath}" "${hostPath}" %*\r\n`,
+    );
+    expect(cmdPath).toBe("C:\\Users\\Test\\surf-cli\\host-wrapper-wsl.cmd");
   });
 
   it("probes a generated WSL Windows wrapper through bounded cmd interop", () => {
