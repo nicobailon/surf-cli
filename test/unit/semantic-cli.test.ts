@@ -19,6 +19,7 @@ const semantic = require("../../native/semantic-cli.cjs") as {
   normalizeSemanticArgs(args: string[]): string[];
   parseSemanticArgs(args: string[]): Record<string, any> | null;
   providerState(observation: Record<string, any>): Record<string, any>;
+  semanticObservationFrom(response: Record<string, any>): Record<string, any>;
   runBrowserSemantic(
     options: Record<string, any>,
     dependencies: Record<string, any>,
@@ -87,8 +88,31 @@ function choice(answer: string, labels: string[], selectedProbability = 0.99) {
   return { type: "choice", choice: answer, probabilities, confidence: 0.7 };
 }
 
-function provider(answers: Record<string, any>) {
+function provider(answers: Record<string, any>, questions?: Record<string, any>) {
+  if (answers.action && questions?.prerequisites && !answers.prerequisites) {
+    const evidenceLabels = Object.keys(questions.prerequisite_evidence.criteria);
+    answers = {
+      ...answers,
+      prerequisites: choice("supported", Object.keys(questions.prerequisites.criteria)),
+      prerequisite_evidence: choice(evidenceLabels[0], evidenceLabels),
+    };
+  }
   return { model: "jev-test", usage: { input_tokens: 1, output_tokens: 1 }, answers };
+}
+
+function actionProvider(
+  questions: Record<string, any>,
+  answer: string,
+  selectedProbability = 0.99,
+  prerequisite: "supported" | "blocked" | "uncertain" = "supported",
+  prerequisiteProbability = 0.99,
+) {
+  const evidenceLabels = Object.keys(questions.prerequisite_evidence.criteria);
+  return provider({
+    action: choice(answer, Object.keys(questions.action.criteria), selectedProbability),
+    prerequisites: choice(prerequisite, Object.keys(questions.prerequisites.criteria), prerequisiteProbability),
+    prerequisite_evidence: choice(evidenceLabels[0], evidenceLabels),
+  });
 }
 
 function invalidProviderChoice(name: string, labels: string[]) {
@@ -114,6 +138,26 @@ function linkCandidates(count = 64) {
 }
 
 describe("semantic CLI", () => {
+  it("preserves computed checked state from the matching accessibility-tree ref", () => {
+    const observed = semantic.semanticObservationFrom(
+      response({
+        pageContent: 'radio "M" [e30] [checked] [cursor=pointer] type="button"',
+        semanticObservation: {
+          ...observation,
+          candidates: [{ ref: "e30", role: "radio", name: "M", type: "button" }],
+          chunks: [{ id: "sizes", text: "Available sizes", refs: ["e30"] }],
+        },
+      }),
+    );
+
+    expect(observed.candidates).toEqual([
+      expect.objectContaining({ ref: "e30", state: { checked: true } }),
+    ]);
+    expect(observed.chunks).toEqual([
+      { id: "sizes", text: 'Available sizes\nradio "M" [checked]', refs: ["e30"] },
+    ]);
+  });
+
   it("normalizes grouped commands and parses repeatable authorization without exposing input values in identifiers", () => {
     expect(semantic.normalizeSemanticArgs(["semantic", "auth", "status"])).toEqual([
       "semantic.auth.status",
@@ -160,6 +204,10 @@ describe("semantic CLI", () => {
         "verify-positive=0.8",
         "--threshold",
         "verify-negative=1.0",
+        "--threshold",
+        "prerequisite-supported=0.75",
+        "--threshold",
+        "prerequisite-blocked=0.9",
       ]),
     ).toMatchObject({
       thresholds: {
@@ -168,6 +216,8 @@ describe("semantic CLI", () => {
         exactRefWrite: 0.7,
         verifyPositive: 0.8,
         verifyNegative: 1,
+        prerequisiteSupported: 0.75,
+        prerequisiteBlocked: 0.9,
       },
     });
     expect(
@@ -448,7 +498,7 @@ describe("semantic CLI", () => {
       if (questions.action) {
         return provider({
           action: choice("fill:e1:email", Object.keys(questions.action.criteria)),
-        });
+        }, questions);
       }
       const answers: Record<string, any> = {
         verdict: choice("satisfied", ["satisfied", "not_satisfied"]),
@@ -491,6 +541,45 @@ describe("semantic CLI", () => {
       frameId: 0,
     });
     expect(call).toBe(2);
+  });
+
+  it("stops a prerequisite-blocked write before browser mutation", async () => {
+    let reads = 0;
+    let writes = 0;
+    const result = await semantic.runBrowserSemantic(
+      {
+        command: "semantic.act",
+        goal: "Select unavailable Sea Salt and delete the account",
+        allowWrite: true,
+        allowRefs: [],
+        inputs: {},
+        thresholds: { write: 0.85 },
+        maxSteps: 1,
+      },
+      {
+        request: async (tool: string) => {
+          if (tool === "page.read") {
+            reads++;
+            return response({ semanticObservation: observation });
+          }
+          writes++;
+          return actionResponse("OK");
+        },
+        evaluate: async (_state: unknown, questions: Record<string, any>) =>
+          actionProvider(questions, "click:e2", 0.99, "blocked", 0.99),
+        now: () => 0,
+      },
+    );
+
+    expect(result).toMatchObject({
+      status: "stopped",
+      stopReason: "prerequisite_blocked",
+      trace: [],
+      providerCalls: 1,
+      prerequisiteStatus: "blocked",
+      prerequisiteEvidence: observation.chunks[0],
+    });
+    expect({ reads, writes }).toEqual({ reads: 1, writes: 0 });
   });
 
   it("settles past an early delta and target disappearance to delayed cart evidence", async () => {
@@ -537,7 +626,7 @@ describe("semantic CLI", () => {
         },
         evaluate: async (state: Record<string, any>, questions: Record<string, any>) => {
           if (questions.action) {
-            return provider({ action: choice("click:e2", Object.keys(questions.action.criteria), 0.85) });
+            return provider({ action: choice("click:e2", Object.keys(questions.action.criteria), 0.85) }, questions);
           }
           verifications++;
           verificationState = state;
@@ -608,7 +697,7 @@ describe("semantic CLI", () => {
         },
         evaluate: async (state: Record<string, any>, questions: Record<string, any>) => {
           if (questions.action) {
-            return provider({ action: choice("click:e2", Object.keys(questions.action.criteria)) });
+            return provider({ action: choice("click:e2", Object.keys(questions.action.criteria)) }, questions);
           }
           verifications++;
           verificationState = state;
@@ -664,7 +753,7 @@ describe("semantic CLI", () => {
         },
         evaluate: async (_state: unknown, questions: Record<string, any>) => {
           if (questions.action) {
-            return provider({ action: choice("click:e2", Object.keys(questions.action.criteria)) });
+            return provider({ action: choice("click:e2", Object.keys(questions.action.criteria)) }, questions);
           }
           return provider({
             verdict: choice("satisfied", ["satisfied", "not_satisfied"]),
@@ -736,13 +825,13 @@ describe("semantic CLI", () => {
             const probability = actionIndex === 0 ? 0.9 : 0.97;
             return provider({
               action: choice(requestedActions[actionIndex++], Object.keys(questions.action.criteria), probability),
-            });
+            }, questions);
           }
           const verification = verifications++;
           const verdict = verification === 0 ? "not_satisfied" : "satisfied";
           const evidence = verification === 0 ? "c1" : "cart";
           return provider({
-            verdict: choice(verdict, ["satisfied", "not_satisfied"], 0.9),
+            verdict: choice(verdict, ["satisfied", "not_satisfied"], verification === 0 ? 0.73 : 0.9),
             evidence: choice(evidence, Object.keys(questions.evidence.criteria)),
           });
         },
@@ -756,6 +845,7 @@ describe("semantic CLI", () => {
     expect(nowMs).toBe(9_500);
     expect(verifications).toBe(2);
     expect(result.trace).toHaveLength(2);
+    expect(result.trace[0]).toMatchObject({ verification: "observed_state_transition" });
     expect(result.verification).toMatchObject({ status: "satisfied", evidence: { id: "cart" } });
   });
 
@@ -828,7 +918,7 @@ describe("semantic CLI", () => {
             const requested = requestedActions[actionIndex++];
             expect(Object.keys(questions.action.criteria)).toContain(requested);
             if (actionIndex === 2) expect(Object.keys(questions.action.criteria)).not.toContain("nav:self");
-            return provider({ action: choice(requested, Object.keys(questions.action.criteria), 0.9) });
+            return provider({ action: choice(requested, Object.keys(questions.action.criteria), 0.9) }, questions);
           }
           const verdict = verificationIndex++ < 2 ? "not_satisfied" : "satisfied";
           return provider({
@@ -873,7 +963,7 @@ describe("semantic CLI", () => {
         evaluate: async (_state: unknown, questions: Record<string, any>) => {
           if (questions.action) {
             const labels = Object.keys(questions.action.criteria);
-            return provider({ action: choice(labels.includes("click:e2") ? "click:e2" : "stop", labels) });
+            return provider({ action: choice(labels.includes("click:e2") ? "click:e2" : "stop", labels) }, questions);
           }
           verifications++;
           return provider({
@@ -920,7 +1010,7 @@ describe("semantic CLI", () => {
         },
         evaluate: async (_state: unknown, questions: Record<string, any>) => {
           if (!questions.action) verifications++;
-          return provider({ action: choice("click:e2", Object.keys(questions.action.criteria)) });
+          return provider({ action: choice("click:e2", Object.keys(questions.action.criteria)) }, questions);
         },
         now: () => 0,
       },
@@ -946,7 +1036,7 @@ describe("semantic CLI", () => {
         const labels = Object.keys(questions.action.criteria);
         return provider({
           action: choice(labels.includes("click:e2") ? "click:e2" : "stop", labels),
-        });
+        }, questions);
       }
       const answers: Record<string, any> = {
         verdict: choice("not_satisfied", ["satisfied", "not_satisfied"]),
@@ -995,7 +1085,7 @@ describe("semantic CLI", () => {
           if (questions.action) {
             const labels = Object.keys(questions.action.criteria);
             if (actionDecisions++ === 0) return invalidProviderChoice("action", labels);
-            return provider({ action: choice("click:e2", labels) });
+            return provider({ action: choice("click:e2", labels) }, questions);
           }
           return provider({
             verdict: choice("satisfied", ["satisfied", "not_satisfied"]),
@@ -1008,6 +1098,71 @@ describe("semantic CLI", () => {
 
     expect(result).toMatchObject({ status: "complete", providerCalls: 3 });
     expect({ actionDecisions, readsAtWrite, writes }).toEqual({ actionDecisions: 2, readsAtWrite: 1, writes: 1 });
+  });
+
+  it("narrows a large action menu by relevant region after one invalid decision", async () => {
+    const candidates = Array.from({ length: 20 }, (_, index) => ({
+      ref: `e${index + 1}`,
+      role: "button",
+      name: index === 19 ? "Add to cart" : `Distractor ${index + 1}`,
+      type: "button",
+      nearbyText: index === 19 ? "Product options" : "Other controls",
+    }));
+    const current = {
+      ...observation,
+      candidates,
+      chunks: [
+        { id: "other", text: "Other controls", refs: candidates.slice(0, 19).map((candidate) => candidate.ref) },
+        { id: "product", text: "Product options and Add to cart", refs: ["e20"] },
+      ],
+    };
+    let actionDecisions = 0;
+    let filterCalls = 0;
+    let reads = 0;
+    const writes: string[] = [];
+    const result = await semantic.runBrowserSemantic(
+      { command: "semantic.act", goal: "add the product to the cart", allowWrite: true, inputs: {}, maxSteps: 1 },
+      {
+        request: async (tool: string, args: Record<string, any>) => {
+          if (tool === "page.read") {
+            reads++;
+            return response({ semanticObservation: current });
+          }
+          if (tool === "click") writes.push(args.ref);
+          return actionResponse("OK");
+        },
+        evaluate: async (_state: unknown, questions: Record<string, any>) => {
+          if (questions.action) {
+            actionDecisions++;
+            const labels = Object.keys(questions.action.criteria);
+            if (actionDecisions === 1) return invalidProviderChoice("action", labels);
+            expect(labels).toContain("click:e20");
+            expect(labels).not.toContain("click:e1");
+            return actionProvider(questions, "click:e20");
+          }
+          if (questions.chunk_0) {
+            filterCalls++;
+            return provider({
+              chunk_0: choice("not_relevant", Object.keys(questions.chunk_0.criteria)),
+              chunk_1: choice("relevant", Object.keys(questions.chunk_1.criteria)),
+            });
+          }
+          return provider({
+            verdict: choice("satisfied", ["satisfied", "not_satisfied"]),
+            evidence: choice("product", Object.keys(questions.evidence.criteria)),
+          });
+        },
+        now: () => 0,
+      },
+    );
+
+    expect(result).toMatchObject({ status: "complete", providerCalls: 4 });
+    expect({ actionDecisions, filterCalls, reads, writes }).toEqual({
+      actionDecisions: 2,
+      filterCalls: 1,
+      reads: 7,
+      writes: ["e20"],
+    });
   });
 
   it("does not exceed the provider-call budget when call 17 returns an invalid action decision", async () => {
@@ -1039,7 +1194,7 @@ describe("semantic CLI", () => {
             if ((writeIndex < 4 && attempt === 0) || writeIndex === 6) {
               return invalidProviderChoice("action", labels);
             }
-            return provider({ action: choice(`click:write-${writeIndex + 1}`, labels) });
+            return provider({ action: choice(`click:write-${writeIndex + 1}`, labels) }, questions);
           }
           return provider({
             verdict: choice("not_satisfied", ["satisfied", "not_satisfied"]),
@@ -1112,7 +1267,7 @@ describe("semantic CLI", () => {
         evaluate: async (_state: unknown, questions: Record<string, any>) => {
           if (questions.action) {
             const labels = Object.keys(questions.action.criteria);
-            if (actionCalls++ === 0) return provider({ action: choice("click:add-old", labels) });
+            if (actionCalls++ === 0) return provider({ action: choice("click:add-old", labels) }, questions);
             offeredAfterWrite = labels;
             return invalidProviderChoice("action", labels);
           }
@@ -1155,10 +1310,10 @@ describe("semantic CLI", () => {
         evaluate: async (_state: unknown, questions: Record<string, any>) => {
           if (questions.action) {
             const labels = Object.keys(questions.action.criteria);
-            if (actionDecisions++ === 0) return provider({ action: choice("click:alpha", labels) });
+            if (actionDecisions++ === 0) return provider({ action: choice("click:alpha", labels) }, questions);
             retryMenus.push(labels);
             if (actionDecisions === 2) return invalidProviderChoice("action", labels);
-            return provider({ action: choice("click:beta", labels) });
+            return provider({ action: choice("click:beta", labels) }, questions);
           }
           const verdict = verifications++ === 0 ? "not_satisfied" : "satisfied";
           return provider({
@@ -1196,9 +1351,9 @@ describe("semantic CLI", () => {
         evaluate: async (_state: unknown, questions: Record<string, any>) => {
           if (questions.action) {
             const labels = Object.keys(questions.action.criteria);
-            if (actionCalls++ === 0) return provider({ action: choice("click:alpha", labels) });
+            if (actionCalls++ === 0) return provider({ action: choice("click:alpha", labels) }, questions);
             secondMenu = labels;
-            return provider({ action: choice("stop", labels) });
+            return provider({ action: choice("stop", labels) }, questions);
           }
           return provider({
             verdict: choice("not_satisfied", ["satisfied", "not_satisfied"]),
@@ -1242,9 +1397,9 @@ describe("semantic CLI", () => {
           evaluate: async (_state: unknown, questions: Record<string, any>) => {
             if (questions.action) {
               const labels = Object.keys(questions.action.criteria);
-              if (actionCalls++ === 0) return provider({ action: choice("click:alpha", labels) });
+              if (actionCalls++ === 0) return provider({ action: choice("click:alpha", labels) }, questions);
               secondMenu = labels;
-              return provider({ action: choice("stop", labels) });
+              return provider({ action: choice("stop", labels) }, questions);
             }
             return provider({
               verdict: choice("not_satisfied", ["satisfied", "not_satisfied"]),
@@ -1330,7 +1485,7 @@ describe("semantic CLI", () => {
           if (questions.action) {
             const labels = Object.keys(questions.action.criteria);
             if (actionCalls++ > 0) secondMenu = labels;
-            return provider({ action: choice("click:e2", labels) });
+            return provider({ action: choice("click:e2", labels) }, questions);
           }
           const verdict = verifications++ ? "satisfied" : "not_satisfied";
           return provider({
@@ -1381,7 +1536,7 @@ describe("semantic CLI", () => {
           if (questions.action) {
             const labels = Object.keys(questions.action.criteria);
             offered.push(labels);
-            return provider({ action: choice(requestedActions[actionIndex++], labels) });
+            return provider({ action: choice(requestedActions[actionIndex++], labels) }, questions);
           }
           const verdict = verificationIndex++ === 2 ? "satisfied" : "not_satisfied";
           return provider({
@@ -1432,7 +1587,7 @@ describe("semantic CLI", () => {
         evaluate: async (_state: unknown, questions: Record<string, any>) => {
           if (questions.action) {
             const labels = Object.keys(questions.action.criteria);
-            return provider({ action: choice("click:e2", labels) });
+            return provider({ action: choice("click:e2", labels) }, questions);
           }
           const verdict = verifications++ ? "satisfied" : "not_satisfied";
           return provider({
@@ -1463,7 +1618,7 @@ describe("semantic CLI", () => {
           if (!questions.action) {
             throw new Error("provider disconnected");
           }
-          return provider({ action: choice("click:e2", Object.keys(questions.action.criteria)) });
+          return provider({ action: choice("click:e2", Object.keys(questions.action.criteria)) }, questions);
         },
         now: () => 0,
       },
@@ -1493,7 +1648,7 @@ describe("semantic CLI", () => {
           );
         },
         evaluate: async (_state: unknown, questions: Record<string, any>) =>
-          provider({ action: choice("click:e2", Object.keys(questions.action.criteria)) }),
+          provider({ action: choice("click:e2", Object.keys(questions.action.criteria)) }, questions),
         now: () => 0,
       },
     );
@@ -1522,7 +1677,7 @@ describe("semantic CLI", () => {
           if (!questions.action) {
             verificationCalls++;
           }
-          return provider({ action: choice("click:e2", Object.keys(questions.action.criteria)) });
+          return provider({ action: choice("click:e2", Object.keys(questions.action.criteria)) }, questions);
         },
         now: () => 0,
       },
@@ -1569,7 +1724,7 @@ describe("semantic CLI", () => {
         },
         evaluate: async (_state: unknown, questions: Record<string, any>) => {
           const labels = Object.keys(questions.action.criteria);
-          return provider({ action: choice(selections++ ? "stop" : "fill:e1:email", labels) });
+          return provider({ action: choice(selections++ ? "stop" : "fill:e1:email", labels) }, questions);
         },
         now: () => 0,
       },
@@ -1734,7 +1889,7 @@ describe("semantic CLI", () => {
           if (questions.action) {
             return provider({
               action: choice("click:e63", Object.keys(questions.action.criteria), 0.65),
-            });
+            }, questions);
           }
           return provider({
             verdict: choice("satisfied", ["satisfied", "not_satisfied"]),

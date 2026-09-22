@@ -4,7 +4,7 @@ const SEMANTIC_POLICY = Object.freeze({
   model: "jev-1.13.0",
   timeoutMs: 5_000,
   probabilitySumTolerance: 0.01,
-  thresholds: Object.freeze({ find: 0.7, filter: 0.65, verifyPositive: 0.85, verifyNegative: 0.85, write: 0.95, exactRefWrite: 0.65 }),
+  thresholds: Object.freeze({ find: 0.7, filter: 0.65, verifyPositive: 0.85, verifyNegative: 0.85, prerequisiteSupported: 0.75, prerequisiteBlocked: 0.9, write: 0.95, exactRefWrite: 0.65 }),
   limits: Object.freeze({
     stateBytes: 24 * 1024,
     candidates: 64,
@@ -20,6 +20,8 @@ const SEMANTIC_POLICY = Object.freeze({
     maxWallMs: 60_000,
     providerCalls: 17,
     invalidActionDecisionRetries: 1,
+    directActionRetryChoices: 18,
+    invalidActionDecisionRegionTop: 2,
     staleRefreshes: 2,
     identicalObservationHashes: 2,
   }),
@@ -159,6 +161,21 @@ function candidateDescription(candidate) {
   return parts.join(" | ").slice(0, 1_024) || null;
 }
 
+function actionDescription(action, state) {
+  const ref = action.ref || action.concreteRef;
+  const candidate = ref && Array.isArray(state.candidates)
+    ? state.candidates.find((item) => item.id === ref)
+    : null;
+  const parts = [action.kind, candidate?.role, candidate?.name];
+  if (candidate?.state?.checked === true) parts.push("checked");
+  if (candidate?.state?.checked === false) parts.push("unchecked");
+  if (candidate?.state?.selected === true) parts.push("selected");
+  if (candidate?.state?.selected === false) parts.push("not selected");
+  if (action.kind === "scroll") parts.push(action.direction);
+  if (action.kind === "wait") parts.push(`${action.durationMs}ms`);
+  return parts.filter((value) => value !== undefined && value !== "").join(" | ").slice(0, 1_024) || null;
+}
+
 async function find({ state, goal, candidates, thresholds = {}, evaluate }) {
   goal = validateGoal(goal);
   assertUniqueItems(candidates, SEMANTIC_POLICY.limits.candidates, "candidates");
@@ -267,22 +284,64 @@ async function chooseAction({ state, goal, actions, origin, allowWrite = false, 
   for (const value of [...allowRefs, ...inputSlots]) assertOpaqueId(value, "authorization identifier");
   const eligible = actions.filter((action) => validateAction(action, { origin, allowWrite, allowRefs, inputSlots }));
   const labels = [...eligible.map((action) => action.id), "stop"];
+  const actionCriteria = Object.fromEntries(eligible.map((action) => [action.id, actionDescription(action, state)]));
+  actionCriteria.stop = "The goal is already satisfied, or no supplied action can safely make progress";
+  const writeActions = eligible.filter((item) => item.kind === "click" || item.kind === "fill");
+  const questions = {
+    action: {
+      type: "choice",
+      instructions: `Choose the single next supplied action that safely advances this multi-step goal: ${goal}. The action only needs to make progress. Choose stop only if the goal is already satisfied or no supplied action can safely make progress.`,
+      criteria: actionCriteria,
+    },
+  };
+  const evidence = writeActions.length && Array.isArray(state.chunks) ? state.chunks : [];
+  if (writeActions.length) {
+    assertUniqueItems(evidence, SEMANTIC_POLICY.limits.chunks, "chunks");
+    questions.prerequisites = {
+      type: "choice",
+      instructions: `Before any mutation, determine whether the supplied page state explicitly supports every product or variant prerequisite in this goal: ${goal}`,
+      criteria: {
+        supported: "Every explicit product and variant prerequisite is already satisfied or visibly available through supplied controls",
+        blocked: "At least one explicit product or variant prerequisite is contradicted or absent from the supplied page state",
+        uncertain: "The supplied page state does not establish whether all explicit prerequisites are supported",
+      },
+    };
+    questions.prerequisite_evidence = choiceQuestion(
+      "Select the supplied page region most relevant to the prerequisite verdict",
+      [...evidence.map((chunk) => chunk.id), "none"],
+    );
+  }
   const response = await evaluatedChoices({
     state,
-    questions: { action: choiceQuestion(`Select one supplied action for this goal, or stop: ${goal}`, labels) },
+    questions,
     evaluate,
   });
   const decision = response.decisions.action;
+  const prerequisiteDecision = response.decisions.prerequisites || null;
+  const prerequisiteEvidenceDecision = response.decisions.prerequisite_evidence || null;
+  const prerequisiteSupported = thresholds.prerequisiteSupported ?? SEMANTIC_POLICY.thresholds.prerequisiteSupported;
+  const prerequisiteBlocked = thresholds.prerequisiteBlocked ?? SEMANTIC_POLICY.thresholds.prerequisiteBlocked;
+  let prerequisiteStatus = "not_applicable";
+  if (writeActions.length) {
+    prerequisiteStatus = "uncertain";
+    if (prerequisiteDecision.label === "supported" && prerequisiteDecision.probability >= prerequisiteSupported) prerequisiteStatus = "supported";
+    if (prerequisiteDecision.label === "blocked" && prerequisiteDecision.probability >= prerequisiteBlocked) prerequisiteStatus = "blocked";
+  }
+  const prerequisiteEvidenceThreshold = SEMANTIC_POLICY.thresholds.filter;
+  const prerequisiteEvidence = !prerequisiteEvidenceDecision || prerequisiteEvidenceDecision.label === "none" || prerequisiteEvidenceDecision.probability < prerequisiteEvidenceThreshold
+    ? null
+    : evidence.find((chunk) => chunk.id === prerequisiteEvidenceDecision.label) || null;
   const action = eligible.find((item) => item.id === decision.label) || null;
-  const writeActions = eligible.filter((item) => item.kind === "click" || item.kind === "fill");
   const exactRefWrite = action && (action.kind === "click" || action.kind === "fill") &&
     allowRefs.length === 1 && writeActions.length === 1 && writeActions[0].ref === allowRefs[0];
   const appliedThreshold = action && (action.kind === "click" || action.kind === "fill")
     ? exactRefWrite ? thresholds.exactRefWrite ?? SEMANTIC_POLICY.thresholds.exactRefWrite : thresholds.write ?? SEMANTIC_POLICY.thresholds.write
     : thresholds.find ?? SEMANTIC_POLICY.thresholds.find;
-  const selected = action && decision.probability >= appliedThreshold ? action : null;
+  const write = action && (action.kind === "click" || action.kind === "fill");
+  const blocked = prerequisiteStatus === "blocked" && (!action || write);
+  const selected = action && decision.probability >= appliedThreshold && (!write || prerequisiteStatus === "supported") ? action : null;
   return {
-    status: selected ? "selected" : "uncertain",
+    status: blocked ? "blocked" : selected ? "selected" : "uncertain",
     action: selected,
     appliedThreshold,
     decision,
@@ -296,6 +355,12 @@ async function chooseAction({ state, goal, actions, origin, allowWrite = false, 
       ...(action.ref || action.concreteRef ? { ref: action.ref || action.concreteRef } : {}),
       probability: decision.probability,
     } : null,
+    prerequisiteStatus,
+    prerequisiteThresholds: { supported: prerequisiteSupported, blocked: prerequisiteBlocked },
+    prerequisiteDecision,
+    prerequisiteEvidence,
+    prerequisiteEvidenceThreshold,
+    prerequisiteEvidenceDecision,
     model: response.model,
     usage: response.usage,
   };

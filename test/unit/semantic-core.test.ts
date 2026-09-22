@@ -20,7 +20,16 @@ function responseFor(
     Object.entries(questions).map(([name, question]) => {
       const labels = Object.keys(question.criteria);
       const selected = selections[name] || labels[0];
-      const remainder = labels.length > 1 ? (1 - selectedProbability) / (labels.length - 1) : 0;
+      let probability = selectedProbability;
+      if (labels.length === 1) {
+        probability = 1;
+      } else if (
+        selections[name] === undefined &&
+        (name === "prerequisites" || name === "prerequisite_evidence")
+      ) {
+        probability = 0.99;
+      }
+      const remainder = labels.length > 1 ? (1 - probability) / (labels.length - 1) : 0;
       return [
         name,
         {
@@ -28,7 +37,7 @@ function responseFor(
           choice: selected,
           confidence: 0.42,
           probabilities: Object.fromEntries(
-            labels.map((label) => [label, label === selected ? selectedProbability : remainder]),
+            labels.map((label) => [label, label === selected ? probability : remainder]),
           ),
         },
       ];
@@ -53,6 +62,8 @@ describe("semantic decision core", () => {
         filter: 0.65,
         verifyPositive: 0.85,
         verifyNegative: 0.85,
+        prerequisiteSupported: 0.75,
+        prerequisiteBlocked: 0.9,
         write: 0.95,
         exactRefWrite: 0.65,
       },
@@ -71,6 +82,8 @@ describe("semantic decision core", () => {
         maxWallMs: 60_000,
         providerCalls: 17,
         invalidActionDecisionRetries: 1,
+        directActionRetryChoices: 18,
+        invalidActionDecisionRegionTop: 2,
         staleRefreshes: 2,
         identicalObservationHashes: 2,
       },
@@ -193,6 +206,146 @@ describe("semantic decision core", () => {
 
     expect(Object.keys(evaluate.mock.calls[0][1].action.criteria)).toEqual(["nav", "wait", "stop"]);
     expect(result).toMatchObject({ status: "selected", action: actions[0] });
+  });
+
+  it("describes closed actions and blocks an incompatible write with bounded evidence", async () => {
+    const state = {
+      candidates: [{ id: "ref.1", role: "radio", name: "M", state: { checked: false } }],
+      chunks: [{ id: "product", text: "Available colours: Larch, Dark Jade", refs: ["ref.1"] }],
+    };
+    const evaluate = evaluateWith(
+      { action: "click", prerequisites: "blocked", prerequisite_evidence: "product" },
+      0.99,
+    );
+    const result = await chooseAction({
+      state,
+      goal: "Select Sea Salt and size M",
+      actions: [{ id: "click", kind: "click", ref: "ref.1" }],
+      origin: "https://example.test",
+      allowWrite: true,
+      thresholds: { write: 0.85 },
+      evaluate,
+    });
+
+    expect(evaluate.mock.calls[0][1].action.criteria).toEqual({
+      click: "click | radio | M | unchecked",
+      stop: "The goal is already satisfied, or no supplied action can safely make progress",
+    });
+    expect(result).toMatchObject({
+      status: "blocked",
+      action: null,
+      prerequisiteStatus: "blocked",
+      prerequisiteThresholds: { supported: 0.75, blocked: 0.9 },
+      prerequisiteEvidence: state.chunks[0],
+      prerequisiteEvidenceThreshold: 0.65,
+    });
+  });
+
+  it("does not present low-confidence prerequisite evidence as support", async () => {
+    const state = {
+      chunks: [
+        { id: "product", text: "Available colours: Larch" },
+        { id: "shipping", text: "Delivery information" },
+      ],
+    };
+    const evaluate = vi.fn(async (_state: unknown, questions: Questions) => {
+      const response = responseFor(
+        questions,
+        { action: "click", prerequisites: "blocked", prerequisite_evidence: "product" },
+        0.99,
+      );
+      response.answers.prerequisite_evidence.probabilities = {
+        product: 0.37,
+        shipping: 0.32,
+        none: 0.31,
+      };
+      return response;
+    });
+    const result = await chooseAction({
+      state,
+      goal: "Select Sea Salt",
+      actions: [{ id: "click", kind: "click", ref: "ref.1" }],
+      origin: "https://example.test",
+      allowWrite: true,
+      evaluate,
+    });
+
+    expect(result).toMatchObject({
+      status: "blocked",
+      prerequisiteEvidence: null,
+      prerequisiteEvidenceThreshold: 0.65,
+      prerequisiteEvidenceDecision: { label: "product", probability: 0.37 },
+    });
+  });
+
+  it("requires supported prerequisites for writes but not read-only navigation", async () => {
+    const write = { id: "click", kind: "click", ref: "ref.1" };
+    const options = {
+      state: {},
+      goal: "advance",
+      actions: [write],
+      origin: "https://example.test",
+      allowWrite: true,
+      thresholds: { write: 0.7 },
+    };
+    const uncertainWrite = await chooseAction({
+      ...options,
+      evaluate: evaluateWith({ action: "click", prerequisites: "supported" }, 0.74),
+    });
+    const acceptedWrite = await chooseAction({
+      ...options,
+      evaluate: evaluateWith({ action: "click", prerequisites: "supported" }, 0.75),
+    });
+    const navigation = { id: "nav", kind: "navigate", url: "https://example.test/product" };
+    const acceptedNavigation = await chooseAction({
+      ...options,
+      actions: [navigation],
+      allowWrite: false,
+      evaluate: evaluateWith({ action: "nav", prerequisites: "blocked" }, 0.99),
+    });
+
+    expect(uncertainWrite).toMatchObject({ status: "uncertain", prerequisiteStatus: "uncertain" });
+    expect(acceptedWrite).toMatchObject({ status: "selected", prerequisiteStatus: "supported" });
+    expect(acceptedNavigation).toMatchObject({
+      status: "selected",
+      action: navigation,
+      prerequisiteStatus: "not_applicable",
+    });
+
+    const overridden = await chooseAction({
+      ...options,
+      thresholds: { write: 0.7, prerequisiteSupported: 0.74 },
+      evaluate: evaluateWith({ action: "click", prerequisites: "supported" }, 0.74),
+    });
+    expect(overridden).toMatchObject({ status: "selected", action: write });
+  });
+
+  it("applies the prerequisite block threshold without weakening write confidence", async () => {
+    const options = {
+      state: {},
+      goal: "change an unavailable variant",
+      actions: [{ id: "click", kind: "click", ref: "ref.1" }],
+      origin: "https://example.test",
+      allowWrite: true,
+      thresholds: { write: 0.8 },
+    };
+    const below = await chooseAction({
+      ...options,
+      evaluate: evaluateWith({ action: "click", prerequisites: "blocked" }, 0.89),
+    });
+    const blocked = await chooseAction({
+      ...options,
+      evaluate: evaluateWith({ action: "click", prerequisites: "blocked" }, 0.9),
+    });
+    const overridden = await chooseAction({
+      ...options,
+      thresholds: { write: 0.8, prerequisiteBlocked: 0.89 },
+      evaluate: evaluateWith({ action: "click", prerequisites: "blocked" }, 0.89),
+    });
+
+    expect(below).toMatchObject({ status: "uncertain", prerequisiteStatus: "uncertain" });
+    expect(blocked).toMatchObject({ status: "blocked", prerequisiteStatus: "blocked" });
+    expect(overridden).toMatchObject({ status: "blocked", prerequisiteStatus: "blocked" });
   });
 
   it("applies the exact-ref write threshold at its 0.64/0.65 boundary", async () => {
