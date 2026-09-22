@@ -75,7 +75,7 @@ function wslRegistryExec(
 
 function createWslDoctorFixture(
   wrapperWindowsPath = "C:\\Users\\Nico\\AppData\\Local\\surf-cli\\host-wrapper-wsl.cmd",
-  wrapperContent = "@echo off\r\nrem SURF_NATIVE_HOST_LAUNCH_PROBE_V1\r\n",
+  wrapperContent = '@echo off\r\nrem SURF_NATIVE_HOST_LAUNCH_PROBE_V1\r\nwsl.exe -d "Ubuntu" --cd "/home/surf/native" --exec "/usr/bin/node" "/home/surf/native/host.cjs" %*\r\n',
 ) {
   const tempDir = makeTempDir();
   const socketPath = path.join(tempDir, "surf.sock");
@@ -114,6 +114,8 @@ function createWslDoctorFixture(
       platform: "linux",
       homeDir: tempDir,
       env: { WSL_DISTRO_NAME: "Ubuntu" },
+      nodePath: "/usr/bin/node",
+      hostPath: "/home/surf/native/host.cjs",
       fs: {
         existsSync: (filePath: string) => filePath === socketPath || fs.existsSync(filePath),
         statSync: (filePath: string) =>
@@ -512,6 +514,52 @@ describe("surf doctor", () => {
     );
     expect(report.checks.find((check: any) => check.id === "wrapper-launch").message).toContain(
       "surf install <extension-id>",
+    );
+  });
+
+  it.each(["before", "after"])(
+    "does not execute a modified wrapper with an extra %s command",
+    async (position) => {
+      const valid =
+        '@echo off\r\nrem SURF_NATIVE_HOST_LAUNCH_PROBE_V1\r\nwsl.exe -d "Ubuntu" --cd "/home/surf/native" --exec "/usr/bin/node" "/home/surf/native/host.cjs" %*\r\n';
+      const extra = "echo unexpected\r\n";
+      const wrapper = position === "before" ? extra + valid : valid + extra;
+      const fixture = createWslDoctorFixture(undefined, wrapper);
+      let called = false;
+      const report = await runDoctor(
+        { browser: "chrome", socket: fixture.socketPath },
+        {
+          ...fixture.deps,
+          probeWindowsWrapper: () => {
+            called = true;
+          },
+        },
+      );
+      expect(called).toBe(false);
+      expect(report.checks).toEqual(
+        expect.arrayContaining([expect.objectContaining({ id: "wrapper-launch", status: "warn" })]),
+      );
+    },
+  );
+
+  it("fails doctor when the validated default distro changes", async () => {
+    const fixture = createWslDoctorFixture(
+      undefined,
+      '@echo off\r\nrem SURF_NATIVE_HOST_LAUNCH_PROBE_V1\r\nwsl.exe --cd "/home/surf/native" --exec "/usr/bin/node" "/home/surf/native/host.cjs" %*\r\n',
+    );
+    const report = await runDoctor(
+      { browser: "chrome", socket: fixture.socketPath },
+      {
+        ...fixture.deps,
+        probeWindowsWrapper: (_path: string, options: any) => {
+          expect(options.verifyDistro).toBe(true);
+          return "Other";
+        },
+      },
+    );
+    expect(report.ok).toBe(false);
+    expect(report.checks).toEqual(
+      expect.arrayContaining([expect.objectContaining({ id: "wrapper-launch", status: "fail" })]),
     );
   });
 

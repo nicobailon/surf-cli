@@ -14,7 +14,7 @@ const { parseListenEndpoint } = require("../native/listener.cjs");
 const { normalizeSocketConfig } = require("../native/socket-permissions.cjs");
 const { getStateDir, loadHostIdentity, loadRegistry } = require("../native/remote-auth.cjs");
 const {
-  WRAPPER_PROBE_CAPABILITY_MARKER,
+  renderWslWrapper,
   probeWindowsWrapper,
 } = require("../native/native-host-launch-probe.cjs");
 
@@ -155,16 +155,14 @@ function wslPathToWindowsPath(wslPath) {
   return convertWslPath(wslPath);
 }
 
-function createWrapper(wrapperDir, nodePath, hostPath, target = process.platform, listen, socketMode, socketGroup) {
+function createWrapper(wrapperDir, nodePath, hostPath, target = process.platform, listen, socketMode, socketGroup, distro = process.env.WSL_DISTRO_NAME) {
   const socketConfig = normalizeSocketConfig(socketMode, socketGroup);
   assertSocketAccessTargetSupported(socketConfig.mode, socketConfig.group, target);
   fs.mkdirSync(wrapperDir, { recursive: true });
 
   if (target === "wsl-windows") {
     const cmdPath = path.join(wrapperDir, "host-wrapper-wsl.cmd");
-    const distroArg = process.env.WSL_DISTRO_NAME ? ` -d "${process.env.WSL_DISTRO_NAME}"` : "";
-    const content = `@echo off\r\n${WRAPPER_PROBE_CAPABILITY_MARKER}\r\nwsl.exe${distroArg} --cd "${path.dirname(hostPath)}" --exec "${nodePath}" "${hostPath}" %*\r\n`;
-    fs.writeFileSync(cmdPath, content);
+    fs.writeFileSync(cmdPath, renderWslWrapper(nodePath, hostPath, distro));
     return wslPathToWindowsPath(cmdPath);
   }
 
@@ -192,10 +190,25 @@ ${listen ? `: "\${SURF_LISTEN:=${listen}}"\nexport SURF_LISTEN\n` : ""}${socketE
 
 function installWithValidatedWrapper(wrapperPath, target, install, deps = {}) {
   if (target === "wsl-windows") {
+    if (!deps.distro) throw new Error("WSL_DISTRO_NAME is required for Windows browser installation");
     try {
       probeWindowsWrapper(wrapperPath, deps);
     } catch (error) {
-      throw new Error(`WSL wrapper validation failed before registration: ${error.message}`);
+      if (!error.message.includes("WSL_E_DISTRO_NOT_FOUND")) {
+        throw new Error(`WSL wrapper validation failed before registration: ${error.message}`);
+      }
+      const explicitFailure = error;
+      const original = fs.readFileSync(deps.wrapperFsPath, "utf8");
+      fs.writeFileSync(deps.wrapperFsPath, renderWslWrapper(deps.nodePath, deps.hostPath, null));
+      try {
+        const defaultDistro = probeWindowsWrapper(wrapperPath, { ...deps, verifyDistro: true });
+        if (defaultDistro !== deps.distro) {
+          throw new Error("Windows default WSL distro does not match the installing distro");
+        }
+      } catch (fallbackError) {
+        fs.writeFileSync(deps.wrapperFsPath, original);
+        throw new Error(`WSL wrapper validation failed before registration (explicit distro: ${explicitFailure.message}; default distro: ${fallbackError.message})`);
+      }
     }
   }
   return install();
@@ -450,6 +463,9 @@ function main() {
   console.log(`Wrapper dir: ${wrapperDir}`);
   console.log("");
 
+  const wrapperFsPath = path.join(wrapperDir, "host-wrapper-wsl.cmd");
+  const previousWrapper = effectiveTarget === "wsl-windows" && fs.existsSync(wrapperFsPath)
+    ? fs.readFileSync(wrapperFsPath, "utf8") : null;
   const wrapperPath = createWrapper(
     wrapperDir,
     nodePath,
@@ -485,8 +501,12 @@ function main() {
           skipped.push(BROWSERS[browser].name);
         }
       }
-    });
+    }, { wrapperFsPath, nodePath, hostPath, distro: process.env.WSL_DISTRO_NAME });
   } catch (error) {
+    if (effectiveTarget === "wsl-windows" && installed.length === 0) {
+      if (previousWrapper === null) fs.rmSync(wrapperFsPath, { force: true });
+      else fs.writeFileSync(wrapperFsPath, previousWrapper);
+    }
     console.error(`Error: ${error.message}`);
     process.exit(1);
   }
@@ -511,6 +531,8 @@ if (require.main === module) {
 
 module.exports = {
   createWrapper,
+  findNode,
+  getHostPath,
   probeWindowsWrapper,
   installWithValidatedWrapper,
   writeManifest,

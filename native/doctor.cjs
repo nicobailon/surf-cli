@@ -11,9 +11,10 @@ const {
   runWindowsExecutable,
 } = require("../scripts/windows-interop.cjs");
 const {
-  hasLaunchProbeCapability,
+  renderWslWrapper,
   probeWindowsWrapper,
 } = require("./native-host-launch-probe.cjs");
+const { findNode, getHostPath } = require("../scripts/install-native-host.cjs");
 
 const HOST_NAME = "surf.browser.host";
 
@@ -366,21 +367,38 @@ function checkWslWrapperLaunch(manifest, context) {
     };
   }
 
-  if (!hasLaunchProbeCapability(wrapperContent)) {
+  const nodePath = context.nodePath || findNode();
+  const hostPath = context.hostPath || getHostPath();
+  const distro = context.env.WSL_DISTRO_NAME;
+  let explicitWrapper = null;
+  let defaultWrapper = null;
+  if (nodePath && hostPath && distro) {
+    try {
+      explicitWrapper = renderWslWrapper(nodePath, hostPath, distro);
+      defaultWrapper = renderWslWrapper(nodePath, hostPath, null);
+    } catch {
+      // Do not execute a wrapper whose installed paths cannot be rendered safely.
+    }
+  }
+  if (wrapperContent !== explicitWrapper && wrapperContent !== defaultWrapper) {
     return {
       id: "wrapper-launch",
       status: "warn",
       message:
-        "Surf's managed WSL wrapper predates safe launch probes, so it was not executed. Run `surf install <extension-id>` to replace it.",
+        "Surf's managed WSL wrapper does not match this installation, so it was not executed. Run `surf install <extension-id>` to replace it.",
       path: canonicalWindowsPath,
       fsPath: wrapperFsPath,
     };
   }
 
   try {
-    context.probeWindowsWrapper(canonicalWindowsPath, {
+    const observedDistro = context.probeWindowsWrapper(canonicalWindowsPath, {
       execFileSync: context.execFileSync,
+      verifyDistro: wrapperContent === defaultWrapper,
     });
+    if (wrapperContent === defaultWrapper && observedDistro !== distro) {
+      throw new Error("Windows default WSL distro does not match this installation");
+    }
     return {
       id: "wrapper-launch",
       status: "pass",
@@ -610,6 +628,8 @@ async function runDoctor(rawOptions = {}, deps = {}) {
     fs: deps.fs || fs,
     execFileSync: deps.execFileSync || execFileSync,
     probeWindowsWrapper: deps.probeWindowsWrapper || probeWindowsWrapper,
+    nodePath: deps.nodePath,
+    hostPath: deps.hostPath,
     connectSocket: deps.connectSocket || connectSocket,
     connectTimeoutMs: options.connectTimeoutMs,
   };
