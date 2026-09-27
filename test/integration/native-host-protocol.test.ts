@@ -674,6 +674,72 @@ describe("native host protocol integration", () => {
     expect(host.stderr()).toBe("");
   });
 
+  it("routes page text, page state, and JavaScript through the selected frame until frame.main", async () => {
+    const host = await startHostHarness();
+    const invoke = async (
+      tool: string,
+      args: Record<string, unknown>,
+      type: string,
+      response: NativeMessage = { success: true },
+    ) => {
+      const socket = net.createConnection(host.socketPath);
+      await new Promise<void>((resolve) => socket.once("connect", resolve));
+      const clientResponse = new Promise<NativeMessage>((resolve) => {
+        socket.once("data", (chunk: BufferLike) => resolve(JSON.parse(chunk.toString("utf8"))));
+      });
+      socket.write(
+        `${JSON.stringify({
+          type: "tool_request",
+          method: "execute_tool",
+          params: { tool, args },
+          id: tool,
+        })}\n`,
+      );
+      const extensionRequest = await host.waitForMessage(
+        (message) => message.type === type,
+        `${type} for ${tool}`,
+      );
+      host.send({ id: extensionRequest.id, ...response });
+      expect((await clientResponse).error).toBeUndefined();
+      socket.end();
+      return extensionRequest;
+    };
+
+    const switched = await invoke("frame.switch", { index: 0 }, "FRAME_SWITCH", {
+      frameId: 7,
+      url: "https://example.test/frame",
+    });
+    expect(switched.frameId).toBeUndefined();
+
+    const selectedFrameRequests = [
+      await invoke("page.text", {}, "GET_PAGE_TEXT", { text: "frame text" }),
+      await invoke("page.state", {}, "PAGE_STATE"),
+      await invoke("js", { code: "return 7" }, "EXECUTE_JAVASCRIPT", { success: true, result: 7 }),
+    ];
+    for (const request of selectedFrameRequests) {
+      expect(request.frameId).toBe(7);
+    }
+    const explicitFrameRequest = await invoke(
+      "js",
+      { code: "return 11", semanticFrameId: 11 },
+      "EXECUTE_JAVASCRIPT",
+      { success: true, result: 11 },
+    );
+    expect(explicitFrameRequest.frameId).toBe(11);
+
+    await invoke("frame.main", {}, "FRAME_MAIN");
+
+    const mainFrameRequests = [
+      await invoke("page.text", {}, "GET_PAGE_TEXT", { text: "main text" }),
+      await invoke("page.state", {}, "PAGE_STATE"),
+      await invoke("js", { code: "return 0" }, "EXECUTE_JAVASCRIPT", { success: true, result: 0 }),
+    ];
+    for (const request of mainFrameRequests) {
+      expect(request.frameId).toBeUndefined();
+    }
+    expect(host.stderr()).toBe("");
+  });
+
   it("stages authenticated remote uploads before fake extension dispatch", async () => {
     const reservation = net.createServer();
     await new Promise<void>((resolve) => reservation.listen(0, "127.0.0.1", resolve));
