@@ -2571,7 +2571,7 @@ export async function handleMessage(
       if (frameId > 0) {
         return {
           error: "JavaScript execution in a selected frame is not supported safely",
-          code: "UNSUPPORTED_FRAME_EXECUTION",
+          errorCode: "UNSUPPORTED_FRAME_EXECUTION",
           frameId,
         };
       }

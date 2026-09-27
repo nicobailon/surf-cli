@@ -264,7 +264,7 @@ surf page.save --selector "#artifact" --strip-scripts --output artifact.html # S
 surf page.state                     # Modals, loading state, scroll position
 ```
 
-Use `surf page.html --strip-scripts` after the page loads when you need a static export of a Claude artifact or other rendered DOM. Use `--selector <css>` to export one element. Both commands target the active frame when `frame.switch` is active.
+Use `surf page.html --strip-scripts` after the page loads when you need a static export of a Claude artifact or other rendered DOM. Use `--selector <css>` to export one element.
 
 Element refs (`e1`, `e2`, `e3`...) are stable identifiers from the accessibility tree - semantic, predictable, and resilient to DOM changes.
 
@@ -310,7 +310,7 @@ surf frame.main                     # Return to main page
 
 | Command group | Behavior after `frame.switch` |
 | --- | --- |
-| `read` / `page.read`, `page.text`, `page.html`, `page.state` | Uses the selected extension/content frame, including a reachable out-of-process iframe (OOPIF). |
+| `read` / `page.read`, `page.text`, `page.state` | Uses the selected extension/content frame, including a reachable out-of-process iframe (OOPIF). |
 | Frame-aware interactions such as `click`, `type`, `select`, and `locate.*` | Uses the selected extension/content frame. |
 | `js` | Refuses to run with code `UNSUPPORTED_FRAME_EXECUTION`; it never silently falls back to the main frame. Run `frame.main` first to restore normal main-frame `js` behavior. |
 | `frame.js --id <id>` | Uses an explicit CDP frame ID, independently of `frame.switch`. Extension frame IDs are not accepted, and OOPIFs absent from the CDP tree remain unreachable. |

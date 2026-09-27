@@ -681,6 +681,7 @@ describe("native host protocol integration", () => {
       args: Record<string, unknown>,
       type: string,
       response: NativeMessage = { success: true },
+      expectError = false,
     ) => {
       const socket = net.createConnection(host.socketPath);
       await new Promise<void>((resolve) => socket.once("connect", resolve));
@@ -700,7 +701,8 @@ describe("native host protocol integration", () => {
         `${type} for ${tool}`,
       );
       host.send({ id: extensionRequest.id, ...response });
-      expect((await clientResponse).error).toBeUndefined();
+      const received = await clientResponse;
+      expect(received.error !== undefined).toBe(expectError);
       socket.end();
       return extensionRequest;
     };
@@ -726,6 +728,25 @@ describe("native host protocol integration", () => {
       { success: true, result: 11 },
     );
     expect(explicitFrameRequest.frameId).toBe(11);
+
+    await invoke(
+      "page.text",
+      {},
+      "GET_PAGE_TEXT",
+      {
+        error: "Selected frame is gone",
+        errorCode: "frame_context_reset",
+        errorDetails: { reason: "missing-frame" },
+      },
+      true,
+    );
+    const requestAfterReset = await invoke("page.state", {}, "PAGE_STATE");
+    expect(requestAfterReset.frameId).toBeUndefined();
+
+    await invoke("frame.switch", { index: 0 }, "FRAME_SWITCH", {
+      frameId: 7,
+      url: "https://example.test/frame",
+    });
 
     await invoke("frame.main", {}, "FRAME_MAIN");
 

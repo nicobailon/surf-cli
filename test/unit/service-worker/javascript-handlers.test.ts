@@ -116,7 +116,7 @@ describe("JavaScript command handlers", () => {
 
     expect(result).toEqual({
       error: "JavaScript execution in a selected frame is not supported safely",
-      code: "UNSUPPORTED_FRAME_EXECUTION",
+      errorCode: "UNSUPPORTED_FRAME_EXECUTION",
       frameId: 7,
     });
     expect(chrome.debugger.sendCommand).not.toHaveBeenCalled();
@@ -312,7 +312,7 @@ describe("Page state handler", () => {
     resetChromeMock();
   });
 
-  it("inspects the explicitly selected extension frame", async () => {
+  it("returns the same state shape for selected and main frames", async () => {
     const handleMessage = await loadHandleMessage();
     const chrome = (globalThis as any).chrome;
     const expectedState = {
@@ -334,6 +334,14 @@ describe("Page state handler", () => {
       func: expect.any(Function),
     });
     expect(chrome.debugger.sendCommand).not.toHaveBeenCalled();
+
+    chrome.debugger.sendCommand.mockImplementation(async (_target: unknown, method: string) =>
+      method === "Runtime.evaluate" ? { result: { value: expectedState } } : {},
+    );
+    const mainResult = await handleMessage({ type: "PAGE_STATE", tabId: 1 }, {});
+
+    expect(mainResult).toEqual(expectedState);
+    expect(chrome.scripting.executeScript).toHaveBeenCalledTimes(1);
   });
 });
 

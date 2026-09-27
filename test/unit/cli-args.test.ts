@@ -491,6 +491,7 @@ describe("CLI argument parsing", () => {
     expect(stdout).toContain("UNSUPPORTED_FRAME_EXECUTION");
     expect(stdout).toContain("frame.js uses an explicit CDP frame ID");
     expect(stdout).toContain("Tab, browser, and network commands are not");
+    expect(stdout).not.toContain("page.html");
     expect(stdout).not.toContain("subsequent commands target that frame context");
   });
 
