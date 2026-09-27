@@ -1287,10 +1287,7 @@ describe("native host protocol integration", () => {
       host.send({ id: click.id, success: true });
       const settled = await primaryResponse;
       expect(settled.error).toBeUndefined();
-      const pendingPath = settled.result.content[0].text.match(
-        /^OK\nScreenshot \(pending\): (.+)$/,
-      )?.[1];
-      expect(pendingPath).toBeTruthy();
+      expect(settled.result.content[0].text).toMatch(/^OK\nScreenshot \(pending\): /);
 
       const screenshot = await host.waitForMessage(
         (message) => message.type === "EXECUTE_SCREENSHOT",

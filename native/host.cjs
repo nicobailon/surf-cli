@@ -3047,26 +3047,25 @@ function processInput() {
             // this tab cannot show up in the screenshot.
             const background = !pending.autoScreenshotOutput;
             const captureRequest = background ? null : pending.request;
-            const strictTarget = pending.request?.target?.strict === true;
             const laneToken = background ? pending.request?.admissionToken : null;
             if (background) {
               if (pending.request) pending.request.admissionToken = null;
               sendToolResponse(socket, originalId, { ...msg, autoScreenshot: { path: screenshotPath, pending: true } }, null);
             }
             // Written under a name the pi-auto- rotation ignores, then renamed, so a reader
-            // never sees a partial or unresized file.
+            // never sees a partially written file.
             const partialPath = path.join(path.dirname(screenshotPath), `.${path.basename(screenshotPath)}`);
             abortableDelay(500, captureRequest?.signal)
               .then(() => requestCallExtension(
                 captureRequest,
                 "screenshot",
-                { type: "EXECUTE_SCREENSHOT", tabId, strictTarget },
+                { type: "EXECUTE_SCREENSHOT", tabId, strictTarget: pending.request?.target?.strict === true },
               ))
               .then((screenshotMsg) => {
                 if (!screenshotMsg.base64) throw new Error(screenshotMsg.error || "Failed to capture");
                 fs.writeFileSync(partialPath, Buffer.from(screenshotMsg.base64, "base64"), { mode: 0o600 });
                 try { fs.chmodSync(partialPath, 0o600); } catch {}
-                if ((screenshotMsg.width || 0) > 1200 || (screenshotMsg.height || 0) > 1200) resizeImage(partialPath, 1200);
+                if (screenshotMsg.width > 1200 || screenshotMsg.height > 1200) resizeImage(partialPath, 1200);
                 fs.renameSync(partialPath, screenshotPath);
                 if (!background) sendToolResponse(socket, originalId, { ...msg, autoScreenshot: { path: screenshotPath } }, null);
               })
