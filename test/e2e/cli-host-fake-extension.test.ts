@@ -494,7 +494,7 @@ describe("CLI/native-host/fake-extension E2E contract", () => {
 
       const state = await runCli(socketPath, ["page.state", "--json"]);
       expect(state).toMatchObject({ code: 0 });
-      expect(JSON.parse(state.stdout)).toMatchObject({
+      expect(JSON.parse(state.stdout).result).toMatchObject({
         hasModal: true,
         url: "https://fixture.test/frame",
       });
