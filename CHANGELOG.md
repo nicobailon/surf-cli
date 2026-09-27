@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+### Fixed
+- **Selected frame context** - `page.text` and `page.state` now use the frame selected by `frame.switch`, including reachable out-of-process iframes. `js` now refuses selected-frame execution explicitly instead of silently running in the main frame. See [#319](https://github.com/nicobailon/surf-cli/issues/319).
+- **Page read and path handling** - `page.read --all` now selects the all filter, and path rewriting skips work when there are no paths to rewrite. See [#322](https://github.com/nicobailon/surf-cli/pull/322).
+
+Thanks to [@tryingET](https://github.com/tryingET) for [#319](https://github.com/nicobailon/surf-cli/issues/319) and [#322](https://github.com/nicobailon/surf-cli/pull/322).
+
 ## [2.20.0] - 2026-09-23
 
 ### Highlights

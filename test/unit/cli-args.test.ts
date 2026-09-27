@@ -482,6 +482,18 @@ describe("CLI argument parsing", () => {
     expect(stdout).toContain("See also: frame.list, frame.switch, frame.js");
   });
 
+  it("describes the frame command scope without claiming every command follows frame.switch", async () => {
+    const { code, stdout, stderr } = await runCliWithoutSocket(["--help-topic", "frames"]);
+
+    expect(code).toBe(0);
+    expect(stderr).toBe("");
+    expect(stdout).toContain("frame-aware page commands");
+    expect(stdout).toContain("UNSUPPORTED_FRAME_EXECUTION");
+    expect(stdout).toContain("frame.js uses an explicit CDP frame ID");
+    expect(stdout).toContain("Tab, browser, and network commands are not");
+    expect(stdout).not.toContain("subsequent commands target that frame context");
+  });
+
   it("keeps remote credential management local when remote routing is configured", async () => {
     const credential = createRemoteCredential();
     const result = await runCliWithoutSocket(["remote", "list"], {
