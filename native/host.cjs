@@ -1712,7 +1712,6 @@ function completeOwnedRequest(context, id, outcome) {
 
 async function sendRequestDownloads(context, request, result) {
   if (!request) return result;
-  let rewritten = result;
   for (const output of request.outputTransfers || []) {
     await streamFileDownload({
       writer: { send: (frame) => sendSocket(context.socket, frame) },
@@ -1722,19 +1721,15 @@ async function sendRequestDownloads(context, request, result) {
       original: output.original,
     });
   }
-  rewritten = rewriteTransferPaths(rewritten, request.pathRewrites || []);
-  return rewritten;
+  return rewriteTransferPaths(result, request.pathRewrites || []);
 }
-
-const PAGE_READ_LIMIT_BYTES = 50_000;
 
 // A long tree would flood an agent's context, so reply with the first part and keep
 // the full tree in a private file. Remote clients cannot read host files. Semantic
 // commands parse every line, so their observations stay whole.
 async function truncatePageRead(context, request, output) {
   if (!["page.read", "read_page"].includes(request?.tool) || typeof output?.pageContent !== "string" || output.semanticObservation !== undefined) return output;
-  const maxBytes = request.args?.["max-bytes"];
-  const limit = maxBytes === undefined ? PAGE_READ_LIMIT_BYTES : Number(maxBytes);
+  const limit = Number(request.args?.["max-bytes"] ?? 50_000);
   const full = Buffer.from(output.pageContent);
   if (full.length <= limit) return output;
   const lineEnd = full.lastIndexOf(10, limit);

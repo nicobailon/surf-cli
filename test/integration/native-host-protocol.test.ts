@@ -676,6 +676,11 @@ describe("native host protocol integration", () => {
 
   it("routes page text, page state, and JavaScript through the selected frame until frame.main", async () => {
     const host = await startHostHarness();
+    const transport = await openClientTransport({
+      kind: "local",
+      connectionOptions: host.socketPath,
+    });
+    let requestId = 0;
     const invoke = async (
       tool: string,
       args: Record<string, unknown>,
@@ -683,27 +688,18 @@ describe("native host protocol integration", () => {
       response: NativeMessage = { success: true },
       expectError = false,
     ) => {
-      const socket = net.createConnection(host.socketPath);
-      await new Promise<void>((resolve) => socket.once("connect", resolve));
-      const clientResponse = new Promise<NativeMessage>((resolve) => {
-        socket.once("data", (chunk: BufferLike) => resolve(JSON.parse(chunk.toString("utf8"))));
+      const clientResponse = transport.request({
+        type: "tool_request",
+        method: "execute_tool",
+        params: { tool, args },
+        id: `${tool}-${++requestId}`,
       });
-      socket.write(
-        `${JSON.stringify({
-          type: "tool_request",
-          method: "execute_tool",
-          params: { tool, args },
-          id: tool,
-        })}\n`,
-      );
       const extensionRequest = await host.waitForMessage(
         (message) => message.type === type,
         `${type} for ${tool}`,
       );
       host.send({ id: extensionRequest.id, ...response });
-      const received = await clientResponse;
-      expect(received.error !== undefined).toBe(expectError);
-      socket.end();
+      expect((await clientResponse).error !== undefined).toBe(expectError);
       return extensionRequest;
     };
 
@@ -758,6 +754,7 @@ describe("native host protocol integration", () => {
     for (const request of mainFrameRequests) {
       expect(request.frameId).toBeUndefined();
     }
+    await transport.close();
     expect(host.stderr()).toBe("");
   });
 

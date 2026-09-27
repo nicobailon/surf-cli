@@ -2526,13 +2526,8 @@ export async function handleMessage(
       if (!tabId) throw new Error("No tabId provided");
       if (!message.code) throw new Error("No code provided");
 
-      const frameId = getFrameIdForTab(tabId, message);
-      if (frameId > 0) {
-        return {
-          error: "JavaScript execution in a selected frame is not supported safely",
-          errorCode: "UNSUPPORTED_FRAME_EXECUTION",
-          frameId,
-        };
+      if (getFrameIdForTab(tabId, message) > 0) {
+        return { error: "JavaScript cannot run in a selected frame. Run frame.main first.", errorCode: "UNSUPPORTED_FRAME_EXECUTION" };
       }
 
       try {

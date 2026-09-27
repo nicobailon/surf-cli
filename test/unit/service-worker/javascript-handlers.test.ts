@@ -115,9 +115,8 @@ describe("JavaScript command handlers", () => {
     );
 
     expect(result).toEqual({
-      error: "JavaScript execution in a selected frame is not supported safely",
+      error: "JavaScript cannot run in a selected frame. Run frame.main first.",
       errorCode: "UNSUPPORTED_FRAME_EXECUTION",
-      frameId: 7,
     });
     expect(chrome.debugger.sendCommand).not.toHaveBeenCalled();
   });

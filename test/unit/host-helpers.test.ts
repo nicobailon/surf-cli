@@ -210,20 +210,16 @@ describe("mapToolToMessage", () => {
       ).toMatchObject({ type: "READ_PAGE", tabId: 71, frameId: 4 });
     });
 
-    it("maps --all to the all filter, as its help says", () => {
-      expect(helpers.mapToolToMessage("page.read", { all: true }).options.filter).toBe("all");
-      expect(helpers.mapToolToMessage("page.read", {}).options.filter).toBe("interactive");
-      expect(
-        helpers.mapToolToMessage("page.read", { all: true, filter: "interactive" }).options.filter,
-      ).toBe("interactive");
-    });
-
-    it("maps --include-hidden to the all filter with hidden elements", () => {
-      const { options } = helpers.mapToolToMessage("page.read", { "include-hidden": true });
-      expect(options).toMatchObject({ filter: "all", includeHidden: true });
-      expect(helpers.mapToolToMessage("page.read", { all: true }).options.includeHidden).toBe(
-        false,
-      );
+    it("maps --all and --include-hidden to the all filter", () => {
+      const read = (args: Record<string, unknown>) =>
+        helpers.mapToolToMessage("page.read", args).options;
+      expect(read({})).toMatchObject({ filter: "interactive", includeHidden: false });
+      expect(read({ all: true })).toMatchObject({ filter: "all", includeHidden: false });
+      expect(read({ all: true, filter: "interactive" }).filter).toBe("interactive");
+      expect(read({ "include-hidden": true })).toMatchObject({
+        filter: "all",
+        includeHidden: true,
+      });
     });
 
     it("throws when max-bytes is not a positive integer", () => {
