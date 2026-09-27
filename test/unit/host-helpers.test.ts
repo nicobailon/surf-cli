@@ -210,6 +210,14 @@ describe("mapToolToMessage", () => {
       ).toMatchObject({ type: "READ_PAGE", tabId: 71, frameId: 4 });
     });
 
+    it("maps --all to the all filter, as its help says", () => {
+      expect(helpers.mapToolToMessage("page.read", { all: true }).options.filter).toBe("all");
+      expect(helpers.mapToolToMessage("page.read", {}).options.filter).toBe("interactive");
+      expect(
+        helpers.mapToolToMessage("page.read", { all: true, filter: "interactive" }).options.filter,
+      ).toBe("interactive");
+    });
+
     it("throws when max-bytes is not a positive integer", () => {
       for (const bad of ["abc", "0", "-5", "12abc", "1.5", " ", ""]) {
         expect(() => helpers.mapToolToMessage("page.read", { "max-bytes": bad })).toThrow(

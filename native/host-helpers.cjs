@@ -1011,7 +1011,7 @@ function mapToolToMessage(tool, args, tabId) {
       return {
         type: "READ_PAGE",
         options: {
-          filter: a.filter || "interactive",
+          filter: a.filter || (a.all === true ? "all" : "interactive"),
           refId: a.ref,
           includeText: a["no-text"] !== true,
           depth: a.depth !== undefined ? parseInt(a.depth, 10) : undefined,
