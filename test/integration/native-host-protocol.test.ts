@@ -676,11 +676,6 @@ describe("native host protocol integration", () => {
 
   it("routes page text, page state, and JavaScript through the selected frame until frame.main", async () => {
     const host = await startHostHarness();
-    const transport = await openClientTransport({
-      kind: "local",
-      connectionOptions: host.socketPath,
-    });
-    let requestId = 0;
     const invoke = async (
       tool: string,
       args: Record<string, unknown>,
@@ -688,11 +683,16 @@ describe("native host protocol integration", () => {
       response: NativeMessage = { success: true },
       expectError = false,
     ) => {
+      // A new connection per command, like separate CLI runs, so frame state must outlive it.
+      const transport = await openClientTransport({
+        kind: "local",
+        connectionOptions: host.socketPath,
+      });
       const clientResponse = transport.request({
         type: "tool_request",
         method: "execute_tool",
         params: { tool, args },
-        id: `${tool}-${++requestId}`,
+        id: tool,
       });
       const extensionRequest = await host.waitForMessage(
         (message) => message.type === type,
@@ -700,6 +700,7 @@ describe("native host protocol integration", () => {
       );
       host.send({ id: extensionRequest.id, ...response });
       expect((await clientResponse).error !== undefined).toBe(expectError);
+      await transport.close();
       return extensionRequest;
     };
 
@@ -754,7 +755,6 @@ describe("native host protocol integration", () => {
     for (const request of mainFrameRequests) {
       expect(request.frameId).toBeUndefined();
     }
-    await transport.close();
     expect(host.stderr()).toBe("");
   });
 
