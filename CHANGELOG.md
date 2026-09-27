@@ -3,12 +3,13 @@
 ## [Unreleased]
 
 ### Fixed
+- **Faster `js`** - `js` no longer waits about 0.75 s for an automatic screenshot. Its output never showed that screenshot anyway. Remote clients from earlier releases must upgrade or pass `--no-screenshot` to `js`, because an updated host rejects the old request. See [#325](https://github.com/nicobailon/surf-cli/issues/325).
 - **Selected frame context** - `page.text` and `page.state` now use the frame selected by `frame.switch`, including reachable out-of-process iframes. In a selected frame, `js` returns `UNSUPPORTED_FRAME_EXECUTION` instead of silently running in the main frame. See [#319](https://github.com/nicobailon/surf-cli/issues/319).
 - **`page.read --all`** - Lists every visible element on the page, including offscreen ones, instead of being ignored. Use `--include-hidden` to also list hidden and `aria-hidden` elements. See [#322](https://github.com/nicobailon/surf-cli/pull/322).
 - **Long page trees** - `page.read` no longer fails when the tree exceeds 50,000 characters. It returns the first 50,000 bytes, or `--max-bytes`, which now caps the tree as well as the text. A closing note gives the path of a private file with the full tree.
 - **Large responses** - Responses with no file paths to rewrite no longer fail with "response exceeds path rewrite limits". See [#322](https://github.com/nicobailon/surf-cli/pull/322).
 
-Thanks to [@tryingET](https://github.com/tryingET) for [#319](https://github.com/nicobailon/surf-cli/issues/319) and [#322](https://github.com/nicobailon/surf-cli/pull/322).
+Thanks to [@tryingET](https://github.com/tryingET) for [#319](https://github.com/nicobailon/surf-cli/issues/319), [#322](https://github.com/nicobailon/surf-cli/pull/322), and [#325](https://github.com/nicobailon/surf-cli/issues/325).
 
 ## [2.20.0] - 2026-09-23
 

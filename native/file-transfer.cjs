@@ -325,7 +325,7 @@ function rewriteTransferPaths(value, rewrites, depth = 0, seen = new Set(), budg
   return result;
 }
 
-const AUTO_SCREENSHOT_TOOLS = Object.freeze(["click", "type", "key", "smart_type", "form.fill", "form_input", "drag", "hover", "scroll", "scroll.top", "scroll.bottom", "scroll.to", "dialog.accept", "dialog.dismiss", "js", "eval"]);
+const AUTO_SCREENSHOT_TOOLS = Object.freeze(["click", "type", "key", "smart_type", "form.fill", "form_input", "drag", "hover", "scroll", "scroll.top", "scroll.bottom", "scroll.to", "dialog.accept", "dialog.dismiss", "eval"]);
 function generatedClientPath(prefix, extension) {
   return path.join(os.tmpdir(), `surf-${prefix}-${crypto.randomBytes(12).toString("hex")}${extension}`);
 }

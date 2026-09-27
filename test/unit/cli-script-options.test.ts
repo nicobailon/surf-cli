@@ -50,7 +50,7 @@ describe.each(["js", "frame.js"])("%s script options", (tool) => {
       expect(request.params.tool).toBe(tool);
       expect(request.params.args).toEqual({
         code: `const SURF_OPTIONS = Object.freeze(JSON.parse("{\\"limit\\":2}"));\n${code}`,
-        ...(tool === "frame.js" ? { id: "child-frame" } : { autoScreenshot: true }),
+        ...(tool === "frame.js" ? { id: "child-frame" } : {}),
       });
     } finally {
       rmSync(dir, { recursive: true, force: true });
