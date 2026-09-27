@@ -1195,8 +1195,79 @@ describe("native host protocol integration", () => {
     }
   });
 
-  it("preserves primary output and releases same-tab admission after an optional screenshot error", async () => {
-    const host = await startHostHarness();
+  it("replies before a local auto-screenshot and holds the tab until the file is written", async () => {
+    const surfTmp = fs.mkdtempSync(path.join(os.tmpdir(), "surf-auto-local-"));
+    tempDirs.push(surfTmp);
+    const host = await startHostHarness({ SURF_TMP: surfTmp });
+    const clickClient = await openClientTransport({
+      kind: "local",
+      connectionOptions: host.socketPath,
+    });
+    const clickResponse = clickClient.request({
+      type: "tool_request",
+      method: "execute_tool",
+      params: { tool: "click", args: { selector: "#go", autoScreenshot: true } },
+      tabId: 1,
+      id: "auto-screenshot-reply-first",
+    });
+    const click = await host.waitForMessage(
+      (message) => message.type === "CLICK_SELECTOR",
+      "reply-first primary action",
+    );
+    host.send({ id: click.id, success: true });
+    const replied = await clickResponse;
+    expect(replied.error).toBeUndefined();
+    const pendingPath = replied.result.content[0].text.match(
+      /^OK\nScreenshot \(pending\): (.+)$/,
+    )?.[1];
+    expect(pendingPath).toBeTruthy();
+    expect(fs.existsSync(pendingPath)).toBe(false);
+    // The CLI exits once it has the reply; that must not cancel the capture.
+    await clickClient.close();
+
+    const nextClient = await openClientTransport({
+      kind: "local",
+      connectionOptions: host.socketPath,
+    });
+    try {
+      const nextResponse = nextClient.request({
+        type: "tool_request",
+        method: "execute_tool",
+        params: { tool: "page.read", args: {} },
+        tabId: 1,
+        id: "same-tab-during-auto-screenshot",
+      });
+      const screenshot = await host.waitForMessage(
+        (message) => message.type === "EXECUTE_SCREENSHOT",
+        "background screenshot",
+      );
+      await host.expectNoMessage(
+        (message) => message.type === "READ_PAGE",
+        "same-tab request while the screenshot is pending",
+      );
+      host.send({
+        id: screenshot.id,
+        base64: Buffer.from("auto-png").toString("base64"),
+        width: 1,
+        height: 1,
+      });
+
+      const next = await host.waitForMessage(
+        (message) => message.type === "READ_PAGE",
+        "same-tab request after the screenshot",
+      );
+      expect(fs.readFileSync(pendingPath, "utf8")).toBe("auto-png");
+      host.send({ id: next.id, pageContent: "next request admitted" });
+      expect((await nextResponse).error).toBeUndefined();
+    } finally {
+      await nextClient.close();
+    }
+  });
+
+  it("releases the tab and writes no file when a background auto-screenshot fails", async () => {
+    const surfTmp = fs.mkdtempSync(path.join(os.tmpdir(), "surf-auto-local-fail-"));
+    tempDirs.push(surfTmp);
+    const host = await startHostHarness({ SURF_TMP: surfTmp });
     const transport = await openClientTransport({
       kind: "local",
       connectionOptions: host.socketPath,
@@ -1214,16 +1285,18 @@ describe("native host protocol integration", () => {
         "timed screenshot primary action",
       );
       host.send({ id: click.id, success: true });
+      const settled = await primaryResponse;
+      expect(settled.error).toBeUndefined();
+      const pendingPath = settled.result.content[0].text.match(
+        /^OK\nScreenshot \(pending\): (.+)$/,
+      )?.[1];
+      expect(pendingPath).toBeTruthy();
+
       const screenshot = await host.waitForMessage(
         (message) => message.type === "EXECUTE_SCREENSHOT",
         "timed optional screenshot",
       );
       host.send({ id: screenshot.id, error: "Screenshot capture timed out after 5000ms" });
-
-      const settled = await primaryResponse;
-      expect(settled.error).toBeUndefined();
-      expect(settled.result.content[0].text).toContain("OK");
-      expect(settled.result.content[0].text).toContain("Screenshot capture timed out after 5000ms");
 
       const nextResponse = transport.request({
         type: "tool_request",
@@ -1238,6 +1311,7 @@ describe("native host protocol integration", () => {
       );
       host.send({ id: next.id, pageContent: "next request admitted" });
       expect((await nextResponse).error).toBeUndefined();
+      expect(fs.readdirSync(surfTmp).filter((entry) => entry.includes("pi-auto-"))).toEqual([]);
     } finally {
       await transport.close();
     }

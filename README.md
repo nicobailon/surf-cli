@@ -381,7 +381,7 @@ surf snap                                   # Alias for screenshot
 
 To disable auto-save globally, set `autoSaveScreenshots: false` in `surf.json`.
 
-Actions like `click`, `type`, and `scroll` automatically capture a screenshot after execution - no extra command needed.
+Actions like `click`, `type`, and `scroll` automatically capture a screenshot after execution - no extra command needed. The command replies as soon as the action finishes with `Screenshot (pending): <path>`, and the file appears at that path shortly after. The next command on the same tab waits until it is written. Remote clients receive the file before the reply.
 
 ### Tabs
 

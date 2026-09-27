@@ -46,7 +46,7 @@ function formatToolError(error) {
  * @param {Function} log - Logging function (defaults to no-op for testing)
  * @returns {Array} Array of content objects with type and text/data
  */
-function formatToolContent(result, log = () => {}, options = {}) {
+function formatToolContent(result, log = () => {}) {
   const text = (s) => [{ type: "text", text: s }];
   
   if (!result) return text("OK");
@@ -436,23 +436,8 @@ function formatToolContent(result, log = () => {}, options = {}) {
   }
 
   if (result.autoScreenshot) {
-    const { path: ssPath, width, height } = result.autoScreenshot;
-    if (options.suppressImages) return text(`OK\nScreenshot saved: ${ssPath}`);
-    try {
-      const imgData = fs.readFileSync(ssPath);
-      const base64 = imgData.toString("base64");
-      const dims = width && height ? `${width}x${height}` : "unknown";
-      return [
-        { type: "text", text: `OK\nScreenshot (${dims}): ${ssPath}` },
-        { type: "image", data: base64, mimeType: "image/png" }
-      ];
-    } catch {
-      return text(`OK\nScreenshot saved: ${ssPath}`);
-    }
-  }
-
-  if (result.autoScreenshotError) {
-    return text(`OK\n[Screenshot failed: ${result.autoScreenshotError}]`);
+    const { path: ssPath, pending } = result.autoScreenshot;
+    return text(pending ? `OK\nScreenshot (pending): ${ssPath}` : `OK\nScreenshot saved: ${ssPath}`);
   }
 
   // Bug fix: Handle success with metrics/frames/readyState/hint in one block

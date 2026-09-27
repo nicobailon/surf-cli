@@ -3,6 +3,7 @@
 ## [Unreleased]
 
 ### Fixed
+- **Faster actions** - `click`, `type`, `scroll`, and the other actions that take an automatic screenshot now reply as soon as the action finishes. They no longer wait about 0.75 s, or up to 5 s when the window is not shown, for the capture. The reply reads `Screenshot (pending): <path>` and the file appears there shortly after; the next command on the same tab waits until it is written. A failed capture writes no file and is recorded in the host log. Remote clients still receive the screenshot before the reply. See [#328](https://github.com/nicobailon/surf-cli/issues/328).
 - **Faster `js`** - `js` no longer waits about 0.75 s for an automatic screenshot. Its output never showed that screenshot anyway. Remote clients from earlier releases must upgrade or pass `--no-screenshot` to `js`, because an updated host rejects the old request. See [#325](https://github.com/nicobailon/surf-cli/issues/325).
 - **Selected frame context** - `page.text` and `page.state` now use the frame selected by `frame.switch`, including reachable out-of-process iframes. In a selected frame, `js` returns `UNSUPPORTED_FRAME_EXECUTION` instead of silently running in the main frame. See [#319](https://github.com/nicobailon/surf-cli/issues/319).
 - **`page.read --all`** - Lists every visible element on the page, including offscreen ones, instead of being ignored. Use `--include-hidden` to also list hidden and `aria-hidden` elements. See [#322](https://github.com/nicobailon/surf-cli/pull/322).
