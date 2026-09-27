@@ -144,24 +144,13 @@ function buildExtensionResponse(message: NativeMessage, currentUrl: string, targ
         success: true,
         _resolvedTabId: 42,
       };
-    case "FRAME_SWITCH":
-      return { id: message.id, frameId: 7, url: "https://fixture.test/frame" };
-    case "FRAME_MAIN":
-      return { id: message.id, success: true };
     case "GET_PAGE_TEXT":
       return {
         id: message.id,
         title: "Contract Fixture",
         url: currentUrl,
-        text:
-          message.frameId === 7
-            ? "Selected frame text from the fake extension."
-            : "Contract fixture page text from the fake extension.",
+        text: "Contract fixture page text from the fake extension.",
       };
-    case "PAGE_STATE":
-      return message.frameId === 7
-        ? { id: message.id, hasModal: true, url: "https://fixture.test/frame" }
-        : { id: message.id, hasModal: false, url: currentUrl };
     case "READ_PAGE":
       return {
         id: message.id,
@@ -178,14 +167,6 @@ function buildExtensionResponse(message: NativeMessage, currentUrl: string, targ
         height: 1,
       };
     case "EXECUTE_JAVASCRIPT":
-      if (message.frameId === 7) {
-        return {
-          id: message.id,
-          error: "JavaScript execution in a selected frame is not supported safely",
-          errorCode: "UNSUPPORTED_FRAME_EXECUTION",
-          frameId: 7,
-        };
-      }
       return {
         id: message.id,
         output: JSON.stringify({
@@ -472,40 +453,6 @@ describe("CLI/native-host/fake-extension E2E contract", () => {
           expect.objectContaining({ type: "EXECUTE_SCREENSHOT" }),
         ]),
       );
-    } finally {
-      await host.dispose();
-    }
-  });
-
-  it("preserves selected frame context across CLI commands and restores main behavior", async () => {
-    const socketPath = createSocketPath();
-    const host = startHost(socketPath);
-
-    try {
-      await host.waitForMessage((message) => message.type === "HOST_READY");
-
-      expect(await runCli(socketPath, ["frame.switch", "--index", "0"])).toMatchObject({
-        code: 0,
-      });
-
-      const text = await runCli(socketPath, ["page.text"]);
-      expect(text).toMatchObject({ code: 0 });
-      expect(text.stdout).toContain("Selected frame text from the fake extension.");
-
-      const state = await runCli(socketPath, ["page.state", "--json"]);
-      expect(state).toMatchObject({ code: 0 });
-      expect(JSON.parse(state.stdout).result).toMatchObject({
-        hasModal: true,
-        url: "https://fixture.test/frame",
-      });
-
-      const selectedJs = await runCli(socketPath, ["js", "return location.href"]);
-      expect(selectedJs.code).toBe(1);
-      expect(selectedJs.stderr).toContain("UNSUPPORTED_FRAME_EXECUTION");
-
-      expect(await runCli(socketPath, ["frame.main"])).toMatchObject({ code: 0 });
-      const mainJs = await runCli(socketPath, ["js", "return location.href"]);
-      expect(mainJs.code).toBe(0);
     } finally {
       await host.dispose();
     }

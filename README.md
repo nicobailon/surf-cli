@@ -297,7 +297,7 @@ surf frame.switch --index 0         # Switch to first iframe
 surf frame.switch --name "payment"  # Switch by frame name
 surf frame.switch --selector "#checkout-frame"  # Switch by CSS selector
 
-# Frame-aware page and interaction commands now target the iframe
+# Page and interaction commands now target the iframe
 surf read                           # Read iframe content
 surf page.text                      # Read raw iframe text
 surf page.state                     # Inspect iframe UI state
@@ -308,13 +308,12 @@ surf locate.role button --action click
 surf frame.main                     # Return to main page
 ```
 
-| Command group | Behavior after `frame.switch` |
+| Command | After `frame.switch` |
 | --- | --- |
-| `read` / `page.read`, `page.text`, `page.state` | Uses the selected extension/content frame, including a reachable out-of-process iframe (OOPIF). |
-| Frame-aware interactions such as `click`, `type`, `select`, and `locate.*` | Uses the selected extension/content frame. |
-| `js` | Refuses to run with code `UNSUPPORTED_FRAME_EXECUTION`; it never silently falls back to the main frame. Run `frame.main` first to restore normal main-frame `js` behavior. |
-| `frame.js --id <id>` | Uses an explicit CDP frame ID, independently of `frame.switch`. Extension frame IDs are not accepted, and OOPIFs absent from the CDP tree remain unreachable. |
-| Tab, window, browser, and network commands | Not scoped by the selected frame. |
+| `read`, `page.text`, `page.state`, `click`, `type`, `select`, `locate.*` | Use the selected frame, including reachable out-of-process iframes. |
+| `js` | Fails with `UNSUPPORTED_FRAME_EXECUTION` instead of running in the main frame. Run `frame.main` first. |
+| `frame.js --id <id>` | Ignores `frame.switch` and takes a CDP frame ID, so it cannot reach frames missing from the CDP tree. |
+| Tab, window, browser, and network commands | Unaffected. |
 
 When a selector never matches, `frame.diagnose` shows the three frame views side by side (DOM `<iframe>` elements, the extension's frames with content-script reachability, and the CDP frame tree) and explains the mismatches: `srcdoc`/`about:blank` frames (matched to their CDP frame by `name`/`id`), sandboxes without `allow-scripts`, cross-origin frames, out-of-process frames that the CDP tree does not list (`frame.js` cannot reach them; `frame.switch` and `page.read` can when the content script answers), and frames still loading. The DOM inventory walks open shadow roots, so frames rendered by custom elements are listed with their `shadowHost` path. The text report abbreviates long frame URLs; `--json` keeps them whole.
 

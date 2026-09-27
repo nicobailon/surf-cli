@@ -1660,12 +1660,10 @@ Return to main:
 Execute JS in frame:
   frame.js "return document.title" --id frame1
 
-After frame.switch, frame-aware page commands (read, page.text, page.state)
-and interactions target the selected extension frame. js refuses
-selected-frame execution with UNSUPPORTED_FRAME_EXECUTION; frame.main restores
-normal main-frame js behavior. frame.js uses an explicit CDP frame ID and cannot
-reach OOPIFs absent from the CDP tree. Tab, browser, and network commands are not
-frame-scoped.`
+After frame.switch, read, page.text, page.state, and interactions target the
+selected frame. js fails with UNSUPPORTED_FRAME_EXECUTION until frame.main.
+frame.js takes a CDP frame ID and ignores frame.switch. Tab, browser, and
+network commands are not frame-scoped.`
   },
   devices: {
     title: "Device Emulation",

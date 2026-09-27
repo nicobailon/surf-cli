@@ -564,7 +564,7 @@ surf frame.switch --index 0    # First iframe
 surf frame.main                # Return to main frame
 surf frame.js "return document.title" --id "CDP_FRAME_ID"
 
-# Frame-aware page and interaction commands follow frame.switch:
+# Page and interaction commands follow frame.switch:
 surf frame.switch --selector "#payment-iframe"
 surf page.read                 # Reads iframe content
 surf page.text                 # Reads raw iframe text
@@ -573,7 +573,7 @@ surf click --selector "#pay"   # Clicks in iframe
 surf frame.main                # Back to main page
 ```
 
-After `frame.switch`, `page.read`, `page.text`, `page.state`, and frame-aware interactions use the selected extension/content frame, including reachable OOPIFs. `js` refuses selected-frame execution with `UNSUPPORTED_FRAME_EXECUTION` rather than silently running in the main frame; use `frame.main` to restore normal main-frame behavior. `frame.js --id` is separate: it requires a CDP frame ID and cannot reach OOPIFs missing from the CDP tree. Tab, window, browser, and network commands are not frame-scoped.
+Selected frames include reachable out-of-process iframes. `js` fails with `UNSUPPORTED_FRAME_EXECUTION` until `frame.main`. `frame.js --id` ignores `frame.switch`, takes a CDP frame ID, and cannot reach frames missing from the CDP tree. Tab, window, browser, and network commands are not frame-scoped.
 
 ## Network Inspection
 

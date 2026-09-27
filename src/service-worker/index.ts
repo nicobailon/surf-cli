@@ -1235,83 +1235,42 @@ export async function handleMessage(
 
     case "PAGE_STATE": {
       if (!tabId) throw new Error("No tabId provided");
-      const frameId = getFrameIdForTab(tabId, message);
-      if (frameId > 0) {
-        const [frameState] = await chrome.scripting.executeScript({
-          target: { tabId, frameIds: [frameId] },
-          func: () => {
-            const hasModal = !!(
-              document.querySelector('[role="dialog"]') ||
-              document.querySelector('[role="alertdialog"]') ||
-              document.querySelector('.modal:not([hidden])') ||
-              document.querySelector('[aria-modal="true"]') ||
-              document.querySelector('.MuiModal-root') ||
-              document.querySelector('.MuiDialog-root')
-            );
-            const hasDropdown = !!(
-              document.querySelector('[role="listbox"]') ||
-              document.querySelector('[role="menu"]:not([hidden])') ||
-              document.querySelector('.dropdown-menu.show') ||
-              document.querySelector('[aria-expanded="true"]')
-            );
-            const hasDatePicker = !!(
-              document.querySelector('[role="grid"][aria-label*="calendar" i]') ||
-              document.querySelector('.react-datepicker') ||
-              document.querySelector('.flatpickr-calendar.open') ||
-              document.querySelector('[class*="DatePicker"]')
-            );
-            const focusedEl = document.activeElement;
-            const focusedTag = focusedEl?.tagName?.toLowerCase();
-            const focusedType = focusedEl?.getAttribute?.("type");
-            return {
-              hasModal,
-              hasDropdown,
-              hasDatePicker,
-              hasOverlay: hasModal || hasDropdown || hasDatePicker,
-              focusedElement: focusedTag ? { tag: focusedTag, type: focusedType } : null,
-              url: location.href,
-              title: document.title,
-            };
-          },
-        });
-        return frameState?.result || { error: "Failed to get page state" };
-      }
-      const stateScript = `(() => {
-        const hasModal = !!(
-          document.querySelector('[role="dialog"]') ||
-          document.querySelector('[role="alertdialog"]') ||
-          document.querySelector('.modal:not([hidden])') ||
-          document.querySelector('[aria-modal="true"]') ||
-          document.querySelector('.MuiModal-root') ||
-          document.querySelector('.MuiDialog-root')
-        );
-        const hasDropdown = !!(
-          document.querySelector('[role="listbox"]') ||
-          document.querySelector('[role="menu"]:not([hidden])') ||
-          document.querySelector('.dropdown-menu.show') ||
-          document.querySelector('[aria-expanded="true"]')
-        );
-        const hasDatePicker = !!(
-          document.querySelector('[role="grid"][aria-label*="calendar" i]') ||
-          document.querySelector('.react-datepicker') ||
-          document.querySelector('.flatpickr-calendar.open') ||
-          document.querySelector('[class*="DatePicker"]')
-        );
-        const focusedEl = document.activeElement;
-        const focusedTag = focusedEl?.tagName?.toLowerCase();
-        const focusedType = focusedEl?.getAttribute?.('type');
-        return {
-          hasModal,
-          hasDropdown,
-          hasDatePicker,
-          hasOverlay: hasModal || hasDropdown || hasDatePicker,
-          focusedElement: focusedTag ? { tag: focusedTag, type: focusedType } : null,
-          url: location.href,
-          title: document.title
-        };
-      })()`;
-      const stateResult = await cdp.evaluateScript(tabId, stateScript);
-      return stateResult.result?.value || { error: "Failed to get page state" };
+      const [state] = await chrome.scripting.executeScript({
+        target: { tabId, frameIds: [getFrameIdForTab(tabId, message)] },
+        func: () => {
+          const hasModal = !!(
+            document.querySelector('[role="dialog"]') ||
+            document.querySelector('[role="alertdialog"]') ||
+            document.querySelector('.modal:not([hidden])') ||
+            document.querySelector('[aria-modal="true"]') ||
+            document.querySelector('.MuiModal-root') ||
+            document.querySelector('.MuiDialog-root')
+          );
+          const hasDropdown = !!(
+            document.querySelector('[role="listbox"]') ||
+            document.querySelector('[role="menu"]:not([hidden])') ||
+            document.querySelector('.dropdown-menu.show') ||
+            document.querySelector('[aria-expanded="true"]')
+          );
+          const hasDatePicker = !!(
+            document.querySelector('[role="grid"][aria-label*="calendar" i]') ||
+            document.querySelector('.react-datepicker') ||
+            document.querySelector('.flatpickr-calendar.open') ||
+            document.querySelector('[class*="DatePicker"]')
+          );
+          const focused = document.activeElement;
+          return {
+            hasModal,
+            hasDropdown,
+            hasDatePicker,
+            hasOverlay: hasModal || hasDropdown || hasDatePicker,
+            focusedElement: focused ? { tag: focused.tagName.toLowerCase(), type: focused.getAttribute("type") } : null,
+            url: location.href,
+            title: document.title,
+          };
+        },
+      });
+      return state?.result || { error: "Failed to get page state" };
     }
 
     case "SEMANTIC_LOCAL_COMPARE": {

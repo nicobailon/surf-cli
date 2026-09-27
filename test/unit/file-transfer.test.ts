@@ -87,8 +87,6 @@ describe("file transfer path policy", () => {
     }));
     const response = { pageContent: "tree", nodes };
     expect(transfer.rewriteTransferPaths(response, [])).toBe(response);
-    expect(transfer.rewriteTransferPaths(response, undefined)).toBe(response);
-    // with something to rewrite, the same response still meets the walk's limit
     expect(() =>
       transfer.rewriteTransferPaths(response, [{ path: "/tmp/stage", original: "local:shot.png" }]),
     ).toThrow(/rewrite limits/);

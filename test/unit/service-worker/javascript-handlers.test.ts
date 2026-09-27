@@ -312,36 +312,21 @@ describe("Page state handler", () => {
     resetChromeMock();
   });
 
-  it("returns the same state shape for selected and main frames", async () => {
+  it("reads state from the selected frame, or the main frame without one", async () => {
     const handleMessage = await loadHandleMessage();
     const chrome = (globalThis as any).chrome;
-    const expectedState = {
-      hasModal: false,
-      hasDropdown: true,
-      hasDatePicker: false,
-      hasOverlay: true,
-      focusedElement: { tag: "input", type: "text" },
-      url: "https://frame.example.com/form",
-      title: "Frame form",
-    };
-    chrome.scripting.executeScript.mockResolvedValue([{ frameId: 7, result: expectedState }]);
+    chrome.scripting.executeScript.mockResolvedValue([{ result: { hasModal: true } }]);
 
-    const result = await handleMessage({ type: "PAGE_STATE", tabId: 1, frameId: 7 }, {});
-
-    expect(result).toEqual(expectedState);
-    expect(chrome.scripting.executeScript).toHaveBeenCalledWith({
-      target: { tabId: 1, frameIds: [7] },
-      func: expect.any(Function),
+    expect(await handleMessage({ type: "PAGE_STATE", tabId: 1, frameId: 7 }, {})).toEqual({
+      hasModal: true,
     });
-    expect(chrome.debugger.sendCommand).not.toHaveBeenCalled();
+    await handleMessage({ type: "PAGE_STATE", tabId: 1 }, {});
 
-    chrome.debugger.sendCommand.mockImplementation(async (_target: unknown, method: string) =>
-      method === "Runtime.evaluate" ? { result: { value: expectedState } } : {},
-    );
-    const mainResult = await handleMessage({ type: "PAGE_STATE", tabId: 1 }, {});
-
-    expect(mainResult).toEqual(expectedState);
-    expect(chrome.scripting.executeScript).toHaveBeenCalledTimes(1);
+    const targets = chrome.scripting.executeScript.mock.calls.map(([call]: any[]) => call.target);
+    expect(targets).toEqual([
+      { tabId: 1, frameIds: [7] },
+      { tabId: 1, frameIds: [0] },
+    ]);
   });
 });
 
