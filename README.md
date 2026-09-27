@@ -252,11 +252,13 @@ surf tab.reload --hard
 
 ```bash
 surf read                           # Accessibility tree + visible text content
+surf read --all                     # Every visible element, including offscreen
+surf read --include-hidden          # Also hidden and aria-hidden elements
 surf read --no-text                 # Accessibility tree only (no text)
 surf read --depth 3                 # Limit tree depth (smaller output)
 surf read --compact                 # Remove empty structural elements
 surf read --depth 3 --compact       # Both (60% smaller output)
-surf read --max-bytes 2000          # Cap visible text on a UTF-8 byte boundary
+surf read --max-bytes 2000          # Cap the tree and visible text at 2000 bytes
 surf page.text                      # Raw text content only
 surf page.html                      # Rendered document HTML
 surf page.html --strip-scripts > artifact.html # Save a safe static Claude artifact
@@ -265,6 +267,8 @@ surf page.state                     # Modals, loading state, scroll position
 ```
 
 Use `surf page.html --strip-scripts` after the page loads when you need a static export of a Claude artifact or other rendered DOM. Use `--selector <css>` to export one element.
+
+Trees over 50,000 bytes, or over `--max-bytes`, end with a note giving the path of a private file with the full tree. Remote clients get the note without a path; narrow with `--ref` or `--depth` instead.
 
 Element refs (`e1`, `e2`, `e3`...) are stable identifiers from the accessibility tree - semantic, predictable, and resilient to DOM changes.
 

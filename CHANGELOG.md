@@ -4,7 +4,8 @@
 
 ### Fixed
 - **Selected frame context** - `page.text` and `page.state` now use the frame selected by `frame.switch`, including reachable out-of-process iframes. In a selected frame, `js` returns `UNSUPPORTED_FRAME_EXECUTION` instead of silently running in the main frame. See [#319](https://github.com/nicobailon/surf-cli/issues/319).
-- **`page.read --all`** - Returns the full tree instead of interactive elements only. See [#322](https://github.com/nicobailon/surf-cli/pull/322).
+- **`page.read --all`** - Lists every visible element on the page, including offscreen ones, instead of being ignored. Use `--include-hidden` to also list hidden and `aria-hidden` elements. See [#322](https://github.com/nicobailon/surf-cli/pull/322).
+- **Long page trees** - `page.read` no longer fails when the tree exceeds 50,000 characters. It returns the first 50,000 bytes, or `--max-bytes`, which now caps the tree as well as the text. A closing note gives the path of a private file with the full tree.
 - **Large responses** - Responses with no file paths to rewrite no longer fail with "response exceeds path rewrite limits". See [#322](https://github.com/nicobailon/surf-cli/pull/322).
 
 Thanks to [@tryingET](https://github.com/tryingET) for [#319](https://github.com/nicobailon/surf-cli/issues/319) and [#322](https://github.com/nicobailon/surf-cli/pull/322).

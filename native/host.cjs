@@ -15,6 +15,7 @@ const net = require("net");
 const fs = require("fs");
 const path = require("path");
 const os = require("os");
+const crypto = require("crypto");
 const { AsyncLocalStorage } = require("async_hooks");
 const requestStorage = new AsyncLocalStorage();
 const https = require("https");
@@ -1725,6 +1726,29 @@ async function sendRequestDownloads(context, request, result) {
   return rewritten;
 }
 
+const PAGE_READ_LIMIT_BYTES = 50_000;
+
+// A long tree would flood an agent's context, so reply with the first part and keep
+// the full tree in a private file. Remote clients cannot read host files. Semantic
+// commands parse every line, so their observations stay whole.
+async function truncatePageRead(context, request, output) {
+  if (!["page.read", "read_page"].includes(request?.tool) || typeof output?.pageContent !== "string" || output.semanticObservation !== undefined) return output;
+  const maxBytes = request.args?.["max-bytes"];
+  const limit = maxBytes === undefined ? PAGE_READ_LIMIT_BYTES : Number(maxBytes);
+  const full = Buffer.from(output.pageContent);
+  if (full.length <= limit) return output;
+  const lineEnd = full.lastIndexOf(10, limit);
+  const kept = full.subarray(0, lineEnd > 0 ? lineEnd : limit).toString("utf8");
+  let note = `[Truncated: showing ${Buffer.byteLength(kept)} of ${full.length} bytes.`;
+  if (!context?.isRemote) {
+    const fullPath = path.join(SURF_TMP, `surf-read-${crypto.randomUUID()}.txt`);
+    await fs.promises.writeFile(fullPath, full, { mode: 0o600, flag: "wx" });
+    note += ` Full tree: ${fullPath}.`;
+  }
+  note += " Narrow with --ref <ref> or --depth <n>.]";
+  return { ...output, pageContent: `${kept}\n\n${note}` };
+}
+
 function sendToolResponse(socket, id, result, error) {
   const context = socketContexts.get(socket);
   if (context && !sessionManager.canRespond(context, id)) return;
@@ -1734,6 +1758,7 @@ function sendToolResponse(socket, id, result, error) {
     let output = result;
     try {
       if (!error) output = await sendRequestDownloads(context, request, result);
+      if (!error) output = await truncatePageRead(context, request, output);
       if (!error && output?.semanticObservation?.identity && request?.target) {
         output.semanticObservation.identity.browserEpoch = request.target.browserEpoch;
       }

@@ -399,12 +399,14 @@ surf drag --from-x 100 --from-y 100 --to-x 200 --to-y 200
 
 ```bash
 surf page.read                 # Accessibility tree with refs + page text
+surf page.read --all           # Every visible element, including offscreen
+surf page.read --include-hidden # Also hidden and aria-hidden elements
 surf page.read --no-text       # Interactive elements only (no text content)
 surf animate-audit --selector ".thing" --duration 2000 --fps 10  # JSON animation timeline
 surf page.read --ref e5        # Get specific element details
 surf page.read --depth 3       # Limit tree depth
 surf page.read --compact       # Minimal output for LLM efficiency
-surf page.read --max-bytes 2000 # Cap visible text at a UTF-8 byte boundary
+surf page.read --max-bytes 2000 # Cap the tree and visible text at 2000 bytes
 surf page.text                 # Plain text content only
 surf page.html --strip-scripts # Rendered HTML without scripts
 surf page.save --selector "#artifact" --strip-scripts --output page.html # Save one static element

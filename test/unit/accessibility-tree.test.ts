@@ -271,6 +271,34 @@ describe("accessibility tree", () => {
     expect(response.pageContent).toContain('button "Save changes"');
   });
 
+  it("lists offscreen elements under the all filter and hidden ones only when asked", () => {
+    const offscreen = element("button");
+    offscreen.append(text("Below the fold"));
+    offscreen.rect = { top: 2000, bottom: 2010, left: 0, right: 10 };
+    const collapsed = element("button");
+    collapsed.append(text("Collapsed menu"));
+    collapsed.offsetWidth = 0;
+    const decorative = element("button", { "aria-hidden": "true" });
+    decorative.append(text("Decorative"));
+    (document.body as unknown as FakeElement).append(offscreen, collapsed, decorative);
+    const read = (options: Record<string, unknown>) => {
+      let response: any;
+      messageHandler?.({ type: "GENERATE_ACCESSIBILITY_TREE", options }, {}, (result) => {
+        response = result;
+      });
+      return response.pageContent as string;
+    };
+
+    const all = read({ filter: "all" });
+    expect(all).toContain('"Below the fold"');
+    expect(all).not.toContain("Collapsed menu");
+    expect(all).not.toContain("Decorative");
+
+    const withHidden = read({ filter: "all", includeHidden: true });
+    expect(withHidden).toContain("Collapsed menu");
+    expect(withHidden).toContain("Decorative");
+  });
+
   it("returns a bounded value-free semantic observation only when requested", () => {
     const password = new FakeInputElement("input");
     password.setAttribute("type", "password");

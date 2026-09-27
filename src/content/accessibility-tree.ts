@@ -697,7 +697,8 @@ function generateAccessibilityTree(
   maxDepth = 15,
   refId?: string,
   forceFullSnapshot = false,
-  compact = false
+  compact = false,
+  includeHidden = false
 ): { 
   pageContent: string;
   diff?: string;
@@ -917,8 +918,7 @@ function generateAccessibilityTree(
     function shouldInclude(element: Element, options: { filter: string; refId: string | null; compact: boolean }): boolean {
       const tag = element.tagName.toLowerCase();
       if (["script", "style", "meta", "link", "title", "noscript"].includes(tag)) return false;
-      if (options.filter !== "all" && element.getAttribute("aria-hidden") === "true") return false;
-      if (options.filter !== "all" && !isVisible(element)) return false;
+      if (!includeHidden && (element.getAttribute("aria-hidden") === "true" || !isVisible(element))) return false;
 
       if (options.filter !== "all" && !options.refId) {
         const rect = element.getBoundingClientRect();
@@ -1099,14 +1099,6 @@ function generateAccessibilityTree(
 
     const content = lines.join("\n");
 
-    if (content.length > 50000) {
-      return {
-        error: `Output exceeds 50000 character limit (${content.length} characters). Try using filter="interactive" or specify a ref_id.`,
-        pageContent: "",
-        viewport: { width: window.innerWidth, height: window.innerHeight },
-      };
-    }
-
     const modalStates = detectModalStates();
 
     let diff: string | undefined;
@@ -1149,7 +1141,8 @@ function yamlEscapeValue(str: string): string {
 
 function generateYamlTree(
   filter: "all" | "interactive" = "interactive",
-  maxDepth = 15
+  maxDepth = 15,
+  includeHidden = false
 ): { yaml: string; viewport: { width: number; height: number }; error?: string } {
   try {
     window.__piRefs = {};
@@ -1394,8 +1387,7 @@ function generateYamlTree(
       
       const tag = element.tagName.toLowerCase();
       if (["script", "style", "meta", "link", "title", "noscript"].includes(tag)) return;
-      if (filter !== "all" && element.getAttribute("aria-hidden") === "true") return;
-      if (filter !== "all" && !isVisible(element)) return;
+      if (!includeHidden && (element.getAttribute("aria-hidden") === "true" || !isVisible(element))) return;
       
       if (filter !== "all") {
         const rect = element.getBoundingClientRect();
@@ -1455,14 +1447,6 @@ function generateYamlTree(
     traverse(document.body, 0, false);
 
     const yaml = lines.join('\n');
-    
-    if (yaml.length > 50000) {
-      return {
-        error: `Output exceeds 50000 character limit (${yaml.length} characters). Try using filter="interactive".`,
-        yaml: "",
-        viewport: { width: window.innerWidth, height: window.innerHeight },
-      };
-    }
 
     return {
       yaml: yaml + `\n\n[Viewport: ${window.innerWidth}x${window.innerHeight}]`,
@@ -1812,7 +1796,8 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       if (options.format === "yaml") {
         const result = generateYamlTree(
           options.filter || "interactive",
-          options.depth ?? 15
+          options.depth ?? 15,
+          options.includeHidden === true
         );
         const modalStates = detectModalStates();
         if (result.error) {
@@ -1831,7 +1816,8 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           options.depth ?? 15,
           options.refId,
           options.forceFullSnapshot ?? false,
-          options.compact ?? false
+          options.compact ?? false,
+          options.includeHidden === true
         );
         if (options.semanticObservation === true && !result.error) {
           (result as typeof result & { semanticObservation: ReturnType<typeof buildSemanticObservation> }).semanticObservation = buildSemanticObservation();

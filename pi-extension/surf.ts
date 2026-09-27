@@ -577,8 +577,8 @@ function registerTool(pi: Pi, name: string, description: string, parameters: unk
 
 export default function surfExtension(pi: Pi) {
   registerTool(pi, "surf_read", "Read the current Surf browser page. Read tools are safer for parallel scouts than browser actions.", Type.Object({
-    tabId: Type.Optional(Type.Number()), filter: Type.Optional(Type.String()), depth: Type.Optional(Type.Number()), ref: Type.Optional(Type.String()), compact: Type.Optional(Type.Boolean()), maxBytes: Type.Optional(Type.Number()),
-  }), (args) => ["page.read", { filter: args.filter, depth: args.depth, ref: args.ref, compact: args.compact, "max-bytes": args.maxBytes }, args.tabId as number | undefined]);
+    tabId: Type.Optional(Type.Number()), filter: Type.Optional(Type.String()), includeHidden: Type.Optional(Type.Boolean()), depth: Type.Optional(Type.Number()), ref: Type.Optional(Type.String()), compact: Type.Optional(Type.Boolean()), maxBytes: Type.Optional(Type.Number()),
+  }), (args) => ["page.read", { filter: args.filter, "include-hidden": args.includeHidden, depth: args.depth, ref: args.ref, compact: args.compact, "max-bytes": args.maxBytes }, args.tabId as number | undefined]);
   registerTool(pi, "surf_screenshot", "Capture a bounded Surf browser screenshot.", Type.Object({
     tabId: Type.Optional(Type.Number()), output: Type.Optional(Type.String()), fullpage: Type.Optional(Type.Boolean()), annotate: Type.Optional(Type.Boolean()), maxSize: Type.Optional(Type.Number()),
   }), (args) => ["screenshot", { output: args.output, fullpage: args.fullpage, annotate: args.annotate, "max-size": args.maxSize }, args.tabId as number | undefined]);

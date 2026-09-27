@@ -218,6 +218,14 @@ describe("mapToolToMessage", () => {
       ).toBe("interactive");
     });
 
+    it("maps --include-hidden to the all filter with hidden elements", () => {
+      const { options } = helpers.mapToolToMessage("page.read", { "include-hidden": true });
+      expect(options).toMatchObject({ filter: "all", includeHidden: true });
+      expect(helpers.mapToolToMessage("page.read", { all: true }).options.includeHidden).toBe(
+        false,
+      );
+    });
+
     it("throws when max-bytes is not a positive integer", () => {
       for (const bad of ["abc", "0", "-5", "12abc", "1.5", " ", ""]) {
         expect(() => helpers.mapToolToMessage("page.read", { "max-bytes": bad })).toThrow(

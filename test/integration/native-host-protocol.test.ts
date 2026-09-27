@@ -1944,6 +1944,39 @@ describe("native host protocol integration", () => {
     second.destroy();
   });
 
+  it("truncates a long page.read tree and saves the full tree to a private file", async () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "surf-read-spill-"));
+    tempDirs.push(tmp);
+    const host = await startHostHarness({ SURF_TMP: tmp });
+    const tree = Array.from({ length: 3000 }, (_, i) => `button "Item ${i}" [e${i + 1}]`).join(
+      "\n",
+    );
+    const read = async (args: string[]) => {
+      const cliPromise = runCli(["page.read", "--no-text", ...args], host.socketPath);
+      const request = await host.waitForMessage(
+        (message) => message.type === "READ_PAGE",
+        "READ_PAGE",
+      );
+      host.send({ id: request.id, pageContent: tree });
+      return cliPromise;
+    };
+
+    const result = await read([]);
+    expect(result.code).toBe(0);
+    expect(result.stdout).toContain('button "Item 0" [e1]');
+    expect(result.stdout).not.toContain('"Item 2999"');
+    expect(Buffer.byteLength(result.stdout)).toBeLessThan(50_500);
+    const fullPath = result.stdout.match(/Full tree: (\S+)\./)?.[1] as string;
+    expect(fs.readFileSync(fullPath, "utf8")).toBe(tree);
+    if (process.platform !== "win32") {
+      expect(fs.statSync(fullPath).mode & 0o777).toBe(0o600);
+    }
+
+    const capped = await read(["--max-bytes", "1000"]);
+    expect(Buffer.byteLength(capped.stdout)).toBeLessThan(1_500);
+    expect(capped.stdout).toContain("Full tree: ");
+  });
+
   it("propagates extension errors through the native host to CLI stderr", async () => {
     const host = await startHostHarness();
     const cliPromise = runCli(["tab.list"], host.socketPath);

@@ -707,16 +707,18 @@ const TOOLS = {
         desc: "Get accessibility tree + visible text",
         args: [],
         opts: {
-          all: "Include all elements",
           ref: "Get specific element",
+          all: "All visible elements, including offscreen",
+          "include-hidden": "Also include hidden elements (implies --all)",
           "no-text": "Exclude visible text content",
           depth: "Maximum tree depth (default: unlimited)",
           compact: "Remove empty structural elements",
-          "max-bytes": "Maximum visible text bytes",
+          "max-bytes": "Maximum tree and visible text bytes (tree default: 50000)",
         },
         examples: [
           { cmd: "page.read", desc: "Interactive elements + text content" },
-          { cmd: "page.read --all", desc: "All elements + text" },
+          { cmd: "page.read --all", desc: "Whole page, not just on-screen controls" },
+          { cmd: "page.read --include-hidden", desc: "Also hidden elements" },
           { cmd: "page.read --no-text", desc: "Interactive elements only (no text)" },
           { cmd: "page.read --depth 3", desc: "Limit to 3 levels deep" },
           { cmd: "page.read --compact", desc: "Skip empty containers" },
@@ -1701,7 +1703,10 @@ Combine for best results:
 
 Filter to interactive only:
   page.read                     # Default: interactive elements only
-  page.read --all               # Include all elements
+  page.read --all               # All visible elements, including offscreen
+
+Long trees stop at 50000 bytes (or --max-bytes); the closing note
+gives the path of a file with the full tree.
 
 Exclude text content:
   page.read --no-text           # Skip visible text section`
@@ -3025,7 +3030,7 @@ if (args[0] === "workflow.validate") {
   }
 }
 
-const BOOLEAN_FLAGS = ["auto-capture", "json", "stream", "dry-run", "stop-on-error", "fail-fast", "clear", "submit", "all", "case-sensitive", "hard", "annotate", "fullpage", "full-page", "reset", "no-screenshot", "full", "soft-fail", "has-body", "exclude-static", "v", "vv", "request", "by-tab", "har", "jsonl", "no-save", "no-auto-wait", "no-lock", "no-wait", "window", "tab", "focused", "unfocused", "keep-target", "close-target", "replace", "refresh"];
+const BOOLEAN_FLAGS = ["auto-capture", "json", "stream", "dry-run", "stop-on-error", "fail-fast", "clear", "submit", "all", "include-hidden", "case-sensitive", "hard", "annotate", "fullpage", "full-page", "reset", "no-screenshot", "full", "soft-fail", "has-body", "exclude-static", "v", "vv", "request", "by-tab", "har", "jsonl", "no-save", "no-auto-wait", "no-lock", "no-wait", "window", "tab", "focused", "unfocused", "keep-target", "close-target", "replace", "refresh"];
 
 const parseArgs = (rawArgs) => {
   const result = { positional: [], options: {} };
