@@ -1235,6 +1235,47 @@ export async function handleMessage(
 
     case "PAGE_STATE": {
       if (!tabId) throw new Error("No tabId provided");
+      const frameId = getFrameIdForTab(tabId, message);
+      if (frameId > 0) {
+        const [frameState] = await chrome.scripting.executeScript({
+          target: { tabId, frameIds: [frameId] },
+          func: () => {
+            const hasModal = !!(
+              document.querySelector('[role="dialog"]') ||
+              document.querySelector('[role="alertdialog"]') ||
+              document.querySelector('.modal:not([hidden])') ||
+              document.querySelector('[aria-modal="true"]') ||
+              document.querySelector('.MuiModal-root') ||
+              document.querySelector('.MuiDialog-root')
+            );
+            const hasDropdown = !!(
+              document.querySelector('[role="listbox"]') ||
+              document.querySelector('[role="menu"]:not([hidden])') ||
+              document.querySelector('.dropdown-menu.show') ||
+              document.querySelector('[aria-expanded="true"]')
+            );
+            const hasDatePicker = !!(
+              document.querySelector('[role="grid"][aria-label*="calendar" i]') ||
+              document.querySelector('.react-datepicker') ||
+              document.querySelector('.flatpickr-calendar.open') ||
+              document.querySelector('[class*="DatePicker"]')
+            );
+            const focusedEl = document.activeElement;
+            const focusedTag = focusedEl?.tagName?.toLowerCase();
+            const focusedType = focusedEl?.getAttribute?.("type");
+            return {
+              hasModal,
+              hasDropdown,
+              hasDatePicker,
+              hasOverlay: hasModal || hasDropdown || hasDatePicker,
+              focusedElement: focusedTag ? { tag: focusedTag, type: focusedType } : null,
+              url: location.href,
+              title: document.title,
+            };
+          },
+        });
+        return frameState?.result || { error: "Failed to get page state" };
+      }
       const stateScript = `(() => {
         const hasModal = !!(
           document.querySelector('[role="dialog"]') ||
@@ -2525,6 +2566,15 @@ export async function handleMessage(
     case "EXECUTE_JAVASCRIPT": {
       if (!tabId) throw new Error("No tabId provided");
       if (!message.code) throw new Error("No code provided");
+
+      const frameId = getFrameIdForTab(tabId, message);
+      if (frameId > 0) {
+        return {
+          error: "JavaScript execution in a selected frame is not supported safely",
+          code: "UNSUPPORTED_FRAME_EXECUTION",
+          frameId,
+        };
+      }
 
       try {
         const piHelpersCode = `if(!window.piHelpers){const piHelpers={wait(ms){return new Promise(r=>setTimeout(r,ms))},setValue(el,v,events=['input','change']){let p=Object.getPrototypeOf(el),s=null;while(p&&p!==Object.prototype){const d=Object.getOwnPropertyDescriptor(p,'value');if(d&&d.set){s=d.set;break}p=Object.getPrototypeOf(p)}if(s)s.call(el,v);else el.value=v;for(const n of events)el.dispatchEvent(new Event(n,{bubbles:n!=='blur'}));return el},async waitForSelector(sel,opts={}){const{state='visible',timeout=20000}=opts;const isVis=el=>el&&getComputedStyle(el).display!=='none'&&getComputedStyle(el).visibility!=='hidden'&&getComputedStyle(el).opacity!=='0'&&el.offsetWidth>0&&el.offsetHeight>0;const chk=()=>{const el=document.querySelector(sel);switch(state){case'attached':return el;case'detached':return el?null:document.body;case'hidden':return(!el||!isVis(el))?(el||document.body):null;default:return isVis(el)?el:null}};return new Promise((res,rej)=>{const r=chk();if(r){res(state==='detached'||state==='hidden'?null:r);return}const obs=new MutationObserver(()=>{const r=chk();if(r){obs.disconnect();clearTimeout(tid);res(state==='detached'||state==='hidden'?null:r)}});const tid=setTimeout(()=>{obs.disconnect();rej(new Error('Timeout'))},timeout);obs.observe(document.documentElement,{childList:true,subtree:true,attributes:true,attributeFilter:['style','class','hidden']})})},async waitForText(text,opts={}){const{selector,timeout=20000}=opts;const chk=()=>{const root=selector?document.querySelector(selector):document.body;if(!root)return null;const w=document.createTreeWalker(root,NodeFilter.SHOW_TEXT);while(w.nextNode())if(w.currentNode.textContent?.includes(text))return w.currentNode.parentElement;return null};return new Promise((res,rej)=>{const r=chk();if(r){res(r);return}const obs=new MutationObserver(()=>{const r=chk();if(r){obs.disconnect();clearTimeout(tid);res(r)}});const tid=setTimeout(()=>{obs.disconnect();rej(new Error('Timeout'))},timeout);obs.observe(document.documentElement,{childList:true,subtree:true,characterData:true})})},async waitForHidden(sel,t=20000){await piHelpers.waitForSelector(sel,{state:'hidden',timeout:t})},getByRole(role,opts={}){const{name}=opts;const roles={button:['button','input[type=button]','input[type=submit]','input[type=reset]'],link:['a[href]'],textbox:['input:not([type])','input[type=text]','input[type=email]','input[type=password]','textarea'],checkbox:['input[type=checkbox]'],radio:['input[type=radio]'],combobox:['select'],heading:['h1','h2','h3','h4','h5','h6']};const cands=[...document.querySelectorAll('[role='+role+']')];if(roles[role])roles[role].forEach(s=>cands.push(...document.querySelectorAll(s+':not([role])')));if(!name)return cands[0]||null;const n=name.toLowerCase().trim();for(const el of cands){const l=el.getAttribute('aria-label')?.toLowerCase().trim();const t=el.textContent?.toLowerCase().trim();if(l===n||t===n||l?.includes(n)||t?.includes(n))return el}return null}};window.__piHelpers=piHelpers;window.piHelpers=piHelpers}`;

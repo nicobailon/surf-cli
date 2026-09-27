@@ -104,6 +104,24 @@ describe("JavaScript command handlers", () => {
     expect(result).toEqual({ output: "3" });
   });
 
+  it("refuses selected-frame execution instead of evaluating in the main frame", async () => {
+    const handleMessage = await loadHandleMessage();
+    const chrome = (globalThis as any).chrome;
+    mockRuntimeEvaluate(chrome);
+
+    const result = await handleMessage(
+      { type: "EXECUTE_JAVASCRIPT", tabId: 1, frameId: 7, code: "location.href" },
+      {},
+    );
+
+    expect(result).toEqual({
+      error: "JavaScript execution in a selected frame is not supported safely",
+      code: "UNSUPPORTED_FRAME_EXECUTION",
+      frameId: 7,
+    });
+    expect(chrome.debugger.sendCommand).not.toHaveBeenCalled();
+  });
+
   it("returns multiline member chain expressions", async () => {
     const handleMessage = await loadHandleMessage();
     const chrome = (globalThis as any).chrome;
@@ -286,6 +304,36 @@ describe("JavaScript command handlers", () => {
       error:
         "Cannot control this page. Chrome restricts automation on chrome://, extensions, and web store pages.",
     });
+  });
+});
+
+describe("Page state handler", () => {
+  beforeEach(() => {
+    resetChromeMock();
+  });
+
+  it("inspects the explicitly selected extension frame", async () => {
+    const handleMessage = await loadHandleMessage();
+    const chrome = (globalThis as any).chrome;
+    const expectedState = {
+      hasModal: false,
+      hasDropdown: true,
+      hasDatePicker: false,
+      hasOverlay: true,
+      focusedElement: { tag: "input", type: "text" },
+      url: "https://frame.example.com/form",
+      title: "Frame form",
+    };
+    chrome.scripting.executeScript.mockResolvedValue([{ frameId: 7, result: expectedState }]);
+
+    const result = await handleMessage({ type: "PAGE_STATE", tabId: 1, frameId: 7 }, {});
+
+    expect(result).toEqual(expectedState);
+    expect(chrome.scripting.executeScript).toHaveBeenCalledWith({
+      target: { tabId: 1, frameIds: [7] },
+      func: expect.any(Function),
+    });
+    expect(chrome.debugger.sendCommand).not.toHaveBeenCalled();
   });
 });
 
