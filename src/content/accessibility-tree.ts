@@ -798,8 +798,8 @@ function resolveRef(ref: string): { element: Element; error?: undefined } | { el
   window.__piRefs = window.__piRefs || {};
   window.__piRefs[suggested] = matches[0];
   elementMap[suggested] = { element: new WeakRef(matches[0]), role: identity.role, name: identity.name };
-  const label = identity.name.replace(/\s+/g, " ").replace(/"/g, '\\"');
-  return { error: `Element ${ref} no longer exists. Did you mean ${suggested} (${identity.role} "${label}")? Otherwise run surf read.` };
+  const label = JSON.stringify(identity.name.replace(/\s+/g, " "));
+  return { error: `Element ${ref} no longer exists. Did you mean ${suggested} (${identity.role} ${label})? Otherwise run surf read.` };
 }
 
 function generateAccessibilityTree(
