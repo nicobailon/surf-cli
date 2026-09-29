@@ -314,10 +314,11 @@ describe("accessibility tree", () => {
     body.append(replacement);
 
     expect(sendMessage({ type: "CLICK_ELEMENT", ref: staleRef, button: "left" }).error).toMatch(
-      new RegExp(`^Element ${staleRef} no longer exists\\. Did you mean e\\d+ \\(button "${label}"\\)\\?`),
+      new RegExp(
+        `^Element ${staleRef} no longer exists\\. Did you mean e\\d+ \\(button "${label}"\\)\\?`,
+      ),
     );
   });
-
 
   it("reports a toggled checkbox as one checked state change", async () => {
     const checkbox = new FakeInputElement("input");
