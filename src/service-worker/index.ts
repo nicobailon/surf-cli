@@ -1414,13 +1414,7 @@ export async function handleMessage(
       // Include visible text content if requested
       if (message.options?.includeText) {
         try {
-          const textResult = await chrome.tabs.sendMessage(tabId, {
-            type: "GET_PAGE_TEXT",
-            options: {
-              compact: message.options?.compact === true,
-              maxBytes: message.options?.maxBytes,
-            },
-          }, { frameId: readFrameId });
+          const textResult = await chrome.tabs.sendMessage(tabId, { type: "GET_PAGE_TEXT" }, { frameId: readFrameId });
           if (textResult?.text) {
             result.text = textResult.text;
           }

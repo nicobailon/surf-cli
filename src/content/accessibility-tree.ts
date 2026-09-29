@@ -1518,27 +1518,16 @@ function smartType(selector: string, text: string, clear = true, submit = false)
   }
 }
 
-function truncateToUtf8Bytes(input: string, maxBytes: number): string {
-  const encoder = new TextEncoder();
-  const encoded = encoder.encode(input);
-  if (encoded.length <= maxBytes) return input;
-  let end = maxBytes;
-  while (end > 0 && (encoded[end] & 0xc0) === 0x80) end--;
-  return new TextDecoder("utf-8", { fatal: false }).decode(encoded.subarray(0, end));
-}
-
-function getPageText(options: { maxBytes?: number } = {}): { text: string; title: string; url: string; error?: string } {
+// The native host caps the text so it can mark the cut and keep the full copy.
+function getPageText(): { text: string; title: string; url: string; error?: string } {
   try {
     const article = document.querySelector("article");
     const main = document.querySelector("main");
     const content = article || main || document.body;
 
-    const normalized = content.textContent
+    const text = content.textContent
       ?.replace(/\s+/g, " ")
       .trim() || "";
-    const text = Number.isFinite(options.maxBytes) && options.maxBytes! > 0
-      ? truncateToUtf8Bytes(normalized, options.maxBytes!)
-      : normalized.substring(0, 50000);
 
     return {
       text,
@@ -2068,7 +2057,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       break;
     }
     case "GET_PAGE_TEXT": {
-      const result = getPageText(message.options || {});
+      const result = getPageText();
       sendResponse(result);
       break;
     }

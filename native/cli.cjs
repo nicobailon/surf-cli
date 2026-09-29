@@ -4069,8 +4069,14 @@ async function handleResponse(response) {
   }
 
   if (wantJson) {
-    const output = response.target || response.notice || response.pageChanges
-      ? { result: data ?? null, target: response.target || null, notice: response.notice || null, ...(response.pageChanges ? { pageChanges: response.pageChanges } : {}) }
+    const output = response.target || response.notice || response.truncated || response.pageChanges
+      ? {
+        result: data ?? null,
+        target: response.target || null,
+        notice: response.notice || null,
+        ...(response.truncated ? { truncated: response.truncated } : {}),
+        ...(response.pageChanges ? { pageChanges: response.pageChanges } : {}),
+      }
       : data ?? null;
     console.log(JSON.stringify(output, null, 2));
     socket.end();
