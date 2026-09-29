@@ -931,6 +931,37 @@ describe("accessibility tree", () => {
         error: "Element e999 not found. Run surf read to get current refs.",
       });
     });
+
+    it("matches a located ref by the element's own name, not the locator query", () => {
+      (document as any).querySelectorAll = (selector: string) =>
+        selector === "button" ? body().children.filter((child) => child.tagName === "BUTTON") : [];
+      body().append(button("Save changes"));
+      const staleRef = send({ type: "LOCATE_ROLE", role: "button", name: "Save" }).ref;
+
+      replaceBody(button("Save"));
+      expect(send({ type: "CLICK_ELEMENT", ref: staleRef, button: "left" })).toEqual({
+        error: `Element ${staleRef} no longer exists. Run surf read to get current refs.`,
+      });
+
+      const replacement = button("Save changes");
+      replaceBody(button("Save"), replacement);
+      const { error } = send({ type: "CLICK_ELEMENT", ref: staleRef, button: "left" });
+      const suggested = error.match(/Did you mean (e\d+) \(button "Save changes"\)\?/)?.[1];
+      send({ type: "CLICK_ELEMENT", ref: suggested, button: "left" });
+      expect(replacement.clicked).toBe(true);
+    });
+
+    it("does not suggest an element inside an aria-hidden container", () => {
+      body().append(button("Save"));
+      const staleRef = readRef("Save");
+
+      const hidden = element("div", { "aria-hidden": "true" });
+      hidden.append(button("Save"));
+      replaceBody(hidden);
+      expect(send({ type: "CLICK_ELEMENT", ref: staleRef, button: "left" })).toEqual({
+        error: `Element ${staleRef} no longer exists. Run surf read to get current refs.`,
+      });
+    });
   });
 
   it("caps visible text in compact mode", () => {

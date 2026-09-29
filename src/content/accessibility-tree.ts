@@ -477,7 +477,7 @@ function getName(element: Element): string {
 
   if (tag === "select") {
     const select = element as HTMLSelectElement;
-    const selected = select.querySelector("option[selected]") || 
+    const selected = select.querySelector("option[selected]") ||
       (select.selectedIndex >= 0 ? select.options[select.selectedIndex] : null);
     if (selected?.textContent?.trim()) return selected.textContent.trim();
   }
@@ -783,13 +783,13 @@ function resolveRef(ref: string): { element: Element; error?: undefined } | { el
   const pending: Element[] = identity.name ? [document.body] : [];
   while (pending.length) {
     const candidate = pending.pop()!;
+    if (candidate.getAttribute("aria-hidden") === "true") continue;
     pending.push(...candidate.children);
     if (getResolvedRole(candidate) !== identity.role || getName(candidate) !== identity.name) continue;
     const style = window.getComputedStyle(candidate);
     if (
       style.display !== "none" && style.visibility !== "hidden" && style.opacity !== "0" &&
-      (candidate as HTMLElement).offsetWidth > 0 && (candidate as HTMLElement).offsetHeight > 0 &&
-      candidate.getAttribute("aria-hidden") !== "true"
+      (candidate as HTMLElement).offsetWidth > 0 && (candidate as HTMLElement).offsetHeight > 0
     ) matches.push(candidate);
   }
   if (matches.length !== 1) return { error: `Element ${ref} no longer exists. Run surf read to get current refs.` };
@@ -1950,10 +1950,12 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         
         // Generate refs for matches
         const results = matches.map(el => {
-          const ref = getOrAssignRef(el, role, name || '');
+          const elRole = getResolvedRole(el);
+          const elName = getName(el);
+          const ref = getOrAssignRef(el, elRole, elName);
           window.__piRefs = window.__piRefs || {};
           window.__piRefs[ref] = el;
-          elementMap[ref] = { element: new WeakRef(el), role, name: name || '' };
+          elementMap[ref] = { element: new WeakRef(el), role: elRole, name: elName };
           return { ref, text: el.textContent?.trim().slice(0, 50) };
         });
         
@@ -2005,10 +2007,11 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         )[0];
         
         const role = getResolvedRole(el);
-        const ref = getOrAssignRef(el, role, text);
+        const name = getName(el);
+        const ref = getOrAssignRef(el, role, name);
         window.__piRefs = window.__piRefs || {};
         window.__piRefs[ref] = el;
-        elementMap[ref] = { element: new WeakRef(el), role, name: text };
+        elementMap[ref] = { element: new WeakRef(el), role, name };
         
         sendResponse({ ref, text: el.textContent?.trim().slice(0, 50) });
       } catch (err) {
@@ -2057,10 +2060,11 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         }
         
         const role = getResolvedRole(input);
-        const ref = getOrAssignRef(input, role, label);
+        const name = getName(input);
+        const ref = getOrAssignRef(input, role, name);
         window.__piRefs = window.__piRefs || {};
         window.__piRefs[ref] = input;
-        elementMap[ref] = { element: new WeakRef(input), role, name: label };
+        elementMap[ref] = { element: new WeakRef(input), role, name };
         
         sendResponse({ ref, label });
       } catch (err) {
