@@ -206,6 +206,48 @@ describe("file transfer path policy", () => {
     ).rejects.toThrow(/auto screenshot metadata/);
   });
 
+  it("accepts pageChanges only as a settle cap on action tools", async () => {
+    const pageChanges = { settleMs: 500 };
+    expect(
+      transfer.validateLocalToolPaths("select", { selector: "#s", pageChanges }).pageChanges,
+    ).toEqual(pageChanges);
+    expect(
+      transfer.prepareRemoteTool("click", { ref: "e1", pageChanges }).args.pageChanges,
+    ).toEqual(pageChanges);
+    const materialized = await transfer.materializeRemoteTool({
+      tool: "key",
+      args: { key: "Enter", pageChanges },
+    });
+    expect(materialized.args.pageChanges).toEqual(pageChanges);
+    for (const invalid of [
+      true,
+      { settleMs: -1 },
+      { settleMs: 1.5 },
+      { settleMs: "500" },
+      { settleMs: 500, extra: 1 },
+      {},
+    ]) {
+      expect(() => transfer.validateLocalToolPaths("click", { pageChanges: invalid })).toThrow(
+        /settleMs/,
+      );
+      expect(() => transfer.prepareRemoteTool("click", { pageChanges: invalid })).toThrow(
+        /settleMs/,
+      );
+      await expect(
+        transfer.materializeRemoteTool({ tool: "click", args: { pageChanges: invalid } }),
+      ).rejects.toThrow(/settleMs/);
+    }
+    expect(() => transfer.validateLocalToolPaths("page.read", { pageChanges })).toThrow(
+      /not supported for page.read/,
+    );
+    expect(() => transfer.prepareRemoteTool("tab.list", { pageChanges })).toThrow(
+      /not supported for tab.list/,
+    );
+    await expect(
+      transfer.materializeRemoteTool({ tool: "js", args: { pageChanges } }),
+    ).rejects.toThrow(/not supported for js/);
+  });
+
   it("materializes staged and direct provider paths with rewrites", async () => {
     const directory = await tempDir();
     const stagedInput = path.join(directory, "staged-input");
