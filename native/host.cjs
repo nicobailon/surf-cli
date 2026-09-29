@@ -1761,6 +1761,8 @@ function sendToolResponse(socket, id, result, error) {
       finalError = transferFailure.message;
     }
     const formattedError = finalError ? formatToolError(finalError) : null;
+    let pageChanges;
+    if (!formattedError && output?.pageChanges) ({ pageChanges, ...output } = output);
     if (formattedError && request) {
       const rewrittenMessage = rewriteTransferPaths(
         formattedError.content[0].text,
@@ -1802,6 +1804,7 @@ function sendToolResponse(socket, id, result, error) {
       };
     }
     if (request?.notice) response.notice = request.notice;
+    if (pageChanges) response.pageChanges = pageChanges;
     if (formattedError) response.error = formattedError;
     else {
       response.result = { content: formatToolContent(output, log) };
@@ -1940,6 +1943,7 @@ function handleToolRequest(msg, socket, requestContext = requestStorage.getStore
     sendToolResponse(socket, originalId, null, `Unknown tool: ${tool}`);
     return;
   }
+  if (args?.pageChanges) extensionMsg.pageChanges = args.pageChanges;
   if (requestContext.target?.strict) extensionMsg.strictTarget = true;
   applyFrameContextToMessage(requestContext, extensionMsg);
   try {

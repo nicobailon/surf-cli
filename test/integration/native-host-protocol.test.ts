@@ -1192,6 +1192,42 @@ describe("native host protocol integration", () => {
     }
   });
 
+  it("forwards pageChanges to the extension and returns its result at the top level", async () => {
+    const host = await startHostHarness();
+    const transport = await openClientTransport({
+      kind: "local",
+      connectionOptions: host.socketPath,
+    });
+    const pageChanges = {
+      settle: { state: "settled", ms: 120 },
+      navigated: null,
+      changes: [{ kind: "added", ref: "e4", role: "button", name: "Delete" }],
+      text: [],
+      omitted: 0,
+    };
+    try {
+      const response = transport.request({
+        type: "tool_request",
+        method: "execute_tool",
+        params: { tool: "click", args: { selector: "#go", pageChanges: { settleMs: 500 } } },
+        tabId: 1,
+        id: "page-changes",
+      });
+      const click = await host.waitForMessage(
+        (message) => message.type === "CLICK_SELECTOR",
+        "click with page changes",
+      );
+      expect(click.pageChanges).toEqual({ settleMs: 500 });
+      host.send({ id: click.id, success: true, pageChanges });
+      const replied = await response;
+      expect(replied.error).toBeUndefined();
+      expect(replied.pageChanges).toEqual(pageChanges);
+      expect(replied.result.content).toEqual([{ type: "text", text: "OK" }]);
+    } finally {
+      await transport.close();
+    }
+  });
+
   it("replies before a local auto-screenshot and holds the tab until the file is written", async () => {
     const surfTmp = fs.mkdtempSync(path.join(os.tmpdir(), "surf-auto-local-"));
     tempDirs.push(surfTmp);

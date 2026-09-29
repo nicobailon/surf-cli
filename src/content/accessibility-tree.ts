@@ -1752,7 +1752,8 @@ function pageNodeName(element: Element, role: string): string {
     // collectValueFreeText skips control roots, so read the children of the element itself.
     const text = Array.from(element.childNodes).map((child) =>
       child instanceof Element ? collectValueFreeText(child, 80) : boundedText(child.textContent, 80));
-    return boundedText(text.join(" "), 80);
+    const content = boundedText(text.join(" "), 80);
+    if (content) return content;
   }
   if (role === "dialog" || role === "alertdialog") {
     const heading = element.querySelector('[role="heading"], h1, h2, h3');

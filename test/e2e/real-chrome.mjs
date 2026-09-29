@@ -151,6 +151,38 @@ function fixturePages(request, { crossOriginBase }) {
 <body><main><h1>Sign in</h1><form><label>Email <input type="email" name="email"></label>
 <label>Password <input type="password" name="password"></label><button type="submit">Sign in</button></form></main></body></html>`;
   }
+  if (url.pathname === "/changes") {
+    return `<!doctype html><html><head><title>Surf page changes fixture</title></head>
+<body><main><h1>Project settings</h1>
+<button id="open-dialog">Delete project</button>
+<label><input type="checkbox" id="notify"> Email me</label>
+<button id="noop">Do nothing</button>
+<label>Password <input type="password" id="secret"></label>
+<button id="ticker-start">Start ticker</button><p id="ticker">0</p>
+<p id="outcome">Nothing deleted</p>
+<a id="leave" href="/changes-target">Leave settings</a>
+</main>
+<script>
+  document.querySelector("#open-dialog").addEventListener("click", () => {
+    const dialog = document.createElement("div");
+    dialog.setAttribute("role", "dialog");
+    dialog.setAttribute("aria-labelledby", "dialog-title");
+    dialog.innerHTML = '<h2 id="dialog-title">Delete project?</h2><button id="cancel">Cancel</button><button id="confirm">Delete</button>';
+    dialog.querySelector("#confirm").addEventListener("click", () => {
+      document.querySelector("#outcome").textContent = "Project deleted";
+      dialog.remove();
+    });
+    setTimeout(() => document.body.append(dialog), 50);
+  });
+  document.querySelector("#ticker-start").addEventListener("click", () => {
+    let count = 0;
+    setInterval(() => { document.querySelector("#ticker").textContent = String(++count); }, 50);
+  });
+</script></body></html>`;
+  }
+  if (url.pathname === "/changes-target") {
+    return `<!doctype html><html><head><title>Changes target</title></head><body><main><h1>Target</h1></main></body></html>`;
+  }
   if (url.pathname === "/list") {
     const empty = url.searchParams.get("empty") === "1";
     const items = empty
@@ -583,6 +615,64 @@ try {
     throw new Error("extract leaked an owned tab");
   }
 
+  // Page changes after actions
+  const changesTab = String(tabIdFromOutput(await runSurf("tab.new", `${baseUrl}/changes`)));
+  await runSurf("wait.ready", "--json", "--tab-id", changesTab, "--selector", "#leave");
+  const dialogOutput = await runSurf("click", "--selector", "#open-dialog", "--tab-id", changesTab);
+  const dialogButtons = Object.fromEntries(
+    [...dialogOutput.matchAll(/^ {6}(e\d+) button "(Cancel|Delete)"$/gm)].map((match) => [match[2], match[1]]),
+  );
+  if (!/^changed \(settled in \d+ms\):$/m.test(dialogOutput) || !dialogOutput.includes('  + dialog "Delete project?"\n') || !dialogButtons.Cancel || !dialogButtons.Delete) {
+    throw new Error(`click did not report the opened dialog and its buttons: ${dialogOutput}`);
+  }
+  const confirmOutput = await runSurf("click", dialogButtons.Delete, "--settle", "1000", "--no-screenshot", "--tab-id", changesTab);
+  if (!confirmOutput.includes('  - dialog "Delete project?"')) {
+    throw new Error(`clicking the reported dialog ref did not remove the dialog: ${confirmOutput}`);
+  }
+  if (!(await runSurf("page.text", "--tab-id", changesTab)).includes("Project deleted")) {
+    throw new Error("clicking the reported dialog ref did not reach the dialog button");
+  }
+  const checkbox = JSON.parse(await runSurf("click", "--selector", "#notify", "--settle", "1000", "--no-screenshot", "--tab-id", changesTab, "--json"));
+  const checkboxChanges = checkbox.pageChanges?.changes;
+  if (checkboxChanges?.length !== 1 || checkboxChanges[0].kind !== "changed" || checkboxChanges[0].name !== "Email me" || checkboxChanges[0].property !== "checked" || checkboxChanges[0].to !== true) {
+    throw new Error(`checkbox toggle did not report one state change: ${JSON.stringify(checkbox)}`);
+  }
+  const timeNoop = async (...flags) => {
+    const startedAt = Date.now();
+    const output = await runSurf("click", "--selector", "#noop", "--no-screenshot", "--tab-id", changesTab, ...flags);
+    return { ms: Date.now() - startedAt, output };
+  };
+  const noopRuns = [];
+  for (let run = 0; run < 3; run++) noopRuns.push({ plain: await timeNoop("--no-diff"), diff: await timeNoop() });
+  const median = (values) => values.sort((a, b) => a - b)[1];
+  const noopLatency = {
+    noDiffMs: median(noopRuns.map((run) => run.plain.ms)),
+    diffMs: median(noopRuns.map((run) => run.diff.ms)),
+  };
+  noopLatency.addedMs = noopLatency.diffMs - noopLatency.noDiffMs;
+  if (noopRuns.some((run) => !/^no visible change \(quiet \d+ms\)$/m.test(run.diff.output) || run.plain.output.includes("visible change"))) {
+    throw new Error(`no-op click did not report no visible change: ${JSON.stringify(noopRuns)}`);
+  }
+  if (noopLatency.addedMs > 1500) {
+    throw new Error(`page changes added too much latency to a no-op click: ${JSON.stringify(noopLatency)}`);
+  }
+  const secret = "hunter2-page-changes";
+  const typedOutput = await runSurf("type", secret, "--into", "#secret", "--settle", "1000", "--no-screenshot", "--tab-id", changesTab);
+  const typedJson = await runSurf("type", `${secret}-json`, "--into", "#secret", "--settle", "1000", "--no-screenshot", "--tab-id", changesTab, "--json");
+  if (!/"Password" {2}value changed$/m.test(typedOutput) || typedOutput.includes(secret) || typedJson.includes(secret)) {
+    throw new Error(`typing into a password field leaked or missed the change: ${typedOutput}\n${typedJson}`);
+  }
+  const tickerOutput = await runSurf("click", "--selector", "#ticker-start", "--settle", "600", "--no-screenshot", "--tab-id", changesTab);
+  if (!/^still changing after \d+ms \(partial\):$/m.test(tickerOutput)) {
+    throw new Error(`a page that keeps changing was not reported as partial: ${tickerOutput}`);
+  }
+  const leaveOutput = await runSurf("click", "--selector", "#leave", "--no-screenshot", "--tab-id", changesTab);
+  const navigatedLines = leaveOutput.split("\n").filter((line) => line.startsWith("navigated: "));
+  if (navigatedLines.length !== 1 || navigatedLines[0] !== `navigated: ${baseUrl}/changes -> ${baseUrl}/changes-target "Changes target"` || leaveOutput.includes("changed (")) {
+    throw new Error(`a navigating click did not report one navigation line: ${leaveOutput}`);
+  }
+  await runSurf("tab.close", "--id", changesTab, "--json");
+
   await runSurf("screenshot", "--output", screenshotPath);
   const png = readFileSync(screenshotPath);
   if (png.length < 100 || png.subarray(0, 8).toString("hex") !== "89504e470d0a1a0a") {
@@ -628,6 +718,7 @@ try {
         readiness: { fixture: readiness.state, loginAccepted: acceptedLogin.state },
         frameDiagnoseWarnings: diagnosis.warnings.length,
         scriptOptions: { js: jsOutput.total, frameJs: frameOutput.total, frozen: frameInline.frozen },
+        pageChanges: { noopLatency },
         screenshotBytes: png.length,
         serviceWorker: workerTarget.url(),
       },
