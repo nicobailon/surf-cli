@@ -1865,7 +1865,7 @@ function waitForPageSettle(session: PageChangeSession, capMs: number, quietMs: n
       if (session.lastMutationAt === null && (now - quietSince >= quietMs || elapsed >= capMs)) {
         resolve({ state: "quiet", ms: elapsed });
       } else if (session.lastMutationAt !== null && now - quietSince >= quietMs) {
-        resolve({ state: "settled", ms: session.lastMutationAt - session.startedAt });
+        resolve({ state: "settled", ms: elapsed });
       } else if (elapsed >= capMs) {
         resolve({ state: "unsettled", ms: elapsed });
       } else {

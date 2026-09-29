@@ -263,7 +263,7 @@ describe("accessibility tree", () => {
     expect(keptOpen).toBe(true);
     const dialogRef = result.changes[0].ref;
     expect(result).toEqual({
-      settle: { state: "settled", ms: 40 },
+      settle: { state: "settled", ms: 340 },
       navigated: null,
       changes: [
         { kind: "added", ref: dialogRef, role: "dialog", name: "Delete project?" },
