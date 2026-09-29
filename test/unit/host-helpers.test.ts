@@ -650,22 +650,24 @@ describe("formatToolError", () => {
 
 describe("truncatePageText", () => {
   it("leaves text under the limit unmarked", () => {
-    expect(helpers.truncatePageText("short page", undefined, "/tmp/full.txt")).toEqual({
+    expect(helpers.truncatePageText("short page", { fullPath: "/tmp/full.txt" })).toEqual({
       text: "short page",
     });
-    expect(helpers.truncatePageText("short page", 10)).toEqual({ text: "short page" });
+    expect(helpers.truncatePageText("short page", { maxBytes: 10 })).toEqual({
+      text: "short page",
+    });
   });
 
   it("marks a max-bytes cut with shown and total bytes and the full-text path", () => {
     const text = "a".repeat(3000);
-    expect(helpers.truncatePageText(text, 2000, "/tmp/full.txt")).toEqual({
+    expect(helpers.truncatePageText(text, { maxBytes: 2000, fullPath: "/tmp/full.txt" })).toEqual({
       text: `${"a".repeat(2000)}\n\n[Truncated: showing 2000 of 3000 bytes. Full text: /tmp/full.txt.]`,
       truncated: { shownBytes: 2000, totalBytes: 3000, path: "/tmp/full.txt" },
     });
   });
 
   it("cuts multi-byte text on a character boundary and omits the path when none is given", () => {
-    expect(helpers.truncatePageText("😀😀", 5)).toEqual({
+    expect(helpers.truncatePageText("😀😀", { maxBytes: 5 })).toEqual({
       text: "😀\n\n[Truncated: showing 4 of 8 bytes.]",
       truncated: { shownBytes: 4, totalBytes: 8 },
     });
@@ -677,6 +679,20 @@ describe("truncatePageText", () => {
       `${"😀".repeat(25000)}\n\n[Truncated: showing 100000 of 120000 bytes.]`,
     );
     expect(result.truncated).toEqual({ shownBytes: 100000, totalBytes: 120000 });
+  });
+
+  it("keeps a surrogate pair whole when it straddles the character cap", () => {
+    expect(helpers.truncatePageText(`${"a".repeat(49_999)}😀tail`)).toEqual({
+      text: `${"a".repeat(49_999)}\n\n[Truncated: showing 49999 of 50007 bytes.]`,
+      truncated: { shownBytes: 49_999, totalBytes: 50_007 },
+    });
+  });
+
+  it("caps AI Studio page context at 20,000 characters with the standard marker", () => {
+    expect(helpers.truncatePageText("a".repeat(30_000), { maxChars: 20_000 })).toEqual({
+      text: `${"a".repeat(20_000)}\n\n[Truncated: showing 20000 of 30000 bytes.]`,
+      truncated: { shownBytes: 20_000, totalBytes: 30_000 },
+    });
   });
 });
 

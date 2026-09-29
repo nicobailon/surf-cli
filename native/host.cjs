@@ -1750,7 +1750,7 @@ async function truncatePageTextResult(context, request, output) {
   if (!["page.read", "page.text", "get_page_text"].includes(request?.tool) || typeof output?.text !== "string" || output.semanticObservation !== undefined) return output;
   const maxBytes = request.tool === "page.read" && request.args?.["max-bytes"] !== undefined ? Number(request.args["max-bytes"]) : undefined;
   const fullPath = context?.isRemote ? undefined : path.join(SURF_TMP, `surf-text-${crypto.randomUUID()}.txt`);
-  const cut = truncatePageText(output.text, maxBytes, fullPath);
+  const cut = truncatePageText(output.text, { maxBytes, fullPath });
   if (!cut.truncated) return output;
   if (fullPath) await fs.promises.writeFile(fullPath, output.text, { mode: 0o600, flag: "wx" });
   return { ...output, text: cut.text, truncated: cut.truncated };
@@ -2527,7 +2527,7 @@ function handleToolRequest(msg, socket, requestContext = requestStorage.getStore
         if (pageResult && !pageResult.error) {
           pageContext = {
             url: pageResult.url,
-            text: truncatePageText(pageResult.text || pageResult.pageContent || "").text
+            text: truncatePageText(pageResult.text || pageResult.pageContent || "", { maxChars: 20_000 }).text
           };
         }
       }
@@ -2535,13 +2535,7 @@ function handleToolRequest(msg, socket, requestContext = requestStorage.getStore
       // 2. Build full prompt
       let fullPrompt = query || "";
       if (pageContext) {
-        const MAX_PAGE_CONTEXT_CHARS = 20000;
-        const pageText = String(pageContext.text || "");
-        const truncated = pageText.length > MAX_PAGE_CONTEXT_CHARS
-          ? pageText.slice(0, MAX_PAGE_CONTEXT_CHARS) + "\n\n[...truncated...]"
-          : pageText;
-
-        fullPrompt = `Page: ${pageContext.url}\n\n${truncated}\n\n---\n\n${fullPrompt}`;
+        fullPrompt = `Page: ${pageContext.url}\n\n${pageContext.text}\n\n---\n\n${fullPrompt}`;
       }
 
       // 3. Call AI Studio client

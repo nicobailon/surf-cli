@@ -41,10 +41,11 @@ function formatToolError(error) {
 }
 
 // A silent cut reads as missing content, so cut page text ends with a marker.
-// Without max-bytes the cap stays at 50,000 characters.
-function truncatePageText(text, maxBytes, fullPath) {
+// Without maxBytes the cap is maxChars characters, never splitting a surrogate pair.
+function truncatePageText(text, { maxBytes, maxChars = 50_000, fullPath } = {}) {
   const full = Buffer.from(text);
-  let kept = text.substring(0, 50_000);
+  const cut = maxChars < text.length && /[\uD800-\uDBFF]/.test(text[maxChars - 1]) ? maxChars - 1 : maxChars;
+  let kept = text.substring(0, cut);
   if (maxBytes !== undefined) {
     let end = Math.min(maxBytes, full.length);
     while (end > 0 && (full[end] & 0xc0) === 0x80) end--;
