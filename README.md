@@ -268,7 +268,7 @@ surf page.state                     # Modals, loading state, scroll position
 
 Use `surf page.html --strip-scripts` after the page loads when you need a static export of a Claude artifact or other rendered DOM. Use `--selector <css>` to export one element.
 
-Trees over 50,000 bytes, or over `--max-bytes`, end with a note giving the path of a private file with the full tree. Remote clients get the note without a path; narrow with `--ref` or `--depth` instead.
+Trees over 50,000 bytes and page text over 50,000 characters, or either over `--max-bytes`, end with a note giving the shown and total bytes and the path of a private file with the full content. Remote clients get the note without a path; narrow with `--ref` or `--depth` instead.
 
 Element refs (`e1`, `e2`, `e3`...) are stable identifiers from the accessibility tree - semantic, predictable, and resilient to DOM changes.
 
