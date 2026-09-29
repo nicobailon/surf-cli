@@ -214,6 +214,21 @@ function fixturePages(request, { crossOriginBase }) {
   });
 </script></body></html>`;
   }
+  if (url.pathname === "/summary") {
+    const sections = ["World", "Business", "Science", "Sport", "Culture", "Travel", "Opinion", "Archive"]
+      .map((name) => `<a href="/${name.toLowerCase()}">${name}</a>`)
+      .join(" ");
+    const stories = Array.from({ length: 120 }, (_, index) => {
+      const n = index + 1;
+      return `<div class="story"><h2>Story ${n}</h2><p>Story ${n} reports on a long-running local question in plain terms, with quotes from residents, figures from the council and a short note on what happens next.</p><a href="/story/${n}">Read story ${n}</a> <a href="/story/${n}#comments">${n} comments</a></div>`;
+    }).join("\n");
+    return `<!doctype html><html><head><title>Surf summary fixture</title></head>
+<body><header><h1>Surf News</h1></header><nav aria-label="Sections">${sections}</nav>
+<main><input type="search" aria-label="Search stories"><button>Search</button>
+${stories}</main>
+<dialog open aria-label="Cookie consent"><p>We use cookies.</p><button>Accept</button><button>Reject</button></dialog>
+</body></html>`;
+  }
   if (url.pathname === "/rerender") {
     return `<!doctype html><html><head><title>Surf rerender fixture</title></head>
 <body><label>Filter <input id="filter" type="text"></label><div id="app"></div><output id="log">none</output>
@@ -516,6 +531,43 @@ try {
     throw new Error(`wait.ready --accept login did not return the state: ${JSON.stringify(acceptedLogin)}`);
   }
   await runSurf("tab.close", "--id", String(loginTab.tabId), "--json");
+
+  // read --summary: a fixed content-heavy page, so summary size growth fails here.
+  const summaryTab = { tabId: tabIdFromOutput(await runSurf("tab.new", `${baseUrl}/summary`)) };
+  const summaryTabId = String(summaryTab.tabId);
+  await runSurf("wait.element", "dialog", "--tab-id", summaryTabId, "--json");
+  const fullRead = await runSurf("read", "--tab-id", summaryTabId);
+  const summaryRead = await runSurf("read", "--summary", "--tab-id", summaryTabId);
+  const summaryLines = summaryRead.split("\n");
+  if (
+    summaryLines[0] !== `Surf summary fixture — ${baseUrl}/summary` ||
+    !summaryLines.includes('headings: h1 "Surf News", h2 "Story 1", h2 "Story 2", h2 "Story 3", h2 "Story 4", h2 "Story 5", h2 "Story 6", h2 "Story 7", h2 "Story 8", h2 "Story 9", +111 more') ||
+    !summaryLines.includes("  main                     link 240, searchbox 1, button 1") ||
+    !summaryLines.includes('  navigation "Sections"    link 8') ||
+    !summaryLines.includes('dialogs: dialog "Cookie consent"') ||
+    /\be\d+\b/.test(summaryRead)
+  ) {
+    throw new Error(`read --summary did not summarize the fixture:\n${summaryRead}`);
+  }
+  const summaryBytes = Buffer.byteLength(summaryRead);
+  const fullReadBytes = Buffer.byteLength(fullRead);
+  if (summaryBytes > 700 || summaryBytes * 10 > fullReadBytes) {
+    throw new Error(`read --summary is ${summaryBytes} bytes; want at most 700 and a tenth of read's ${fullReadBytes}`);
+  }
+  const summaryJson = unwrapJson(await runSurf("read", "--summary", "--json", "--tab-id", summaryTabId));
+  if (
+    JSON.stringify(summaryJson.dialogs) !== JSON.stringify([{ role: "dialog", name: "Cookie consent" }]) ||
+    JSON.stringify(summaryJson.regions.find(({ region }) => region === 'dialog "Cookie consent"')) !==
+      JSON.stringify({ region: 'dialog "Cookie consent"', controls: { button: 2 } }) ||
+    summaryJson.headingsOmitted !== 111
+  ) {
+    throw new Error(`read --summary --json did not return the summary fields: ${JSON.stringify(summaryJson)}`);
+  }
+  const summaryConflict = await runSurfExpectingFailure("read", "--summary", "--depth", "2", "--tab-id", summaryTabId);
+  if (!summaryConflict.stderr.includes("--summary cannot be combined with --depth")) {
+    throw new Error(`read --summary --depth did not fail clearly: ${JSON.stringify(summaryConflict)}`);
+  }
+  await runSurf("tab.close", "--id", summaryTabId, "--json");
 
   // frame.diagnose
   const framesTab = { tabId: tabIdFromOutput(await runSurf("tab.new", `${baseUrl}/frames`)) };

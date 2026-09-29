@@ -1587,6 +1587,8 @@ type PageChangeSession = {
 
 const pageChangeSessions = new Map<string, PageChangeSession>();
 
+const PAGE_SUMMARY_HEADING_CAP = 10;
+
 const PAGE_NAME_FROM_CONTENT_ROLES = new Set([
   "button", "link", "checkbox", "radio", "switch", "tab", "menuitem", "menuitemcheckbox", "menuitemradio",
   "option", "treeitem", "heading", "alert", "status",
@@ -1666,6 +1668,11 @@ function pageNodeState(element: Element): PageNode["state"] {
   };
 }
 
+// Change reports and read --summary must name the same region the same way.
+function pageRegionLabel(node: PageNode): string {
+  return node.name ? `${node.role} "${node.name}"` : node.role;
+}
+
 function capturePageSnapshot(): { snapshot: PageSnapshot; elements: Element[] } {
   const nodes: PageNode[] = [];
   const elements: Element[] = [];
@@ -1702,7 +1709,7 @@ function capturePageSnapshot(): { snapshot: PageSnapshot; elements: Element[] } 
       elements.push(element);
       if (PAGE_CONTAINER_ROLES.has(role)) {
         childContainer = nodes.length - 1;
-        childRegion = name ? `${role} "${name}"` : role;
+        childRegion = pageRegionLabel(node);
       } else {
         childRegion = null;
       }
@@ -1789,6 +1796,51 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     case "GENERATE_ACCESSIBILITY_TREE": {
       const options = message.options || {};
       
+      if (options.summary === true) {
+        const { snapshot, elements } = capturePageSnapshot();
+        const headings: Array<{ level: number; name: string }> = [];
+        let headingCount = 0;
+        // Controls outside every landmark and dialog count under "page".
+        const regions = new Map<string, Record<string, number>>();
+        const dialogs: Array<{ role: string; name: string }> = [];
+        const alerts: Array<{ role: string; name: string }> = [];
+        snapshot.nodes.forEach((node, index) => {
+          if (PAGE_CONTAINER_ROLES.has(node.role)) {
+            if (!regions.has(pageRegionLabel(node))) regions.set(pageRegionLabel(node), {});
+            if (node.role === "dialog" || node.role === "alertdialog") dialogs.push({ role: node.role, name: node.name });
+          } else if (node.role === "heading") {
+            headingCount++;
+            if (headings.length === PAGE_SUMMARY_HEADING_CAP) return;
+            const tag = elements[index].tagName.toLowerCase();
+            // Same level rule as the tree; ARIA's default heading level is 2.
+            const level = /^h[1-6]$/.test(tag)
+              ? parseInt(tag[1], 10)
+              : parseInt(elements[index].getAttribute("aria-level") || "", 10) || 2;
+            headings.push({ level, name: node.name });
+          } else if (node.role === "alert") {
+            alerts.push({ role: node.role, name: node.name });
+          } else if (node.role !== "status") {
+            const region = node.container === null ? "page" : pageRegionLabel(snapshot.nodes[node.container]);
+            const controls = regions.get(region) || {};
+            controls[node.role] = (controls[node.role] || 0) + 1;
+            regions.set(region, controls);
+          }
+        });
+        sendResponse({
+          title: document.title,
+          url: window.location.href,
+          headings,
+          headingsOmitted: headingCount - headings.length,
+          regions: Array.from(regions, ([region, controls]) => ({
+            region,
+            controls: Object.fromEntries(Object.entries(controls).sort((a, b) => b[1] - a[1])),
+          })),
+          dialogs,
+          alerts,
+        });
+        break;
+      }
+
       if (options.format === "yaml") {
         const result = generateYamlTree(
           options.filter || "interactive",

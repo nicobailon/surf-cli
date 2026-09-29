@@ -233,6 +233,27 @@ describe("mapToolToMessage", () => {
       const msg = helpers.mapToolToMessage("page.read", { "max-bytes": "1200" });
       expect(msg.options.maxBytes).toBe(1200);
     });
+
+    it("maps --summary to a summary read without page text", () => {
+      expect(helpers.mapToolToMessage("page.read", { summary: true }, 71)).toEqual({
+        type: "READ_PAGE",
+        options: { summary: true },
+        tabId: 71,
+      });
+    });
+
+    it("rejects --summary combined with tree or text flags", () => {
+      expect(() =>
+        helpers.mapToolToMessage("page.read", { summary: true, depth: 3, compact: true }),
+      ).toThrow(
+        "--summary cannot be combined with --depth, --compact: the summary always covers the whole page and lists no elements",
+      );
+      for (const flag of ["ref", "all", "include-hidden", "no-text", "max-bytes"]) {
+        expect(() =>
+          helpers.mapToolToMessage("page.read", { summary: true, [flag]: true }),
+        ).toThrow(`--summary cannot be combined with --${flag}:`);
+      }
+    });
   });
 
   describe("page.html command", () => {

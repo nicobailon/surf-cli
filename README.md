@@ -259,6 +259,7 @@ surf read --depth 3                 # Limit tree depth (smaller output)
 surf read --compact                 # Remove empty structural elements
 surf read --depth 3 --compact       # Both (60% smaller output)
 surf read --max-bytes 2000          # Cap the tree and visible text at 2000 bytes
+surf read --summary                 # Title, headings, control counts per region, open dialogs (no refs)
 surf page.text                      # Raw text content only
 surf page.html                      # Rendered document HTML
 surf page.html --strip-scripts > artifact.html # Save a safe static Claude artifact

@@ -464,6 +464,93 @@ describe("accessibility tree", () => {
     expect(second).not.toHaveProperty("isIncremental");
   });
 
+  it("summarizes headings, control counts per region, open dialogs and alerts without refs", () => {
+    const withText = (node: FakeElement, value: string): FakeElement => {
+      node.append(text(value));
+      return node;
+    };
+    const banner = element("header");
+    banner.append(
+      withText(element("h1"), "Example Store"),
+      withText(element("a", { href: "/" }), "Home"),
+    );
+    const nav = element("nav", { "aria-label": "Primary" });
+    nav.append(
+      withText(element("a", { href: "/deals" }), "Deals"),
+      withText(element("a", { href: "/help" }), "Help"),
+    );
+    const main = element("main");
+    main.append(
+      withText(element("h2"), "Products"),
+      element("input", { type: "search", "aria-label": "Search products" }),
+      withText(element("button"), "Add lamp"),
+      withText(element("button"), "Add chair"),
+      withText(element("a", { href: "/cart" }), "Cart"),
+    );
+    const alert = withText(element("div", { role: "alert" }), "Saved to cart");
+    const status = withText(element("div", { role: "status" }), "2 items");
+    const dialog = element("div", { role: "dialog", "aria-label": "Sign in" });
+    dialog.append(
+      withText(element("div", { role: "heading", "aria-level": "3" }), "Welcome back"),
+      element("input", { type: "email", "aria-label": "Email" }),
+      withText(element("button"), "Continue"),
+    );
+    (document.body as unknown as FakeElement).append(
+      banner,
+      nav,
+      main,
+      withText(element("button"), "Feedback"),
+      alert,
+      status,
+      dialog,
+    );
+
+    const summary = sendMessage({
+      type: "GENERATE_ACCESSIBILITY_TREE",
+      options: { summary: true },
+    });
+
+    expect(summary).toEqual({
+      title: "Example",
+      url: "https://example.test/page",
+      headings: [
+        { level: 1, name: "Example Store" },
+        { level: 2, name: "Products" },
+        { level: 3, name: "Welcome back" },
+      ],
+      headingsOmitted: 0,
+      regions: [
+        { region: "banner", controls: { link: 1 } },
+        { region: 'navigation "Primary"', controls: { link: 2 } },
+        { region: "main", controls: { button: 2, searchbox: 1, link: 1 } },
+        { region: "page", controls: { button: 1 } },
+        { region: 'dialog "Sign in"', controls: { textbox: 1, button: 1 } },
+      ],
+      dialogs: [{ role: "dialog", name: "Sign in" }],
+      alerts: [{ role: "alert", name: "Saved to cart" }],
+    });
+    expect(JSON.stringify(summary)).not.toMatch(/\be\d+\b/);
+  });
+
+  it("caps summary headings and counts the rest", () => {
+    const body = document.body as unknown as FakeElement;
+    for (let index = 1; index <= 12; index++) {
+      const heading = element("div", { role: "heading" });
+      heading.append(text(`Section ${index}`));
+      body.append(heading);
+    }
+
+    const summary = sendMessage({
+      type: "GENERATE_ACCESSIBILITY_TREE",
+      options: { summary: true },
+    });
+
+    expect(summary.headings).toHaveLength(10);
+    expect(summary.headings[9]).toEqual({ level: 2, name: "Section 10" });
+    expect(summary.headingsOmitted).toBe(2);
+    expect(summary.regions).toEqual([]);
+  });
+
   it("routes visual indicator commands through the sole content-message listener", () => {
     let response: any;
     const listenerResult = messageHandler?.({ type: "SHOW_AGENT_INDICATORS" }, {}, (result) => {

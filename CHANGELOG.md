@@ -3,6 +3,7 @@
 ## [Unreleased]
 
 ### Added
+- **`read --summary`** - Prints a short overview of the page: title, URL, headings, the controls in each landmark counted by role, and open dialogs and alerts. It lists no elements or refs, so it is a fraction of the size of `read`. `--json` returns the same fields. It cannot be combined with `--ref`, `--all`, `--include-hidden`, `--no-text`, `--depth`, `--compact` or `--max-bytes`. See [#339](https://github.com/nicobailon/surf-cli/issues/339).
 - **Page changes after actions** - `click`, `type`, `key`, `select`, and the other auto-screenshot actions now print what changed: new dialogs and controls with usable refs, state changes, removed elements, text counts per region, or one `navigated:` line. The report waits up to 2000 ms for the page to settle and says whether it did. Password and payment values are never printed. Set the wait with `--settle <ms>` or `settleMs` in `surf.json` (max 30000), or turn it off with `--no-diff`. The hidden 5-second diff between two `read` calls is gone. See [#337](https://github.com/nicobailon/surf-cli/issues/337).
 
 ### Fixed

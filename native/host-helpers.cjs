@@ -994,6 +994,14 @@ function mapToolToMessage(tool, args, tabId) {
       const files = a.files ? (typeof a.files === "string" ? a.files.split(",").map(f => f.trim()) : a.files) : [];
       return { type: "UPLOAD_FILE", ref: a.ref, files, ...baseMsg };
     case "page.read": {
+      if (a.summary === true) {
+        const conflicts = ["ref", "all", "include-hidden", "no-text", "depth", "compact", "max-bytes"]
+          .filter((flag) => a[flag] !== undefined && a[flag] !== false);
+        if (conflicts.length > 0) {
+          throw new Error(`--summary cannot be combined with ${conflicts.map((flag) => `--${flag}`).join(", ")}: the summary always covers the whole page and lists no elements`);
+        }
+        return { type: "READ_PAGE", options: { summary: true }, ...baseMsg };
+      }
       let maxBytes;
       if (a["max-bytes"] !== undefined) {
         const raw = String(a["max-bytes"]).trim();

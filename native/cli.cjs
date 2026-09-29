@@ -715,6 +715,7 @@ const TOOLS = {
           depth: "Maximum tree depth (default: unlimited)",
           compact: "Remove empty structural elements",
           "max-bytes": "Maximum tree and visible text bytes (tree default: 50000)",
+          summary: "Short overview: title, headings, regions with control counts, dialogs; no refs",
         },
         examples: [
           { cmd: "page.read", desc: "Interactive elements + text content" },
@@ -4214,6 +4215,21 @@ async function handleResponse(response) {
     }
   } else if (tool === "page.read" && data?.pageContent) {
     console.log(data.pageContent);
+  } else if (tool === "page.read" && Array.isArray(data?.regions)) {
+    const label = ({ role, name }) => (name ? `${role} "${name}"` : role);
+    const headings = data.headings.map(({ level, name }) => label({ role: `h${level}`, name }));
+    if (data.headingsOmitted > 0) headings.push(`+${data.headingsOmitted} more`);
+    const width = Math.max(...data.regions.map(({ region }) => region.length)) + 2;
+    const lines = [
+      data.title ? `${data.title} — ${data.url}` : data.url,
+      `headings: ${headings.join(", ") || "none"}`,
+      data.regions.length > 0 ? "regions:" : "regions: none",
+      ...data.regions.map(({ region, controls }) =>
+        `  ${region.padEnd(width)}${Object.entries(controls).map(([role, count]) => `${role} ${count}`).join(", ") || "no controls"}`),
+      `dialogs: ${data.dialogs.map(label).join(", ") || "none"}`,
+    ];
+    if (data.alerts.length > 0) lines.push(`alerts: ${data.alerts.map(label).join(", ")}`);
+    console.log(lines.join("\n"));
   } else if (tool === "page.text" && data?.text) {
     console.log(data.text);
   } else if (tool === "page.html" && typeof data?.html === "string") {
