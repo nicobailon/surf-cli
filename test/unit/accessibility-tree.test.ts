@@ -1114,6 +1114,114 @@ describe("accessibility tree", () => {
     expect(staleScope).toMatchObject({ success: false, reason: "stale_scroll_scope" });
   });
 
+  describe("refs whose element was re-rendered", () => {
+    const send = (message: Record<string, unknown>) => {
+      let response: any;
+      messageHandler?.(message, {}, (result) => {
+        response = result;
+      });
+      return response;
+    };
+    const body = () => document.body as unknown as FakeElement;
+    const button = (label: string) => {
+      const node = element("button");
+      node.append(text(label));
+      return node;
+    };
+    const readRef = (label: string) => {
+      const content = send({
+        type: "GENERATE_ACCESSIBILITY_TREE",
+        options: { filter: "interactive" },
+      }).pageContent;
+      return content.match(new RegExp(`button "${label}" \\[(e\\d+)\\]`))[1] as string;
+    };
+    const replaceBody = (...children: FakeElement[]) => {
+      for (const child of body().children) {
+        child.isConnected = false;
+      }
+      body().childNodes = [];
+      body().append(...children);
+    };
+
+    it("names the replacement element when role and name match exactly one", () => {
+      const original = button("Save");
+      body().append(original);
+      const staleRef = readRef("Save");
+
+      const replacement = button("Save");
+      const otherRole = element("a", { href: "/save" });
+      otherRole.append(text("Save"));
+      replaceBody(button("Save draft"), otherRole, replacement);
+
+      const stale = send({ type: "CLICK_ELEMENT", ref: staleRef, button: "left" });
+      const suggested = stale.error.match(/Did you mean (e\d+) /)?.[1];
+      expect(stale.error).toBe(
+        `Element ${staleRef} no longer exists. Did you mean ${suggested} (button "Save")? Otherwise run surf read.`,
+      );
+      expect(suggested).not.toBe(staleRef);
+      expect(original.clicked).toBe(false);
+
+      expect(send({ type: "CLICK_ELEMENT", ref: suggested, button: "left" })).toEqual({
+        success: true,
+      });
+      expect(replacement.clicked).toBe(true);
+    });
+
+    it("returns a plain error when no single element has the same role and name", () => {
+      body().append(button("Save"));
+      const staleRef = readRef("Save");
+      const plain = `Element ${staleRef} no longer exists. Run surf read to get current refs.`;
+
+      const link = element("a", { href: "/save" });
+      link.append(text("Save"));
+      replaceBody(button("Save as"), link);
+      expect(send({ type: "CLICK_ELEMENT", ref: staleRef, button: "left" })).toEqual({
+        error: plain,
+      });
+
+      replaceBody(button("Save"), button("Save"));
+      expect(send({ type: "SCROLL_TO_ELEMENT", ref: staleRef })).toEqual({
+        success: false,
+        error: plain,
+      });
+
+      expect(send({ type: "GET_ELEMENT_COORDINATES", ref: "e999" })).toMatchObject({
+        error: "Element e999 not found. Run surf read to get current refs.",
+      });
+    });
+
+    it("matches a located ref by the element's own name, not the locator query", () => {
+      (document as any).querySelectorAll = (selector: string) =>
+        selector === "button" ? body().children.filter((child) => child.tagName === "BUTTON") : [];
+      body().append(button("Save changes"));
+      const staleRef = send({ type: "LOCATE_ROLE", role: "button", name: "Save" }).ref;
+
+      replaceBody(button("Save"));
+      expect(send({ type: "CLICK_ELEMENT", ref: staleRef, button: "left" })).toEqual({
+        error: `Element ${staleRef} no longer exists. Run surf read to get current refs.`,
+      });
+
+      const replacement = button("Save changes");
+      replaceBody(button("Save"), replacement);
+      const { error } = send({ type: "CLICK_ELEMENT", ref: staleRef, button: "left" });
+      const suggested = error.match(/Did you mean (e\d+) \(button "Save changes"\)\?/)?.[1];
+      send({ type: "CLICK_ELEMENT", ref: suggested, button: "left" });
+      expect(replacement.clicked).toBe(true);
+    });
+
+    it("does not suggest an element inside an aria-hidden container", () => {
+      body().append(button("Save"));
+      const staleRef = readRef("Save");
+
+      const hidden = element("div", { "aria-hidden": "true" });
+      hidden.append(button("Save"));
+      replaceBody(hidden);
+      expect(send({ type: "CLICK_ELEMENT", ref: staleRef, button: "left" })).toEqual({
+        error: `Element ${staleRef} no longer exists. Run surf read to get current refs.`,
+      });
+    });
+  });
+
   it("returns the whole visible text so the host can mark a cut", () => {
     const long = "😀".repeat(30000);
     (document.body as unknown as FakeElement).append(text(long));
