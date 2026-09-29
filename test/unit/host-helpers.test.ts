@@ -185,7 +185,6 @@ describe("mapToolToMessage", () => {
           compact: true,
           maxBytes: 1200,
           depth: 2,
-          forceFullSnapshot: true,
         },
       });
     });
@@ -233,7 +232,6 @@ describe("mapToolToMessage", () => {
     it("accepts a valid positive integer max-bytes", () => {
       const msg = helpers.mapToolToMessage("page.read", { "max-bytes": "1200" });
       expect(msg.options.maxBytes).toBe(1200);
-      expect(msg.options.forceFullSnapshot).toBe(true);
     });
   });
 

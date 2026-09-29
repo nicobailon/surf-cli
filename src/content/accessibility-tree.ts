@@ -10,13 +10,21 @@ import {
   moveSemanticScrollScope,
   scrollToPosition,
 } from "../utils/scroll-position";
+import {
+  diffPageSnapshots,
+  PAGE_CONTAINER_ROLES,
+  PAGE_TRACKED_ROLES,
+  type PageChanges,
+  type PageNode,
+  type PageSnapshot,
+  type PageStateValue,
+} from "../utils/page-changes";
 
 export {};
 
 declare global {
   interface Window {
     __piElementMap?: Record<string, { element: WeakRef<Element>; role: string; name: string }>;
-    __piLastSnapshot?: { content: string; timestamp: number };
     __piHelpers?: typeof piHelpersImpl;
     piHelpers?: typeof piHelpersImpl;
     __piRefs?: Record<string, Element>;
@@ -696,17 +704,14 @@ function generateAccessibilityTree(
   filter: "all" | "interactive" = "interactive",
   maxDepth = 15,
   refId?: string,
-  forceFullSnapshot = false,
   compact = false,
   includeHidden = false
 ): { 
   pageContent: string;
-  diff?: string;
   viewport: { width: number; height: number }; 
   error?: string;
   modalStates?: ModalState[];
   modalLimitations?: string;
-  isIncremental?: boolean;
 } {
   try {
     window.__piRefs = {};
@@ -1001,68 +1006,6 @@ function generateAccessibilityTree(
       return lines;
     }
 
-    function normalizeLineForDiff(line: string): string {
-      return line.replace(/\[e\d+\]/g, '[REF]');
-    }
-
-    function countOccurrences(lines: string[]): Map<string, number> {
-      const counts = new Map<string, number>();
-      for (const line of lines) {
-        if (!line.trim()) continue;
-        const norm = normalizeLineForDiff(line);
-        counts.set(norm, (counts.get(norm) || 0) + 1);
-      }
-      return counts;
-    }
-
-    function computeSimpleDiff(oldContent: string, newContent: string): { diff: string; hasChanges: boolean } {
-      const oldLines = oldContent.split('\n');
-      const newLines = newContent.split('\n');
-      
-      const oldCounts = countOccurrences(oldLines);
-      const newCounts = countOccurrences(newLines);
-      
-      const added: string[] = [];
-      const removed: string[] = [];
-      
-      for (const line of newLines) {
-        if (!line.trim()) continue;
-        const norm = normalizeLineForDiff(line);
-        const oldCount = oldCounts.get(norm) || 0;
-        const newCount = newCounts.get(norm) || 0;
-        if (newCount > oldCount) {
-          added.push(line);
-          oldCounts.set(norm, oldCount + 1);
-        }
-      }
-      
-      const oldCountsReset = countOccurrences(oldLines);
-      for (const line of oldLines) {
-        if (!line.trim()) continue;
-        const norm = normalizeLineForDiff(line);
-        const oldCount = oldCountsReset.get(norm) || 0;
-        const newCount = newCounts.get(norm) || 0;
-        if (oldCount > newCount) {
-          removed.push(line);
-          oldCountsReset.set(norm, oldCount - 1);
-        }
-      }
-      
-      if (added.length === 0 && removed.length === 0) {
-        return { diff: '[NO CHANGES]', hasChanges: false };
-      }
-      
-      const diffLines: string[] = [];
-      if (removed.length > 0) {
-        diffLines.push(...removed.map(l => `- ${l}`));
-      }
-      if (added.length > 0) {
-        diffLines.push(...added.map(l => `+ ${l}`));
-      }
-      
-      return { diff: diffLines.join('\n'), hasChanges: true };
-    }
-
     const elementMap = getElementMap();
     let startElement: Element | null = null;
 
@@ -1101,26 +1044,11 @@ function generateAccessibilityTree(
 
     const modalStates = detectModalStates();
 
-    let diff: string | undefined;
-    let isIncremental = false;
-    const lastSnapshot = window.__piLastSnapshot;
-
-    if (!forceFullSnapshot && !refId && lastSnapshot && 
-        Date.now() - lastSnapshot.timestamp < 5000) {
-      const diffResult = computeSimpleDiff(lastSnapshot.content, content);
-      diff = diffResult.diff;
-      isIncremental = true;
-    }
-
-    window.__piLastSnapshot = { content, timestamp: Date.now() };
-
     return {
       pageContent: content + `\n\n[Viewport: ${window.innerWidth}x${window.innerHeight}]`,
-      diff: isIncremental ? diff : undefined,
       viewport: { width: window.innerWidth, height: window.innerHeight },
       modalStates: modalStates.length > 0 ? modalStates : undefined,
       modalLimitations: 'Only custom modals ([role=dialog]) detected. Native alert/confirm/prompt dialogs and system file choosers cannot be detected from content scripts.',
-      isIncremental,
     };
   } catch (err) {
     return {
@@ -1766,6 +1694,187 @@ if (typeof window.addEventListener === "function") {
   window.addEventListener("hashchange", () => postWatchEvent("navigation"));
 }
 
+type PageChangeSession = {
+  before: PageSnapshot;
+  startedAt: number;
+  lastMutationAt: number | null;
+  observer: MutationObserver;
+};
+
+const pageChangeSessions = new Map<string, PageChangeSession>();
+
+const PAGE_NAME_FROM_CONTENT_ROLES = new Set([
+  "button", "link", "checkbox", "radio", "switch", "tab", "menuitem", "menuitemcheckbox", "menuitemradio",
+  "option", "treeitem", "heading", "alert", "status",
+]);
+
+// FNV-1a salted per document: detects a change without the snapshot keeping the text or value.
+function pageFingerprint(value: string): string {
+  const input = `${semanticDocumentToken}\u0000${value}`;
+  let hash = 0x811c9dc5;
+  for (let index = 0; index < input.length; index++) {
+    hash ^= input.charCodeAt(index);
+    hash = Math.imul(hash, 0x01000193);
+  }
+  return (hash >>> 0).toString(16);
+}
+
+function isSensitiveField(element: Element): boolean {
+  if (element.tagName.toLowerCase() === "input" && semanticElementType(element) === "password") return true;
+  return (element.getAttribute("autocomplete") || "").toLowerCase().split(/\s+/).some((token) =>
+    ["current-password", "new-password", "one-time-code"].includes(token) || token.startsWith("cc-"));
+}
+
+function pageFieldValue(element: Element): string | undefined {
+  const tag = element.tagName.toLowerCase();
+  if (tag === "input") {
+    const type = semanticElementType(element);
+    return ["checkbox", "radio", "button", "submit", "reset", "file", "image"].includes(type)
+      ? undefined
+      : (element as HTMLInputElement).value;
+  }
+  if (tag === "textarea") return (element as HTMLTextAreaElement).value;
+  if (tag === "select") {
+    const select = element as HTMLSelectElement;
+    return select.selectedIndex >= 0 ? select.options[select.selectedIndex].text : "";
+  }
+  if (element.getAttribute("contenteditable") === "true") return element.textContent || "";
+  return undefined;
+}
+
+function pageNodeName(element: Element, role: string): string {
+  const name = getValueFreeSemanticName(element);
+  if (name) return boundedText(name, 80);
+  if (element.tagName.toLowerCase() === "input" && ["button", "submit", "reset"].includes(semanticElementType(element))) {
+    return boundedText(element.getAttribute("value"), 80);
+  }
+  if (PAGE_NAME_FROM_CONTENT_ROLES.has(role)) {
+    // collectValueFreeText skips control roots, so read the children of the element itself.
+    const text = Array.from(element.childNodes).map((child) =>
+      child instanceof Element ? collectValueFreeText(child, 80) : boundedText(child.textContent, 80));
+    return boundedText(text.join(" "), 80);
+  }
+  if (role === "dialog" || role === "alertdialog") {
+    const heading = element.querySelector('[role="heading"], h1, h2, h3');
+    return heading ? collectValueFreeText(heading, 80) : "";
+  }
+  const label = element.closest("label");
+  return label && label !== element ? collectValueFreeText(label, 80) : "";
+}
+
+function pageNodeState(element: Element): PageNode["state"] {
+  const aria = (attribute: string): PageStateValue => {
+    const value = element.getAttribute(attribute);
+    if (value === "true") return true;
+    if (value === "false") return false;
+    return value === "mixed" ? "mixed" : null;
+  };
+  const interactive = semanticInteractiveState(element);
+  return {
+    checked: interactive?.checked ?? null,
+    disabled: element.getAttribute("aria-disabled") === "true" ||
+      (isSemanticControl(element) && (element as HTMLButtonElement).disabled === true) ||
+      element.closest("fieldset:disabled") !== null,
+    expanded: aria("aria-expanded"),
+    selected: interactive?.selected ?? null,
+    pressed: aria("aria-pressed"),
+  };
+}
+
+function capturePageSnapshot(): { snapshot: PageSnapshot; elements: Element[] } {
+  const nodes: PageNode[] = [];
+  const elements: Element[] = [];
+  const text: PageSnapshot["text"] = {};
+  // A null region marks text that belongs to a tracked element's name or value rather than body text.
+  const visit = (element: Element, container: number | null, region: string | null): void => {
+    const tag = element.tagName.toLowerCase();
+    if (["script", "style", "noscript", "template"].includes(tag) || element.id.startsWith("pi-agent-")) return;
+    const style = window.getComputedStyle(element);
+    if (element.getAttribute("aria-hidden") === "true" || style.display === "none" || style.opacity === "0") return;
+    const shown = style.visibility !== "hidden";
+    const role = getResolvedRole(element);
+    let childContainer = container;
+    let childRegion = isSemanticControl(element) ? null : region;
+    if (
+      shown && PAGE_TRACKED_ROLES.has(role) &&
+      (element as HTMLElement).offsetWidth > 0 && (element as HTMLElement).offsetHeight > 0
+    ) {
+      const name = pageNodeName(element, role);
+      const node: PageNode = {
+        role,
+        name,
+        scope: container === null ? "" : `${nodes[container].role} ${nodes[container].name}`,
+        container,
+        state: pageNodeState(element),
+      };
+      const value = pageFieldValue(element);
+      if (value !== undefined) {
+        node.valueHash = pageFingerprint(value);
+        if (isSensitiveField(element)) node.sensitive = true;
+        else node.value = boundedText(value, 80);
+      }
+      nodes.push(node);
+      elements.push(element);
+      if (PAGE_CONTAINER_ROLES.has(role)) {
+        childContainer = nodes.length - 1;
+        childRegion = name ? `${role} "${name}"` : role;
+      } else {
+        childRegion = null;
+      }
+    }
+    for (const child of Array.from(element.childNodes)) {
+      if (child instanceof Element) {
+        visit(child, childContainer, childRegion);
+      } else if (child.nodeType === Node.TEXT_NODE && shown && childRegion !== null) {
+        const normalized = (child.textContent || "").replace(/\s+/g, " ").trim();
+        if (!normalized) continue;
+        const counts = text[childRegion] || (text[childRegion] = {});
+        const hash = pageFingerprint(normalized);
+        counts[hash] = (counts[hash] || 0) + 1;
+      }
+    }
+  };
+  if (document.body) visit(document.body, null, "page");
+  return { snapshot: { nodes, text }, elements };
+}
+
+function registerPageRef(element: Element, role: string, name: string): string {
+  const ref = elementRefs.get(element)?.ref ?? getOrAssignRef(element, role, name);
+  window.__piRefs = window.__piRefs || {};
+  window.__piRefs[ref] = element;
+  getElementMap()[ref] = { element: new WeakRef(element), role, name };
+  return ref;
+}
+
+// The visual indicator toggles its own overlay nodes around tool use; that is not a page change.
+function isSurfIndicatorMutation(record: MutationRecord): boolean {
+  const target = record.target instanceof Element ? record.target : record.target.parentElement;
+  if (target?.closest('[id^="pi-agent-"]')) return true;
+  return record.type === "childList" &&
+    [...Array.from(record.addedNodes), ...Array.from(record.removedNodes)]
+      .every((node) => node instanceof Element && node.id.startsWith("pi-agent-"));
+}
+
+function waitForPageSettle(session: PageChangeSession, capMs: number, quietMs: number): Promise<PageChanges["settle"]> {
+  return new Promise((resolve) => {
+    const check = () => {
+      const now = Date.now();
+      const elapsed = now - session.startedAt;
+      const quietSince = session.lastMutationAt ?? session.startedAt;
+      if (session.lastMutationAt === null && (now - quietSince >= quietMs || elapsed >= capMs)) {
+        resolve({ state: "quiet", ms: elapsed });
+      } else if (session.lastMutationAt !== null && now - quietSince >= quietMs) {
+        resolve({ state: "settled", ms: session.lastMutationAt - session.startedAt });
+      } else if (elapsed >= capMs) {
+        resolve({ state: "unsettled", ms: elapsed });
+      } else {
+        setTimeout(check, Math.min(quietSince + quietMs, session.startedAt + capMs) - now);
+      }
+    };
+    check();
+  });
+}
+
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   switch (message.type) {
     case "PLAYBOOK_WATCH_START":
@@ -1815,7 +1924,6 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           options.filter || "interactive",
           options.depth ?? 15,
           options.refId,
-          options.forceFullSnapshot ?? false,
           options.compact ?? false,
           options.includeHidden === true
         );
@@ -2449,7 +2557,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           });
           return;
         }
-        const treeResult = generateAccessibilityTree("interactive", 15, undefined, true);
+        const treeResult = generateAccessibilityTree("interactive", 15);
         sendResponse({ ...treeResult, waited: waitResult.waited });
       });
       return true;
@@ -2521,7 +2629,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           });
           return;
         }
-        const treeResult = generateAccessibilityTree("interactive", 15, undefined, true);
+        const treeResult = generateAccessibilityTree("interactive", 15);
         sendResponse({ ...treeResult, waited: waitResult.waited });
       });
       return true;
@@ -2587,7 +2695,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           });
           return;
         }
-        const treeResult = generateAccessibilityTree("interactive", 15, undefined, true);
+        const treeResult = generateAccessibilityTree("interactive", 15);
         sendResponse({ ...treeResult, waited: waitResult.waited });
       });
       return true;
@@ -2769,7 +2877,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           });
           return;
         }
-        const treeResult = generateAccessibilityTree("interactive", 15, undefined, true);
+        const treeResult = generateAccessibilityTree("interactive", 15);
         sendResponse({ ...treeResult, waited: waitResult.waited });
       });
       return true;
@@ -2807,6 +2915,46 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       
       sendResponse({ elements });
       break;
+    }
+    case "BEGIN_PAGE_CHANGES": {
+      const { snapshot } = capturePageSnapshot();
+      const session: PageChangeSession = {
+        before: snapshot,
+        startedAt: Date.now(),
+        lastMutationAt: null,
+        observer: new MutationObserver((records) => {
+          if (records.some((record) => !isSurfIndicatorMutation(record))) session.lastMutationAt = Date.now();
+        }),
+      };
+      session.observer.observe(document.documentElement, {
+        subtree: true,
+        attributes: true,
+        childList: true,
+        characterData: true,
+      });
+      pageChangeSessions.set(message.token, session);
+      sendResponse({ ok: true, url: window.location.href, title: document.title });
+      break;
+    }
+    case "END_PAGE_CHANGES": {
+      const session = pageChangeSessions.get(message.token);
+      if (!session) {
+        sendResponse({ error: "unknown_token" });
+        break;
+      }
+      pageChangeSessions.delete(message.token);
+      waitForPageSettle(session, message.capMs, message.quietMs ?? 300).then((settle) => {
+        session.observer.disconnect();
+        const after = capturePageSnapshot();
+        const result: PageChanges = {
+          settle,
+          navigated: null,
+          ...diffPageSnapshots(session.before, after.snapshot, (index) =>
+            registerPageRef(after.elements[index], after.snapshot.nodes[index].role, after.snapshot.nodes[index].name)),
+        };
+        sendResponse(result);
+      });
+      return true;
     }
     default:
       return false;
