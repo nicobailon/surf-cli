@@ -182,6 +182,20 @@ function fixturePages(request, { crossOriginBase }) {
   });
 </script></body></html>`;
   }
+  if (url.pathname === "/rerender") {
+    return `<!doctype html><html><head><title>Surf rerender fixture</title></head>
+<body><label>Filter <input id="filter" type="text"></label><div id="app"></div><output id="log">none</output>
+<script>
+  // Re-renders replace the button node while its role and name stay the same.
+  // The click handler is delegated to the document, like React, so a detached node never reaches it.
+  const render = () => { document.querySelector("#app").innerHTML = "<button>Save</button>"; };
+  render();
+  document.querySelector("#filter").addEventListener("input", render);
+  document.addEventListener("click", (event) => {
+    if (event.target.closest("#app button")) document.querySelector("#log").textContent = "saved";
+  });
+</script></body></html>`;
+  }
   return null;
 }
 
@@ -512,6 +526,23 @@ try {
     throw new Error(`framework-controlled input did not observe the typed value (mirror=${JSON.stringify(mirror)})`);
   }
   await runSurf("tab.close", "--id", String(listTab.tabId), "--json");
+
+  // Stale ref after a re-render
+  const rerenderTabId = String(tabIdFromOutput(await runSurf("tab.new", `${baseUrl}/rerender`)));
+  await runSurf("wait.element", "#app button", "--tab-id", rerenderTabId, "--json");
+  const staleRef = (await runSurf("read", "--tab-id", rerenderTabId)).match(/button "Save" \[(e\d+)\]/)?.[1];
+  if (!staleRef) throw new Error("read did not list the rerender fixture button");
+  await runSurf("type", "a", "--into", "#filter", "--tab-id", rerenderTabId, "--no-screenshot", "--json");
+  const staleClick = await runSurfExpectingFailure("click", staleRef, "--tab-id", rerenderTabId, "--no-screenshot");
+  const suggestedRef = staleClick.stderr.match(
+    new RegExp(`Element ${staleRef} no longer exists\\. Did you mean (e\\d+) \\(button "Save"\\)\\? Otherwise run surf read\\.`),
+  )?.[1];
+  if (!suggestedRef) throw new Error(`stale ref click did not suggest the new ref: ${JSON.stringify(staleClick)}`);
+  await runSurf("click", suggestedRef, "--tab-id", rerenderTabId, "--no-screenshot", "--json");
+  const rerenderPage = (await browser.pages()).find((page) => page.url() === `${baseUrl}/rerender`);
+  const rerenderLog = await rerenderPage?.evaluate(() => document.querySelector("#log")?.textContent);
+  if (rerenderLog !== "saved") throw new Error(`suggested ref click did not reach the new button (log=${rerenderLog})`);
+  await runSurf("tab.close", "--id", rerenderTabId, "--json");
 
   // js --file with statements and --options
   const optionsScript = join(repo, "test/e2e/fixtures/list-items.js");

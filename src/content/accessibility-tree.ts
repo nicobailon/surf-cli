@@ -460,6 +460,82 @@ function getResolvedRole(element: Element): string {
   return explicitRole;
 }
 
+function getName(element: Element): string {
+  const tag = element.tagName.toLowerCase();
+
+  const labelledBy = element.getAttribute('aria-labelledby');
+  if (labelledBy) {
+    const names = labelledBy.split(/\s+/).map(id => {
+      const el = document.getElementById(id);
+      return el?.textContent?.trim() || '';
+    }).filter(Boolean);
+    if (names.length) {
+      const joined = names.join(' ');
+      return joined.length > 100 ? joined.substring(0, 100) + '...' : joined;
+    }
+  }
+
+  if (tag === "select") {
+    const select = element as HTMLSelectElement;
+    const selected = select.querySelector("option[selected]") || 
+      (select.selectedIndex >= 0 ? select.options[select.selectedIndex] : null);
+    if (selected?.textContent?.trim()) return selected.textContent.trim();
+  }
+
+  const ariaLabel = element.getAttribute("aria-label");
+  if (ariaLabel?.trim()) return ariaLabel.trim();
+
+  const placeholder = element.getAttribute("placeholder");
+  if (placeholder?.trim()) return placeholder.trim();
+
+  const title = element.getAttribute("title");
+  if (title?.trim()) return title.trim();
+
+  const alt = element.getAttribute("alt");
+  if (alt?.trim()) return alt.trim();
+
+  if (element.id) {
+    const label = document.querySelector(`label[for="${element.id}"]`);
+    if (label?.textContent?.trim()) return label.textContent.trim();
+  }
+
+  if (tag === "input") {
+    const input = element as HTMLInputElement;
+    const type = element.getAttribute("type") || "";
+    const value = element.getAttribute("value");
+    if (type === "submit" && value?.trim()) return value.trim();
+    if (input.value && input.value.length < 50 && input.value.trim()) return input.value.trim();
+  }
+
+  if (["button", "a", "summary"].includes(tag)) {
+    const textContent = element.textContent || "";
+    if (textContent.trim()) return textContent.trim();
+  }
+
+  if (/^h[1-6]$/.test(tag)) {
+    const text = element.textContent;
+    if (text?.trim()) {
+      const t = text.trim();
+      return t.length > 100 ? t.substring(0, 100) + "..." : t;
+    }
+  }
+
+  if (tag === "img") return "";
+
+  let directText = "";
+  for (const node of element.childNodes) {
+    if (node.nodeType === Node.TEXT_NODE) {
+      directText += node.textContent;
+    }
+  }
+  if (directText?.trim() && directText.trim().length >= 3) {
+    const text = directText.trim();
+    return text.length > 100 ? text.substring(0, 100) + "..." : text;
+  }
+
+  return "";
+}
+
 if (!window.__piElementMap) window.__piElementMap = {};
 
 interface ElementRef {
@@ -469,6 +545,8 @@ interface ElementRef {
 }
 
 const elementRefs = new WeakMap<Element, ElementRef>();
+// Unlike __piElementMap entries, these outlive the element so a stale ref can name its replacement.
+const refIdentities: Record<string, { role: string; name: string }> = {};
 let globalRefCounter = 0;
 
 function getOrAssignRef(element: Element, role: string, name: string): string {
@@ -479,6 +557,7 @@ function getOrAssignRef(element: Element, role: string, name: string): string {
   
   const ref = `e${++globalRefCounter}`;
   elementRefs.set(element, { role, name, ref });
+  refIdentities[ref] = { role, name };
   return ref;
 }
 
@@ -692,6 +771,37 @@ function getElementMap() {
   return window.__piElementMap!;
 }
 
+function resolveRef(ref: string): { element: Element; error?: undefined } | { element?: undefined; error: string } {
+  const elementMap = getElementMap();
+  const element = elementMap[ref]?.element.deref() || window.__piRefs?.[ref];
+  // A re-rendered node stays reachable through __piRefs; acting on it would silently do nothing.
+  if (element?.isConnected) return { element };
+  const identity = refIdentities[ref];
+  if (!identity) return { error: `Element ${ref} not found. Run surf read to get current refs.` };
+
+  const matches: Element[] = [];
+  const pending: Element[] = identity.name ? [document.body] : [];
+  while (pending.length) {
+    const candidate = pending.pop()!;
+    pending.push(...candidate.children);
+    if (getResolvedRole(candidate) !== identity.role || getName(candidate) !== identity.name) continue;
+    const style = window.getComputedStyle(candidate);
+    if (
+      style.display !== "none" && style.visibility !== "hidden" && style.opacity !== "0" &&
+      (candidate as HTMLElement).offsetWidth > 0 && (candidate as HTMLElement).offsetHeight > 0 &&
+      candidate.getAttribute("aria-hidden") !== "true"
+    ) matches.push(candidate);
+  }
+  if (matches.length !== 1) return { error: `Element ${ref} no longer exists. Run surf read to get current refs.` };
+
+  const suggested = getOrAssignRef(matches[0], identity.role, identity.name);
+  window.__piRefs = window.__piRefs || {};
+  window.__piRefs[suggested] = matches[0];
+  elementMap[suggested] = { element: new WeakRef(matches[0]), role: identity.role, name: identity.name };
+  const label = identity.name.replace(/\s+/g, " ").replace(/"/g, '\\"');
+  return { error: `Element ${ref} no longer exists. Did you mean ${suggested} (${identity.role} "${label}")? Otherwise run surf read.` };
+}
+
 function generateAccessibilityTree(
   filter: "all" | "interactive" = "interactive",
   maxDepth = 15,
@@ -713,82 +823,6 @@ function generateAccessibilityTree(
 
     function getRole(element: Element): string {
       return getResolvedRole(element);
-    }
-
-    function getName(element: Element): string {
-      const tag = element.tagName.toLowerCase();
-
-      const labelledBy = element.getAttribute('aria-labelledby');
-      if (labelledBy) {
-        const names = labelledBy.split(/\s+/).map(id => {
-          const el = document.getElementById(id);
-          return el?.textContent?.trim() || '';
-        }).filter(Boolean);
-        if (names.length) {
-          const joined = names.join(' ');
-          return joined.length > 100 ? joined.substring(0, 100) + '...' : joined;
-        }
-      }
-
-      if (tag === "select") {
-        const select = element as HTMLSelectElement;
-        const selected = select.querySelector("option[selected]") || 
-          (select.selectedIndex >= 0 ? select.options[select.selectedIndex] : null);
-        if (selected?.textContent?.trim()) return selected.textContent.trim();
-      }
-
-      const ariaLabel = element.getAttribute("aria-label");
-      if (ariaLabel?.trim()) return ariaLabel.trim();
-
-      const placeholder = element.getAttribute("placeholder");
-      if (placeholder?.trim()) return placeholder.trim();
-
-      const title = element.getAttribute("title");
-      if (title?.trim()) return title.trim();
-
-      const alt = element.getAttribute("alt");
-      if (alt?.trim()) return alt.trim();
-
-      if (element.id) {
-        const label = document.querySelector(`label[for="${element.id}"]`);
-        if (label?.textContent?.trim()) return label.textContent.trim();
-      }
-
-      if (tag === "input") {
-        const input = element as HTMLInputElement;
-        const type = element.getAttribute("type") || "";
-        const value = element.getAttribute("value");
-        if (type === "submit" && value?.trim()) return value.trim();
-        if (input.value && input.value.length < 50 && input.value.trim()) return input.value.trim();
-      }
-
-      if (["button", "a", "summary"].includes(tag)) {
-        const textContent = element.textContent || "";
-        if (textContent.trim()) return textContent.trim();
-      }
-
-      if (/^h[1-6]$/.test(tag)) {
-        const text = element.textContent;
-        if (text?.trim()) {
-          const t = text.trim();
-          return t.length > 100 ? t.substring(0, 100) + "..." : t;
-        }
-      }
-
-      if (tag === "img") return "";
-
-      let directText = "";
-      for (const node of element.childNodes) {
-        if (node.nodeType === Node.TEXT_NODE) {
-          directText += node.textContent;
-        }
-      }
-      if (directText?.trim() && directText.trim().length >= 3) {
-        const text = directText.trim();
-        return text.length > 100 ? text.substring(0, 100) + "..." : text;
-      }
-
-      return "";
     }
 
     interface AriaProps {
@@ -1067,19 +1101,10 @@ function generateAccessibilityTree(
     let startElement: Element | null = null;
 
     if (refId) {
-      const elemRef = elementMap[refId];
-      if (!elemRef) {
-        return {
-          error: `Element with ref_id '${refId}' not found. Use read_page without ref_id to get current elements.`,
-          pageContent: "",
-          viewport: { width: window.innerWidth, height: window.innerHeight },
-        };
-      }
-      const element = elemRef.element.deref();
+      const { element, error } = resolveRef(refId);
       if (!element) {
-        delete elementMap[refId];
         return {
-          error: `Element with ref_id '${refId}' no longer exists. Use read_page without ref_id to get current elements.`,
+          error,
           pageContent: "",
           viewport: { width: window.innerWidth, height: window.innerHeight },
         };
@@ -1151,82 +1176,6 @@ function generateYamlTree(
 
     function getRole(element: Element): string {
       return getResolvedRole(element);
-    }
-
-    function getName(element: Element): string {
-      const tag = element.tagName.toLowerCase();
-
-      const labelledBy = element.getAttribute('aria-labelledby');
-      if (labelledBy) {
-        const names = labelledBy.split(/\s+/).map(id => {
-          const el = document.getElementById(id);
-          return el?.textContent?.trim() || '';
-        }).filter(Boolean);
-        if (names.length) {
-          const joined = names.join(' ');
-          return joined.length > 100 ? joined.substring(0, 100) + '...' : joined;
-        }
-      }
-
-      if (tag === "select") {
-        const select = element as HTMLSelectElement;
-        const selected = select.querySelector("option[selected]") || 
-          (select.selectedIndex >= 0 ? select.options[select.selectedIndex] : null);
-        if (selected?.textContent?.trim()) return selected.textContent.trim();
-      }
-
-      const ariaLabel = element.getAttribute("aria-label");
-      if (ariaLabel?.trim()) return ariaLabel.trim();
-
-      const placeholder = element.getAttribute("placeholder");
-      if (placeholder?.trim()) return placeholder.trim();
-
-      const title = element.getAttribute("title");
-      if (title?.trim()) return title.trim();
-
-      const alt = element.getAttribute("alt");
-      if (alt?.trim()) return alt.trim();
-
-      if (element.id) {
-        const label = document.querySelector(`label[for="${element.id}"]`);
-        if (label?.textContent?.trim()) return label.textContent.trim();
-      }
-
-      if (tag === "input") {
-        const input = element as HTMLInputElement;
-        const type = element.getAttribute("type") || "";
-        const value = element.getAttribute("value");
-        if (type === "submit" && value?.trim()) return value.trim();
-        if (input.value && input.value.length < 50 && input.value.trim()) return input.value.trim();
-      }
-
-      if (["button", "a", "summary"].includes(tag)) {
-        const textContent = element.textContent || "";
-        if (textContent.trim()) return textContent.trim();
-      }
-
-      if (/^h[1-6]$/.test(tag)) {
-        const text = element.textContent;
-        if (text?.trim()) {
-          const t = text.trim();
-          return t.length > 100 ? t.substring(0, 100) + "..." : t;
-        }
-      }
-
-      if (tag === "img") return "";
-
-      let directText = "";
-      for (const node of element.childNodes) {
-        if (node.nodeType === Node.TEXT_NODE) {
-          directText += node.textContent;
-        }
-      }
-      if (directText?.trim() && directText.trim().length >= 3) {
-        const text = directText.trim();
-        return text.length > 100 ? text.substring(0, 100) + "..." : text;
-      }
-
-      return "";
     }
 
     interface AriaProps {
@@ -1462,23 +1411,9 @@ function generateYamlTree(
 }
 
 function getElementCoordinates(ref: string): { x: number; y: number; error?: string } {
-  const elementMap = getElementMap();
-  const elemRef = elementMap[ref];
-  let element: Element | undefined;
-  
-  if (elemRef) {
-    element = elemRef.element.deref();
-    if (!element) {
-      delete elementMap[ref];
-    }
-  }
-  
-  if (!element && window.__piRefs) {
-    element = window.__piRefs[ref];
-  }
-  
+  const { element, error } = resolveRef(ref);
   if (!element) {
-    return { x: 0, y: 0, error: `Element ${ref} not found. Use read_page to get current elements.` };
+    return { x: 0, y: 0, error };
   }
 
   const rect = element.getBoundingClientRect();
@@ -1489,23 +1424,9 @@ function getElementCoordinates(ref: string): { x: number; y: number; error?: str
 }
 
 function setFormValue(ref: string, value: string | boolean | number): { success: boolean; error?: string } {
-  const elementMap = getElementMap();
-  const elemRef = elementMap[ref];
-  let element: Element | undefined;
-  
-  if (elemRef) {
-    element = elemRef.element.deref();
-    if (!element) {
-      delete elementMap[ref];
-    }
-  }
-  
-  if (!element && window.__piRefs) {
-    element = window.__piRefs[ref];
-  }
-  
+  const { element, error } = resolveRef(ref);
   if (!element) {
-    return { success: false, error: `Element ${ref} not found. Use read_page to get current elements.` };
+    return { success: false, error };
   }
 
   const tagName = element.tagName.toLowerCase();
@@ -1628,23 +1549,9 @@ function getPageText(options: { maxBytes?: number } = {}): { text: string; title
 }
 
 function scrollToElement(ref: string): { success: boolean; error?: string } {
-  const elementMap = getElementMap();
-  const elemRef = elementMap[ref];
-  let element: Element | undefined;
-  
-  if (elemRef) {
-    element = elemRef.element.deref();
-    if (!element) {
-      delete elementMap[ref];
-    }
-  }
-  
-  if (!element && window.__piRefs) {
-    element = window.__piRefs[ref];
-  }
-  
+  const { element, error } = resolveRef(ref);
   if (!element) {
-    return { success: false, error: `Element ${ref} not found. Run read_page to get current element refs.` };
+    return { success: false, error };
   }
 
   element.scrollIntoView({ behavior: "smooth", block: "center" });
@@ -1670,23 +1577,11 @@ function uploadImage(
     let targetElement: HTMLElement | null = null;
 
     if (ref) {
-      const elementMap = getElementMap();
-      const elemRef = elementMap[ref];
-      
-      if (elemRef) {
-        targetElement = elemRef.element.deref() as HTMLElement | null;
-        if (!targetElement) {
-          delete elementMap[ref];
-        }
+      const { element, error } = resolveRef(ref);
+      if (!element) {
+        return { success: false, error };
       }
-      
-      if (!targetElement && window.__piRefs) {
-        targetElement = window.__piRefs[ref] as HTMLElement | null;
-      }
-      
-      if (!targetElement) {
-        return { success: false, error: `Element ${ref} not found. Run read_page to get current element refs.` };
-      }
+      targetElement = element as HTMLElement;
     } else if (coordinate) {
       targetElement = document.elementFromPoint(coordinate[0], coordinate[1]) as HTMLElement | null;
       if (!targetElement) {
@@ -1894,23 +1789,14 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       break;
     }
     case "CLICK_ELEMENT": {
-      const elementMap = getElementMap();
-      const elemRef = elementMap[message.ref];
-      let element: Element | undefined;
-      if (elemRef) {
-        element = elemRef.element.deref();
-        if (!element) delete elementMap[message.ref];
-      }
-      if (!element && window.__piRefs) {
-        element = window.__piRefs[message.ref];
-      }
-      if (!element) {
-        sendResponse({ error: `Element ${message.ref} not found. Use read_page to get current elements.` });
-        break;
-      }
+      const { element, error } = resolveRef(message.ref);
       const guardError = semanticGuardError(element, message.expectedIdentity);
       if (guardError) {
         sendResponse({ error: guardError, code: guardError });
+        break;
+      }
+      if (!element) {
+        sendResponse({ error });
         break;
       }
       if (message.button === "triple") {
@@ -2185,8 +2071,6 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     case "GET_ELEMENT_STYLES": {
       try {
         const { selector } = message;
-        const elementMap = getElementMap();
-        
         // Helper to extract styles from an element
         const extractStyles = (el: Element) => {
           const s = getComputedStyle(el);
@@ -2216,18 +2100,9 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         
         // Check if selector is a ref (e.g., "e5")
         if (/^e\d+$/.test(selector)) {
-          const elemRef = elementMap[selector];
-          let element: Element | undefined;
-          if (elemRef) {
-            element = elemRef.element.deref();
-            if (!element) delete elementMap[selector];
-          }
-          if (!element && window.__piRefs) {
-            element = window.__piRefs[selector];
-          }
-          
+          const { element, error } = resolveRef(selector);
           if (!element) {
-            sendResponse({ error: `Element ${selector} not found` });
+            sendResponse({ error });
             break;
           }
           
@@ -2251,24 +2126,13 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     case "SELECT_OPTION": {
       try {
         const { selector, values, by } = message;
-        const elementMap = getElementMap();
-        
         // Find the select element
         let selectEl: HTMLSelectElement | null = null;
         
         if (/^e\d+$/.test(selector)) {
-          const elemRef = elementMap[selector];
-          let element: Element | undefined;
-          if (elemRef) {
-            element = elemRef.element.deref();
-            if (!element) delete elementMap[selector];
-          }
-          if (!element && window.__piRefs) {
-            element = window.__piRefs[selector];
-          }
-          
+          const { element, error } = resolveRef(selector);
           if (!element) {
-            sendResponse({ error: `Element ${selector} not found` });
+            sendResponse({ error });
             break;
           }
           if (element.tagName !== 'SELECT') {
@@ -2346,20 +2210,9 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     case "GET_ELEMENT_TEXT": {
       try {
         const { ref } = message;
-        const elementMap = getElementMap();
-        const elemRef = elementMap[ref];
-        
-        let element: Element | undefined;
-        if (elemRef) {
-          element = elemRef.element.deref();
-          if (!element) delete elementMap[ref];
-        }
-        if (!element && window.__piRefs) {
-          element = window.__piRefs[ref];
-        }
-        
+        const { element, error } = resolveRef(ref);
         if (!element) {
-          sendResponse({ error: `Element ${ref} not found` });
+          sendResponse({ error });
           break;
         }
         
@@ -2602,7 +2455,6 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         sendResponse({ error: "guarded fill requires exactly one field", code: "stale_observation" });
         return true;
       }
-      const elementMap = getElementMap();
       const results: { ref: string; success: boolean; error?: string }[] = [];
       for (const item of data) {
         const { ref, value } = item;
@@ -2610,21 +2462,16 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           results.push({ ref: ref || "unknown", success: false, error: "Missing ref" });
           continue;
         }
-        const elemRef = elementMap[ref];
-        if (!elemRef) {
-          results.push({ ref, success: false, error: "Element not found (run page.read first)" });
-          continue;
-        }
-        const el = elemRef.element.deref() as HTMLElement | null;
-        if (!el) {
-          delete elementMap[ref];
-          results.push({ ref, success: false, error: "Element no longer exists" });
-          continue;
-        }
-        const guardError = semanticGuardError(el, message.expectedIdentity);
+        const { element, error } = resolveRef(ref);
+        const guardError = semanticGuardError(element, message.expectedIdentity);
         if (guardError) {
           sendResponse({ success: false, error: guardError, code: guardError, filled: 0, failed: 1, results: [] });
           return true;
+        }
+        const el = element as HTMLElement | undefined;
+        if (!el) {
+          results.push({ ref, success: false, error });
+          continue;
         }
         try {
           if (el instanceof HTMLInputElement) {
@@ -2673,16 +2520,9 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         sendResponse({ error: "No ref provided" });
         return true;
       }
-      const elementMap = getElementMap();
-      const elemRef = elementMap[ref];
-      if (!elemRef) {
-        sendResponse({ error: "Element not found (run page.read first)" });
-        return true;
-      }
-      const el = elemRef.element.deref() as HTMLElement | null;
+      const { element: el, error } = resolveRef(ref);
       if (!el) {
-        delete elementMap[ref];
-        sendResponse({ error: "Element no longer exists" });
+        sendResponse({ error });
         return true;
       }
       if (!(el instanceof HTMLInputElement) || el.type !== "file") {
