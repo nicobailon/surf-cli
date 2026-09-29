@@ -212,6 +212,9 @@ describe("file transfer path policy", () => {
       transfer.validateLocalToolPaths("select", { selector: "#s", pageChanges }).pageChanges,
     ).toEqual(pageChanges);
     expect(
+      transfer.validateLocalToolPaths("click", { pageChanges: { settleMs: 30000 } }).pageChanges,
+    ).toEqual({ settleMs: 30000 });
+    expect(
       transfer.prepareRemoteTool("click", { ref: "e1", pageChanges }).args.pageChanges,
     ).toEqual(pageChanges);
     const materialized = await transfer.materializeRemoteTool({
@@ -223,6 +226,7 @@ describe("file transfer path policy", () => {
       true,
       { settleMs: -1 },
       { settleMs: 1.5 },
+      { settleMs: 30001 },
       { settleMs: "500" },
       { settleMs: 500, extra: 1 },
       {},

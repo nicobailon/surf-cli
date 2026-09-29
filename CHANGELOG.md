@@ -3,7 +3,7 @@
 ## [Unreleased]
 
 ### Added
-- **Page changes after actions** - `click`, `type`, `key`, `select`, and the other auto-screenshot actions now print what changed on the page: new dialogs and controls with refs you can use right away, state changes such as `now checked`, removed elements, text counts per region, or a single `navigated:` line. The report waits up to 2000 ms for the page to settle and says whether it settled, stayed quiet, or was still changing. Password and payment field values are never printed. Set the wait with `--settle <ms>` or `settleMs` in `surf.json`, or turn the report off with `--no-diff`. The hidden 5-second diff between two `read` calls is gone. See [#337](https://github.com/nicobailon/surf-cli/issues/337).
+- **Page changes after actions** - `click`, `type`, `key`, `select`, and the other auto-screenshot actions now print what changed: new dialogs and controls with usable refs, state changes, removed elements, text counts per region, or one `navigated:` line. The report waits up to 2000 ms for the page to settle and says whether it did. Password and payment values are never printed. Set the wait with `--settle <ms>` or `settleMs` in `surf.json` (max 30000), or turn it off with `--no-diff`. The hidden 5-second diff between two `read` calls is gone. See [#337](https://github.com/nicobailon/surf-cli/issues/337).
 
 ## [2.21.1] - 2026-09-28
 

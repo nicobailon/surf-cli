@@ -328,11 +328,17 @@ function rewriteTransferPaths(value, rewrites, depth = 0, seen = new Set(), budg
 
 const AUTO_SCREENSHOT_TOOLS = Object.freeze(["click", "type", "key", "smart_type", "form.fill", "form_input", "drag", "hover", "scroll", "scroll.top", "scroll.bottom", "scroll.to", "dialog.accept", "dialog.dismiss", "eval"]);
 const PAGE_CHANGES_TOOLS = Object.freeze([...AUTO_SCREENSHOT_TOOLS, "select"]);
+// Keeps BEGIN, settle, capture and the reply inside the host's 60s request deadline.
+const MAX_SETTLE_MS = 30000;
+
+function isSettleMs(value) {
+  return Number.isInteger(value) && value >= 0 && value <= MAX_SETTLE_MS;
+}
 
 function validatePageChanges(tool, value) {
   if (value === undefined) return;
   if (!PAGE_CHANGES_TOOLS.includes(tool)) throw transferError(`pageChanges is not supported for ${tool}`, "SURF_PATH_DESCRIPTOR");
-  if (!isPlainObject(value) || Object.keys(value).join() !== "settleMs" || !Number.isInteger(value.settleMs) || value.settleMs < 0) throw transferError("pageChanges must be { settleMs: non-negative integer }", "SURF_PATH_DESCRIPTOR");
+  if (!isPlainObject(value) || Object.keys(value).join() !== "settleMs" || !isSettleMs(value.settleMs)) throw transferError(`pageChanges must be { settleMs: integer from 0 to ${MAX_SETTLE_MS} }`, "SURF_PATH_DESCRIPTOR");
 }
 
 function generatedClientPath(prefix, extension) {
@@ -734,6 +740,7 @@ function createClientTransferController({ writer, limits = {}, onActivity = () =
 module.exports = {
   AUTO_SCREENSHOT_TOOLS,
   PAGE_CHANGES_TOOLS,
+  MAX_SETTLE_MS,
   DEFAULT_LIMITS,
   TRANSFER_VERSION,
   TRANSFER_TYPES,
@@ -745,6 +752,7 @@ module.exports = {
   decodeBase64,
   streamFileDownload,
   hashFile,
+  isSettleMs,
   materializeRemoteTool,
   parsePathDescriptor,
   prepareRemoteTool,

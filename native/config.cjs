@@ -11,8 +11,7 @@ const STARTER_CONFIG = {
   // Set to false to disable auto-saving screenshots to /tmp
   // When disabled, screenshots return base64 + ID instead of file path
   autoSaveScreenshots: true,
-  // Longest wait (ms) for the page to stop changing before actions report
-  // what changed. Override per command with --settle <ms>.
+  // Max wait (ms, up to 30000) for the page to settle after actions; --settle <ms> overrides it.
   settleMs: 2000,
   routes: {
     main: ["http://localhost:3000"]

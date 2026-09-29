@@ -383,7 +383,7 @@ To disable auto-save globally, set `autoSaveScreenshots: false` in `surf.json`.
 
 Actions like `click`, `type`, and `scroll` automatically capture a screenshot after execution - no extra command needed. The command replies as soon as the action finishes with `Screenshot (pending): <path>`, and the file appears at that path shortly after. The next command on the same tab waits until it is written. Remote clients receive the file before the reply.
 
-These actions and `select` also report what changed on the page, waiting up to 2000ms for it to settle. Change the default with `settleMs` in `surf.json`, override it per command with `--settle <ms>`, or turn it off with `--no-diff`.
+These actions and `select` also report what changed on the page, waiting up to 2000ms for it to settle. Set `settleMs` in `surf.json` or `--settle <ms>` per command (max 30000), or turn it off with `--no-diff`.
 
 ### Tabs
 
@@ -968,7 +968,7 @@ Generated manifests declare provenance and authentication environment inputs. Su
 --soft-fail        # Host tool errors: stderr warning, exit 0, no JSON error output
 --no-lock          # Bypass the legacy lock for compound client-side commands
 --no-screenshot    # Skip auto-screenshot after actions
---settle <ms>      # Max wait for the page to settle before actions report changes (default 2000)
+--settle <ms>      # Max wait for the page to settle before actions report changes (default 2000, max 30000)
 --no-diff          # Skip the page-change report after actions
 --full             # Full resolution screenshots (skip resize)
 ```

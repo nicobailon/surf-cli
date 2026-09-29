@@ -37,7 +37,7 @@ const { createFrameParser, createSocketWriter, writeFrame } = require("./remote-
 const { resolveRequestDeadlineMs } = require("./host-sessions.cjs");
 const { classifyTool } = require("./tool-scope.cjs");
 const { parseVideoFps, validateVideoOutputPath } = require("./video-recorder.cjs");
-const { AUTO_SCREENSHOT_TOOLS, PAGE_CHANGES_TOOLS, prepareRemoteTool, validateLocalToolPaths } = require("./file-transfer.cjs");
+const { AUTO_SCREENSHOT_TOOLS, MAX_SETTLE_MS, PAGE_CHANGES_TOOLS, isSettleMs, prepareRemoteTool, validateLocalToolPaths } = require("./file-transfer.cjs");
 const { authorizeClient, listClients, revokeClient, getStateDir } = require("./remote-auth.cjs");
 if (IS_WIN) { try { fs.mkdirSync(SURF_TMP, { recursive: true }); } catch {} }
 
@@ -1934,7 +1934,7 @@ Options:
   --auto-capture    On error: capture screenshot + console to /tmp
   --soft-fail       Host tool errors: warn on stderr, exit 0, no JSON error output
   --no-lock         Bypass the legacy lock for compound client-side commands
-  --settle <ms>     Max wait for the page to settle before reporting changes after actions (default 2000, surf.json settleMs)
+  --settle <ms>     Max wait for the page to settle after actions (default 2000, max 30000, surf.json settleMs)
   --no-diff         Skip reporting page changes after actions
 
 Host tool-response errors: stderr includes [code] on the first line when supplied;
@@ -3412,8 +3412,8 @@ const noDiff = toolArgs["no-diff"] === true;
 delete toolArgs["no-diff"];
 const settleFlag = toolArgs.settle;
 delete toolArgs.settle;
-if (settleFlag !== undefined && !(Number.isInteger(settleFlag) && settleFlag >= 0)) {
-  console.error("Error: --settle requires a non-negative whole number of milliseconds");
+if (settleFlag !== undefined && !isSettleMs(settleFlag)) {
+  console.error(`Error: --settle requires a whole number of milliseconds from 0 to ${MAX_SETTLE_MS}`);
   process.exit(1);
 }
 
@@ -3527,8 +3527,8 @@ if (methodFlag === "js") {
 
 if (!noDiff && PAGE_CHANGES_TOOLS.includes(finalTool)) {
   const settleMs = settleFlag ?? config.settleMs ?? STARTER_CONFIG.settleMs;
-  if (!Number.isInteger(settleMs) || settleMs < 0) {
-    console.error(`Error: settleMs in ${getConfigPath()} must be a non-negative whole number of milliseconds`);
+  if (!isSettleMs(settleMs)) {
+    console.error(`Error: settleMs in ${getConfigPath()} must be a whole number of milliseconds from 0 to ${MAX_SETTLE_MS}`);
     process.exit(1);
   }
   toolArgs.pageChanges = { settleMs };

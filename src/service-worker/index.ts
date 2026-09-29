@@ -4384,9 +4384,10 @@ async function runWithPageChanges(tabId: number, msg: any, run: () => Promise<an
   const release = () => send({ type: "END_PAGE_CHANGES", token, capMs: 0 }).catch(() => {});
   const beginRequest = send({ type: "BEGIN_PAGE_CHANGES", token });
   const startedAt = Date.now();
+  const remainingMs = () => Math.max(0, startedAt + capMs - Date.now());
   const begin = await answerWithin(beginRequest, PAGE_CHANGES_BEGIN_TIMEOUT_MS);
   if (begin === TIMED_OUT) beginRequest.then((late) => late?.ok && release()).catch(() => {});
-  if (begin === TIMED_OUT || begin === FAILED || !begin?.ok) return run();
+  if (!begin?.ok) return run();
 
   let result: any;
   try {
@@ -4401,7 +4402,7 @@ async function runWithPageChanges(tabId: number, msg: any, run: () => Promise<an
   }
   const end = await answerWithin(
     send({ type: "END_PAGE_CHANGES", token, capMs }),
-    capMs + PAGE_CHANGES_END_GRACE_MS,
+    remainingMs() + PAGE_CHANGES_END_GRACE_MS,
   );
   if (end === TIMED_OUT) return result;
   if (end !== FAILED && end?.error !== "unknown_token") return end?.settle ? { ...result, pageChanges: end } : result;
@@ -4411,7 +4412,7 @@ async function runWithPageChanges(tabId: number, msg: any, run: () => Promise<an
     let title = "";
     let loaded = true;
     if (frameId === 0) {
-      loaded = (await cdp.waitForLoad(tabId, capMs)).success;
+      loaded = (await cdp.waitForLoad(tabId, remainingMs())).success;
       const tab = await chrome.tabs.get(tabId);
       to = tab.url ?? "";
       title = tab.title ?? "";

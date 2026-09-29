@@ -23,9 +23,6 @@ function describeChange(change) {
   return `${change.property} ${show(change.from)} -> ${show(change.to)}`;
 }
 
-/**
- * Render a PageChanges result as output lines
- */
 function formatPageChanges(pageChanges) {
   const { settle, navigated, changes, text, omitted } = pageChanges;
   if (navigated) {

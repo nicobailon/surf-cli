@@ -124,8 +124,10 @@ describe("page changes CLI", () => {
   });
 
   it("uses --settle, then surf.json settleMs, and --no-diff turns it off", async () => {
-    const flag = await runCli(["click", "e5", "--settle", "500"], { surfJson: { settleMs: 800 } });
-    expect(flag.request.params.args.pageChanges).toEqual({ settleMs: 500 });
+    const flag = await runCli(["click", "e5", "--settle", "30000"], {
+      surfJson: { settleMs: 800 },
+    });
+    expect(flag.request.params.args.pageChanges).toEqual({ settleMs: 30000 });
     expect(flag.request.params.args.settle).toBeUndefined();
     const config = await runCli(["click", "e5"], { surfJson: { settleMs: 800 } });
     expect(config.request.params.args.pageChanges).toEqual({ settleMs: 800 });
@@ -135,17 +137,22 @@ describe("page changes CLI", () => {
   });
 
   it("rejects invalid settle values before sending a request", async () => {
-    for (const value of ["abc", "1.5", "-1"]) {
+    for (const value of ["abc", "1.5", "-1", "30001"]) {
       const result = await runCli(["click", "e5", "--settle", value]);
       expect(result.code).toBe(1);
       expect(result.stderr).toContain(
-        "--settle requires a non-negative whole number of milliseconds",
+        "--settle requires a whole number of milliseconds from 0 to 30000",
       );
       expect(result.request).toBeUndefined();
     }
-    const config = await runCli(["click", "e5"], { surfJson: { settleMs: "fast" } });
-    expect(config.code).toBe(1);
-    expect(config.stderr).toMatch(/settleMs in .*surf\.json must be a non-negative whole number/);
+    for (const settleMs of ["fast", 30001]) {
+      const config = await runCli(["click", "e5"], { surfJson: { settleMs } });
+      expect(config.code).toBe(1);
+      expect(config.stderr).toMatch(
+        /settleMs in .*surf\.json must be a whole number of milliseconds from 0 to 30000/,
+      );
+      expect(config.request).toBeUndefined();
+    }
   });
 
   it("prints changes between the action output and the screenshot line", async () => {

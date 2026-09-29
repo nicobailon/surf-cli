@@ -820,7 +820,7 @@ surf wait.element ".missing" --auto-capture --timeout 2000
 --json                # Raw JSON including target metadata
 --auto-capture        # Screenshot + console on error
 --timeout <ms>        # Override default timeout
---settle <ms>         # Max wait before actions report page changes (default 2000, surf.json settleMs)
+--settle <ms>         # Max wait before actions report page changes (default 2000, max 30000, surf.json settleMs)
 --no-diff             # Skip the page-change report after actions
 ```
 
