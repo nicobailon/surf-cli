@@ -1297,6 +1297,93 @@ describe("native host protocol integration", () => {
     }
   });
 
+  it("reports a native dialog opened by an action without capturing a screenshot", async () => {
+    const surfTmp = fs.mkdtempSync(path.join(os.tmpdir(), "surf-native-dialog-"));
+    tempDirs.push(surfTmp);
+    const host = await startHostHarness({ SURF_TMP: surfTmp });
+    const transport = await openClientTransport({
+      kind: "local",
+      connectionOptions: host.socketPath,
+    });
+    try {
+      const response = transport.request({
+        type: "tool_request",
+        method: "execute_tool",
+        params: { tool: "click", args: { selector: "#alert", autoScreenshot: true } },
+        tabId: 1,
+        id: "click-opens-alert",
+      });
+      const click = await host.waitForMessage(
+        (message) => message.type === "CLICK_SELECTOR",
+        "click that opens an alert",
+      );
+      expect(click.watchDialogs).toBe(true);
+      host.send({ id: click.id, success: true, nativeDialog: { type: "alert", message: "hi" } });
+      expect((await response).result.content).toEqual([
+        {
+          type: "text",
+          text: 'OK\nNative alert dialog is open: "hi". Close it with dialog.accept or dialog.dismiss.',
+        },
+      ]);
+      // A page blocked by a native dialog cannot be captured; the capture starts after 500ms.
+      await host.expectNoMessage(
+        (message) => message.type === "EXECUTE_SCREENSHOT",
+        "screenshot of a page blocked by a native dialog",
+        800,
+      );
+    } finally {
+      await transport.close();
+    }
+  });
+
+  it("handles a native dialog while the action that opened it still holds the tab", async () => {
+    const host = await startHostHarness();
+    const clickClient = await openClientTransport({
+      kind: "local",
+      connectionOptions: host.socketPath,
+    });
+    const dialogClient = await openClientTransport({
+      kind: "local",
+      connectionOptions: host.socketPath,
+    });
+    try {
+      const clickResponse = clickClient.request({
+        type: "tool_request",
+        method: "execute_tool",
+        params: { tool: "click", args: { selector: "#alert" } },
+        tabId: 1,
+        id: "click-blocked-by-alert",
+      });
+      const click = await host.waitForMessage(
+        (message) => message.type === "CLICK_SELECTOR",
+        "click blocked by an alert",
+      );
+      for (const [tool, type] of [
+        ["dialog.info", "DIALOG_INFO"],
+        ["dialog.accept", "DIALOG_ACCEPT"],
+      ]) {
+        const dialogResponse = dialogClient.request({
+          type: "tool_request",
+          method: "execute_tool",
+          params: { tool, args: {} },
+          tabId: 1,
+          id: `${tool}-during-blocked-click`,
+        });
+        const dialog = await host.waitForMessage(
+          (message) => message.type === type,
+          `${tool} while the click holds the tab`,
+        );
+        host.send({ id: dialog.id, success: true });
+        expect((await dialogResponse).error).toBeUndefined();
+      }
+      host.send({ id: click.id, success: true });
+      expect((await clickResponse).error).toBeUndefined();
+    } finally {
+      await dialogClient.close();
+      await clickClient.close();
+    }
+  });
+
   it("releases the tab and writes no file when a background auto-screenshot fails", async () => {
     const surfTmp = fs.mkdtempSync(path.join(os.tmpdir(), "surf-auto-local-fail-"));
     tempDirs.push(surfTmp);
@@ -1425,6 +1512,39 @@ describe("native host protocol integration", () => {
         "primary click failure",
       );
       expect(fs.existsSync(primaryFailure.downloads[0].destination)).toBe(false);
+
+      const dialogAction = fileTransfer.prepareRemoteTool("click", {
+        selector: "#alert",
+        autoScreenshot: true,
+      });
+      const dialogActionResponse = transport.request(
+        {
+          type: "tool_request",
+          method: "execute_tool",
+          params: { tool: "click", args: dialogAction.args },
+          tabId: 1,
+          id: "auto-native-dialog",
+        },
+        30000,
+        dialogAction,
+      );
+      const dialogClick = await host.waitForMessage(
+        (message) => message.type === "CLICK_SELECTOR",
+        "auto native-dialog click",
+      );
+      host.send({
+        id: dialogClick.id,
+        success: true,
+        nativeDialog: { type: "confirm", message: "Sure?" },
+      });
+      expect((await dialogActionResponse).error.content[0].text).toContain(
+        "a native confirm dialog is open; close it with dialog.accept or dialog.dismiss",
+      );
+      await host.expectNoMessage(
+        (message) => message.type === "EXECUTE_SCREENSHOT",
+        "remote screenshot of a page blocked by a native dialog",
+      );
+      expect(fs.existsSync(dialogAction.downloads[0].destination)).toBe(false);
 
       const nextPromise = transport.request({
         type: "tool_request",

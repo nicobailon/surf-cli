@@ -59,6 +59,8 @@ const TAB_TOOLS = new Set([
   "playbook.record.pause", "playbook.record.resume", "playbook.record.discard",
 ]);
 
+const NATIVE_DIALOG_TOOLS = new Set(["dialog.accept", "dialog.dismiss", "dialog.info"]);
+
 function hasExplicitTabCloseTarget(args = {}) {
   return [args.id, args.tab_id, args.tabId, args.ids, args.tab_ids, args.tabIds]
     .some((value) => value !== undefined && value !== null && value !== "");
@@ -90,6 +92,12 @@ function classifyTool(tool, args = {}) {
   if (BROWSER_WRITE_TOOLS.has(tool)) return { scope: "browser-write", targetUse: "browser" };
   if (tool === "video.stop" || tool === "video.status" || tool === "video.restart") {
     return { scope: "host", targetUse: "host", resourceKeys: ["video-recorder"] };
+  }
+  // A native JS dialog blocks the command that opened it, which holds the tab lane until the
+  // dialog closes, so handling the dialog must not queue behind it. `dismiss --all` closes
+  // page-level dialogs with page scripts, so it stays on the lane.
+  if (NATIVE_DIALOG_TOOLS.has(tool) && !(tool === "dialog.dismiss" && args.all)) {
+    return { scope: "host", targetUse: "default-tab" };
   }
   if (TAB_TOOLS.has(tool)) {
     const resourceKeys = [];

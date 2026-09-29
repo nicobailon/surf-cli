@@ -69,6 +69,16 @@ describe("tool scope classification", () => {
     });
   });
 
+  it("admits native dialog handling past the tab lane, but not page-level dismiss --all", () => {
+    for (const tool of ["dialog.info", "dialog.accept", "dialog.dismiss"]) {
+      expect(classifyTool(tool, {})).toEqual({ scope: "host", targetUse: "default-tab" });
+    }
+    expect(classifyTool("dialog.dismiss", { all: true })).toMatchObject({
+      scope: "tab",
+      targetUse: "default-tab",
+    });
+  });
+
   it("keeps frame.diagnose on the tab lane", () => {
     expect(classifyTool("frame.diagnose", {})).toMatchObject({
       scope: "tab",

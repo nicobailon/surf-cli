@@ -1,4 +1,4 @@
-import { CDPController } from "../cdp/controller";
+import { CDPController, type PendingDialog } from "../cdp/controller";
 import { debugLog } from "../utils/debug";
 import type { PageChanges } from "../utils/page-changes";
 import {
@@ -4428,6 +4428,29 @@ async function runWithPageChanges(tabId: number, msg: any, run: () => Promise<an
   }
 }
 
+// A native alert/confirm/prompt blocks the page, so the action that opened it (a CDP input
+// event, a content-script click, a script) gets no answer until the dialog closes. Answer as
+// soon as one opens so the caller can handle it with dialog.accept or dialog.dismiss; the
+// blocked action finishes on its own once the dialog is closed. Dialogs are reported only on
+// an attached tab, so actions attach first.
+async function returnOnNativeDialog(tabId: number, attachFirst: boolean, run: () => Promise<any>): Promise<any> {
+  if (attachFirst) await cdp.attachForDialogs(tabId);
+  let unsubscribe = () => {};
+  const opened = new Promise<PendingDialog>((resolve) => { unsubscribe = cdp.onDialogOpening(tabId, resolve); });
+  const action = run();
+  try {
+    const outcome = await Promise.race([
+      action.then((result) => ({ result })),
+      opened.then((dialog) => ({ dialog })),
+    ]);
+    if ("result" in outcome) return outcome.result;
+    const { type, message, defaultPrompt } = outcome.dialog;
+    return { success: true, nativeDialog: { type, message, ...(type === "prompt" ? { defaultPrompt } : {}) } };
+  } finally {
+    unsubscribe();
+  }
+}
+
 initNativeMessaging(async (msg) => {
   let tabId = msg.tabId;
   const windowId = msg.windowId;
@@ -4451,7 +4474,10 @@ initNativeMessaging(async (msg) => {
   }
 
   if (tabId && msg.frameId !== undefined) await validateRequestedFrame(tabId, msg.frameId);
-  const runAction = () => handleMessage({ ...msg, tabId }, {} as chrome.runtime.MessageSender);
+  const handle = () => handleMessage({ ...msg, tabId }, {} as chrome.runtime.MessageSender);
+  const runAction = tabId && !isDialogCommand
+    ? () => returnOnNativeDialog(tabId, msg.watchDialogs === true, handle)
+    : handle;
   const result = tabId && msg.pageChanges ? await runWithPageChanges(tabId, msg, runAction) : await runAction();
   const hints: string[] = [];
   if (autoCreatedTab) {

@@ -107,7 +107,7 @@ export interface NetworkEntry {
   _loadingFinished: boolean;     // Whether loading finished
 }
 
-interface PendingDialog {
+export interface PendingDialog {
   type: "alert" | "confirm" | "prompt" | "beforeunload";
   message: string;
   defaultPrompt?: string;
@@ -191,6 +191,7 @@ export class CDPController {
   private screencastCallbacks: Map<number, Map<string, { onFrame: ScreencastFrameCallback; onError: ScreencastErrorCallback }>> = new Map();
   private networkRequestStartTimes: Map<string, number> = new Map();
   private pendingDialogs: Map<number, PendingDialog> = new Map();
+  private dialogListeners: Map<number, Set<(dialog: PendingDialog) => void>> = new Map();
   private detachReasons: Map<number, string> = new Map();
   private networkEntrySeq = 0; // Sequence counter for unique IDs
   private networkBodyBytes: Map<number, number> = new Map();
@@ -678,12 +679,14 @@ export class CDPController {
   }
 
   private handleDialogOpening(tabId: number, params: any): void {
-    this.pendingDialogs.set(tabId, {
+    const dialog: PendingDialog = {
       type: params.type,
       message: params.message,
       defaultPrompt: params.defaultPrompt,
       timestamp: Date.now(),
-    });
+    };
+    this.pendingDialogs.set(tabId, dialog);
+    for (const listener of this.dialogListeners.get(tabId) ?? []) listener(dialog);
   }
 
   private async handleLoadingFinished(tabId: number, params: any): Promise<void> {
@@ -823,6 +826,29 @@ export class CDPController {
 
   getDialogInfo(tabId: number): PendingDialog | null {
     return this.pendingDialogs.get(tabId) || null;
+  }
+
+  /** Calls `listener` whenever a native JS dialog opens on the tab. Returns the unsubscribe. */
+  onDialogOpening(tabId: number, listener: (dialog: PendingDialog) => void): () => void {
+    let listeners = this.dialogListeners.get(tabId);
+    if (!listeners) this.dialogListeners.set(tabId, (listeners = new Set()));
+    listeners.add(listener);
+    return () => {
+      listeners.delete(listener);
+      if (listeners.size === 0 && this.dialogListeners.get(tabId) === listeners) this.dialogListeners.delete(tabId);
+    };
+  }
+
+  /**
+   * Best-effort attach so dialogs are reported: Chrome sends them only to an attached debugger
+   * and cannot attach once a dialog blocks the page. A pending detach notice is left for the
+   * next command to report.
+   */
+  async attachForDialogs(tabId: number): Promise<void> {
+    if (this.targets.has(tabId) || this.detachReasons.has(tabId)) return;
+    try {
+      await this.attach(tabId);
+    } catch {}
   }
 
   async emulateNetwork(tabId: number, preset: string): Promise<{ success: boolean; error?: string }> {

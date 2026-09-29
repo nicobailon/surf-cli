@@ -41,7 +41,7 @@ const { HostSessionManager, resolveRequestDeadlineMs } = require("./host-session
 const { abortError, abortableDelay, throwIfAborted } = require("./abort.cjs");
 const { BoundedAiQueue } = require("./ai-queue.cjs");
 const { RequestPendingMap } = require("./request-pending.cjs");
-const { cleanupFilePaths, createStagingDirectory, createTransferState, materializeRemoteTool, rewriteTransferPaths, streamFileDownload, transferError } = require("./file-transfer.cjs");
+const { PAGE_CHANGES_TOOLS, cleanupFilePaths, createStagingDirectory, createTransferState, materializeRemoteTool, rewriteTransferPaths, streamFileDownload, transferError } = require("./file-transfer.cjs");
 const { writeNetworkExport } = require("./network-export.cjs");
 const networkStore = require("./network-store.cjs");
 const { redactUrlSecrets } = require("./redaction.cjs");
@@ -1958,6 +1958,8 @@ function handleToolRequest(msg, socket, requestContext = requestStorage.getStore
     return;
   }
   if (args?.pageChanges) extensionMsg.pageChanges = args.pageChanges;
+  // An action can open a native dialog, which Chrome reports only to an attached debugger.
+  if (PAGE_CHANGES_TOOLS.includes(tool)) extensionMsg.watchDialogs = true;
   if (requestContext.target?.strict) extensionMsg.strictTarget = true;
   applyFrameContextToMessage(requestContext, extensionMsg);
   try {
@@ -3035,6 +3037,10 @@ function processInput() {
             } catch (e) {
               sendToolResponse(socket, originalId, null, `Failed to save: ${e.message}`);
             }
+          } else if (autoScreenshot && msg.nativeDialog) {
+            // An open native dialog blocks page capture until the dialog closes.
+            if (pending.autoScreenshotOutput) failAutoScreenshot(`a native ${msg.nativeDialog.type} dialog is open; close it with dialog.accept or dialog.dismiss`);
+            else sendToolResponse(socket, originalId, msg, null);
           } else if (autoScreenshot && tabId && !msg.error && !msg.base64) {
             
             const screenshotPath = pending.autoScreenshotOutput || path.join(SURF_TMP, `pi-auto-${Date.now()}.png`);

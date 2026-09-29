@@ -183,6 +183,12 @@ function fixturePages(request, { crossOriginBase }) {
   if (url.pathname === "/changes-target") {
     return `<!doctype html><html><head><title>Changes target</title></head><body><main><h1>Target</h1></main></body></html>`;
   }
+  if (url.pathname === "/native-dialog") {
+    return `<!doctype html><html><head><title>Native dialog fixture</title></head>
+<body><main><button id="alert" onclick="alert('hi')">Alert</button>
+<button id="confirm" onclick="document.querySelector('#answer').textContent = confirm('Sure?') ? 'yes' : 'no'">Confirm</button>
+<p id="answer">none</p></main></body></html>`;
+  }
   if (url.pathname === "/list") {
     const empty = url.searchParams.get("empty") === "1";
     const items = empty
@@ -755,6 +761,46 @@ try {
     throw new Error(`a navigating click did not report one navigation line: ${leaveOutput}`);
   }
   await runSurf("tab.close", "--id", changesTab, "--json");
+
+  // Native JS dialogs (#343): the click that opens one returns, and dialog.* handle it.
+  const nativeDialogNotice = (type, message) =>
+    `Native ${type} dialog is open: ${JSON.stringify(message)}. Close it with dialog.accept or dialog.dismiss.`;
+  const expectNativeDialog = async (tabId, type, message) => {
+    const info = unwrapJson(await runSurf("dialog.info", "--tab-id", tabId, "--json"));
+    if (info?.hasDialog !== true || info.type !== type || info.message !== message) {
+      throw new Error(`dialog.info did not report the open ${type} dialog: ${JSON.stringify(info)}`);
+    }
+  };
+  // CDP click (--selector) on a tab the debugger already controls.
+  const cdpDialogTab = String(tabIdFromOutput(await runSurf("tab.new", `${baseUrl}/native-dialog`)));
+  await runSurf("wait.ready", "--json", "--tab-id", cdpDialogTab, "--selector", "#confirm");
+  for (const flags of [[], ["--no-diff", "--no-screenshot"]]) {
+    const clicked = await runSurf("click", "--selector", "#alert", "--tab-id", cdpDialogTab, ...flags);
+    if (clicked.trim() !== `OK\n${nativeDialogNotice("alert", "hi")}`) {
+      throw new Error(`a click that opened alert() did not report it (${flags.join(" ")}): ${clicked}`);
+    }
+    await expectNativeDialog(cdpDialogTab, "alert", "hi");
+    await runSurf("dialog.accept", "--tab-id", cdpDialogTab, "--no-screenshot");
+    if (unwrapJson(await runSurf("dialog.info", "--tab-id", cdpDialogTab, "--json"))?.hasDialog !== false) {
+      throw new Error("dialog.accept did not close the alert");
+    }
+  }
+  await runSurf("tab.close", "--id", cdpDialogTab, "--json");
+  // Content-script click (ref) on a tab no command has attached the debugger to yet.
+  const refDialogTab = String(tabIdFromOutput(await runSurf("tab.new", `${baseUrl}/native-dialog`)));
+  const confirmRef = (await runSurf("page.read", "--tab-id", refDialogTab)).match(/button "Confirm" \[(e\d+)\]/)?.[1];
+  for (const [flags, verb, answer] of [[[], "dialog.dismiss", "no"], [["--no-diff", "--no-screenshot"], "dialog.accept", "yes"]]) {
+    const clicked = await runSurf("click", confirmRef, "--tab-id", refDialogTab, ...flags);
+    if (clicked.trim() !== `OK\n${nativeDialogNotice("confirm", "Sure?")}`) {
+      throw new Error(`a ref click that opened confirm() did not report it (${flags.join(" ")}): ${clicked}`);
+    }
+    await expectNativeDialog(refDialogTab, "confirm", "Sure?");
+    await runSurf(verb, "--tab-id", refDialogTab, "--no-screenshot");
+    if (!(await runSurf("page.text", "--tab-id", refDialogTab)).includes(`Alert Confirm ${answer}`)) {
+      throw new Error(`${verb} did not answer the confirm() with ${answer}`);
+    }
+  }
+  await runSurf("tab.close", "--id", refDialogTab, "--json");
 
   await runSurf("screenshot", "--output", screenshotPath);
   const png = readFileSync(screenshotPath);

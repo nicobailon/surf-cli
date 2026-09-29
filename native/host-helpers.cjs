@@ -68,6 +68,11 @@ function formatToolContent(result, log = () => {}) {
   
   if (!result) return text("OK");
 
+  if (result.nativeDialog) {
+    const { type, message } = result.nativeDialog;
+    return text(`OK\nNative ${type} dialog is open: ${JSON.stringify(message)}. Close it with dialog.accept or dialog.dismiss.`);
+  }
+
   if (result.session || Array.isArray(result.sessions) || Array.isArray(result.removed) || Object.hasOwn(result, "targetClosed")) {
     return text(JSON.stringify(result, null, 2));
   }
