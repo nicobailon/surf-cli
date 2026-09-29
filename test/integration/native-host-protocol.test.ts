@@ -2045,6 +2045,55 @@ describe("native host protocol integration", () => {
     expect(capped.stdout).toContain("Full tree: ");
   });
 
+  it("marks truncated page text and saves the full text to a private file", async () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "surf-text-spill-"));
+    tempDirs.push(tmp);
+    const host = await startHostHarness({ SURF_TMP: tmp });
+    const longText = "word ".repeat(12_000).trim();
+    const run = async (args: string[], type: string, reply: Record<string, unknown>) => {
+      const cliPromise = runCli(args, host.socketPath);
+      const request = await host.waitForMessage((message) => message.type === type, type);
+      host.send({ id: request.id, ...reply });
+      return cliPromise;
+    };
+    const pageText = (text: string, args: string[] = []) =>
+      run(["page.text", ...args], "GET_PAGE_TEXT", {
+        text,
+        title: "Long",
+        url: "https://example.test/",
+      });
+
+    const plain = await pageText(longText);
+    expect(plain.code).toBe(0);
+    expect(plain.stdout).toContain("[Truncated: showing 50000 of 59999 bytes. Full text: ");
+    const fullPath = plain.stdout.match(/Full text: (\S+)\.\]/)?.[1] as string;
+    expect(fs.readFileSync(fullPath, "utf8")).toBe(longText);
+    if (process.platform !== "win32") {
+      expect(fs.statSync(fullPath).mode & 0o777).toBe(0o600);
+    }
+
+    const json = JSON.parse((await pageText(longText, ["--json"])).stdout);
+    expect(json.truncated).toEqual({
+      shownBytes: 50000,
+      totalBytes: 59999,
+      path: expect.any(String),
+    });
+    expect(fs.readFileSync(json.truncated.path, "utf8")).toBe(longText);
+
+    const read = await run(["read", "--max-bytes", "2000"], "READ_PAGE", {
+      pageContent: 'button "Go" [e1]',
+      text: longText,
+    });
+    expect(read.code).toBe(0);
+    expect(read.stdout).toMatch(
+      /--- Page Text ---\n(word ){400}\n\n\[Truncated: showing 2000 of 59999 bytes\. Full text: \S+\.\]/,
+    );
+
+    const short = await pageText("short page", ["--json"]);
+    expect(short.stdout).toContain("short page");
+    expect(short.stdout).not.toMatch(/truncated/i);
+  });
+
   it("propagates extension errors through the native host to CLI stderr", async () => {
     const host = await startHostHarness();
     const cliPromise = runCli(["tab.list"], host.socketPath);

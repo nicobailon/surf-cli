@@ -4,6 +4,7 @@
 
 ### Fixed
 - **Refs after a re-render** - When a page re-renders and replaces the element behind a ref such as `e12`, actions on that ref now fail instead of silently acting on the removed element. If exactly one visible element has the same role and name, the error names its ref: `Element e12 no longer exists. Did you mean e40 (button "Save")? Otherwise run surf read.` See [#340](https://github.com/nicobailon/surf-cli/issues/340).
+- **Marked page-text cuts** - Page text cut at 50,000 characters or at `--max-bytes` now ends with `[Truncated: showing N of M bytes. Full text: <path>.]` in `read` and `page.text`, and the full text is saved to a private file. `--json` adds `truncated: { shownBytes, totalBytes, path }`. Remote clients and `--with-page` prompts get the note without a path. See [#338](https://github.com/nicobailon/surf-cli/issues/338).
 
 ## [2.21.1] - 2026-09-28
 

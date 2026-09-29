@@ -40,6 +40,23 @@ function formatToolError(error) {
   return result;
 }
 
+// A silent cut reads as missing content, so cut page text ends with a marker.
+// Without maxBytes the cap is maxChars characters, never splitting a surrogate pair.
+function truncatePageText(text, { maxBytes, maxChars = 50_000, fullPath } = {}) {
+  const full = Buffer.from(text);
+  const cut = maxChars < text.length && /[\uD800-\uDBFF]/.test(text[maxChars - 1]) ? maxChars - 1 : maxChars;
+  let kept = text.substring(0, cut);
+  if (maxBytes !== undefined) {
+    let end = Math.min(maxBytes, full.length);
+    while (end > 0 && (full[end] & 0xc0) === 0x80) end--;
+    kept = full.subarray(0, end).toString("utf8");
+  }
+  if (kept === text) return { text };
+  const truncated = { shownBytes: Buffer.byteLength(kept), totalBytes: full.length, ...(fullPath ? { path: fullPath } : {}) };
+  const note = `[Truncated: showing ${truncated.shownBytes} of ${truncated.totalBytes} bytes.${fullPath ? ` Full text: ${fullPath}.` : ""}]`;
+  return { text: `${kept}\n\n${note}`, truncated };
+}
+
 /**
  * Format tool result content for MCP response
  * @param {*} result - The result object from the extension
@@ -1388,4 +1405,4 @@ function applySemanticExpectedIdentity(request, extensionMessage, args) {
   };
 }
 
-module.exports = { mapToolToMessage, mapComputerAction, formatToolContent, formatToolError, buildProviderUploadMessage, readinessExpectations, applySemanticExpectedIdentity };
+module.exports = { mapToolToMessage, mapComputerAction, formatToolContent, formatToolError, buildProviderUploadMessage, readinessExpectations, applySemanticExpectedIdentity, truncatePageText };

@@ -4048,8 +4048,13 @@ async function handleResponse(response) {
   }
 
   if (wantJson) {
-    const output = response.target || response.notice
-      ? { result: data ?? null, target: response.target || null, notice: response.notice || null }
+    const output = response.target || response.notice || response.truncated
+      ? {
+        result: data ?? null,
+        target: response.target || null,
+        notice: response.notice || null,
+        ...(response.truncated ? { truncated: response.truncated } : {}),
+      }
       : data ?? null;
     console.log(JSON.stringify(output, null, 2));
     socket.end();

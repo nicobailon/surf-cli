@@ -964,36 +964,16 @@ describe("accessibility tree", () => {
     });
   });
 
-  it("caps visible text in compact mode", () => {
-    (document.body as unknown as FakeElement).append(text("abcdef"));
-
-    let response: any;
-    messageHandler?.(
-      { type: "GET_PAGE_TEXT", options: { compact: true, maxBytes: 3 } },
-      {},
-      (result) => {
-        response = result;
-      },
-    );
-
-    expect(response).toMatchObject({
-      text: "abc",
-      title: "Example",
-      url: "https://example.test/page",
-    });
-  });
-
-  it("preserves the existing 50000-character default when max-bytes is not given", () => {
+  it("returns the whole visible text so the host can mark a cut", () => {
     const long = "😀".repeat(30000);
     (document.body as unknown as FakeElement).append(text(long));
 
     let response: any;
-    messageHandler?.({ type: "GET_PAGE_TEXT", options: { compact: true } }, {}, (result) => {
+    messageHandler?.({ type: "GET_PAGE_TEXT" }, {}, (result) => {
       response = result;
     });
 
-    expect(response.text.length).toBe(50000);
-    expect(new TextEncoder().encode(response.text).length).toBe(100000);
+    expect(response).toEqual({ text: long, title: "Example", url: "https://example.test/page" });
   });
 
   it("types into a selector in the content-script frame", () => {
@@ -1111,24 +1091,5 @@ describe("accessibility tree", () => {
     }
     expect(checkbox.checked).toBe(true);
     expect(select.value).toBe("chosen");
-  });
-
-  it("truncates multi-byte utf-8 text on a byte boundary, not a surrogate", () => {
-    (document.body as unknown as FakeElement).append(text("😀😀"));
-
-    let response: any;
-    messageHandler?.(
-      { type: "GET_PAGE_TEXT", options: { compact: true, maxBytes: 3 } },
-      {},
-      (result) => {
-        response = result;
-      },
-    );
-
-    expect(response.text).not.toContain("\uD83D");
-    expect(response.text).not.toContain("\uDE00");
-    const byteLen = new TextEncoder().encode(response.text).length;
-    expect(byteLen).toBeLessThanOrEqual(3);
-    expect(response.text).toBe("");
   });
 });
