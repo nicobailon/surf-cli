@@ -1723,7 +1723,9 @@ function capturePageSnapshot(): { snapshot: PageSnapshot; elements: Element[] } 
   return { snapshot: { nodes, text }, elements };
 }
 
-function registerPageRef(element: Element, role: string, name: string): string {
+// Ref identity uses the same name as `surf read` so stale-ref suggestions match.
+function registerPageRef(element: Element, role: string): string {
+  const name = getName(element);
   const ref = elementRefs.get(element)?.ref ?? getOrAssignRef(element, role, name);
   window.__piRefs = window.__piRefs || {};
   window.__piRefs[ref] = element;
@@ -2784,7 +2786,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           settle,
           navigated: null,
           ...diffPageSnapshots(session.before, after.snapshot, (index) =>
-            registerPageRef(after.elements[index], after.snapshot.nodes[index].role, after.snapshot.nodes[index].name)),
+            registerPageRef(after.elements[index], after.snapshot.nodes[index].role)),
         };
         sendResponse(result);
       });

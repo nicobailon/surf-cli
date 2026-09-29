@@ -296,6 +296,29 @@ describe("accessibility tree", () => {
     expect(cancel.clicked).toBe(false);
   });
 
+  it("gives added elements refs that suggest their replacement after a re-render", async () => {
+    const label = "Save ".repeat(20).trim();
+    const body = document.body as unknown as FakeElement;
+    beginPageChanges();
+    const first = element("button");
+    first.append(text(label));
+    body.append(first);
+    FakeMutationObserver.mutate();
+    const { result } = await endPageChanges();
+    const staleRef = result.changes[0].ref;
+
+    first.isConnected = false;
+    body.childNodes = body.childNodes.filter((child) => child !== first);
+    const replacement = element("button");
+    replacement.append(text(label));
+    body.append(replacement);
+
+    expect(sendMessage({ type: "CLICK_ELEMENT", ref: staleRef, button: "left" }).error).toMatch(
+      new RegExp(`^Element ${staleRef} no longer exists\\. Did you mean e\\d+ \\(button "${label}"\\)\\?`),
+    );
+  });
+
+
   it("reports a toggled checkbox as one checked state change", async () => {
     const checkbox = new FakeInputElement("input");
     checkbox.setAttribute("type", "checkbox");
