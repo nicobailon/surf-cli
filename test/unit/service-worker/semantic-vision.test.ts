@@ -3,6 +3,7 @@ import {
   type ContactSheetPlan,
   planContactSheet,
   renderContactSheet,
+  semanticVisionFramesClear,
 } from "../../../src/service-worker/semantic-vision";
 
 type Rect = { x: number; y: number; width: number; height: number };
@@ -241,5 +242,83 @@ describe("contact sheet renderer", () => {
       "sheet.fillText(e3,10,10,36)",
       "sheet.convertToBlob(image/png)",
     ]);
+  });
+});
+
+describe("semanticVisionFramesClear", () => {
+  const frames = (...ids: number[]) => ids.map((frameId) => ({ frameId }));
+  const answer = (shown: unknown) => async () => ({ shown });
+  const noReceiver = () =>
+    new Error("Could not establish connection. Receiving end does not exist.");
+  // An answer that never comes.
+  const never = () => new Promise<unknown>(() => undefined);
+
+  it("is clear only when every frame answers shown: false in time", async () => {
+    expect(await semanticVisionFramesClear([], answer(true), 50)).toBe(true);
+    expect(await semanticVisionFramesClear(frames(1, 2, 3), answer(false), 50)).toBe(true);
+  });
+
+  it("is not clear when any frame shows a surface, fails, answers something else, or is late", async () => {
+    const asks: Array<(frameId: number) => Promise<unknown>> = [
+      async (frameId) => ({ shown: frameId === 2 }),
+      async (frameId) => {
+        if (frameId === 2) {
+          throw noReceiver();
+        }
+        return { shown: false };
+      },
+      (frameId) => {
+        if (frameId === 2) {
+          throw new Error("synchronous failure");
+        }
+        return Promise.resolve({ shown: false });
+      },
+      async (frameId) => (frameId === 2 ? undefined : { shown: false }),
+      async (frameId) => (frameId === 2 ? { shown: "no" } : { shown: false }),
+      (frameId) => (frameId === 2 ? never() : Promise.resolve({ shown: false })),
+    ];
+    for (const ask of asks) {
+      expect(await semanticVisionFramesClear(frames(1, 2, 3), ask, 50)).toBe(false);
+    }
+  });
+
+  it("excuses only a failed-load frame with no content script to answer", async () => {
+    const failed = [{ frameId: 1 }, { frameId: 2, errorOccurred: true }];
+    const ask = (error: () => unknown) => async (frameId: number) => {
+      if (frameId === 2) {
+        throw error();
+      }
+      return { shown: false };
+    };
+    // Chrome's error page: no receiver, and the frame's load failed.
+    expect(await semanticVisionFramesClear(failed, ask(noReceiver), 50)).toBe(true);
+    // Any other error, a late answer, or a shown surface from that frame still counts.
+    expect(
+      await semanticVisionFramesClear(
+        failed,
+        ask(() => new Error("The message port closed")),
+        50,
+      ),
+    ).toBe(false);
+    expect(
+      await semanticVisionFramesClear(
+        failed,
+        (frameId) => (frameId === 2 ? never() : answer(false)()),
+        50,
+      ),
+    ).toBe(false);
+    expect(await semanticVisionFramesClear(failed, answer(true), 50)).toBe(false);
+  });
+
+  it("asks every frame in parallel", async () => {
+    const started: number[] = [];
+    const ask = (frameId: number) => {
+      started.push(frameId);
+      return new Promise((resolve) => setTimeout(() => resolve({ shown: false }), 30));
+    };
+    const begin = Date.now();
+    expect(await semanticVisionFramesClear(frames(1, 2, 3, 4, 5), ask, 200)).toBe(true);
+    expect(started).toEqual([1, 2, 3, 4, 5]);
+    expect(Date.now() - begin).toBeLessThan(120);
   });
 });

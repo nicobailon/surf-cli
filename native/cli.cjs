@@ -1645,9 +1645,9 @@ element uses display:contents, content is editable through -webkit-user-modify, 
 picker that Chrome draws in the page is open (select, date, datetime-local, time, month, week, color),
 a customizable select's picker is closing, a form field is invalid after a failed submit or the
 focused field is invalid (Chrome may be showing a validation message that quotes the value; after a
-failed submit, reads skip until the fields are fixed), or focus is inside an embedded document that
-can't be read (a cross-origin iframe or object, any <embed>, or a plugin such as a PDF viewer). The
-picker and validation checks cover fields in same-origin iframes and <object> documents too.
+failed submit, reads skip until the fields are fixed). The picker and validation checks run inside
+every frame on the page, including cross-origin ones; a frame surf can't check (no content script,
+or no answer within half a second) skips the read, except one whose load failed (Chrome's error page).
 Reads are also skipped when designMode is on, a view transition is running, a shadow root is
 unreadable, anything in the DOM changed meanwhile, or the screenshot took over 2 s.
 Popups the browser draws outside the page frame are not in the screenshot.

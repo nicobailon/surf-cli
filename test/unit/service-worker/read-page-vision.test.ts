@@ -191,6 +191,80 @@ describe("READ_PAGE semantic vision", () => {
     }
   });
 
+  it("asks every child frame before the capture and at the recheck, and skips unless all answer clear", async () => {
+    const handleMessage = await loadHandleMessage();
+    const chrome = (globalThis as any).chrome;
+    chrome.webNavigation.getAllFrames.mockResolvedValue([
+      { frameId: 0, parentFrameId: -1 },
+      { frameId: 3, parentFrameId: 0 },
+      { frameId: 4, parentFrameId: 3 },
+    ]);
+    const recheck = {
+      viewport: { width: 1280, height: 800 },
+      current: { e1: targets[0].rect, e2: targets[1].rect },
+      masks: [],
+      fieldsChanged: false,
+    };
+    // Answers per child frame for each SEMANTIC_VISION_FRAME_SURFACES round.
+    const route = (answers: Array<Record<number, unknown>>) => {
+      routeContentMessages(visionTree, recheck);
+      const content = chrome.tabs.sendMessage.getMockImplementation();
+      let round = 0;
+      const asked: number[] = [];
+      chrome.tabs.sendMessage.mockImplementation(
+        async (tabId: number, message: any, options: any) => {
+          if (message.type !== "SEMANTIC_VISION_FRAME_SURFACES") {
+            return content(tabId, message, options);
+          }
+          asked.push(options.frameId);
+          const answer = answers[Math.min(round, answers.length - 1)][options.frameId];
+          if (asked.length % 2 === 0) {
+            round++;
+          }
+          if (answer instanceof Error) {
+            throw answer;
+          }
+          return answer;
+        },
+      );
+      return asked;
+    };
+
+    // Clear before and after: the sheet is sent, and frame 0 is never asked.
+    const asked = route([{ 3: { shown: false }, 4: { shown: false } }]);
+    expect((await readVision(handleMessage)).semanticObservation.vision.tiles).toHaveLength(2);
+    expect(asked.sort()).toEqual([3, 3, 4, 4]);
+    expect(order.indexOf("SEMANTIC_VISION_PREPARE")).toBeGreaterThan(-1);
+
+    // A frame showing a surface, or one without a content script, skips before anything is hidden or captured.
+    for (const answer of [
+      { shown: true },
+      new Error("Could not establish connection. Receiving end does not exist."),
+    ]) {
+      cdpState.captureScreenshot.mockClear();
+      order = [];
+      route([{ 3: { shown: false }, 4: answer }]);
+      expect((await readVision(handleMessage)).semanticObservation.vision).toEqual({
+        image: null,
+        tiles: [],
+        skipped: 2,
+      });
+      expect(cdpState.captureScreenshot).not.toHaveBeenCalled();
+      expect(order).not.toContain("SEMANTIC_VISION_PREPARE");
+    }
+
+    // A frame that starts showing one by the recheck skips the read after the capture.
+    route([
+      { 3: { shown: false }, 4: { shown: false } },
+      { 3: { shown: true }, 4: { shown: false } },
+    ]);
+    expect((await readVision(handleMessage)).semanticObservation.vision).toEqual({
+      image: null,
+      tiles: [],
+      skipped: 2,
+    });
+  });
+
   it("restores the fields and fails the read with a vision-specific error when the capture fails", async () => {
     const handleMessage = await loadHandleMessage();
     routeContentMessages(visionTree, {});

@@ -171,3 +171,34 @@ export async function renderContactSheet(source: CanvasImageSource, plan: Contac
   }
   return sheet.convertToBlob({ type: "image/png" });
 }
+
+// Chrome's error for a message to a frame with no content script listening.
+const NO_RECEIVER = /Receiving end does not exist|Could not establish connection/;
+
+// Whether every frame answered that it shows no native-field surface (picker or validation message): true only when
+// each answer is `{ shown: false }` within timeoutMs. A frame that answers `shown: true`, fails, answers anything else
+// or too late counts as showing one. The one exception is a frame whose load failed (`errorOccurred`) and that has no
+// content script to answer: it shows Chrome's error page, which holds no page fields.
+export async function semanticVisionFramesClear(
+  frames: Array<{ frameId: number; errorOccurred?: boolean }>,
+  ask: (frameId: number) => Promise<unknown>,
+  timeoutMs: number,
+): Promise<boolean> {
+  const answers = await Promise.all(
+    frames.map(
+      ({ frameId, errorOccurred }) =>
+        new Promise<boolean>((resolve) => {
+          const timer = setTimeout(() => resolve(false), timeoutMs);
+          Promise.resolve()
+            .then(() => ask(frameId))
+            .then(
+              (answer) => resolve((answer as { shown?: unknown } | undefined)?.shown === false),
+              (error: unknown) =>
+                resolve(errorOccurred === true && NO_RECEIVER.test(error instanceof Error ? error.message : String(error))),
+            )
+            .finally(() => clearTimeout(timer));
+        }),
+    ),
+  );
+  return answers.every(Boolean);
+}

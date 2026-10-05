@@ -23,7 +23,32 @@ const SHOW_SECRET = `<script>document.querySelector("#secret").showPopover();</s
 // (quotes escaped for the attribute). FRAME_DATE is a date input with a value, for a srcdoc iframe.
 const FRAME_FORM_PAGE = `<!doctype html><body style="margin:0"><form><input id="f" type="email" aria-label="Email" style="width:300px;height:28px"><button id="go">Subscribe</button></form></body>`;
 const FRAME_FORM = FRAME_FORM_PAGE.replace("<!doctype html>", "").replaceAll('"', "&quot;");
-const FRAME_DATE = `<body style="margin:0"><input id="f" type="date" value="2031-02-14" aria-label="When" style="width:200px;height:28px"></body>`.replaceAll('"', "&quot;");
+const FRAME_DATE_PAGE = `<!doctype html><body style="margin:0"><input id="f" type="date" value="2031-02-14" aria-label="When" style="width:200px;height:28px"></body>`;
+const FRAME_DATE = FRAME_DATE_PAGE.replace("<!doctype html>", "").replaceAll('"', "&quot;");
+// A field-less embedded page, like an ad or a video player.
+const FRAME_BLANK_PAGE = `<!doctype html><body style="margin:0;background:#eee"><p>Advertisement</p></body>`;
+// The same server under another origin (localhost instead of 127.0.0.1): a cross-origin, out-of-process frame.
+const crossOrigin = (path) => `location.origin.replace("127.0.0.1", "localhost") + "${path}"`;
+// Opens the date picker in the cross-origin frame with a real click on the calendar button at the right end of the
+// date input (page coordinates; Puppeteer can't reach into the out-of-process frame here), and confirms it is open
+// from the extension, in every frame of the tab, before going on.
+const openFramePicker = async (tab) => {
+  for (let attempt = 0; attempt < 5; attempt++) {
+    await tab.bringToFront();
+    await tab.mouse.click(286, 70);
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    const open = await harness.worker.evaluate(async (url) => {
+      const [target] = await chrome.tabs.query({ url });
+      const frames = await chrome.scripting.executeScript({
+        target: { tabId: target.id, allFrames: true },
+        func: () => document.querySelector("#f")?.matches(":open") ?? false,
+      });
+      return frames.some((frame) => frame.result === true);
+    }, tab.url());
+    if (open) return;
+  }
+  throw new Error("the date picker in the cross-origin frame did not open");
+};
 // The first child frame (iframe, or <object>/<embed> document) that has the selector.
 const childFrame = async (tab, selector) => {
   for (let attempt = 0; attempt < 50; attempt++) {
@@ -450,6 +475,70 @@ option { padding:0;margin:0;min-block-size:0;color:#0f0 } option::checkmark { di
     expect: "tile",
   },
   {
+    // A date picker opened by a click in a cross-origin iframe stays drawn over the page after the host moves focus
+    // away (as a focus-trap chat widget does). Only that frame can see it, and it answers that it is shown.
+    name: "date picker in a cross-origin iframe after the host moves focus",
+    html: page(`<iframe id="frame" style="position:absolute;left:100px;top:56px;width:300px;height:36px;border:0"></iframe>
+<button id="chat" style="position:absolute;left:600px;top:450px">Start chat</button>
+<script>const frame = document.querySelector("#frame");
+frame.addEventListener("load", () => { window.frameLoads = (window.frameLoads ?? 0) + 1; });
+frame.src = ${crossOrigin("/frame-date")};</script>`),
+    // Puppeteer can't reach into the out-of-process frame here, so the picker is opened with a real click on the
+    // calendar button at the right end of the date input, at page coordinates.
+    populate: async (tab) => {
+      await tab.waitForFunction(() => window.frameLoads === 1);
+      await openFramePicker(tab);
+      await tab.evaluate(() => document.querySelector("#chat").focus());
+      await new Promise((resolve) => setTimeout(resolve, 200));
+    },
+    // The empty control reloads the frame with no value, then opens the picker the same way.
+    clear: async (tab) => {
+      await tab.keyboard.press("Escape");
+      await tab.evaluate((src) => {
+        document.querySelector("#frame").src = src;
+      }, `${new URL(tab.url()).origin.replace("127.0.0.1", "localhost")}/frame-date?empty`);
+      await tab.waitForFunction(() => window.frameLoads === 2);
+      await openFramePicker(tab);
+      await tab.evaluate(() => document.querySelector("#chat").focus());
+      await new Promise((resolve) => setTimeout(resolve, 200));
+    },
+    expect: "skipped",
+    anyDifference: true,
+  },
+  {
+    // Field-less cross-origin iframes (ads, video players) answer that nothing is shown: tiles are kept.
+    name: "field-less cross-origin iframes",
+    html: page(`${[0, 1, 2].map((index) => `<iframe class="ad" style="position:absolute;left:${400 + index * 160}px;top:300px;width:150px;height:100px;border:0"></iframe>`).join("")}
+<script>for (const ad of document.querySelectorAll(".ad")) {
+  ad.addEventListener("load", () => { window.frameLoads = (window.frameLoads ?? 0) + 1; });
+  ad.src = ${crossOrigin("/frame-blank")};
+}</script>`),
+    populate: (tab) => tab.waitForFunction(() => window.frameLoads === 3),
+    // Nothing to clear: the empty control reads the same page again.
+    clear: async () => {},
+    expect: "tile",
+  },
+  {
+    // A script-built about:blank iframe (an ad slot) also answers, since the content script runs there too.
+    name: "script-built about:blank iframe without fields",
+    html: page(`<iframe id="slot" style="position:absolute;left:400px;top:300px;width:300px;height:250px;border:0"></iframe>
+<script>document.querySelector("#slot").contentDocument.body.innerHTML = '<div style="width:300px;height:250px;background:#eee">Advertisement</div>';</script>`),
+    expect: "tile",
+  },
+  {
+    // An iframe whose load failed (here a closed port, as with an ad blocker) shows Chrome's error page, where no
+    // content script runs; it holds no page fields, so it doesn't stop the read.
+    name: "iframe whose load failed",
+    html: page(`<iframe id="frame" style="position:absolute;left:400px;top:300px;width:300px;height:100px;border:0"></iframe>
+<script>const frame = document.querySelector("#frame");
+frame.addEventListener("load", () => { window.frameLoads = 1; });
+frame.src = "http://127.0.0.1:9/";</script>`),
+    populate: (tab) => tab.waitForFunction(() => window.frameLoads === 1),
+    // Nothing to clear: the empty control reads the same page again.
+    clear: async () => {},
+    expect: "tile",
+  },
+  {
     // A date input in a same-origin iframe with its picker open: Chrome draws the picker in the page, showing the
     // value, so the read is skipped.
     name: "open date input picker in a same-origin iframe",
@@ -627,6 +716,12 @@ async function waitFor(predicate, label) {
 const pages = {
   ...Object.fromEntries(scenarios.map((scenario, index) => [`/s${index}`, scenario.html])),
   "/frame-form": FRAME_FORM_PAGE,
+  // Served for the cross-origin frame: `?empty` clears the value for the empty control.
+  "/frame-date": FRAME_DATE_PAGE.replace(
+    "</body>",
+    `<script>if (location.search) document.querySelector("#f").value = "";</script></body>`,
+  ),
+  "/frame-blank": FRAME_BLANK_PAGE,
 };
 const harness = await launchVisionChrome(process.cwd(), pages);
 const results = {};

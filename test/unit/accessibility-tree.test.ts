@@ -890,7 +890,7 @@ describe("accessibility tree", () => {
     const closedRoot = {
       adoptedStyleSheets: [] as object[],
       querySelectorAll: (selector: string) => (selector === "*" ? [closedField] : []),
-      querySelector: () => null,
+      querySelector: (_selector: string): FakeElement | null => null,
     };
     const elements: FakeElement[] = [toolbar.settings, toolbar.search, toolbar.notes, host];
     (document as any).querySelectorAll = (selector: string) =>
@@ -1162,74 +1162,58 @@ describe("accessibility tree", () => {
     recheck();
   });
 
-  it("checks pickers and validation messages in every same-origin frame or embedded document", async () => {
-    const { elements } = visionPage();
-    const frameDocument = (nodes: FakeElement[], activeElement: FakeElement | null) => ({
-      activeElement,
-      querySelectorAll: (selector: string) =>
-        selector === "*" ? nodes : nodes.filter((node) => node.matches(selector)),
-      querySelector: (selector: string) => nodes.find((node) => node.matches(selector)) ?? null,
-    });
-    const email = new FakeInputElement("input");
-    email.computed.opacity = "0";
+  it("answers whether this frame shows a picker or validation message, and leaves frames to themselves", async () => {
+    const { elements, closedRoot } = visionPage();
+    const frameSurfaces = () => sendMessage({ type: "SEMANTIC_VISION_FRAME_SURFACES" });
+    expect(frameSurfaces()).toEqual({ shown: false });
+
+    // A picker open, or a select picker still closing, in this document.
+    const date = new FakeInputElement("input");
+    date.computed.opacity = "0";
+    elements.push(date);
+    date.pickerOpen = true;
+    expect(frameSurfaces()).toEqual({ shown: true });
+    date.pickerOpen = false;
+    const select = new FakeSelectElement("select");
+    select.computed.opacity = "0";
+    elements.push(select);
+    select.computed.picker = "block";
+    expect(frameSurfaces()).toEqual({ shown: true });
+    select.computed.picker = "none";
+
+    // A failed submit in a closed shadow root.
+    const shadowed = new FakeInputElement("input");
+    shadowed.userInvalid = true;
+    closedRoot.querySelector = (selector: string) => (shadowed.matches(selector) ? shadowed : null);
+    expect(frameSurfaces()).toEqual({ shown: true });
+    shadowed.userInvalid = false;
+
+    // The focused field is invalid; with no chrome.dom the frame can't check, so it answers shown.
+    (document as any).activeElement = date;
+    date.invalid = true;
+    expect(frameSurfaces()).toEqual({ shown: true });
+    date.invalid = false;
+    expect(frameSurfaces()).toEqual({ shown: false });
+    const dom = (globalThis as any).chrome.dom;
+    (globalThis as any).chrome.dom = undefined;
+    expect(frameSurfaces()).toEqual({ shown: true });
+    (globalThis as any).chrome.dom = dom;
+
+    // The page no longer reads frame documents, nor treats focus on a frame as a skip: each frame answers itself.
     const frameField = new FakeInputElement("input");
+    frameField.userInvalid = true;
     const frame = Object.assign(element("iframe"), {
-      contentDocument: frameDocument([frameField], null) as any,
+      contentDocument: {
+        querySelector: () => frameField,
+        querySelectorAll: () => [frameField],
+        activeElement: frameField,
+      },
     });
     frame.computed.opacity = "0";
-    elements.push(email, frame);
-    expect(await prepare()).not.toEqual({ masks: [null] });
-    recheck();
-
-    // After a failed submit every invalid field matches :user-invalid, whatever has focus, also in a same-origin frame.
-    email.userInvalid = true;
-    expect(await prepare()).toEqual({ masks: [null] });
-    email.userInvalid = false;
-    await prepare();
-    email.userInvalid = true;
-    expect(recheck().fieldsChanged).toBe(true);
-    email.userInvalid = false;
-    frameField.userInvalid = true;
-    expect(await prepare()).toEqual({ masks: [null] });
-    frameField.userInvalid = false;
-
-    // The same checks run in every reachable document: an open picker or a select picker still closing in a frame,
-    // and a failed submit in an embedded <object> document.
-    frameField.pickerOpen = true;
-    expect(await prepare()).toEqual({ masks: [null] });
-    frameField.pickerOpen = false;
-    const frameSelect = new FakeSelectElement("select");
-    frameSelect.computed.picker = "block";
-    frame.contentDocument = frameDocument([frameField, frameSelect], null) as any;
-    expect(await prepare()).toEqual({ masks: [null] });
-    frame.contentDocument = frameDocument([frameField], null) as any;
-    const objectField = new FakeInputElement("input");
-    const object = Object.assign(element("object"), {
-      contentDocument: frameDocument([objectField], null) as any,
-    });
-    object.computed.opacity = "0";
-    elements.push(object);
-    expect(await prepare()).not.toEqual({ masks: [null] });
-    recheck();
-    objectField.userInvalid = true;
-    expect(await prepare()).toEqual({ masks: [null] });
-    objectField.userInvalid = false;
-
-    // Focus is followed into a same-origin frame; a frame whose document can't be read skips the read.
+    elements.push(frame);
     (document as any).activeElement = frame;
-    frameField.invalid = true;
-    frame.contentDocument = frameDocument([frameField], frameField) as any;
-    expect(await prepare()).toEqual({ masks: [null] });
-    frameField.invalid = false;
     expect(await prepare()).not.toEqual({ masks: [null] });
     recheck();
-    frame.contentDocument = null;
-    expect(await prepare()).toEqual({ masks: [null] });
-
-    // Focus on an embed whose document can't be read (a plugin such as a PDF viewer) skips the read too.
-    const embed = Object.assign(element("embed"), { contentDocument: null });
-    (document as any).activeElement = embed;
-    expect(await prepare()).toEqual({ masks: [null] });
   });
 
   it("reports any change between hiding the fields and the recheck", async () => {

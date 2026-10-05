@@ -18,7 +18,7 @@ import {
   readinessErrorCode,
 } from "../utils/readiness-poll";
 import { initNativeMessaging, postToNativeHost } from "../native/port-manager";
-import { planContactSheet, renderContactSheet, type VisionRect } from "./semantic-vision";
+import { planContactSheet, renderContactSheet, semanticVisionFramesClear, type VisionRect } from "./semantic-vision";
 
 debugLog("Service worker loaded");
 
@@ -607,12 +607,33 @@ type SemanticVision = {
 
 // The viewport capture stays in this function: only the contact sheet of masked crops leaves it. The content
 // script hides every field (PREPARE) right before the capture and restores them at the recheck.
+// Longest wait for a frame's answer to SEMANTIC_VISION_FRAME_SURFACES; a frame that misses it skips the read.
+const SEMANTIC_VISION_FRAME_TIMEOUT_MS = 500;
+
+// A picker or validation message opened in a frame, even a cross-origin one, can stay drawn over the page while only
+// that frame can see it, so every frame other than the main one (which PREPARE and RECHECK check) is asked about its
+// own document. True only when all of them answer that nothing is showing.
+async function semanticVisionFramesClearInTab(tabId: number): Promise<boolean> {
+  try {
+    const frames = await chrome.webNavigation.getAllFrames({ tabId });
+    if (!frames) return false;
+    return await semanticVisionFramesClear(
+      frames.filter((frame) => frame.frameId !== 0),
+      (frameId) => chrome.tabs.sendMessage(tabId, { type: "SEMANTIC_VISION_FRAME_SURFACES" }, { frameId }),
+      SEMANTIC_VISION_FRAME_TIMEOUT_MS,
+    );
+  } catch {
+    return false;
+  }
+}
+
 async function captureSemanticVision(
   tabId: number,
   frameId: number,
   targets: Array<{ ref: string; rect: VisionRect | null }>,
 ): Promise<SemanticVision> {
   if (frameId !== 0 || targets.length === 0) return { image: null, tiles: [], skipped: targets.length };
+  if (!(await semanticVisionFramesClearInTab(tabId))) return { image: null, tiles: [], skipped: targets.length };
   const prepared: { masks?: Array<VisionRect | null>; error?: string } = await chrome.tabs.sendMessage(tabId, {
     type: "SEMANTIC_VISION_PREPARE",
   }, { frameId: 0 });
@@ -626,15 +647,19 @@ async function captureSemanticVision(
     await chrome.tabs.sendMessage(tabId, { type: "SEMANTIC_VISION_RELEASE" }, { frameId: 0 }).catch(() => undefined);
     throw err;
   }
-  const recheck: {
+  const [recheck, framesClear]: [{
     viewport: { width: number; height: number };
     current: Record<string, VisionRect | null>;
     masks: Array<VisionRect | null>;
     fieldsChanged: boolean;
-  } = await chrome.tabs.sendMessage(tabId, {
-    type: "SEMANTIC_VISION_RECHECK",
-    refs: targets.map((target) => target.ref),
-  }, { frameId: 0 });
+  }, boolean] = await Promise.all([
+    chrome.tabs.sendMessage(tabId, {
+      type: "SEMANTIC_VISION_RECHECK",
+      refs: targets.map((target) => target.ref),
+    }, { frameId: 0 }),
+    semanticVisionFramesClearInTab(tabId),
+  ]);
+  if (!framesClear) return { image: null, tiles: [], skipped: targets.length };
   const bitmap = await createImageBitmap(base64ToBlob(capture.base64));
   try {
     // The capture includes any classic scrollbar, so scale against innerWidth rather than the CDP client width.

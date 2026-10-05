@@ -342,62 +342,65 @@ function semanticVisionTopLayerInFields(roots: Array<Document | ShadowRoot>, slo
 }
 
 // Native fields whose own browser-drawn surface, inside the page, shows their value where no style sheet reaches it:
-// - an open native picker (a select's, or a date, time or color input's: `:open`);
+// - an open native picker (a select's, or a date, time or color input's: `:open`), which stays drawn after focus
+//   leaves it, also over the parent page for a field in a frame;
 // - a validation message after a failed submit (`:user-invalid`, which every invalid field matches then, whatever has
 //   focus). Chrome draws it for the first invalid field even after the page moves focus away, and for a field in a
-//   same-origin frame or embedded document over the parent page, outside the hidden frame.
+//   frame over the parent page, outside the hidden frame.
+// The page checks its own document and shadow roots; every frame checks its own (semanticVisionFrameSurfacesShown).
 // A customizable select's picker also paints while closing with an exit transition, when `:open` no longer matches
 // but `::picker(select)` still renders; a closed one computes `none`. Other elements that match `:open`, such as an
 // open <details> inside an editor, draw nothing of their own outside the page's style.
 const SEMANTIC_VISION_NATIVE_SURFACE =
   "input:open, select:open, input:user-invalid, textarea:user-invalid, select:user-invalid";
 
-// Whether a native field in root (a document or shadow root) may be showing such a surface. Fails closed.
+// Whether a native field in root (this document or one of its shadow roots) may be showing such a surface. Fails
+// closed.
 function semanticVisionNativeSurfaceShown(root: Document | ShadowRoot): boolean {
   try {
     if (root.querySelector(SEMANTIC_VISION_NATIVE_SURFACE)) return true;
-    const view = ((root.ownerDocument ?? root) as Document).defaultView ?? window;
     return Array.from(root.querySelectorAll("select"))
-      .some((select) => view.getComputedStyle(select, "::picker(select)").display !== "none");
+      .some((select) => window.getComputedStyle(select, "::picker(select)").display !== "none");
   } catch {
     return true;
   }
 }
 
-const SEMANTIC_VISION_FRAME_LIKE = ["iframe", "frame", "object", "embed"];
-// The only elements that can host a shadow root, besides custom elements (whose names contain "-").
-const SEMANTIC_VISION_SHADOW_HOSTS = new Set(["article", "aside", "blockquote", "body", "div", "footer", "h1", "h2",
-  "h3", "h4", "h5", "h6", "header", "main", "nav", "p", "section", "span"]);
-
-// The document of a frame-like element (iframe, frame, or an object showing a document): null when it is not one, or
-// when its document can't be read (cross-origin, or a plugin such as a PDF viewer). An embed's document is never
-// exposed, so only focus inside an embed is caught (semanticVisionValidationShown).
-function semanticVisionFrameDocument(element: Element): Document | null {
-  if (!SEMANTIC_VISION_FRAME_LIKE.includes(element.tagName.toLowerCase())) return null;
-  return (element as { contentDocument?: Document | null }).contentDocument ?? null;
-}
-
 // After reportValidity(), Chrome draws the validation message of the field it focuses. Asking the fields
-// (checkValidity()) would fire events, so this is true when the focused element, followed through open and closed
-// shadow roots and into frame-like elements, is an invalid native field (including an untouched required one), or
-// when focus is in a frame-like element whose document can't be read.
+// (checkValidity()) would fire events, so this is true when this document's focused element, followed through open
+// and closed shadow roots, is an invalid native field (including an untouched required one). A field in a frame is
+// checked by that frame's own content script (semanticVisionFrameSurfacesShown).
 function semanticVisionValidationShown(): boolean {
   try {
     let focused: Element | null = document.activeElement;
     for (;;) {
-      let inner: Element | null | undefined;
-      if (focused && SEMANTIC_VISION_FRAME_LIKE.includes(focused.tagName.toLowerCase())) {
-        const frameDocument = semanticVisionFrameDocument(focused);
-        if (!frameDocument) return true;
-        inner = frameDocument.activeElement;
-      } else {
-        inner = focused && chrome.dom.openOrClosedShadowRoot(focused as HTMLElement)?.activeElement;
-      }
+      const inner: Element | null | undefined = focused &&
+        chrome.dom.openOrClosedShadowRoot(focused as HTMLElement)?.activeElement;
       if (!inner) break;
       focused = inner;
     }
     return !!focused && ["input", "textarea", "select"].includes(focused.tagName.toLowerCase()) &&
       focused.matches(":invalid");
+  } catch {
+    return true;
+  }
+}
+
+// Whether this frame's document or its open and closed shadow roots may be showing a native-field surface, or its
+// focused field a validation message. Every frame of the page answers this for a vision read
+// (SEMANTIC_VISION_FRAME_SURFACES): a picker or message opened in a frame, even a cross-origin one, stays drawn over
+// the page after focus leaves it, and only the frame itself can see it. Fails closed.
+function semanticVisionFrameSurfacesShown(): boolean {
+  try {
+    const roots: Array<Document | ShadowRoot> = [document];
+    for (const root of roots) {
+      if (semanticVisionNativeSurfaceShown(root)) return true;
+      for (const element of Array.from(root.querySelectorAll("*"))) {
+        const shadowRoot = element instanceof HTMLElement ? chrome.dom.openOrClosedShadowRoot(element) : null;
+        if (shadowRoot) roots.push(shadowRoot);
+      }
+    }
+    return semanticVisionValidationShown();
   } catch {
     return true;
   }
@@ -411,50 +414,43 @@ type SemanticVisionScan = {
   unsupported: boolean;
 };
 
-// One walk over every reachable document: the page, its open and closed shadow roots (which content scripts can read
-// through chrome.dom), and the documents of same-origin frame-like elements with their own shadow roots and frames.
-// Every document and shadow root is checked for native-field surfaces (semanticVisionNativeSurfaceShown). Fields are
-// collected to hide only in the page and its shadow roots, listed in `roots`; a frame-like element is hidden whole.
+// Fields in the page, including inside open and closed shadow roots, which content scripts can read through
+// chrome.dom; a frame is hidden whole, and checks its own document when asked (semanticVisionFrameSurfacesShown).
 // Shadow roots inside a field are listed in `fieldRoots`. The read is skipped (`unsupported`) for a shadow root that
 // cannot be read, for content made editable by CSS (`-webkit-user-modify`), which no selector can reach, for a native
-// field that may be showing its picker or validation message in any of these documents, and while the focused field
-// may be showing its validation message (semanticVisionValidationShown).
+// field in the page that may be showing its picker or validation message (semanticVisionNativeSurfaceShown), and
+// while the page's focused field may be showing its validation message (semanticVisionValidationShown).
 function scanSemanticVisionFields(): SemanticVisionScan {
   const scan = { fields: [] as Element[], roots: [] as ShadowRoot[], unsupported: false };
-  const visit = (root: Document | ShadowRoot, framed: boolean) => {
+  const visit = (root: Document | ShadowRoot) => {
     if (semanticVisionNativeSurfaceShown(root)) scan.unsupported = true;
     for (const element of Array.from(root.querySelectorAll("*"))) {
-      const tag = element.tagName.toLowerCase();
-      if (!framed && isSemanticVisionFieldElement(element)) {
+      if (isSemanticVisionFieldElement(element)) {
         // Editable content inside an editable parent is covered by its root's opacity.
         if (!(element.matches(":read-write") && element.parentElement?.matches(":read-write") === true)) {
           scan.fields.push(element);
         }
       }
-      const frameDocument = semanticVisionFrameDocument(element);
-      if (frameDocument) visit(frameDocument, true);
-      if (element.namespaceURI !== "http://www.w3.org/1999/xhtml") continue;
-      if (!framed && !element.matches(":read-write") &&
+      if (!(element instanceof HTMLElement)) continue;
+      if (!element.matches(":read-write") &&
         (window.getComputedStyle(element) as CSSStyleDeclaration & { webkitUserModify?: string })
           .webkitUserModify?.startsWith("read-write")) {
         scan.unsupported = true;
       }
-      // In frame documents, only elements that can host a shadow root are asked for one.
-      if (framed && !SEMANTIC_VISION_SHADOW_HOSTS.has(tag) && !tag.includes("-")) continue;
       let shadowRoot: ShadowRoot | null;
       try {
-        shadowRoot = chrome.dom.openOrClosedShadowRoot(element as HTMLElement);
+        shadowRoot = chrome.dom.openOrClosedShadowRoot(element);
       } catch {
         scan.unsupported = true;
         continue;
       }
       if (shadowRoot) {
-        if (!framed) scan.roots.push(shadowRoot);
-        visit(shadowRoot, framed);
+        scan.roots.push(shadowRoot);
+        visit(shadowRoot);
       }
     }
   };
-  visit(document, false);
+  visit(document);
   if (semanticVisionValidationShown()) scan.unsupported = true;
   const slots = semanticVisionSlots(scan.roots);
   return { ...scan, slots, fieldRoots: scan.roots.filter((root) => inSemanticVisionField(root.host, slots)) };
@@ -2227,6 +2223,10 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     case "SEMANTIC_VISION_RELEASE": {
       releaseSemanticVision();
       sendResponse({ released: true });
+      break;
+    }
+    case "SEMANTIC_VISION_FRAME_SURFACES": {
+      sendResponse({ shown: semanticVisionFrameSurfacesShown() });
       break;
     }
     case "GET_ELEMENT_COORDINATES": {

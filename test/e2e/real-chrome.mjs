@@ -600,8 +600,13 @@ try {
   if (!sameOriginFrame?.contentScriptReachable) {
     throw new Error(`content script PING did not reach the same-origin iframe: ${JSON.stringify(diagnosis.extensionFrames)}`);
   }
-  if (!diagnosis.warnings.some((line) => line.includes("srcdoc")) || !diagnosis.warnings.some((line) => line.includes("allow-scripts"))) {
+  if (!diagnosis.warnings.some((line) => line.includes("allow-scripts"))) {
     throw new Error(`frame.diagnose warnings missing: ${JSON.stringify(diagnosis.warnings)}`);
+  }
+  // The content script also runs in srcdoc and about:blank frames, so the srcdoc iframe is reachable.
+  const srcdocFrame = diagnosis.extensionFrames.find((frame) => frame.url === "about:srcdoc");
+  if (!srcdocFrame?.contentScriptReachable || diagnosis.warnings.some((line) => line.includes("about:srcdoc) has no reachable"))) {
+    throw new Error(`content script PING did not reach the srcdoc iframe: ${JSON.stringify(diagnosis)}`);
   }
   await runSurf("tab.close", "--id", String(framesTab.tabId), "--json");
 
