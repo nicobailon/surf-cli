@@ -258,8 +258,11 @@ describe("accessibility tree", () => {
       innerWidth: 1024,
       innerHeight: 768,
       location: { href: "https://example.test/page" },
-      getComputedStyle: (node?: FakeElement) => ({
-        display: node?.computed.display ?? "block",
+      getComputedStyle: (node?: FakeElement, pseudo?: string) => ({
+        display:
+          pseudo === "::picker(select)"
+            ? (node?.computed.picker ?? "none")
+            : (node?.computed.display ?? "block"),
         visibility: "visible",
         opacity: node?.computed.opacity ?? (node?.hiddenBySheet() ? "0" : "1"),
         webkitUserModify: node?.computed.webkitUserModify ?? "read-only",
@@ -1011,7 +1014,7 @@ describe("accessibility tree", () => {
     expect(await prepare()).toEqual({ masks: [null] });
   });
 
-  it("follows slots to fields in the flat tree, and skips the read while a select picker is open", async () => {
+  it("follows slots to fields in the flat tree, and skips the read while a select picker is open or closing", async () => {
     const { elements } = visionPage();
     const slotOf = (assigned: FakeElement[]) =>
       Object.assign(element("slot"), { assignedElements: () => assigned });
@@ -1095,10 +1098,18 @@ describe("accessibility tree", () => {
     expect(recheck().fieldsChanged).toBe(true);
     slotted.computed.display = "none";
 
-    // An open select picker is out of reach, so the read is skipped, at the recheck too.
+    // A select picker that is open, or closing (no longer `:open` but still rendered), is out of reach, so the read
+    // is skipped, at the recheck too.
     select.pickerOpen = true;
     expect(await prepare()).toEqual({ masks: [null] });
     select.pickerOpen = false;
+    select.computed.picker = "block";
+    expect(await prepare()).toEqual({ masks: [null] });
+    select.computed.picker = "none";
+    await prepare();
+    select.computed.picker = "block";
+    expect(recheck().fieldsChanged).toBe(true);
+    select.computed.picker = "none";
     await prepare();
     select.pickerOpen = true;
     expect(recheck().fieldsChanged).toBe(true);

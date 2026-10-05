@@ -347,11 +347,12 @@ function semanticVisionTopLayerInFields(roots: Array<Document | ShadowRoot>, slo
     Array.from(root.querySelectorAll(SEMANTIC_VISION_TOP_LAYER)).filter((element) => inSemanticVisionField(element, slots)));
 }
 
-// An open customizable select draws its picker in the top layer of the select's own shadow tree, which a content
-// script cannot reach, so it cannot be hidden or checked.
-function semanticVisionPickerOpen(select: Element): boolean {
+// A customizable select draws its picker in the top layer of the select's own shadow tree, which a content script
+// cannot reach, so it cannot be hidden or checked. The picker paints while open and while closing with an exit
+// transition, when `:open` no longer matches but `::picker(select)` still renders; a closed one computes `none`.
+function semanticVisionPickerShown(select: Element): boolean {
   try {
-    return select.matches(":open");
+    return select.matches(":open") || window.getComputedStyle(select, "::picker(select)").display !== "none";
   } catch {
     return true;
   }
@@ -368,13 +369,13 @@ type SemanticVisionScan = {
 // Fields in the page, including inside open and closed shadow roots, which content scripts can read through
 // chrome.dom. Shadow roots inside a field are listed in `fieldRoots`. The read is skipped (`unsupported`) for a
 // shadow root that cannot be read, for content made editable by CSS (`-webkit-user-modify`), which no selector can
-// reach, and for an open select picker.
+// reach, and for a select picker that is open or closing.
 function scanSemanticVisionFields(): SemanticVisionScan {
   const scan = { fields: [] as Element[], roots: [] as ShadowRoot[], unsupported: false };
   const collect = (root: Document | ShadowRoot) => {
     for (const element of Array.from(root.querySelectorAll("*"))) {
       if (isSemanticVisionMaskTarget(element)) scan.fields.push(element);
-      if (element.tagName.toLowerCase() === "select" && semanticVisionPickerOpen(element)) scan.unsupported = true;
+      if (element.tagName.toLowerCase() === "select" && semanticVisionPickerShown(element)) scan.unsupported = true;
       if (!(element instanceof HTMLElement)) continue;
       if (!element.matches(":read-write") && (window.getComputedStyle(element) as CSSStyleDeclaration & { webkitUserModify?: string })
         .webkitUserModify?.startsWith("read-write")) {

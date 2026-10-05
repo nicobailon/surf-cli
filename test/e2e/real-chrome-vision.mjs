@@ -281,6 +281,40 @@ option { color: #0f0 }</style>
       }),
     expect: "skipped",
   },
+  ...[
+    ["Escape", (tab) => tab.keyboard.press("Escape")],
+    ["picking an option", (tab) => tab.mouse.click(110, 110)],
+  ].map(([how, close]) => {
+    // A customizable select's picker over the button, closing with a display/overlay exit transition: no longer
+    // `:open`, but it still paints the options, so the read is skipped.
+    const openAndClose = async (tab) => {
+      await tab.click("#secret");
+      await tab.waitForFunction(() => document.querySelector("#secret").matches(":open"));
+      await close(tab);
+      await tab.waitForFunction(() => !document.querySelector("#secret").matches(":open"));
+    };
+    return {
+      name: `customizable select picker closing after ${how}`,
+      html: page(`<style>select, ::picker(select) { appearance: base-select }
+select { position:absolute;left:400px;top:300px;width:80px;height:24px;color:#0f0;font:16px/20px monospace }
+::picker(select) { position-area:none;position-try:none;position:fixed;inset:auto;left:100px;top:100px;margin:0;padding:0;border:0;width:60px;color:#0f0;background:white;font:16px/20px monospace;
+  transition: display 3s allow-discrete, overlay 3s allow-discrete }
+option { padding:0;margin:0;min-block-size:0;color:#0f0 } option::checkmark { display:none }</style>
+<select id="secret" aria-label="Account"><option>PRIVATE-1234</option><option>PRIVATE-5678</option></select>`),
+      populate: openAndClose,
+      clear: async (tab) => {
+        await tab.evaluate(async () => {
+          // A non-breaking space keeps each option's line box, so the pick lands on an option again.
+          for (const option of document.querySelectorAll("option")) option.textContent = String.fromCharCode(160);
+          // Let the previous exit transition finish before opening again.
+          await new Promise((resolve) => setTimeout(resolve, 3200));
+        });
+        await openAndClose(tab);
+      },
+      expect: "skipped",
+      restore: false,
+    };
+  }),
   {
     name: "shadow popover showing an editing host's text through a slot",
     html: page(`<div id="secret" contenteditable="true" style="position:absolute;left:400px;top:300px;width:60px;height:20px;color:#0f0;font:16px/20px monospace"></div>
