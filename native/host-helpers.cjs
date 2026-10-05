@@ -1029,6 +1029,7 @@ function mapToolToMessage(tool, args, tabId) {
           compact: a.compact || false,
           maxBytes,
           ...(a.semanticObservation === true ? { semanticObservation: true } : {}),
+          ...(a.semanticVision === true ? { semanticVision: true } : {}),
         },
         ...baseMsg
       };

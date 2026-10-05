@@ -163,6 +163,80 @@ describe("semantic CLI", () => {
     ]);
   });
 
+  const PNG_DATA = "iVBORw0KGgoAAAANSUhEUg==";
+  const vision = {
+    image: { mimeType: "image/png", data: PNG_DATA },
+    tiles: [{ ref: "e2", x: 8, y: 24, width: 64, height: 64 }],
+    skipped: 3,
+  };
+
+  it("accepts a well-formed vision contact sheet and passes observations without one unchanged", () => {
+    const plain = { pageContent: "", semanticObservation: observation };
+    expect(semantic.semanticObservationFrom(response(plain))).toEqual(observation);
+    expect(semantic.semanticObservationFrom(response(plain))).not.toHaveProperty("vision");
+
+    expect(
+      semantic.semanticObservationFrom(
+        response({ pageContent: "", semanticObservation: { ...observation, vision } }),
+      ).vision,
+    ).toEqual(vision);
+    const empty = { image: null, tiles: [], skipped: 0 };
+    expect(
+      semantic.semanticObservationFrom(
+        response({ pageContent: "", semanticObservation: { ...observation, vision: empty } }),
+      ).vision,
+    ).toEqual(empty);
+  });
+
+  it("rejects malformed vision contact sheets", () => {
+    const tile = vision.tiles[0];
+    const malformed = [
+      null,
+      "sheet",
+      { ...vision, skipped: -1 },
+      { ...vision, skipped: 1.5 },
+      { ...vision, extra: true },
+      { ...vision, tiles: "e2" },
+      { ...vision, image: { mimeType: "image/jpeg", data: "/9j/4AAQ" } },
+      { ...vision, image: { mimeType: "image/png", data: "R0lGODlh" } },
+      { ...vision, image: { mimeType: "image/png", data: `${PNG_DATA}!` } },
+      { ...vision, image: { mimeType: "image/png", data: 7 } },
+      { ...vision, image: null },
+      { ...vision, tiles: [] },
+      { ...vision, tiles: [{ ...tile, ref: "e99" }] },
+      { ...vision, tiles: [tile, tile] },
+      { ...vision, tiles: [{ ...tile, width: 0 }] },
+      { ...vision, tiles: [{ ...tile, x: -1 }] },
+      { ...vision, tiles: [{ ...tile, y: "24" }] },
+      { ...vision, tiles: [{ ...tile, rect: { x: 1 } }] },
+      {
+        ...vision,
+        tiles: Array.from({ length: 17 }, (_, index) => ({ ...tile, ref: `e${index + 1}` })),
+      },
+    ];
+    const many = linkCandidates(17);
+    for (const value of malformed) {
+      expect(() =>
+        semantic.semanticObservationFrom(
+          response({
+            pageContent: "",
+            semanticObservation: { ...observation, candidates: many, vision: value },
+          }),
+        ),
+      ).toThrow("browser returned an invalid semantic vision");
+    }
+  });
+
+  it("keeps vision images and tile rects out of provider state", () => {
+    const observed = semantic.semanticObservationFrom(
+      response({ pageContent: "", semanticObservation: { ...observation, vision } }),
+    );
+    const state = semantic.providerState(observed);
+    expect(state).toEqual(semantic.providerState(observation));
+    expect(JSON.stringify(state)).not.toContain(PNG_DATA);
+    expect(JSON.stringify(state)).not.toMatch(/vision|tiles|image|"width"/);
+  });
+
   it("normalizes grouped commands and parses repeatable authorization without exposing input values in identifiers", () => {
     expect(semantic.normalizeSemanticArgs(["semantic", "auth", "status"])).toEqual([
       "semantic.auth.status",

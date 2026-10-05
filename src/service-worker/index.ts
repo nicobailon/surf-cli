@@ -18,6 +18,7 @@ import {
   readinessErrorCode,
 } from "../utils/readiness-poll";
 import { initNativeMessaging, postToNativeHost } from "../native/port-manager";
+import { planContactSheet, renderContactSheet, type VisionRect } from "./semantic-vision";
 
 debugLog("Service worker loaded");
 
@@ -596,6 +597,50 @@ function base64ToBlob(base64: string, mimeType = "image/png"): Blob {
     bytes[i] = binary.charCodeAt(i);
   }
   return new Blob([bytes], { type: mimeType });
+}
+
+type SemanticVision = {
+  image: { mimeType: "image/png"; data: string } | null;
+  tiles: Array<{ ref: string } & VisionRect>;
+  skipped: number;
+};
+
+// The viewport capture stays in this function: only the contact sheet of masked crops leaves it.
+async function captureSemanticVision(
+  tabId: number,
+  frameId: number,
+  targets: Array<{ ref: string; rect: VisionRect | null }>,
+): Promise<SemanticVision> {
+  if (frameId !== 0 || targets.length === 0) return { image: null, tiles: [], skipped: targets.length };
+  const capture = await cdp.captureScreenshot(tabId);
+  const recheck: {
+    viewport: { width: number; height: number };
+    current: Record<string, VisionRect | null>;
+    masks: Array<VisionRect | null>;
+  } = await chrome.tabs.sendMessage(tabId, {
+    type: "SEMANTIC_VISION_RECHECK",
+    refs: targets.map((target) => target.ref),
+  }, { frameId: 0 });
+  const bitmap = await createImageBitmap(base64ToBlob(capture.base64));
+  try {
+    // The capture includes any classic scrollbar, so scale against innerWidth rather than the CDP client width.
+    const plan = planContactSheet({
+      targets,
+      current: recheck.current,
+      masks: recheck.masks,
+      scale: bitmap.width / recheck.viewport.width,
+      viewport: recheck.viewport,
+    });
+    if (plan.tiles.length === 0) return { image: null, tiles: [], skipped: plan.skipped };
+    const data = await blobToBase64(await renderContactSheet(bitmap, plan));
+    return {
+      image: { mimeType: "image/png", data },
+      tiles: plan.tiles.map(({ ref, sheet }) => ({ ref, ...sheet })),
+      skipped: plan.skipped,
+    };
+  } finally {
+    bitmap.close();
+  }
 }
 
 function codeWithExpressionReturn(code: string): string {
@@ -1395,16 +1440,24 @@ export async function handleMessage(
 
       let result;
       try {
-        result = await chrome.tabs.sendMessage(tabId, {
-          type: "GENERATE_ACCESSIBILITY_TREE",
-          options: message.options || {},
-        }, { frameId: readFrameId });
-      } catch (err) {
-        return {
-          error: "Content script not loaded. Try refreshing the page.",
-          pageContent: "",
-          viewport: { width: 0, height: 0 }
-        };
+        try {
+          result = await chrome.tabs.sendMessage(tabId, {
+            type: "GENERATE_ACCESSIBILITY_TREE",
+            options: message.options || {},
+          }, { frameId: readFrameId });
+        } catch (err) {
+          return {
+            error: "Content script not loaded. Try refreshing the page.",
+            pageContent: "",
+            viewport: { width: 0, height: 0 }
+          };
+        }
+        // Captured while the agent indicators are still hidden so they never appear in a crop.
+        if (result?.semanticVisionTargets) {
+          const { semanticVisionTargets, ...rest } = result;
+          result = rest;
+          result.semanticObservation.vision = await captureSemanticVision(tabId, readFrameId, semanticVisionTargets);
+        }
       } finally {
         try {
           await chrome.tabs.sendMessage(tabId, { type: "SHOW_AFTER_TOOL_USE" }, { frameId: 0 });

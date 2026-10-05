@@ -31,6 +31,7 @@ class FakeElement extends FakeNode {
   listeners = new Map<string, Array<() => void>>();
   isContentEditable = false;
   isConnected = true;
+  shadowRoot: { querySelectorAll(selector: string): FakeElement[] } | null = null;
   rect = { top: 0, bottom: 10, left: 0, right: 10 };
 
   private attrs = new Map<string, string>();
@@ -83,6 +84,19 @@ class FakeElement extends FakeNode {
 
   closest(): FakeElement | null {
     return null;
+  }
+
+  contains(other: FakeElement | null): boolean {
+    for (let node = other; node; node = node.parentElement) {
+      if (node === this) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  getRootNode(): unknown {
+    return document;
   }
 
   querySelector(): FakeElement | null {
@@ -720,6 +734,95 @@ describe("accessibility tree", () => {
     expect(
       new TextEncoder().encode(JSON.stringify(response.semanticObservation)).length,
     ).toBeLessThanOrEqual(24 * 1024);
+  });
+
+  const iconToolbar = () => {
+    const settings = element("button");
+    settings.rect = { top: 10, bottom: 34, left: 10, right: 34 };
+    const share = element("a", { href: "/share" });
+    share.rect = { top: 10, bottom: 34, left: 50, right: 74 };
+    const save = element("button");
+    save.append(text("Save"));
+    const search = new FakeInputElement("input");
+    const notes = new FakeTextAreaElement("textarea");
+    const editor = element("div", { tabindex: "0" });
+    editor.isContentEditable = true;
+    (document.body as unknown as FakeElement).append(settings, share, save, search, notes, editor);
+    const entries = { settings, share, save, search, notes, editor };
+    window.__piElementMap = Object.fromEntries(
+      Object.entries(entries).map(([ref, node]) => [
+        ref,
+        { element: new WeakRef(node as unknown as Element), role: "", name: "" },
+      ]),
+    );
+    return entries;
+  };
+
+  it("lists unnamed non-field candidates for vision without changing the observation", () => {
+    iconToolbar();
+    const plain = sendMessage({
+      type: "GENERATE_ACCESSIBILITY_TREE",
+      options: { semanticObservation: true },
+    });
+    const withVision = sendMessage({
+      type: "GENERATE_ACCESSIBILITY_TREE",
+      options: { semanticObservation: true, semanticVision: true },
+    });
+
+    expect(plain).not.toHaveProperty("semanticVisionTargets");
+    expect(withVision.semanticObservation).toEqual(plain.semanticObservation);
+    expect(withVision.semanticObservation).not.toHaveProperty("vision");
+    expect(JSON.stringify(withVision.semanticObservation)).not.toContain('"rect"');
+    expect(
+      withVision.semanticObservation.candidates
+        .filter((candidate: any) => candidate.name === "")
+        .map((candidate: any) => candidate.ref),
+    ).toEqual(["settings", "share", "search", "notes", "editor"]);
+    expect(withVision.semanticVisionTargets).toEqual([
+      { ref: "settings", rect: { x: 10, y: 10, width: 24, height: 24 } },
+      { ref: "share", rect: { x: 50, y: 10, width: 24, height: 24 } },
+    ]);
+  });
+
+  it("rechecks vision targets after capture and reports field masks", () => {
+    const { settings, search, notes } = iconToolbar();
+    const glyph = element("svg");
+    settings.append(glyph);
+    const banner = element("div");
+    (document as any).elementFromPoint = (x: number) => (x < 40 ? glyph : banner);
+    const shadowField = new FakeInputElement("input");
+    shadowField.rect = { top: 100, bottom: 120, left: 0, right: 200 };
+    const host = element("custom-widget");
+    host.shadowRoot = {
+      querySelectorAll: (selector: string) => (selector === "*" ? [] : [shadowField]),
+    };
+    search.rect = { top: 20, bottom: 40, left: 30, right: 230 };
+    notes.rect = { top: 2000, bottom: 2100, left: 0, right: 200 };
+    (document as any).querySelectorAll = (selector: string) =>
+      selector === "*" ? [host] : [search, notes];
+
+    const response = sendMessage({
+      type: "SEMANTIC_VISION_RECHECK",
+      refs: ["settings", "share", "missing"],
+    });
+
+    expect(response).toEqual({
+      viewport: { width: 1024, height: 768 },
+      current: {
+        settings: { x: 10, y: 10, width: 24, height: 24 },
+        share: null,
+        missing: null,
+      },
+      masks: [
+        { x: 30, y: 20, width: 200, height: 20 },
+        { x: 0, y: 100, width: 200, height: 20 },
+      ],
+    });
+
+    search.rect = { top: Number.NaN, bottom: 40, left: 30, right: 230 };
+    expect(
+      sendMessage({ type: "SEMANTIC_VISION_RECHECK", refs: ["settings"] }).masks,
+    ).toContainEqual(null);
   });
 
   it("associates value-free checked and selected state with semantic refs and evidence", () => {

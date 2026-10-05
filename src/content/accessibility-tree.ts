@@ -246,6 +246,69 @@ function buildSemanticObservation() {
   return observation;
 }
 
+type SemanticVisionRect = { x: number; y: number; width: number; height: number };
+
+const SEMANTIC_VISION_VALUE_ROLES = ["textbox", "searchbox", "combobox", "spinbutton"];
+// Iframes, embeds and objects are masked whole: fields inside them cannot be measured from here.
+const SEMANTIC_VISION_MASK_SELECTOR = [
+  "input", "textarea", "select", '[contenteditable]:not([contenteditable="false"])',
+  ...SEMANTIC_VISION_VALUE_ROLES.map((role) => `[role="${role}"]`),
+  "iframe", "frame", "embed", "object",
+].join(", ");
+
+function isSemanticVisionField(element: Element): boolean {
+  return ["input", "textarea", "select"].includes(element.tagName.toLowerCase()) ||
+    (element as HTMLElement).isContentEditable === true ||
+    SEMANTIC_VISION_VALUE_ROLES.includes(getResolvedRole(element));
+}
+
+function semanticVisionRect(element: Element): SemanticVisionRect | null {
+  const rect = element.getBoundingClientRect();
+  const measured = { x: rect.left, y: rect.top, width: rect.right - rect.left, height: rect.bottom - rect.top };
+  return Object.values(measured).every(Number.isFinite) ? measured : null;
+}
+
+// Unnamed, non-field candidates of the observation, with their viewport rects. Kept out of the observation itself.
+function semanticVisionTargets(observation: ReturnType<typeof buildSemanticObservation>) {
+  return observation.candidates.flatMap((candidate) => {
+    const element = getElementMap()[candidate.ref]?.element.deref();
+    if (candidate.name !== "" || !element || isSemanticVisionField(element)) return [];
+    return [{ ref: candidate.ref, rect: semanticVisionRect(element) }];
+  });
+}
+
+// Current rect of each ref, or null when it is gone, hidden, or something else is drawn over its center.
+function semanticVisionCurrentRect(ref: string): SemanticVisionRect | null {
+  const element = getElementMap()[ref]?.element.deref();
+  if (!element || element.isConnected === false || !isVisibleSemanticElement(element)) return null;
+  const rect = semanticVisionRect(element);
+  if (!rect) return null;
+  const root = element.getRootNode() as Document | ShadowRoot;
+  const hit = root.elementFromPoint(rect.x + rect.width / 2, rect.y + rect.height / 2);
+  return hit && (hit === element || element.contains(hit)) ? rect : null;
+}
+
+// Rects of every field in the viewport, including open shadow roots; null when one cannot be measured.
+function semanticVisionMasks(): Array<SemanticVisionRect | null> {
+  const masks: Array<SemanticVisionRect | null> = [];
+  const visit = (root: Document | ShadowRoot): void => {
+    for (const field of Array.from(root.querySelectorAll(SEMANTIC_VISION_MASK_SELECTOR))) {
+      const rect = semanticVisionRect(field);
+      if (!rect) {
+        masks.push(null);
+      } else if (rect.width > 0 && rect.height > 0 && rect.x < window.innerWidth && rect.y < window.innerHeight &&
+        rect.x + rect.width > 0 && rect.y + rect.height > 0) {
+        masks.push(rect);
+      }
+    }
+    for (const host of Array.from(root.querySelectorAll("*"))) {
+      if (host.shadowRoot) visit(host.shadowRoot);
+    }
+  };
+  visit(document);
+  return masks;
+}
+
 function semanticGuardError(element: Element | undefined, expected: any, requireElement = true): string | null {
   if (!expected || typeof expected !== "object") return null;
   if (window.location.href !== expected.fullUrl || semanticDocumentToken !== expected.documentToken) return "stale_observation";
@@ -1867,10 +1930,23 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           options.includeHidden === true
         );
         if (options.semanticObservation === true && !result.error) {
-          (result as typeof result & { semanticObservation: ReturnType<typeof buildSemanticObservation> }).semanticObservation = buildSemanticObservation();
+          const observation = buildSemanticObservation();
+          (result as typeof result & { semanticObservation: typeof observation }).semanticObservation = observation;
+          if (options.semanticVision === true) {
+            (result as typeof result & { semanticVisionTargets: ReturnType<typeof semanticVisionTargets> })
+              .semanticVisionTargets = semanticVisionTargets(observation);
+          }
         }
         sendResponse(result);
       }
+      break;
+    }
+    case "SEMANTIC_VISION_RECHECK": {
+      sendResponse({
+        viewport: { width: window.innerWidth, height: window.innerHeight },
+        current: Object.fromEntries((message.refs as string[]).map((ref) => [ref, semanticVisionCurrentRect(ref)])),
+        masks: semanticVisionMasks(),
+      });
       break;
     }
     case "GET_ELEMENT_COORDINATES": {

@@ -301,6 +301,38 @@ function semanticStateEvidence(candidate) {
   return `${candidate.role || "control"}${name} ${markers.join(" ")}`.slice(0, 240);
 }
 
+const SEMANTIC_VISION_MAX_TILES = 16;
+
+function hasExactKeys(value, keys) {
+  return value !== null && typeof value === "object" && !Array.isArray(value) &&
+    Object.keys(value).sort().join() === [...keys].sort().join();
+}
+
+function validSemanticVision(vision, candidates) {
+  if (!hasExactKeys(vision, ["image", "tiles", "skipped"])) return false;
+  if (!Number.isInteger(vision.skipped) || vision.skipped < 0) return false;
+  if (!Array.isArray(vision.tiles) || vision.tiles.length > SEMANTIC_VISION_MAX_TILES) return false;
+  if (vision.image === null) return vision.tiles.length === 0;
+  if (
+    !hasExactKeys(vision.image, ["mimeType", "data"]) ||
+    vision.image.mimeType !== "image/png" ||
+    typeof vision.image.data !== "string" ||
+    !vision.image.data.startsWith("iVBORw0KGgo") ||
+    !/^[A-Za-z0-9+/]+={0,2}$/.test(vision.image.data) ||
+    vision.tiles.length === 0
+  ) return false;
+  const refs = new Set(candidates.map((candidate) => candidate.ref));
+  const tiled = new Set();
+  return vision.tiles.every((tile) => {
+    const valid = hasExactKeys(tile, ["ref", "x", "y", "width", "height"]) &&
+      refs.has(tile.ref) && !tiled.has(tile.ref) &&
+      [tile.x, tile.y].every((value) => Number.isInteger(value) && value >= 0) &&
+      [tile.width, tile.height].every((value) => Number.isInteger(value) && value > 0);
+    tiled.add(tile.ref);
+    return valid;
+  });
+}
+
 function semanticObservationFrom(response) {
   const text = unwrapResponse(response);
   let envelope;
@@ -317,6 +349,9 @@ function semanticObservationFrom(response) {
     !Array.isArray(observation.chunks)
   ) {
     throw new Error("browser returned an invalid semantic observation");
+  }
+  if (observation.vision !== undefined && !validSemanticVision(observation.vision, observation.candidates)) {
+    throw new Error("browser returned an invalid semantic vision");
   }
   const pageStates = semanticStatesFromPageContent(envelope.pageContent);
   const addedState = [];
