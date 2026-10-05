@@ -313,7 +313,7 @@ async function chooseAction({ state, goal, actions, origin, allowWrite = false, 
   actionCriteria.stop = "The goal is already satisfied, or no supplied action can safely make progress";
   const writeActions = eligible.filter((item) => item.kind === "click" || item.kind === "fill");
   const writing = writeActions.length > 0;
-  const exactRefWrite = writing && allowRefs.length === 1 && writeActions.length === 1 && writeActions[0].ref === allowRefs[0];
+  const exactRefWrite = allowRefs.length === 1 && writeActions.length === 1 && writeActions[0].ref === allowRefs[0];
   const findThreshold = modelThreshold(model, thresholds, "find");
   const writeThreshold = writing ? modelThreshold(model, thresholds, exactRefWrite ? "exactRefWrite" : "write") : null;
   const prerequisiteSupported = modelThreshold(model, thresholds, "prerequisiteSupported");

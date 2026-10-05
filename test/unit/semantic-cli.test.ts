@@ -2395,6 +2395,26 @@ describe("semantic CLI model selection", () => {
     },
   );
 
+  it("attaches an empty run summary when the browser connection fails", async () => {
+    const openTransport = vi.fn(async () => {
+      throw Object.assign(new Error("connect ENOENT"), { code: "ENOENT" });
+    });
+    await expect(
+      handleSemanticCli(["semantic.find", "goal", "--model", "clef-flash"], {
+        env: cloudflare,
+        openTransport,
+      }),
+    ).rejects.toMatchObject({
+      code: "ENOENT",
+      runSummary: {
+        provider: "cloudflare",
+        model: "clef-flash",
+        providerCalls: 0,
+        providerLatencyMs: 0,
+      },
+    });
+  });
+
   it("fails before browser or provider I/O for unknown models and missing credentials", async () => {
     const fs = require("node:fs");
     const os = require("node:os");

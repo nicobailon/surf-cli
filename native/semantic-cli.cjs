@@ -741,7 +741,6 @@ async function handleSemanticCli(argv, { endpoint, env = process.env, input = pr
   }
   const model = options.model ?? resolveModel(env);
   const evaluator = createSemanticEvaluator({ model, env });
-  const transport = await openTransport(endpoint, { requestTimeoutMs: SEMANTIC_POLICY.limits.maxWallMs });
   let id = 0;
   const environmentSession = !options.session && !options.tabId && typeof env.SURF_SESSION === "string" && env.SURF_SESSION.trim() ? env.SURF_SESSION.trim() : undefined;
   const target = {
@@ -750,7 +749,9 @@ async function handleSemanticCli(argv, { endpoint, env = process.env, input = pr
     ...(options.tabId ? { tabId: options.tabId } : {}),
     ...(options.noWait ? { admission: { wait: false } } : {}),
   };
+  let transport;
   try {
+    transport = await openTransport(endpoint, { requestTimeoutMs: SEMANTIC_POLICY.limits.maxWallMs });
     const request = (tool, args, timeoutMs = SEMANTIC_POLICY.limits.maxWallMs, designatedIdentity) => transport.request({
       type: "tool_request",
       method: "execute_tool",
@@ -763,9 +764,9 @@ async function handleSemanticCli(argv, { endpoint, env = process.env, input = pr
     const value = await runBrowserSemantic({ ...options, model }, { request, evaluate: evaluator.evaluate });
     return { handled: true, value: { ...value, ...evaluator.summary() }, json: options.json };
   } catch (error) {
-    if (error && typeof error === "object") error.runSummary = evaluator.summary();
+    error.runSummary = evaluator.summary();
     throw error;
-  } finally { await transport.close(); }
+  } finally { await transport?.close(); }
 }
 
 const CLEARED_TEXT = Object.freeze({
