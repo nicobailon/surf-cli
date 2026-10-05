@@ -348,6 +348,39 @@ option { padding:0;margin:0;min-block-size:0;color:#0f0 } option::checkmark { di
     expect: "tile",
     anyDifference: true,
   },
+  ...[
+    ["a submit click", (tab) => tab.click("#submit")],
+    ["reportValidity()", (tab) => tab.evaluate(() => document.querySelector("form").reportValidity())],
+  ].map(([how, validate]) => ({
+    // Chrome draws the validation message for the focused invalid field inside the page, over the button, and it
+    // quotes the value ("'john.smith.private' is missing an '@'"): the read is skipped while that field is focused.
+    name: `email validation message after ${how}`,
+    html: page(`<form><input id="secret" type="email" aria-label="Email" style="position:absolute;left:100px;top:60px;width:300px;height:28px">
+<button id="submit" type="submit" style="position:absolute;left:600px;top:400px">Sign up</button></form>`),
+    populate: async (tab) => {
+      await type("john.smith.private", { blur: false })(tab);
+      await validate(tab);
+      await new Promise((resolve) => setTimeout(resolve, 300));
+    },
+    clear: async (tab) => {
+      // An empty email field is valid: blur it so its message goes away before the empty read.
+      await tab.evaluate(() => {
+        const secret = document.querySelector("#secret");
+        secret.value = "";
+        secret.blur();
+      });
+      await new Promise((resolve) => setTimeout(resolve, 300));
+    },
+    expect: "skipped",
+    anyDifference: true,
+  })),
+  {
+    // An open <details> inside an editor is hidden with the editor and draws no browser surface: tiles are kept.
+    name: "open details inside a contenteditable",
+    html: page(`<div id="secret" contenteditable="true" style="${FIELD_AT}"><details open><summary>PRIVATE</summary>PRIVATE-1234</details></div>`),
+    clear: clearSecret,
+    expect: "tile",
+  },
   {
     name: "shadow popover showing an editing host's text through a slot",
     html: page(`<div id="secret" contenteditable="true" style="position:absolute;left:400px;top:300px;width:60px;height:20px;color:#0f0;font:16px/20px monospace"></div>

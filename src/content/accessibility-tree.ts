@@ -341,14 +341,37 @@ function semanticVisionTopLayerInFields(roots: Array<Document | ShadowRoot>, slo
     Array.from(root.querySelectorAll(SEMANTIC_VISION_TOP_LAYER)).filter((element) => inSemanticVisionField(element, slots)));
 }
 
-// A field's native picker (a select's, or a date, time or color input's) is drawn by the browser inside the page,
-// where a content script cannot reach it, so it cannot be hidden or checked: it shows the field's value while the
-// field matches `:open`. A customizable select's picker also paints while closing with an exit transition, when
-// `:open` no longer matches but `::picker(select)` still renders; a closed one computes `none`.
+// A native picker (a select's, or a date, time or color input's) is drawn by the browser inside the page, where a
+// content script cannot reach it, so it cannot be hidden or checked: it shows the field's value while the input or
+// select matches `:open`. A customizable select's picker also paints while closing with an exit transition, when
+// `:open` no longer matches but `::picker(select)` still renders; a closed one computes `none`. Other elements that
+// match `:open`, such as an open <details> inside an editor, draw nothing of their own outside the page's style.
 function semanticVisionPickerShown(field: Element): boolean {
+  const tag = field.tagName.toLowerCase();
+  if (tag !== "input" && tag !== "select") return false;
   try {
     return field.matches(":open") ||
-      (field.tagName.toLowerCase() === "select" && window.getComputedStyle(field, "::picker(select)").display !== "none");
+      (tag === "select" && window.getComputedStyle(field, "::picker(select)").display !== "none");
+  } catch {
+    return true;
+  }
+}
+
+// Chrome also draws a field's validation message inside the page after a failed submit or reportValidity(), quoting
+// its value, for the field it focuses. Asking the field (checkValidity()) would fire events, so this is true whenever
+// the focused element, followed through open and closed shadow roots, is an invalid native field, including an
+// untouched required one.
+function semanticVisionValidationShown(): boolean {
+  try {
+    let focused: Element | null = document.activeElement;
+    for (;;) {
+      const inner: Element | null | undefined = focused &&
+        chrome.dom.openOrClosedShadowRoot(focused as HTMLElement)?.activeElement;
+      if (!inner) break;
+      focused = inner;
+    }
+    return !!focused && ["input", "textarea", "select"].includes(focused.tagName.toLowerCase()) &&
+      focused.matches(":invalid");
   } catch {
     return true;
   }
@@ -365,7 +388,8 @@ type SemanticVisionScan = {
 // Fields in the page, including inside open and closed shadow roots, which content scripts can read through
 // chrome.dom. Shadow roots inside a field are listed in `fieldRoots`. The read is skipped (`unsupported`) for a
 // shadow root that cannot be read, for content made editable by CSS (`-webkit-user-modify`), which no selector can
-// reach, and for a field whose native picker is open, or a select picker that is closing.
+// reach, for an input or select whose native picker is open or a select picker that is closing, and while the
+// browser may be showing a validation message for the focused field.
 function scanSemanticVisionFields(): SemanticVisionScan {
   const scan = { fields: [] as Element[], roots: [] as ShadowRoot[], unsupported: false };
   const collect = (root: Document | ShadowRoot) => {
@@ -396,6 +420,7 @@ function scanSemanticVisionFields(): SemanticVisionScan {
     }
   };
   collect(document);
+  if (semanticVisionValidationShown()) scan.unsupported = true;
   const slots = semanticVisionSlots(scan.roots);
   return { ...scan, slots, fieldRoots: scan.roots.filter((root) => inSemanticVisionField(root.host, slots)) };
 }

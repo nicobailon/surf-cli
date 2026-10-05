@@ -1642,10 +1642,11 @@ content slotted into them) are made to paint nothing for the screenshot, checked
 blink invisible for that moment.
 surf sends no crops for a read when it can't prove that: the page forces a field visible, an editable
 element uses display:contents, content is editable through -webkit-user-modify, a field's native
-picker that Chrome draws in the page is open (select, date, time, month, week, color), a customizable
-select's picker is closing, designMode is on, a view transition is running, a shadow root is
-unreadable, anything in the DOM changed meanwhile, or the screenshot took over 2 s. Popups the browser
-draws outside the page frame are not in the screenshot.
+picker that Chrome draws in the page is open (select, date, datetime-local, time, month, week, color),
+a customizable select's picker is closing, the focused field is invalid (Chrome may be showing its
+validation message, which can quote the value), designMode is on, a view transition is running, a
+shadow root is unreadable, anything in the DOM changed meanwhile, or the screenshot took over 2 s.
+Popups the browser draws outside the page frame are not in the screenshot.
 
 Every click/fill requires --allow-write. This broadly authorizes even high-impact controls;
 repeat --allow-ref <ref> to narrow authorization to exact observed refs.

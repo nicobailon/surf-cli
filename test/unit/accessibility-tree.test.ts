@@ -35,6 +35,7 @@ class FakeElement extends FakeNode {
   shadowParent: FakeShadowRoot | null = null;
   popoverOpen = false;
   pickerOpen = false;
+  invalid = false;
 
   get parentNode(): FakeElement | FakeShadowRoot | null {
     return this.parentElement ?? this.shadowParent;
@@ -125,6 +126,9 @@ class FakeElement extends FakeNode {
       if (part === ":open") {
         return this.pickerOpen;
       }
+      if (part === ":invalid") {
+        return this.invalid;
+      }
       return part === this.tagName.toLowerCase();
     });
   }
@@ -168,6 +172,7 @@ class FakeElement extends FakeNode {
 
 class FakeShadowRoot {
   adoptedStyleSheets: Array<{ text: string }> = [];
+  activeElement: FakeElement | null = null;
 
   constructor(
     public host: FakeElement,
@@ -1014,7 +1019,7 @@ describe("accessibility tree", () => {
     expect(await prepare()).toEqual({ masks: [null] });
   });
 
-  it("follows slots to fields in the flat tree, and skips the read while a native picker is open or a select picker is closing", async () => {
+  it("follows slots to fields in the flat tree, and skips the read while a native picker or validation message may show", async () => {
     const { elements } = visionPage();
     const slotOf = (assigned: FakeElement[]) =>
       Object.assign(element("slot"), { assignedElements: () => assigned });
@@ -1120,12 +1125,32 @@ describe("accessibility tree", () => {
     const dateInput = new FakeInputElement("input");
     dateInput.computed.opacity = "0";
     const details = element("details");
+    // An open <details> inside an editor matches `:open` and `:read-write`, but is no input or select.
+    details.isContentEditable = true;
+    details.computed.opacity = "0";
     details.pickerOpen = true;
     elements.push(dateInput, details);
     expect(await prepare()).not.toEqual({ masks: [null] });
     recheck();
     dateInput.pickerOpen = true;
     expect(await prepare()).toEqual({ masks: [null] });
+    dateInput.pickerOpen = false;
+
+    // Chrome may be showing a validation message for the focused field, found through shadow roots, when it is an
+    // invalid native field; the read is skipped, at the recheck too. Focus elsewhere does not skip.
+    const email = new FakeInputElement("input");
+    email.computed.opacity = "0";
+    email.invalid = true;
+    (document as any).activeElement = comboboxHost;
+    comboboxRoot.activeElement = email;
+    expect(await prepare()).toEqual({ masks: [null] });
+    email.invalid = false;
+    await prepare();
+    email.invalid = true;
+    expect(recheck().fieldsChanged).toBe(true);
+    comboboxRoot.activeElement = null;
+    expect(await prepare()).not.toEqual({ masks: [null] });
+    recheck();
   });
 
   it("reports any change between hiding the fields and the recheck", async () => {
