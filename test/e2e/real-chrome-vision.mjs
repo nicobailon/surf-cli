@@ -26,6 +26,18 @@ const pages = {
   "/animated": page(
     `<style>@keyframes drift{from{transform:translateX(0)}to{transform:translateX(1px)}}</style><div style="animation:drift 1s infinite alternate">${INPUT()}</div>`,
   ),
+  "/multiline": page(
+    `<div id="editor" contenteditable="true" style="position:absolute;left:100px;top:60px;width:60px;height:40px;color:#0f0;font:16px/20px monospace;z-index:1"></div>`,
+  ),
+  "/nowrap": page(
+    `<div id="editor" contenteditable="true" style="position:absolute;left:20px;top:100px;width:60px;height:40px;white-space:nowrap;color:#0f0;font:16px/20px monospace;z-index:1"></div>`,
+  ),
+  "/text-shadow": page(
+    `<div id="editor" contenteditable="true" style="position:absolute;left:100px;top:20px;width:120px;height:20px;color:#0f0;text-shadow:0 85px 0 #0f0;font:16px/20px monospace;z-index:1"></div>`,
+  ),
+  "/display-contents": page(
+    `<div contenteditable="true" style="display:contents"><div id="editor" style="position:absolute;left:100px;top:100px;width:60px;height:40px;background:#0f0;color:#0f0;font:16px monospace;z-index:1"></div></div>`,
+  ),
 };
 const TARGET = { x: 100, y: 100, width: 140, height: 40 };
 const FIELD = { x: 100, y: 100 };
@@ -34,6 +46,49 @@ const FIELD = { x: 100, y: 100 };
 const scenarios = [
   { name: "clean page keeps its tile", path: "/clean", clean: true },
   { name: "closed shadow root", path: "/closed-root", masked: true },
+  // Typed text painted outside the editor's border box on a static page.
+  {
+    name: "multi-line editor typed past its height",
+    path: "/multiline",
+    type: async (tab) => {
+      await tab.focus("#editor");
+      await tab.keyboard.type("note");
+      await tab.keyboard.press("Enter");
+      await tab.keyboard.type("note");
+      await tab.keyboard.press("Enter");
+      await tab.keyboard.type("PRIVATE-1234");
+      await tab.evaluate(() => document.activeElement.blur());
+    },
+  },
+  {
+    name: "single-line editor typed past its width",
+    path: "/nowrap",
+    type: async (tab) => {
+      await tab.focus("#editor");
+      await tab.keyboard.type("PRIVATE-1234");
+      await tab.evaluate(() => document.activeElement.blur());
+    },
+  },
+  {
+    // A text shadow paints a copy of the typed text far from the editor, so its extent cannot be bounded.
+    name: "editor whose text shadow lands on the button",
+    path: "/text-shadow",
+    skipped: true,
+    type: async (tab) => {
+      await tab.focus("#editor");
+      await tab.keyboard.type("PRIVATE");
+      await tab.evaluate(() => document.activeElement.blur());
+    },
+  },
+  {
+    name: "display:contents editable wrapper",
+    path: "/display-contents",
+    type: async (tab) => {
+      await tab.mouse.click(130, 120);
+      await tab.keyboard.type("PRIVATE");
+      await tab.evaluate(() => document.activeElement.blur());
+    },
+  },
   // A running animation can move a field without any DOM mutation, so the read sends nothing.
   { name: "animated field container", path: "/animated", skipped: true },
   { name: "field removed after the screenshot", path: "/removed-field", after: () => document.querySelector("#secret").remove() },
@@ -137,7 +192,29 @@ try {
         Math.floor(tile.x + (x * dpr - cropX) * factor),
         Math.floor(tile.y + (y * dpr - cropY) * factor),
       );
-    return { field: await at(FIELD.x + 3, FIELD.y + 3), button: await at(TARGET.x + TARGET.width - 5, TARGET.y + 5) };
+    return {
+      field: await at(FIELD.x + 3, FIELD.y + 3),
+      button: await at(TARGET.x + TARGET.width - 5, TARGET.y + 5),
+      // Field content is green in every fixture; none of it may survive anywhere in the tile.
+      green: await decoder.evaluate(
+        async (data, tile) => {
+          const image = new Image();
+          image.src = `data:image/png;base64,${data}`;
+          await image.decode();
+          const canvas = new OffscreenCanvas(image.width, image.height);
+          const context = canvas.getContext("2d");
+          context.drawImage(image, 0, 0);
+          const { data: rgba } = context.getImageData(tile.x, tile.y, tile.width, tile.height);
+          let count = 0;
+          for (let index = 0; index < rgba.length; index += 4) {
+            if (rgba[index + 1] > 160 && rgba[index] < 120 && rgba[index + 2] < 120) count++;
+          }
+          return count;
+        },
+        observation.vision.image.data,
+        tile,
+      ),
+    };
   };
   const black = ([r, g, b]) => r <= 16 && g <= 16 && b <= 16;
   const white = ([r, g, b]) => r >= 240 && g >= 240 && b >= 240;
@@ -146,6 +223,7 @@ try {
   for (const scenario of scenarios) {
     const tab = await harness.openTab(scenario.path);
     const dpr = await tab.page.evaluate(() => devicePixelRatio);
+    if (scenario.type) await scenario.type(tab.page);
     const reading = harness.readPage(tab.tabId, { semanticObservation: true, semanticVision: true });
     await waitFor(() => atGate("pre"), `${scenario.name}: pre-capture measurement`);
     if (scenario.before) {
@@ -166,7 +244,7 @@ try {
     if (scenario.masked && !(pixels && black(pixels.field) && white(pixels.button))) {
       failures.push(`${scenario.name}: expected a tile with the field blacked out`);
     }
-    if (!scenario.clean && pixels && !black(pixels.field)) {
+    if (!scenario.clean && pixels && (!black(pixels.field) || pixels.green > 0)) {
       failures.push(`${scenario.name}: field pixels reached the sheet`);
     }
   }

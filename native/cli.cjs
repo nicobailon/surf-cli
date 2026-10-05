@@ -1635,9 +1635,10 @@ Choose with --model <id> or SURF_SEMANTIC_MODEL. Results report provider, model,
 
 --vision (find and act, clef or clef-flash only) also sends one image of small crops of visible
 controls that have no name, such as icon-only buttons. A crop can include whatever is drawn in that
-spot; form fields, iframes and embeds are blacked out. If anything in the page's DOM changed between
-the field measurements before and after the screenshot, or a field is animating, surf sends no crops
-for that read.
+spot; form fields, editable content, iframes and embeds are blacked out, including any text that
+overflows them. If a field uses an effect that can paint its content elsewhere (text-shadow, filter,
+box-reflect), or anything in the page's DOM changed between the field measurements before and after
+the screenshot, or a field is animating, surf sends no crops for that read.
 
 Every click/fill requires --allow-write. This broadly authorizes even high-impact controls;
 repeat --allow-ref <ref> to narrow authorization to exact observed refs.

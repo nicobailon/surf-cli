@@ -33,6 +33,8 @@ class FakeElement extends FakeNode {
   isConnected = true;
   shadowRoot: { querySelectorAll(selector: string): FakeElement[] } | null = null;
   rect = { top: 0, bottom: 10, left: 0, right: 10 };
+  textRects: Array<{ top: number; bottom: number; left: number; right: number }> = [];
+  computed: Record<string, string> = {};
 
   private attrs = new Map<string, string>();
 
@@ -133,6 +135,10 @@ class FakeElement extends FakeNode {
   getBoundingClientRect(): { top: number; bottom: number; left: number; right: number } {
     return this.rect;
   }
+
+  getClientRects(): Array<{ top: number; bottom: number; left: number; right: number }> {
+    return [this.rect];
+  }
 }
 
 class FakeButtonElement extends FakeElement {}
@@ -202,11 +208,14 @@ describe("accessibility tree", () => {
       innerWidth: 1024,
       innerHeight: 768,
       location: { href: "https://example.test/page" },
-      getComputedStyle: () => ({
+      getComputedStyle: (node?: FakeElement) => ({
         display: "block",
         visibility: "visible",
         opacity: "1",
         cursor: "default",
+        textShadow: node?.computed.textShadow,
+        filter: node?.computed.filter,
+        getPropertyValue: (name: string) => node?.computed[name] ?? "",
       }),
       __piVisualIndicatorMessageHandler: visualIndicatorHandler,
       get top() {
@@ -221,6 +230,15 @@ describe("accessibility tree", () => {
       querySelector: () => null,
       querySelectorAll: () => [],
       getAnimations: () => [],
+      createRange: () => {
+        let contents: FakeElement | undefined;
+        return {
+          selectNodeContents: (node: FakeElement) => {
+            contents = node;
+          },
+          getClientRects: () => contents?.textRects ?? [],
+        };
+      },
     };
 
     (globalThis as any).chrome = {
@@ -812,7 +830,7 @@ describe("accessibility tree", () => {
     closedField.rect = { top: 100, bottom: 120, left: 0, right: 200 };
     const host = element("custom-widget");
     const closedRoot = {
-      querySelectorAll: (selector: string) => (selector === "*" ? [] : [closedField]),
+      querySelectorAll: (selector: string) => (selector === "*" ? [closedField] : []),
       getAnimations: () => [],
     };
     const unreadable = element("other-widget");
@@ -828,7 +846,7 @@ describe("accessibility tree", () => {
     search.rect = { top: 20, bottom: 40, left: 30, right: 230 };
     notes.rect = { top: 2000, bottom: 2100, left: 0, right: 200 };
     (document as any).querySelectorAll = (selector: string) =>
-      selector === "*" ? [host, unreadable] : [search, notes];
+      selector === "*" ? [search, notes, host, unreadable] : [];
 
     const response = sendMessage({
       type: "SEMANTIC_VISION_RECHECK",
@@ -844,9 +862,9 @@ describe("accessibility tree", () => {
         missing: null,
       },
       masks: [
-        { x: 30, y: 20, width: 200, height: 20 },
-        { x: 0, y: 100, width: 200, height: 20 },
-        { x: 0, y: 200, width: 100, height: 40 },
+        { x: 26, y: 16, width: 208, height: 28 },
+        { x: -4, y: 96, width: 208, height: 28 },
+        { x: -4, y: 196, width: 108, height: 48 },
       ],
       fieldsChanged: true,
     });
@@ -862,6 +880,51 @@ describe("accessibility tree", () => {
     ]);
   });
 
+  it("masks the painted extent of editable content and fails closed on effects that copy it", () => {
+    // A fixed-height editor whose last line overflows its box, with a positioned editable child.
+    const editor = element("div");
+    editor.isContentEditable = true;
+    editor.rect = { top: 60, bottom: 100, left: 100, right: 160 };
+    editor.textRects = [
+      { top: 60, bottom: 80, left: 100, right: 140 },
+      { top: 100, bottom: 120, left: 100, right: 215 },
+    ];
+    const inner = element("img");
+    inner.isContentEditable = true;
+    inner.rect = { top: 130, bottom: 150, left: 300, right: 320 };
+    editor.append(inner);
+    // A display:contents editing host has no box of its own; its editable child does.
+    const wrapper = element("div");
+    wrapper.isContentEditable = true;
+    wrapper.rect = { top: 0, bottom: 0, left: 0, right: 0 };
+    const child = element("div");
+    child.isContentEditable = true;
+    child.rect = { top: 300, bottom: 340, left: 100, right: 160 };
+    wrapper.append(child);
+    const roleBox = element("div", { role: "textbox" });
+    roleBox.rect = { top: 400, bottom: 420, left: 0, right: 50 };
+    const outer = element("section");
+    outer.append(editor);
+    (globalThis as any).chrome.dom = { openOrClosedShadowRoot: () => null };
+    (document as any).querySelectorAll = (selector: string) =>
+      selector === "*" ? [outer, editor, inner, wrapper, child, roleBox] : [];
+    const masks = () => sendMessage({ type: "SEMANTIC_VISION_RECHECK", refs: [] }).masks;
+
+    expect(masks()).toEqual([
+      { x: 96, y: 56, width: 228, height: 98 },
+      { x: 96, y: 296, width: 68, height: 48 },
+      { x: -4, y: 396, width: 58, height: 28 },
+    ]);
+
+    inner.computed.textShadow = "0 80px 0 green";
+    expect(masks()[0]).toBeNull();
+    inner.computed = {};
+    outer.computed.filter = "drop-shadow(0 80px 0 green)";
+    expect(masks()[0]).toBeNull();
+    outer.computed = { "-webkit-box-reflect": "below" };
+    expect(masks()[0]).toBeNull();
+  });
+
   it("reports any change between the pre-capture measurement and the recheck", () => {
     const { search } = iconToolbar();
     search.rect = { top: 20, bottom: 40, left: 30, right: 230 };
@@ -869,7 +932,7 @@ describe("accessibility tree", () => {
     form.append(search);
     const spinner = element("div");
     let animations: object[] = [];
-    (document as any).querySelectorAll = (selector: string) => (selector === "*" ? [] : [search]);
+    (document as any).querySelectorAll = (selector: string) => (selector === "*" ? [search] : []);
     (document as any).getAnimations = () => animations;
     (document as any).elementFromPoint = () => null;
     (globalThis as any).chrome.dom = { openOrClosedShadowRoot: () => null };
@@ -880,7 +943,7 @@ describe("accessibility tree", () => {
       });
     const recheck = () => sendMessage({ type: "SEMANTIC_VISION_RECHECK", refs: ["settings"] });
 
-    expect(read().semanticVisionMasks).toEqual([{ x: 30, y: 20, width: 200, height: 20 }]);
+    expect(read().semanticVisionMasks).toEqual([{ x: 26, y: 16, width: 208, height: 28 }]);
     expect(recheck().fieldsChanged).toBe(false);
 
     read();
@@ -893,10 +956,10 @@ describe("accessibility tree", () => {
       openOrClosedShadowRoot: (node: FakeElement) => (node === form ? lateRoot : null),
     };
     (document as any).querySelectorAll = (selector: string) =>
-      selector === "*" ? [form] : [search];
+      selector === "*" ? [form, search] : [];
     expect(recheck().fieldsChanged).toBe(true);
     (globalThis as any).chrome.dom = { openOrClosedShadowRoot: () => null };
-    (document as any).querySelectorAll = (selector: string) => (selector === "*" ? [] : [search]);
+    (document as any).querySelectorAll = (selector: string) => (selector === "*" ? [search] : []);
 
     read();
     animations = [{ playState: "running", effect: { target: spinner } }];

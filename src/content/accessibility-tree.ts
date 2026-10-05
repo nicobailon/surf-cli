@@ -250,11 +250,9 @@ type SemanticVisionRect = { x: number; y: number; width: number; height: number 
 
 const SEMANTIC_VISION_VALUE_ROLES = ["textbox", "searchbox", "combobox", "spinbutton"];
 // Iframes, embeds and objects are masked whole: fields inside them cannot be measured from here.
-const SEMANTIC_VISION_MASK_SELECTOR = [
-  "input", "textarea", "select", '[contenteditable]:not([contenteditable="false"])',
-  ...SEMANTIC_VISION_VALUE_ROLES.map((role) => `[role="${role}"]`),
-  "iframe", "frame", "embed", "object",
-].join(", ");
+const SEMANTIC_VISION_MASKED_TAGS = ["input", "textarea", "select", "iframe", "frame", "embed", "object"];
+// Glyph overhang and anti-aliasing past the line boxes, in CSS px.
+const SEMANTIC_VISION_BLEED = 4;
 
 function isSemanticVisionField(element: Element): boolean {
   return ["input", "textarea", "select"].includes(element.tagName.toLowerCase()) ||
@@ -288,22 +286,34 @@ function semanticVisionCurrentRect(ref: string): SemanticVisionRect | null {
   return hit && (hit === element || element.contains(hit)) ? rect : null;
 }
 
+// Elements whose painted extent is masked, chosen by behavior: native fields, frames, explicit value roles,
+// and editing hosts, whose extent covers every editable descendant.
+function isSemanticVisionMaskTarget(element: Element): boolean {
+  return SEMANTIC_VISION_MASKED_TAGS.includes(element.tagName.toLowerCase()) ||
+    SEMANTIC_VISION_VALUE_ROLES.includes(element.getAttribute("role") ?? "") ||
+    ((element as HTMLElement).isContentEditable === true && (element.parentElement as HTMLElement | null)?.isContentEditable !== true);
+}
+
+function composedParent(element: Element): Element | null {
+  return element.parentElement ?? (element.parentNode instanceof ShadowRoot ? element.parentNode.host : null);
+}
+
 type SemanticVisionScan = { fields: Element[]; unreadableHosts: Element[]; roots: ShadowRoot[] };
 
-// Fields under root, including inside open and closed shadow roots, which content scripts can read through chrome.dom.
-// A host whose shadow root cannot be read is listed so its whole rect is masked.
+// Mask targets under root, including inside open and closed shadow roots, which content scripts can read
+// through chrome.dom. A host whose shadow root cannot be read is listed so its whole extent is masked.
 function scanSemanticVisionFields(
   root: Document | ShadowRoot,
   scan: SemanticVisionScan = { fields: [], unreadableHosts: [], roots: [] },
 ): SemanticVisionScan {
-  scan.fields.push(...Array.from(root.querySelectorAll(SEMANTIC_VISION_MASK_SELECTOR)));
-  for (const host of Array.from(root.querySelectorAll("*"))) {
-    if (!(host instanceof HTMLElement)) continue;
+  for (const element of Array.from(root.querySelectorAll("*"))) {
+    if (isSemanticVisionMaskTarget(element)) scan.fields.push(element);
+    if (!(element instanceof HTMLElement)) continue;
     let shadowRoot: ShadowRoot | null;
     try {
-      shadowRoot = chrome.dom.openOrClosedShadowRoot(host);
+      shadowRoot = chrome.dom.openOrClosedShadowRoot(element);
     } catch {
-      scan.unreadableHosts.push(host);
+      scan.unreadableHosts.push(element);
       continue;
     }
     if (shadowRoot) {
@@ -314,11 +324,45 @@ function scanSemanticVisionFields(
   return scan;
 }
 
+// Effects that paint copies of content arbitrarily far from it. Text effects only matter on the target and its
+// descendants (inherited values show up there); filters and reflections on any ancestor copy the whole subtree.
+function copiesSemanticVisionContent(element: Element, ownText: boolean): boolean {
+  const style = window.getComputedStyle(element);
+  const set = (value: string | undefined) => !!value && value !== "none";
+  return set(style.filter) || set(style.getPropertyValue("-webkit-box-reflect")) ||
+    (ownText && (set(style.textShadow) || Number.parseFloat(style.getPropertyValue("-webkit-text-stroke-width")) > 2));
+}
+
+// Painted extent of a mask target: its border box, every text line box (overflowed lines included) and every
+// descendant box, inflated for glyph bleed. Null when it cannot be bounded.
+function semanticVisionExtent(element: Element): SemanticVisionRect | null {
+  const descendants = Array.from(element.querySelectorAll("*"));
+  if ([element, ...descendants].some((node) => copiesSemanticVisionContent(node, true))) return null;
+  for (let ancestor = composedParent(element); ancestor; ancestor = composedParent(ancestor)) {
+    if (copiesSemanticVisionContent(ancestor, false)) return null;
+  }
+  const range = document.createRange();
+  range.selectNodeContents(element);
+  const rects = [
+    element.getBoundingClientRect(),
+    ...Array.from(range.getClientRects()),
+    ...descendants.flatMap((node) => Array.from(node.getClientRects())),
+  ];
+  if (!rects.every((rect) => [rect.left, rect.top, rect.right, rect.bottom].every(Number.isFinite))) return null;
+  const painted = rects.filter((rect) => rect.right > rect.left && rect.bottom > rect.top);
+  if (!painted.length) return { x: 0, y: 0, width: 0, height: 0 };
+  const left = Math.min(...painted.map((rect) => rect.left)) - SEMANTIC_VISION_BLEED;
+  const top = Math.min(...painted.map((rect) => rect.top)) - SEMANTIC_VISION_BLEED;
+  const right = Math.max(...painted.map((rect) => rect.right)) + SEMANTIC_VISION_BLEED;
+  const bottom = Math.max(...painted.map((rect) => rect.bottom)) + SEMANTIC_VISION_BLEED;
+  return { x: left, y: top, width: right - left, height: bottom - top };
+}
+
 // A running CSS animation or transition on a field, or on anything that contains one, can move or reveal
 // it without a DOM mutation.
 function semanticVisionFieldAnimating(fields: Element[], roots: ShadowRoot[]): boolean {
   const containsField = (target: Element) => fields.some((field) => {
-    for (let node: Element | null = field; node; node = node.parentElement ?? (node.parentNode instanceof ShadowRoot ? node.parentNode.host : null)) {
+    for (let node: Element | null = field; node; node = composedParent(node)) {
       if (node === target) return true;
     }
     return false;
@@ -329,14 +373,15 @@ function semanticVisionFieldAnimating(fields: Element[], roots: ShadowRoot[]): b
   }));
 }
 
-// Viewport rects of every field and unreadable shadow host; null when one cannot be measured. Without
-// chrome.dom no shadow root can be proven clear, so the single null mask makes the planner skip every tile.
+// Viewport rects of the painted extent of every mask target and unreadable shadow host; null when one cannot be
+// bounded. Without chrome.dom no shadow root can be proven clear, so the single null mask makes the planner skip
+// every tile.
 function measureSemanticVisionFields(): { masks: Array<SemanticVisionRect | null>; roots: ShadowRoot[]; animating: boolean } {
   if (typeof chrome.dom?.openOrClosedShadowRoot !== "function") return { masks: [null], roots: [], animating: false };
   const scan = scanSemanticVisionFields(document);
   const fields = [...scan.fields, ...scan.unreadableHosts];
   const masks = fields.flatMap((element) => {
-    const rect = semanticVisionRect(element);
+    const rect = semanticVisionExtent(element);
     if (!rect) return [null];
     const inViewport = rect.width > 0 && rect.height > 0 && rect.x < window.innerWidth && rect.y < window.innerHeight &&
       rect.x + rect.width > 0 && rect.y + rect.height > 0;
@@ -344,7 +389,6 @@ function measureSemanticVisionFields(): { masks: Array<SemanticVisionRect | null
   });
   return { masks, roots: scan.roots, animating: semanticVisionFieldAnimating(fields, scan.roots) };
 }
-
 let semanticVisionWatch: {
   observer: MutationObserver;
   timer: ReturnType<typeof setTimeout>;
