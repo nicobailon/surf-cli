@@ -153,6 +153,10 @@ class FakeMutationObserver {
     FakeMutationObserver.active.delete(this);
   }
 
+  takeRecords(): unknown[] {
+    return [];
+  }
+
   static mutate(records: unknown[] = [{ type: "attributes", target: {} }]): void {
     for (const observer of FakeMutationObserver.active) {
       observer.callback(records);
@@ -191,6 +195,7 @@ describe("accessibility tree", () => {
     (globalThis as any).HTMLTextAreaElement = FakeTextAreaElement;
     (globalThis as any).Node = FakeNode;
     (globalThis as any).MutationObserver = FakeMutationObserver;
+    (globalThis as any).ShadowRoot = class {};
     FakeMutationObserver.active.clear();
 
     (globalThis as any).window = {
@@ -204,6 +209,9 @@ describe("accessibility tree", () => {
         cursor: "default",
       }),
       __piVisualIndicatorMessageHandler: visualIndicatorHandler,
+      get top() {
+        return (globalThis as any).window;
+      },
     };
 
     (globalThis as any).document = {
@@ -212,6 +220,7 @@ describe("accessibility tree", () => {
       getElementById: () => null,
       querySelector: () => null,
       querySelectorAll: () => [],
+      getAnimations: () => [],
     };
 
     (globalThis as any).chrome = {
@@ -804,6 +813,7 @@ describe("accessibility tree", () => {
     const host = element("custom-widget");
     const closedRoot = {
       querySelectorAll: (selector: string) => (selector === "*" ? [] : [closedField]),
+      getAnimations: () => [],
     };
     const unreadable = element("other-widget");
     unreadable.rect = { top: 200, bottom: 240, left: 0, right: 100 };
@@ -852,10 +862,15 @@ describe("accessibility tree", () => {
     ]);
   });
 
-  it("reports field changes between the pre-capture measurement and the recheck", () => {
+  it("reports any change between the pre-capture measurement and the recheck", () => {
     const { search } = iconToolbar();
     search.rect = { top: 20, bottom: 40, left: 30, right: 230 };
+    const form = element("form");
+    form.append(search);
+    const spinner = element("div");
+    let animations: object[] = [];
     (document as any).querySelectorAll = (selector: string) => (selector === "*" ? [] : [search]);
+    (document as any).getAnimations = () => animations;
     (document as any).elementFromPoint = () => null;
     (globalThis as any).chrome.dom = { openOrClosedShadowRoot: () => null };
     const read = () =>
@@ -866,19 +881,34 @@ describe("accessibility tree", () => {
     const recheck = () => sendMessage({ type: "SEMANTIC_VISION_RECHECK", refs: ["settings"] });
 
     expect(read().semanticVisionMasks).toEqual([{ x: 30, y: 20, width: 200, height: 20 }]);
-    FakeMutationObserver.mutate([{ addedNodes: [element("div"), text("x")], removedNodes: [] }]);
     expect(recheck().fieldsChanged).toBe(false);
 
     read();
-    const wrapper = element("div");
-    wrapper.append(new FakeInputElement("input"));
-    FakeMutationObserver.mutate([{ addedNodes: [], removedNodes: [wrapper] }]);
+    FakeMutationObserver.mutate([{ type: "attributes", target: element("div") }]);
     expect(recheck().fieldsChanged).toBe(true);
 
     read();
-    FakeMutationObserver.mutate([
-      { addedNodes: [new FakeInputElement("input")], removedNodes: [] },
-    ]);
+    const lateRoot = { querySelectorAll: () => [], getAnimations: () => [] };
+    (globalThis as any).chrome.dom = {
+      openOrClosedShadowRoot: (node: FakeElement) => (node === form ? lateRoot : null),
+    };
+    (document as any).querySelectorAll = (selector: string) =>
+      selector === "*" ? [form] : [search];
+    expect(recheck().fieldsChanged).toBe(true);
+    (globalThis as any).chrome.dom = { openOrClosedShadowRoot: () => null };
+    (document as any).querySelectorAll = (selector: string) => (selector === "*" ? [] : [search]);
+
+    read();
+    animations = [{ playState: "running", effect: { target: spinner } }];
+    expect(recheck().fieldsChanged).toBe(false);
+    read();
+    animations = [{ playState: "running", effect: { target: form } }];
+    expect(recheck().fieldsChanged).toBe(true);
+    animations = [];
+
+    Object.defineProperty(window, "top", { value: {} });
+    expect(read()).not.toHaveProperty("semanticVisionMasks");
+    expect(FakeMutationObserver.active.size).toBe(0);
     expect(recheck().fieldsChanged).toBe(true);
   });
 
