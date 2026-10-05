@@ -148,7 +148,10 @@ describe("Cloudflare Workers AI provider boundary", () => {
     );
   }
 
-  function evaluator(fetch: unknown, model = "clef") {
+  function evaluator(
+    fetch: unknown,
+    model = "clef",
+  ): (state: unknown, questions: unknown, options?: { signal?: AbortSignal }) => Promise<any> {
     return createCloudflareEvaluator({
       accountId: " acct123 ",
       apiToken: ` ${TOKEN} `,

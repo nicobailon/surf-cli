@@ -327,7 +327,7 @@ describe("Cloudflare credential store", () => {
     };
     const pending = credentials.setCloudflareCredentialFromInput({ input, output, env });
     input.emit("data", Buffer.from(`${ACCOUNT_ID}\r`));
-    await new Promise((resolve) => setImmediate(resolve));
+    await new Promise((resolve) => setTimeout(resolve, 0));
     input.emit("data", Buffer.from("tty-token\r"));
 
     await expect(pending).resolves.toMatchObject({ source: "stored" });
