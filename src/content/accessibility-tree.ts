@@ -257,7 +257,7 @@ const SEMANTIC_VISION_TOP_LAYER = "[popover], dialog, :fullscreen";
 // Any element of a field, matching isSemanticVisionFieldElement.
 const SEMANTIC_VISION_FIELD_ELEMENTS = `input, textarea, select, iframe, frame, embed, object,
   [role~="textbox" i], [role~="searchbox" i], [role~="combobox" i], [role~="spinbutton" i], :read-write`;
-// Fields to hide, matching isSemanticVisionMaskTarget, plus top-layer elements inside a field in the same tree or
+// Fields to hide, matching the scan's field list, plus top-layer elements inside a field in the same tree or
 // slotted straight into one. Only the root of each editable region is listed, since opacity on it hides everything
 // inside.
 const SEMANTIC_VISION_FIELDS = `input, textarea, select, iframe, frame, embed, object,
@@ -309,12 +309,6 @@ function isSemanticVisionFieldElement(element: Element): boolean {
     element.matches(":read-write");
 }
 
-// Fields to hide and verify; editable content inside an editable parent is covered by its root's opacity.
-function isSemanticVisionMaskTarget(element: Element): boolean {
-  return isSemanticVisionFieldElement(element) &&
-    !(element.matches(":read-write") && element.parentElement?.matches(":read-write") === true);
-}
-
 // The slot each element is assigned to, across every scanned shadow root. `assignedSlot` is null for slots in closed
 // roots, so the map is built from the slots. A slot forwarded into another component's slot is assigned in turn.
 type SemanticVisionSlots = Map<Element, Element>;
@@ -347,12 +341,14 @@ function semanticVisionTopLayerInFields(roots: Array<Document | ShadowRoot>, slo
     Array.from(root.querySelectorAll(SEMANTIC_VISION_TOP_LAYER)).filter((element) => inSemanticVisionField(element, slots)));
 }
 
-// A customizable select draws its picker in the top layer of the select's own shadow tree, which a content script
-// cannot reach, so it cannot be hidden or checked. The picker paints while open and while closing with an exit
-// transition, when `:open` no longer matches but `::picker(select)` still renders; a closed one computes `none`.
-function semanticVisionPickerShown(select: Element): boolean {
+// A field's native picker (a select's, or a date, time or color input's) is drawn by the browser inside the page,
+// where a content script cannot reach it, so it cannot be hidden or checked: it shows the field's value while the
+// field matches `:open`. A customizable select's picker also paints while closing with an exit transition, when
+// `:open` no longer matches but `::picker(select)` still renders; a closed one computes `none`.
+function semanticVisionPickerShown(field: Element): boolean {
   try {
-    return select.matches(":open") || window.getComputedStyle(select, "::picker(select)").display !== "none";
+    return field.matches(":open") ||
+      (field.tagName.toLowerCase() === "select" && window.getComputedStyle(field, "::picker(select)").display !== "none");
   } catch {
     return true;
   }
@@ -369,13 +365,18 @@ type SemanticVisionScan = {
 // Fields in the page, including inside open and closed shadow roots, which content scripts can read through
 // chrome.dom. Shadow roots inside a field are listed in `fieldRoots`. The read is skipped (`unsupported`) for a
 // shadow root that cannot be read, for content made editable by CSS (`-webkit-user-modify`), which no selector can
-// reach, and for a select picker that is open or closing.
+// reach, and for a field whose native picker is open, or a select picker that is closing.
 function scanSemanticVisionFields(): SemanticVisionScan {
   const scan = { fields: [] as Element[], roots: [] as ShadowRoot[], unsupported: false };
   const collect = (root: Document | ShadowRoot) => {
     for (const element of Array.from(root.querySelectorAll("*"))) {
-      if (isSemanticVisionMaskTarget(element)) scan.fields.push(element);
-      if (element.tagName.toLowerCase() === "select" && semanticVisionPickerShown(element)) scan.unsupported = true;
+      if (isSemanticVisionFieldElement(element)) {
+        // Editable content inside an editable parent is covered by its root's opacity.
+        if (!(element.matches(":read-write") && element.parentElement?.matches(":read-write") === true)) {
+          scan.fields.push(element);
+        }
+        if (semanticVisionPickerShown(element)) scan.unsupported = true;
+      }
       if (!(element instanceof HTMLElement)) continue;
       if (!element.matches(":read-write") && (window.getComputedStyle(element) as CSSStyleDeclaration & { webkitUserModify?: string })
         .webkitUserModify?.startsWith("read-write")) {

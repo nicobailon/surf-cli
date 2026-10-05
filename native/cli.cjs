@@ -1641,9 +1641,11 @@ Fields (inputs, editable content, value roles, iframes, embeds, and popovers ope
 content slotted into them) are made to paint nothing for the screenshot, checked, and blacked out; they
 blink invisible for that moment.
 surf sends no crops for a read when it can't prove that: the page forces a field visible, an editable
-element uses display:contents, content is editable through -webkit-user-modify, a customizable select
-has its picker open or closing, designMode is on, a view transition is running, a shadow root is
-unreadable, anything in the DOM changed meanwhile, or the screenshot took over 2 s.
+element uses display:contents, content is editable through -webkit-user-modify, a field's native
+picker that Chrome draws in the page is open (select, date, time, month, week, color), a customizable
+select's picker is closing, designMode is on, a view transition is running, a shadow root is
+unreadable, anything in the DOM changed meanwhile, or the screenshot took over 2 s. Popups the browser
+draws outside the page frame are not in the screenshot.
 
 Every click/fill requires --allow-write. This broadly authorizes even high-impact controls;
 repeat --allow-ref <ref> to narrow authorization to exact observed refs.

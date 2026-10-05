@@ -1014,7 +1014,7 @@ describe("accessibility tree", () => {
     expect(await prepare()).toEqual({ masks: [null] });
   });
 
-  it("follows slots to fields in the flat tree, and skips the read while a select picker is open or closing", async () => {
+  it("follows slots to fields in the flat tree, and skips the read while a native picker is open or a select picker is closing", async () => {
     const { elements } = visionPage();
     const slotOf = (assigned: FakeElement[]) =>
       Object.assign(element("slot"), { assignedElements: () => assigned });
@@ -1113,6 +1113,19 @@ describe("accessibility tree", () => {
     await prepare();
     select.pickerOpen = true;
     expect(recheck().fieldsChanged).toBe(true);
+    select.pickerOpen = false;
+
+    // Any field with an open native picker (a date or time input's, drawn inside the page) skips the read; an open
+    // element that is not a field, such as <details>, does not.
+    const dateInput = new FakeInputElement("input");
+    dateInput.computed.opacity = "0";
+    const details = element("details");
+    details.pickerOpen = true;
+    elements.push(dateInput, details);
+    expect(await prepare()).not.toEqual({ masks: [null] });
+    recheck();
+    dateInput.pickerOpen = true;
+    expect(await prepare()).toEqual({ masks: [null] });
   });
 
   it("reports any change between hiding the fields and the recheck", async () => {

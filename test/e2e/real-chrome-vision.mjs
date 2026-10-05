@@ -315,6 +315,39 @@ option { padding:0;margin:0;min-block-size:0;color:#0f0 } option::checkmark { di
       restore: false,
     };
   }),
+  ...[
+    ["date", "2031-02-14"],
+    ["time", "09:30"],
+  ].map(([type, value]) => {
+    // Chrome draws a date or time input's picker inside the page, over the button, showing the field's value:
+    // the read is skipped while it is open.
+    const openPicker = async (tab) => {
+      await tab.evaluate(() => document.querySelector("#secret").showPicker());
+      await tab.waitForFunction(() => document.querySelector("#secret").matches(":open"));
+    };
+    return {
+      name: `open ${type} input picker`,
+      html: page(`<input id="secret" type="${type}" value="${value}" aria-label="When" style="position:absolute;left:100px;top:60px;width:200px;height:28px">`),
+      populate: openPicker,
+      clear: async (tab) => {
+        await tab.keyboard.press("Escape");
+        await tab.evaluate(() => {
+          document.querySelector("#secret").value = "";
+        });
+        await openPicker(tab);
+      },
+      expect: "skipped",
+      anyDifference: true,
+    };
+  }),
+  {
+    // The same date input with its picker closed keeps the button's tile.
+    name: "idle date input above the button",
+    html: page(`<input id="secret" type="date" value="2031-02-14" aria-label="When" style="position:absolute;left:100px;top:60px;width:200px;height:28px">`),
+    clear: clearSecret,
+    expect: "tile",
+    anyDifference: true,
+  },
   {
     name: "shadow popover showing an editing host's text through a slot",
     html: page(`<div id="secret" contenteditable="true" style="position:absolute;left:400px;top:300px;width:60px;height:20px;color:#0f0;font:16px/20px monospace"></div>
