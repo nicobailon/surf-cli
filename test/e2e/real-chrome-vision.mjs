@@ -19,8 +19,21 @@ const BUTTON_AT = (x, y) =>
   `<button style="position:absolute;left:${x}px;top:${y}px;width:40px;height:40px;margin:0;padding:0;border:0;background:#fff"><svg width="24" height="24" viewBox="0 0 24 24"><rect x="4" y="4" width="16" height="16" fill="#00f"/></svg></button>`;
 const SECRET_POPOVER = POPOVER.replace("<div popover", '<div id="secret" popover').replace("></div>", ">PRIVATE-1234</div>");
 const SHOW_SECRET = `<script>document.querySelector("#secret").showPopover();</script>`;
-// An email field and its submit button inside a same-origin (srcdoc) iframe; quotes are escaped for the attribute.
-const FRAME_FORM = `<body style="margin:0"><form><input id="f" type="email" aria-label="Email" style="width:300px;height:28px"><button id="go">Subscribe</button></form></body>`.replaceAll('"', "&quot;");
+// An email field and its submit button, served at /frame-form for <object data>, and inline for an iframe's srcdoc
+// (quotes escaped for the attribute). FRAME_DATE is a date input with a value, for a srcdoc iframe.
+const FRAME_FORM_PAGE = `<!doctype html><body style="margin:0"><form><input id="f" type="email" aria-label="Email" style="width:300px;height:28px"><button id="go">Subscribe</button></form></body>`;
+const FRAME_FORM = FRAME_FORM_PAGE.replace("<!doctype html>", "").replaceAll('"', "&quot;");
+const FRAME_DATE = `<body style="margin:0"><input id="f" type="date" value="2031-02-14" aria-label="When" style="width:200px;height:28px"></body>`.replaceAll('"', "&quot;");
+// The first child frame (iframe, or <object>/<embed> document) that has the selector.
+const childFrame = async (tab, selector) => {
+  for (let attempt = 0; attempt < 50; attempt++) {
+    for (const frame of tab.frames()) {
+      if (frame !== tab.mainFrame() && (await frame.$(selector).catch(() => null))) return frame;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  throw new Error(`no child frame with ${selector}`);
+};
 const closeSecret = (tab) =>
   tab.evaluate(() => {
     const secret = document.querySelector("#secret");
@@ -407,6 +420,58 @@ option { padding:0;margin:0;min-block-size:0;color:#0f0 } option::checkmark { di
     expect: "tile",
   },
   {
+    // An embedded same-origin HTML document (<object data>): after a failed submit inside it, Chrome draws the
+    // validation message over the parent page. The object's document is walked like a frame, so the read is skipped.
+    name: "validation message of a field in a same-origin <object> document",
+    html: page(`<object id="frame" type="text/html" data="/frame-form" style="position:absolute;left:100px;top:56px;width:380px;height:40px"></object>`),
+    populate: async (tab) => {
+      const frame = await childFrame(tab, "#f");
+      await frame.type("#f", "john.smith.private");
+      await frame.click("#go");
+      await new Promise((resolve) => setTimeout(resolve, 300));
+    },
+    clear: async (tab) => {
+      const frame = await childFrame(tab, "#f");
+      await frame.evaluate(() => {
+        const field = document.querySelector("#f");
+        field.value = "";
+        field.blur();
+      });
+      await tab.evaluate(() => document.activeElement.blur());
+      await new Promise((resolve) => setTimeout(resolve, 300));
+    },
+    expect: "skipped",
+    anyDifference: true,
+  },
+  {
+    // The same <object> with an untouched form keeps the button's tile.
+    name: "same-origin <object> document with an untouched form",
+    html: page(`<object id="frame" type="text/html" data="/frame-form" style="position:absolute;left:100px;top:56px;width:380px;height:40px"></object>`),
+    expect: "tile",
+  },
+  {
+    // A date input in a same-origin iframe with its picker open: Chrome draws the picker in the page, showing the
+    // value, so the read is skipped.
+    name: "open date input picker in a same-origin iframe",
+    html: page(`<iframe id="frame" style="position:absolute;left:100px;top:56px;width:300px;height:36px;border:0" srcdoc="${FRAME_DATE}"></iframe>`),
+    populate: async (tab) => {
+      const frame = await childFrame(tab, "#f");
+      await frame.evaluate(() => document.querySelector("#f").showPicker());
+      await frame.waitForFunction(() => document.querySelector("#f").matches(":open"));
+    },
+    clear: async (tab) => {
+      const frame = await childFrame(tab, "#f");
+      await tab.keyboard.press("Escape");
+      await frame.evaluate(() => {
+        document.querySelector("#f").value = "";
+      });
+      await frame.evaluate(() => document.querySelector("#f").showPicker());
+      await frame.waitForFunction(() => document.querySelector("#f").matches(":open"));
+    },
+    expect: "skipped",
+    anyDifference: true,
+  },
+  {
     // A failed submit focuses the invalid field and the page moves focus away at once (as a focus trap does): Chrome
     // still shows the message, and the field matches :user-invalid, so the read is skipped.
     name: "validation message after a submit that moves focus away",
@@ -559,7 +624,10 @@ async function waitFor(predicate, label) {
   }
 }
 
-const pages = Object.fromEntries(scenarios.map((scenario, index) => [`/s${index}`, scenario.html]));
+const pages = {
+  ...Object.fromEntries(scenarios.map((scenario, index) => [`/s${index}`, scenario.html])),
+  "/frame-form": FRAME_FORM_PAGE,
+};
 const harness = await launchVisionChrome(process.cwd(), pages);
 const results = {};
 const failures = [];

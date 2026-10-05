@@ -37,6 +37,7 @@ class FakeElement extends FakeNode {
   pickerOpen = false;
   invalid = false;
   userInvalid = false;
+  namespaceURI = "http://www.w3.org/1999/xhtml";
 
   get parentNode(): FakeElement | FakeShadowRoot | null {
     return this.parentElement ?? this.shadowParent;
@@ -114,27 +115,24 @@ class FakeElement extends FakeNode {
   }
 
   matches(selector: string): boolean {
-    return selector.split(/,\s*/).some((part) => {
-      if (part === ":read-write") {
-        return ["INPUT", "TEXTAREA"].includes(this.tagName) || this.isContentEditable;
-      }
-      if (part === "[popover]") {
-        return this.hasAttribute("popover");
-      }
-      if (part === ":popover-open") {
-        return this.popoverOpen;
-      }
-      if (part === ":open") {
-        return this.pickerOpen;
-      }
-      if (part === ":invalid") {
-        return this.invalid;
-      }
-      if (part === `${this.tagName.toLowerCase()}:user-invalid`) {
-        return this.userInvalid;
-      }
-      return part === this.tagName.toLowerCase();
-    });
+    return selector.split(/,\s*/).some((part) => this.matchesPart(part));
+  }
+
+  private matchesPart(part: string): boolean {
+    // `tag:pseudo`, as in "select:open", matches the tag and then the pseudo-class.
+    const tagged = /^([a-z]+)(:.+)$/.exec(part);
+    if (tagged) {
+      return tagged[1] === this.tagName.toLowerCase() && this.matchesPart(tagged[2]);
+    }
+    const states: Record<string, () => boolean> = {
+      ":read-write": () => ["INPUT", "TEXTAREA"].includes(this.tagName) || this.isContentEditable,
+      "[popover]": () => this.hasAttribute("popover"),
+      ":popover-open": () => this.popoverOpen,
+      ":open": () => this.pickerOpen,
+      ":invalid": () => this.invalid,
+      ":user-invalid": () => this.userInvalid,
+    };
+    return states[part]?.() ?? part === this.tagName.toLowerCase();
   }
 
   querySelectorAll(selector: string): FakeElement[] {
@@ -1164,7 +1162,7 @@ describe("accessibility tree", () => {
     recheck();
   });
 
-  it("skips the read after a failed submit or with focus in a frame that may show a validation message", async () => {
+  it("checks pickers and validation messages in every same-origin frame or embedded document", async () => {
     const { elements } = visionPage();
     const frameDocument = (nodes: FakeElement[], activeElement: FakeElement | null) => ({
       activeElement,
@@ -1195,6 +1193,28 @@ describe("accessibility tree", () => {
     expect(await prepare()).toEqual({ masks: [null] });
     frameField.userInvalid = false;
 
+    // The same checks run in every reachable document: an open picker or a select picker still closing in a frame,
+    // and a failed submit in an embedded <object> document.
+    frameField.pickerOpen = true;
+    expect(await prepare()).toEqual({ masks: [null] });
+    frameField.pickerOpen = false;
+    const frameSelect = new FakeSelectElement("select");
+    frameSelect.computed.picker = "block";
+    frame.contentDocument = frameDocument([frameField, frameSelect], null) as any;
+    expect(await prepare()).toEqual({ masks: [null] });
+    frame.contentDocument = frameDocument([frameField], null) as any;
+    const objectField = new FakeInputElement("input");
+    const object = Object.assign(element("object"), {
+      contentDocument: frameDocument([objectField], null) as any,
+    });
+    object.computed.opacity = "0";
+    elements.push(object);
+    expect(await prepare()).not.toEqual({ masks: [null] });
+    recheck();
+    objectField.userInvalid = true;
+    expect(await prepare()).toEqual({ masks: [null] });
+    objectField.userInvalid = false;
+
     // Focus is followed into a same-origin frame; a frame whose document can't be read skips the read.
     (document as any).activeElement = frame;
     frameField.invalid = true;
@@ -1204,6 +1224,11 @@ describe("accessibility tree", () => {
     expect(await prepare()).not.toEqual({ masks: [null] });
     recheck();
     frame.contentDocument = null;
+    expect(await prepare()).toEqual({ masks: [null] });
+
+    // Focus on an embed whose document can't be read (a plugin such as a PDF viewer) skips the read too.
+    const embed = Object.assign(element("embed"), { contentDocument: null });
+    (document as any).activeElement = embed;
     expect(await prepare()).toEqual({ masks: [null] });
   });
 
