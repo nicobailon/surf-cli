@@ -97,7 +97,7 @@ surf animate-audit --selector ".thing" --duration 2000 --fps 10
 ## Optional semantic decisions
 
 `semantic.act` is a bounded, goal-driven website controller. It repeatedly
-observes the page, lets Jev select the next action from Surf's allowed menu,
+observes the page, lets a decision model select the next action from Surf's allowed menu,
 validates and executes that action, and checks the overall goal:
 
 ```text
@@ -109,11 +109,15 @@ goal -> observe -> choose -> validate + act -> verify
 It returns when the goal is complete, a decision is uncertain, or a configured
 budget is exhausted. Use `semantic.find` for one control, `semantic.filter` for
 relevant page regions, and
-`semantic.verify` for one outcome. Use Jev when the page or happy path is
+`semantic.verify` for one outcome. Use these when the page or happy path is
 unfamiliar; once the path is stable, prefer deterministic Surf commands for
 repeated runs. The agent owns the goal and final confirmation, while Surf retains
 execution authority. Only `semantic.*` sends bounded, value-free page text to
-TypeSafe.
+the provider of the selected model: `jev-1.13.0` (default) goes to TypeSafe
+(api.typesafe.ai); `clef` and `clef-flash` go to Cloudflare Workers AI
+(api.cloudflare.com). Choose with `--model <id>` or `SURF_SEMANTIC_MODEL` (the
+only way for `surf do`). Every result reports `provider`, `model`,
+`providerCalls`, and `providerLatencyMs`.
 
 ```bash
 surf semantic.find "the settings control"
@@ -122,9 +126,11 @@ surf semantic.filter "settings"
 surf semantic.act "Open settings" --max-steps 5
 surf semantic.act "Fill email" --input email="$EMAIL" --allow-write --allow-ref e3
 surf semantic.act 'Add the selected item to the cart' --allow-write --threshold write=0.85
+surf semantic.find "the export button" --model clef-flash
 printf '%s\n' "$TYPESAFE_KEY" | surf semantic auth set
-surf semantic auth status
-surf semantic auth clear
+printf '%s\n%s\n' "$CLOUDFLARE_ACCOUNT_ID" "$CLOUDFLARE_API_TOKEN" | surf semantic auth set --provider cloudflare
+surf semantic auth status          # both providers unless --provider is given
+surf semantic auth clear --provider cloudflare
 ```
 
 For reusable bounded recipes, put only linear `semantic.step` operations in a
@@ -160,7 +166,7 @@ from it instead of inventing fields.
 
 Every click/fill requires `--allow-write`; repeat `--allow-ref` to narrow it.
 Broad writes use threshold `0.95`; exactly one allowed ref with one applicable
-write uses `0.65`. The applied threshold is included in decision/trace output.
+write uses `0.65` (`0.79` for `clef`). The applied threshold is included in decision/trace output.
 Repeatable `--threshold name=value` overrides applicable confidence thresholds
 for one run only; defaults remain safer, and overrides never grant write authority.
 `TYPESAFE_API_KEY` is the ephemeral/CI override.
@@ -170,6 +176,9 @@ The shared credential schema is `{"version":1,"apiKey":"..."}` at
 the project. POSIX directories/files use `0700`/`0600`; Windows relies on the
 current user's profile ACL. `TYPESAFE_API_KEY` wins. Status reveals only source
 and fingerprint; clear affects all clients using the shared file.
+Cloudflare credentials use `CLOUDFLARE_ACCOUNT_ID` + `CLOUDFLARE_API_TOKEN`
+(both or neither) or a separate private record under
+`${XDG_CONFIG_HOME:-~/.config}/surf/`.
 
 ## AI Assistants (No API Keys)
 

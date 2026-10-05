@@ -742,7 +742,7 @@ surf do 'go "url" | click e5 | screenshot' --dry-run
 - `--step-delay <ms>` - Delay between steps (default: 100, use 0 to disable)
 - `--no-auto-wait` - Disable automatic waits between steps
 - `--json` - Output structured JSON result
-- `--allow-semantic` - Opt in to bounded TypeSafe decisions for a semantic workflow
+- `--allow-semantic` - Opt in to bounded model decisions for a semantic workflow (model from `SURF_SEMANTIC_MODEL`, default `jev-1.13.0`)
 - `--allow-write` - Additionally authorize declared `fill`, `ensureChecked`, and `click` steps
 - `--inputs-stdin` - Read one bounded JSON object of private local input slots from stdin
 - `--<arg> <value>` - Pass arguments to workflow (e.g., `--url "..."`)
@@ -894,9 +894,11 @@ back to a click. Model-derived writes retain the `0.95` gate, dispatch at most
 once in a run, and require local/read-only verification. A stopped or uncertain
 step fails the workflow. Search reports bounded overlapping coverage and does
 not prove global ranking or absence outside that scope. Local input values are
-sent only to their browser fill/compare operation, not to TypeSafe, workflow
+sent only to their browser fill/compare operation, not to the model provider, workflow
 variables, events, output, or checkpoints. A new run can repeat an external
 effect: Surf does not claim exactly-once server behavior or automatic resume.
+Each semantic step result's `semantic` block reports `provider`, `model`,
+`providerCalls`, and `providerLatencyMs` for the run so far.
 
 **Supported commands:** Ordinary workflows support all Surf commands. Semantic
 v1 workflows intentionally support only the six closed operations above.
@@ -994,10 +996,10 @@ successful result payloads retain their existing behavior. In particular, a
 connection failure still prints stderr, leaves stdout empty and exits 1 with
 `--json`, even with `--soft-fail`.
 
-## Optional Jev semantic commands
+## Optional semantic commands
 
 `semantic.act` is a bounded, goal-driven website controller. Give it an outcome
-and it repeatedly observes the current page, asks Jev to select the next action
+and it repeatedly observes the current page, asks a decision model to select the next action
 from Surf's allowed menu, validates and executes that action, then checks whether
 the overall goal is complete. It stops when the goal is satisfied, a decision is
 uncertain, or a step, provider-call, or time budget is exhausted.
@@ -1006,7 +1008,7 @@ uncertain, or a step, provider-call, or time budget is exhausted.
 agent goal
     |
     v
-Surf observes -> Jev selects -> Surf validates + acts -> Jev checks goal
+Surf observes -> model selects -> Surf validates + acts -> model checks goal
     ^                                                        |
     +---------------- goal incomplete -----------------------+
                                                              |
@@ -1026,15 +1028,31 @@ semantic.act      run the bounded observe/choose/act/verify loop
 ```
 
 This is most useful when the agent does not yet know a site's structure or happy
-path: Jev handles next-action selection and goal verification while Surf builds
+path: the model handles next-action selection and goal verification while Surf builds
 the allowed action menu and enforces permissions, confidence thresholds, and
 element freshness. The agent owns the goal and final confirmation. Once the path
 is known and stable, deterministic Surf commands are usually faster and more
 reliable for repeated execution.
 
 Semantic commands are an explicit remote-AI boundary: only `surf semantic.*`
-sends a bounded, value-free current-page observation to TypeSafe. Existing Surf
-commands do not read a TypeSafe credential, load the SDK, or make provider calls.
+(and semantic `surf do` steps) send a bounded, value-free current-page
+observation, and it goes to the provider of the selected model. Existing Surf
+commands do not read a provider credential, load the SDK, or make provider calls.
+
+| Model | Provider | Endpoint | Credentials |
+| --- | --- | --- | --- |
+| `jev-1.13.0` (default) | TypeSafe | `api.typesafe.ai` | `TYPESAFE_API_KEY` or `surf semantic auth set` |
+| `clef` | Cloudflare Workers AI | `api.cloudflare.com` | `CLOUDFLARE_ACCOUNT_ID` + `CLOUDFLARE_API_TOKEN`, or `surf semantic auth set --provider cloudflare` |
+| `clef-flash` | Cloudflare Workers AI | `api.cloudflare.com` | same as `clef` |
+
+Pick a model with `--model <id>` on `semantic.find`, `semantic.filter`,
+`semantic.verify`, and `semantic.act`, or with `SURF_SEMANTIC_MODEL` (the only
+way to choose it for `surf do`). `--model` wins over the variable. Each model
+has its own measured confidence thresholds; see
+[Semantic model evaluation](docs/semantic-models.md) for how they were chosen
+and how the models compared. Every result reports a run summary: `provider`,
+`model`, `providerCalls`, and `providerLatencyMs` (summed provider round-trip
+time), including runs stopped by a budget or a failed decision.
 
 ```bash
 surf semantic.find "the control for notification preferences"
@@ -1043,15 +1061,21 @@ surf semantic.filter "notification preferences" --top 6
 surf semantic.act "Open notification settings" --max-steps 5
 surf semantic.act "Fill the email field" --input email="$EMAIL" --allow-write
 surf semantic.act 'Add the selected item to the cart' --allow-write --threshold write=0.85
-surf semantic auth set       # hidden prompt, or exactly one stdin line
-surf semantic auth status    # source and redacted fingerprint only
-surf semantic auth clear     # removes the shared credential for all clients
+surf semantic.find "the export button" --model clef-flash
+SURF_SEMANTIC_MODEL=clef surf semantic.verify "Settings were saved"
+surf semantic auth set       # TypeSafe key: hidden prompt, or exactly one stdin line
+surf semantic auth set --provider cloudflare   # account id, then hidden token
+surf semantic auth status    # each provider's source and redacted fingerprint only
+surf semantic auth clear     # removes stored credentials (--provider narrows it)
 
 # Ephemeral/CI override (highest precedence; does not modify the stored key)
 TYPESAFE_API_KEY="$CI_TYPESAFE_KEY" surf semantic.find "the checkout link"
 
 # Non-interactive persisted setup (exactly one bounded line on stdin)
 printf '%s\n' "$TYPESAFE_KEY" | surf semantic auth set
+
+# Cloudflare: two stdin lines, account id then token
+printf '%s\n%s\n' "$CLOUDFLARE_ACCOUNT_ID" "$CLOUDFLARE_API_TOKEN" | surf semantic auth set --provider cloudflare
 ```
 
 The provider-neutral shared schema is `{"version":1,"apiKey":"..."}`. Persisted
@@ -1069,14 +1093,22 @@ the host/extension or included in logs, errors, or JSON output. Install,
 configuration, doctor, startup, and non-semantic commands never prompt for a key
 or load the TypeSafe SDK.
 
+Cloudflare credentials live in their own record,
+`${XDG_CONFIG_HOME:-~/.config}/surf/cloudflare-credentials.json` (or
+`%APPDATA%\surf\cloudflare-credentials.json`), with the same file modes, atomic
+writes, and symlink rejection. `CLOUDFLARE_ACCOUNT_ID` and
+`CLOUDFLARE_API_TOKEN` win when both are set; setting only one is an error.
+Status never prints the account id or token, only `environment`, `stored`, or
+`not-configured` plus a fingerprint.
+
 `semantic.act` is bounded to observed same-origin HTTP(S) links, fixed scrolling
 and waits, and observed refs. Every DOM click and fill is mutation-capable and is
 excluded unless `--allow-write` is present. That flag intentionally permits
 high-impact submit, purchase, delete, send, and publish controls; repeat
 `--allow-ref <ref>` to narrow authorization to exact current refs. Fill values
-come only from named `--input name=value` slots and are never sent to TypeSafe or
-included in traces. Broad and ambiguous writes require probability `0.95`. The
-threshold is `0.65` only when exactly one `--allow-ref` names exactly one
+come only from named `--input name=value` slots and are never sent to the model provider or
+included in traces. Broad and ambiguous writes require probability `0.95`. With
+`jev-1.13.0` the threshold is `0.65` (`clef`: `0.79`) only when exactly one `--allow-ref` names exactly one
 applicable click, or one fill with one input slot; the applied threshold appears
 in decision/trace output and never grants authority. Repeatable
 `--threshold name=value` overrides applicable confidence thresholds for one run
@@ -1089,14 +1121,14 @@ authorized with `--allow-ref`; additional variants are omitted deterministically
 An oversized mandatory authorized set fails before provider selection. Page text
 remains adversarial data; model output never grants authority.
 
-The real-Jev evaluation harness is opt-in and excluded from CI:
-`SURF_REAL_JEV=1 TYPESAFE_API_KEY=... npm run eval:jev`.
+The real-model evaluation harness is opt-in and excluded from CI:
+`SURF_REAL_SEMANTIC=1 npm run eval:semantic -- --models jev-1.13.0,clef,clef-flash`.
 
 ## Environment Variables
 
 ```bash
 SURF_NETWORK_PATH         # Native-host network state root (default: ~/.surf/state/network)
-SURF_STATE_DIR            # Private Surf state root; does not affect shared TypeSafe credentials
+SURF_STATE_DIR            # Private Surf state root; does not affect semantic provider credentials
 SURF_SESSION              # Default named browser session for tab-scoped commands
 SURF_SOCKET               # Socket path or named pipe (default: /tmp/surf.sock, Windows: //./pipe/surf)
 SURF_REMOTE               # Remote Surf endpoint as host:port (overrides SURF_SOCKET)
@@ -1111,9 +1143,11 @@ SURF_SOCKET_GROUP         # Group name or numeric gid required with mode 660
 SURF_NODE_PATH            # Path to node binary (for native host wrapper)
 SURF_HOST_PATH            # Path to native/host.cjs (for native host wrapper)
 SURF_EXTENSION_PATH       # Path to extension dist/ directory
-TYPESAFE_API_KEY          # Optional semantic-command credential; overrides the shared store
-SURF_JEV_MODEL            # Optional observable Jev model override (default: jev-1.13.0)
-XDG_CONFIG_HOME           # Unix/macOS base for shared TypeSafe credentials (default: ~/.config)
+TYPESAFE_API_KEY          # Optional Jev credential; overrides the shared store
+CLOUDFLARE_ACCOUNT_ID     # Optional Clef credential (with CLOUDFLARE_API_TOKEN); overrides the stored record
+CLOUDFLARE_API_TOKEN      # Optional Clef credential (with CLOUDFLARE_ACCOUNT_ID)
+SURF_SEMANTIC_MODEL       # Semantic model: jev-1.13.0 (default), clef, or clef-flash
+XDG_CONFIG_HOME           # Unix/macOS base for semantic provider credentials (default: ~/.config)
 ```
 
 **Use cases:**
@@ -1130,8 +1164,9 @@ XDG_CONFIG_HOME           # Unix/macOS base for shared TypeSafe credentials (def
 - `SURF_SOCKET_MODE` / `SURF_SOCKET_GROUP`: Advanced POSIX native-host settings. Use `surf install ... --socket-mode 660 --socket-group <group>` to persist group access; mode `660` grants full Surf authority to every member of that group.
 - `SURF_NODE_PATH` / `SURF_HOST_PATH`: Package manager installs (e.g., Nix) that store binaries in non-standard locations
 - `SURF_EXTENSION_PATH`: Package managers that create stable symlinks instead of changing paths on reinstall
-- `TYPESAFE_API_KEY`: Used only by explicit `semantic.*` networked commands. Otherwise use `surf semantic auth set` for the provider-neutral shared store.
-- `SURF_JEV_MODEL`: Explicit model override for semantic commands; Surf otherwise pins `jev-1.13.0`.
+- `TYPESAFE_API_KEY`: Used only by explicit `semantic.*` networked commands with a Jev model. Otherwise use `surf semantic auth set` for the provider-neutral shared store.
+- `CLOUDFLARE_ACCOUNT_ID` / `CLOUDFLARE_API_TOKEN`: Used only by semantic commands with a Clef model. Otherwise use `surf semantic auth set --provider cloudflare`.
+- `SURF_SEMANTIC_MODEL`: Default model for semantic commands and the model for semantic `surf do` steps; `--model` overrides it on commands. Replaces `SURF_JEV_MODEL`, which is no longer read.
 
 **Example (Nix):**
 ```bash
