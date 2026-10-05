@@ -578,8 +578,8 @@ async function runBrowserSemantic(options, { request, evaluate, now = () => perf
     finally { clearTimeout(timer); }
   };
   let designatedIdentity;
+  const readArgs = options.vision ? { semanticObservation: true, semanticVision: true } : { semanticObservation: true };
   const observe = async () => {
-    const readArgs = options.vision ? { semanticObservation: true, semanticVision: true } : { semanticObservation: true };
     const observation = semanticObservationFrom(await request("page.read", readArgs, remaining(), designatedIdentity));
     if (options.vision && !observation.vision) throw new Error("browser returned no semantic vision; reload the surf extension");
     if (!designatedIdentity) {
@@ -668,9 +668,8 @@ async function runBrowserSemantic(options, { request, evaluate, now = () => perf
     let choice;
     try {
       decisionVision = visionInput(observation);
-      const { tiled } = decisionVision;
       let actions = buildActions(observation, options.inputs, options.allowWrite, options.allowRefs, spentWrites)
-        .map((action) => tiled.has(action.ref || action.concreteRef) ? { ...action, tile: true } : action);
+        .map((action) => decisionVision.tiled.has(action.ref || action.concreteRef) ? { ...action, tile: true } : action);
       for (let retries = 0; ; retries++) {
         try {
           choice = await chooseAction({ state, goal: options.goal, actions, origin: state.origin, allowWrite: options.allowWrite, allowRefs: options.allowRefs, inputSlots: Object.keys(options.inputs), thresholds: options.thresholds, model: options.model, evaluate: evaluator, images: decisionVision.images });

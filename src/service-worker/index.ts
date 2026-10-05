@@ -1466,7 +1466,7 @@ export async function handleMessage(
             result.semanticObservation.vision = await captureSemanticVision(tabId, readFrameId, semanticVisionTargets);
           } catch (err) {
             // Fail the read rather than silently answering from text alone.
-            throw new Error(`semantic vision capture failed: ${err instanceof Error ? err.message : String(err)}`);
+            throw new Error(`semantic vision capture failed: ${err instanceof Error ? err.message : String(err)}`, { cause: err });
           }
         }
       } finally {

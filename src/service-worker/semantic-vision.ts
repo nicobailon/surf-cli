@@ -1,6 +1,6 @@
 export type VisionRect = { x: number; y: number; width: number; height: number };
 
-export type ContactSheetTile = {
+type ContactSheetTile = {
   ref: string;
   /** Source rectangle in capture device pixels. */
   crop: VisionRect;
@@ -19,8 +19,8 @@ export type ContactSheetPlan = {
   skipped: number;
 };
 
-export const SEMANTIC_VISION_MAX_TILES = 16;
-export const SEMANTIC_VISION_MAX_SIDE = 1024;
+const SEMANTIC_VISION_MAX_TILES = 16;
+const SEMANTIC_VISION_MAX_SIDE = 1024;
 const CROP_PADDING = 4;
 const MOVE_TOLERANCE = 2;
 const GAP = 8;
