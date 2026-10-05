@@ -141,9 +141,6 @@ const CREDENTIAL_RESOLVERS = {
 };
 
 function credentialStatus(env = process.env, provider = "all") {
-  if (provider !== "all" && !Object.hasOwn(CREDENTIAL_RESOLVERS, provider)) {
-    throw new Error("unknown credential provider; expected all, typesafe, or cloudflare");
-  }
   const providers = provider === "all" ? Object.keys(CREDENTIAL_RESOLVERS) : [provider];
   return Object.fromEntries(providers.map((name) => {
     const credential = CREDENTIAL_RESOLVERS[name](env);
@@ -156,17 +153,6 @@ function storeTypeSafeCredential(apiKey, env = process.env) {
   const { root, filePath } = credentialLocation(env);
   atomicWriteJson(filePath, { version: CREDENTIAL_VERSION, apiKey: validated }, { root });
   return { source: "shared-store", fingerprint: fingerprintApiKey(validated) };
-}
-
-function storeCloudflareCredential({ accountId, apiToken }, env = process.env) {
-  const record = {
-    version: CREDENTIAL_VERSION,
-    accountId: requireCloudflareAccountId(accountId),
-    apiToken: requireCloudflareApiToken(apiToken),
-  };
-  const { root, filePath } = cloudflareCredentialLocation(env);
-  atomicWriteJson(filePath, record, { root });
-  return { source: "stored", fingerprint: fingerprintApiKey(record.apiToken) };
 }
 
 function clearStoredTypeSafeCredential(env = process.env) {
@@ -319,8 +305,10 @@ async function readCloudflareCredential(options = {}) {
 }
 
 async function setCloudflareCredentialFromInput(options = {}) {
-  const credential = await readCloudflareCredential(options);
-  return storeCloudflareCredential(credential, options.env || process.env);
+  const { accountId, apiToken } = await readCloudflareCredential(options);
+  const { root, filePath } = cloudflareCredentialLocation(options.env || process.env);
+  atomicWriteJson(filePath, { version: CREDENTIAL_VERSION, accountId, apiToken }, { root });
+  return { source: "stored", fingerprint: fingerprintApiKey(apiToken) };
 }
 
 module.exports = {
@@ -337,6 +325,5 @@ module.exports = {
   resolveTypeSafeCredential,
   setCloudflareCredentialFromInput,
   setTypeSafeCredentialFromInput,
-  storeCloudflareCredential,
   storeTypeSafeCredential,
 };

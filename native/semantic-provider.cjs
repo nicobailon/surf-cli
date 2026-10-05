@@ -66,11 +66,7 @@ function createJevEvaluator({ apiKey, model = SEMANTIC_POLICY.model, loadSdk = (
 }
 
 function createCloudflareEvaluator({ accountId, apiToken, model, fetch = globalThis.fetch } = {}) {
-  if (typeof accountId !== "string" || !accountId.trim() || typeof apiToken !== "string" || !apiToken.trim()) {
-    throw providerError("provider_not_configured", `${CLOUDFLARE} account id and API token are not configured`);
-  }
-  if (typeof model !== "string" || !model.trim()) throw new SemanticError("semantic_invalid_request", `${CLOUDFLARE} model is required`);
-  const url = `${CLOUDFLARE_API_URL}/accounts/${encodeURIComponent(accountId.trim())}/ai/run/@cf/cloudflare/${encodeURIComponent(model)}`;
+  const url = `${CLOUDFLARE_API_URL}/accounts/${accountId}/ai/run/@cf/cloudflare/${model}`;
   const authorization = `Bearer ${apiToken.trim()}`;
 
   return async function evaluate(state, questions, options = {}) {

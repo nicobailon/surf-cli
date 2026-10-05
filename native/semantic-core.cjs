@@ -312,10 +312,7 @@ async function chooseAction({ state, goal, actions, origin, allowWrite = false, 
   const actionCriteria = Object.fromEntries(eligible.map((action) => [action.id, actionDescription(action, state)]));
   actionCriteria.stop = "The goal is already satisfied, or no supplied action can safely make progress";
   const writeActions = eligible.filter((item) => item.kind === "click" || item.kind === "fill");
-  const writing = writeActions.length > 0;
   const exactRefWrite = allowRefs.length === 1 && writeActions.length === 1 && writeActions[0].ref === allowRefs[0];
-  const findThreshold = modelThreshold(model, thresholds, "find");
-  const writeThreshold = writing ? modelThreshold(model, thresholds, exactRefWrite ? "exactRefWrite" : "write") : null;
   const prerequisiteSupported = modelThreshold(model, thresholds, "prerequisiteSupported");
   const prerequisiteBlocked = modelThreshold(model, thresholds, "prerequisiteBlocked");
   const prerequisiteEvidenceThreshold = modelThreshold(model, {}, "filter");
@@ -362,7 +359,8 @@ async function chooseAction({ state, goal, actions, origin, allowWrite = false, 
     : evidence.find((chunk) => chunk.id === prerequisiteEvidenceDecision.label) || null;
   const action = eligible.find((item) => item.id === decision.label) || null;
   const write = action && (action.kind === "click" || action.kind === "fill");
-  const appliedThreshold = write ? writeThreshold : findThreshold;
+  const writeKey = exactRefWrite ? "exactRefWrite" : "write";
+  const appliedThreshold = modelThreshold(model, thresholds, write ? writeKey : "find");
   const blocked = prerequisiteStatus === "blocked" && (!action || write);
   const selected = action && decision.probability >= appliedThreshold && (!write || prerequisiteStatus === "supported") ? action : null;
   return {

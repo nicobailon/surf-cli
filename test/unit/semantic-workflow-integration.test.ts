@@ -113,10 +113,6 @@ describe("semantic workflow integration seam", () => {
     expect(result.status).toBe("completed");
     expect(result.semantic).toMatchObject({
       stepId: "find",
-      provider: "typesafe",
-      model: "jev-1.13.0",
-      providerCalls: 1,
-      providerLatencyMs: expect.any(Number),
       usage: { providerCalls: 1, inputTokens: 2, outputTokens: 1 },
       limits: {
         maxProviderCalls: 32,

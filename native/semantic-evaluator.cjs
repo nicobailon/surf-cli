@@ -12,7 +12,7 @@ function providerEvaluator(provider, model, env, { fetch, loadSdk }) {
         "Clef needs Cloudflare credentials: set CLOUDFLARE_ACCOUNT_ID and CLOUDFLARE_API_TOKEN, or run: surf semantic auth set --provider cloudflare",
       );
     }
-    return createCloudflareEvaluator({ accountId: credential.accountId, apiToken: credential.apiToken, model, ...(fetch ? { fetch } : {}) });
+    return createCloudflareEvaluator({ accountId: credential.accountId, apiToken: credential.apiToken, model, fetch });
   }
   const credential = resolveTypeSafeCredential(env);
   if (!credential) {
@@ -21,10 +21,9 @@ function providerEvaluator(provider, model, env, { fetch, loadSdk }) {
       "Jev needs a TypeSafe API key: set TYPESAFE_API_KEY, or run: surf semantic auth set --provider typesafe",
     );
   }
-  return createJevEvaluator({ apiKey: credential.apiKey, model, ...(loadSdk ? { loadSdk } : {}), ...(fetch ? { fetch } : {}) });
+  return createJevEvaluator({ apiKey: credential.apiKey, model, loadSdk, fetch });
 }
 
-// The single place that routes a model to its provider and measures provider round trips.
 function createSemanticEvaluator({ model, env = process.env, fetch, loadSdk, now = () => performance.now() }) {
   const { provider } = semanticModel(model);
   const evaluateProvider = providerEvaluator(provider, model, env, { fetch, loadSdk });
@@ -40,7 +39,6 @@ function createSemanticEvaluator({ model, env = process.env, fetch, loadSdk, now
     }
   }
   return {
-    provider,
     model,
     evaluate,
     summary: () => ({ provider, model, providerCalls, providerLatencyMs: Math.round(providerLatencyMs) }),

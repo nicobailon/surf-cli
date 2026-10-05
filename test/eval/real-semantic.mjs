@@ -159,7 +159,6 @@ for (const model of models) {
   for (const [key, probability] of runs.flatMap((run) => run.wrong)) (wrongByKey[key] ||= []).push(probability);
   report.push({
     model,
-    provider: evaluator.provider,
     thresholds: SEMANTIC_POLICY.models[model].thresholds,
     repeat,
     passRate: runs.filter((run) => run.pass).length / runs.length,

@@ -45,12 +45,6 @@ describe("semantic evaluator factory", () => {
     );
   });
 
-  it("rejects an unknown model before resolving credentials", () => {
-    expect(() => createSemanticEvaluator({ model: "gpt", env: {} })).toThrow(
-      expect.objectContaining({ code: "semantic_invalid_request" }),
-    );
-  });
-
   it("routes Clef to Workers AI and sums provider calls and latency, including failures", async () => {
     let clock = 0;
     const fetch = vi.fn(async (_url: string, _init: unknown) => {

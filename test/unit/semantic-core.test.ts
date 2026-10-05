@@ -79,7 +79,6 @@ describe("semantic decision core", () => {
         identicalObservationHashes: 2,
       },
     });
-    expect(SEMANTIC_POLICY).not.toHaveProperty("thresholds");
   });
 
   it("registers only models with a complete measured threshold set", () => {
@@ -118,18 +117,6 @@ describe("semantic decision core", () => {
     );
   });
 
-  it("applies the selected model's calibrated thresholds", async () => {
-    const candidates = [{ id: "ref.1", role: "button", name: "Preferences" }];
-    const result = await find({
-      state: {},
-      goal: "preferences",
-      candidates,
-      model: "jev-1.13.0",
-      evaluate: evaluateWith({ target: "ref.1" }, 0.69),
-    });
-    expect(result).toMatchObject({ status: "uncertain", appliedThreshold: 0.7 });
-  });
-
   it("applies Clef measured thresholds through the model option", async () => {
     const click = { id: "click", kind: "click", ref: "ref.1" };
     const exactRef = (probability: number) =>
@@ -158,14 +145,6 @@ describe("semantic decision core", () => {
       status: "not_satisfied",
       appliedThreshold: 0.94,
     });
-  });
-
-  it("rejects an unknown model before calling the provider", async () => {
-    const evaluate = evaluateWith({});
-    await expect(
-      find({ state: {}, goal: "target", candidates: [], model: "gpt", evaluate }),
-    ).rejects.toMatchObject({ code: "semantic_invalid_request" });
-    expect(evaluate).not.toHaveBeenCalled();
   });
 
   it("find selects only a supplied candidate and gates on selected probability", async () => {

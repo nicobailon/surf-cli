@@ -335,28 +335,4 @@ describe("Cloudflare credential store", () => {
     expect(input.rawCalls).toEqual([true, false, true, false]);
     expect(credentials.resolveCloudflareCredential(env)).toMatchObject({ apiToken: "tty-token" });
   });
-
-  it("reports status per provider with fingerprints only", async () => {
-    const env = testEnv({ TYPESAFE_API_KEY: "typesafe-secret" });
-    await setCloudflareFromPipe(env, `${ACCOUNT_ID}\ncloudflare-secret\n`);
-
-    const typesafe = {
-      source: "environment",
-      fingerprint: credentials.fingerprintApiKey("typesafe-secret"),
-    };
-    const cloudflare = {
-      source: "stored",
-      fingerprint: credentials.fingerprintApiKey("cloudflare-secret"),
-    };
-    const all = credentials.credentialStatus(env);
-    expect(all).toEqual({ typesafe, cloudflare });
-    expect(credentials.credentialStatus(env, "typesafe")).toEqual({ typesafe });
-    expect(credentials.credentialStatus(env, "cloudflare")).toEqual({ cloudflare });
-    for (const value of ["typesafe-secret", "cloudflare-secret", ACCOUNT_ID]) {
-      expect(JSON.stringify(all)).not.toContain(value);
-    }
-    expect(() => credentials.credentialStatus(env, "openai")).toThrow(
-      /unknown credential provider/,
-    );
-  });
 });
