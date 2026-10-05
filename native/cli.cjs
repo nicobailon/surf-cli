@@ -1634,11 +1634,13 @@ Choose with --model <id> or SURF_SEMANTIC_MODEL. Results report provider, model,
   semantic auth set|status|clear [--provider typesafe|cloudflare]
 
 --vision (find and act, clef or clef-flash only) also sends one image of small crops of visible
-controls that have no name, such as icon-only buttons. A crop can include whatever is drawn in that
-spot; form fields, editable content, iframes and embeds are blacked out, including any text that
-overflows them. If a field uses an effect that can paint its content elsewhere (text-shadow, filter,
-box-reflect), or anything in the page's DOM changed between the field measurements before and after
-the screenshot, or a field is animating, surf sends no crops for that read.
+controls that have no name, such as icon-only buttons. Not masked: anything the page itself draws
+outside its fields (live previews, counters, search results, canvas or div-based editors); a crop can
+include whatever is drawn there. Fields (inputs, editable content, value roles, iframes, embeds) are
+made to paint nothing for the screenshot, checked, and blacked out; they blink invisible for that
+moment. surf sends no crops for a read when it can't prove that: the page forces a field visible,
+an editable element uses display:contents, designMode is on, a view transition is running, a shadow
+root is unreadable, anything in the DOM changed meanwhile, or the screenshot took over 2 s.
 
 Every click/fill requires --allow-write. This broadly authorizes even high-impact controls;
 repeat --allow-ref <ref> to narrow authorization to exact observed refs.

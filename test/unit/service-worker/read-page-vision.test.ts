@@ -38,12 +38,19 @@ const targets = [
 let bitmapClose: ReturnType<typeof vi.fn>;
 let order: string[];
 
-function routeContentMessages(tree: Record<string, unknown>, recheck: Record<string, unknown>) {
+function routeContentMessages(
+  tree: Record<string, unknown>,
+  recheck: Record<string, unknown>,
+  prepared: Record<string, unknown> = { masks: [] },
+) {
   const chrome = (globalThis as any).chrome;
   chrome.tabs.sendMessage.mockImplementation(async (_tabId: number, message: any) => {
     order.push(message.type);
     if (message.type === "GENERATE_ACCESSIBILITY_TREE") {
       return structuredClone(tree);
+    }
+    if (message.type === "SEMANTIC_VISION_PREPARE") {
+      return prepared;
     }
     if (message.type === "SEMANTIC_VISION_RECHECK") {
       return recheck;
@@ -112,30 +119,29 @@ describe("READ_PAGE semantic vision", () => {
     vi.unstubAllGlobals();
   });
 
-  it("attaches one contact sheet of rechecked controls and drops covered ones", async () => {
-    const handleMessage = await loadHandleMessage();
-    routeContentMessages(
-      {
-        pageContent: "",
-        viewport: {},
-        semanticObservation: observation,
-        semanticVisionTargets: targets,
-        semanticVisionMasks: [],
-      },
-      {
-        viewport: { width: 1280, height: 800 },
-        current: { e1: targets[0].rect, e2: null },
-        masks: [],
-        fieldsChanged: false,
-      },
-    );
-
-    const result = await handleMessage(
+  const visionTree = {
+    pageContent: "",
+    viewport: {},
+    semanticObservation: observation,
+    semanticVisionTargets: targets,
+  };
+  const readVision = (handleMessage: Awaited<ReturnType<typeof loadHandleMessage>>) =>
+    handleMessage(
       { type: "READ_PAGE", tabId: 9, options: { semanticObservation: true, semanticVision: true } },
       {} as chrome.runtime.MessageSender,
     );
 
-    expect(result).not.toHaveProperty("semanticVisionMasks");
+  it("hides the fields, captures once, and attaches one contact sheet of rechecked controls", async () => {
+    const handleMessage = await loadHandleMessage();
+    routeContentMessages(visionTree, {
+      viewport: { width: 1280, height: 800 },
+      current: { e1: targets[0].rect, e2: null },
+      masks: [],
+      fieldsChanged: false,
+    });
+
+    const result = await readVision(handleMessage);
+
     expect(result).not.toHaveProperty("semanticVisionTargets");
     expect(result.semanticObservation.candidates).toEqual(observation.candidates);
     expect(result.semanticObservation.vision).toEqual({
@@ -147,6 +153,7 @@ describe("READ_PAGE semantic vision", () => {
     expect(order).toEqual([
       "HIDE_FOR_TOOL_USE",
       "GENERATE_ACCESSIBILITY_TREE",
+      "SEMANTIC_VISION_PREPARE",
       "capture",
       "SEMANTIC_VISION_RECHECK",
       "SHOW_AFTER_TOOL_USE",
@@ -154,97 +161,66 @@ describe("READ_PAGE semantic vision", () => {
     expect(bitmapClose).toHaveBeenCalledTimes(1);
   });
 
-  it("sends no image when a field changed between the pre-capture measurement and the recheck", async () => {
+  it("sends no image when the fields could not be hidden or the capture may not have been field-free", async () => {
     const handleMessage = await loadHandleMessage();
     const field = { x: 90, y: 40, width: 20, height: 20 };
-    for (const [before, after, fieldsChanged] of [
-      [[field], [field], true],
-      [[field], [], false],
-    ] as const) {
-      routeContentMessages(
-        {
-          pageContent: "",
-          viewport: {},
-          semanticObservation: observation,
-          semanticVisionTargets: targets,
-          semanticVisionMasks: before,
-        },
-        {
-          viewport: { width: 1280, height: 800 },
-          current: { e1: targets[0].rect, e2: targets[1].rect },
-          masks: after,
-          fieldsChanged,
-        },
-      );
+    const recheck = {
+      viewport: { width: 1280, height: 800 },
+      current: { e1: targets[0].rect, e2: targets[1].rect },
+    };
 
-      const result = await handleMessage(
-        {
-          type: "READ_PAGE",
-          tabId: 9,
-          options: { semanticObservation: true, semanticVision: true },
-        },
-        {} as chrome.runtime.MessageSender,
-      );
+    routeContentMessages(visionTree, {}, { masks: [null] });
+    expect((await readVision(handleMessage)).semanticObservation.vision).toEqual({
+      image: null,
+      tiles: [],
+      skipped: 2,
+    });
+    expect(cdpState.captureScreenshot).not.toHaveBeenCalled();
+    expect(order).not.toContain("SEMANTIC_VISION_RECHECK");
 
-      expect(result.semanticObservation.vision).toEqual({ image: null, tiles: [], skipped: 2 });
+    for (const after of [
+      { masks: [field], fieldsChanged: true },
+      { masks: [null], fieldsChanged: false },
+    ]) {
+      routeContentMessages(visionTree, { ...recheck, ...after }, { masks: [field] });
+      expect((await readVision(handleMessage)).semanticObservation.vision).toEqual({
+        image: null,
+        tiles: [],
+        skipped: 2,
+      });
     }
   });
 
-  it("fails the read with a vision-specific error when the capture fails", async () => {
+  it("restores the fields and fails the read with a vision-specific error when the capture fails", async () => {
     const handleMessage = await loadHandleMessage();
-    routeContentMessages(
-      {
-        pageContent: "",
-        viewport: {},
-        semanticObservation: observation,
-        semanticVisionTargets: targets,
-        semanticVisionMasks: [],
-      },
-      {},
-    );
+    routeContentMessages(visionTree, {});
     cdpState.captureScreenshot.mockRejectedValue(new Error("Debugger is not attached"));
 
-    await expect(
-      handleMessage(
-        {
-          type: "READ_PAGE",
-          tabId: 9,
-          options: { semanticObservation: true, semanticVision: true },
-        },
-        {} as chrome.runtime.MessageSender,
-      ),
-    ).rejects.toThrow("semantic vision capture failed: Debugger is not attached");
-    expect(order.at(-1)).toBe("SHOW_AFTER_TOOL_USE");
+    await expect(readVision(handleMessage)).rejects.toThrow(
+      "semantic vision capture failed: Debugger is not attached",
+    );
+    expect(order.slice(-3)).toEqual([
+      "SEMANTIC_VISION_PREPARE",
+      "SEMANTIC_VISION_RELEASE",
+      "SHOW_AFTER_TOOL_USE",
+    ]);
+
+    routeContentMessages(visionTree, {}, { error: "replaceSync failed" });
+    await expect(readVision(handleMessage)).rejects.toThrow(
+      "semantic vision capture failed: replaceSync failed",
+    );
   });
 
   it("fails the read when the capture does not match the page viewport", async () => {
     const handleMessage = await loadHandleMessage();
-    routeContentMessages(
-      {
-        pageContent: "",
-        viewport: {},
-        semanticObservation: observation,
-        semanticVisionTargets: targets,
-        semanticVisionMasks: [],
-      },
-      {
-        viewport: { width: 1280, height: 900 },
-        current: { e1: targets[0].rect, e2: targets[1].rect },
-        masks: [],
-        fieldsChanged: false,
-      },
-    );
+    routeContentMessages(visionTree, {
+      viewport: { width: 1280, height: 900 },
+      current: { e1: targets[0].rect, e2: targets[1].rect },
+      masks: [],
+      fieldsChanged: false,
+    });
 
-    await expect(
-      handleMessage(
-        {
-          type: "READ_PAGE",
-          tabId: 9,
-          options: { semanticObservation: true, semanticVision: true },
-        },
-        {} as chrome.runtime.MessageSender,
-      ),
-    ).rejects.toThrow(
+    await expect(readVision(handleMessage)).rejects.toThrow(
       "semantic vision capture failed: the screenshot does not match the page viewport",
     );
     expect(bitmapClose).toHaveBeenCalledTimes(1);
@@ -289,7 +265,6 @@ describe("READ_PAGE semantic vision", () => {
         viewport: {},
         semanticObservation: observation,
         semanticVisionTargets: targets,
-        semanticVisionMasks: [],
       },
       {},
     );

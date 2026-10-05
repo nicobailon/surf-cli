@@ -37,7 +37,11 @@ export async function launchVisionChrome(repo, pages) {
   let server;
   let transport;
   const close = async () => {
-    await transport?.close().catch(() => {});
+    try {
+      await transport?.close();
+    } catch {
+      // Already closed by the native host.
+    }
     await browser?.close().catch(() => {});
     await new Promise((done) => (server ? server.close(done) : done()));
     rmSync(scratch, { recursive: true, force: true });

@@ -249,10 +249,19 @@ function buildSemanticObservation() {
 type SemanticVisionRect = { x: number; y: number; width: number; height: number };
 
 const SEMANTIC_VISION_VALUE_ROLES = ["textbox", "searchbox", "combobox", "spinbutton"];
-// Iframes, embeds and objects are masked whole: fields inside them cannot be measured from here.
-const SEMANTIC_VISION_MASKED_TAGS = ["input", "textarea", "select", "iframe", "frame", "embed", "object"];
-// Glyph overhang and anti-aliasing past the line boxes, in CSS px.
-const SEMANTIC_VISION_BLEED = 4;
+const SEMANTIC_VISION_FIELD_TAGS = ["input", "textarea", "select", "iframe", "frame", "embed", "object"];
+// Longest time fields stay hidden for one capture; a recheck after that skips the read.
+const SEMANTIC_VISION_HIDE_MS = 2_000;
+// Makes every field paint nothing while the screenshot is taken. The layer beats unlayered page `!important`
+// rules; a field the page still keeps visible fails the opacity check before and after the capture. Top-layer
+// descendants of an editing host (popovers, dialogs, fullscreen) escape its opacity group, so they are listed.
+const SEMANTIC_VISION_SHEET = `@layer surf-vision {
+  input, textarea, select, iframe, frame, embed, object,
+  [role~="textbox" i], [role~="searchbox" i], [role~="combobox" i], [role~="spinbutton" i],
+  [contenteditable]:not([contenteditable="false" i]),
+  [contenteditable]:not([contenteditable="false" i]) :is([popover], dialog, :fullscreen)
+  { opacity: 0 !important; transition: none !important; }
+}`;
 
 function isSemanticVisionField(element: Element): boolean {
   return ["input", "textarea", "select"].includes(element.tagName.toLowerCase()) ||
@@ -286,22 +295,18 @@ function semanticVisionCurrentRect(ref: string): SemanticVisionRect | null {
   return hit && (hit === element || element.contains(hit)) ? rect : null;
 }
 
-// Elements whose painted extent is masked, chosen by behavior: native fields, frames, explicit value roles,
-// and editing hosts, whose extent covers every editable descendant.
+// Fields chosen by behavior, matching the sheet: native fields, frames, explicit value roles, and editing hosts.
 function isSemanticVisionMaskTarget(element: Element): boolean {
-  return SEMANTIC_VISION_MASKED_TAGS.includes(element.tagName.toLowerCase()) ||
-    SEMANTIC_VISION_VALUE_ROLES.includes(element.getAttribute("role") ?? "") ||
+  const roles = (element.getAttribute("role") ?? "").toLowerCase().split(/\s+/);
+  return SEMANTIC_VISION_FIELD_TAGS.includes(element.tagName.toLowerCase()) ||
+    roles.some((role) => SEMANTIC_VISION_VALUE_ROLES.includes(role)) ||
     ((element as HTMLElement).isContentEditable === true && (element.parentElement as HTMLElement | null)?.isContentEditable !== true);
-}
-
-function composedParent(element: Element): Element | null {
-  return element.parentElement ?? (element.parentNode instanceof ShadowRoot ? element.parentNode.host : null);
 }
 
 type SemanticVisionScan = { fields: Element[]; unreadableHosts: Element[]; roots: ShadowRoot[] };
 
-// Mask targets under root, including inside open and closed shadow roots, which content scripts can read
-// through chrome.dom. A host whose shadow root cannot be read is listed so its whole extent is masked.
+// Fields under root, including inside open and closed shadow roots, which content scripts can read through
+// chrome.dom. A host whose shadow root cannot be read is listed, and the read is skipped.
 function scanSemanticVisionFields(
   root: Document | ShadowRoot,
   scan: SemanticVisionScan = { fields: [], unreadableHosts: [], roots: [] },
@@ -324,115 +329,106 @@ function scanSemanticVisionFields(
   return scan;
 }
 
-// Effects that paint copies of content arbitrarily far from it. Text effects only matter on the target and its
-// descendants (inherited values show up there); filters and reflections on any ancestor copy the whole subtree.
-function copiesSemanticVisionContent(element: Element, ownText: boolean): boolean {
-  const style = window.getComputedStyle(element);
-  const set = (value: string | undefined) => !!value && value !== "none";
-  return set(style.filter) || set(style.getPropertyValue("-webkit-box-reflect")) ||
-    (ownText && (set(style.textShadow) || Number.parseFloat(style.getPropertyValue("-webkit-text-stroke-width")) > 2));
-}
-
-// Painted extent of a mask target: its border box, every text line box (overflowed lines included) and every
-// descendant box, inflated for glyph bleed. Null when it cannot be bounded.
-function semanticVisionExtent(element: Element): SemanticVisionRect | null {
-  const descendants = Array.from(element.querySelectorAll("*"));
-  if ([element, ...descendants].some((node) => copiesSemanticVisionContent(node, true))) return null;
-  for (let ancestor = composedParent(element); ancestor; ancestor = composedParent(ancestor)) {
-    if (copiesSemanticVisionContent(ancestor, false)) return null;
-  }
-  const range = document.createRange();
-  range.selectNodeContents(element);
-  const rects = [
-    element.getBoundingClientRect(),
-    ...Array.from(range.getClientRects()),
-    ...descendants.flatMap((node) => Array.from(node.getClientRects())),
-  ];
-  if (!rects.every((rect) => [rect.left, rect.top, rect.right, rect.bottom].every(Number.isFinite))) return null;
-  const painted = rects.filter((rect) => rect.right > rect.left && rect.bottom > rect.top);
-  if (!painted.length) return { x: 0, y: 0, width: 0, height: 0 };
-  const left = Math.min(...painted.map((rect) => rect.left)) - SEMANTIC_VISION_BLEED;
-  const top = Math.min(...painted.map((rect) => rect.top)) - SEMANTIC_VISION_BLEED;
-  const right = Math.max(...painted.map((rect) => rect.right)) + SEMANTIC_VISION_BLEED;
-  const bottom = Math.max(...painted.map((rect) => rect.bottom)) + SEMANTIC_VISION_BLEED;
-  return { x: left, y: top, width: right - left, height: bottom - top };
-}
-
-// A running CSS animation or transition on a field, or on anything that contains one, can move or reveal
-// it without a DOM mutation.
-function semanticVisionFieldAnimating(fields: Element[], roots: ShadowRoot[]): boolean {
-  const containsField = (target: Element) => fields.some((field) => {
-    for (let node: Element | null = field; node; node = composedParent(node)) {
-      if (node === target) return true;
-    }
-    return false;
-  });
-  return [document, ...roots].some((root) => root.getAnimations().some((animation) => {
-    const target = (animation.effect as KeyframeEffect | null)?.target;
-    return animation.playState === "running" && !!target && containsField(target);
-  }));
-}
-
-// Viewport rects of the painted extent of every mask target and unreadable shadow host; null when one cannot be
-// bounded. Without chrome.dom no shadow root can be proven clear, so the single null mask makes the planner skip
-// every tile.
-function measureSemanticVisionFields(): { masks: Array<SemanticVisionRect | null>; roots: ShadowRoot[]; animating: boolean } {
-  if (typeof chrome.dom?.openOrClosedShadowRoot !== "function") return { masks: [null], roots: [], animating: false };
-  const scan = scanSemanticVisionFields(document);
-  const fields = [...scan.fields, ...scan.unreadableHosts];
-  const masks = fields.flatMap((element) => {
-    const rect = semanticVisionExtent(element);
+// Border boxes of the fields in the viewport, blacked out on top of the hidden fields; null when one cannot be measured.
+function semanticVisionMasks(fields: Element[]): Array<SemanticVisionRect | null> {
+  return fields.flatMap((field) => {
+    const rect = semanticVisionRect(field);
     if (!rect) return [null];
     const inViewport = rect.width > 0 && rect.height > 0 && rect.x < window.innerWidth && rect.y < window.innerHeight &&
       rect.x + rect.width > 0 && rect.y + rect.height > 0;
     return inViewport ? [rect] : [];
   });
-  return { masks, roots: scan.roots, animating: semanticVisionFieldAnimating(fields, scan.roots) };
 }
-let semanticVisionWatch: {
+
+type SemanticVisionHiding = {
+  roots: Array<Document | ShadowRoot>;
+  shadowRoots: ShadowRoot[];
+  fields: Element[];
   observer: MutationObserver;
   timer: ReturnType<typeof setTimeout>;
-  roots: ShadowRoot[];
   changed: boolean;
-} | null = null;
+};
+let semanticVisionHiding: SemanticVisionHiding | null = null;
+let semanticVisionSheet: CSSStyleSheet | undefined;
 
-// Tiles are sent only if the DOM that decides where fields are drawn is provably unchanged between the
-// measurement before the capture and the recheck after it. Any mutation in the document or in a shadow
-// root, a shadow root that was not there before, or a running animation on a field counts as a change.
-function startSemanticVisionWatch(): Array<SemanticVisionRect | null> {
-  semanticVisionWatch?.observer.disconnect();
-  if (semanticVisionWatch) clearTimeout(semanticVisionWatch.timer);
-  const { masks, roots, animating } = measureSemanticVisionFields();
-  const watch = {
-    roots,
-    changed: animating,
-    observer: new MutationObserver(() => {
-      watch.changed = true;
-      watch.observer.disconnect();
-    }),
-    // A recheck that never comes must not leave the observer running.
-    timer: setTimeout(() => {
-      watch.changed = true;
-      watch.observer.disconnect();
-    }, 30_000),
-  };
-  for (const root of [document, ...roots]) {
-    watch.observer.observe(root, { subtree: true, childList: true, attributes: true, characterData: true });
+function releaseSemanticVision(): void {
+  const hiding = semanticVisionHiding;
+  if (!hiding) return;
+  semanticVisionHiding = null;
+  hiding.observer.disconnect();
+  clearTimeout(hiding.timer);
+  for (const root of hiding.roots) {
+    root.adoptedStyleSheets = root.adoptedStyleSheets.filter((sheet) => sheet !== semanticVisionSheet);
   }
-  semanticVisionWatch = watch;
+}
+
+// The sheet is still in every root and every field paints nothing: opacity 0 on a box of its own.
+function semanticVisionFieldsHidden(hiding: SemanticVisionHiding): boolean {
+  return hiding.roots.every((root) => root.adoptedStyleSheets.includes(semanticVisionSheet as CSSStyleSheet)) &&
+    hiding.fields.every((field) => {
+      const style = window.getComputedStyle(field);
+      return style.opacity === "0" && style.display !== "contents";
+    });
+}
+
+// Hides every field for the capture and returns their border boxes, or [null] when the read cannot be made safe.
+// Any mutation in the document or a shadow root from here to the recheck skips the read.
+async function prepareSemanticVision(): Promise<Array<SemanticVisionRect | null>> {
+  releaseSemanticVision();
+  if (
+    document.designMode === "on" ||
+    typeof chrome.dom?.openOrClosedShadowRoot !== "function" ||
+    (document as Document & { activeViewTransition?: unknown }).activeViewTransition
+  ) return [null];
+  const scan = scanSemanticVisionFields(document);
+  if (scan.unreadableHosts.length) return [null];
+  if (!semanticVisionSheet) {
+    semanticVisionSheet = new CSSStyleSheet();
+    semanticVisionSheet.replaceSync(SEMANTIC_VISION_SHEET);
+  }
+  const sheet = semanticVisionSheet;
+  const hiding: SemanticVisionHiding = {
+    roots: [document, ...scan.roots],
+    shadowRoots: scan.roots,
+    fields: scan.fields,
+    changed: false,
+    observer: new MutationObserver(() => {
+      hiding.changed = true;
+      hiding.observer.disconnect();
+    }),
+    timer: setTimeout(() => {
+      if (semanticVisionHiding === hiding) releaseSemanticVision();
+    }, SEMANTIC_VISION_HIDE_MS),
+  };
+  for (const root of hiding.roots) {
+    hiding.observer.observe(root, { subtree: true, childList: true, attributes: true, characterData: true });
+  }
+  for (const root of hiding.roots) root.adoptedStyleSheets = [...root.adoptedStyleSheets, sheet];
+  semanticVisionHiding = hiding;
+  // One frame, or 100 ms where a hidden tab gets no animation frames.
+  await new Promise((resolve) => {
+    requestAnimationFrame(resolve);
+    setTimeout(resolve, 100);
+  });
+  const masks = semanticVisionMasks(hiding.fields);
+  if (semanticVisionHiding !== hiding || hiding.changed || !semanticVisionFieldsHidden(hiding) || masks.includes(null)) {
+    if (semanticVisionHiding === hiding) releaseSemanticVision();
+    return [null];
+  }
   return masks;
 }
 
-// Field masks after the capture, and whether anything changed since the measurement before it.
-function finishSemanticVisionWatch(): { masks: Array<SemanticVisionRect | null>; fieldsChanged: boolean } {
-  const watch = semanticVisionWatch;
-  semanticVisionWatch = null;
-  const pending = watch ? watch.observer.takeRecords().length > 0 : false;
-  watch?.observer.disconnect();
-  if (watch) clearTimeout(watch.timer);
-  const { masks, roots, animating } = measureSemanticVisionFields();
-  const fieldsChanged = !watch || watch.changed || pending || animating ||
-    roots.length !== watch.roots.length || roots.some((root) => !watch.roots.includes(root));
+// Field masks after the capture, and whether the capture may not have been field-free; always restores the fields.
+function recheckSemanticVision(): { masks: Array<SemanticVisionRect | null>; fieldsChanged: boolean } {
+  const hiding = semanticVisionHiding;
+  if (!hiding) return { masks: [null], fieldsChanged: true };
+  const pending = hiding.observer.takeRecords().length > 0;
+  const scan = scanSemanticVisionFields(document);
+  const fieldsChanged = hiding.changed || pending || scan.unreadableHosts.length > 0 ||
+    scan.roots.length !== hiding.shadowRoots.length || scan.roots.some((root) => !hiding.shadowRoots.includes(root)) ||
+    !semanticVisionFieldsHidden(hiding);
+  const masks = semanticVisionMasks(hiding.fields);
+  releaseSemanticVision();
   return { masks, fieldsChanged };
 }
 
@@ -2060,26 +2056,32 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           const observation = buildSemanticObservation();
           (result as typeof result & { semanticObservation: typeof observation }).semanticObservation = observation;
           if (options.semanticVision === true) {
-            const targets = semanticVisionTargets(observation);
-            Object.assign(result, {
-              semanticVisionTargets: targets,
-              // Only the main frame is captured and rechecked, so a child-frame read starts no watch.
-              ...(targets.length && window.top === window ? { semanticVisionMasks: startSemanticVisionWatch() } : {}),
-            });
+            (result as typeof result & { semanticVisionTargets: ReturnType<typeof semanticVisionTargets> })
+              .semanticVisionTargets = semanticVisionTargets(observation);
           }
         }
         sendResponse(result);
       }
       break;
     }
+    case "SEMANTIC_VISION_PREPARE": {
+      prepareSemanticVision().then(
+        (masks) => sendResponse({ masks }),
+        (error: unknown) => {
+          releaseSemanticVision();
+          sendResponse({ error: error instanceof Error ? error.message : String(error) });
+        },
+      );
+      return true;
+    }
     case "SEMANTIC_VISION_RECHECK": {
-      const { masks, fieldsChanged } = finishSemanticVisionWatch();
-      sendResponse({
-        viewport: { width: window.innerWidth, height: window.innerHeight },
-        current: Object.fromEntries((message.refs as string[]).map((ref) => [ref, semanticVisionCurrentRect(ref)])),
-        masks,
-        fieldsChanged,
-      });
+      const current = Object.fromEntries((message.refs as string[]).map((ref) => [ref, semanticVisionCurrentRect(ref)]));
+      sendResponse({ viewport: { width: window.innerWidth, height: window.innerHeight }, current, ...recheckSemanticVision() });
+      break;
+    }
+    case "SEMANTIC_VISION_RELEASE": {
+      releaseSemanticVision();
+      sendResponse({ released: true });
       break;
     }
     case "GET_ELEMENT_COORDINATES": {

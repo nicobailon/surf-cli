@@ -146,17 +146,21 @@ describe("contact sheet planner", () => {
       { x: 30, y: 0, width: 34, height: 30 },
     ]);
     expect(plan.tiles[1].masks).toEqual([]);
+
+    // A field measured only once (it moved or went away) is still masked where it was.
+    const once = planContactSheet({
+      targets,
+      current: unchanged(targets),
+      masks: fields([{ x: 110, y: 40, width: 100, height: 20 }], []),
+      scale: 2,
+      viewport,
+    });
+    expect(once.tiles[0].masks).toEqual([{ x: 28, y: 0, width: 36, height: 28 }]);
   });
 
   it.each([
     ["a field could not be measured", fields([{ x: 0, y: 0, width: 10, height: 10 }, null])],
-    ["a field was added or removed between the measurements", fields([], [], true)],
-    ["a field appeared after the capture", fields([], [{ x: 0, y: 0, width: 10, height: 10 }])],
-    ["a field disappeared after the capture", fields([{ x: 0, y: 0, width: 10, height: 10 }], [])],
-    [
-      "a field moved more than 2 px",
-      fields([{ x: 0, y: 0, width: 10, height: 10 }], [{ x: 3, y: 0, width: 10, height: 10 }]),
-    ],
+    ["the capture may not have been field-free", fields([], [], true)],
   ])("skips every tile when %s", (_reason, masks) => {
     const targets = icons(3);
     const plan = planContactSheet({

@@ -33,7 +33,6 @@ class FakeElement extends FakeNode {
   isConnected = true;
   shadowRoot: { querySelectorAll(selector: string): FakeElement[] } | null = null;
   rect = { top: 0, bottom: 10, left: 0, right: 10 };
-  textRects: Array<{ top: number; bottom: number; left: number; right: number }> = [];
   computed: Record<string, string> = {};
 
   private attrs = new Map<string, string>();
@@ -136,8 +135,13 @@ class FakeElement extends FakeNode {
     return this.rect;
   }
 
-  getClientRects(): Array<{ top: number; bottom: number; left: number; right: number }> {
-    return [this.rect];
+  // Fields paint nothing while the surf vision sheet is adopted.
+  hiddenBySheet(): boolean {
+    const field =
+      this instanceof FakeInputElement ||
+      this instanceof FakeTextAreaElement ||
+      this.isContentEditable;
+    return field && (globalThis as any).document.adoptedStyleSheets?.length > 0;
   }
 }
 
@@ -201,7 +205,13 @@ describe("accessibility tree", () => {
     (globalThis as any).HTMLTextAreaElement = FakeTextAreaElement;
     (globalThis as any).Node = FakeNode;
     (globalThis as any).MutationObserver = FakeMutationObserver;
-    (globalThis as any).ShadowRoot = class {};
+    (globalThis as any).CSSStyleSheet = class {
+      text = "";
+      replaceSync(cssText: string): void {
+        this.text = cssText;
+      }
+    };
+    (globalThis as any).requestAnimationFrame = (callback: () => void) => setTimeout(callback, 0);
     FakeMutationObserver.active.clear();
 
     (globalThis as any).window = {
@@ -209,18 +219,12 @@ describe("accessibility tree", () => {
       innerHeight: 768,
       location: { href: "https://example.test/page" },
       getComputedStyle: (node?: FakeElement) => ({
-        display: "block",
+        display: node?.computed.display ?? "block",
         visibility: "visible",
-        opacity: "1",
+        opacity: node?.computed.opacity ?? (node?.hiddenBySheet() ? "0" : "1"),
         cursor: "default",
-        textShadow: node?.computed.textShadow,
-        filter: node?.computed.filter,
-        getPropertyValue: (name: string) => node?.computed[name] ?? "",
       }),
       __piVisualIndicatorMessageHandler: visualIndicatorHandler,
-      get top() {
-        return (globalThis as any).window;
-      },
     };
 
     (globalThis as any).document = {
@@ -229,16 +233,8 @@ describe("accessibility tree", () => {
       getElementById: () => null,
       querySelector: () => null,
       querySelectorAll: () => [],
-      getAnimations: () => [],
-      createRange: () => {
-        let contents: FakeElement | undefined;
-        return {
-          selectNodeContents: (node: FakeElement) => {
-            contents = node;
-          },
-          getClientRects: () => contents?.textRects ?? [],
-        };
-      },
+      adoptedStyleSheets: [],
+      designMode: "off",
     };
 
     (globalThis as any).chrome = {
@@ -820,161 +816,148 @@ describe("accessibility tree", () => {
     ]);
   });
 
-  it("rechecks vision targets after capture and masks fields in open and closed shadow roots", () => {
-    const { settings, search, notes } = iconToolbar();
+  const prepare = () =>
+    new Promise<any>((resolve) => {
+      messageHandler?.({ type: "SEMANTIC_VISION_PREPARE" }, {}, resolve);
+    });
+  const recheck = (refs: string[] = []) => sendMessage({ type: "SEMANTIC_VISION_RECHECK", refs });
+  // A toolbar with an in-viewport input, an offscreen textarea, and an input in a closed shadow root.
+  const visionPage = () => {
+    const toolbar = iconToolbar();
     const glyph = element("svg");
-    settings.append(glyph);
-    const banner = element("div");
-    (document as any).elementFromPoint = (x: number) => (x < 40 ? glyph : banner);
+    toolbar.settings.append(glyph);
+    (document as any).elementFromPoint = (x: number) => (x < 40 ? glyph : element("div"));
+    toolbar.search.rect = { top: 20, bottom: 40, left: 30, right: 230 };
+    toolbar.notes.rect = { top: 2000, bottom: 2100, left: 0, right: 200 };
     const closedField = new FakeInputElement("input");
     closedField.rect = { top: 100, bottom: 120, left: 0, right: 200 };
     const host = element("custom-widget");
     const closedRoot = {
+      adoptedStyleSheets: [] as object[],
       querySelectorAll: (selector: string) => (selector === "*" ? [closedField] : []),
-      getAnimations: () => [],
     };
-    const unreadable = element("other-widget");
-    unreadable.rect = { top: 200, bottom: 240, left: 0, right: 100 };
+    const elements: FakeElement[] = [toolbar.settings, toolbar.search, toolbar.notes, host];
+    (document as any).querySelectorAll = (selector: string) => (selector === "*" ? elements : []);
+    (globalThis as any).chrome.dom = {
+      openOrClosedShadowRoot: (node: FakeElement) => (node === host ? closedRoot : null),
+    };
+    return { ...toolbar, closedField, host, closedRoot, elements };
+  };
+
+  it("hides every field for the capture, masks their border boxes, and restores them at the recheck", async () => {
+    const { closedRoot } = visionPage();
+
+    const prepared = await prepare();
+
+    expect(prepared).toEqual({
+      masks: [
+        { x: 30, y: 20, width: 200, height: 20 },
+        { x: 0, y: 100, width: 200, height: 20 },
+      ],
+    });
+    expect((document as any).adoptedStyleSheets).toHaveLength(1);
+    expect(closedRoot.adoptedStyleSheets).toEqual((document as any).adoptedStyleSheets);
+    expect((document as any).adoptedStyleSheets[0].text).toMatch(
+      /^@layer surf-vision \{[\s\S]*\{ opacity: 0 !important; transition: none !important; \}\s*\}$/,
+    );
+
+    expect(recheck(["settings", "share", "missing"])).toEqual({
+      viewport: { width: 1024, height: 768 },
+      current: { settings: { x: 10, y: 10, width: 24, height: 24 }, share: null, missing: null },
+      masks: [
+        { x: 30, y: 20, width: 200, height: 20 },
+        { x: 0, y: 100, width: 200, height: 20 },
+      ],
+      fieldsChanged: false,
+    });
+    expect((document as any).adoptedStyleSheets).toEqual([]);
+    expect(closedRoot.adoptedStyleSheets).toEqual([]);
+    expect(recheck().fieldsChanged).toBe(true);
+  });
+
+  it("skips the read when fields cannot be proven hidden", async () => {
+    const { search, host } = visionPage();
+    const skipped = async () => {
+      expect(await prepare()).toEqual({ masks: [null] });
+      expect((document as any).adoptedStyleSheets).toEqual([]);
+    };
+
+    (document as any).designMode = "on";
+    await skipped();
+    (document as any).designMode = "off";
+    (document as any).activeViewTransition = {};
+    await skipped();
+    (document as any).activeViewTransition = null;
+    search.computed.display = "contents";
+    await skipped();
+    search.computed = { opacity: "1" };
+    await skipped();
+    search.computed = {};
     (globalThis as any).chrome.dom = {
       openOrClosedShadowRoot: (node: FakeElement) => {
-        if (node === unreadable) {
+        if (node === host) {
           throw new Error("cannot read root");
         }
-        return node === host ? closedRoot : null;
+        return null;
       },
     };
-    search.rect = { top: 20, bottom: 40, left: 30, right: 230 };
-    notes.rect = { top: 2000, bottom: 2100, left: 0, right: 200 };
-    (document as any).querySelectorAll = (selector: string) =>
-      selector === "*" ? [search, notes, host, unreadable] : [];
-
-    const response = sendMessage({
-      type: "SEMANTIC_VISION_RECHECK",
-      refs: ["settings", "share", "missing"],
-    });
-
-    expect(host.shadowRoot).toBeNull();
-    expect(response).toEqual({
-      viewport: { width: 1024, height: 768 },
-      current: {
-        settings: { x: 10, y: 10, width: 24, height: 24 },
-        share: null,
-        missing: null,
-      },
-      masks: [
-        { x: 26, y: 16, width: 208, height: 28 },
-        { x: -4, y: 96, width: 208, height: 28 },
-        { x: -4, y: 196, width: 108, height: 48 },
-      ],
-      fieldsChanged: true,
-    });
-
-    search.rect = { top: Number.NaN, bottom: 40, left: 30, right: 230 };
-    expect(
-      sendMessage({ type: "SEMANTIC_VISION_RECHECK", refs: ["settings"] }).masks,
-    ).toContainEqual(null);
-
+    await skipped();
     (globalThis as any).chrome.dom = undefined;
-    expect(sendMessage({ type: "SEMANTIC_VISION_RECHECK", refs: ["settings"] }).masks).toEqual([
-      null,
-    ]);
+    await skipped();
+    (globalThis as any).chrome.dom = { openOrClosedShadowRoot: () => null };
+    search.rect = { top: Number.NaN, bottom: 40, left: 30, right: 230 };
+    await skipped();
   });
 
-  it("masks the painted extent of editable content and fails closed on effects that copy it", () => {
-    // A fixed-height editor whose last line overflows its box, with a positioned editable child.
-    const editor = element("div");
-    editor.isContentEditable = true;
-    editor.rect = { top: 60, bottom: 100, left: 100, right: 160 };
-    editor.textRects = [
-      { top: 60, bottom: 80, left: 100, right: 140 },
-      { top: 100, bottom: 120, left: 100, right: 215 },
-    ];
-    const inner = element("img");
-    inner.isContentEditable = true;
-    inner.rect = { top: 130, bottom: 150, left: 300, right: 320 };
-    editor.append(inner);
-    // A display:contents editing host has no box of its own; its editable child does.
-    const wrapper = element("div");
-    wrapper.isContentEditable = true;
-    wrapper.rect = { top: 0, bottom: 0, left: 0, right: 0 };
-    const child = element("div");
-    child.isContentEditable = true;
-    child.rect = { top: 300, bottom: 340, left: 100, right: 160 };
-    wrapper.append(child);
-    const roleBox = element("div", { role: "textbox" });
-    roleBox.rect = { top: 400, bottom: 420, left: 0, right: 50 };
-    const outer = element("section");
-    outer.append(editor);
-    (globalThis as any).chrome.dom = { openOrClosedShadowRoot: () => null };
-    (document as any).querySelectorAll = (selector: string) =>
-      selector === "*" ? [outer, editor, inner, wrapper, child, roleBox] : [];
-    const masks = () => sendMessage({ type: "SEMANTIC_VISION_RECHECK", refs: [] }).masks;
+  it("reports any change between hiding the fields and the recheck", async () => {
+    const { search, host, closedRoot, elements } = visionPage();
 
-    expect(masks()).toEqual([
-      { x: 96, y: 56, width: 228, height: 98 },
-      { x: 96, y: 296, width: 68, height: 48 },
-      { x: -4, y: 396, width: 58, height: 28 },
-    ]);
-
-    inner.computed.textShadow = "0 80px 0 green";
-    expect(masks()[0]).toBeNull();
-    inner.computed = {};
-    outer.computed.filter = "drop-shadow(0 80px 0 green)";
-    expect(masks()[0]).toBeNull();
-    outer.computed = { "-webkit-box-reflect": "below" };
-    expect(masks()[0]).toBeNull();
-  });
-
-  it("reports any change between the pre-capture measurement and the recheck", () => {
-    const { search } = iconToolbar();
-    search.rect = { top: 20, bottom: 40, left: 30, right: 230 };
-    const form = element("form");
-    form.append(search);
-    const spinner = element("div");
-    let animations: object[] = [];
-    (document as any).querySelectorAll = (selector: string) => (selector === "*" ? [search] : []);
-    (document as any).getAnimations = () => animations;
-    (document as any).elementFromPoint = () => null;
-    (globalThis as any).chrome.dom = { openOrClosedShadowRoot: () => null };
-    const read = () =>
-      sendMessage({
-        type: "GENERATE_ACCESSIBILITY_TREE",
-        options: { semanticObservation: true, semanticVision: true },
-      });
-    const recheck = () => sendMessage({ type: "SEMANTIC_VISION_RECHECK", refs: ["settings"] });
-
-    expect(read().semanticVisionMasks).toEqual([{ x: 26, y: 16, width: 208, height: 28 }]);
-    expect(recheck().fieldsChanged).toBe(false);
-
-    read();
+    await prepare();
     FakeMutationObserver.mutate([{ type: "attributes", target: element("div") }]);
     expect(recheck().fieldsChanged).toBe(true);
 
-    read();
-    const lateRoot = { querySelectorAll: () => [], getAnimations: () => [] };
+    await prepare();
+    const lateRoot = { adoptedStyleSheets: [], querySelectorAll: () => [] };
+    const lateHost = element("late-widget");
+    elements.push(lateHost);
     (globalThis as any).chrome.dom = {
-      openOrClosedShadowRoot: (node: FakeElement) => (node === form ? lateRoot : null),
+      openOrClosedShadowRoot: (node: FakeElement) =>
+        new Map<FakeElement, object>([
+          [host, closedRoot],
+          [lateHost, lateRoot],
+        ]).get(node) ?? null,
     };
-    (document as any).querySelectorAll = (selector: string) =>
-      selector === "*" ? [form, search] : [];
     expect(recheck().fieldsChanged).toBe(true);
-    (globalThis as any).chrome.dom = { openOrClosedShadowRoot: () => null };
-    (document as any).querySelectorAll = (selector: string) => (selector === "*" ? [search] : []);
+    elements.pop();
 
-    read();
-    animations = [{ playState: "running", effect: { target: spinner } }];
-    expect(recheck().fieldsChanged).toBe(false);
-    read();
-    animations = [{ playState: "running", effect: { target: form } }];
+    await prepare();
+    search.computed = { opacity: "1" };
     expect(recheck().fieldsChanged).toBe(true);
-    animations = [];
+    search.computed = {};
 
-    Object.defineProperty(window, "top", { value: {} });
-    expect(read()).not.toHaveProperty("semanticVisionMasks");
-    expect(FakeMutationObserver.active.size).toBe(0);
+    await prepare();
+    closedRoot.adoptedStyleSheets = [];
     expect(recheck().fieldsChanged).toBe(true);
   });
 
+  it("restores the fields after 2 s or on release without a recheck", async () => {
+    const { closedRoot } = visionPage();
+    vi.useFakeTimers();
+    const prepared = prepare();
+    await vi.advanceTimersByTimeAsync(100);
+    expect((await prepared).masks).toHaveLength(2);
+    await vi.advanceTimersByTimeAsync(2_000);
+    expect((document as any).adoptedStyleSheets).toEqual([]);
+    expect(closedRoot.adoptedStyleSheets).toEqual([]);
+    expect(recheck().fieldsChanged).toBe(true);
+
+    const again = prepare();
+    await vi.advanceTimersByTimeAsync(100);
+    await again;
+    expect(sendMessage({ type: "SEMANTIC_VISION_RELEASE" })).toEqual({ released: true });
+    expect((document as any).adoptedStyleSheets).toEqual([]);
+    expect(recheck().fieldsChanged).toBe(true);
+  });
   it("associates value-free checked and selected state with semantic refs and evidence", () => {
     const size = new FakeInputElement("input");
     size.setAttribute("type", "radio");

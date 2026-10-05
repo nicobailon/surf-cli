@@ -605,15 +605,27 @@ type SemanticVision = {
   skipped: number;
 };
 
-// The viewport capture stays in this function: only the contact sheet of masked crops leaves it.
+// The viewport capture stays in this function: only the contact sheet of masked crops leaves it. The content
+// script hides every field (PREPARE) right before the capture and restores them at the recheck.
 async function captureSemanticVision(
   tabId: number,
   frameId: number,
   targets: Array<{ ref: string; rect: VisionRect | null }>,
-  masksBefore: Array<VisionRect | null>,
 ): Promise<SemanticVision> {
   if (frameId !== 0 || targets.length === 0) return { image: null, tiles: [], skipped: targets.length };
-  const capture = await cdp.captureScreenshot(tabId);
+  const prepared: { masks?: Array<VisionRect | null>; error?: string } = await chrome.tabs.sendMessage(tabId, {
+    type: "SEMANTIC_VISION_PREPARE",
+  }, { frameId: 0 });
+  if (!prepared.masks) throw new Error(prepared.error ?? "fields could not be hidden");
+  if (prepared.masks.includes(null)) return { image: null, tiles: [], skipped: targets.length };
+  let capture: { base64: string };
+  try {
+    capture = await cdp.captureScreenshot(tabId);
+  } catch (err) {
+    // Best effort: the content script also restores the fields on its own timer.
+    await chrome.tabs.sendMessage(tabId, { type: "SEMANTIC_VISION_RELEASE" }, { frameId: 0 }).catch(() => undefined);
+    throw err;
+  }
   const recheck: {
     viewport: { width: number; height: number };
     current: Record<string, VisionRect | null>;
@@ -635,7 +647,7 @@ async function captureSemanticVision(
     const plan = planContactSheet({
       targets,
       current: recheck.current,
-      masks: { before: masksBefore, after: recheck.masks, changed: recheck.fieldsChanged },
+      masks: { before: prepared.masks, after: recheck.masks, changed: recheck.fieldsChanged },
       scale,
       viewport: recheck.viewport,
     });
@@ -1462,10 +1474,10 @@ export async function handleMessage(
         }
         // Captured while the agent indicators are still hidden so they never appear in a crop.
         if (result?.semanticVisionTargets) {
-          const { semanticVisionTargets, semanticVisionMasks, ...rest } = result;
+          const { semanticVisionTargets, ...rest } = result;
           result = rest;
           try {
-            result.semanticObservation.vision = await captureSemanticVision(tabId, readFrameId, semanticVisionTargets, semanticVisionMasks);
+            result.semanticObservation.vision = await captureSemanticVision(tabId, readFrameId, semanticVisionTargets);
           } catch (err) {
             // Fail the read rather than silently answering from text alone.
             throw new Error(`semantic vision capture failed: ${err instanceof Error ? err.message : String(err)}`, { cause: err });
