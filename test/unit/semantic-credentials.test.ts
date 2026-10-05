@@ -53,8 +53,10 @@ describe("TypeSafe credential store", () => {
       source: "environment",
       fingerprint: credentials.fingerprintApiKey("environment-secret"),
     });
-    const status = credentials.credentialStatus(env);
-    expect(status).toEqual({ source: "environment", fingerprint: resolved.fingerprint });
+    const status = credentials.credentialStatus(env, "typesafe");
+    expect(status).toEqual({
+      typesafe: { source: "environment", fingerprint: resolved.fingerprint },
+    });
     expect(JSON.stringify(status)).not.toContain("environment-secret");
   });
 
@@ -106,7 +108,7 @@ describe("TypeSafe credential store", () => {
     expect(credentials.clearStoredTypeSafeCredential(env)).toBe(true);
     expect(fs.existsSync(filePath)).toBe(false);
     expect(fs.readFileSync(sibling, "utf8")).toBe("keep");
-    expect(credentials.credentialStatus(env).source).toBe("environment");
+    expect(credentials.credentialStatus(env, "typesafe").typesafe.source).toBe("environment");
   });
 
   it("resolves the provider-neutral shared path independently of Surf state", () => {
@@ -139,7 +141,10 @@ describe("TypeSafe credential store", () => {
   it("returns not-configured without creating state and rejects malformed or public files", () => {
     const env = testEnv();
     const { root, filePath } = credentials.credentialLocation(env);
-    expect(credentials.credentialStatus(env)).toEqual({ source: "not-configured" });
+    expect(credentials.credentialStatus(env)).toEqual({
+      typesafe: { source: "not-configured" },
+      cloudflare: { source: "not-configured" },
+    });
     expect(fs.existsSync(root)).toBe(false);
 
     fs.mkdirSync(path.dirname(filePath), { recursive: true, mode: 0o700 });
@@ -212,5 +217,146 @@ describe("TypeSafe credential input", () => {
     expect(
       ["SIGINT", "SIGTERM", "SIGHUP"].map((signal) => signalSource.listenerCount(signal)),
     ).toEqual([0, 0, 0]);
+  });
+});
+
+const ACCOUNT_ID = "0123456789abcdef0123456789abcdef";
+const OTHER_ACCOUNT_ID = "fedcba9876543210fedcba9876543210";
+
+function setCloudflareFromPipe(env: Record<string, string>, text: string) {
+  return credentials.setCloudflareCredentialFromInput({
+    input: Readable.from([text]),
+    output: { write: () => true },
+    env,
+  });
+}
+
+describe("Cloudflare credential store", () => {
+  it("prefers complete environment credentials and rejects a partial environment by name", async () => {
+    const env = testEnv({
+      CLOUDFLARE_ACCOUNT_ID: OTHER_ACCOUNT_ID,
+      CLOUDFLARE_API_TOKEN: "environment-token",
+    });
+    await setCloudflareFromPipe(env, `${ACCOUNT_ID}\nstored-token\n`);
+
+    expect(credentials.resolveCloudflareCredential(env)).toEqual({
+      accountId: OTHER_ACCOUNT_ID,
+      apiToken: "environment-token",
+      source: "environment",
+      fingerprint: credentials.fingerprintApiKey("environment-token"),
+    });
+    expect(() =>
+      credentials.resolveCloudflareCredential({ ...env, CLOUDFLARE_API_TOKEN: " " }),
+    ).toThrow(/^CLOUDFLARE_API_TOKEN is not set/);
+    expect(() =>
+      credentials.resolveCloudflareCredential({ ...env, CLOUDFLARE_ACCOUNT_ID: "" }),
+    ).toThrow(/^CLOUDFLARE_ACCOUNT_ID is not set/);
+    expect(() =>
+      credentials.resolveCloudflareCredential({ ...env, CLOUDFLARE_ACCOUNT_ID: "not-an-account" }),
+    ).toThrow(/account id must be 32/);
+    expect(
+      credentials.resolveCloudflareCredential({
+        ...env,
+        CLOUDFLARE_ACCOUNT_ID: " ",
+        CLOUDFLARE_API_TOKEN: "",
+      }),
+    ).toMatchObject({ accountId: ACCOUNT_ID, apiToken: "stored-token", source: "stored" });
+  });
+
+  it("stores piped credentials in a private Surf file separate from TypeSafe and clears it", async () => {
+    const env = testEnv();
+    const { root, filePath } = credentials.cloudflareCredentialLocation(env);
+    expect(root).toBe(path.join(env.XDG_CONFIG_HOME, "surf"));
+    expect(credentials.resolveCloudflareCredential(env)).toBeNull();
+    expect(credentials.clearStoredCloudflareCredential(env)).toBe(false);
+    expect(fs.existsSync(root)).toBe(false);
+
+    await expect(setCloudflareFromPipe(env, `${ACCOUNT_ID}\r\nstored-token\r\n`)).resolves.toEqual({
+      source: "stored",
+      fingerprint: credentials.fingerprintApiKey("stored-token"),
+    });
+    expect(JSON.parse(fs.readFileSync(filePath, "utf8"))).toEqual({
+      version: 1,
+      accountId: ACCOUNT_ID,
+      apiToken: "stored-token",
+    });
+    expect(fs.statSync(root).mode & 0o777).toBe(0o700);
+    expect(fs.statSync(filePath).mode & 0o777).toBe(0o600);
+    expect(fs.existsSync(credentials.credentialLocation(env).root)).toBe(false);
+    expect(credentials.resolveCloudflareCredential(env)).toEqual({
+      accountId: ACCOUNT_ID,
+      apiToken: "stored-token",
+      source: "stored",
+      fingerprint: credentials.fingerprintApiKey("stored-token"),
+    });
+
+    expect(credentials.clearStoredCloudflareCredential(env)).toBe(true);
+    expect(fs.existsSync(filePath)).toBe(false);
+    expect(credentials.resolveCloudflareCredential(env)).toBeNull();
+  });
+
+  it("rejects invalid stored records and malformed piped input without storing anything", async () => {
+    const env = testEnv();
+    const { filePath } = credentials.cloudflareCredentialLocation(env);
+    for (const text of [`${ACCOUNT_ID}\n`, `${ACCOUNT_ID}\ntoken\nextra\n`, "ABC\ntoken\n"]) {
+      await expect(setCloudflareFromPipe(env, text)).rejects.toThrow(/two lines|account id/);
+    }
+    await expect(setCloudflareFromPipe(env, `${ACCOUNT_ID}\n \n`)).rejects.toThrow(
+      /must not be blank/,
+    );
+    expect(fs.existsSync(filePath)).toBe(false);
+
+    fs.mkdirSync(path.dirname(filePath), { recursive: true, mode: 0o700 });
+    fs.writeFileSync(filePath, JSON.stringify({ version: 1, accountId: "bad", apiToken: "t" }), {
+      mode: 0o600,
+    });
+    expect(() => credentials.resolveCloudflareCredential(env)).toThrow(
+      "stored Cloudflare credential is invalid",
+    );
+  });
+
+  it("echoes the account id on a TTY but keeps the token hidden", async () => {
+    const env = testEnv();
+    const input = new FakeTty();
+    let written = "";
+    const output = {
+      write(value: string) {
+        written += value;
+        return true;
+      },
+    };
+    const pending = credentials.setCloudflareCredentialFromInput({ input, output, env });
+    input.emit("data", Buffer.from(`${ACCOUNT_ID}\r`));
+    await new Promise((resolve) => setImmediate(resolve));
+    input.emit("data", Buffer.from("tty-token\r"));
+
+    await expect(pending).resolves.toMatchObject({ source: "stored" });
+    expect(written).toBe(`Cloudflare account id: ${ACCOUNT_ID}\nCloudflare API token: \n`);
+    expect(input.rawCalls).toEqual([true, false, true, false]);
+    expect(credentials.resolveCloudflareCredential(env)).toMatchObject({ apiToken: "tty-token" });
+  });
+
+  it("reports status per provider with fingerprints only", async () => {
+    const env = testEnv({ TYPESAFE_API_KEY: "typesafe-secret" });
+    await setCloudflareFromPipe(env, `${ACCOUNT_ID}\ncloudflare-secret\n`);
+
+    const typesafe = {
+      source: "environment",
+      fingerprint: credentials.fingerprintApiKey("typesafe-secret"),
+    };
+    const cloudflare = {
+      source: "stored",
+      fingerprint: credentials.fingerprintApiKey("cloudflare-secret"),
+    };
+    const all = credentials.credentialStatus(env);
+    expect(all).toEqual({ typesafe, cloudflare });
+    expect(credentials.credentialStatus(env, "typesafe")).toEqual({ typesafe });
+    expect(credentials.credentialStatus(env, "cloudflare")).toEqual({ cloudflare });
+    for (const value of ["typesafe-secret", "cloudflare-secret", ACCOUNT_ID]) {
+      expect(JSON.stringify(all)).not.toContain(value);
+    }
+    expect(() => credentials.credentialStatus(env, "openai")).toThrow(
+      /unknown credential provider/,
+    );
   });
 });
