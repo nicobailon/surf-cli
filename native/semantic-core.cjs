@@ -4,7 +4,21 @@ const SEMANTIC_POLICY = Object.freeze({
   model: "jev-1.13.0",
   timeoutMs: 5_000,
   probabilitySumTolerance: 0.01,
-  thresholds: Object.freeze({ find: 0.7, filter: 0.65, verifyPositive: 0.85, verifyNegative: 0.85, prerequisiteSupported: 0.75, prerequisiteBlocked: 0.9, write: 0.95, exactRefWrite: 0.65 }),
+  // A null threshold is unmeasured for that model; decisions needing it fail closed.
+  models: Object.freeze({
+    "jev-1.13.0": Object.freeze({
+      provider: "typesafe",
+      thresholds: Object.freeze({ find: 0.7, filter: 0.65, verifyPositive: 0.85, verifyNegative: 0.85, prerequisiteSupported: 0.75, prerequisiteBlocked: 0.9, write: 0.95, exactRefWrite: 0.65 }),
+    }),
+    clef: Object.freeze({
+      provider: "cloudflare",
+      thresholds: Object.freeze({ find: null, filter: null, verifyPositive: null, verifyNegative: null, prerequisiteSupported: null, prerequisiteBlocked: null, write: null, exactRefWrite: null }),
+    }),
+    "clef-flash": Object.freeze({
+      provider: "cloudflare",
+      thresholds: Object.freeze({ find: null, filter: null, verifyPositive: null, verifyNegative: null, prerequisiteSupported: null, prerequisiteBlocked: null, write: null, exactRefWrite: null }),
+    }),
+  }),
   limits: Object.freeze({
     stateBytes: 24 * 1024,
     candidates: 64,
@@ -43,6 +57,21 @@ function fail(message) {
 
 function providerInvalid(message) {
   throw new SemanticError("provider_invalid_response", message);
+}
+
+function semanticModel(id) {
+  if (typeof id !== "string" || !Object.hasOwn(SEMANTIC_POLICY.models, id)) {
+    fail(`unknown semantic model ${JSON.stringify(id)}; valid models: ${Object.keys(SEMANTIC_POLICY.models).join(", ")}`);
+  }
+  return SEMANTIC_POLICY.models[id];
+}
+
+// An override never unlocks an unmeasured default. Unrequired keys report null instead of throwing.
+function modelThreshold(model, overrides, key, required = true) {
+  const measured = semanticModel(model).thresholds[key];
+  if (measured !== null) return overrides[key] ?? measured;
+  if (!required) return null;
+  throw new SemanticError("model_uncalibrated", `model ${model} has no measured ${key} threshold yet; use --model jev-1.13.0`);
 }
 
 function assertOpaqueId(value, field) {
@@ -176,9 +205,10 @@ function actionDescription(action, state) {
   return parts.filter((value) => value !== undefined && value !== "").join(" | ").slice(0, 1_024) || null;
 }
 
-async function find({ state, goal, candidates, thresholds = {}, evaluate }) {
+async function find({ state, goal, candidates, thresholds = {}, model = SEMANTIC_POLICY.model, evaluate }) {
   goal = validateGoal(goal);
   assertUniqueItems(candidates, SEMANTIC_POLICY.limits.candidates, "candidates");
+  const appliedThreshold = modelThreshold(model, thresholds, "find");
   const labels = [...candidates.map((candidate) => candidate.id), "none"];
   const criteria = Object.fromEntries(candidates.map((candidate) => [candidate.id, candidateDescription(candidate)]));
   criteria.none = "No supplied candidate matches the goal";
@@ -188,7 +218,6 @@ async function find({ state, goal, candidates, thresholds = {}, evaluate }) {
     evaluate,
   });
   const decision = response.decisions.target;
-  const appliedThreshold = thresholds.find ?? SEMANTIC_POLICY.thresholds.find;
   const found = decision.label !== "none" && decision.probability >= appliedThreshold;
   return {
     status: found ? "found" : "uncertain",
@@ -200,9 +229,11 @@ async function find({ state, goal, candidates, thresholds = {}, evaluate }) {
   };
 }
 
-async function verify({ state, outcome, evidence = [], thresholds = {}, evaluate }) {
+async function verify({ state, outcome, evidence = [], thresholds = {}, model = SEMANTIC_POLICY.model, evaluate }) {
   outcome = validateGoal(outcome);
   assertUniqueItems(evidence, SEMANTIC_POLICY.limits.chunks, "evidence");
+  const verifyPositive = modelThreshold(model, thresholds, "verifyPositive");
+  const verifyNegative = modelThreshold(model, thresholds, "verifyNegative");
   const questions = {
     verdict: choiceQuestion(`Does the supplied page state show this outcome: ${outcome}`, ["satisfied", "not_satisfied"]),
   };
@@ -214,8 +245,6 @@ async function verify({ state, outcome, evidence = [], thresholds = {}, evaluate
   }
   const response = await evaluatedChoices({ state, questions, evaluate });
   const verdict = response.decisions.verdict;
-  const verifyPositive = thresholds.verifyPositive ?? SEMANTIC_POLICY.thresholds.verifyPositive;
-  const verifyNegative = thresholds.verifyNegative ?? SEMANTIC_POLICY.thresholds.verifyNegative;
   const appliedThreshold = verdict.label === "satisfied" ? verifyPositive : verifyNegative;
   let status = "uncertain";
   if (verdict.label === "satisfied" && verdict.probability >= verifyPositive) status = "satisfied";
@@ -227,11 +256,11 @@ async function verify({ state, outcome, evidence = [], thresholds = {}, evaluate
   return { status, appliedThreshold, decision: verdict, evidence: evidenceItem || null, evidenceDecision: evidenceDecision || null, model: response.model, usage: response.usage };
 }
 
-async function filter({ state, goal, chunks, top = SEMANTIC_POLICY.limits.filterTop, thresholds = {}, evaluate }) {
+async function filter({ state, goal, chunks, top = SEMANTIC_POLICY.limits.filterTop, thresholds = {}, model = SEMANTIC_POLICY.model, evaluate }) {
   goal = validateGoal(goal);
   assertUniqueItems(chunks, SEMANTIC_POLICY.limits.chunks, "chunks");
   if (!Number.isInteger(top) || top < 1 || top > SEMANTIC_POLICY.limits.filterTop) fail(`top must be between 1 and ${SEMANTIC_POLICY.limits.filterTop}`);
-  const appliedThreshold = thresholds.filter ?? SEMANTIC_POLICY.thresholds.filter;
+  const appliedThreshold = modelThreshold(model, thresholds, "filter");
   if (!chunks.length) return { status: "uncertain", appliedThreshold, chunks: [], omittedCount: 0, decisions: {}, model: null, usage: null };
   const questions = Object.fromEntries(chunks.map((chunk, index) => [
     `chunk_${index}`,
@@ -276,7 +305,7 @@ function validateAction(action, options) {
   return true;
 }
 
-async function chooseAction({ state, goal, actions, origin, allowWrite = false, allowRefs = [], inputSlots = [], thresholds = {}, evaluate }) {
+async function chooseAction({ state, goal, actions, origin, allowWrite = false, allowRefs = [], inputSlots = [], thresholds = {}, model = SEMANTIC_POLICY.model, evaluate }) {
   goal = validateGoal(goal);
   assertUniqueItems(actions, SEMANTIC_POLICY.limits.actionChoices, "actions");
   if (!Array.isArray(allowRefs)) fail("allowRefs must be an array");
@@ -287,6 +316,13 @@ async function chooseAction({ state, goal, actions, origin, allowWrite = false, 
   const actionCriteria = Object.fromEntries(eligible.map((action) => [action.id, actionDescription(action, state)]));
   actionCriteria.stop = "The goal is already satisfied, or no supplied action can safely make progress";
   const writeActions = eligible.filter((item) => item.kind === "click" || item.kind === "fill");
+  const writing = writeActions.length > 0;
+  const exactRefWrite = writing && allowRefs.length === 1 && writeActions.length === 1 && writeActions[0].ref === allowRefs[0];
+  const findThreshold = modelThreshold(model, thresholds, "find");
+  const writeThreshold = writing ? modelThreshold(model, thresholds, exactRefWrite ? "exactRefWrite" : "write") : null;
+  const prerequisiteSupported = modelThreshold(model, thresholds, "prerequisiteSupported", writing);
+  const prerequisiteBlocked = modelThreshold(model, thresholds, "prerequisiteBlocked", writing);
+  const prerequisiteEvidenceThreshold = modelThreshold(model, {}, "filter", writing);
   const questions = {
     action: {
       type: "choice",
@@ -319,25 +355,18 @@ async function chooseAction({ state, goal, actions, origin, allowWrite = false, 
   const decision = response.decisions.action;
   const prerequisiteDecision = response.decisions.prerequisites || null;
   const prerequisiteEvidenceDecision = response.decisions.prerequisite_evidence || null;
-  const prerequisiteSupported = thresholds.prerequisiteSupported ?? SEMANTIC_POLICY.thresholds.prerequisiteSupported;
-  const prerequisiteBlocked = thresholds.prerequisiteBlocked ?? SEMANTIC_POLICY.thresholds.prerequisiteBlocked;
   let prerequisiteStatus = "not_applicable";
   if (writeActions.length) {
     prerequisiteStatus = "uncertain";
     if (prerequisiteDecision.label === "supported" && prerequisiteDecision.probability >= prerequisiteSupported) prerequisiteStatus = "supported";
     if (prerequisiteDecision.label === "blocked" && prerequisiteDecision.probability >= prerequisiteBlocked) prerequisiteStatus = "blocked";
   }
-  const prerequisiteEvidenceThreshold = SEMANTIC_POLICY.thresholds.filter;
   const prerequisiteEvidence = !prerequisiteEvidenceDecision || prerequisiteEvidenceDecision.label === "none" || prerequisiteEvidenceDecision.probability < prerequisiteEvidenceThreshold
     ? null
     : evidence.find((chunk) => chunk.id === prerequisiteEvidenceDecision.label) || null;
   const action = eligible.find((item) => item.id === decision.label) || null;
-  const exactRefWrite = action && (action.kind === "click" || action.kind === "fill") &&
-    allowRefs.length === 1 && writeActions.length === 1 && writeActions[0].ref === allowRefs[0];
-  const appliedThreshold = action && (action.kind === "click" || action.kind === "fill")
-    ? exactRefWrite ? thresholds.exactRefWrite ?? SEMANTIC_POLICY.thresholds.exactRefWrite : thresholds.write ?? SEMANTIC_POLICY.thresholds.write
-    : thresholds.find ?? SEMANTIC_POLICY.thresholds.find;
   const write = action && (action.kind === "click" || action.kind === "fill");
+  const appliedThreshold = write ? writeThreshold : findThreshold;
   const blocked = prerequisiteStatus === "blocked" && (!action || write);
   const selected = action && decision.probability >= appliedThreshold && (!write || prerequisiteStatus === "supported") ? action : null;
   return {
@@ -366,4 +395,4 @@ async function chooseAction({ state, goal, actions, origin, allowWrite = false, 
   };
 }
 
-module.exports = { SEMANTIC_POLICY, SemanticError, chooseAction, filter, find, verify };
+module.exports = { SEMANTIC_POLICY, SemanticError, chooseAction, filter, find, semanticModel, verify };

@@ -356,6 +356,58 @@ describe("bounded semantic workflow runtime", () => {
     expect(request.mock.calls.some(([tool]) => tool === "click")).toBe(false);
   });
 
+  it("fails closed for an uncalibrated runtime model without browser or provider calls on writes", async () => {
+    const request = boundary();
+    const evaluate = provider("e1", 0.99);
+    const attemptStore = store();
+    const runtime = createSemanticWorkflowRuntime({
+      request,
+      evaluate,
+      attemptStore,
+      model: "clef",
+    });
+    const result = await runtime.executeStep(
+      {
+        id: "add",
+        op: "click",
+        target: { query: "Add", type: "button" },
+        expect: { kind: "visible" },
+      },
+      runtime.createContext(),
+    );
+    expect(result).toMatchObject({ kind: "failure", reason: "model_uncalibrated" });
+    expect(request).not.toHaveBeenCalled();
+    expect(evaluate).not.toHaveBeenCalled();
+    expect(attemptStore.reserve).not.toHaveBeenCalled();
+  });
+
+  it("fails closed for uncalibrated semantic reads without calling the provider", async () => {
+    const evaluate = provider("e1", 0.99);
+    const runtime = createSemanticWorkflowRuntime({
+      request: boundary(),
+      evaluate,
+      model: "clef-flash",
+    });
+    const context = runtime.createContext();
+    const found = await runtime.executeStep(
+      { id: "find", op: "find", target: { query: "Add" } },
+      context,
+    );
+    const asserted = await runtime.executeStep(
+      { id: "check", op: "assert", mode: "semantic", claim: "Added" },
+      context,
+    );
+    expect(found).toMatchObject({ kind: "failure", reason: "model_uncalibrated" });
+    expect(asserted).toMatchObject({ kind: "failure", reason: "model_uncalibrated" });
+    expect(evaluate).not.toHaveBeenCalled();
+  });
+
+  it("rejects an unknown runtime model at construction", () => {
+    expect(() =>
+      createSemanticWorkflowRuntime({ request: boundary(), evaluate: provider(), model: "jev-9" }),
+    ).toThrow(expect.objectContaining({ code: "semantic_invalid_request" }));
+  });
+
   it("does not dispatch a model-derived write outside the declared target type", async () => {
     const request = boundary();
     const runtime = createSemanticWorkflowRuntime({
