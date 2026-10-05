@@ -180,4 +180,47 @@ describe("semantic workflow integration seam", () => {
       vi.unstubAllGlobals();
     }
   });
+  it("reports the run summary when the workflow state store cannot be acquired", async () => {
+    const fs = require("node:fs");
+    const os = require("node:os");
+    const path = require("node:path");
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "surf-semantic-state-"));
+    const stateFile = path.join(root, "not-a-directory");
+    fs.writeFileSync(stateFile, "");
+    try {
+      const request = browser();
+      const args = { op: "find", target: { query: "Blue bottle", role: "link" } };
+      const result = await executeDoSteps([{ id: "find", cmd: "semantic.step", args }], {
+        quiet: true,
+        stepDelay: 0,
+        executeTool: vi.fn(),
+        createSemanticExecutor: () =>
+          createConcreteSemanticExecutor({
+            request,
+            workflow: {
+              semantic: { version: 1 },
+              steps: [{ id: "find", tool: "semantic.step", args }],
+            },
+            env: {
+              SURF_STATE_DIR: stateFile,
+              SURF_SEMANTIC_MODEL: "clef",
+              CLOUDFLARE_ACCOUNT_ID: "0123456789abcdef0123456789abcdef",
+              CLOUDFLARE_API_TOKEN: "fake-token",
+            },
+          }),
+      });
+      expect(result.status).toBe("failed");
+      expect(result.error).toContain("private state path is not a directory");
+      expect(result.semantic).toMatchObject({
+        reason: "checkpoint_failure",
+        provider: "cloudflare",
+        model: "clef",
+        providerCalls: 0,
+        providerLatencyMs: 0,
+      });
+      expect(request).not.toHaveBeenCalled();
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
 });

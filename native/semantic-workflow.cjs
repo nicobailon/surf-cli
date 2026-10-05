@@ -316,7 +316,10 @@ function createSemanticWorkflowRuntime(dependencies) {
     if (!context || !(context.bindings instanceof Map)) throw new TypeError("invalid semantic workflow context");
     if (++context.steps > WORKFLOW_POLICY.maxSteps) return failure("budget_exhaustion");
     if (remaining(context) < 1) return failure("budget_exhaustion");
-    if (!context.acquired && context.attemptStore) { await context.attemptStore.acquire(); context.acquired = true; }
+    if (!context.acquired && context.attemptStore) {
+      try { await context.attemptStore.acquire(); } catch (error) { return failure("checkpoint_failure", { error: error.message }); }
+      context.acquired = true;
+    }
     try {
       if (step.op === "find") {
         const resolved = await resolve(context, step.target, false, step.search);
