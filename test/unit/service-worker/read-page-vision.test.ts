@@ -151,6 +151,63 @@ describe("READ_PAGE semantic vision", () => {
     expect(bitmapClose).toHaveBeenCalledTimes(1);
   });
 
+  it("fails the read with a vision-specific error when the capture fails", async () => {
+    const handleMessage = await loadHandleMessage();
+    routeContentMessages(
+      {
+        pageContent: "",
+        viewport: {},
+        semanticObservation: observation,
+        semanticVisionTargets: targets,
+      },
+      {},
+    );
+    cdpState.captureScreenshot.mockRejectedValue(new Error("Debugger is not attached"));
+
+    await expect(
+      handleMessage(
+        {
+          type: "READ_PAGE",
+          tabId: 9,
+          options: { semanticObservation: true, semanticVision: true },
+        },
+        {} as chrome.runtime.MessageSender,
+      ),
+    ).rejects.toThrow("semantic vision capture failed: Debugger is not attached");
+    expect(order.at(-1)).toBe("SHOW_AFTER_TOOL_USE");
+  });
+
+  it("fails the read when the capture does not match the page viewport", async () => {
+    const handleMessage = await loadHandleMessage();
+    routeContentMessages(
+      {
+        pageContent: "",
+        viewport: {},
+        semanticObservation: observation,
+        semanticVisionTargets: targets,
+      },
+      {
+        viewport: { width: 1280, height: 900 },
+        current: { e1: targets[0].rect, e2: targets[1].rect },
+        masks: [],
+      },
+    );
+
+    await expect(
+      handleMessage(
+        {
+          type: "READ_PAGE",
+          tabId: 9,
+          options: { semanticObservation: true, semanticVision: true },
+        },
+        {} as chrome.runtime.MessageSender,
+      ),
+    ).rejects.toThrow(
+      "semantic vision capture failed: the screenshot does not match the page viewport",
+    );
+    expect(bitmapClose).toHaveBeenCalledTimes(1);
+  });
+
   it("captures nothing and adds no vision field without semanticVision", async () => {
     const handleMessage = await loadHandleMessage();
     routeContentMessages({ pageContent: "", viewport: {}, semanticObservation: observation }, {});

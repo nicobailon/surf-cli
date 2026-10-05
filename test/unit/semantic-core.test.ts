@@ -96,9 +96,11 @@ describe("semantic decision core", () => {
     expect(Object.isFrozen(SEMANTIC_POLICY.models)).toBe(true);
     for (const entry of Object.values(SEMANTIC_POLICY.models) as Array<{
       provider: string;
+      images: boolean;
       thresholds: Record<string, number>;
     }>) {
       expect(["typesafe", "cloudflare"]).toContain(entry.provider);
+      expect(entry.images).toBe(entry.provider === "cloudflare");
       expect(Object.keys(entry.thresholds).sort()).toEqual([...keys].sort());
       for (const value of Object.values(entry.thresholds)) {
         expect(Number.isFinite(value) && value > 0 && value <= 1).toBe(true);

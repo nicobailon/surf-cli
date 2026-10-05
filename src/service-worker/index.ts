@@ -624,11 +624,17 @@ async function captureSemanticVision(
   const bitmap = await createImageBitmap(base64ToBlob(capture.base64));
   try {
     // The capture includes any classic scrollbar, so scale against innerWidth rather than the CDP client width.
+    const scale = bitmap.width / recheck.viewport.width;
+    // Viewport emulation (DevTools device mode, automation viewports) can capture a window that is not the
+    // layout viewport; crops would then show the wrong pixels under a ref.
+    if (Math.abs(bitmap.height - recheck.viewport.height * scale) > 2) {
+      throw new Error("the screenshot does not match the page viewport; turn off viewport emulation");
+    }
     const plan = planContactSheet({
       targets,
       current: recheck.current,
       masks: recheck.masks,
-      scale: bitmap.width / recheck.viewport.width,
+      scale,
       viewport: recheck.viewport,
     });
     if (plan.tiles.length === 0) return { image: null, tiles: [], skipped: plan.skipped };
@@ -1456,7 +1462,12 @@ export async function handleMessage(
         if (result?.semanticVisionTargets) {
           const { semanticVisionTargets, ...rest } = result;
           result = rest;
-          result.semanticObservation.vision = await captureSemanticVision(tabId, readFrameId, semanticVisionTargets);
+          try {
+            result.semanticObservation.vision = await captureSemanticVision(tabId, readFrameId, semanticVisionTargets);
+          } catch (err) {
+            // Fail the read rather than silently answering from text alone.
+            throw new Error(`semantic vision capture failed: ${err instanceof Error ? err.message : String(err)}`);
+          }
         }
       } finally {
         try {

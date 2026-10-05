@@ -34,14 +34,16 @@ const COMMAND_THRESHOLD_KEYS = Object.freeze({
 const AUTH_PROVIDERS = Object.freeze(["typesafe", "cloudflare"]);
 
 const SEMANTIC_HELP = `Usage:
-  surf semantic.find <goal> [--model <id>] [--threshold find=<0-1>] [--session <name> | --tab-id <id>] [--json]
+  surf semantic.find <goal> [--model <id>] [--vision] [--threshold find=<0-1>] [--session <name> | --tab-id <id>] [--json]
   surf semantic.verify <outcome> [--model <id>] [--threshold verify-positive=<0-1>] [--threshold verify-negative=<0-1>] [--session <name> | --tab-id <id>] [--json]
   surf semantic.filter <goal> [--model <id>] [--top <1-12>] [--threshold filter=<0-1>] [--session <name> | --tab-id <id>] [--json]
-  surf semantic.act <goal> [--model <id>] [--max-steps <1-8>] [--allow-write] [--allow-ref <ref>...] [--input <name=value>...] [--threshold <name=value>...] [--session <name> | --tab-id <id>] [--json]
+  surf semantic.act <goal> [--model <id>] [--vision] [--max-steps <1-8>] [--allow-write] [--allow-ref <ref>...] [--input <name=value>...] [--threshold <name=value>...] [--session <name> | --tab-id <id>] [--json]
   surf semantic auth set [--provider typesafe|cloudflare]     (default: typesafe)
   surf semantic auth status|clear [--provider typesafe|cloudflare]   (default: both)
 
-Models: jev-1.13.0 (TypeSafe, api.typesafe.ai), clef and clef-flash (Cloudflare Workers AI, api.cloudflare.com). --model wins over SURF_SEMANTIC_MODEL; the default is jev-1.13.0. Semantic commands send a bounded, value-free page observation to the provider of the selected model. Every result reports provider, model, providerCalls and providerLatencyMs. semantic.act allows only same-origin navigation, fixed scroll/wait actions, and (with --allow-write) clicks/fills. --allow-write authorizes mutation-capable clicks, including submit/purchase/delete/send/publish; repeatable --allow-ref narrows this authority. Repeatable --threshold overrides applicable confidence thresholds for this run only; defaults remain safer and write authority is unchanged. Names: find, filter, verify-positive, verify-negative, prerequisite-supported, prerequisite-blocked, write, exact-ref-write.`;
+Models: jev-1.13.0 (TypeSafe, api.typesafe.ai), clef and clef-flash (Cloudflare Workers AI, api.cloudflare.com). --model wins over SURF_SEMANTIC_MODEL; the default is jev-1.13.0. Semantic commands send a bounded, value-free page observation to the provider of the selected model. Every result reports provider, model, providerCalls and providerLatencyMs. semantic.act allows only same-origin navigation, fixed scroll/wait actions, and (with --allow-write) clicks/fills. --allow-write authorizes mutation-capable clicks, including submit/purchase/delete/send/publish; repeatable --allow-ref narrows this authority. Repeatable --threshold overrides applicable confidence thresholds for this run only; defaults remain safer and write authority is unchanged. Names: find, filter, verify-positive, verify-negative, prerequisite-supported, prerequisite-blocked, write, exact-ref-write.
+
+--vision (semantic.find and semantic.act, with clef or clef-flash) also sends the provider one image of small crops of the visible controls that have no name, such as icon-only buttons. A crop can include whatever is drawn in that spot; form fields, iframes and embeds are blacked out. Results report vision: {tiles, skipped}, and "tile": true on a returned candidate or action that was shown as a tile. Thresholds, --allow-write and --allow-ref are unchanged.`;
 
 function normalizeSemanticArgs(argv) {
   if (argv[0] !== "semantic") return argv;
@@ -72,6 +74,7 @@ function parseSemanticArgs(argv) {
     if (arg === "--json") result.json = true;
     else if (arg === "--no-wait") result.noWait = true;
     else if (arg === "--allow-write") result.allowWrite = true;
+    else if (arg === "--vision") result.vision = true;
     else if (["--session", "--tab-id", "--top", "--max-steps", "--allow-ref", "--input", "--threshold", "--model"].includes(arg)) {
       const value = args[++i];
       if (!value || value.startsWith("--")) throw new Error(`${arg} requires a value`);
@@ -112,6 +115,7 @@ function parseSemanticArgs(argv) {
   if (result.maxSteps > SEMANTIC_POLICY.limits.maxSteps) throw new Error(`--max-steps must not exceed ${SEMANTIC_POLICY.limits.maxSteps}`);
   if (Object.keys(result.inputs).length > SEMANTIC_POLICY.limits.inputSlots) throw new Error(`--input supports at most ${SEMANTIC_POLICY.limits.inputSlots} slots`);
   if (result.allowRefs.length && !result.allowWrite) throw new Error("--allow-ref requires --allow-write");
+  if (result.vision && command !== "semantic.find" && command !== "semantic.act") throw new Error(`--vision does not apply to ${command}`);
   for (const name of Object.keys(THRESHOLD_KEYS)) {
     if (Object.hasOwn(result.thresholds, THRESHOLD_KEYS[name]) && !COMMAND_THRESHOLD_KEYS[command].has(name)) {
       throw new Error(`--threshold ${name} does not apply to ${command}`);
@@ -331,6 +335,16 @@ function validSemanticVision(vision, candidates) {
     tiled.add(tile.ref);
     return valid;
   });
+}
+
+function visionInput(observation) {
+  const { vision } = observation;
+  if (!vision) return { images: undefined, tiled: new Set(), summary: undefined };
+  return {
+    images: vision.image ? [vision.image] : undefined,
+    tiled: new Set(vision.tiles.map((tile) => tile.ref)),
+    summary: { tiles: vision.tiles.length, skipped: vision.skipped },
+  };
 }
 
 function semanticObservationFrom(response) {
@@ -565,7 +579,9 @@ async function runBrowserSemantic(options, { request, evaluate, now = () => perf
   };
   let designatedIdentity;
   const observe = async () => {
-    const observation = semanticObservationFrom(await request("page.read", { semanticObservation: true }, remaining(), designatedIdentity));
+    const readArgs = options.vision ? { semanticObservation: true, semanticVision: true } : { semanticObservation: true };
+    const observation = semanticObservationFrom(await request("page.read", readArgs, remaining(), designatedIdentity));
+    if (options.vision && !observation.vision) throw new Error("browser returned no semantic vision; reload the surf extension");
     if (!designatedIdentity) {
       designatedIdentity = observation.identity;
     } else if (
@@ -603,17 +619,22 @@ async function runBrowserSemantic(options, { request, evaluate, now = () => perf
   let observation = await observe();
   let state = providerState(observation);
   if (options.command === "semantic.find") {
-    const logicalCandidates = buildLogicalCandidates(observation, state.candidates);
+    const vision = visionInput(observation);
+    const logicalCandidates = buildLogicalCandidates(observation, state.candidates)
+      .map((candidate) => vision.tiled.has(candidate.id) ? { ...candidate, tile: true } : candidate);
     const logicalState = {
       ...state,
       candidates: logicalCandidates.map(({ id, role, name, type, text }) => ({ id, role, name, type, text })),
     };
-    const result = await find({ state: logicalState, goal: options.goal, candidates: logicalCandidates, thresholds: options.thresholds, model: options.model, evaluate: evaluator });
+    const result = await find({ state: logicalState, goal: options.goal, candidates: logicalCandidates, thresholds: options.thresholds, model: options.model, evaluate: evaluator, images: vision.images });
     const logicalCandidate = result.candidate;
     const concrete = logicalCandidate?.concreteCandidates?.[0] || null;
     return {
       ...result,
-      candidate: concrete ? Object.fromEntries(Object.entries(concrete).filter(([key]) => key !== "index")) : null,
+      candidate: concrete ? {
+        ...Object.fromEntries(Object.entries(concrete).filter(([key]) => key !== "index")),
+        ...(vision.tiled.has(concrete.id) ? { tile: true } : {}),
+      } : null,
       logicalCandidate: logicalCandidate ? {
         id: logicalCandidate.id,
         identity: logicalCandidate.logicalIdentity,
@@ -625,6 +646,7 @@ async function runBrowserSemantic(options, { request, evaluate, now = () => perf
         identity: `${concrete.role || ""}:${concrete.type || ""}:${concrete.name || ""}`.slice(0, 1_024),
         probability: result.decision.probability,
       } : null,
+      ...(vision.summary ? { vision: vision.summary } : {}),
     };
   }
   if (options.command === "semantic.verify") return verify({ state, outcome: options.goal, evidence: state.chunks, thresholds: options.thresholds, model: options.model, evaluate: evaluator });
@@ -639,14 +661,19 @@ async function runBrowserSemantic(options, { request, evaluate, now = () => perf
   const spentWrites = [];
   let identical = 0;
   let previousHash = semanticProjectionHash(state);
+  let decisionVision = visionInput(observation);
+  const done = (result) => decisionVision.summary ? { ...result, vision: decisionVision.summary } : result;
   for (let step = 1; step <= options.maxSteps; step++) {
-    if (remaining() < 1) return { status: "stopped", stopReason: "time_budget", trace, providerCalls };
+    if (remaining() < 1) return done({ status: "stopped", stopReason: "time_budget", trace, providerCalls });
     let choice;
     try {
-      let actions = buildActions(observation, options.inputs, options.allowWrite, options.allowRefs, spentWrites);
+      decisionVision = visionInput(observation);
+      const { tiled } = decisionVision;
+      let actions = buildActions(observation, options.inputs, options.allowWrite, options.allowRefs, spentWrites)
+        .map((action) => tiled.has(action.ref || action.concreteRef) ? { ...action, tile: true } : action);
       for (let retries = 0; ; retries++) {
         try {
-          choice = await chooseAction({ state, goal: options.goal, actions, origin: state.origin, allowWrite: options.allowWrite, allowRefs: options.allowRefs, inputSlots: Object.keys(options.inputs), thresholds: options.thresholds, model: options.model, evaluate: evaluator });
+          choice = await chooseAction({ state, goal: options.goal, actions, origin: state.origin, allowWrite: options.allowWrite, allowRefs: options.allowRefs, inputSlots: Object.keys(options.inputs), thresholds: options.thresholds, model: options.model, evaluate: evaluator, images: decisionVision.images });
           break;
         } catch (error) {
           if (error?.code !== "provider_invalid_response" || retries >= SEMANTIC_POLICY.limits.invalidActionDecisionRetries) throw error;
@@ -671,9 +698,9 @@ async function runBrowserSemantic(options, { request, evaluate, now = () => perf
         }
       }
     } catch (error) {
-      return { status: "stopped", stopReason: "decision_failed", errorCode: semanticErrorCode(error, "decision_failed"), trace, providerCalls };
+      return done({ status: "stopped", stopReason: "decision_failed", errorCode: semanticErrorCode(error, "decision_failed"), trace, providerCalls });
     }
-    if (choice.status !== "selected") return {
+    if (choice.status !== "selected") return done({
       status: "stopped",
       stopReason: choice.status === "blocked" ? "prerequisite_blocked" : "uncertain",
       trace,
@@ -690,8 +717,8 @@ async function runBrowserSemantic(options, { request, evaluate, now = () => perf
       prerequisiteEvidenceDecision: choice.prerequisiteEvidenceDecision,
       model: choice.model,
       usage: choice.usage,
-    };
-    if (remaining() < 1) return { status: "stopped", stopReason: "time_budget", trace, providerCalls };
+    });
+    if (remaining() < 1) return done({ status: "stopped", stopReason: "time_budget", trace, providerCalls });
     const action = choice.action;
     const actionCandidate = observation.candidates.find((item) => item.ref === action.ref);
     const writeIdentity = action.kind === "click" || action.kind === "fill"
@@ -709,7 +736,7 @@ async function runBrowserSemantic(options, { request, evaluate, now = () => perf
           state: preWriteState,
         }
       : null;
-    const traceAction = { step, kind: action.kind, appliedThreshold: choice.appliedThreshold, logicalProbability: choice.decision.probability, ...(action.logicalIdentity ? { logicalIdentity: action.logicalIdentity } : {}), ...(action.ref ? { ref: action.ref } : {}), ...(action.concreteRef ? { concreteRef: action.concreteRef, concreteProbability: choice.decision.probability } : {}), ...(action.slot ? { slot: action.slot } : {}), ...(action.direction ? { direction: action.direction } : {}), ...(action.durationMs ? { durationMs: action.durationMs } : {}) };
+    const traceAction = { step, kind: action.kind, appliedThreshold: choice.appliedThreshold, logicalProbability: choice.decision.probability, ...(action.logicalIdentity ? { logicalIdentity: action.logicalIdentity } : {}), ...(action.ref ? { ref: action.ref } : {}), ...(action.concreteRef ? { concreteRef: action.concreteRef, concreteProbability: choice.decision.probability } : {}), ...(action.tile ? { tile: true } : {}), ...(action.slot ? { slot: action.slot } : {}), ...(action.direction ? { direction: action.direction } : {}), ...(action.durationMs ? { durationMs: action.durationMs } : {}) };
     try { confirmedActionResponse(await executeAction(request, observation, action, options.inputs, remaining(), designatedIdentity)); }
     catch (error) {
       trace.push({ ...traceAction, result: error.code === "stale_observation" ? "stale" : "failed" });
@@ -719,7 +746,7 @@ async function runBrowserSemantic(options, { request, evaluate, now = () => perf
       const stopReason = error.code === "stale_observation"
         ? "stale_observation"
         : error.code === "action_outcome_unknown" ? "outcome_unknown" : "action_failed";
-      return { status: "stopped", stopReason, trace, providerCalls };
+      return done({ status: "stopped", stopReason, trace, providerCalls });
     }
     trace.push({ ...traceAction, result: "executed" });
     let stateTransitionObserved = false;
@@ -731,19 +758,19 @@ async function runBrowserSemantic(options, { request, evaluate, now = () => perf
         state = providerState(observation);
       }
     } catch {
-      return { status: "stopped", stopReason: "outcome_unknown", trace, providerCalls };
+      return done({ status: "stopped", stopReason: "outcome_unknown", trace, providerCalls });
     }
     let outcome;
     try {
       outcome = await verify({ state, outcome: options.goal, evidence: state.chunks, thresholds: options.thresholds, model: options.model, evaluate: evaluator });
     } catch (error) {
-      return { status: "stopped", stopReason: "verification_failed", errorCode: semanticErrorCode(error, "verification_failed"), trace, providerCalls };
+      return done({ status: "stopped", stopReason: "verification_failed", errorCode: semanticErrorCode(error, "verification_failed"), trace, providerCalls });
     }
-    if (outcome.status === "satisfied") return { status: "complete", stopReason: "complete", trace, verification: outcome, providerCalls };
+    if (outcome.status === "satisfied") return done({ status: "complete", stopReason: "complete", trace, verification: outcome, providerCalls });
     if (action.kind === "click" || action.kind === "fill") {
       const verifiedIntermediate = stateTransitionObserved && outcome.decision.label === "not_satisfied";
       if (outcome.status !== "not_satisfied" && !verifiedIntermediate) {
-        return { status: "stopped", stopReason: "uncertain", trace, verification: outcome, providerCalls };
+        return done({ status: "stopped", stopReason: "uncertain", trace, verification: outcome, providerCalls });
       }
       if (verifiedIntermediate) trace[trace.length - 1].verification = "observed_state_transition";
       spendWrite(spentWrites, writeIdentity);
@@ -752,9 +779,9 @@ async function runBrowserSemantic(options, { request, evaluate, now = () => perf
     const hash = semanticProjectionHash(state);
     identical = hash === previousHash ? identical + 1 : 0;
     previousHash = hash;
-    if (identical >= SEMANTIC_POLICY.limits.identicalObservationHashes) return { status: "stopped", stopReason: "no_progress", trace, providerCalls };
+    if (identical >= SEMANTIC_POLICY.limits.identicalObservationHashes) return done({ status: "stopped", stopReason: "no_progress", trace, providerCalls });
   }
-  return { status: "stopped", stopReason: "step_budget", trace, providerCalls };
+  return done({ status: "stopped", stopReason: "step_budget", trace, providerCalls });
 }
 
 async function handleSemanticCli(argv, { endpoint, env = process.env, input = process.stdin, output = process.stderr, openTransport = openClientTransport } = {}) {
@@ -775,6 +802,9 @@ async function handleSemanticCli(argv, { endpoint, env = process.env, input = pr
     return { handled: true, value: { cleared, status: credentialStatus(env, options.provider) }, json: options.json, auth: "clear" };
   }
   const model = options.model ?? resolveModel(env);
+  if (options.vision && !semanticModel(model).images) {
+    throw new SemanticError("semantic_invalid_request", "--vision needs an image-capable model such as --model clef");
+  }
   const evaluator = createSemanticEvaluator({ model, env });
   let id = 0;
   const environmentSession = !options.session && !options.tabId && typeof env.SURF_SESSION === "string" && env.SURF_SESSION.trim() ? env.SURF_SESSION.trim() : undefined;

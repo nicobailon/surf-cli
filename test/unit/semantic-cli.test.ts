@@ -2537,3 +2537,235 @@ describe("semantic CLI model selection", () => {
     }
   });
 });
+
+describe("semantic CLI vision", () => {
+  const { handleSemanticCli } = require("../../native/semantic-cli.cjs") as {
+    handleSemanticCli(
+      argv: string[],
+      options: Record<string, unknown>,
+    ): Promise<{ value: Record<string, any> }>;
+  };
+  const cloudflare = {
+    CLOUDFLARE_ACCOUNT_ID: "0123456789abcdef0123456789abcdef",
+    CLOUDFLARE_API_TOKEN: "fake-token",
+  };
+  const SHEET = "iVBORw0KGgoAAAANSUhEUgAAAAE=";
+  const toolbar = {
+    ...observation,
+    candidates: [
+      { ref: "e5", role: "button", name: "", type: "button", nearbyText: "Toolbar" },
+      { ref: "e6", role: "button", name: "", type: "button", nearbyText: "Toolbar" },
+      { ref: "e7", role: "button", name: "Save", type: "button", nearbyText: "Toolbar" },
+    ],
+    chunks: [{ id: "c1", text: "Toolbar", refs: ["e5", "e6", "e7"] }],
+  };
+  const sheet = {
+    image: { mimeType: "image/png", data: SHEET },
+    tiles: [
+      { ref: "e5", x: 0, y: 16, width: 32, height: 32 },
+      { ref: "e6", x: 40, y: 16, width: 32, height: 32 },
+    ],
+    skipped: 1,
+  };
+
+  async function runFind(argv: string[], vision: Record<string, any> | undefined, pick = "e5") {
+    const reads: Record<string, any>[] = [];
+    const fetch = vi.fn(async (_url: string, init: { body: string }) => {
+      const { questions } = JSON.parse(init.body);
+      return new Response(
+        JSON.stringify({
+          success: true,
+          result: provider({ target: choice(pick, Object.keys(questions.target.criteria)) }),
+        }),
+      );
+    });
+    const openTransport = vi.fn(async () => ({
+      request: async (message: { params: { args: Record<string, any> } }) => {
+        reads.push(message.params.args);
+        return response({
+          semanticObservation: vision ? { ...toolbar, vision } : toolbar,
+        });
+      },
+      close: async () => undefined,
+    }));
+    vi.stubGlobal("fetch", fetch);
+    try {
+      const result = await handleSemanticCli(argv, { env: cloudflare, openTransport });
+      return { result, body: JSON.parse(fetch.mock.calls[0][1].body), reads };
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  }
+
+  it("accepts --vision only on semantic.find and semantic.act", () => {
+    expect(semantic.parseSemanticArgs(["semantic.find", "goal", "--vision"])).toMatchObject({
+      vision: true,
+    });
+    expect(semantic.parseSemanticArgs(["semantic.act", "goal", "--vision"])).toMatchObject({
+      vision: true,
+    });
+    expect(semantic.parseSemanticArgs(["semantic.find", "goal"])).not.toHaveProperty("vision");
+    for (const command of ["semantic.verify", "semantic.filter"]) {
+      expect(() => semantic.parseSemanticArgs([command, "goal", "--vision"])).toThrow(
+        `--vision does not apply to ${command}`,
+      );
+    }
+  });
+
+  it("fails before any browser, credential or provider I/O when the model cannot read images", async () => {
+    for (const [argv, env] of [
+      [["semantic.find", "the download icon", "--vision"], {}],
+      [["semantic.act", "Open settings", "--vision", "--model", "jev-1.13.0"], cloudflare],
+      [["semantic.find", "the download icon", "--vision"], { SURF_SEMANTIC_MODEL: "jev-1.13.0" }],
+    ] as const) {
+      const fetch = vi.fn();
+      const openTransport = vi.fn();
+      vi.stubGlobal("fetch", fetch);
+      try {
+        await expect(
+          handleSemanticCli([...argv], {
+            env: { XDG_CONFIG_HOME: "/nonexistent-surf-config", ...env },
+            openTransport,
+          }),
+        ).rejects.toMatchObject({
+          code: "semantic_invalid_request",
+          message: "--vision needs an image-capable model such as --model clef",
+        });
+      } finally {
+        vi.unstubAllGlobals();
+      }
+      expect(openTransport).not.toHaveBeenCalled();
+      expect(fetch).not.toHaveBeenCalled();
+    }
+  });
+
+  it("requests the sheet, attaches it once, and points tiled criteria at their tiles", async () => {
+    const { result, body, reads } = await runFind(
+      ["semantic.find", "the download icon", "--model", "clef", "--vision"],
+      sheet,
+    );
+    expect(reads).toEqual([{ semanticObservation: true, semanticVision: true }]);
+    expect(body.images).toEqual([{ content_type: "image/png", base64: SHEET }]);
+    expect(body.questions.target.criteria).toEqual({
+      e5: "button | (icon shown in tile e5) | Toolbar",
+      e6: "button | (icon shown in tile e6) | Toolbar",
+      e7: "button | Save | Toolbar",
+      none: "No supplied candidate matches the goal",
+    });
+    expect(JSON.stringify(body.state)).not.toMatch(/tile|iVBORw0KGgo/);
+    expect(result.value).toMatchObject({
+      status: "found",
+      candidate: { id: "e5", name: "", tile: true },
+      vision: { tiles: 2, skipped: 1 },
+    });
+
+    const named = await runFind(
+      ["semantic.find", "save", "--model", "clef", "--vision"],
+      sheet,
+      "e7",
+    );
+    expect(named.result.value.candidate).toEqual(expect.not.objectContaining({ tile: true }));
+  });
+
+  it("attaches no image without --vision or when every candidate is named", async () => {
+    const plain = await runFind(
+      ["semantic.find", "the download icon", "--model", "clef"],
+      undefined,
+    );
+    expect(plain.reads).toEqual([{ semanticObservation: true }]);
+    expect(plain.body).not.toHaveProperty("images");
+    expect(plain.body.questions.target.criteria.e5).toBe("button | Toolbar");
+    expect(plain.result.value).not.toHaveProperty("vision");
+    expect(plain.result.value.candidate).not.toHaveProperty("tile");
+
+    const labeled = await runFind(
+      ["semantic.find", "the download icon", "--model", "clef", "--vision"],
+      { image: null, tiles: [], skipped: 0 },
+    );
+    expect(labeled.body).not.toHaveProperty("images");
+    expect(labeled.body.questions.target.criteria.e5).toBe("button | Toolbar");
+    expect(labeled.result.value).toMatchObject({ vision: { tiles: 0, skipped: 0 } });
+  });
+
+  it("fails rather than answering from text when the browser returns no sheet", async () => {
+    await expect(
+      runFind(["semantic.find", "the download icon", "--model", "clef", "--vision"], undefined),
+    ).rejects.toThrow("browser returned no semantic vision; reload the surf extension");
+  });
+
+  async function runAct(options: Record<string, any>, probability: number, pick = "click:e5") {
+    const requests: string[] = [];
+    const calls: Array<{ questions: Record<string, any>; options: Record<string, any> }> = [];
+    const result = await semantic.runBrowserSemantic(
+      {
+        command: "semantic.act",
+        goal: "Open settings",
+        allowWrite: true,
+        allowRefs: [],
+        inputs: {},
+        maxSteps: 1,
+        vision: true,
+        ...options,
+      },
+      {
+        request: async (tool: string) => {
+          requests.push(tool);
+          return tool === "page.read"
+            ? response({ semanticObservation: { ...toolbar, vision: sheet } })
+            : actionResponse("OK");
+        },
+        evaluate: async (
+          _state: unknown,
+          questions: Record<string, any>,
+          providerOptions: Record<string, any>,
+        ) => {
+          calls.push({ questions, options: providerOptions });
+          if (!questions.action) {
+            return provider({
+              verdict: choice("satisfied", ["satisfied", "not_satisfied"]),
+              evidence: choice("c1", Object.keys(questions.evidence.criteria)),
+            });
+          }
+          const labels = Object.keys(questions.action.criteria);
+          return actionProvider(questions, labels.includes(pick) ? pick : "stop", probability);
+        },
+        now: () => 0,
+      },
+    );
+    return { result, requests, calls };
+  }
+
+  it("marks tiled act choices and reports the tile on the executed action", async () => {
+    const { result, calls } = await runAct({}, 0.99);
+    expect(calls[0].options.images).toEqual([sheet.image]);
+    expect(calls[0].questions.action.criteria).toMatchObject({
+      "click:e5": "click | button | (icon shown in tile e5)",
+      "click:e7": "click | button | Save",
+    });
+    expect(calls[1].options).not.toHaveProperty("images");
+    expect(result).toMatchObject({
+      status: "complete",
+      trace: [{ kind: "click", ref: "e5", tile: true, result: "executed" }],
+      vision: { tiles: 2, skipped: 1 },
+    });
+  });
+
+  it("keeps write thresholds and --allow-ref authority with an image attached", async () => {
+    const below = await runAct({}, 0.9);
+    expect(below.calls[0].options.images).toEqual([sheet.image]);
+    expect(below.result).toMatchObject({
+      status: "stopped",
+      stopReason: "uncertain",
+      appliedThreshold: 0.95,
+      concreteDecision: { ref: "e5", tile: true },
+      vision: { tiles: 2, skipped: 1 },
+    });
+    expect(below.requests).toEqual(["page.read"]);
+
+    const outside = await runAct({ allowRefs: ["e7"] }, 0.99);
+    expect(outside.calls[0].options.images).toEqual([sheet.image]);
+    expect(Object.keys(outside.calls[0].questions.action.criteria)).not.toContain("click:e5");
+    expect(outside.result).toMatchObject({ status: "stopped", stopReason: "uncertain" });
+    expect(outside.requests).toEqual(["page.read"]);
+  });
+});

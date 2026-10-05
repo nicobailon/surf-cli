@@ -64,6 +64,29 @@ describe("Jev provider boundary", () => {
     );
   });
 
+  it("never sends an image to TypeSafe", async () => {
+    const systemOne = vi.fn(async (_request: unknown, _options: unknown) => ({}));
+    const evaluate = createJevEvaluator({
+      apiKey: "secret",
+      loadSdk: () => ({
+        TypeSafeClient: function FakeClient(this: { systemOne: typeof systemOne }) {
+          this.systemOne = systemOne;
+        },
+      }),
+    });
+    await evaluate(
+      { title: "Page" },
+      {},
+      { images: [{ mimeType: "image/png", data: "iVBORw0KGgo=" }] },
+    );
+    expect(systemOne.mock.calls[0][0]).toEqual({
+      state: { title: "Page" },
+      questions: {},
+      model: "jev-1.13.0",
+    });
+    expect(JSON.stringify(systemOne.mock.calls[0])).not.toContain("iVBORw0KGgo");
+  });
+
   it("resolves the model from a nonblank SURF_SEMANTIC_MODEL only", () => {
     expect(resolveModel({ SURF_SEMANTIC_MODEL: " clef-flash " })).toBe("clef-flash");
     expect(resolveModel({ SURF_SEMANTIC_MODEL: "  " })).toBe("jev-1.13.0");
@@ -195,6 +218,24 @@ describe("Cloudflare Workers AI provider boundary", () => {
       questions,
     });
     expect(init.signal).toBeInstanceOf(AbortSignal);
+  });
+
+  it("sends an attached image in the Workers AI images field", async () => {
+    const fetch = respond(200, { result, success: true, errors: [], messages: [] });
+    const evaluate = evaluator(fetch) as (
+      state: unknown,
+      questions: unknown,
+      options: { images: Array<{ mimeType: string; data: string }> },
+    ) => Promise<unknown>;
+    await evaluate({ title: "Page" }, questions, {
+      images: [{ mimeType: "image/png", data: "iVBORw0KGgo=" }],
+    });
+    expect(JSON.parse(fetch.mock.calls[0][1].body as string)).toEqual({
+      model: "clef",
+      state: { title: "Page" },
+      questions,
+      images: [{ content_type: "image/png", base64: "iVBORw0KGgo=" }],
+    });
   });
 
   it.each([

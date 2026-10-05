@@ -1630,7 +1630,12 @@ Choose with --model <id> or SURF_SEMANTIC_MODEL. Results report provider, model,
   semantic.act "Open notification settings" --max-steps 5
   semantic.act "Fill email" --input email="$EMAIL" --allow-write
   semantic.find "the export button" --model clef-flash
+  semantic.find "the download icon" --model clef --vision
   semantic auth set|status|clear [--provider typesafe|cloudflare]
+
+--vision (find and act, clef or clef-flash only) also sends one image of small crops of visible
+controls that have no name, such as icon-only buttons. A crop can include whatever is drawn in that
+spot; form fields, iframes and embeds are blacked out.
 
 Every click/fill requires --allow-write. This broadly authorizes even high-impact controls;
 repeat --allow-ref <ref> to narrow authorization to exact observed refs.

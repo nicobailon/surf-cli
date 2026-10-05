@@ -86,7 +86,12 @@ function createCloudflareEvaluator({ accountId, apiToken, model, fetch = globalT
         response = await fetch(url, {
           method: "POST",
           headers: { Authorization: authorization, "Content-Type": "application/json" },
-          body: JSON.stringify({ model, state, questions }),
+          body: JSON.stringify({
+            model,
+            state,
+            questions,
+            ...(options.images ? { images: options.images.map(({ mimeType, data }) => ({ content_type: mimeType, base64: data })) } : {}),
+          }),
           signal: controller.signal,
         });
         text = await response.text();
