@@ -19,6 +19,8 @@ const BUTTON_AT = (x, y) =>
   `<button style="position:absolute;left:${x}px;top:${y}px;width:40px;height:40px;margin:0;padding:0;border:0;background:#fff"><svg width="24" height="24" viewBox="0 0 24 24"><rect x="4" y="4" width="16" height="16" fill="#00f"/></svg></button>`;
 const SECRET_POPOVER = POPOVER.replace("<div popover", '<div id="secret" popover').replace("></div>", ">PRIVATE-1234</div>");
 const SHOW_SECRET = `<script>document.querySelector("#secret").showPopover();</script>`;
+// An email field and its submit button inside a same-origin (srcdoc) iframe; quotes are escaped for the attribute.
+const FRAME_FORM = `<body style="margin:0"><form><input id="f" type="email" aria-label="Email" style="width:300px;height:28px"><button id="go">Subscribe</button></form></body>`.replaceAll('"', "&quot;");
 const closeSecret = (tab) =>
   tab.evaluate(() => {
     const secret = document.querySelector("#secret");
@@ -374,6 +376,62 @@ option { padding:0;margin:0;min-block-size:0;color:#0f0 } option::checkmark { di
     expect: "skipped",
     anyDifference: true,
   })),
+  {
+    // A field in a same-origin iframe: Chrome draws its validation message over the parent page, outside the hidden
+    // frame, while the parent's activeElement is the iframe. After the failed submit the read is skipped.
+    name: "validation message of a field in a same-origin iframe",
+    html: page(`<iframe id="frame" style="position:absolute;left:100px;top:56px;width:380px;height:40px;border:0" srcdoc="${FRAME_FORM}"></iframe>`),
+    populate: async (tab) => {
+      const frame = tab.frames().find((candidate) => candidate !== tab.mainFrame());
+      await frame.type("#f", "john.smith.private");
+      await frame.click("#go");
+      await new Promise((resolve) => setTimeout(resolve, 300));
+    },
+    clear: async (tab) => {
+      const frame = tab.frames().find((candidate) => candidate !== tab.mainFrame());
+      await frame.evaluate(() => {
+        const field = document.querySelector("#f");
+        field.value = "";
+        field.blur();
+      });
+      await tab.evaluate(() => document.querySelector("#frame").blur());
+      await new Promise((resolve) => setTimeout(resolve, 300));
+    },
+    expect: "skipped",
+    anyDifference: true,
+  },
+  {
+    // The same iframe with an untouched field keeps the button's tile.
+    name: "same-origin iframe with an untouched form",
+    html: page(`<iframe id="frame" style="position:absolute;left:100px;top:56px;width:380px;height:40px;border:0" srcdoc="${FRAME_FORM}"></iframe>`),
+    expect: "tile",
+  },
+  {
+    // A failed submit focuses the invalid field and the page moves focus away at once (as a focus trap does): Chrome
+    // still shows the message, and the field matches :user-invalid, so the read is skipped.
+    name: "validation message after a submit that moves focus away",
+    html: page(`<form><input id="secret" type="email" aria-label="Email" style="position:absolute;left:100px;top:60px;width:300px;height:28px">
+<button id="submit" type="submit" style="position:absolute;left:600px;top:400px">Sign up</button></form>
+<button id="chat" style="position:absolute;left:600px;top:450px">Start chat</button>`),
+    populate: async (tab) => {
+      await type("john.smith.private", { blur: false })(tab);
+      await tab.evaluate(() => {
+        const chat = document.querySelector("#chat");
+        document.querySelector("#secret").addEventListener("focus", () => chat.focus());
+      });
+      await tab.click("#submit");
+      await new Promise((resolve) => setTimeout(resolve, 300));
+    },
+    clear: async (tab) => {
+      await tab.evaluate(() => {
+        document.querySelector("#secret").value = "";
+        document.activeElement.blur();
+      });
+      await new Promise((resolve) => setTimeout(resolve, 300));
+    },
+    expect: "skipped",
+    anyDifference: true,
+  },
   {
     // An open <details> inside an editor is hidden with the editor and draws no browser surface: tiles are kept.
     name: "open details inside a contenteditable",

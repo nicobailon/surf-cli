@@ -357,16 +357,33 @@ function semanticVisionPickerShown(field: Element): boolean {
   }
 }
 
-// Chrome also draws a field's validation message inside the page after a failed submit or reportValidity(), quoting
-// its value, for the field it focuses. Asking the field (checkValidity()) would fire events, so this is true whenever
-// the focused element, followed through open and closed shadow roots, is an invalid native field, including an
-// untouched required one.
+const SEMANTIC_VISION_USER_INVALID = "input:user-invalid, textarea:user-invalid, select:user-invalid";
+
+function isSemanticVisionFrame(element: Element): element is HTMLIFrameElement | HTMLFrameElement {
+  const tag = element.tagName.toLowerCase();
+  return tag === "iframe" || tag === "frame";
+}
+
+// Chrome draws a field's validation message inside the page, quoting its value, and not only for the focused field:
+// after a failed submit it shows it for the first invalid field even when the page moves focus elsewhere, and for a
+// field in a same-origin frame it draws it over the parent page, outside the hidden frame. Asking the fields
+// (checkValidity()) would fire events, so the read is skipped while a validation message may be showing:
+// - after a failed submit, when any native field matches `:user-invalid` (semanticVisionSubmitFailed);
+// - after reportValidity(), when the focused element, followed through open and closed shadow roots and into frames,
+//   is an invalid native field (including an untouched required one), or when focus is in a frame whose document
+//   cannot be read (semanticVisionValidationShown).
 function semanticVisionValidationShown(): boolean {
   try {
     let focused: Element | null = document.activeElement;
     for (;;) {
-      const inner: Element | null | undefined = focused &&
-        chrome.dom.openOrClosedShadowRoot(focused as HTMLElement)?.activeElement;
+      let inner: Element | null | undefined;
+      if (focused && isSemanticVisionFrame(focused)) {
+        const frameDocument = focused.contentDocument;
+        if (!frameDocument) return true;
+        inner = frameDocument.activeElement;
+      } else {
+        inner = focused && chrome.dom.openOrClosedShadowRoot(focused as HTMLElement)?.activeElement;
+      }
       if (!inner) break;
       focused = inner;
     }
@@ -377,6 +394,32 @@ function semanticVisionValidationShown(): boolean {
   }
 }
 
+// Whether a native field under the roots, or in the documents of the same-origin frames (with their own shadow roots
+// and frames), matches `:user-invalid`, which every invalid field does after a failed submit, whatever has focus.
+function semanticVisionSubmitFailed(roots: Array<Document | ShadowRoot>, frames: Element[]): boolean {
+  try {
+    if (roots.some((root) => root.querySelector(SEMANTIC_VISION_USER_INVALID))) return true;
+    for (const frame of frames) {
+      const frameDocument = (frame as HTMLIFrameElement).contentDocument;
+      if (!frameDocument) continue;
+      const frameRoots: Array<Document | ShadowRoot> = [frameDocument];
+      const innerFrames: Element[] = [];
+      for (const root of frameRoots) {
+        for (const element of Array.from(root.querySelectorAll("*"))) {
+          const shadowRoot = element.namespaceURI === "http://www.w3.org/1999/xhtml"
+            ? chrome.dom.openOrClosedShadowRoot(element as HTMLElement)
+            : null;
+          if (shadowRoot) frameRoots.push(shadowRoot);
+          if (isSemanticVisionFrame(element)) innerFrames.push(element);
+        }
+      }
+      if (semanticVisionSubmitFailed(frameRoots, innerFrames)) return true;
+    }
+    return false;
+  } catch {
+    return true;
+  }
+}
 type SemanticVisionScan = {
   fields: Element[];
   roots: ShadowRoot[];
@@ -389,9 +432,10 @@ type SemanticVisionScan = {
 // chrome.dom. Shadow roots inside a field are listed in `fieldRoots`. The read is skipped (`unsupported`) for a
 // shadow root that cannot be read, for content made editable by CSS (`-webkit-user-modify`), which no selector can
 // reach, for an input or select whose native picker is open or a select picker that is closing, and while the
-// browser may be showing a validation message for the focused field.
+// browser may be showing a field's validation message.
 function scanSemanticVisionFields(): SemanticVisionScan {
   const scan = { fields: [] as Element[], roots: [] as ShadowRoot[], unsupported: false };
+  const frames: Element[] = [];
   const collect = (root: Document | ShadowRoot) => {
     for (const element of Array.from(root.querySelectorAll("*"))) {
       if (isSemanticVisionFieldElement(element)) {
@@ -400,6 +444,7 @@ function scanSemanticVisionFields(): SemanticVisionScan {
           scan.fields.push(element);
         }
         if (semanticVisionPickerShown(element)) scan.unsupported = true;
+        if (isSemanticVisionFrame(element)) frames.push(element);
       }
       if (!(element instanceof HTMLElement)) continue;
       if (!element.matches(":read-write") && (window.getComputedStyle(element) as CSSStyleDeclaration & { webkitUserModify?: string })
@@ -420,7 +465,9 @@ function scanSemanticVisionFields(): SemanticVisionScan {
     }
   };
   collect(document);
-  if (semanticVisionValidationShown()) scan.unsupported = true;
+  if (semanticVisionValidationShown() || semanticVisionSubmitFailed([document, ...scan.roots], frames)) {
+    scan.unsupported = true;
+  }
   const slots = semanticVisionSlots(scan.roots);
   return { ...scan, slots, fieldRoots: scan.roots.filter((root) => inSemanticVisionField(root.host, slots)) };
 }

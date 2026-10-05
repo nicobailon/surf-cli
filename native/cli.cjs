@@ -1643,9 +1643,11 @@ blink invisible for that moment.
 surf sends no crops for a read when it can't prove that: the page forces a field visible, an editable
 element uses display:contents, content is editable through -webkit-user-modify, a field's native
 picker that Chrome draws in the page is open (select, date, datetime-local, time, month, week, color),
-a customizable select's picker is closing, the focused field is invalid (Chrome may be showing its
-validation message, which can quote the value), designMode is on, a view transition is running, a
-shadow root is unreadable, anything in the DOM changed meanwhile, or the screenshot took over 2 s.
+a customizable select's picker is closing, a form field is invalid after a failed submit or the
+focused field (including one in a same-origin iframe) is invalid or focus is in a cross-origin iframe
+(Chrome may be showing a validation message that quotes the value; after a failed submit, reads skip
+until the fields are fixed), designMode is on, a view transition is running, a shadow root is
+unreadable, anything in the DOM changed meanwhile, or the screenshot took over 2 s.
 Popups the browser draws outside the page frame are not in the screenshot.
 
 Every click/fill requires --allow-write. This broadly authorizes even high-impact controls;

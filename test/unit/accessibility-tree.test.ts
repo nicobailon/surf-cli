@@ -36,6 +36,7 @@ class FakeElement extends FakeNode {
   popoverOpen = false;
   pickerOpen = false;
   invalid = false;
+  userInvalid = false;
 
   get parentNode(): FakeElement | FakeShadowRoot | null {
     return this.parentElement ?? this.shadowParent;
@@ -129,6 +130,9 @@ class FakeElement extends FakeNode {
       if (part === ":invalid") {
         return this.invalid;
       }
+      if (part === `${this.tagName.toLowerCase()}:user-invalid`) {
+        return this.userInvalid;
+      }
       return part === this.tagName.toLowerCase();
     });
   }
@@ -186,6 +190,10 @@ class FakeShadowRoot {
   querySelectorAll(selector: string): FakeElement[] {
     const all = this.nodes.flatMap((node) => [node, ...node.querySelectorAll("*")]);
     return selector === "*" ? all : all.filter((node) => node.matches(selector));
+  }
+
+  querySelector(selector: string): FakeElement | null {
+    return this.querySelectorAll(selector)[0] ?? null;
   }
 }
 
@@ -884,10 +892,13 @@ describe("accessibility tree", () => {
     const closedRoot = {
       adoptedStyleSheets: [] as object[],
       querySelectorAll: (selector: string) => (selector === "*" ? [closedField] : []),
+      querySelector: () => null,
     };
     const elements: FakeElement[] = [toolbar.settings, toolbar.search, toolbar.notes, host];
     (document as any).querySelectorAll = (selector: string) =>
       selector === "*" ? elements : elements.filter((node) => node.matches(selector));
+    (document as any).querySelector = (selector: string) =>
+      (document as any).querySelectorAll(selector)[0] ?? null;
     (globalThis as any).chrome.dom = {
       openOrClosedShadowRoot: (node: FakeElement) => (node === host ? closedRoot : null),
     };
@@ -1153,6 +1164,49 @@ describe("accessibility tree", () => {
     recheck();
   });
 
+  it("skips the read after a failed submit or with focus in a frame that may show a validation message", async () => {
+    const { elements } = visionPage();
+    const frameDocument = (nodes: FakeElement[], activeElement: FakeElement | null) => ({
+      activeElement,
+      querySelectorAll: (selector: string) =>
+        selector === "*" ? nodes : nodes.filter((node) => node.matches(selector)),
+      querySelector: (selector: string) => nodes.find((node) => node.matches(selector)) ?? null,
+    });
+    const email = new FakeInputElement("input");
+    email.computed.opacity = "0";
+    const frameField = new FakeInputElement("input");
+    const frame = Object.assign(element("iframe"), {
+      contentDocument: frameDocument([frameField], null) as any,
+    });
+    frame.computed.opacity = "0";
+    elements.push(email, frame);
+    expect(await prepare()).not.toEqual({ masks: [null] });
+    recheck();
+
+    // After a failed submit every invalid field matches :user-invalid, whatever has focus, also in a same-origin frame.
+    email.userInvalid = true;
+    expect(await prepare()).toEqual({ masks: [null] });
+    email.userInvalid = false;
+    await prepare();
+    email.userInvalid = true;
+    expect(recheck().fieldsChanged).toBe(true);
+    email.userInvalid = false;
+    frameField.userInvalid = true;
+    expect(await prepare()).toEqual({ masks: [null] });
+    frameField.userInvalid = false;
+
+    // Focus is followed into a same-origin frame; a frame whose document can't be read skips the read.
+    (document as any).activeElement = frame;
+    frameField.invalid = true;
+    frame.contentDocument = frameDocument([frameField], frameField) as any;
+    expect(await prepare()).toEqual({ masks: [null] });
+    frameField.invalid = false;
+    expect(await prepare()).not.toEqual({ masks: [null] });
+    recheck();
+    frame.contentDocument = null;
+    expect(await prepare()).toEqual({ masks: [null] });
+  });
+
   it("reports any change between hiding the fields and the recheck", async () => {
     const { search, host, closedRoot, elements } = visionPage();
 
@@ -1161,7 +1215,11 @@ describe("accessibility tree", () => {
     expect(recheck().fieldsChanged).toBe(true);
 
     await prepare();
-    const lateRoot = { adoptedStyleSheets: [], querySelectorAll: () => [] };
+    const lateRoot = {
+      adoptedStyleSheets: [],
+      querySelectorAll: () => [],
+      querySelector: () => null,
+    };
     const lateHost = element("late-widget");
     elements.push(lateHost);
     (globalThis as any).chrome.dom = {
