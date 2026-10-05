@@ -34,6 +34,7 @@ class FakeElement extends FakeNode {
   shadowRoot: { querySelectorAll(selector: string): FakeElement[] } | null = null;
   shadowParent: FakeShadowRoot | null = null;
   popoverOpen = false;
+  pickerOpen = false;
 
   get parentNode(): FakeElement | FakeShadowRoot | null {
     return this.parentElement ?? this.shadowParent;
@@ -120,6 +121,9 @@ class FakeElement extends FakeNode {
       }
       if (part === ":popover-open") {
         return this.popoverOpen;
+      }
+      if (part === ":open") {
+        return this.pickerOpen;
       }
       return part === this.tagName.toLowerCase();
     });
@@ -1005,6 +1009,88 @@ describe("accessibility tree", () => {
     // Content made editable by CSS has no selector, so the read is skipped.
     settings.computed.webkitUserModify = "read-write";
     expect(await prepare()).toEqual({ masks: [null] });
+  });
+
+  it("follows slots to fields in the flat tree, and skips the read while a select picker is open", async () => {
+    const { elements } = visionPage();
+    const slotOf = (assigned: FakeElement[]) =>
+      Object.assign(element("slot"), { assignedElements: () => assigned });
+    const openPopover = (top: number) => {
+      const popover = element("div", { popover: "manual" });
+      popover.popoverOpen = true;
+      popover.rect = { top, bottom: top + 40, left: 100, right: 160 };
+      return popover;
+    };
+    // <ui-combobox> renders its light-DOM popover inside a role=combobox through a slot (assignedSlot is null when
+    // the root is closed, so the slot map comes from the slots).
+    const comboboxHost = element("ui-combobox");
+    const slotted = openPopover(100);
+    comboboxHost.append(slotted);
+    const comboboxRoot = new FakeShadowRoot(comboboxHost, [
+      Object.assign(element("div", { role: "combobox" }), {
+        rect: { top: 300, bottom: 320, left: 400, right: 460 },
+      }),
+    ]);
+    comboboxRoot.querySelectorAll("div")[0].append(slotOf([slotted]));
+    // <ui-outer> forwards its popover through its own slot into an inner role=combobox slot.
+    const outerHost = element("ui-outer");
+    const chained = openPopover(200);
+    outerHost.append(chained);
+    const innerHost = element("ui-inner");
+    const outerSlot = slotOf([chained]);
+    innerHost.append(outerSlot);
+    const outerRoot = new FakeShadowRoot(outerHost, [innerHost]);
+    const innerField = element("div", { role: "combobox" });
+    innerField.append(slotOf([outerSlot]));
+    const innerRoot = new FakeShadowRoot(innerHost, [innerField]);
+    // A popover menu slotted beside a field, not into it.
+    const menuHost = element("ui-menu");
+    const menu = openPopover(500);
+    menuHost.append(menu);
+    const menuRoot = new FakeShadowRoot(menuHost, [
+      element("div", { role: "combobox" }),
+      element("div"),
+    ]);
+    menuRoot.querySelectorAll("div")[1].append(slotOf([menu]));
+    const select = new FakeSelectElement("select");
+    select.computed.opacity = "0";
+    elements.push(comboboxHost, slotted, outerHost, chained, menuHost, menu, select);
+    const roots = new Map<FakeElement, FakeShadowRoot>([
+      [comboboxHost, comboboxRoot],
+      [outerHost, outerRoot],
+      [innerHost, innerRoot],
+      [menuHost, menuRoot],
+    ]);
+    (globalThis as any).chrome.dom = {
+      openOrClosedShadowRoot: (node: FakeElement) => roots.get(node) ?? null,
+    };
+    for (const root of roots.values()) {
+      for (const field of root.querySelectorAll("div")) {
+        field.computed.opacity = "0";
+      }
+    }
+
+    // Slotted popovers that still paint skip the read; the menu beside the field does not.
+    expect(await prepare()).toEqual({ masks: [null] });
+    slotted.computed.opacity = "0";
+    expect(await prepare()).toEqual({ masks: [null] });
+    chained.computed.opacity = "0";
+    const { masks } = await prepare();
+    expect(masks).toContainEqual({ x: 100, y: 100, width: 60, height: 40 });
+    expect(masks).toContainEqual({ x: 100, y: 200, width: 60, height: 40 });
+    expect(masks).not.toContainEqual({ x: 100, y: 500, width: 60, height: 40 });
+    expect((document as any).adoptedStyleSheets[0].text).toContain(
+      ":read-write) ::slotted(:is([popover], dialog, :fullscreen))",
+    );
+    expect(recheck().fieldsChanged).toBe(false);
+
+    // An open select picker is out of reach, so the read is skipped, at the recheck too.
+    select.pickerOpen = true;
+    expect(await prepare()).toEqual({ masks: [null] });
+    select.pickerOpen = false;
+    await prepare();
+    select.pickerOpen = true;
+    expect(recheck().fieldsChanged).toBe(true);
   });
 
   it("reports any change between hiding the fields and the recheck", async () => {

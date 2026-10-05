@@ -17,6 +17,13 @@ const CLOSED_INPUT = `<input value="PRIVATE-1234" style="width:60px;height:40px;
 const POPOVER = `<div popover="manual" style="position:fixed;inset:auto;left:100px;top:100px;margin:0;padding:0;border:0;width:60px;height:40px;color:#0f0;background:white;font:16px/20px monospace"></div>`;
 const BUTTON_AT = (x, y) =>
   `<button style="position:absolute;left:${x}px;top:${y}px;width:40px;height:40px;margin:0;padding:0;border:0;background:#fff"><svg width="24" height="24" viewBox="0 0 24 24"><rect x="4" y="4" width="16" height="16" fill="#00f"/></svg></button>`;
+const SECRET_POPOVER = POPOVER.replace("<div popover", '<div id="secret" popover').replace("></div>", ">PRIVATE-1234</div>");
+const SHOW_SECRET = `<script>document.querySelector("#secret").showPopover();</script>`;
+const FIELD_AT = "position:absolute;left:400px;top:300px;width:60px;height:20px;color:#0f0;font:16px/20px monospace";
+// A custom element whose shadow tree is `inner`.
+const COMPONENT = (name, mode, inner) => `<script>customElements.define("${name}", class extends HTMLElement {
+  constructor() { super(); this.attachShadow({ mode: "${mode}" }).innerHTML = '${inner}'; }
+});</script>`;
 
 const type = (text, { blur = true } = {}) => async (tab) => {
   await tab.focus("#secret");
@@ -180,6 +187,73 @@ combobox.addEventListener("keydown", (event) => {
 <script>document.querySelector("#menu").showPopover();</script>`),
     expect: "tile",
     minTiles: 3,
+  },
+  ...["open", "closed"].map((mode) => ({
+    // A component's role=combobox renders its light-DOM value, an open popover, through a slot.
+    name: `popover slotted into a role=combobox in a ${mode} shadow root`,
+    html: page(`${COMPONENT("ui-combobox", mode, `<div role="combobox" tabindex="0" style="${FIELD_AT}"><slot></slot></div>`)}
+<ui-combobox>${SECRET_POPOVER}</ui-combobox>${SHOW_SECRET}`),
+    clear: clearSecret,
+    expect: "tile",
+  })),
+  {
+    // An editor component's content is its light DOM, rendered inside a contenteditable through a slot.
+    name: "popover slotted into a contenteditable component",
+    html: page(`${COMPONENT("ui-editor", "open", `<div contenteditable="true" style="${FIELD_AT}"><slot></slot></div>`)}
+<ui-editor>${SECRET_POPOVER}</ui-editor>${SHOW_SECRET}`),
+    clear: clearSecret,
+    expect: "tile",
+  },
+  {
+    // The same popover nested in a slotted paragraph: no sheet reaches it, so the read is skipped.
+    name: "popover nested in content slotted into a contenteditable component",
+    html: page(`${COMPONENT("ui-editor", "open", `<div contenteditable="true" style="${FIELD_AT}"><slot></slot></div>`)}
+<ui-editor><p style="margin:0">x${SECRET_POPOVER.replaceAll("div", "span")}</p></ui-editor>${SHOW_SECRET}`),
+    clear: clearSecret,
+    expect: "skipped",
+  },
+  {
+    // A popover nested in content slotted into a role=combobox is not hidden by a sheet; the check skips the read.
+    name: "popover nested in content slotted into a role=combobox",
+    html: page(`${COMPONENT("ui-combobox", "closed", `<div role="combobox" tabindex="0" style="${FIELD_AT}"><slot></slot></div>`)}
+<ui-combobox><p style="margin:0">x${SECRET_POPOVER.replaceAll("div", "span")}</p></ui-combobox>${SHOW_SECRET}`),
+    clear: clearSecret,
+    expect: "skipped",
+  },
+  {
+    // ui-outer forwards its light DOM through its own slot into a ui-combobox slot.
+    name: "popover slotted into a role=combobox through a two-level slot chain",
+    html: page(`${COMPONENT("ui-combobox", "open", `<div role="combobox" tabindex="0" style="${FIELD_AT}"><slot></slot></div>`)}
+${COMPONENT("ui-outer", "open", "<ui-combobox><slot></slot></ui-combobox>")}
+<ui-outer>${SECRET_POPOVER}</ui-outer>${SHOW_SECRET}`),
+    clear: clearSecret,
+    expect: "tile",
+  },
+  {
+    // A popover menu slotted beside a field, not into it, keeps its tiles.
+    name: "popover menu slotted beside a field",
+    html: page(`${COMPONENT("ui-picker", "open", `<div role="combobox" tabindex="0" style="${FIELD_AT}"></div><div><slot></slot></div>`)}
+<ui-picker><div id="menu" popover="manual" style="position:fixed;inset:auto;left:300px;top:300px;width:100px;height:48px;margin:0;padding:0;border:1px solid #ccc;background:#fff">${BUTTON_AT(4, 4)}${BUTTON_AT(56, 4)}</div></ui-picker>
+<script>document.querySelector("#menu").showPopover();</script>`),
+    expect: "tile",
+    minTiles: 3,
+  },
+  {
+    // An open customizable select draws its picker in the select's own shadow tree, out of reach: skipped.
+    name: "open customizable select picker",
+    html: page(`<style>select, ::picker(select) { appearance: base-select }
+select { position:absolute;left:0;top:60px;width:120px;white-space:nowrap;color:#0f0;font:16px/20px monospace }
+option { color: #0f0 }</style>
+<select id="secret" aria-label="Account"><option>Choose</option><option selected>PRIVATE-1234</option></select>`),
+    populate: async (tab) => {
+      await tab.click("#secret");
+      await tab.waitForFunction(() => document.querySelector("#secret").matches(":open"));
+    },
+    clear: (tab) =>
+      tab.evaluate(() => {
+        document.querySelector("#secret").selectedOptions[0].textContent = "";
+      }),
+    expect: "skipped",
   },
   {
     name: "shadow popover showing an editing host's text through a slot",

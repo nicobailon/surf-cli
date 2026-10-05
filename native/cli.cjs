@@ -1637,12 +1637,13 @@ Choose with --model <id> or SURF_SEMANTIC_MODEL. Results report provider, model,
 controls that have no name, such as icon-only buttons. Not masked: anything the page itself draws
 outside its fields (live previews, counters, search results, canvas or div-based editors), and custom
 elements that are fields only through ElementInternals; a crop can include whatever is drawn there.
-Fields (inputs, editable content, value roles, iframes, embeds, and popovers open inside them) are made
-to paint nothing for the screenshot, checked, and blacked out; they blink invisible for that moment.
+Fields (inputs, editable content, value roles, iframes, embeds, and popovers open inside them, including
+content slotted into them) are made to paint nothing for the screenshot, checked, and blacked out; they
+blink invisible for that moment.
 surf sends no crops for a read when it can't prove that: the page forces a field visible, an editable
-element uses display:contents, content is editable through -webkit-user-modify, designMode is on, a view
-transition is running, a shadow root is unreadable, anything in the DOM changed meanwhile, or the
-screenshot took over 2 s.
+element uses display:contents, content is editable through -webkit-user-modify, a customizable select
+has its picker open, designMode is on, a view transition is running, a shadow root is unreadable,
+anything in the DOM changed meanwhile, or the screenshot took over 2 s.
 
 Every click/fill requires --allow-write. This broadly authorizes even high-impact controls;
 repeat --allow-ref <ref> to narrow authorization to exact observed refs.

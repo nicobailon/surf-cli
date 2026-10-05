@@ -258,11 +258,13 @@ const SEMANTIC_VISION_OPEN_TOP_LAYER = ":popover-open, dialog[open], :fullscreen
 // Any element of a field, matching isSemanticVisionFieldElement.
 const SEMANTIC_VISION_FIELD_ELEMENTS = `input, textarea, select, iframe, frame, embed, object,
   [role~="textbox" i], [role~="searchbox" i], [role~="combobox" i], [role~="spinbutton" i], :read-write`;
-// Fields to hide, matching isSemanticVisionMaskTarget, plus top-layer elements inside a field in the same tree.
-// Only the root of each editable region is listed, since opacity on it hides everything inside.
+// Fields to hide, matching isSemanticVisionMaskTarget, plus top-layer elements inside a field in the same tree or
+// slotted straight into one. Only the root of each editable region is listed, since opacity on it hides everything
+// inside.
 const SEMANTIC_VISION_FIELDS = `input, textarea, select, iframe, frame, embed, object,
   [role~="textbox" i], [role~="searchbox" i], [role~="combobox" i], [role~="spinbutton" i],
-  :read-write:not(:read-write > *), :is(${SEMANTIC_VISION_FIELD_ELEMENTS}) :is(${SEMANTIC_VISION_TOP_LAYER})`;
+  :read-write:not(:read-write > *), :is(${SEMANTIC_VISION_FIELD_ELEMENTS}) :is(${SEMANTIC_VISION_TOP_LAYER}),
+  :is(${SEMANTIC_VISION_FIELD_ELEMENTS}) ::slotted(:is(${SEMANTIC_VISION_TOP_LAYER}))`;
 // Makes every field paint nothing while the screenshot is taken. The layer beats unlayered page `!important`
 // rules; a field the page still keeps visible fails the opacity check before and after the capture.
 const semanticVisionSheetText = (selector: string) =>
@@ -314,55 +316,86 @@ function isSemanticVisionMaskTarget(element: Element): boolean {
     !(element.matches(":read-write") && element.parentElement?.matches(":read-write") === true);
 }
 
-function composedParent(element: Element): Element | null {
-  const parent = element.parentNode;
-  return parent instanceof ShadowRoot ? parent.host : parent instanceof Element ? parent : null;
+// The slot each element is assigned to, across every scanned shadow root. `assignedSlot` is null for slots in closed
+// roots, so the map is built from the slots. A slot forwarded into another component's slot is assigned in turn.
+type SemanticVisionSlots = Map<Element, Element>;
+
+function semanticVisionSlots(roots: ShadowRoot[]): SemanticVisionSlots {
+  const slots: SemanticVisionSlots = new Map();
+  for (const root of roots) {
+    for (const slot of Array.from(root.querySelectorAll("slot"))) {
+      for (const assigned of (slot as HTMLSlotElement).assignedElements()) slots.set(assigned, slot);
+    }
+  }
+  return slots;
 }
 
-function insideSemanticVisionField(element: Element): boolean {
-  for (let node = composedParent(element); node; node = composedParent(node)) {
+// Whether the element or one of its ancestors in the flat tree, which is what renders, is a field: from an element
+// go to the slot it is assigned to, else its parent, else across a shadow root to its host.
+function inSemanticVisionField(element: Element, slots: SemanticVisionSlots): boolean {
+  for (let node: Element | null = element; node; ) {
     if (isSemanticVisionFieldElement(node)) return true;
+    const parent: Node | null = node.parentNode;
+    node = slots.get(node) ?? (parent instanceof ShadowRoot ? parent.host : parent instanceof Element ? parent : null);
   }
   return false;
 }
 
 // Open top-layer elements inside a field: they escape the field's opacity group, so each must paint nothing itself.
-function semanticVisionTopLayerInFields(roots: Array<Document | ShadowRoot>): Element[] {
+function semanticVisionTopLayerInFields(roots: Array<Document | ShadowRoot>, slots: SemanticVisionSlots): Element[] {
   return roots.flatMap((root) =>
-    Array.from(root.querySelectorAll(SEMANTIC_VISION_OPEN_TOP_LAYER)).filter(insideSemanticVisionField));
+    Array.from(root.querySelectorAll(SEMANTIC_VISION_OPEN_TOP_LAYER)).filter((element) => inSemanticVisionField(element, slots)));
 }
 
-type SemanticVisionScan = { fields: Element[]; roots: ShadowRoot[]; fieldRoots: ShadowRoot[]; unsupported: boolean };
-
-// Fields under root, including inside open and closed shadow roots, which content scripts can read through
-// chrome.dom. Shadow roots inside a field are listed in `fieldRoots`. The read is skipped (`unsupported`) for a
-// shadow root that cannot be read, and for content made editable by CSS (`-webkit-user-modify`), which no
-// selector can reach.
-function scanSemanticVisionFields(
-  root: Document | ShadowRoot,
-  scan: SemanticVisionScan = { fields: [], roots: [], fieldRoots: [], unsupported: false },
-): SemanticVisionScan {
-  for (const element of Array.from(root.querySelectorAll("*"))) {
-    if (isSemanticVisionMaskTarget(element)) scan.fields.push(element);
-    if (!(element instanceof HTMLElement)) continue;
-    if (!element.matches(":read-write") && (window.getComputedStyle(element) as CSSStyleDeclaration & { webkitUserModify?: string })
-      .webkitUserModify?.startsWith("read-write")) {
-      scan.unsupported = true;
-    }
-    let shadowRoot: ShadowRoot | null;
-    try {
-      shadowRoot = chrome.dom.openOrClosedShadowRoot(element);
-    } catch {
-      scan.unsupported = true;
-      continue;
-    }
-    if (shadowRoot) {
-      scan.roots.push(shadowRoot);
-      if (isSemanticVisionFieldElement(element) || insideSemanticVisionField(element)) scan.fieldRoots.push(shadowRoot);
-      scanSemanticVisionFields(shadowRoot, scan);
-    }
+// An open customizable select draws its picker in the top layer of the select's own shadow tree, which a content
+// script cannot reach, so it cannot be hidden or checked.
+function semanticVisionPickerOpen(select: Element): boolean {
+  try {
+    return select.matches(":open");
+  } catch {
+    return true;
   }
-  return scan;
+}
+
+type SemanticVisionScan = {
+  fields: Element[];
+  roots: ShadowRoot[];
+  fieldRoots: ShadowRoot[];
+  slots: SemanticVisionSlots;
+  unsupported: boolean;
+};
+
+// Fields in the page, including inside open and closed shadow roots, which content scripts can read through
+// chrome.dom. Shadow roots inside a field are listed in `fieldRoots`. The read is skipped (`unsupported`) for a
+// shadow root that cannot be read, for content made editable by CSS (`-webkit-user-modify`), which no selector can
+// reach, and for an open select picker.
+function scanSemanticVisionFields(): SemanticVisionScan {
+  const scan = { fields: [] as Element[], roots: [] as ShadowRoot[], unsupported: false };
+  const collect = (root: Document | ShadowRoot) => {
+    for (const element of Array.from(root.querySelectorAll("*"))) {
+      if (isSemanticVisionMaskTarget(element)) scan.fields.push(element);
+      if (element.tagName.toLowerCase() === "select" && semanticVisionPickerOpen(element)) scan.unsupported = true;
+      if (!(element instanceof HTMLElement)) continue;
+      if (!element.matches(":read-write") && (window.getComputedStyle(element) as CSSStyleDeclaration & { webkitUserModify?: string })
+        .webkitUserModify?.startsWith("read-write")) {
+        scan.unsupported = true;
+      }
+      let shadowRoot: ShadowRoot | null;
+      try {
+        shadowRoot = chrome.dom.openOrClosedShadowRoot(element);
+      } catch {
+        scan.unsupported = true;
+        continue;
+      }
+      if (shadowRoot) {
+        scan.roots.push(shadowRoot);
+        collect(shadowRoot);
+      }
+    }
+  };
+  collect(document);
+  const slots = semanticVisionSlots(scan.roots);
+  return { ...scan, slots, fieldRoots: scan.roots.filter((root) => inSemanticVisionField(root.host, slots)) };
 }
 
 // Border boxes of the fields in the viewport, blacked out on top of the hidden fields; null when one cannot be measured.
@@ -401,9 +434,9 @@ function releaseSemanticVision(): void {
 
 // Verifies that nothing in a field paints: every sheet is still adopted, and each field and each open top-layer
 // element inside one has opacity 0 on a box of its own. Returns those elements, or null when one still paints.
-function semanticVisionHiddenElements(hiding: SemanticVisionHiding): Element[] | null {
+function semanticVisionHiddenElements(hiding: SemanticVisionHiding, slots: SemanticVisionSlots): Element[] | null {
   if (![...hiding.sheets].every(([root, sheet]) => root.adoptedStyleSheets.includes(sheet))) return null;
-  const elements = [...hiding.fields, ...semanticVisionTopLayerInFields([...hiding.sheets.keys()])];
+  const elements = [...hiding.fields, ...semanticVisionTopLayerInFields([...hiding.sheets.keys()], slots)];
   return elements.every((element) => {
     const style = window.getComputedStyle(element);
     return style.opacity === "0" && style.display !== "contents";
@@ -419,7 +452,7 @@ async function prepareSemanticVision(): Promise<Array<SemanticVisionRect | null>
     typeof chrome.dom?.openOrClosedShadowRoot !== "function" ||
     (document as Document & { activeViewTransition?: unknown }).activeViewTransition
   ) return [null];
-  const scan = scanSemanticVisionFields(document);
+  const scan = scanSemanticVisionFields();
   if (scan.unsupported) return [null];
   if (!semanticVisionSheets) {
     semanticVisionSheets = { base: new CSSStyleSheet(), fieldRoot: new CSSStyleSheet() };
@@ -455,7 +488,7 @@ async function prepareSemanticVision(): Promise<Array<SemanticVisionRect | null>
     requestAnimationFrame(resolve);
     setTimeout(resolve, 100);
   });
-  const hidden = semanticVisionHiddenElements(hiding);
+  const hidden = semanticVisionHiddenElements(hiding, scan.slots);
   const masks = hidden ? semanticVisionMasks(hidden) : [null];
   if (semanticVisionHiding !== hiding || hiding.changed || masks.includes(null)) {
     if (semanticVisionHiding === hiding) releaseSemanticVision();
@@ -469,8 +502,8 @@ function recheckSemanticVision(): { masks: Array<SemanticVisionRect | null>; fie
   const hiding = semanticVisionHiding;
   if (!hiding) return { masks: [null], fieldsChanged: true };
   const pending = hiding.observer.takeRecords().length > 0;
-  const scan = scanSemanticVisionFields(document);
-  const hidden = semanticVisionHiddenElements(hiding);
+  const scan = scanSemanticVisionFields();
+  const hidden = semanticVisionHiddenElements(hiding, scan.slots);
   const fieldsChanged = hiding.changed || pending || scan.unsupported || !hidden ||
     scan.roots.length !== hiding.shadowRoots.length || scan.roots.some((root) => !hiding.shadowRoots.includes(root));
   const masks = hidden ? semanticVisionMasks(hidden) : [null];
