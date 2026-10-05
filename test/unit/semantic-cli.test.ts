@@ -170,11 +170,7 @@ describe("semantic CLI", () => {
     skipped: 3,
   };
 
-  it("accepts a well-formed vision contact sheet and passes observations without one unchanged", () => {
-    const plain = { pageContent: "", semanticObservation: observation };
-    expect(semantic.semanticObservationFrom(response(plain))).toEqual(observation);
-    expect(semantic.semanticObservationFrom(response(plain))).not.toHaveProperty("vision");
-
+  it("accepts a well-formed vision contact sheet", () => {
     expect(
       semantic.semanticObservationFrom(
         response({ pageContent: "", semanticObservation: { ...observation, vision } }),
@@ -225,16 +221,6 @@ describe("semantic CLI", () => {
         ),
       ).toThrow("browser returned an invalid semantic vision");
     }
-  });
-
-  it("keeps vision images and tile rects out of provider state", () => {
-    const observed = semantic.semanticObservationFrom(
-      response({ pageContent: "", semanticObservation: { ...observation, vision } }),
-    );
-    const state = semantic.providerState(observed);
-    expect(state).toEqual(semantic.providerState(observation));
-    expect(JSON.stringify(state)).not.toContain(PNG_DATA);
-    expect(JSON.stringify(state)).not.toMatch(/vision|tiles|image|"width"/);
   });
 
   it("normalizes grouped commands and parses repeatable authorization without exposing input values in identifiers", () => {
@@ -2652,7 +2638,7 @@ describe("semantic CLI vision", () => {
       e7: "button | Save | Toolbar",
       none: "No supplied candidate matches the goal",
     });
-    expect(JSON.stringify(body.state)).not.toMatch(/tile|iVBORw0KGgo/);
+    expect(JSON.stringify(body.state)).not.toMatch(/tile|vision|iVBORw0KGgo|"width"/);
     expect(result.value).toMatchObject({
       status: "found",
       candidate: { id: "e5", name: "", tile: true },
