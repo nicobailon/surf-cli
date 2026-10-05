@@ -25,6 +25,12 @@ function unchanged(targets: Array<{ ref: string; rect: Rect }>): Record<string, 
 
 const viewport = { width: 1280, height: 800 };
 
+function fields(before: Array<Rect | null>, after = before, changed = false) {
+  return { before, after, changed };
+}
+
+const noFields = fields([]);
+
 function overlaps(a: Rect, b: Rect): boolean {
   return a.x < b.x + b.width && b.x < a.x + a.width && a.y < b.y + b.height && b.y < a.y + a.height;
 }
@@ -35,7 +41,7 @@ describe("contact sheet planner", () => {
     const plan = planContactSheet({
       targets,
       current: unchanged(targets),
-      masks: [],
+      masks: noFields,
       scale: 2,
       viewport,
     });
@@ -53,7 +59,7 @@ describe("contact sheet planner", () => {
     const plan = planContactSheet({
       targets,
       current: unchanged(targets),
-      masks: [],
+      masks: noFields,
       scale: 2,
       viewport,
     });
@@ -83,7 +89,7 @@ describe("contact sheet planner", () => {
     const single = planContactSheet({
       targets: wide,
       current: unchanged(wide),
-      masks: [],
+      masks: noFields,
       scale: 2,
       viewport,
     });
@@ -98,7 +104,7 @@ describe("contact sheet planner", () => {
     const grid = planContactSheet({
       targets: large,
       current: unchanged(large),
-      masks: [],
+      masks: noFields,
       scale: 3,
       viewport,
     });
@@ -114,13 +120,12 @@ describe("contact sheet planner", () => {
     current.e3 = { ...targets[2].rect, y: targets[2].rect.y + 3 };
     current.e4 = null;
 
-    const plan = planContactSheet({ targets, current, masks: [], scale: 1, viewport });
+    const plan = planContactSheet({ targets, current, masks: noFields, scale: 1, viewport });
 
     expect(plan.tiles.map((tile) => tile.ref)).toEqual(["e1", "e2"]);
     expect(plan.skipped).toBe(3);
   });
-
-  it("intersects field rects into each crop's own space", () => {
+  it("masks the union of field rects measured before and after the capture, in each crop's space", () => {
     const targets = [
       { ref: "e1", rect: { x: 100, y: 50, width: 24, height: 24 } },
       { ref: "e2", rect: { x: 600, y: 400, width: 24, height: 24 } },
@@ -128,21 +133,36 @@ describe("contact sheet planner", () => {
     const plan = planContactSheet({
       targets,
       current: unchanged(targets),
-      masks: [{ x: 110, y: 40, width: 100, height: 20 }],
+      masks: fields(
+        [{ x: 110, y: 40, width: 100, height: 20 }],
+        [{ x: 111, y: 41, width: 100, height: 20 }],
+      ),
       scale: 2,
       viewport,
     });
 
-    expect(plan.tiles[0].masks).toEqual([{ x: 28, y: 0, width: 36, height: 28 }]);
+    expect(plan.tiles[0].masks).toEqual([
+      { x: 28, y: 0, width: 36, height: 28 },
+      { x: 30, y: 0, width: 34, height: 30 },
+    ]);
     expect(plan.tiles[1].masks).toEqual([]);
   });
 
-  it("skips every tile when a field could not be measured", () => {
+  it.each([
+    ["a field could not be measured", fields([{ x: 0, y: 0, width: 10, height: 10 }, null])],
+    ["a field was added or removed between the measurements", fields([], [], true)],
+    ["a field appeared after the capture", fields([], [{ x: 0, y: 0, width: 10, height: 10 }])],
+    ["a field disappeared after the capture", fields([{ x: 0, y: 0, width: 10, height: 10 }], [])],
+    [
+      "a field moved more than 2 px",
+      fields([{ x: 0, y: 0, width: 10, height: 10 }], [{ x: 3, y: 0, width: 10, height: 10 }]),
+    ],
+  ])("skips every tile when %s", (_reason, masks) => {
     const targets = icons(3);
     const plan = planContactSheet({
       targets,
       current: unchanged(targets),
-      masks: [{ x: 0, y: 0, width: 10, height: 10 }, null],
+      masks,
       scale: 1,
       viewport,
     });

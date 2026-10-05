@@ -288,24 +288,83 @@ function semanticVisionCurrentRect(ref: string): SemanticVisionRect | null {
   return hit && (hit === element || element.contains(hit)) ? rect : null;
 }
 
-// Rects of every field in the viewport, including open shadow roots; null when one cannot be measured.
-function semanticVisionMasks(): Array<SemanticVisionRect | null> {
-  const masks: Array<SemanticVisionRect | null> = [];
-  const visit = (root: Document | ShadowRoot): void => {
-    for (const field of Array.from(root.querySelectorAll(SEMANTIC_VISION_MASK_SELECTOR))) {
-      const rect = semanticVisionRect(field);
-      if (!rect) {
-        masks.push(null);
-      } else if (rect.width > 0 && rect.height > 0 && rect.x < window.innerWidth && rect.y < window.innerHeight &&
-        rect.x + rect.width > 0 && rect.y + rect.height > 0) {
-        masks.push(rect);
-      }
+type SemanticVisionScan = { fields: Element[]; unreadableHosts: Element[]; roots: ShadowRoot[] };
+
+// Fields under root, including inside open and closed shadow roots, which content scripts can read through chrome.dom.
+// A host whose shadow root cannot be read is listed so its whole rect is masked.
+function scanSemanticVisionFields(
+  root: Document | ShadowRoot | Element,
+  scan: SemanticVisionScan = { fields: [], unreadableHosts: [], roots: [] },
+): SemanticVisionScan {
+  if (root instanceof Element && root.matches(SEMANTIC_VISION_MASK_SELECTOR)) scan.fields.push(root);
+  scan.fields.push(...Array.from(root.querySelectorAll(SEMANTIC_VISION_MASK_SELECTOR)));
+  const elements = Array.from(root.querySelectorAll("*"));
+  for (const host of root instanceof Element ? [root, ...elements] : elements) {
+    if (!(host instanceof HTMLElement)) continue;
+    let shadowRoot: ShadowRoot | null;
+    try {
+      shadowRoot = chrome.dom.openOrClosedShadowRoot(host);
+    } catch {
+      scan.unreadableHosts.push(host);
+      continue;
     }
-    for (const host of Array.from(root.querySelectorAll("*"))) {
-      if (host.shadowRoot) visit(host.shadowRoot);
+    if (shadowRoot) {
+      scan.roots.push(shadowRoot);
+      scanSemanticVisionFields(shadowRoot, scan);
     }
+  }
+  return scan;
+}
+
+// Viewport rects of every field and unreadable shadow host; null when one cannot be measured. Without
+// chrome.dom no shadow root can be proven clear, so the single null mask makes the planner skip every tile.
+function measureSemanticVisionFields(): { masks: Array<SemanticVisionRect | null>; roots: ShadowRoot[] } {
+  if (typeof chrome.dom?.openOrClosedShadowRoot !== "function") return { masks: [null], roots: [] };
+  const scan = scanSemanticVisionFields(document);
+  const masks = [...scan.fields, ...scan.unreadableHosts].flatMap((element) => {
+    const rect = semanticVisionRect(element);
+    if (!rect) return [null];
+    const inViewport = rect.width > 0 && rect.height > 0 && rect.x < window.innerWidth && rect.y < window.innerHeight &&
+      rect.x + rect.width > 0 && rect.y + rect.height > 0;
+    return inViewport ? [rect] : [];
+  });
+  return { masks, roots: scan.roots };
+}
+
+let semanticVisionWatch: { observer: MutationObserver; timer: ReturnType<typeof setTimeout>; fieldsChanged: boolean } | null = null;
+
+function stopSemanticVisionWatch(): boolean {
+  const fieldsChanged = !semanticVisionWatch || semanticVisionWatch.fieldsChanged;
+  semanticVisionWatch?.observer.disconnect();
+  if (semanticVisionWatch) clearTimeout(semanticVisionWatch.timer);
+  semanticVisionWatch = null;
+  return fieldsChanged;
+}
+
+// Measures fields before the capture and watches every root until the recheck, so a field that is
+// added and removed in between is still noticed.
+function startSemanticVisionWatch(): Array<SemanticVisionRect | null> {
+  stopSemanticVisionWatch();
+  const { masks, roots } = measureSemanticVisionFields();
+  const watch = {
+    fieldsChanged: false,
+    observer: new MutationObserver((records) => {
+      const nodes = records.flatMap((record) => [...Array.from(record.addedNodes), ...Array.from(record.removedNodes)]);
+      // A removed node is detached and has no rect left, so any field in it counts, wherever it was.
+      watch.fieldsChanged ||= nodes.some((node) => {
+        if (!(node instanceof Element)) return false;
+        const scan = scanSemanticVisionFields(node);
+        return scan.fields.length > 0 || scan.unreadableHosts.length > 0;
+      });
+    }),
+    // A recheck that never comes must not leave the observer running.
+    timer: setTimeout(() => {
+      watch.fieldsChanged = true;
+      watch.observer.disconnect();
+    }, 30_000),
   };
-  visit(document);
+  for (const root of [document, ...roots]) watch.observer.observe(root, { childList: true, subtree: true });
+  semanticVisionWatch = watch;
   return masks;
 }
 
@@ -1933,8 +1992,11 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           const observation = buildSemanticObservation();
           (result as typeof result & { semanticObservation: typeof observation }).semanticObservation = observation;
           if (options.semanticVision === true) {
-            (result as typeof result & { semanticVisionTargets: ReturnType<typeof semanticVisionTargets> })
-              .semanticVisionTargets = semanticVisionTargets(observation);
+            const targets = semanticVisionTargets(observation);
+            Object.assign(result, {
+              semanticVisionTargets: targets,
+              ...(targets.length ? { semanticVisionMasks: startSemanticVisionWatch() } : {}),
+            });
           }
         }
         sendResponse(result);
@@ -1945,7 +2007,8 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       sendResponse({
         viewport: { width: window.innerWidth, height: window.innerHeight },
         current: Object.fromEntries((message.refs as string[]).map((ref) => [ref, semanticVisionCurrentRect(ref)])),
-        masks: semanticVisionMasks(),
+        masks: measureSemanticVisionFields().masks,
+        fieldsChanged: stopSemanticVisionWatch(),
       });
       break;
     }

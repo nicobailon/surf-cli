@@ -610,6 +610,7 @@ async function captureSemanticVision(
   tabId: number,
   frameId: number,
   targets: Array<{ ref: string; rect: VisionRect | null }>,
+  masksBefore: Array<VisionRect | null>,
 ): Promise<SemanticVision> {
   if (frameId !== 0 || targets.length === 0) return { image: null, tiles: [], skipped: targets.length };
   const capture = await cdp.captureScreenshot(tabId);
@@ -617,6 +618,7 @@ async function captureSemanticVision(
     viewport: { width: number; height: number };
     current: Record<string, VisionRect | null>;
     masks: Array<VisionRect | null>;
+    fieldsChanged: boolean;
   } = await chrome.tabs.sendMessage(tabId, {
     type: "SEMANTIC_VISION_RECHECK",
     refs: targets.map((target) => target.ref),
@@ -633,7 +635,7 @@ async function captureSemanticVision(
     const plan = planContactSheet({
       targets,
       current: recheck.current,
-      masks: recheck.masks,
+      masks: { before: masksBefore, after: recheck.masks, changed: recheck.fieldsChanged },
       scale,
       viewport: recheck.viewport,
     });
@@ -1460,10 +1462,10 @@ export async function handleMessage(
         }
         // Captured while the agent indicators are still hidden so they never appear in a crop.
         if (result?.semanticVisionTargets) {
-          const { semanticVisionTargets, ...rest } = result;
+          const { semanticVisionTargets, semanticVisionMasks, ...rest } = result;
           result = rest;
           try {
-            result.semanticObservation.vision = await captureSemanticVision(tabId, readFrameId, semanticVisionTargets);
+            result.semanticObservation.vision = await captureSemanticVision(tabId, readFrameId, semanticVisionTargets, semanticVisionMasks);
           } catch (err) {
             // Fail the read rather than silently answering from text alone.
             throw new Error(`semantic vision capture failed: ${err instanceof Error ? err.message : String(err)}`, { cause: err });

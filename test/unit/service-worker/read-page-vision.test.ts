@@ -120,11 +120,13 @@ describe("READ_PAGE semantic vision", () => {
         viewport: {},
         semanticObservation: observation,
         semanticVisionTargets: targets,
+        semanticVisionMasks: [],
       },
       {
         viewport: { width: 1280, height: 800 },
         current: { e1: targets[0].rect, e2: null },
         masks: [],
+        fieldsChanged: false,
       },
     );
 
@@ -133,6 +135,7 @@ describe("READ_PAGE semantic vision", () => {
       {} as chrome.runtime.MessageSender,
     );
 
+    expect(result).not.toHaveProperty("semanticVisionMasks");
     expect(result).not.toHaveProperty("semanticVisionTargets");
     expect(result.semanticObservation.candidates).toEqual(observation.candidates);
     expect(result.semanticObservation.vision).toEqual({
@@ -151,6 +154,42 @@ describe("READ_PAGE semantic vision", () => {
     expect(bitmapClose).toHaveBeenCalledTimes(1);
   });
 
+  it("sends no image when a field changed between the pre-capture measurement and the recheck", async () => {
+    const handleMessage = await loadHandleMessage();
+    const field = { x: 90, y: 40, width: 20, height: 20 };
+    for (const [before, after, fieldsChanged] of [
+      [[field], [field], true],
+      [[field], [], false],
+    ] as const) {
+      routeContentMessages(
+        {
+          pageContent: "",
+          viewport: {},
+          semanticObservation: observation,
+          semanticVisionTargets: targets,
+          semanticVisionMasks: before,
+        },
+        {
+          viewport: { width: 1280, height: 800 },
+          current: { e1: targets[0].rect, e2: targets[1].rect },
+          masks: after,
+          fieldsChanged,
+        },
+      );
+
+      const result = await handleMessage(
+        {
+          type: "READ_PAGE",
+          tabId: 9,
+          options: { semanticObservation: true, semanticVision: true },
+        },
+        {} as chrome.runtime.MessageSender,
+      );
+
+      expect(result.semanticObservation.vision).toEqual({ image: null, tiles: [], skipped: 2 });
+    }
+  });
+
   it("fails the read with a vision-specific error when the capture fails", async () => {
     const handleMessage = await loadHandleMessage();
     routeContentMessages(
@@ -159,6 +198,7 @@ describe("READ_PAGE semantic vision", () => {
         viewport: {},
         semanticObservation: observation,
         semanticVisionTargets: targets,
+        semanticVisionMasks: [],
       },
       {},
     );
@@ -185,11 +225,13 @@ describe("READ_PAGE semantic vision", () => {
         viewport: {},
         semanticObservation: observation,
         semanticVisionTargets: targets,
+        semanticVisionMasks: [],
       },
       {
         viewport: { width: 1280, height: 900 },
         current: { e1: targets[0].rect, e2: targets[1].rect },
         masks: [],
+        fieldsChanged: false,
       },
     );
 
@@ -247,6 +289,7 @@ describe("READ_PAGE semantic vision", () => {
         viewport: {},
         semanticObservation: observation,
         semanticVisionTargets: targets,
+        semanticVisionMasks: [],
       },
       {},
     );

@@ -57,23 +57,28 @@ function moved(before: VisionRect, after: VisionRect): boolean {
  * Plans one contact sheet from rects measured at observation time (`targets`) and
  * re-measured right after the capture (`current`; null means gone or covered).
  * Rects and the viewport are CSS pixels; `scale` is capture device pixels per CSS pixel.
- * A null mask is a field that could not be measured, so no crop can be proven clear of it.
+ * Field masks are measured before and after the capture and both are applied. Every tile is skipped
+ * when no crop can be proven clear: a field could not be measured (null), fields were added or
+ * removed in between (`changed`), or the two measurements differ.
  */
 export function planContactSheet(input: {
   targets: Array<{ ref: string; rect: VisionRect | null }>;
   current: Record<string, VisionRect | null>;
-  masks: Array<VisionRect | null>;
+  masks: { before: Array<VisionRect | null>; after: Array<VisionRect | null>; changed: boolean };
   scale: number;
   viewport: { width: number; height: number };
 }): ContactSheetPlan {
-  const { targets, current, masks, scale, viewport } = input;
+  const { targets, current, scale, viewport } = input;
+  const { before, after: afterMasks, changed } = input.masks;
   const capture = {
     x: 0,
     y: 0,
     width: Math.round(viewport.width * scale),
     height: Math.round(viewport.height * scale),
   };
-  const maskable = masks.every((mask) => mask !== null);
+  const masks = [...before, ...afterMasks];
+  const maskable = !changed && before.length === afterMasks.length && masks.every((mask) => mask !== null) &&
+    before.every((mask, index) => !moved(mask as VisionRect, afterMasks[index] as VisionRect));
   const crops: Array<{ ref: string; crop: VisionRect; masks: VisionRect[] }> = [];
   for (const { ref, rect } of targets) {
     if (crops.length === SEMANTIC_VISION_MAX_TILES || !maskable || !rect) continue;

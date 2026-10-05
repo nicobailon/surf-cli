@@ -103,6 +103,15 @@ class FakeElement extends FakeNode {
     return null;
   }
 
+  matches(selector: string): boolean {
+    return selector.split(", ").includes(this.tagName.toLowerCase());
+  }
+
+  querySelectorAll(selector: string): FakeElement[] {
+    const descendants = this.children.flatMap((child) => [child, ...child.querySelectorAll("*")]);
+    return selector === "*" ? descendants : descendants.filter((node) => node.matches(selector));
+  }
+
   focus(): void {
     this.focused = true;
   }
@@ -784,28 +793,39 @@ describe("accessibility tree", () => {
     ]);
   });
 
-  it("rechecks vision targets after capture and reports field masks", () => {
+  it("rechecks vision targets after capture and masks fields in open and closed shadow roots", () => {
     const { settings, search, notes } = iconToolbar();
     const glyph = element("svg");
     settings.append(glyph);
     const banner = element("div");
     (document as any).elementFromPoint = (x: number) => (x < 40 ? glyph : banner);
-    const shadowField = new FakeInputElement("input");
-    shadowField.rect = { top: 100, bottom: 120, left: 0, right: 200 };
+    const closedField = new FakeInputElement("input");
+    closedField.rect = { top: 100, bottom: 120, left: 0, right: 200 };
     const host = element("custom-widget");
-    host.shadowRoot = {
-      querySelectorAll: (selector: string) => (selector === "*" ? [] : [shadowField]),
+    const closedRoot = {
+      querySelectorAll: (selector: string) => (selector === "*" ? [] : [closedField]),
+    };
+    const unreadable = element("other-widget");
+    unreadable.rect = { top: 200, bottom: 240, left: 0, right: 100 };
+    (globalThis as any).chrome.dom = {
+      openOrClosedShadowRoot: (node: FakeElement) => {
+        if (node === unreadable) {
+          throw new Error("cannot read root");
+        }
+        return node === host ? closedRoot : null;
+      },
     };
     search.rect = { top: 20, bottom: 40, left: 30, right: 230 };
     notes.rect = { top: 2000, bottom: 2100, left: 0, right: 200 };
     (document as any).querySelectorAll = (selector: string) =>
-      selector === "*" ? [host] : [search, notes];
+      selector === "*" ? [host, unreadable] : [search, notes];
 
     const response = sendMessage({
       type: "SEMANTIC_VISION_RECHECK",
       refs: ["settings", "share", "missing"],
     });
 
+    expect(host.shadowRoot).toBeNull();
     expect(response).toEqual({
       viewport: { width: 1024, height: 768 },
       current: {
@@ -816,13 +836,50 @@ describe("accessibility tree", () => {
       masks: [
         { x: 30, y: 20, width: 200, height: 20 },
         { x: 0, y: 100, width: 200, height: 20 },
+        { x: 0, y: 200, width: 100, height: 40 },
       ],
+      fieldsChanged: true,
     });
 
     search.rect = { top: Number.NaN, bottom: 40, left: 30, right: 230 };
     expect(
       sendMessage({ type: "SEMANTIC_VISION_RECHECK", refs: ["settings"] }).masks,
     ).toContainEqual(null);
+
+    (globalThis as any).chrome.dom = undefined;
+    expect(sendMessage({ type: "SEMANTIC_VISION_RECHECK", refs: ["settings"] }).masks).toEqual([
+      null,
+    ]);
+  });
+
+  it("reports field changes between the pre-capture measurement and the recheck", () => {
+    const { search } = iconToolbar();
+    search.rect = { top: 20, bottom: 40, left: 30, right: 230 };
+    (document as any).querySelectorAll = (selector: string) => (selector === "*" ? [] : [search]);
+    (document as any).elementFromPoint = () => null;
+    (globalThis as any).chrome.dom = { openOrClosedShadowRoot: () => null };
+    const read = () =>
+      sendMessage({
+        type: "GENERATE_ACCESSIBILITY_TREE",
+        options: { semanticObservation: true, semanticVision: true },
+      });
+    const recheck = () => sendMessage({ type: "SEMANTIC_VISION_RECHECK", refs: ["settings"] });
+
+    expect(read().semanticVisionMasks).toEqual([{ x: 30, y: 20, width: 200, height: 20 }]);
+    FakeMutationObserver.mutate([{ addedNodes: [element("div"), text("x")], removedNodes: [] }]);
+    expect(recheck().fieldsChanged).toBe(false);
+
+    read();
+    const wrapper = element("div");
+    wrapper.append(new FakeInputElement("input"));
+    FakeMutationObserver.mutate([{ addedNodes: [], removedNodes: [wrapper] }]);
+    expect(recheck().fieldsChanged).toBe(true);
+
+    read();
+    FakeMutationObserver.mutate([
+      { addedNodes: [new FakeInputElement("input")], removedNodes: [] },
+    ]);
+    expect(recheck().fieldsChanged).toBe(true);
   });
 
   it("associates value-free checked and selected state with semantic refs and evidence", () => {
