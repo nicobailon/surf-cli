@@ -105,7 +105,15 @@ class FakeElement extends FakeNode {
   }
 
   matches(selector: string): boolean {
-    return selector.split(", ").includes(this.tagName.toLowerCase());
+    return selector.split(/,\s*/).some((part) => {
+      if (part === ":read-write") {
+        return ["INPUT", "TEXTAREA"].includes(this.tagName) || this.isContentEditable;
+      }
+      if (part === "[popover]") {
+        return this.hasAttribute("popover");
+      }
+      return part === this.tagName.toLowerCase();
+    });
   }
 
   querySelectorAll(selector: string): FakeElement[] {
@@ -222,6 +230,7 @@ describe("accessibility tree", () => {
         display: node?.computed.display ?? "block",
         visibility: "visible",
         opacity: node?.computed.opacity ?? (node?.hiddenBySheet() ? "0" : "1"),
+        webkitUserModify: node?.computed.webkitUserModify ?? "read-only",
         cursor: "default",
       }),
       __piVisualIndicatorMessageHandler: visualIndicatorHandler,
@@ -907,6 +916,44 @@ describe("accessibility tree", () => {
     (globalThis as any).chrome.dom = { openOrClosedShadowRoot: () => null };
     search.rect = { top: Number.NaN, bottom: 40, left: 30, right: 230 };
     await skipped();
+  });
+
+  it("hides top-layer elements in shadow trees inside editable content", async () => {
+    const { settings, elements } = visionPage();
+    const editor = element("div");
+    editor.isContentEditable = true;
+    editor.rect = { top: 300, bottom: 320, left: 400, right: 460 };
+    const popover = element("div", { popover: "manual" });
+    popover.rect = { top: 100, bottom: 140, left: 100, right: 160 };
+    const editorRoot = {
+      adoptedStyleSheets: [] as Array<{ text: string }>,
+      querySelectorAll: (selector: string) => (selector === "*" ? [popover] : []),
+    };
+    elements.push(editor);
+    (globalThis as any).chrome.dom = {
+      openOrClosedShadowRoot: (node: FakeElement) => (node === editor ? editorRoot : null),
+    };
+
+    popover.computed.opacity = "0";
+    expect((await prepare()).masks).toContainEqual({ x: 100, y: 100, width: 60, height: 40 });
+    const [documentSheet] = (document as any).adoptedStyleSheets;
+    expect(editorRoot.adoptedStyleSheets).toHaveLength(1);
+    expect(editorRoot.adoptedStyleSheets[0]).not.toBe(documentSheet);
+    expect(editorRoot.adoptedStyleSheets[0].text).toContain(
+      ":fullscreen), [popover], dialog, :fullscreen",
+    );
+    expect(recheck().fieldsChanged).toBe(false);
+    expect(editorRoot.adoptedStyleSheets).toEqual([]);
+
+    // A top-layer element the sheet failed to hide skips the read.
+    popover.computed.opacity = "1";
+    expect(await prepare()).toEqual({ masks: [null] });
+    expect(editorRoot.adoptedStyleSheets).toEqual([]);
+
+    // Content made editable by CSS has no selector, so the read is skipped.
+    elements.pop();
+    settings.computed.webkitUserModify = "read-write";
+    expect(await prepare()).toEqual({ masks: [null] });
   });
 
   it("reports any change between hiding the fields and the recheck", async () => {

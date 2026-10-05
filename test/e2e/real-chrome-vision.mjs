@@ -136,7 +136,48 @@ const scenarios = [
     expect: "tile",
     restore: false,
   },
+  {
+    name: "shadow popover showing an editing host's text through a slot",
+    html: page(`<div id="secret" contenteditable="true" style="position:absolute;left:400px;top:300px;width:60px;height:20px;color:#0f0;font:16px/20px monospace"></div>
+<script>const root = document.querySelector("#secret").attachShadow({ mode: "open" });
+root.innerHTML = '<div id="pop" popover="manual" style="position:fixed;inset:auto;left:100px;top:100px;margin:0;padding:0;border:0;width:60px;height:40px;color:#0f0;background:white;font:16px/20px monospace"><slot></slot></div>';
+root.querySelector("#pop").showPopover();</script>`),
+    populate: type("PRIVATE-1234"),
+    expect: "tile",
+  },
+  {
+    // Documented limit: a custom element whose only field signal is an ElementInternals role or form association,
+    // with no native field or editable region inside, is not detected. Recorded, not asserted.
+    name: "ElementInternals combobox (documented limit)",
+    html: page(`<form><private-select id="secret" name="choice" tabindex="0" style="${BOX};color:#0f0;font:16px/20px monospace"></private-select></form>
+<script>customElements.define("private-select", class extends HTMLElement {
+  static formAssociated = true;
+  constructor() {
+    super();
+    this.internals = this.attachInternals();
+    this.internals.role = "combobox";
+    this.addEventListener("keydown", (event) => {
+      if (event.key === "ArrowDown") { this.textContent = "PRIVATE-1234"; this.internals.setFormValue(this.textContent); event.preventDefault(); }
+    });
+  }
+});</script>`),
+    populate: async (tab) => {
+      await tab.focus("#secret");
+      await tab.keyboard.press("ArrowDown");
+      await tab.evaluate(() => document.activeElement.blur());
+    },
+    expect: "limit",
+  },
   // Skipped reads: nothing in the frame can be proven field-free.
+  {
+    // Chrome lets the user type here, but no selector matches CSS-made editability, so the read is skipped.
+    name: "field made editable by -webkit-user-modify",
+    html: page(
+      `<div id="secret" tabindex="0" style="${BOX};color:#0f0;font:16px/20px monospace;-webkit-user-modify:read-write"></div>`,
+    ),
+    populate: type("PRIVATE-1234"),
+    expect: "skipped",
+  },
   {
     name: "display:contents editing host with direct text",
     html: page(`<div style="position:absolute;left:100px;top:100px;color:#0f0;z-index:1"><div contenteditable="true" style="display:contents">PRIVATE-1234</div></div>`),
@@ -372,7 +413,7 @@ try {
         const controlTint = control ? tinted(control.tile) : new Set();
         const leaked = [...tinted(populated.tile)].filter((pixel) => !controlTint.has(pixel)).length;
         result.tintedPixels = leaked;
-        if (leaked > 0) fail(`${leaked} tinted pixels reached the sheet`);
+        if (leaked > 0 && scenario.expect !== "limit") fail(`${leaked} tinted pixels reached the sheet`);
         if (scenario.anyDifference && control) {
           let differing = 0;
           for (let channel = 0; channel < populated.tile.length; channel += 4) {
