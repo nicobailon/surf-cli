@@ -1338,7 +1338,7 @@ const TOOLS = {
           "no-auto-wait": "Disable automatic waits between steps",
           "step-delay": "Delay between steps in ms (default: 100)",
           "dry-run": "Parse and validate without executing",
-          "allow-semantic": "Allow bounded TypeSafe semantic decisions",
+          "allow-semantic": "Allow bounded semantic model decisions (model: SURF_SEMANTIC_MODEL, default jev-1.13.0)",
           "allow-write": "Allow declared semantic fill/check/click steps",
           "inputs-stdin": "Read bounded private input slots as one JSON object from stdin",
         },
@@ -1617,13 +1617,16 @@ Tips:
   },
   semantic: {
     title: "Semantic browser decisions and locators",
-    content: `Optional Jev commands (page-derived text is sent to TypeSafe only for these commands):
+    content: `Optional model commands. Only these send page-derived text, to the provider of the selected model:
+jev-1.13.0 (default) -> TypeSafe (api.typesafe.ai); clef, clef-flash -> Cloudflare Workers AI (api.cloudflare.com).
+Choose with --model <id> or SURF_SEMANTIC_MODEL. Results report provider, model, providerCalls, providerLatencyMs.
   semantic.find "the notification control"
   semantic.verify "Notification preferences were saved"
   semantic.filter "notification preferences"
   semantic.act "Open notification settings" --max-steps 5
   semantic.act "Fill email" --input email="$EMAIL" --allow-write
-  semantic auth set|status|clear
+  semantic.find "the export button" --model clef-flash
+  semantic auth set|status|clear [--provider typesafe|cloudflare]
 
 Every click/fill requires --allow-write. This broadly authorizes even high-impact controls;
 repeat --allow-ref <ref> to narrow authorization to exact observed refs.
@@ -1817,7 +1820,7 @@ Common Commands:
   animate-audit      JSON timeline of element animation/style samples
   perf-audit         PerformanceObserver snapshot for motion/jank debugging
   page.read          Get page accessibility tree (alias: read)
-  semantic.find      Optional Jev-powered candidate selection
+  semantic.find      Optional model-powered candidate selection
   semantic.act       Bounded semantic browser action controller
   locate.role <role> Find element by ARIA role
   search <term>      Search for text in page (alias: find)

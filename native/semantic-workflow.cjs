@@ -112,7 +112,6 @@ function createSemanticWorkflowRuntime(dependencies) {
     const timer = setTimeout(() => controller.abort(), timeoutMs);
     try {
       const response = await evaluate(state, questions, { ...options, signal: controller.signal, timeoutMs });
-      context.model = response.model;
       context.usage.inputTokens += response.usage?.input_tokens || 0;
       context.usage.outputTokens += response.usage?.output_tokens || 0;
       return response;
@@ -164,7 +163,6 @@ function createSemanticWorkflowRuntime(dependencies) {
     return value;
   }
   async function resolve(context, target, write, search = {}) {
-    if (write && writeThreshold === null) return { error: failure("model_uncalibrated") };
     const binding = target?.binding ? context.bindings.get(target.binding) : null;
     if (target?.binding && !binding) return { error: failure("invalid_binding") };
     const query = binding?.query || target?.query;

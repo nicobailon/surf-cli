@@ -4,7 +4,7 @@ const SEMANTIC_POLICY = Object.freeze({
   model: "jev-1.13.0",
   timeoutMs: 5_000,
   probabilitySumTolerance: 0.01,
-  // A null threshold is unmeasured for that model; decisions needing it fail closed.
+  // Only models with a complete measured threshold set are registered; see docs/semantic-models.md.
   models: Object.freeze({
     "jev-1.13.0": Object.freeze({
       provider: "typesafe",
@@ -12,11 +12,11 @@ const SEMANTIC_POLICY = Object.freeze({
     }),
     clef: Object.freeze({
       provider: "cloudflare",
-      thresholds: Object.freeze({ find: null, filter: null, verifyPositive: null, verifyNegative: null, prerequisiteSupported: null, prerequisiteBlocked: null, write: null, exactRefWrite: null }),
+      thresholds: Object.freeze({ find: 0.7, filter: 0.65, verifyPositive: 0.85, verifyNegative: 0.85, prerequisiteSupported: 0.75, prerequisiteBlocked: 0.9, write: 0.95, exactRefWrite: 0.79 }),
     }),
     "clef-flash": Object.freeze({
       provider: "cloudflare",
-      thresholds: Object.freeze({ find: null, filter: null, verifyPositive: null, verifyNegative: null, prerequisiteSupported: null, prerequisiteBlocked: null, write: null, exactRefWrite: null }),
+      thresholds: Object.freeze({ find: 0.7, filter: 0.65, verifyPositive: 0.85, verifyNegative: 0.94, prerequisiteSupported: 0.75, prerequisiteBlocked: 0.9, write: 0.95, exactRefWrite: 0.65 }),
     }),
   }),
   limits: Object.freeze({
@@ -66,12 +66,8 @@ function semanticModel(id) {
   return SEMANTIC_POLICY.models[id];
 }
 
-// An override never unlocks an unmeasured default. Unrequired keys report null instead of throwing.
-function modelThreshold(model, overrides, key, required = true) {
-  const measured = semanticModel(model).thresholds[key];
-  if (measured !== null) return overrides[key] ?? measured;
-  if (!required) return null;
-  throw new SemanticError("model_uncalibrated", `model ${model} has no measured ${key} threshold yet; use --model jev-1.13.0`);
+function modelThreshold(model, overrides, key) {
+  return overrides[key] ?? semanticModel(model).thresholds[key];
 }
 
 function assertOpaqueId(value, field) {
@@ -320,9 +316,9 @@ async function chooseAction({ state, goal, actions, origin, allowWrite = false, 
   const exactRefWrite = writing && allowRefs.length === 1 && writeActions.length === 1 && writeActions[0].ref === allowRefs[0];
   const findThreshold = modelThreshold(model, thresholds, "find");
   const writeThreshold = writing ? modelThreshold(model, thresholds, exactRefWrite ? "exactRefWrite" : "write") : null;
-  const prerequisiteSupported = modelThreshold(model, thresholds, "prerequisiteSupported", writing);
-  const prerequisiteBlocked = modelThreshold(model, thresholds, "prerequisiteBlocked", writing);
-  const prerequisiteEvidenceThreshold = modelThreshold(model, {}, "filter", writing);
+  const prerequisiteSupported = modelThreshold(model, thresholds, "prerequisiteSupported");
+  const prerequisiteBlocked = modelThreshold(model, thresholds, "prerequisiteBlocked");
+  const prerequisiteEvidenceThreshold = modelThreshold(model, {}, "filter");
   const questions = {
     action: {
       type: "choice",

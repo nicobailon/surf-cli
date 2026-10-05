@@ -82,39 +82,30 @@ describe("semantic decision core", () => {
     expect(SEMANTIC_POLICY).not.toHaveProperty("thresholds");
   });
 
-  it("registers per-model thresholds with Jev calibrated and Clef models unmeasured", () => {
-    const unmeasured = {
-      find: null,
-      filter: null,
-      verifyPositive: null,
-      verifyNegative: null,
-      prerequisiteSupported: null,
-      prerequisiteBlocked: null,
-      write: null,
-      exactRefWrite: null,
-    };
-    expect(SEMANTIC_POLICY.models).toEqual({
-      "jev-1.13.0": {
-        provider: "typesafe",
-        thresholds: {
-          find: 0.7,
-          filter: 0.65,
-          verifyPositive: 0.85,
-          verifyNegative: 0.85,
-          prerequisiteSupported: 0.75,
-          prerequisiteBlocked: 0.9,
-          write: 0.95,
-          exactRefWrite: 0.65,
-        },
-      },
-      clef: { provider: "cloudflare", thresholds: unmeasured },
-      "clef-flash": { provider: "cloudflare", thresholds: unmeasured },
-    });
-    for (const entry of Object.values(SEMANTIC_POLICY.models) as Array<{ thresholds: object }>) {
-      expect(Object.isFrozen(entry)).toBe(true);
-      expect(Object.isFrozen(entry.thresholds)).toBe(true);
-    }
+  it("registers only models with a complete measured threshold set", () => {
+    const keys = [
+      "find",
+      "filter",
+      "verifyPositive",
+      "verifyNegative",
+      "prerequisiteSupported",
+      "prerequisiteBlocked",
+      "write",
+      "exactRefWrite",
+    ];
+    expect(Object.keys(SEMANTIC_POLICY.models)).toEqual(["jev-1.13.0", "clef", "clef-flash"]);
     expect(Object.isFrozen(SEMANTIC_POLICY.models)).toBe(true);
+    for (const entry of Object.values(SEMANTIC_POLICY.models) as Array<{
+      provider: string;
+      thresholds: Record<string, number>;
+    }>) {
+      expect(["typesafe", "cloudflare"]).toContain(entry.provider);
+      expect(Object.keys(entry.thresholds).sort()).toEqual([...keys].sort());
+      for (const value of Object.values(entry.thresholds)) {
+        expect(Number.isFinite(value) && value > 0 && value <= 1).toBe(true);
+      }
+      expect(Object.isFrozen(entry) && Object.isFrozen(entry.thresholds)).toBe(true);
+    }
     expect(semanticModel("clef-flash")).toBe(SEMANTIC_POLICY.models["clef-flash"]);
   });
 
@@ -139,67 +130,35 @@ describe("semantic decision core", () => {
     expect(result).toMatchObject({ status: "uncertain", appliedThreshold: 0.7 });
   });
 
-  it.each(["clef", "clef-flash"])(
-    "fails closed before calling the provider for uncalibrated %s decisions, even with overrides",
-    async (model) => {
-      const evaluate = evaluateWith({});
-      const allOverrides = {
-        find: 0.5,
-        filter: 0.5,
-        verifyPositive: 0.5,
-        verifyNegative: 0.5,
-        prerequisiteSupported: 0.5,
-        prerequisiteBlocked: 0.5,
-        write: 0.5,
-        exactRefWrite: 0.5,
-      };
-      const decisions = [
-        find({
-          state: {},
-          goal: "target",
-          candidates: [{ id: "r1" }],
-          model,
-          thresholds: allOverrides,
-          evaluate,
-        }),
-        filter({
-          state: {},
-          goal: "target",
-          chunks: [{ id: "c1" }],
-          model,
-          thresholds: allOverrides,
-          evaluate,
-        }),
-        verify({ state: {}, outcome: "saved", model, thresholds: allOverrides, evaluate }),
-        chooseAction({
-          state: {},
-          goal: "advance",
-          actions: [{ id: "wait", kind: "wait", durationMs: 500 }],
-          origin: "https://example.test",
-          model,
-          thresholds: allOverrides,
-          evaluate,
-        }),
-        chooseAction({
-          state: {},
-          goal: "advance",
-          actions: [{ id: "click", kind: "click", ref: "ref.1" }],
-          origin: "https://example.test",
-          allowWrite: true,
-          model,
-          thresholds: allOverrides,
-          evaluate,
-        }),
-      ];
-      for (const decision of decisions) {
-        await expect(decision).rejects.toMatchObject({
-          code: "model_uncalibrated",
-          message: expect.stringMatching(new RegExp(`${model} .*--model jev-1\\.13\\.0`)),
-        });
-      }
-      expect(evaluate).not.toHaveBeenCalled();
-    },
-  );
+  it("applies Clef measured thresholds through the model option", async () => {
+    const click = { id: "click", kind: "click", ref: "ref.1" };
+    const exactRef = (probability: number) =>
+      chooseAction({
+        state: {},
+        goal: "save",
+        actions: [click],
+        origin: "https://example.test",
+        allowWrite: true,
+        allowRefs: ["ref.1"],
+        model: "clef",
+        evaluate: evaluateWith({ action: "click" }, probability),
+      });
+    expect(await exactRef(0.78)).toMatchObject({ status: "uncertain", appliedThreshold: 0.79 });
+    expect(await exactRef(0.79)).toMatchObject({ status: "selected", appliedThreshold: 0.79 });
+
+    const negative = (probability: number) =>
+      verify({
+        state: {},
+        outcome: "saved",
+        model: "clef-flash",
+        evaluate: evaluateWith({ verdict: "not_satisfied" }, probability),
+      });
+    expect(await negative(0.93)).toMatchObject({ status: "uncertain", appliedThreshold: 0.94 });
+    expect(await negative(0.94)).toMatchObject({
+      status: "not_satisfied",
+      appliedThreshold: 0.94,
+    });
+  });
 
   it("rejects an unknown model before calling the provider", async () => {
     const evaluate = evaluateWith({});

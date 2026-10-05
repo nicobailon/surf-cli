@@ -1,27 +1,20 @@
 const crypto = require("node:crypto");
 const { getPrivateStateRoot } = require("./private-state.cjs");
-const { resolveTypeSafeCredential } = require("./semantic-credentials.cjs");
-const { createJevEvaluator } = require("./semantic-provider.cjs");
+const { createSemanticEvaluator } = require("./semantic-evaluator.cjs");
+const { resolveModel } = require("./semantic-provider.cjs");
 const { createSemanticWorkflowRuntime, WORKFLOW_POLICY } = require("./semantic-workflow.cjs");
 const { createSemanticWorkflowStateStore } = require("./semantic-workflow-state.cjs");
 
-function createConcreteSemanticExecutor({ request, workflow, inputs = {}, env = process.env, clock = () => Date.now(), evaluate, attemptStore }) {
+function createConcreteSemanticExecutor({ request, workflow, inputs = {}, env = process.env, clock = () => Date.now(), evaluator, attemptStore }) {
   if (typeof request !== "function") throw new TypeError("semantic workflow browser request is required");
-  if (!evaluate) {
-    const credential = resolveTypeSafeCredential(env);
-    if (!credential) {
-      const error = new Error("TypeSafe API key is not configured; run `surf semantic auth set` or set TYPESAFE_API_KEY");
-      error.code = "provider_not_configured";
-      throw error;
-    }
-    evaluate = createJevEvaluator({ apiKey: credential.apiKey, env });
-  }
+  evaluator ??= createSemanticEvaluator({ model: resolveModel(env), env });
   const digest = crypto.createHash("sha256").update(JSON.stringify(workflow)).digest("hex");
   const createAttemptStore = attemptStore ? undefined : ({ runId, workflowDigest }) =>
     createSemanticWorkflowStateStore({ root: getPrivateStateRoot(env), clock, runId, workflowDigest });
   const runtime = createSemanticWorkflowRuntime({
     request,
-    evaluate,
+    evaluate: evaluator.evaluate,
+    model: evaluator.model,
     attemptStore,
     createAttemptStore,
     now: clock,
@@ -42,7 +35,7 @@ function createConcreteSemanticExecutor({ request, workflow, inputs = {}, env = 
         runId: context.runId,
         stepId: step.id,
         checkpoint: context.runId,
-        ...(context.model ? { model: context.model } : {}),
+        ...evaluator.summary(),
         ...(result.reason ? { reason: result.reason } : {}),
         ...(result.write ? { write: result.write } : {}),
         ...(result.coverage ? { coverage: result.coverage } : {}),

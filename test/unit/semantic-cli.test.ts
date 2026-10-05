@@ -2267,3 +2267,152 @@ describe("semantic CLI", () => {
     expect(result.candidates.map((candidate: { id: string }) => candidate.id)).toEqual(["e3"]);
   });
 });
+
+describe("semantic CLI model selection", () => {
+  const { handleSemanticCli } = require("../../native/semantic-cli.cjs") as {
+    handleSemanticCli(
+      argv: string[],
+      options: Record<string, unknown>,
+    ): Promise<{ value: Record<string, any> }>;
+  };
+  const cloudflare = {
+    CLOUDFLARE_ACCOUNT_ID: "0123456789abcdef0123456789abcdef",
+    CLOUDFLARE_API_TOKEN: "fake-token",
+  };
+
+  function workersAi(answer: (questions: Record<string, any>) => Record<string, any>) {
+    return vi.fn(async (_url: string, init: { body: string }) => {
+      const { questions } = JSON.parse(init.body);
+      return new Response(JSON.stringify({ success: true, result: provider(answer(questions)) }));
+    });
+  }
+
+  function transport() {
+    return vi.fn(async () => ({
+      request: async () => response({ semanticObservation: observation }),
+      close: async () => undefined,
+    }));
+  }
+
+  async function run(
+    argv: string[],
+    env: Record<string, string>,
+    fetch = workersAi((questions) => ({
+      target: choice("e1", Object.keys(questions.target.criteria)),
+    })),
+  ) {
+    vi.stubGlobal("fetch", fetch);
+    try {
+      const openTransport = transport();
+      const result = await handleSemanticCli(argv, { env, openTransport });
+      return { result, fetch, openTransport };
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  }
+
+  it("parses --model as a validated, single-use option", () => {
+    expect(
+      semantic.parseSemanticArgs(["semantic.find", "goal", "--model", "clef-flash"]),
+    ).toMatchObject({
+      model: "clef-flash",
+    });
+    expect(semantic.parseSemanticArgs(["semantic.find", "goal"])).not.toHaveProperty("model");
+    expect(() => semantic.parseSemanticArgs(["semantic.verify", "goal", "--model", "gpt"])).toThrow(
+      "valid models: jev-1.13.0, clef, clef-flash",
+    );
+    expect(() =>
+      semantic.parseSemanticArgs(["semantic.act", "goal", "--model", "clef", "--model", "clef"]),
+    ).toThrow("duplicate --model");
+    expect(() => semantic.parseSemanticArgs(["semantic.filter", "goal", "--model"])).toThrow(
+      "--model requires a value",
+    );
+  });
+
+  it("prefers --model over SURF_SEMANTIC_MODEL and reports the run summary", async () => {
+    const env = { ...cloudflare, SURF_SEMANTIC_MODEL: "clef-flash" };
+    const flagged = await run(["semantic.find", "the email field", "--model", "clef"], env);
+    expect(flagged.fetch.mock.calls[0][0]).toMatch(/\/ai\/run\/@cf\/cloudflare\/clef$/);
+    expect(flagged.result.value).toMatchObject({
+      status: "found",
+      appliedThreshold: 0.7,
+      provider: "cloudflare",
+      model: "clef",
+      providerCalls: 1,
+      providerLatencyMs: expect.any(Number),
+    });
+
+    const fromEnv = await run(["semantic.find", "the email field"], env);
+    expect(fromEnv.fetch.mock.calls[0][0]).toMatch(/\/ai\/run\/@cf\/cloudflare\/clef-flash$/);
+    expect(fromEnv.result.value).toMatchObject({ model: "clef-flash", providerCalls: 1 });
+  });
+
+  it("reports the run summary on an act run stopped by failed decisions", async () => {
+    const fetch = workersAi(
+      (questions) =>
+        invalidProviderChoice("action", Object.keys(questions.action.criteria)).answers,
+    );
+    const { result } = await run(
+      ["semantic.act", "stop safely", "--model", "clef-flash"],
+      cloudflare,
+      fetch,
+    );
+    expect(result.value).toMatchObject({
+      status: "stopped",
+      stopReason: "decision_failed",
+      errorCode: "provider_invalid_response",
+      provider: "cloudflare",
+      model: "clef-flash",
+      providerCalls: 2,
+      providerLatencyMs: expect.any(Number),
+    });
+  });
+
+  it("fails before browser or provider I/O for unknown models and missing credentials", async () => {
+    const fs = require("node:fs");
+    const os = require("node:os");
+    const path = require("node:path");
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "surf-semantic-cli-model-"));
+    try {
+      const empty = { XDG_CONFIG_HOME: root };
+      for (const [argv, env, expected] of [
+        [
+          ["semantic.find", "goal"],
+          { ...empty, SURF_SEMANTIC_MODEL: "gpt" },
+          { code: "semantic_invalid_request" },
+        ],
+        [
+          ["semantic.find", "goal", "--model", "clef"],
+          empty,
+          {
+            code: "provider_not_configured",
+            message: expect.stringContaining("Clef needs Cloudflare credentials"),
+          },
+        ],
+        [
+          ["semantic.find", "goal"],
+          empty,
+          {
+            code: "provider_not_configured",
+            message: expect.stringContaining("Jev needs a TypeSafe API key"),
+          },
+        ],
+      ] as const) {
+        const fetch = vi.fn();
+        vi.stubGlobal("fetch", fetch);
+        const openTransport = transport();
+        try {
+          await expect(handleSemanticCli([...argv], { env, openTransport })).rejects.toMatchObject(
+            expected,
+          );
+        } finally {
+          vi.unstubAllGlobals();
+        }
+        expect(openTransport).not.toHaveBeenCalled();
+        expect(fetch).not.toHaveBeenCalled();
+      }
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+});
