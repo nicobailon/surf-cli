@@ -249,6 +249,10 @@ ${stories}</main>
   });
 </script></body></html>`;
   }
+  if (url.pathname === "/type") {
+    return `<!doctype html><html><head><title>Surf type fixture</title></head>
+<body><input id="plain" type="text"><textarea id="notes"></textarea></body></html>`;
+  }
   return null;
 }
 
@@ -633,6 +637,22 @@ try {
   const rerenderLog = await rerenderPage?.evaluate(() => document.querySelector("#log")?.textContent);
   if (rerenderLog !== "saved") throw new Error(`suggested ref click did not reach the new button (log=${rerenderLog})`);
   await runSurf("tab.close", "--id", rerenderTabId, "--json");
+
+  // CDP type enters punctuation and non-ASCII exactly
+  const typeTabId = String(tabIdFromOutput(await runSurf("tab.new", `${baseUrl}/type`)));
+  await runSurf("wait.element", "#notes", "--tab-id", typeTabId, "--json");
+  const typePage = (await browser.pages()).find((page) => page.url() === `${baseUrl}/type`);
+  if (!typePage) throw new Error("Puppeteer could not find the type fixture page");
+  const punctuated = "john.smith-private's (a&b)#1!%$\" `~=+[]{}\\|;:<>,/?^*_@ é 😀";
+  for (const selector of ["#plain", "#notes"]) {
+    await runSurf("click", "--selector", selector, "--tab-id", typeTabId, "--no-screenshot", "--json");
+    await runSurf("type", punctuated, "--tab-id", typeTabId, "--no-screenshot", "--json");
+    const typedValue = await typePage.evaluate((target) => document.querySelector(target).value, selector);
+    if (typedValue !== punctuated) {
+      throw new Error(`type into ${selector} did not enter the exact text: ${JSON.stringify(typedValue)}`);
+    }
+  }
+  await runSurf("tab.close", "--id", typeTabId, "--json");
 
   // js --file with statements and --options
   const optionsScript = join(repo, "test/e2e/fixtures/list-items.js");

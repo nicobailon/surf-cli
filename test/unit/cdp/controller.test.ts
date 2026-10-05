@@ -827,6 +827,18 @@ describe("CDPController", () => {
       expect(keyDown?.[2].text).toBe("a");
     });
 
+    it("presses the period key rather than Delete for '.'", async () => {
+      await controller.pressKey(tabId, ".");
+
+      const keyDown = mockChrome.debugger.sendCommand.mock.calls.find(
+        (call) => call[1] === "Input.dispatchKeyEvent" && call[2].type === "keyDown",
+      );
+
+      expect(keyDown?.[2].code).toBe("Period");
+      expect(keyDown?.[2].windowsVirtualKeyCode).toBe(190);
+      expect(keyDown?.[2].text).toBe(".");
+    });
+
     it("throws error for unknown key", async () => {
       let error: Error | undefined;
       try {
@@ -1356,6 +1368,43 @@ describe("CDPController", () => {
 
       const enterDown = keyCalls.find((c) => c[2].key === "Enter" && c[2].type === "keyDown");
       expect(enterDown).toBeDefined();
+    });
+
+    it("handles tab as the Tab key", async () => {
+      await controller.type(tabId, "user\tpass");
+
+      const tabDown = mockChrome.debugger.sendCommand.mock.calls.find(
+        (call) => call[1] === "Input.dispatchKeyEvent" && call[2].key === "Tab",
+      );
+      expect(tabDown?.[2].code).toBe("Tab");
+      expect(tabDown?.[2].windowsVirtualKeyCode).toBe(9);
+      const insertCalls = mockChrome.debugger.sendCommand.mock.calls.filter(
+        (call) => call[1] === "Input.insertText",
+      );
+      expect(insertCalls).toEqual([]);
+    });
+
+    it("sends US key codes for punctuation and inserts other text", async () => {
+      await controller.type(tabId, ".'(é😀");
+
+      const keyDowns = mockChrome.debugger.sendCommand.mock.calls
+        .filter((call) => call[1] === "Input.dispatchKeyEvent" && call[2].type === "keyDown")
+        .map((call) => [
+          call[2].text,
+          call[2].code,
+          call[2].windowsVirtualKeyCode,
+          call[2].modifiers,
+        ]);
+      expect(keyDowns).toEqual([
+        [".", "Period", 190, 0],
+        ["'", "Quote", 222, 0],
+        ["(", "Digit9", 57, 8],
+      ]);
+
+      const inserted = mockChrome.debugger.sendCommand.mock.calls
+        .filter((call) => call[1] === "Input.insertText")
+        .map((call) => call[2].text);
+      expect(inserted).toEqual(["é", "😀"]);
     });
   });
 
