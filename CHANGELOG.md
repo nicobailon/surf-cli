@@ -14,6 +14,9 @@
 ### Changed
 - **Breaking: `SURF_JEV_MODEL` is replaced by `SURF_SEMANTIC_MODEL`** - Surf no longer reads `SURF_JEV_MODEL`. If you set it, rename it to `SURF_SEMANTIC_MODEL`. The value must be `jev-1.13.0`, `clef` or `clef-flash`; any other value is an error.
 
+### Fixed
+- **Malformed TypeSafe credential file** - A damaged `typesafe/credentials.json` now fails with "stored TypeSafe credential is invalid" instead of a JSON parse error that could print part of the key.
+
 ## [2.22.0] - 2026-09-29
 
 ### Highlights

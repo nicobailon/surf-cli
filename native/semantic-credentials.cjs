@@ -3,7 +3,7 @@ const os = require("os");
 const path = require("path");
 const {
   atomicWriteJson,
-  readPrivateJson,
+  readPrivateFile,
   removePrivateFile,
 } = require("./private-state.cjs");
 
@@ -79,13 +79,20 @@ function isRecord(value) {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value) && value.version === CREDENTIAL_VERSION;
 }
 
+// Parse errors would echo file contents, so any malformed record gets one fixed message.
+function readStoredRecord({ root, filePath }, provider) {
+  const content = readPrivateFile(filePath, { root, allowMissing: true, fallback: null, encoding: "utf8" });
+  if (content === null) return null;
+  const invalid = new Error(`stored ${provider} credential is invalid`);
+  let value;
+  try { value = JSON.parse(content); } catch { throw invalid; }
+  if (!isRecord(value)) throw invalid;
+  return value;
+}
+
 function readStoredApiKey(env = process.env) {
-  const { root, filePath } = credentialLocation(env);
-  const value = readPrivateJson(filePath, null, { root });
+  const value = readStoredRecord(credentialLocation(env), "TypeSafe");
   if (value === null) return null;
-  if (!isRecord(value) || typeof value.apiKey !== "string") {
-    throw new Error("stored TypeSafe credential is invalid");
-  }
   try {
     return requireApiKey(value.apiKey);
   } catch {
@@ -104,11 +111,9 @@ function resolveTypeSafeCredential(env = process.env) {
 }
 
 function readStoredCloudflareCredential(env) {
-  const { root, filePath } = cloudflareCredentialLocation(env);
-  const value = readPrivateJson(filePath, null, { root });
+  const value = readStoredRecord(cloudflareCredentialLocation(env), "Cloudflare");
   if (value === null) return null;
   try {
-    if (!isRecord(value)) throw new Error("invalid record");
     return {
       accountId: requireCloudflareAccountId(value.accountId),
       apiToken: requireCloudflareApiToken(value.apiToken),

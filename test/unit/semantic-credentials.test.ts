@@ -156,6 +156,33 @@ describe("TypeSafe credential store", () => {
   });
 });
 
+describe("malformed stored credentials", () => {
+  it.each([
+    ["typesafe", "credentialLocation", "TypeSafe", '{"version":1,"apiKey":SENTINELSECRET}'],
+    [
+      "cloudflare",
+      "cloudflareCredentialLocation",
+      "Cloudflare",
+      `{"version":1,"accountId":"${"0".repeat(32)}","apiToken":SENTINELSECRET}`,
+    ],
+  ])(
+    "reports a malformed %s record without echoing its contents",
+    (provider, location, label, text) => {
+      const env = testEnv();
+      const { filePath } = credentials[location](env);
+      fs.mkdirSync(path.dirname(filePath), { recursive: true, mode: 0o700 });
+      fs.writeFileSync(filePath, text, { mode: 0o600 });
+      let message = "";
+      try {
+        credentials.credentialStatus(env, provider);
+      } catch (error) {
+        message = (error as Error).message;
+      }
+      expect(message).toBe(`stored ${label} credential is invalid`);
+    },
+  );
+});
+
 describe("TypeSafe credential input", () => {
   it("accepts exactly one bounded stdin line without writing the secret", async () => {
     const output = new PassThrough();
