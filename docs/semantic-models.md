@@ -176,8 +176,7 @@ npm run eval:vision -- --models clef,clef-flash --repeat 10
 - **Page.** A "Quarterly report" toolbar with three 40 px icon buttons that have no label, title, or text: share, download, and settings (24 px Feather icons, in that order). A fourth button is labeled "Save". Clicking a button writes a status line such as "Download started".
 - **Queries.** For `semantic.find`: "the settings icon", "the download icon", "the share icon", and "the save button". For `semantic.act --allow-write --max-steps 1`: "Open settings", "Download the report", "Share the report", and "Save the report".
 - **Runs.** Each query ran 10 times per model, with and without `--vision`: 320 commands in all. The harness maps each ref to its button by clicking it once, then checks which button a result picked and which one was actually clicked.
-- **Browser.** Headless Chrome 154 with no viewport emulation, a 756×469 viewport at device pixel ratio 1. The contact sheet for this page was a 120×154 PNG of 4,286 bytes with 3 tiles and 0 skipped.
-- **Measured on** one developer machine on 2026-10-05.
+- **Browser.** Headless Chrome 154 with no viewport emulation, a 756×469 viewport at device pixel ratio 1, on one developer machine on 2026-10-05. The contact sheet for this page was a 120×154 PNG of 4,286 bytes with 3 tiles and 0 skipped.
 
 Definitions:
 
@@ -209,9 +208,8 @@ The labeled "Save" control (10 runs per row) was found every time in both
 modes, but `--vision` lowered its probability: `find` 0.985 → 0.778 on `clef`
 and 0.965 → 0.829 on `clef-flash`; `act` 0.908 → 0.793 and 0.892 → 0.716. No
 "Save" act ran in either mode, because every probability was below the 0.95
-write floor. So on this page the image made the model less sure about a named
-control. Use `--vision` when the target is likely to be an icon-only control,
-not by default.
+write floor. Use `--vision` when the target is likely to be an icon-only
+control, not by default.
 
 ### Cost
 
@@ -227,6 +225,6 @@ not by default.
 ### Limits of this eval
 
 - One small synthetic page with distinct, common icons, at device pixel ratio 1. Real toolbars have look-alike icons, smaller targets and busier backgrounds.
-- Crops are never upscaled, so a 24 px icon reaches the model at about 32 px.
+- Crops are never upscaled: each 40 px button reached the model as a 48 px tile.
 - The tiles here were never covered, moved, or next to a form field, so `skipped` was 0. Those cases are covered by unit tests only.
 - With viewport emulation on (DevTools device mode, or an automation viewport such as Puppeteer's default 800×600), the screenshot does not match the page viewport. Surf then fails the read with `semantic vision capture failed: the screenshot does not match the page viewport; turn off viewport emulation` rather than send misaligned crops. The harness launches Chrome without emulation for this reason.
