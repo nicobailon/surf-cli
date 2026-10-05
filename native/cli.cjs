@@ -1621,7 +1621,7 @@ Tips:
   },
   semantic: {
     title: "Semantic browser decisions and locators",
-    content: `Optional model commands. Only these send page-derived text, to the provider of the selected model:
+    content: `Optional model-backed commands. Only these send page-derived text, and only to the selected model's provider:
 jev-1.13.0 (default) -> TypeSafe (api.typesafe.ai); clef, clef-flash -> Cloudflare Workers AI (api.cloudflare.com).
 Choose with --model <id> or SURF_SEMANTIC_MODEL. Results report provider, model, providerCalls, providerLatencyMs.
   semantic.find "the notification control"

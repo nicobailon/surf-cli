@@ -1052,7 +1052,8 @@ has its own measured confidence thresholds; see
 [Semantic model evaluation](docs/semantic-models.md) for how they were chosen
 and how the models compared. Every result reports a run summary: `provider`,
 `model`, `providerCalls`, and `providerLatencyMs` (summed provider round-trip
-time), including runs stopped by a budget or a failed decision.
+time), including runs stopped by a budget or a failed decision. When a command
+fails, Surf prints the summary on stderr after the error.
 
 ```bash
 surf semantic.find "the control for notification preferences"

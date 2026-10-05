@@ -9,11 +9,9 @@ Surf's semantic commands (`semantic.find`, `semantic.filter`, `semantic.verify`,
 | `clef` | Cloudflare Workers AI | `https://api.cloudflare.com/client/v4/accounts/{id}/ai/run/@cf/cloudflare/clef` |
 | `clef-flash` | Cloudflare Workers AI | `https://api.cloudflare.com/client/v4/accounts/{id}/ai/run/@cf/cloudflare/clef-flash` |
 
-Each model has its own complete set of confidence thresholds. A model can be
-selected only if it is in Surf's model registry, and a model is added to the
-registry only with all eight thresholds measured. So the rule "a model is
-selectable only once it has a complete measured set" holds by construction:
-there are no partial or borrowed threshold sets.
+Each model has its own set of eight confidence thresholds. Surf accepts only
+models in its registry, and a model enters the registry only with all eight
+thresholds measured, so no model runs with partial or borrowed thresholds.
 
 This page explains how the Clef thresholds were chosen and how the three models
 compared on the same fixtures.
@@ -43,7 +41,7 @@ npm run eval:semantic -- --models jev-1.13.0,clef,clef-flash --repeat 10
     - two goals the page cannot satisfy: a sold-out color and a different product
 - **Repetitions.** Each case ran 10 times per model, one call at a time.
 - **Decisions.** The harness calls the same `find`, `filter`, `verify`, and `chooseAction` functions the CLI uses, through the same evaluator factory, with the selected model's thresholds.
-- **Latency.** Provider latency is the round trip of each provider call, measured in the one place every semantic command measures it (the shared evaluator). It was measured from one developer machine on 2026-10-05, so it includes that machine's network path to each API.
+- **Latency.** Provider latency is the round trip of each provider call, measured by the shared evaluator that every semantic command uses. It was measured from one developer machine on 2026-10-05, so it includes that machine's network path to each API.
 - **Determinism.** All three models returned identical probabilities on every repetition. Repetitions therefore inform latency and reliability, not decision variance.
 
 ### Definitions
@@ -53,7 +51,7 @@ npm run eval:semantic -- --models jev-1.13.0,clef,clef-flash --repeat 10
   - filter keeps only the right region
   - verify reports the right verdict
   - act selects the right write; for the exact-ref decoy it selects no write; for the unsatisfiable goals it reports `blocked`
-- **Wrong write:** an act decision selects a click or fill above its threshold that is not the correct target. This is the safety number.
+- **Wrong write:** an act decision selects a click or fill above its threshold that is not the correct target. The write-threshold rule uses this count.
 - **Wrong answer** (used for calibration): the model's chosen label is wrong for that decision. Each wrong answer is recorded with the probability the model gave it, under the threshold key that would gate it:
 
   | Wrong label | Gated by |
@@ -104,8 +102,8 @@ Two values come from the measurements: `clef` `exactRefWrite` 0.79 and
 The wrong writes behind the `write` column came from the two unsatisfiable
 goals. There, both Clef models picked "Add to cart" (`clef` at 0.737,
 `clef-flash` at 0.526 and 0.586) while also, correctly, judging the prerequisite
-`blocked`. These writes are rejected twice over: their probability is below the
-write threshold, and a write also requires the prerequisite to be `supported`.
+`blocked`. Surf rejects these writes for two reasons: their probability is below
+the write threshold, and a write also requires the prerequisite to be `supported`.
 
 ## Results (shipped thresholds, 10 repetitions × 19 cases per model)
 
