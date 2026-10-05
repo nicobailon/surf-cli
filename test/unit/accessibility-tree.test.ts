@@ -32,6 +32,12 @@ class FakeElement extends FakeNode {
   isContentEditable = false;
   isConnected = true;
   shadowRoot: { querySelectorAll(selector: string): FakeElement[] } | null = null;
+  shadowParent: FakeShadowRoot | null = null;
+  popoverOpen = false;
+
+  get parentNode(): FakeElement | FakeShadowRoot | null {
+    return this.parentElement ?? this.shadowParent;
+  }
   rect = { top: 0, bottom: 10, left: 0, right: 10 };
   computed: Record<string, string> = {};
 
@@ -112,6 +118,9 @@ class FakeElement extends FakeNode {
       if (part === "[popover]") {
         return this.hasAttribute("popover");
       }
+      if (part === ":popover-open") {
+        return this.popoverOpen;
+      }
       return part === this.tagName.toLowerCase();
     });
   }
@@ -150,6 +159,24 @@ class FakeElement extends FakeNode {
       this instanceof FakeTextAreaElement ||
       this.isContentEditable;
     return field && (globalThis as any).document.adoptedStyleSheets?.length > 0;
+  }
+}
+
+class FakeShadowRoot {
+  adoptedStyleSheets: Array<{ text: string }> = [];
+
+  constructor(
+    public host: FakeElement,
+    private nodes: FakeElement[],
+  ) {
+    for (const node of nodes) {
+      node.shadowParent = this;
+    }
+  }
+
+  querySelectorAll(selector: string): FakeElement[] {
+    const all = this.nodes.flatMap((node) => [node, ...node.querySelectorAll("*")]);
+    return selector === "*" ? all : all.filter((node) => node.matches(selector));
   }
 }
 
@@ -213,6 +240,7 @@ describe("accessibility tree", () => {
     (globalThis as any).HTMLTextAreaElement = FakeTextAreaElement;
     (globalThis as any).Node = FakeNode;
     (globalThis as any).MutationObserver = FakeMutationObserver;
+    (globalThis as any).ShadowRoot = FakeShadowRoot;
     (globalThis as any).CSSStyleSheet = class {
       text = "";
       replaceSync(cssText: string): void {
@@ -846,7 +874,8 @@ describe("accessibility tree", () => {
       querySelectorAll: (selector: string) => (selector === "*" ? [closedField] : []),
     };
     const elements: FakeElement[] = [toolbar.settings, toolbar.search, toolbar.notes, host];
-    (document as any).querySelectorAll = (selector: string) => (selector === "*" ? elements : []);
+    (document as any).querySelectorAll = (selector: string) =>
+      selector === "*" ? elements : elements.filter((node) => node.matches(selector));
     (globalThis as any).chrome.dom = {
       openOrClosedShadowRoot: (node: FakeElement) => (node === host ? closedRoot : null),
     };
@@ -918,40 +947,62 @@ describe("accessibility tree", () => {
     await skipped();
   });
 
-  it("hides top-layer elements in shadow trees inside editable content", async () => {
+  it("hides and verifies every open top-layer element inside a field, across shadow roots", async () => {
     const { settings, elements } = visionPage();
+    // A non-editable chip inside an editor, with an open popover in its shadow tree.
     const editor = element("div");
     editor.isContentEditable = true;
     editor.rect = { top: 300, bottom: 320, left: 400, right: 460 };
-    const popover = element("div", { popover: "manual" });
-    popover.rect = { top: 100, bottom: 140, left: 100, right: 160 };
-    const editorRoot = {
-      adoptedStyleSheets: [] as Array<{ text: string }>,
-      querySelectorAll: (selector: string) => (selector === "*" ? [popover] : []),
-    };
-    elements.push(editor);
+    const chip = element("span", { contenteditable: "false" });
+    editor.append(chip);
+    const chipPopover = element("div", { popover: "manual" });
+    chipPopover.popoverOpen = true;
+    chipPopover.rect = { top: 100, bottom: 140, left: 100, right: 160 };
+    const chipRoot = new FakeShadowRoot(chip, [chipPopover]);
+    // An explicit combobox with an open popover child in the light DOM.
+    const combobox = element("div", { role: "combobox" });
+    combobox.rect = { top: 400, bottom: 420, left: 400, right: 460 };
+    const listbox = element("div", { popover: "manual" });
+    listbox.popoverOpen = true;
+    listbox.rect = { top: 200, bottom: 240, left: 100, right: 160 };
+    combobox.append(listbox);
+    // An open popover menu outside any field.
+    const menu = element("div", { popover: "manual" });
+    menu.popoverOpen = true;
+    menu.rect = { top: 500, bottom: 540, left: 100, right: 160 };
+    elements.push(editor, chip, combobox, listbox, menu);
     (globalThis as any).chrome.dom = {
-      openOrClosedShadowRoot: (node: FakeElement) => (node === editor ? editorRoot : null),
+      openOrClosedShadowRoot: (node: FakeElement) => (node === chip ? chipRoot : null),
     };
+    chipPopover.computed.opacity = "0";
+    listbox.computed.opacity = "0";
+    combobox.computed.opacity = "0";
 
-    popover.computed.opacity = "0";
-    expect((await prepare()).masks).toContainEqual({ x: 100, y: 100, width: 60, height: 40 });
+    const { masks } = await prepare();
+    expect(masks).toContainEqual({ x: 100, y: 100, width: 60, height: 40 });
+    expect(masks).toContainEqual({ x: 100, y: 200, width: 60, height: 40 });
+    expect(masks).not.toContainEqual({ x: 100, y: 500, width: 60, height: 40 });
     const [documentSheet] = (document as any).adoptedStyleSheets;
-    expect(editorRoot.adoptedStyleSheets).toHaveLength(1);
-    expect(editorRoot.adoptedStyleSheets[0]).not.toBe(documentSheet);
-    expect(editorRoot.adoptedStyleSheets[0].text).toContain(
-      ":fullscreen), [popover], dialog, :fullscreen",
-    );
+    expect(documentSheet.text).toContain(":read-write) :is([popover], dialog, :fullscreen)");
+    // The chip's shadow root is inside a field, so its sheet hides every top-layer element.
+    expect(chipRoot.adoptedStyleSheets[0]).not.toBe(documentSheet);
+    expect(chipRoot.adoptedStyleSheets[0].text).toMatch(/, \[popover\], dialog, :fullscreen\n/);
     expect(recheck().fieldsChanged).toBe(false);
-    expect(editorRoot.adoptedStyleSheets).toEqual([]);
+    expect(chipRoot.adoptedStyleSheets).toEqual([]);
 
-    // A top-layer element the sheet failed to hide skips the read.
-    popover.computed.opacity = "1";
-    expect(await prepare()).toEqual({ masks: [null] });
-    expect(editorRoot.adoptedStyleSheets).toEqual([]);
+    // A top-layer element inside a field that still paints skips the read, in a shadow root or the light DOM.
+    for (const leaking of [chipPopover, listbox]) {
+      leaking.computed.opacity = "1";
+      expect(await prepare()).toEqual({ masks: [null] });
+      leaking.computed.opacity = "0";
+    }
+    // A popover opened inside a field after the fields were hidden is caught at the recheck.
+    await prepare();
+    listbox.computed.opacity = "1";
+    expect(recheck().fieldsChanged).toBe(true);
+    listbox.computed.opacity = "0";
 
     // Content made editable by CSS has no selector, so the read is skipped.
-    elements.pop();
     settings.computed.webkitUserModify = "read-write";
     expect(await prepare()).toEqual({ masks: [null] });
   });

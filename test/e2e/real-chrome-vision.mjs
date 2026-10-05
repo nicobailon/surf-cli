@@ -14,6 +14,9 @@ const INPUT = (attributes = "", style = `${BOX};background:#0f0;font:16px monosp
   `<input id="secret" value="PRIVATE-1234" ${attributes} style="${style}">`;
 const EDITOR = (css) => `<div id="secret" contenteditable="true" style="position:absolute;color:#0f0;white-space:nowrap;z-index:1;${css}"></div>`;
 const CLOSED_INPUT = `<input value="PRIVATE-1234" style="width:60px;height:40px;margin:0;padding:0;border:0;box-sizing:border-box;background:#0f0;font:16px monospace">`;
+const POPOVER = `<div popover="manual" style="position:fixed;inset:auto;left:100px;top:100px;margin:0;padding:0;border:0;width:60px;height:40px;color:#0f0;background:white;font:16px/20px monospace"></div>`;
+const BUTTON_AT = (x, y) =>
+  `<button style="position:absolute;left:${x}px;top:${y}px;width:40px;height:40px;margin:0;padding:0;border:0;background:#fff"><svg width="24" height="24" viewBox="0 0 24 24"><rect x="4" y="4" width="16" height="16" fill="#00f"/></svg></button>`;
 
 const type = (text, { blur = true } = {}) => async (tab) => {
   await tab.focus("#secret");
@@ -135,6 +138,48 @@ const scenarios = [
     html: page(`<style>@keyframes drift{from{transform:translateX(0)}to{transform:translateX(1px)}}</style><div style="animation:drift 1s infinite alternate">${INPUT()}</div>`),
     expect: "tile",
     restore: false,
+  },
+  {
+    // A non-editable chip inside an editor shows its text through a slot in its own shadow popover.
+    name: "shadow popover of a non-editable chip inside an editor",
+    html: page(`<div contenteditable="true" style="position:absolute;left:400px;top:300px;width:60px;height:20px;color:#0f0;font:16px/20px monospace"><span id="secret" contenteditable="false">PRIVATE-1234</span></div>
+<script>const root = document.querySelector("#secret").attachShadow({ mode: "open" });
+root.innerHTML = '<div popover="manual" style="position:fixed;inset:auto;left:100px;top:100px;margin:0;padding:0;border:0;width:60px;height:40px;color:#0f0;background:white;font:16px/20px monospace"><slot></slot></div>';
+root.querySelector("[popover]").showPopover();</script>`),
+    clear: clearSecret,
+    expect: "tile",
+  },
+  ...["shadow", "light"].map((variant) => ({
+    // An explicit role=combobox shows its selected value in its own popover.
+    name: `role=combobox value in a ${variant} popover`,
+    html: page(`<div id="secret" role="combobox" tabindex="0" aria-expanded="true" style="position:absolute;left:400px;top:300px;width:60px;height:20px;color:#0f0;font:16px/20px monospace">${variant === "light" ? POPOVER : ""}</div>
+<script>const combobox = document.querySelector("#secret");
+const pop = ${variant === "light" ? 'combobox.querySelector("[popover]")' : `combobox.attachShadow({ mode: "open" }); pop.innerHTML = '${POPOVER.replace("></div>", "><slot></slot></div>")}'`};
+(pop.querySelector?.("[popover]") ?? pop).showPopover();
+combobox.addEventListener("keydown", (event) => {
+  if (event.key !== "ArrowDown") return;
+  (combobox.querySelector("[popover]") ?? combobox).textContent = "PRIVATE-1234";
+  event.preventDefault();
+});</script>`),
+    populate: async (tab) => {
+      await tab.focus("#secret");
+      await tab.keyboard.press("ArrowDown");
+      await tab.evaluate(() => document.activeElement.blur());
+    },
+    clear: (tab) =>
+      tab.evaluate(() => {
+        const secret = document.querySelector("#secret");
+        (secret.querySelector("[popover]") ?? secret).textContent = "";
+      }),
+    expect: "tile",
+  })),
+  {
+    // An open popover menu that is not inside a field keeps its tiles.
+    name: "open popover menu outside any field",
+    html: page(`<div id="menu" popover="manual" style="position:fixed;inset:auto;left:300px;top:300px;width:100px;height:48px;margin:0;padding:0;border:1px solid #ccc;background:#fff">${BUTTON_AT(4, 4)}${BUTTON_AT(56, 4)}</div>
+<script>document.querySelector("#menu").showPopover();</script>`),
+    expect: "tile",
+    minTiles: 3,
   },
   {
     name: "shadow popover showing an editing host's text through a slot",
@@ -397,6 +442,9 @@ try {
 
     if (scenario.expect === "skipped" && populated.tile) fail("expected the read to be skipped");
     if (scenario.expect === "tile" && !populated.tile) fail("expected a tile");
+    if (scenario.minTiles && populated.observation.vision.tiles.length < scenario.minTiles) {
+      fail(`expected at least ${scenario.minTiles} tiles`);
+    }
     if (populated.tile) {
       if (!white(populated.control)) fail("tile sampling is misaligned");
       if (scenario.masked && !black(populated.field)) fail("expected the field box blacked out");

@@ -252,13 +252,17 @@ const SEMANTIC_VISION_VALUE_ROLES = ["textbox", "searchbox", "combobox", "spinbu
 const SEMANTIC_VISION_FIELD_TAGS = ["input", "textarea", "select", "iframe", "frame", "embed", "object"];
 // Longest time fields stay hidden for one capture; a recheck after that skips the read.
 const SEMANTIC_VISION_HIDE_MS = 2_000;
-// Top-layer elements paint outside their ancestors' opacity group, so inside editable content they are hidden too.
+// The top layer is the only paint that escapes an ancestor's opacity group (view transitions are skipped).
 const SEMANTIC_VISION_TOP_LAYER = "[popover], dialog, :fullscreen";
-// Every field, matching isSemanticVisionMaskTarget. `:read-write` covers contenteditable and editable native fields;
-// only the root of each editable region is listed, since opacity on it hides everything inside.
+const SEMANTIC_VISION_OPEN_TOP_LAYER = ":popover-open, dialog[open], :fullscreen";
+// Any element of a field, matching isSemanticVisionFieldElement.
+const SEMANTIC_VISION_FIELD_ELEMENTS = `input, textarea, select, iframe, frame, embed, object,
+  [role~="textbox" i], [role~="searchbox" i], [role~="combobox" i], [role~="spinbutton" i], :read-write`;
+// Fields to hide, matching isSemanticVisionMaskTarget, plus top-layer elements inside a field in the same tree.
+// Only the root of each editable region is listed, since opacity on it hides everything inside.
 const SEMANTIC_VISION_FIELDS = `input, textarea, select, iframe, frame, embed, object,
   [role~="textbox" i], [role~="searchbox" i], [role~="combobox" i], [role~="spinbutton" i],
-  :read-write:not(:read-write > *), :read-write :is(${SEMANTIC_VISION_TOP_LAYER})`;
+  :read-write:not(:read-write > *), :is(${SEMANTIC_VISION_FIELD_ELEMENTS}) :is(${SEMANTIC_VISION_TOP_LAYER})`;
 // Makes every field paint nothing while the screenshot is taken. The layer beats unlayered page `!important`
 // rules; a field the page still keeps visible fails the opacity check before and after the capture.
 const semanticVisionSheetText = (selector: string) =>
@@ -296,33 +300,52 @@ function semanticVisionCurrentRect(ref: string): SemanticVisionRect | null {
   return hit && (hit === element || element.contains(hit)) ? rect : null;
 }
 
-// Fields chosen by behavior, matching SEMANTIC_VISION_FIELDS: native fields, frames, explicit value roles, editable
-// regions and the top-layer elements inside them. In a shadow tree inside editable content every top-layer element
-// counts, since it can show the host's editable text through a slot.
-function isSemanticVisionMaskTarget(element: Element, inEditable: boolean): boolean {
+// Any element of a field, by behavior: native fields, frames, explicit value roles, and editable content.
+function isSemanticVisionFieldElement(element: Element): boolean {
   const roles = (element.getAttribute("role") ?? "").toLowerCase().split(/\s+/);
   return SEMANTIC_VISION_FIELD_TAGS.includes(element.tagName.toLowerCase()) ||
     roles.some((role) => SEMANTIC_VISION_VALUE_ROLES.includes(role)) ||
-    (element.matches(":read-write") && element.parentElement?.matches(":read-write") !== true) ||
-    element.matches(`:read-write :is(${SEMANTIC_VISION_TOP_LAYER})`) ||
-    (inEditable && element.matches(SEMANTIC_VISION_TOP_LAYER));
+    element.matches(":read-write");
 }
 
-type SemanticVisionScan = { fields: Element[]; roots: ShadowRoot[]; editableRoots: ShadowRoot[]; unsupported: boolean };
+// Fields to hide and verify; editable content inside an editable parent is covered by its root's opacity.
+function isSemanticVisionMaskTarget(element: Element): boolean {
+  return isSemanticVisionFieldElement(element) &&
+    !(element.matches(":read-write") && element.parentElement?.matches(":read-write") === true);
+}
+
+function composedParent(element: Element): Element | null {
+  const parent = element.parentNode;
+  return parent instanceof ShadowRoot ? parent.host : parent instanceof Element ? parent : null;
+}
+
+function insideSemanticVisionField(element: Element): boolean {
+  for (let node = composedParent(element); node; node = composedParent(node)) {
+    if (isSemanticVisionFieldElement(node)) return true;
+  }
+  return false;
+}
+
+// Open top-layer elements inside a field: they escape the field's opacity group, so each must paint nothing itself.
+function semanticVisionTopLayerInFields(roots: Array<Document | ShadowRoot>): Element[] {
+  return roots.flatMap((root) =>
+    Array.from(root.querySelectorAll(SEMANTIC_VISION_OPEN_TOP_LAYER)).filter(insideSemanticVisionField));
+}
+
+type SemanticVisionScan = { fields: Element[]; roots: ShadowRoot[]; fieldRoots: ShadowRoot[]; unsupported: boolean };
 
 // Fields under root, including inside open and closed shadow roots, which content scripts can read through
-// chrome.dom. The read is skipped (`unsupported`) for a shadow root that cannot be read, and for content made
-// editable by CSS (`-webkit-user-modify`), which no selector can reach.
+// chrome.dom. Shadow roots inside a field are listed in `fieldRoots`. The read is skipped (`unsupported`) for a
+// shadow root that cannot be read, and for content made editable by CSS (`-webkit-user-modify`), which no
+// selector can reach.
 function scanSemanticVisionFields(
   root: Document | ShadowRoot,
-  scan: SemanticVisionScan = { fields: [], roots: [], editableRoots: [], unsupported: false },
-  inEditable = false,
+  scan: SemanticVisionScan = { fields: [], roots: [], fieldRoots: [], unsupported: false },
 ): SemanticVisionScan {
   for (const element of Array.from(root.querySelectorAll("*"))) {
-    if (isSemanticVisionMaskTarget(element, inEditable)) scan.fields.push(element);
+    if (isSemanticVisionMaskTarget(element)) scan.fields.push(element);
     if (!(element instanceof HTMLElement)) continue;
-    const editable = element.matches(":read-write");
-    if (!editable && (window.getComputedStyle(element) as CSSStyleDeclaration & { webkitUserModify?: string })
+    if (!element.matches(":read-write") && (window.getComputedStyle(element) as CSSStyleDeclaration & { webkitUserModify?: string })
       .webkitUserModify?.startsWith("read-write")) {
       scan.unsupported = true;
     }
@@ -335,8 +358,8 @@ function scanSemanticVisionFields(
     }
     if (shadowRoot) {
       scan.roots.push(shadowRoot);
-      if (inEditable || editable) scan.editableRoots.push(shadowRoot);
-      scanSemanticVisionFields(shadowRoot, scan, inEditable || editable);
+      if (isSemanticVisionFieldElement(element) || insideSemanticVisionField(element)) scan.fieldRoots.push(shadowRoot);
+      scanSemanticVisionFields(shadowRoot, scan);
     }
   }
   return scan;
@@ -354,7 +377,7 @@ function semanticVisionMasks(fields: Element[]): Array<SemanticVisionRect | null
 }
 
 type SemanticVisionHiding = {
-  // The sheet adopted into each root: shadow roots inside editable content also hide every top-layer element.
+  // The sheet adopted into each root: shadow roots inside a field also hide every top-layer element.
   sheets: Map<Document | ShadowRoot, CSSStyleSheet>;
   shadowRoots: ShadowRoot[];
   fields: Element[];
@@ -363,7 +386,7 @@ type SemanticVisionHiding = {
   changed: boolean;
 };
 let semanticVisionHiding: SemanticVisionHiding | null = null;
-let semanticVisionSheets: { base: CSSStyleSheet; editableRoot: CSSStyleSheet } | undefined;
+let semanticVisionSheets: { base: CSSStyleSheet; fieldRoot: CSSStyleSheet } | undefined;
 
 function releaseSemanticVision(): void {
   const hiding = semanticVisionHiding;
@@ -376,13 +399,15 @@ function releaseSemanticVision(): void {
   }
 }
 
-// Every sheet is still adopted and every field paints nothing: opacity 0 on a box of its own.
-function semanticVisionFieldsHidden(hiding: SemanticVisionHiding): boolean {
-  return [...hiding.sheets].every(([root, sheet]) => root.adoptedStyleSheets.includes(sheet)) &&
-    hiding.fields.every((field) => {
-      const style = window.getComputedStyle(field);
-      return style.opacity === "0" && style.display !== "contents";
-    });
+// Verifies that nothing in a field paints: every sheet is still adopted, and each field and each open top-layer
+// element inside one has opacity 0 on a box of its own. Returns those elements, or null when one still paints.
+function semanticVisionHiddenElements(hiding: SemanticVisionHiding): Element[] | null {
+  if (![...hiding.sheets].every(([root, sheet]) => root.adoptedStyleSheets.includes(sheet))) return null;
+  const elements = [...hiding.fields, ...semanticVisionTopLayerInFields([...hiding.sheets.keys()])];
+  return elements.every((element) => {
+    const style = window.getComputedStyle(element);
+    return style.opacity === "0" && style.display !== "contents";
+  }) ? elements : null;
 }
 
 // Hides every field for the capture and returns their border boxes, or [null] when the read cannot be made safe.
@@ -397,17 +422,17 @@ async function prepareSemanticVision(): Promise<Array<SemanticVisionRect | null>
   const scan = scanSemanticVisionFields(document);
   if (scan.unsupported) return [null];
   if (!semanticVisionSheets) {
-    semanticVisionSheets = { base: new CSSStyleSheet(), editableRoot: new CSSStyleSheet() };
+    semanticVisionSheets = { base: new CSSStyleSheet(), fieldRoot: new CSSStyleSheet() };
     semanticVisionSheets.base.replaceSync(semanticVisionSheetText(SEMANTIC_VISION_FIELDS));
-    semanticVisionSheets.editableRoot.replaceSync(
+    semanticVisionSheets.fieldRoot.replaceSync(
       semanticVisionSheetText(`${SEMANTIC_VISION_FIELDS}, ${SEMANTIC_VISION_TOP_LAYER}`),
     );
   }
-  const { base, editableRoot } = semanticVisionSheets;
+  const { base, fieldRoot } = semanticVisionSheets;
   const hiding: SemanticVisionHiding = {
     sheets: new Map<Document | ShadowRoot, CSSStyleSheet>([
       [document, base],
-      ...scan.roots.map((root): [ShadowRoot, CSSStyleSheet] => [root, scan.editableRoots.includes(root) ? editableRoot : base]),
+      ...scan.roots.map((root): [ShadowRoot, CSSStyleSheet] => [root, scan.fieldRoots.includes(root) ? fieldRoot : base]),
     ]),
     shadowRoots: scan.roots,
     fields: scan.fields,
@@ -430,8 +455,9 @@ async function prepareSemanticVision(): Promise<Array<SemanticVisionRect | null>
     requestAnimationFrame(resolve);
     setTimeout(resolve, 100);
   });
-  const masks = semanticVisionMasks(hiding.fields);
-  if (semanticVisionHiding !== hiding || hiding.changed || !semanticVisionFieldsHidden(hiding) || masks.includes(null)) {
+  const hidden = semanticVisionHiddenElements(hiding);
+  const masks = hidden ? semanticVisionMasks(hidden) : [null];
+  if (semanticVisionHiding !== hiding || hiding.changed || masks.includes(null)) {
     if (semanticVisionHiding === hiding) releaseSemanticVision();
     return [null];
   }
@@ -444,10 +470,10 @@ function recheckSemanticVision(): { masks: Array<SemanticVisionRect | null>; fie
   if (!hiding) return { masks: [null], fieldsChanged: true };
   const pending = hiding.observer.takeRecords().length > 0;
   const scan = scanSemanticVisionFields(document);
-  const fieldsChanged = hiding.changed || pending || scan.unsupported ||
-    scan.roots.length !== hiding.shadowRoots.length || scan.roots.some((root) => !hiding.shadowRoots.includes(root)) ||
-    !semanticVisionFieldsHidden(hiding);
-  const masks = semanticVisionMasks(hiding.fields);
+  const hidden = semanticVisionHiddenElements(hiding);
+  const fieldsChanged = hiding.changed || pending || scan.unsupported || !hidden ||
+    scan.roots.length !== hiding.shadowRoots.length || scan.roots.some((root) => !hiding.shadowRoots.includes(root));
+  const masks = hidden ? semanticVisionMasks(hidden) : [null];
   releaseSemanticVision();
   return { masks, fieldsChanged };
 }
