@@ -214,6 +214,10 @@ if (args[0] === "semantic" || args[0]?.startsWith("semantic.")) {
     .catch((error) => {
       const code = error?.code ? ` [${error.code}]` : "";
       console.error(`Error: ${error?.message || String(error)}${code}`);
+      if (error?.runSummary) {
+        const { provider, model, providerCalls, providerLatencyMs } = error.runSummary;
+        console.error(`Run summary: provider=${provider} model=${model} providerCalls=${providerCalls} providerLatencyMs=${providerLatencyMs}`);
+      }
       process.exit(1);
     });
   return;

@@ -762,6 +762,9 @@ async function handleSemanticCli(argv, { endpoint, env = process.env, input = pr
     }, Math.max(1, timeoutMs));
     const value = await runBrowserSemantic({ ...options, model }, { request, evaluate: evaluator.evaluate });
     return { handled: true, value: { ...value, ...evaluator.summary() }, json: options.json };
+  } catch (error) {
+    if (error && typeof error === "object") error.runSummary = evaluator.summary();
+    throw error;
   } finally { await transport.close(); }
 }
 

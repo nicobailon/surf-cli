@@ -2368,6 +2368,33 @@ describe("semantic CLI model selection", () => {
     });
   });
 
+  it.each(["semantic.find", "semantic.verify", "semantic.filter"])(
+    "keeps the error code and attaches the run summary when %s fails at the provider",
+    async (command) => {
+      const fetch = vi.fn(
+        async (_url: string, _init: unknown) => new Response("{}", { status: 503 }),
+      );
+      vi.stubGlobal("fetch", fetch);
+      try {
+        const failed = handleSemanticCli([command, "goal", "--model", "clef"], {
+          env: cloudflare,
+          openTransport: transport(),
+        });
+        await expect(failed).rejects.toMatchObject({
+          code: "provider_unavailable",
+          runSummary: {
+            provider: "cloudflare",
+            model: "clef",
+            providerCalls: 1,
+            providerLatencyMs: expect.any(Number),
+          },
+        });
+      } finally {
+        vi.unstubAllGlobals();
+      }
+    },
+  );
+
   it("fails before browser or provider I/O for unknown models and missing credentials", async () => {
     const fs = require("node:fs");
     const os = require("node:os");
