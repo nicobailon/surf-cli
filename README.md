@@ -1079,6 +1079,29 @@ printf '%s\n' "$TYPESAFE_KEY" | surf semantic auth set
 printf '%s\n%s\n' "$CLOUDFLARE_ACCOUNT_ID" "$CLOUDFLARE_API_TOKEN" | surf semantic auth set --provider cloudflare
 ```
 
+#### Icon-only controls (`--vision`)
+
+A button with only an icon and no label, title, or alt text has no name, so the
+model sees several identical `button` candidates. `--vision` on `semantic.find`
+and `semantic.act` lets it tell them apart:
+
+```bash
+surf semantic.find "the download icon" --model clef --vision
+surf semantic.act "Open settings" --model clef --vision --allow-write
+```
+
+- **What is sent.** One extra PNG image: small crops of the visible controls in the main frame that have no name, at most 16, each tagged with its ref. It goes to the selected model's provider, with the usual page observation. **A crop can include whatever is drawn in that spot.** Form fields, editable areas, iframes, embeds, and objects are never cropped and are blacked out where a crop overlaps them. The full screenshot never leaves the browser and is never saved.
+- **When.** Only with `--vision`, and only when the page has such controls. On a fully labeled page nothing extra is sent.
+- **Models.** Only image-capable models: `clef` and `clef-flash`. With `jev-1.13.0`, the command fails before anything is sent: `--vision needs an image-capable model such as --model clef`. `semantic.verify`, `semantic.filter`, and `surf do` don't take it.
+- **Results.** `vision: { tiles, skipped }` counts the controls shown and the ones left out (more than 16, moved, covered, or near a field that couldn't be measured). For `semantic.act` the counts come from the read behind the last action decision. The `find` candidate, an `act` trace step, or an `act` decision whose control was shown as a tile carries `"tile": true`. That records what the model was shown, not why it chose. If you are about to rely on a tiled write target, a screenshot is a cheap check.
+- **Safety.** Confidence thresholds, `--allow-write`, and `--allow-ref` work exactly as without `--vision`.
+- **Failures.** If the screenshot can't be taken, or doesn't match the page viewport (for example, with DevTools device emulation on), the command fails with `semantic vision capture failed: <cause>`. It never silently falls back to text only.
+
+How much `--vision` helps, and what it costs, is measured in
+[Semantic model evaluation](docs/semantic-models.md#icon-only-controls---vision).
+On that page it also made the model less sure about a labeled button, so use
+`--vision` when the target is likely an icon-only control, not by default.
+
 The provider-neutral shared schema is `{"version":1,"apiKey":"..."}`. Persisted
 setup lives at `${XDG_CONFIG_HOME:-~/.config}/typesafe/credentials.json` on
 Unix/macOS and `%APPDATA%\TypeSafe\credentials.json` on Windows, independent of
@@ -1124,6 +1147,8 @@ remains adversarial data; model output never grants authority.
 
 The real-model evaluation harness is opt-in and excluded from CI:
 `SURF_REAL_SEMANTIC=1 npm run eval:semantic -- --models jev-1.13.0,clef,clef-flash`.
+`SURF_REAL_SEMANTIC=1 npm run eval:vision` measures `--vision` in real Chrome
+(run `npm run build` first).
 
 ## Environment Variables
 

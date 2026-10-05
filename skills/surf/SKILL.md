@@ -119,6 +119,12 @@ the provider of the selected model: `jev-1.13.0` (default) goes to TypeSafe
 only way for `surf do`). Every result reports `provider`, `model`,
 `providerCalls`, and `providerLatencyMs`.
 
+For icon-only buttons with no name, add `--vision` to `semantic.find` or
+`semantic.act` with `--model clef` or `clef-flash`. It also sends one image of
+small crops of those controls (a crop can include whatever is drawn there).
+Results carry `vision: { tiles, skipped }` and `"tile": true` on a target that
+was shown as a tile; screenshot before relying on a tiled write target.
+
 ```bash
 surf semantic.find "the settings control"
 surf semantic.verify "Settings were saved" --json
@@ -127,6 +133,7 @@ surf semantic.act "Open settings" --max-steps 5
 surf semantic.act "Fill email" --input email="$EMAIL" --allow-write --allow-ref e3
 surf semantic.act 'Add the selected item to the cart' --allow-write --threshold write=0.85
 surf semantic.find "the export button" --model clef-flash
+surf semantic.find "the download icon" --model clef --vision
 printf '%s\n' "$TYPESAFE_KEY" | surf semantic auth set
 printf '%s\n%s\n' "$CLOUDFLARE_ACCOUNT_ID" "$CLOUDFLARE_API_TOKEN" | surf semantic auth set --provider cloudflare
 surf semantic auth status          # both providers unless --provider is given
