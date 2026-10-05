@@ -19,6 +19,11 @@ const BUTTON_AT = (x, y) =>
   `<button style="position:absolute;left:${x}px;top:${y}px;width:40px;height:40px;margin:0;padding:0;border:0;background:#fff"><svg width="24" height="24" viewBox="0 0 24 24"><rect x="4" y="4" width="16" height="16" fill="#00f"/></svg></button>`;
 const SECRET_POPOVER = POPOVER.replace("<div popover", '<div id="secret" popover').replace("></div>", ">PRIVATE-1234</div>");
 const SHOW_SECRET = `<script>document.querySelector("#secret").showPopover();</script>`;
+const closeSecret = (tab) =>
+  tab.evaluate(() => {
+    const secret = document.querySelector("#secret");
+    secret.localName === "dialog" ? secret.close() : secret.hidePopover();
+  });
 const FIELD_AT = "position:absolute;left:400px;top:300px;width:60px;height:20px;color:#0f0;font:16px/20px monospace";
 // A custom element whose shadow tree is `inner`.
 const COMPONENT = (name, mode, inner) => `<script>customElements.define("${name}", class extends HTMLElement {
@@ -220,6 +225,27 @@ combobox.addEventListener("keydown", (event) => {
     clear: clearSecret,
     expect: "skipped",
   },
+  ...["popover", "dialog"].map((kind) => ({
+    // A top-layer element nested in slotted field content, closing with a display/overlay exit transition: it still
+    // paints while no longer open, so the read is skipped.
+    name: `closing ${kind} nested in content slotted into a contenteditable component`,
+    html: page(`<style>#secret { transition: display 3s allow-discrete, overlay 3s allow-discrete } #secret::backdrop { display: none }</style>
+${COMPONENT("ui-editor", "open", `<div contenteditable="true" style="${FIELD_AT}"><slot></slot></div>`)}
+<ui-editor><div style="margin:0">x<span>${kind === "dialog" ? SECRET_POPOVER.replaceAll("div", "dialog").replace(' popover="manual"', "") : SECRET_POPOVER.replaceAll("div", "span")}</span></div></ui-editor>
+<script>const secret = document.querySelector("#secret"); secret.localName === "dialog" ? secret.showModal() : secret.showPopover();</script>`),
+    populate: closeSecret,
+    clear: async (tab) => {
+      await tab.evaluate(async () => {
+        const secret = document.querySelector("#secret");
+        secret.textContent = "";
+        secret.localName === "dialog" ? secret.showModal() : secret.showPopover();
+        await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+      });
+      await closeSecret(tab);
+    },
+    expect: "skipped",
+    restore: false,
+  })),
   {
     // ui-outer forwards its light DOM through its own slot into a ui-combobox slot.
     name: "popover slotted into a role=combobox through a two-level slot chain",

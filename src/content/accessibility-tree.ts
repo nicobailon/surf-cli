@@ -254,7 +254,6 @@ const SEMANTIC_VISION_FIELD_TAGS = ["input", "textarea", "select", "iframe", "fr
 const SEMANTIC_VISION_HIDE_MS = 2_000;
 // The top layer is the only paint that escapes an ancestor's opacity group (view transitions are skipped).
 const SEMANTIC_VISION_TOP_LAYER = "[popover], dialog, :fullscreen";
-const SEMANTIC_VISION_OPEN_TOP_LAYER = ":popover-open, dialog[open], :fullscreen";
 // Any element of a field, matching isSemanticVisionFieldElement.
 const SEMANTIC_VISION_FIELD_ELEMENTS = `input, textarea, select, iframe, frame, embed, object,
   [role~="textbox" i], [role~="searchbox" i], [role~="combobox" i], [role~="spinbutton" i], :read-write`;
@@ -341,10 +340,11 @@ function inSemanticVisionField(element: Element, slots: SemanticVisionSlots): bo
   return false;
 }
 
-// Open top-layer elements inside a field: they escape the field's opacity group, so each must paint nothing itself.
+// Top-layer elements inside a field: they escape the field's opacity group, so each must paint nothing itself.
+// Closed ones are listed too, since one closing with an exit transition still paints while no longer open.
 function semanticVisionTopLayerInFields(roots: Array<Document | ShadowRoot>, slots: SemanticVisionSlots): Element[] {
   return roots.flatMap((root) =>
-    Array.from(root.querySelectorAll(SEMANTIC_VISION_OPEN_TOP_LAYER)).filter((element) => inSemanticVisionField(element, slots)));
+    Array.from(root.querySelectorAll(SEMANTIC_VISION_TOP_LAYER)).filter((element) => inSemanticVisionField(element, slots)));
 }
 
 // An open customizable select draws its picker in the top layer of the select's own shadow tree, which a content
@@ -432,15 +432,19 @@ function releaseSemanticVision(): void {
   }
 }
 
-// Verifies that nothing in a field paints: every sheet is still adopted, and each field and each open top-layer
-// element inside one has opacity 0 on a box of its own. Returns those elements, or null when one still paints.
+// Verifies that nothing in a field paints: every sheet is still adopted, each field has opacity 0 on a box of its
+// own, and each top-layer element inside one has that or is not rendered (`display: none`, closed). Returns those
+// elements, or null when one still paints.
 function semanticVisionHiddenElements(hiding: SemanticVisionHiding, slots: SemanticVisionSlots): Element[] | null {
   if (![...hiding.sheets].every(([root, sheet]) => root.adoptedStyleSheets.includes(sheet))) return null;
-  const elements = [...hiding.fields, ...semanticVisionTopLayerInFields([...hiding.sheets.keys()], slots)];
-  return elements.every((element) => {
+  const paintsNothing = (element: Element) => {
     const style = window.getComputedStyle(element);
     return style.opacity === "0" && style.display !== "contents";
-  }) ? elements : null;
+  };
+  const topLayer = semanticVisionTopLayerInFields([...hiding.sheets.keys()], slots);
+  const hidden = hiding.fields.every(paintsNothing) &&
+    topLayer.every((element) => window.getComputedStyle(element).display === "none" || paintsNothing(element));
+  return hidden ? [...hiding.fields, ...topLayer] : null;
 }
 
 // Hides every field for the capture and returns their border boxes, or [null] when the read cannot be made safe.

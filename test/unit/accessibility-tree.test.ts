@@ -1084,6 +1084,17 @@ describe("accessibility tree", () => {
     );
     expect(recheck().fieldsChanged).toBe(false);
 
+    // A closed popover inside a field is checked too: one still rendered while closing (an exit transition) skips
+    // the read, at the recheck too; a closed one (display: none) passes.
+    slotted.popoverOpen = false;
+    slotted.computed.opacity = "1";
+    expect(await prepare()).toEqual({ masks: [null] });
+    slotted.computed.display = "none";
+    expect((await prepare()).masks).not.toContain(null);
+    slotted.computed.display = "block";
+    expect(recheck().fieldsChanged).toBe(true);
+    slotted.computed.display = "none";
+
     // An open select picker is out of reach, so the read is skipped, at the recheck too.
     select.pickerOpen = true;
     expect(await prepare()).toEqual({ masks: [null] });
