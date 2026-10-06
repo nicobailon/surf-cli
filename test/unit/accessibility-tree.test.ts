@@ -13,6 +13,7 @@ class FakeText extends FakeNode {
 }
 
 class FakeElement extends FakeNode {
+  nodeType = 1;
   childNodes: Array<FakeElement | FakeText> = [];
   parentElement: FakeElement | null = null;
   offsetWidth = 10;
@@ -173,6 +174,7 @@ class FakeElement extends FakeNode {
 }
 
 class FakeShadowRoot {
+  nodeType = 11;
   adoptedStyleSheets: Array<{ text: string }> = [];
   activeElement: FakeElement | null = null;
 
@@ -1199,21 +1201,88 @@ describe("accessibility tree", () => {
     expect(frameSurfaces()).toEqual({ shown: true });
     (globalThis as any).chrome.dom = dom;
 
-    // The page no longer reads frame documents, nor treats focus on a frame as a skip: each frame answers itself.
+    // Readable child frames are walked too (Chrome doesn't list blob:, javascript: or document.write frames), both
+    // by the page's own scan and by a frame answering for itself. An embed's document is found through the window's
+    // frames; a cross-origin child whose document throws is left to answer for itself.
+    (document as any).activeElement = null;
     const frameField = new FakeInputElement("input");
-    frameField.userInvalid = true;
+    const childDocument = (nodes: FakeElement[], activeElement: FakeElement | null = null) => ({
+      activeElement,
+      defaultView: undefined,
+      querySelector: (selector: string) => nodes.find((node) => node.matches(selector)) ?? null,
+      querySelectorAll: (selector: string) =>
+        selector === "*" ? nodes : nodes.filter((node) => node.matches(selector)),
+    });
     const frame = Object.assign(element("iframe"), {
-      contentDocument: {
-        querySelector: () => frameField,
-        querySelectorAll: () => [frameField],
-        activeElement: frameField,
-      },
+      contentDocument: childDocument([frameField]) as any,
     });
     frame.computed.opacity = "0";
     elements.push(frame);
-    (document as any).activeElement = frame;
     expect(await prepare()).not.toEqual({ masks: [null] });
     recheck();
+    frameField.userInvalid = true;
+    expect(await prepare()).toEqual({ masks: [null] });
+    expect(frameSurfaces()).toEqual({ shown: true });
+    frameField.userInvalid = false;
+    frame.contentDocument = null;
+    const embedField = new FakeInputElement("input");
+    embedField.pickerOpen = true;
+    const embed = Object.assign(element("embed"), { ownerDocument: document });
+    embed.computed.opacity = "0";
+    elements.push(embed);
+    const crossOrigin = {
+      get frameElement(): never {
+        throw new Error("SecurityError");
+      },
+      get document(): never {
+        throw new Error("SecurityError");
+      },
+    };
+    const embedWindow = { frameElement: embed, document: childDocument([embedField]) };
+    (document as any).defaultView = {
+      frames: [crossOrigin, embedWindow],
+      getComputedStyle: (globalThis as any).window.getComputedStyle,
+    };
+    expect(await prepare()).toEqual({ masks: [null] });
+    embedField.pickerOpen = false;
+    expect(await prepare()).not.toEqual({ masks: [null] });
+    recheck();
+
+    // Focus is followed into a readable frame: an invalid focused field there skips. Focus in a frame that can't be
+    // read doesn't (that frame answers for itself).
+    embedWindow.document = childDocument([embedField], embedField);
+    (document as any).activeElement = embed;
+    embedField.invalid = true;
+    expect(frameSurfaces()).toEqual({ shown: true });
+    embedField.invalid = false;
+    (document as any).activeElement = frame;
+    expect(frameSurfaces()).toEqual({ shown: false });
+    (document as any).activeElement = null;
+    (document as any).defaultView = undefined;
+  });
+
+  it("finds shadow roots and fields whatever realm the host's wrapper comes from", async () => {
+    const { elements } = visionPage();
+    // A host moved in from a same-origin frame keeps that frame's realm: not an instance of this realm's HTMLElement.
+    const realmHTMLElement = (globalThis as any).HTMLElement;
+    (globalThis as any).HTMLElement = class OtherRealmHTMLElement {};
+    try {
+      const host = element("custom-widget");
+      expect(host instanceof (globalThis as any).HTMLElement).toBe(false);
+      const field = new FakeInputElement("input");
+      field.rect = { top: 200, bottom: 220, left: 0, right: 100 };
+      const hostRoot = new FakeShadowRoot(host, [field]);
+      elements.push(host);
+      (globalThis as any).chrome.dom = {
+        openOrClosedShadowRoot: (node: FakeElement) => (node === host ? hostRoot : null),
+      };
+      const { masks } = await prepare();
+      expect(masks).toContainEqual({ x: 0, y: 200, width: 100, height: 20 });
+      expect(hostRoot.adoptedStyleSheets).toHaveLength(1);
+      recheck();
+    } finally {
+      (globalThis as any).HTMLElement = realmHTMLElement;
+    }
   });
 
   it("reports any change between hiding the fields and the recheck", async () => {

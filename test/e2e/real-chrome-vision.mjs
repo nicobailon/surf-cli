@@ -32,6 +32,25 @@ const crossOrigin = (path) => `location.origin.replace("127.0.0.1", "localhost")
 // Opens the date picker in the cross-origin frame with a real click on the calendar button at the right end of the
 // date input (page coordinates; Puppeteer can't reach into the out-of-process frame here), and confirms it is open
 // from the extension, in every frame of the tab, before going on.
+// A same-origin iframe whose document Chrome's frame list doesn't include: one loaded from a blob: URL, or a
+// javascript:false frame the page then writes into.
+const UNLISTED_FRAME = (kind, html) =>
+  `<iframe id="frame" ${kind === "blob" ? "" : 'src="javascript:false"'} style="position:absolute;left:100px;top:56px;width:380px;height:40px;border:0"></iframe>
+<script>const frameHtml = ${JSON.stringify(html).replaceAll("</", "<\\/")};
+const frame = document.querySelector("#frame");
+${
+  kind === "blob"
+    ? 'frame.src = URL.createObjectURL(new Blob([frameHtml], { type: "text/html" }));'
+    : "setTimeout(() => { const written = frame.contentDocument; written.open(); written.write(frameHtml); written.close(); }, 100);"
+}</script>`;
+// Opens the date picker in an unlisted same-origin frame from the host page, then moves focus to the host's button.
+const openUnlistedPicker = async (tab) => {
+  await tab.waitForFunction(() => document.querySelector("#frame").contentDocument?.querySelector("#f"));
+  await tab.evaluate(() => document.querySelector("#frame").contentDocument.querySelector("#f").showPicker());
+  await tab.waitForFunction(() => document.querySelector("#frame").contentDocument.querySelector("#f").matches(":open"));
+  await tab.evaluate(() => document.querySelector("#chat").focus());
+  await new Promise((resolve) => setTimeout(resolve, 200));
+};
 const openFramePicker = async (tab) => {
   for (let attempt = 0; attempt < 5; attempt++) {
     await tab.bringToFront();
@@ -538,6 +557,57 @@ frame.src = "http://127.0.0.1:9/";</script>`),
     clear: async () => {},
     expect: "tile",
   },
+  ...["blob", "javascript:false + document.write"].map((kind) => ({
+    // Chrome doesn't list a same-origin frame whose document came from a blob: URL or document.write, so it isn't
+    // asked about itself; the page walks its document instead. A date picker open there, after the host moved focus,
+    // skips the read.
+    name: `date picker in a ${kind} iframe after the host moves focus`,
+    html: page(`${UNLISTED_FRAME(kind, FRAME_DATE_PAGE)}
+<button id="chat" style="position:absolute;left:600px;top:450px">Start chat</button>`),
+    populate: async (tab) => {
+      await openUnlistedPicker(tab);
+    },
+    clear: async (tab) => {
+      await tab.keyboard.press("Escape");
+      await tab.evaluate(() => {
+        document.querySelector("#frame").contentDocument.querySelector("#f").value = "";
+      });
+      await openUnlistedPicker(tab);
+    },
+    expect: "skipped",
+    anyDifference: true,
+  })),
+  {
+    // A failed submit in a blob: iframe: Chrome draws the validation message over the page, quoting the value.
+    name: "validation message of a field in a blob iframe",
+    html: page(UNLISTED_FRAME("blob", FRAME_FORM_PAGE)),
+    populate: async (tab) => {
+      const frame = await childFrame(tab, "#f");
+      await frame.type("#f", "john.smith.private");
+      await frame.click("#go");
+      await new Promise((resolve) => setTimeout(resolve, 300));
+    },
+    clear: async (tab) => {
+      const frame = await childFrame(tab, "#f");
+      await frame.evaluate(() => {
+        const field = document.querySelector("#f");
+        field.value = "";
+        field.blur();
+      });
+      await tab.evaluate(() => document.activeElement.blur());
+      await new Promise((resolve) => setTimeout(resolve, 300));
+    },
+    expect: "skipped",
+    anyDifference: true,
+  },
+  ...["blob", "javascript:false + document.write"].map((kind) => ({
+    // The same unlisted frames without fields keep the page's tiles.
+    name: `field-less ${kind} iframe`,
+    html: page(UNLISTED_FRAME(kind, FRAME_BLANK_PAGE)),
+    populate: (tab) => tab.waitForFunction(() => document.querySelector("#frame").contentDocument?.querySelector("p")),
+    clear: async () => {},
+    expect: "tile",
+  })),
   {
     // A date input in a same-origin iframe with its picker open: Chrome draws the picker in the page, showing the
     // value, so the read is skipped.
