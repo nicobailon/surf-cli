@@ -180,6 +180,43 @@ const KEY_DEFINITIONS: Record<string, KeyDefinition> = {
   f12: { key: "F12", code: "F12", keyCode: 123 },
 };
 
+// US-layout physical key for each ASCII punctuation character. The virtual key
+// code must be the key's own code: a character's char code collides with
+// navigation keys (e.g. "." = 46 = Delete, "'" = 39 = ArrowRight).
+const PUNCTUATION_KEYS: Record<string, { code: string; keyCode: number }> = {
+  "`": { code: "Backquote", keyCode: 192 }, "~": { code: "Backquote", keyCode: 192 },
+  "-": { code: "Minus", keyCode: 189 }, "_": { code: "Minus", keyCode: 189 },
+  "=": { code: "Equal", keyCode: 187 }, "+": { code: "Equal", keyCode: 187 },
+  "[": { code: "BracketLeft", keyCode: 219 }, "{": { code: "BracketLeft", keyCode: 219 },
+  "]": { code: "BracketRight", keyCode: 221 }, "}": { code: "BracketRight", keyCode: 221 },
+  "\\": { code: "Backslash", keyCode: 220 }, "|": { code: "Backslash", keyCode: 220 },
+  ";": { code: "Semicolon", keyCode: 186 }, ":": { code: "Semicolon", keyCode: 186 },
+  "'": { code: "Quote", keyCode: 222 }, "\"": { code: "Quote", keyCode: 222 },
+  ",": { code: "Comma", keyCode: 188 }, "<": { code: "Comma", keyCode: 188 },
+  ".": { code: "Period", keyCode: 190 }, ">": { code: "Period", keyCode: 190 },
+  "/": { code: "Slash", keyCode: 191 }, "?": { code: "Slash", keyCode: 191 },
+  ")": { code: "Digit0", keyCode: 48 }, "!": { code: "Digit1", keyCode: 49 },
+  "@": { code: "Digit2", keyCode: 50 }, "#": { code: "Digit3", keyCode: 51 },
+  "$": { code: "Digit4", keyCode: 52 }, "%": { code: "Digit5", keyCode: 53 },
+  "^": { code: "Digit6", keyCode: 54 }, "&": { code: "Digit7", keyCode: 55 },
+  "*": { code: "Digit8", keyCode: 56 }, "(": { code: "Digit9", keyCode: 57 },
+};
+
+// Key event for a character on a US layout, or null when the character has no
+// US key and must be inserted as text.
+function printableKeyDefinition(char: string): KeyDefinition | null {
+  if (/^[a-z]$/i.test(char)) {
+    const upper = char.toUpperCase();
+    return { key: char, code: `Key${upper}`, keyCode: upper.charCodeAt(0), text: char };
+  }
+  if (/^[0-9]$/.test(char)) {
+    return { key: char, code: `Digit${char}`, keyCode: char.charCodeAt(0), text: char };
+  }
+  if (char === " ") return KEY_DEFINITIONS.space;
+  const punctuation = PUNCTUATION_KEYS[char];
+  return punctuation ? { key: char, ...punctuation, text: char } : null;
+}
+
 export class CDPController {
   private static readonly SCREENSHOT_TIMEOUT_MS = 5000;
   private targets = new Map<number, Debuggee>();
@@ -1607,8 +1644,10 @@ export class CDPController {
     for (const char of text) {
       if (char === "\n" || char === "\r") {
         await this.pressKey(tabId, "Enter");
+      } else if (char === "\t") {
+        await this.pressKey(tabId, "Tab");
       } else {
-        const keyDef = this.getKeyDefinition(char);
+        const keyDef = printableKeyDefinition(char);
         if (keyDef) {
           const needsShift = this.requiresShift(char);
           await this.pressKey(tabId, char, needsShift ? MODIFIERS.shift : 0);
@@ -1681,14 +1720,15 @@ export class CDPController {
       return KEY_DEFINITIONS[lowerKey];
     }
 
+    const printable = printableKeyDefinition(key);
+    if (printable) {
+      return printable;
+    }
+
+    // Other single characters have no US key; virtual key 0 cannot trigger an
+    // editing or navigation action, so only the text is entered.
     if (key.length === 1) {
-      const code = key.toUpperCase().charCodeAt(0);
-      return {
-        key,
-        code: `Key${key.toUpperCase()}`,
-        keyCode: code,
-        text: key,
-      };
+      return { key, code: "", keyCode: 0, text: key };
     }
 
     return null;

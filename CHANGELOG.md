@@ -19,6 +19,7 @@
 ### Fixed
 - **Commands in `about:blank`, `srcdoc`, `data:` and `blob:` iframes** - Surf's content script now also runs in these frames, so `frame.switch` (including `--name`), `page.read` and click by ref work inside them instead of failing with "Receiving end does not exist", and `frame.diagnose` no longer reports them as unreachable.
 - **Malformed TypeSafe credential file** - A damaged `typesafe/credentials.json` now fails with "stored TypeSafe credential is invalid" instead of a JSON parse error that could print part of the key.
+- **`surf type` enters punctuation exactly** - Typing text such as `john.smith-private's (a&b)#1!%$"` now enters it unchanged. Before, `.`, `'`, `(`, `&`, `#`, `%`, `$` and similar characters were sent as Delete, arrow, Home or End presses, so they were dropped or moved the caret and scrambled the rest of the text. `surf key .` now presses the period key instead of Delete. See [#358](https://github.com/nicobailon/surf-cli/issues/358).
 
 ## [2.22.0] - 2026-09-29
 
