@@ -199,6 +199,20 @@ describe("mapToolToMessage", () => {
       ).toBe(true);
     });
 
+    it("forwards the internal semantic vision flag only when it is exactly true", () => {
+      expect(
+        helpers.mapToolToMessage("page.read", { semanticObservation: true }).options,
+      ).not.toHaveProperty("semanticVision");
+      expect(
+        helpers.mapToolToMessage("page.read", { semanticObservation: true, semanticVision: "yes" })
+          .options,
+      ).not.toHaveProperty("semanticVision");
+      expect(
+        helpers.mapToolToMessage("page.read", { semanticObservation: true, semanticVision: true })
+          .options,
+      ).toMatchObject({ semanticObservation: true, semanticVision: true });
+    });
+
     it("pins internal semantic reads to the designated frame", () => {
       expect(
         helpers.mapToolToMessage(

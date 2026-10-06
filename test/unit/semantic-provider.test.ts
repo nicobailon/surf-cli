@@ -197,6 +197,24 @@ describe("Cloudflare Workers AI provider boundary", () => {
     expect(init.signal).toBeInstanceOf(AbortSignal);
   });
 
+  it("sends an attached image in the Workers AI images field", async () => {
+    const fetch = respond(200, { result, success: true, errors: [], messages: [] });
+    const evaluate = evaluator(fetch) as (
+      state: unknown,
+      questions: unknown,
+      options: { images: Array<{ mimeType: string; data: string }> },
+    ) => Promise<unknown>;
+    await evaluate({ title: "Page" }, questions, {
+      images: [{ mimeType: "image/png", data: "iVBORw0KGgo=" }],
+    });
+    expect(JSON.parse(fetch.mock.calls[0][1].body as string)).toEqual({
+      model: "clef",
+      state: { title: "Page" },
+      questions,
+      images: [{ content_type: "image/png", base64: "iVBORw0KGgo=" }],
+    });
+  });
+
   it.each([
     [401, "provider_authentication"],
     [403, "provider_authentication"],

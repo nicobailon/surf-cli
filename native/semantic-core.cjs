@@ -8,14 +8,17 @@ const SEMANTIC_POLICY = Object.freeze({
   models: Object.freeze({
     "jev-1.13.0": Object.freeze({
       provider: "typesafe",
+      images: false,
       thresholds: Object.freeze({ find: 0.7, filter: 0.65, verifyPositive: 0.85, verifyNegative: 0.85, prerequisiteSupported: 0.75, prerequisiteBlocked: 0.9, write: 0.95, exactRefWrite: 0.65 }),
     }),
     clef: Object.freeze({
       provider: "cloudflare",
+      images: true,
       thresholds: Object.freeze({ find: 0.7, filter: 0.65, verifyPositive: 0.85, verifyNegative: 0.85, prerequisiteSupported: 0.75, prerequisiteBlocked: 0.9, write: 0.95, exactRefWrite: 0.79 }),
     }),
     "clef-flash": Object.freeze({
       provider: "cloudflare",
+      images: true,
       thresholds: Object.freeze({ find: 0.7, filter: 0.65, verifyPositive: 0.85, verifyNegative: 0.94, prerequisiteSupported: 0.75, prerequisiteBlocked: 0.9, write: 0.95, exactRefWrite: 0.65 }),
     }),
   }),
@@ -168,12 +171,12 @@ function choiceQuestion(instructions, labels) {
   return { type: "choice", instructions, criteria: Object.fromEntries(labels.map((label) => [label, null])) };
 }
 
-async function evaluatedChoices({ state, questions, evaluate }) {
+async function evaluatedChoices({ state, questions, evaluate, images }) {
   validateState(state);
   if (typeof evaluate !== "function") fail("evaluate must be a function");
   const names = Object.keys(questions);
   if (!names.length || names.length > SEMANTIC_POLICY.limits.questions) fail("question count is outside policy limits");
-  const response = await evaluate(state, questions, {});
+  const response = await evaluate(state, questions, images ? { images } : {});
   const metadata = validateMetadata(response);
   exactKeys(response.answers, names, "provider answers");
   const decisions = {};
@@ -181,8 +184,13 @@ async function evaluatedChoices({ state, questions, evaluate }) {
   return { decisions, ...metadata };
 }
 
+function tileCriterion(ref) {
+  return `(icon shown in tile ${ref})`;
+}
+
 function candidateDescription(candidate) {
-  const parts = [candidate.role, candidate.name, candidate.text].filter((value) => typeof value === "string" && value);
+  const parts = [candidate.role, candidate.tile ? tileCriterion(candidate.id) : candidate.name, candidate.text]
+    .filter((value) => typeof value === "string" && value);
   return parts.join(" | ").slice(0, 1_024) || null;
 }
 
@@ -191,7 +199,7 @@ function actionDescription(action, state) {
   const candidate = ref && Array.isArray(state.candidates)
     ? state.candidates.find((item) => item.id === ref)
     : null;
-  const parts = [action.kind, candidate?.role, candidate?.name];
+  const parts = [action.kind, candidate?.role, action.tile ? tileCriterion(ref) : candidate?.name];
   if (candidate?.state?.checked === true) parts.push("checked");
   if (candidate?.state?.checked === false) parts.push("unchecked");
   if (candidate?.state?.selected === true) parts.push("selected");
@@ -201,7 +209,7 @@ function actionDescription(action, state) {
   return parts.filter((value) => value !== undefined && value !== "").join(" | ").slice(0, 1_024) || null;
 }
 
-async function find({ state, goal, candidates, thresholds = {}, model = SEMANTIC_POLICY.model, evaluate }) {
+async function find({ state, goal, candidates, thresholds = {}, model = SEMANTIC_POLICY.model, evaluate, images }) {
   goal = validateGoal(goal);
   assertUniqueItems(candidates, SEMANTIC_POLICY.limits.candidates, "candidates");
   const appliedThreshold = modelThreshold(model, thresholds, "find");
@@ -212,6 +220,7 @@ async function find({ state, goal, candidates, thresholds = {}, model = SEMANTIC
     state,
     questions: { target: { type: "choice", instructions: `Select the supplied candidate that matches this goal: ${goal}`, criteria } },
     evaluate,
+    images,
   });
   const decision = response.decisions.target;
   const found = decision.label !== "none" && decision.probability >= appliedThreshold;
@@ -301,7 +310,7 @@ function validateAction(action, options) {
   return true;
 }
 
-async function chooseAction({ state, goal, actions, origin, allowWrite = false, allowRefs = [], inputSlots = [], thresholds = {}, model = SEMANTIC_POLICY.model, evaluate }) {
+async function chooseAction({ state, goal, actions, origin, allowWrite = false, allowRefs = [], inputSlots = [], thresholds = {}, model = SEMANTIC_POLICY.model, evaluate, images }) {
   goal = validateGoal(goal);
   assertUniqueItems(actions, SEMANTIC_POLICY.limits.actionChoices, "actions");
   if (!Array.isArray(allowRefs)) fail("allowRefs must be an array");
@@ -344,6 +353,7 @@ async function chooseAction({ state, goal, actions, origin, allowWrite = false, 
     state,
     questions,
     evaluate,
+    images,
   });
   const decision = response.decisions.action;
   const prerequisiteDecision = response.decisions.prerequisites || null;
@@ -376,6 +386,7 @@ async function chooseAction({ state, goal, actions, origin, allowWrite = false, 
     concreteDecision: action ? {
       id: action.id,
       ...(action.ref || action.concreteRef ? { ref: action.ref || action.concreteRef } : {}),
+      ...(action.tile ? { tile: true } : {}),
       probability: decision.probability,
     } : null,
     prerequisiteStatus,
