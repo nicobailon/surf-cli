@@ -14,8 +14,8 @@ const extensionKey =
   "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEArWZVsRzpoyzuyQFqRzGOnkxv9FNaX/SR/VMw2f9ld+DKmUMxJhi/14olehkLWRJQumFPYTzWr1oqb1LwwI2KhBtn9mbaqzPSrrRGQ1VobTx7ZmxU+ooppXNdb2KGh/WXVqahS0D1nsQplAE6hCqQWPjsPCnXnWjUIH/B0EsInIUDwA8PKfuMG8p2HDlLj8hEpmLwOA48W4aHbl2S6bZHu9O50Lbd0L94aSwJLBNLKuXpBt/kFwlnpHd3zoJme9DIbqnDU/nMNh9SlA+EXRT6FhyiKdo6ZBMdtJeUPLQI2uHeoF8wikkNhIXX/E2EXlBqtZJJaFEi895x2s40+j/iZQIDAQAB"; // gitleaks:allow -- public test manifest key
 const extensionId = "nionemkjcnknfdhdolfloigkhpjnifmf";
 
-/** `pages` maps a URL path to its HTML. */
-export async function launchVisionChrome(repo, pages) {
+/** `pages` maps a URL path to its HTML, or to `{ type, body, headers }` for other content. `args` are extra Chrome flags. */
+export async function launchVisionChrome(repo, pages, { args = [] } = {}) {
   const scratch = mkdtempSync(join(tmpdir(), "surf-vision-chrome-"));
   const home = join(scratch, "home");
   const extensionDir = join(scratch, "extension");
@@ -71,9 +71,10 @@ export async function launchVisionChrome(repo, pages) {
     cpSync(standardManifest, join(profileDir, "NativeMessagingHosts/surf.browser.host.json"));
 
     server = createServer((request, response) => {
-      const html = pages[new URL(request.url, "http://127.0.0.1").pathname];
-      response.writeHead(html === undefined ? 404 : 200, { "content-type": "text/html; charset=utf-8" });
-      response.end(html ?? "");
+      const page = pages[new URL(request.url, "http://127.0.0.1").pathname];
+      const content = typeof page === "string" ? { type: "text/html; charset=utf-8", body: page } : page;
+      response.writeHead(content ? 200 : 404, { "content-type": content?.type ?? "text/plain", ...content?.headers });
+      response.end(content?.body ?? "");
     });
     await new Promise((done, reject) => {
       server.once("error", reject);
@@ -84,12 +85,12 @@ export async function launchVisionChrome(repo, pages) {
     const { default: puppeteer } = await import("puppeteer");
     browser = await puppeteer.launch({
       headless: true,
-      // No viewport emulation: the extension captures the real window, as it does for a user.
+      // No viewport emulation: pages render in the real window, as they do for a user.
       defaultViewport: null,
       enableExtensions: [extensionDir],
       userDataDir: profileDir,
       env,
-      args: process.platform === "linux" ? ["--no-sandbox"] : [],
+      args: [...(process.platform === "linux" ? ["--no-sandbox"] : []), ...args],
     });
     const workerTarget = await browser.waitForTarget(
       (target) => target.type() === "service_worker" && target.url().startsWith(`chrome-extension://${extensionId}/`),
@@ -116,6 +117,7 @@ export async function launchVisionChrome(repo, pages) {
     let readId = 0;
     return {
       browser,
+      baseUrl,
       env,
       surf,
       close,

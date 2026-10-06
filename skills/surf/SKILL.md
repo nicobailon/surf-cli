@@ -121,7 +121,8 @@ only way for `surf do`). Every result reports `provider`, `model`,
 
 For icon-only buttons with no name, add `--vision` to `semantic.find` or
 `semantic.act` with `--model clef` or `clef-flash`. It also sends one image of
-small crops of those controls (a crop can include whatever is drawn there).
+those controls, each drawn from its own icon (SVG, image or icon-font glyph); no
+page screenshot is sent. Controls whose icon can't be drawn count as skipped.
 Results carry `vision: { tiles, skipped }` and `"tile": true` on a target that
 was shown as a tile; screenshot before relying on a tiled write target.
 

@@ -1,4 +1,5 @@
 import { setNativeValue } from "./native-value";
+import { renderSemanticVisionTiles } from "./semantic-vision-icons";
 import {
   createDomProbe,
   InvalidReadinessSelectorError,
@@ -244,6 +245,24 @@ function buildSemanticObservation() {
     observation.omitted.candidates++;
   }
   return observation;
+}
+
+const SEMANTIC_VISION_VALUE_ROLES = ["textbox", "searchbox", "combobox", "spinbutton"];
+
+function isSemanticVisionField(element: Element): boolean {
+  const tag = element.tagName.toLowerCase();
+  // An image input is a button drawn from its image, not a field.
+  return (tag === "input" && (element as HTMLInputElement).type !== "image") || tag === "textarea" || tag === "select" ||
+    (element as HTMLElement).isContentEditable === true ||
+    SEMANTIC_VISION_VALUE_ROLES.includes(getResolvedRole(element));
+}
+
+// Refs of the observation's unnamed, non-field candidates: the controls --vision draws an icon tile for.
+function semanticVisionTargets(observation: ReturnType<typeof buildSemanticObservation>): string[] {
+  return observation.candidates.flatMap((candidate) => {
+    const element = getElementMap()[candidate.ref]?.element.deref();
+    return candidate.name === "" && element && !isSemanticVisionField(element) ? [candidate.ref] : [];
+  });
 }
 
 function semanticGuardError(element: Element | undefined, expected: any, requireElement = true): string | null {
@@ -1867,11 +1886,21 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           options.includeHidden === true
         );
         if (options.semanticObservation === true && !result.error) {
-          (result as typeof result & { semanticObservation: ReturnType<typeof buildSemanticObservation> }).semanticObservation = buildSemanticObservation();
+          const observation = buildSemanticObservation();
+          (result as typeof result & { semanticObservation: typeof observation }).semanticObservation = observation;
+          if (options.semanticVision === true) {
+            (result as typeof result & { semanticVisionTargets: string[] }).semanticVisionTargets = semanticVisionTargets(observation);
+          }
         }
         sendResponse(result);
       }
       break;
+    }
+    case "SEMANTIC_VISION_TILES": {
+      const elements = getElementMap();
+      renderSemanticVisionTiles((message.refs as string[]).map((ref) => ({ ref, element: elements[ref]?.element.deref() })))
+        .then((tiles) => sendResponse({ tiles }));
+      return true;
     }
     case "GET_ELEMENT_COORDINATES": {
       const result = getElementCoordinates(message.ref);

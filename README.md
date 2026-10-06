@@ -1090,27 +1090,29 @@ surf semantic.find "the download icon" --model clef --vision
 surf semantic.act "Open settings" --model clef --vision --allow-write
 ```
 
-- **What is sent.** One extra PNG image: small crops of the visible controls in the main frame that have no name, at most 16, each tagged with its ref. It goes to the selected model's provider, with the usual page observation. The full screenshot never leaves the browser and is never saved.
-- **Not masked: what the page itself draws outside its fields.** A crop can include whatever is drawn in that spot. That includes text the page shows elsewhere based on what you type: live previews, character counters, search-as-you-type results, and editors that draw their text in ordinary page elements or a canvas instead of an editable field (code editors and some document editors).
-- **Not masked: custom elements that are fields only through `ElementInternals`.** A web component whose only field signal is a role or form association set through `ElementInternals`, with no native field or editable region inside, looks like ordinary content to Surf, which can't read `ElementInternals`. Most such components render a native input in their shadow root, and that input is hidden.
-- **What is hidden.** For the instant of the screenshot, Surf makes every field paint nothing, then restores it. Fields are native inputs, text areas and selects, any editable content (`contenteditable` and everything inside it), elements with a `textbox`, `searchbox`, `combobox` or `spinbutton` role attribute, and iframes, embeds and objects, including those inside open or closed shadow roots. Popovers, dialogs and fullscreen elements open inside a field are hidden too, since they would otherwise paint on top of the hidden field. "Inside" follows what renders: it includes the shadow trees of the field and of anything inside it, and content a web component slots into a field in its shadow tree. Before and after the screenshot Surf checks that each of them really painted nothing, and also blacks out their boxes. What Chrome itself draws for a field, its native picker or validation message, can't be hidden or checked, so while one may be showing the read sends no crops (see below). Fields on a page you read with `--vision` blink invisible for that moment (tens of milliseconds); a field with its own fade transition fades back in.
-- **When crops are withheld.** Surf sends no crops for a read, and counts them in `skipped`, when it can't prove the fields painted nothing:
-  - The page keeps a field visible with its own `!important` style, an editable element uses `display: contents`, content is made editable with the CSS property `-webkit-user-modify`, the whole page is in `designMode`, or a view transition is running.
-  - A popover or dialog inside a field, open or still closing with an exit transition, is not hidden by Surf's style sheet (for example, one nested deeper in content slotted into a field).
-  - A field's native picker is open. Chrome draws the pickers of selects and of date, `datetime-local`, time, month, week and color inputs inside the page, where they show the field's value. A customizable select's (`appearance: base-select`) picker also counts while it is still closing.
-  - A form field is invalid after a failed submit, or the focused field is invalid. Chrome may then be showing a validation message inside the page that quotes the value (for example "'john.smith.private' is missing an '@'"), for 30 seconds or more, even after the page moves focus away and, for a field in an iframe, over the parent page. After a failed submit, reads are skipped until the invalid fields are fixed. A focused required field that is still empty also counts.
-  - These picker and validation checks run inside every frame on the page, including cross-origin ones, each over its own document and shadow roots: a picker opened in a frame stays drawn over the page after focus leaves it. Each frame also checks the same-origin frames inside it, which covers frames Chrome doesn't list, such as ones whose document came from a `blob:` or `javascript:` URL or `document.write`. A frame Surf can't check, because its content script isn't there or doesn't answer within half a second, skips the read. A frame whose load failed shows Chrome's error page, which holds no fields, and doesn't.
-  - A shadow root can't be read, or a field can't be measured.
-  - Anything changed between hiding the fields and restoring them: any element, attribute or text change in the document or any shadow root, or a new shadow root. Busy pages often get no crops.
-  - The screenshot took longer than 2 seconds; the fields are restored at that point.
-- **The page can notice the read.** While the fields are hidden, the page can see the extra style sheet and the changed styles.
-- **Not captured: popups outside the page.** Popups the browser draws in their own window, outside the page frame, are not part of the page screenshot, so they can't reach a crop.
-- **Not tested: leaving fullscreen.** A fullscreen element inside a field that leaves fullscreen with an exit transition is checked the same way as a closing popover, but this has not been exercised, because entering fullscreen needs a user gesture.
+- **What is sent.** One extra PNG image of the controls in the main frame that have no name (at most 16), with each tile tagged with its ref. It goes to the selected model's provider along with the usual page observation.
+- **Where the tiles come from.** Each tile is the control's own icon drawn on a blank white canvas at the control's size. Surf uses the first of these it finds in the control:
+  1. an inline SVG, including a `<use>` of a symbol in the same page;
+  2. an image (`<img>`, `<picture>` or `<input type=image>`);
+  3. an icon-font glyph, from the element's text (a ligature such as Material Icons' `home`) or its `::before`/`::after` content (Font Awesome style);
+  4. a CSS `mask-image`, filled with the element's background color or text color;
+  5. a CSS `background-image` (its first `url()` layer, with its size and position).
+
+  No screenshot of the page is taken or sent, so field content, pickers, validation messages, popovers, frames and anything else on the page can't appear in the image. The icon is drawn with the control's current styles; hover and focus states aren't reproduced.
+- **Images.** Same-origin, `data:` and CORS-readable images are drawn as the page has them. For a cross-origin image the page can't share, the extension fetches it again from its URL, over HTTPS only, without cookies, preferring the browser cache, and only up to 512 KiB and 2 seconds.
+- **Skipped.** A control gets no tile, and is counted in `skipped`, when:
+  - its icon is drawn on a `<canvas>` or with CSS gradients or borders;
+  - it uses `content: url()`, or an SVG `<use>` that points to an external file;
+  - its text isn't in a web font the page loaded (plain text is not an icon), or the icon font failed to load;
+  - it has a cross-origin mask without CORS (the page itself doesn't draw that one) or several mask layers;
+  - its image can't be loaded or fetched;
+  - it is past the first 16 such controls, or the read is of a frame other than the main one.
+- **Caveats.** Canvas can't set an icon font's variable axes, so Material Symbols with `FILL` or `wght` set show as the default outline. Children of a `<use>` symbol that are styled only by page style sheet selectors lose those styles (inherited colors and `currentColor` still work). An image fetched again may differ from what the page showed if its URL now returns different bytes.
 - **When.** Only when the page has such controls. On a fully labeled page nothing extra is sent.
 - **Models.** Only image-capable models: `clef` and `clef-flash`. With `jev-1.13.0`, the command fails before anything is sent: `--vision needs an image-capable model such as --model clef`. `semantic.verify`, `semantic.filter`, and `surf do` don't take it.
-- **Results.** `vision: { tiles, skipped }` counts the controls shown and the ones left out (more than 16, moved, covered, or every control of a read that couldn't be proven field-free). For `semantic.act` the counts come from the read behind the last action decision. The `find` candidate, an `act` trace step, or an `act` decision whose control was shown as a tile carries `"tile": true`. It records what the model was shown, not why it chose. Before relying on a tiled write target, take a screenshot.
+- **Results.** `vision: { tiles, skipped }` counts the controls shown and the ones left out. For `semantic.act` the counts come from the read behind the last action decision. The `find` candidate, an `act` trace step, or an `act` decision whose control was shown as a tile carries `"tile": true`. It records what the model was shown, not why it chose. Before relying on a tiled write target, take a screenshot.
 - **Safety.** Confidence thresholds, `--allow-write`, and `--allow-ref` work exactly as without `--vision`.
-- **Failures.** If the screenshot can't be taken, or doesn't match the page viewport (for example, with DevTools device emulation on), the command fails with `semantic vision capture failed: <cause>`. It never silently falls back to text only.
+- **Failures.** If the tiles can't be built, the command fails with `semantic vision failed: <cause>`. It never silently falls back to text only.
 
 How much `--vision` helps, and what it costs, is measured in
 [Semantic model evaluation](docs/semantic-models.md#icon-only-controls---vision).

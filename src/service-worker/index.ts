@@ -18,6 +18,7 @@ import {
   readinessErrorCode,
 } from "../utils/readiness-poll";
 import { initNativeMessaging, postToNativeHost } from "../native/port-manager";
+import { buildSemanticVision, fetchSemanticVisionIcon } from "./semantic-vision";
 
 debugLog("Service worker loaded");
 
@@ -820,6 +821,14 @@ export async function handleMessage(
       return { tabId: tab?.id };
     }
 
+    case "SEMANTIC_VISION_ICON_FETCH": {
+      // Only for this extension's content scripts, which ask while drawing --vision tiles.
+      if (sender.id !== chrome.runtime.id || typeof sender.tab?.id !== "number" || typeof message.url !== "string") {
+        throw new Error("SEMANTIC_VISION_ICON_FETCH is only for content scripts");
+      }
+      return fetchSemanticVisionIcon(message.url);
+    }
+
     case "TARGET_INSPECT": {
       const targetTabId = Number(message.tabId);
       if (!Number.isInteger(targetTabId) || targetTabId <= 0) {
@@ -1409,6 +1418,19 @@ export async function handleMessage(
         try {
           await chrome.tabs.sendMessage(tabId, { type: "SHOW_AFTER_TOOL_USE" }, { frameId: 0 });
         } catch (e) {}
+      }
+
+      if (result?.semanticVisionTargets) {
+        const { semanticVisionTargets, ...rest } = result;
+        result = rest;
+        try {
+          result.semanticObservation.vision = await buildSemanticVision(readFrameId, semanticVisionTargets, (refs) =>
+            chrome.tabs.sendMessage(tabId, { type: "SEMANTIC_VISION_TILES", refs }, { frameId: 0 })
+              .then((response) => response?.tiles));
+        } catch (err) {
+          // Fail the read rather than silently answering from text alone.
+          throw new Error(`semantic vision failed: ${err instanceof Error ? err.message : String(err)}`, { cause: err });
+        }
       }
 
       // Include visible text content if requested

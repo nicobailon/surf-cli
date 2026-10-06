@@ -1633,25 +1633,14 @@ Choose with --model <id> or SURF_SEMANTIC_MODEL. Results report provider, model,
   semantic.find "the download icon" --model clef --vision
   semantic auth set|status|clear [--provider typesafe|cloudflare]
 
---vision (find and act, clef or clef-flash only) also sends one image of small crops of visible
-controls that have no name, such as icon-only buttons. Not masked: anything the page itself draws
-outside its fields (live previews, counters, search results, canvas or div-based editors), and custom
-elements that are fields only through ElementInternals; a crop can include whatever is drawn there.
-Fields (inputs, editable content, value roles, iframes, embeds, and popovers open inside them, including
-content slotted into them) are made to paint nothing for the screenshot, checked, and blacked out; they
-blink invisible for that moment.
-surf sends no crops for a read when it can't prove that: the page forces a field visible, an editable
-element uses display:contents, content is editable through -webkit-user-modify, a field's native
-picker that Chrome draws in the page is open (select, date, datetime-local, time, month, week, color),
-a customizable select's picker is closing, a form field is invalid after a failed submit or the
-focused field is invalid (Chrome may be showing a validation message that quotes the value; after a
-failed submit, reads skip until the fields are fixed). The picker and validation checks run inside
-every frame on the page, including cross-origin ones and same-origin frames Chrome doesn't list
-(blob:, javascript:, document.write); a frame surf can't check (no content script, or no answer within
-half a second) skips the read, except one whose load failed (Chrome's error page).
-Reads are also skipped when designMode is on, a view transition is running, a shadow root is
-unreadable, anything in the DOM changed meanwhile, or the screenshot took over 2 s.
-Popups the browser draws outside the page frame are not in the screenshot.
+--vision (find and act, clef or clef-flash only) also sends one image of the controls that have no
+name, such as icon-only buttons. Each tile is drawn from the control's own icon (its SVG, image,
+icon-font glyph, CSS mask or background image) on a blank canvas; no screenshot of the page is sent,
+so field content and anything else on the page can't appear in it. Controls whose icon can't be drawn
+are counted as skipped: canvas icons, CSS gradients, content: url(), external <use> files, text not in
+a loaded icon font, cross-origin masks without CORS, images that fail to load, and controls in child
+frames. Icon fonts lose their variable axes (Material Symbols FILL/wght), and <use> symbol children
+styled only by page style sheet selectors lose those styles.
 
 Every click/fill requires --allow-write. This broadly authorizes even high-impact controls;
 repeat --allow-ref <ref> to narrow authorization to exact observed refs.
