@@ -177,7 +177,7 @@ npm run eval:vision -- --models clef,clef-flash --repeat 10
 - **Page.** A "Quarterly report" toolbar with three 40 px icon buttons that have no label, title, or text: share, download, and settings (24 px Feather icons, in that order). A fourth button is labeled "Save". Clicking a button writes a status line such as "Download started".
 - **Queries.** For `semantic.find`: "the settings icon", "the download icon", "the share icon", and "the save button". For `semantic.act --allow-write --max-steps 1`: "Open settings", "Download the report", "Share the report", and "Save the report".
 - **Runs.** Each query ran 10 times per model, with and without `--vision`: 320 commands in all. The harness maps each ref to its button by clicking it once, then checks which button a result picked and which one was actually clicked.
-- **Browser.** Headless Chrome 154 with no viewport emulation, a 756×469 viewport at device pixel ratio 1, on one developer machine on 2026-10-05. The contact sheet for this page was a 120×154 PNG of 4,286 bytes with 3 tiles and 0 skipped (the current build's sheet is 104×136, 3,395 bytes).
+- **Browser.** Headless Chrome 154 with no viewport emulation, a 756×469 viewport at device pixel ratio 1, on one developer machine on 2026-10-06. The contact sheet for this page is a 104×136 PNG of 3,395 bytes with 3 tiles and 0 skipped.
 
 Definitions:
 
@@ -192,29 +192,21 @@ Icon queries (3 queries × 10 runs per row):
 | Model | Command | Correct pick, text only | Correct pick, `--vision` | Correct result, text only | Correct result, `--vision` | Wrong results |
 | --- | --- | --- | --- | --- | --- | --- |
 | `clef` | find | 0/30 | **30/30** | 0/30 | **30/30** | 0 |
-| `clef` | act | 10/30 | **30/30** | 0/30 | **20/30** | 0 |
+| `clef` | act | 10/30 | **29/30** | 0/30 | **10/30** | 0 |
 | `clef-flash` | find | 0/30 | **30/30** | 0/30 | **30/30** | 0 |
 | `clef-flash` | act | 0/30 | **30/30** | 0/30 | 0/30 | 0 |
 
-Both models returned the same answer and the same probabilities on all 10
-repetitions of every query, as in the model eval above.
+Measured on 2026-10-06 with the current build, which draws each tile from the
+control's own icon (`npm run eval:vision -- --models clef,clef-flash --repeat 10`).
 
-These results were measured on 2026-10-05 with an earlier build that cropped
-the tiles from a screenshot of the page. The current build draws each tile from
-the control's own icon instead. A one-repeat check of the current build on
-`clef` the same day gave the same picture: with `--vision`, `find` picked the
-right icon 3/3 (0.970–0.984; 0/3 without), `act` picked it 3/3 and clicked
-settings at 0.971, and "Save" dropped from 0.985 to 0.842 on `find`.
-
-- **Without `--vision`**, the three icons are identical `button | Toolbar` entries. On `find`, both models answered `none`, so every run was `uncertain`. On `act`, they chose `stop` or an arbitrary control (for example "share" for "Download the report") at 0.32–0.59, and every run stopped as `uncertain` without a click. `clef`'s 10 correct picks are "Share the report" choosing share at 0.37: a guess that happened to be right, and it was rejected.
-- **With `--vision`**, both models picked the right icon on every run:
-  - `find`: `clef` at 0.975–0.984 and `clef-flash` at 0.889–0.952, all above the 0.70 `find` threshold.
-  - `act`: `clef` at 0.956 (download), 0.973 (settings) and 0.912 (share); `clef-flash` at 0.910–0.922. Only the two `clef` picks above the 0.95 `write` floor were clicked. The other correct picks were rejected as `uncertain`, so `act` clicked the right icon 20/30 times on `clef` and 0/30 on `clef-flash`. As in the model eval, the Jev write floor is what limits Clef here; `--threshold write=<value>` lowers it for one run.
+- **Without `--vision`**, the three icons are identical `button | Toolbar` entries. On `find`, both models answered `none`, so every run was `uncertain`. On `act`, every run stopped as `uncertain` without a click. `clef`'s 10 correct picks are "Share the report" choosing share at 0.41: a guess that happened to be right, and it was rejected.
+- **With `--vision`**, both models picked the right icon on `find` every run: `clef` at 0.969–0.983 and `clef-flash` at 0.868–0.951, all above the 0.70 `find` threshold.
+- **`act` with `--vision`** picked the right icon on 59 of 60 runs (`clef` at 0.865–0.971, `clef-flash` at 0.902–0.920). One `clef` "Share the report" run chose `stop`. Only `clef`'s settings pick (0.971) cleared the 0.95 `write` floor and was clicked, so `act` clicked the right icon 10/30 times on `clef` and 0/30 on `clef-flash`. As in the model eval, the Jev write floor is what limits Clef here; `--threshold write=<value>` lowers it for one run.
 - **No wrong results.** In 320 runs, neither mode returned or clicked a wrong button.
 
 The labeled "Save" control (10 runs per row) was found every time in both
-modes, but `--vision` lowered its probability: `find` 0.985 → 0.778 on `clef`
-and 0.965 → 0.829 on `clef-flash`; `act` 0.908 → 0.793 and 0.892 → 0.716. No
+modes, but `--vision` lowered its probability: `find` 0.985 → 0.860 on `clef`
+and 0.965 → 0.828 on `clef-flash`; `act` 0.909 → 0.907 and 0.894 → 0.820. No
 "Save" act ran in either mode, because every probability was below the 0.95
 write floor. Use `--vision` when the target is likely to be an icon-only
 control, not by default.
@@ -223,15 +215,15 @@ control, not by default.
 
 | | Text only | `--vision` |
 | --- | --- | --- |
-| `page.read` (20 direct reads; median / p95) | 68 / 72 ms | 91 / 101 ms |
-| `clef` provider call (median / p95) | 490 / 747 ms (find), 465 / 835 ms (act) | 502 / 807 ms (find), 574 / 785 ms (act) |
-| `clef-flash` provider call (median / p95) | 249 / 388 ms (find), 257 / 535 ms (act) | 324 / 641 ms (find), 331 / 736 ms (act) |
+| `page.read` (20 direct reads; median / p95) | 70 / 76 ms | 81 / 87 ms |
+| `clef` provider call (median) | 478 ms (find), 468 ms (act) | 562 ms (find), 691 ms (act) |
+| `clef-flash` provider call (median) | 282 ms (find), 349 ms (act) | 345 ms (find), 442 ms (act) |
 
-- **Building the image** added about 23 ms at the median to each read of this page with the earlier screenshot build. With the current build, a 20-read sample on 2026-10-05 measured 67 / 82 ms (median / p95) text only and 79 / 99 ms with `--vision`: about 11 ms for drawing three SVG icons and the sheet.
-- **The provider call** took about 10–110 ms longer with the image. The act rows also include the verify call that follows a click, which carries no image.
+- **Building the image** added about 11 ms at the median to each read of this page: drawing three SVG icons and the sheet.
+- **The provider call** took about 60–220 ms longer with the image. The act rows also include the verify call that follows a click, which carries no image.
 
 ### Limits of this eval
 
 - One small synthetic page with distinct, common icons, at device pixel ratio 1. Real toolbars have look-alike icons, smaller targets and busier backgrounds.
-- Tiles are never upscaled: each 40 px button reaches the model as a 40 px tile (the earlier build's screenshot crops were 48 px, with 4 px of padding).
+- Tiles are never upscaled: each 40 px button reaches the model as a 40 px tile.
 - This page's icons are inline SVGs, so the eval covers that kind only. `npm run test:e2e:vision` checks in real Chrome that every supported icon kind draws a non-empty tile, that unsupported kinds (canvas, CSS gradients, `content: url()`, external `<use>`, plain-text glyphs, a failed icon font, a cross-origin mask without CORS) are counted as skipped, that a read without `--vision` draws and fetches nothing, and that tiles of icon buttons under a typed input, open date pickers in the page and in a cross-origin iframe, a validation message, a sandboxed `srcdoc` frame and a popover are byte-identical to the same buttons' tiles on an otherwise blank page.

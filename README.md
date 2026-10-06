@@ -1099,15 +1099,16 @@ surf semantic.act "Open settings" --model clef --vision --allow-write
   5. a CSS `background-image` (its first `url()` layer, with its size and position).
 
   No screenshot of the page is taken or sent, so field content, pickers, validation messages, popovers, frames and anything else on the page can't appear in the image. The icon is drawn with the control's current styles; hover and focus states aren't reproduced.
-- **Images.** Same-origin, `data:` and CORS-readable images are drawn as the page has them. For a cross-origin image the page can't share, the extension fetches it again from its URL, over HTTPS only, without cookies, preferring the browser cache, and only up to 512 KiB and 2 seconds.
+- **Images.** Same-origin, `data:` and CORS-readable images are drawn as the page has them. For a cross-origin image the page can't share, the extension fetches it again from its URL, over HTTPS only, without cookies or redirects, preferring the browser cache, and only up to 512 KiB and 2 seconds.
 - **Skipped.** A control gets no tile, and is counted in `skipped`, when:
   - its icon is drawn on a `<canvas>` or with CSS gradients or borders;
   - it uses `content: url()`, or an SVG `<use>` that points to an external file;
   - its text isn't in a web font the page loaded (plain text is not an icon), or the icon font failed to load;
   - it has a cross-origin mask without CORS (the page itself doesn't draw that one) or several mask layers;
   - its image can't be loaded or fetched;
+  - its background or mask position can't be read (more than two values, or lengths such as `calc()`), or its icon is inside the control's own shadow DOM;
   - it is past the first 16 such controls, or the read is of a frame other than the main one.
-- **Caveats.** Canvas can't set an icon font's variable axes, so Material Symbols with `FILL` or `wght` set show as the default outline. Children of a `<use>` symbol that are styled only by page style sheet selectors lose those styles (inherited colors and `currentColor` still work). An image fetched again may differ from what the page showed if its URL now returns different bytes.
+- **Caveats.** Canvas can't set an icon font's variable axes, so Material Symbols with `FILL` or `wght` set show as the default outline. Children of a `<use>` symbol that are styled only by page style sheet selectors lose those styles (inherited colors and `currentColor` still work). An image fetched again may differ from what the page showed if its URL now returns different bytes. Background and mask images are placed approximately: `background-repeat` and `object-fit` aren't reproduced.
 - **When.** Only when the page has such controls. On a fully labeled page nothing extra is sent.
 - **Models.** Only image-capable models: `clef` and `clef-flash`. With `jev-1.13.0`, the command fails before anything is sent: `--vision needs an image-capable model such as --model clef`. `semantic.verify`, `semantic.filter`, and `surf do` don't take it.
 - **Results.** `vision: { tiles, skipped }` counts the controls shown and the ones left out. For `semantic.act` the counts come from the read behind the last action decision. The `find` candidate, an `act` trace step, or an `act` decision whose control was shown as a tile carries `"tile": true`. It records what the model was shown, not why it chose. Before relying on a tiled write target, take a screenshot.

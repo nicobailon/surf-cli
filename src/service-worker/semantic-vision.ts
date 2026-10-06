@@ -140,10 +140,11 @@ export async function buildSemanticVision(
  */
 export async function fetchSemanticVisionIcon(url: string): Promise<{ mimeType: string; data: string }> {
   const { protocol } = new URL(url);
-  if (protocol !== "https:" && protocol !== "http:") throw new Error("icon URL must be http or https");
+  if (protocol !== "https:") throw new Error("icon URL must be https");
   const response = await fetch(url, {
     credentials: "omit",
     cache: "force-cache",
+    redirect: "error",
     signal: AbortSignal.timeout(ICON_FETCH_TIMEOUT_MS),
   });
   if (!response.ok || !response.body) throw new Error(`icon fetch failed: HTTP ${response.status}`);
