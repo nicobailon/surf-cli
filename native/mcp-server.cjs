@@ -350,7 +350,7 @@ const TOOL_SCHEMAS = {
     }
   },
   collect: {
-    desc: "Scroll a list and collect one record per item, deduped by key",
+    desc: "Scroll a list and collect one record per item, deduped by key. Needs a visible tab (fails in a background tab)",
     schema: {
       item: z.string().describe("Selector for one list item"),
       key: z.string().describe("Field spec that identifies an item"),

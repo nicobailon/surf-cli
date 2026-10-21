@@ -10,6 +10,7 @@ type Entry = {
   status: number;
   type: string;
   requestHeaders: Record<string, string>;
+  responseHeaders?: Record<string, string>;
   requestBody?: string;
   _loadingFinished: boolean;
   flags: string[];
@@ -31,7 +32,7 @@ const feedUrl = (cursor?: string) =>
  * A fake browser tab on a site whose feed API pages with a Bottom cursor (c1, c2, ...).
  * `replay`: "ok", "status" (the server answers 403), or "throw" (the browser error echoes a header).
  */
-function fakeSite({ pages = 3, replay = "ok", repeatCursor = false } = {}) {
+function fakeSite({ pages = 3, replay = "ok", repeatCursor = false, visibility = "visible" } = {}) {
   const log: Entry[] = [];
   const bodies = new Map<string, string>();
   const calls: string[] = [];
@@ -63,6 +64,19 @@ function fakeSite({ pages = 3, replay = "ok", repeatCursor = false } = {}) {
     };
   };
   const respond = (url: string, status: number, body: unknown, method = "GET", type = "Fetch") => {
+    // The feed API is cross-origin with custom headers, so Chrome logs a CORS preflight first.
+    if (method === "GET" && type === "Fetch") {
+      log.push({
+        id: `r_${log.length + 1}`,
+        url,
+        method: "OPTIONS",
+        status: 204,
+        type: "Preflight",
+        requestHeaders: {},
+        _loadingFinished: true,
+        flags: [],
+      });
+    }
     const id = `r_${log.length + 1}`;
     log.push({
       id,
@@ -103,6 +117,13 @@ function fakeSite({ pages = 3, replay = "ok", repeatCursor = false } = {}) {
     };
   };
 
+  // A hidden tab ignores scrolling.
+  const scrolled = () => {
+    if (pageCursor && visibility === "visible") {
+      pageLoads(pageCursor);
+    }
+  };
+
   async function executeTool(tool: string, args: Record<string, unknown>) {
     calls.push(tool);
     if (tool === "network") {
@@ -115,9 +136,7 @@ function fakeSite({ pages = 3, replay = "ok", repeatCursor = false } = {}) {
       return { success: true };
     }
     if (tool === "scroll.bottom") {
-      if (pageCursor) {
-        pageLoads(pageCursor);
-      }
+      scrolled();
       return { success: true };
     }
     if (tool === "network.body") {
@@ -127,7 +146,12 @@ function fakeSite({ pages = 3, replay = "ok", repeatCursor = false } = {}) {
       return { entry: log.find((entry) => entry.id === args.id) };
     }
     if (tool === "javascript_tool") {
-      const value = await new Function("fetch", `return ${args.code}`)(fetch);
+      const run = new Function("fetch", "location", "document", `return ${args.code}`);
+      const value = await run(
+        fetch,
+        { origin: "https://site.test" },
+        { visibilityState: visibility },
+      );
       return { output: JSON.stringify(value, null, 2) };
     }
     throw new Error(`unexpected tool ${tool}`);
@@ -233,6 +257,43 @@ describe("api harvest runners", () => {
       status: 200,
       json: { data: { items: [{ id: "1a-" }, { id: "1b-" }] } },
     });
+  });
+
+  it("sends credentials only where the page could have: same origin or allowed cross-origin", async () => {
+    const site = fakeSite();
+    const entry = (url: string, responseHeaders: Record<string, string>) => {
+      site.respond(url, 200, {});
+      Object.assign(site.log[site.log.length - 1], { responseHeaders });
+      return site.log[site.log.length - 1].id;
+    };
+    const sameOrigin = entry(feedUrl(), {});
+    const crossOrigin = entry(
+      `https://api.other.test/api/v1/feed?variables=${encodeURIComponent("{}")}`,
+      {
+        "Access-Control-Allow-Origin": "*",
+      },
+    );
+    const crossOriginWithCredentials = entry(
+      `https://api.other.test/api/v1/feed?variables=${encodeURIComponent("{}")}`,
+      {
+        "Access-Control-Allow-Credentials": "true",
+      },
+    );
+    for (const id of [sameOrigin, crossOrigin, crossOriginWithCredentials]) {
+      await harvest.replay({ ...site, id });
+    }
+    expect(site.replays.map(({ init }) => init.credentials)).toEqual([
+      "include",
+      "omit",
+      "include",
+    ]);
+  });
+
+  it("fails instead of returning partial pages when it must drive a hidden tab", async () => {
+    const site = fakeSite({ pages: 3, replay: "throw", visibility: "hidden" });
+    await expect(harvest.runApiHarvest({ ...site, spec })).rejects.toThrow(
+      /api drive mode needs a visible tab.*--window --focused/,
+    );
   });
 
   it("names the glob and the API paths it saw when nothing matches", async () => {

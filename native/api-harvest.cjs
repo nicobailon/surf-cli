@@ -2,6 +2,7 @@
 // drive the page to load the next one. Runners take an injected `executeTool` (host tools).
 
 const { createRecordSet, readCursor } = require("./records.cjs");
+const { hiddenTabError } = require("./dom-collect.cjs");
 
 const POLL_MS = 500;
 const DEFAULT_TIMEOUT_MS = 30000;
@@ -158,12 +159,12 @@ async function markSeen(ctx, filter) {
   for (const entry of await listEntries(ctx, filter)) ctx.seen.add(entry.id);
 }
 
-/** Polls for the first finished, unseen entry passing `test`; null on timeout. */
+/** Polls for the first finished, unseen entry passing `test`; null on timeout. CORS preflights (OPTIONS) never count. */
 async function findEntry(ctx, filter, test, timeoutMs) {
   const deadline = ctx.now() + timeoutMs;
   for (;;) {
     for (const entry of await listEntries(ctx, filter)) {
-      if (ctx.seen.has(entry.id) || entry._loadingFinished !== true || entry.flags?.includes("failed") || !test(entry)) continue;
+      if (ctx.seen.has(entry.id) || entry.method === "OPTIONS" || entry._loadingFinished !== true || entry.flags?.includes("failed") || !test(entry)) continue;
       ctx.seen.add(entry.id);
       return entry;
     }
@@ -243,11 +244,18 @@ async function replayEntry(ctx, entry, { set, allowPost = false, origins = [] } 
   const secrets = Object.values(headers).filter((value) => String(value).length >= 8);
   try {
     await markSeen(ctx, url.pathname);
-    const init = { method, credentials: "include", headers, ...(request.body !== undefined && !["GET", "HEAD"].includes(method) ? { body: request.body } : {}) };
+    const init = { method, headers, ...(request.body !== undefined && !["GET", "HEAD"].includes(method) ? { body: request.body } : {}) };
+    // Send what the page must have sent: cookies same-origin, and cross-origin only when the captured
+    // response allowed credentials (a credentialed request fails against `Access-Control-Allow-Origin: *`).
+    const allowCredentials = Object.entries(entry.responseHeaders || {}).some(
+      ([name, value]) => name.toLowerCase() === "access-control-allow-credentials" && String(value).trim().toLowerCase() === "true",
+    );
     // The script only reports status: its output is capped, so the body is read from network capture.
     const sent = await ctx.executeTool("javascript_tool", {
       code: `(async () => {
-const response = await fetch(${JSON.stringify(request.url)}, ${JSON.stringify(init)});
+const url = new URL(${JSON.stringify(request.url)});
+const credentials = url.origin === location.origin || ${allowCredentials} ? "include" : "omit";
+const response = await fetch(url.href, { ...${JSON.stringify(init)}, credentials });
 await response.arrayBuffer();
 return { status: response.status, url: response.url };
 })()`,
@@ -279,6 +287,12 @@ async function replay(options) {
 }
 
 async function driveNext(ctx, matches, filter) {
+  if (!ctx.visibleChecked) {
+    // A hidden tab ignores scrolling, so driving it would end early with partial pages.
+    const visibility = await ctx.executeTool("javascript_tool", { code: "document.visibilityState" });
+    if (visibility?.output === '"hidden"') throw hiddenTabError("api drive mode");
+    ctx.visibleChecked = true;
+  }
   for (let scroll = 0; scroll < DRIVE_IDLE_SCROLLS; scroll++) {
     await ctx.executeTool("scroll.bottom", {});
     const entry = await findEntry(ctx, filter, (candidate) => matches(candidate.url), DRIVE_WAIT_MS);

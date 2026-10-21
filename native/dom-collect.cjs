@@ -79,7 +79,17 @@ function roundScript(spec, seenKeys) {
   const input = JSON.stringify({ item: spec.item, key: spec.key, fields: spec.fields, expand: spec.expand, seen: seenKeys });
   return `(async () => {
 const spec = ${input};
+// Background tabs and minimized windows do not render virtualized lists.
+if (document.visibilityState === "hidden") return { hidden: true };
 const seen = new Set(spec.seen);
+// Dotted field names ("quoted.text") build nested objects.
+const assign = (record, name, value) => {
+  if (value === undefined) return;
+  const parts = name.split(".");
+  let node = record;
+  for (const part of parts.slice(0, -1)) node = node[part] ??= {};
+  node[parts[parts.length - 1]] = value;
+};
 const pick = (item, field, record) => {
   if (field.template !== undefined) {
     let missing = false;
@@ -101,21 +111,28 @@ const pick = (item, field, record) => {
     const found = value.match(new RegExp(field.match));
     return found ? (found.length > 1 ? found[1] : found[0]) : undefined;
   };
-  if (field.all) return elements.map(read).map(apply).filter((value) => value !== undefined && value !== null);
+  if (field.all) {
+    const values = elements.map(read).map(apply).filter((value) => value !== undefined && value !== null);
+    return values.length ? values : undefined;
+  }
   return elements.length ? apply(read(elements[0])) : undefined;
 };
 if (spec.expand) {
-  let clicked = 0;
+  const clicked = [];
   for (const item of document.querySelectorAll(spec.item)) {
     for (const element of item.querySelectorAll(spec.expand)) {
       const isButton = element.tagName === "BUTTON" || element.getAttribute("role") === "button";
-      if (!isButton || element.closest("a[href]") || element.dataset.surfExpanded) continue;
+      if (!isButton || element.closest('a[href], [role="link"]') || element.dataset.surfExpanded) continue;
       element.dataset.surfExpanded = "1";
       element.click();
-      clicked++;
+      clicked.push(element);
     }
   }
-  if (clicked) await new Promise((resolve) => setTimeout(resolve, 300));
+  // Wait (bounded) for the page to replace the expanders with the full content before reading.
+  const deadline = Date.now() + 2000;
+  while (clicked.some((element) => element.isConnected) && Date.now() < deadline) {
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
 }
 const items = [...document.querySelectorAll(spec.item)];
 const records = [];
@@ -124,15 +141,9 @@ for (const item of items) {
   const templates = [];
   for (const [name, field] of Object.entries(spec.fields)) {
     if (field.template !== undefined) templates.push([name, field]);
-    else {
-      const value = pick(item, field, record);
-      if (value !== undefined) record[name] = value;
-    }
+    else assign(record, name, pick(item, field, record));
   }
-  for (const [name, field] of templates) {
-    const value = pick(item, field, record);
-    if (value !== undefined) record[name] = value;
-  }
+  for (const [name, field] of templates) assign(record, name, pick(item, field, record));
   const key = pick(item, spec.key, record);
   if (key === undefined || key === null || key === "") continue;
   const id = JSON.stringify(key);
@@ -146,11 +157,21 @@ return { records };
 })()`;
 }
 
+/** Background tabs and minimized windows neither render virtualized lists nor load more on scroll. */
+function hiddenTabError(what = "collect") {
+  return new Error(
+    `${what} needs a visible tab: this tab is hidden (a background tab or a minimized window), so the page does not render or load its list. ` +
+      "Use a session with its own focused window (surf session.ensure <name> <url> --window --focused) or bring the tab to the front.",
+  );
+}
+
 /** Collects records from a virtualized list. Returns records in first-seen order, deduped by key. */
 async function runCollect({ spec, executeTool, sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms)) }) {
   const options = validateCollectSpec(spec);
   if (options.open) await executeTool("navigate", { url: options.open });
   await executeTool("wait.element", { selector: options.item, timeout: ITEM_WAIT_MS });
+  const visibility = await executeTool("javascript_tool", { code: "document.visibilityState" });
+  if (visibility?.output === '"hidden"') throw hiddenTabError();
   const byKey = new Map();
   let idle = 0;
   while (byKey.size < options.maxItems && idle < options.idleRounds) {
@@ -166,6 +187,7 @@ async function runCollect({ spec, executeTool, sleep = (ms) => new Promise((reso
           : "collect round returned no records",
       );
     }
+    if (round?.hidden === true) throw hiddenTabError();
     if (!Array.isArray(round?.records)) throw new Error("collect round returned no records");
     let added = 0;
     for (const { id, record } of round.records) {
@@ -179,4 +201,4 @@ async function runCollect({ spec, executeTool, sleep = (ms) => new Promise((reso
   return filterRecords([...byKey.values()], options.keep);
 }
 
-module.exports = { runCollect, validateCollectSpec };
+module.exports = { hiddenTabError, runCollect, validateCollectSpec };

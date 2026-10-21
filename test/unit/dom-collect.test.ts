@@ -4,7 +4,7 @@ import { describe, expect, it } from "vitest";
 import * as collect from "../../native/dom-collect.cjs";
 
 /** A fake tab with a virtualized list: rows 1..total, three rendered at a time from `top`. */
-function virtualList(total: number) {
+function virtualList(total: number, visibilityState = "visible") {
   let top = 0;
   const calls: string[] = [];
   const row = (n: number) => ({
@@ -17,6 +17,7 @@ function virtualList(total: number) {
     },
   });
   const document = {
+    visibilityState,
     querySelectorAll: (selector: string) =>
       selector === "article"
         ? Array.from({ length: Math.min(3, total - top) }, (_, index) => row(top + index + 1))
@@ -40,7 +41,7 @@ function virtualList(total: number) {
 const spec = {
   item: "article",
   key: ":scope@data-id",
-  fields: { title: "h2", id: ":scope@data-id" },
+  fields: { title: "h2", id: ":scope@data-id", "meta.id": ":scope@data-id", tags: "span[]" },
 };
 
 describe("dom collect", () => {
@@ -56,9 +57,10 @@ describe("dom collect", () => {
       "Item 6",
       "Item 7",
     ]);
-    expect(records[0]).toEqual({ title: "Item 1", id: "row-1" });
-    // Three rounds find rows, then two rounds find nothing new.
-    expect(page.calls.filter((tool) => tool === "javascript_tool")).toHaveLength(5);
+    // Dotted names nest; an `[]` spec with no matches is left out, like any missing field.
+    expect(records[0]).toEqual({ title: "Item 1", id: "row-1", meta: { id: "row-1" } });
+    // A visibility check, three rounds that find rows, then two rounds that find nothing new.
+    expect(page.calls.filter((tool) => tool === "javascript_tool")).toHaveLength(6);
   });
 
   it("stops at maxItems", async () => {
@@ -70,7 +72,14 @@ describe("dom collect", () => {
       "row-3",
       "row-4",
     ]);
-    expect(page.calls.filter((tool) => tool === "javascript_tool")).toHaveLength(2);
+    expect(page.calls.filter((tool) => tool === "javascript_tool")).toHaveLength(3);
+  });
+
+  it("fails instead of returning partial records when the tab is hidden", async () => {
+    const page = virtualList(7, "hidden");
+    await expect(collect.runCollect({ ...page, spec })).rejects.toThrow(
+      /collect needs a visible tab.*--window --focused.*bring the tab to the front/,
+    );
   });
 
   it("rejects unknown options and empty fields", () => {

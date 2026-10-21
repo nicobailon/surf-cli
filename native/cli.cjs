@@ -967,7 +967,7 @@ const TOOLS = {
         ]
       },
       "collect": {
-        desc: "Scroll a list (virtualized or not) and collect one record per item, deduped by key",
+        desc: "Scroll a list (virtualized or not) and collect one record per item, deduped by key. Needs a visible tab: a background tab fails; use a `session.ensure <name> <url> --window --focused` session or bring the tab to the front",
         args: [],
         opts: {
           item: "Selector for one list item",
