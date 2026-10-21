@@ -3189,18 +3189,37 @@ export async function handleMessage(
       if (!message.requestId) throw new Error("No requestId provided");
       await cdp.drainNetworkEvents(tabId);
 
-      // If requestId looks like entry.id format (r_xxx), look up the CDP requestId
-      let cdpRequestId = message.requestId;
-      if (message.requestId.startsWith('r_')) {
-        const entries = cdp.getNetworkEntries(tabId, {});
-        const entry = entries.find(e => e.id === message.requestId);
-        if (entry) {
-          cdpRequestId = entry._requestId;
-        }
+      // Accept either the entry id (r_xxx) or the CDP requestId.
+      const entry = cdp.getNetworkEntry(tabId, message.requestId)
+        || cdp.getNetworkEntries(tabId, { includeStatic: true }).find(e => e.id === message.requestId)
+        || null;
+      if (typeof entry?.responseBody === "string") {
+        return { success: true, body: entry.responseBody, base64Encoded: entry.responseBodyEncoding === "base64" };
       }
 
-      const result = await cdp.getResponseBody(tabId, cdpRequestId);
-      return result;
+      const result = await cdp.getResponseBody(tabId, entry?._requestId || message.requestId);
+      if (result.success && typeof result.body === "string") return result;
+
+      // Chrome evicts bodies (e.g. after navigation); explain why surf has none either.
+      const capture = entry?.bodyCapture;
+      const why: Record<string, string> = {
+        "per-body-cap": `it is ${capture?.sizeBytes} bytes, over the ${capture?.limitBytes}-byte per-body cap`,
+        "session-cap": `the tab's ${capture?.limitBytes}-byte body budget was used up`,
+        "disabled": "body capture was off (--body-mode none)",
+        "content-mode": "--body-mode text skips static and binary responses",
+        "decode-failed": "its base64 body could not be decoded",
+        "unavailable": "Chrome had no body when it finished loading",
+        "pending": "it had not finished loading",
+      };
+      const stored = !entry
+        ? "surf has no captured entry with that id"
+        : `surf did not store it because ${why[capture?.reason || ""] || capture?.reason || "of an unknown reason"}`;
+      return {
+        success: false,
+        error: `Response body for ${message.requestId} is gone: Chrome no longer has it (${result.error || "no body"}) and ${stored}. `
+          + "Raise the cap with `surf network --per-body-bytes <n>` (or --body-mode all) before the request, "
+          + "or use `surf network.wait --match <glob>` to read the body as soon as it arrives.",
+      };
     }
 
     case "GET_NETWORK_ORIGINS": {

@@ -91,7 +91,14 @@ export interface NetworkEntry {
   responseBody?: string;         // Will be fetched via getResponseBody
   responseBodyEncoding?: "base64";
   responseBodySize?: number;
-  bodyCapture: { mode: "none" | "text" | "all"; complete: boolean; reason?: string; capturedBytes?: number };
+  bodyCapture: {
+    mode: "none" | "text" | "all";
+    complete: boolean;
+    reason?: string;
+    capturedBytes?: number;
+    sizeBytes?: number;          // Body size that hit a cap
+    limitBytes?: number;         // The cap that was hit
+  };
   
   // Metadata
   tabId: number;
@@ -765,7 +772,11 @@ export class CDPController {
     else if ((this.networkBodyBytes.get(tabId) || 0) + encodedBytes > capture.totalBytes) reason = "session-cap";
     if (reason) {
       entry.bodyCapture = { mode: capture.mode, complete: false, reason };
-      if (reason.endsWith("cap")) entry.flags.push("truncated");
+      if (reason.endsWith("cap")) {
+        entry.flags.push("truncated");
+        entry.bodyCapture.sizeBytes = encodedBytes;
+        entry.bodyCapture.limitBytes = reason === "per-body-cap" ? capture.perBodyBytes : capture.totalBytes;
+      }
       return;
     }
     try {
@@ -774,7 +785,14 @@ export class CDPController {
       const capturedBytes = result.base64Encoded ? Math.ceil(body.length * 0.75) : new TextEncoder().encode(body).byteLength;
       if (capturedBytes > capture.perBodyBytes || (this.networkBodyBytes.get(tabId) || 0) + capturedBytes > capture.totalBytes) {
         entry.flags.push("truncated");
-        entry.bodyCapture = { mode: capture.mode, complete: false, reason: capturedBytes > capture.perBodyBytes ? "per-body-cap" : "session-cap" };
+        const perBody = capturedBytes > capture.perBodyBytes;
+        entry.bodyCapture = {
+          mode: capture.mode,
+          complete: false,
+          reason: perBody ? "per-body-cap" : "session-cap",
+          sizeBytes: capturedBytes,
+          limitBytes: perBody ? capture.perBodyBytes : capture.totalBytes,
+        };
         return;
       }
       if (result.base64Encoded && capture.mode === "all") {
