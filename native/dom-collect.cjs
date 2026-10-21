@@ -169,9 +169,9 @@ function hiddenTabError(what = "collect") {
 async function runCollect({ spec, executeTool, sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms)) }) {
   const options = validateCollectSpec(spec);
   if (options.open) await executeTool("navigate", { url: options.open });
-  await executeTool("wait.element", { selector: options.item, timeout: ITEM_WAIT_MS });
   const visibility = await executeTool("javascript_tool", { code: "document.visibilityState" });
   if (visibility?.output === '"hidden"') throw hiddenTabError();
+  await executeTool("wait.element", { selector: options.item, timeout: ITEM_WAIT_MS });
   const byKey = new Map();
   let idle = 0;
   while (byKey.size < options.maxItems && idle < options.idleRounds) {

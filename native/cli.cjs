@@ -935,7 +935,7 @@ const TOOLS = {
     }
   },
   extract: {
-    desc: "Scripted extraction in an owned tab",
+    desc: "Extraction and list harvesting",
     commands: {
       "extract": {
         desc: "Open a URL in a fresh tab, wait until it is ready, run a page-side script that returns JSON, print rows",

@@ -126,7 +126,7 @@ function validateApiSpec(spec) {
   if (spec.records === undefined) throw new Error("api strategy needs records");
   createRecordSet(spec.records);
   if (spec.cursor !== undefined) {
-    if (typeof spec.cursor?.into !== "string" || !/^(query\.|body(\.|$))/.test(spec.cursor.into)) {
+    if (typeof spec.cursor?.into !== "string" || !/^(query\.[^.]+|body)(\.[^.]+)*$/.test(spec.cursor.into)) {
       throw new Error("api strategy cursor.into must be query.<param>[.<json.path>] or body[.<json.path>]");
     }
     readCursor({}, spec.cursor);

@@ -26,6 +26,9 @@ function virtualList(total: number, visibilityState = "visible") {
   const window = { innerHeight: 800, scrollBy: () => undefined };
   async function executeTool(tool: string, args: Record<string, unknown>) {
     calls.push(tool);
+    if (tool === "wait.element" && document.querySelectorAll(String(args.selector)).length === 0) {
+      throw new Error(`Timeout waiting for ${args.selector}`);
+    }
     if (tool === "javascript_tool") {
       const value = await new Function("document", "window", `return ${args.code}`)(
         document,
@@ -76,7 +79,8 @@ describe("dom collect", () => {
   });
 
   it("fails instead of returning partial records when the tab is hidden", async () => {
-    const page = virtualList(7, "hidden");
+    // A hidden tab usually renders no list items at all.
+    const page = virtualList(0, "hidden");
     await expect(collect.runCollect({ ...page, spec })).rejects.toThrow(
       /collect needs a visible tab.*--window --focused.*bring the tab to the front/,
     );
