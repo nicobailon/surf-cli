@@ -59,6 +59,10 @@ function renderWithSpec(records, spec, args) {
       if (spec.heading) quote.push(`**${fill(spec.heading, quoted)}**`, "");
       const quotedBody = spec.body ? getPath(quoted, spec.body) : undefined;
       if (quotedBody !== undefined && quotedBody !== null) quote.push(text(quotedBody));
+      const quotedImages = spec.images ? getPath(quoted, spec.images) : undefined;
+      if (Array.isArray(quotedImages)) {
+        for (const url of quotedImages) if (typeof url === "string") quote.push("", `![image](${url})`);
+      }
       lines.push(...quote.join("\n").trimEnd().split("\n").map((line) => (line ? `> ${line}` : ">")), "");
     }
     const images = spec.images ? getPath(record, spec.images) : undefined;
