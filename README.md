@@ -47,6 +47,7 @@ Surf takes a different approach:
 | CLI interface | Yes | No | No | No | No |
 | Free | Yes | No | No | Yes | Yes |
 | AI via browser cookies | Yes | No | No | No | No |
+| Threads and feeds from the site's own API | Yes | No | No | Partial (reads responses) | No |
 
 ## Installation
 
@@ -959,6 +960,28 @@ surf pb client verify ./client
 ```
 
 Generated manifests declare provenance and authentication environment inputs. Surf excludes cookies, bearer tokens, and captured credentials and does not export write-capable clients without explicit review.
+
+### Threads and Feeds
+
+Long threads and feeds usually load in pages from the site's own JSON API, while the page shows only a few items at a time. Surf can read that API instead of scrolling and re-reading the page.
+
+```bash
+# A whole X thread by its author: long posts in full, quoted posts, images
+surf use x thread --url https://x.com/<user>/status/<id> --format md
+
+# Wait for the page's own API response (capture starts before --open)
+surf network.wait --match "/api/*/feed" --open https://example.com/feed --json
+
+# Re-send it from inside the tab with the next cursor
+surf network.replay r_123 --set query.cursor=abc
+
+# Or scroll a list and collect one record per item
+surf collect --item article --key 'a@href' --field title=h2 --field link=a@href
+```
+
+Playbooks can use the same steps as `api` and `collect` strategies. An `api` strategy re-sends the page's request with each next cursor. If the site rejects that, it scrolls the page and reads each new response instead. `surf use <playbook> <op> --format md|jsonl` prints the records as Markdown or JSON lines.
+
+`network.replay` only re-sends GET and HEAD requests unless you pass `--allow-post`, and request header values never appear in its output or errors. Scrolling needs a visible tab: `collect`, and an `api` strategy that has to scroll, fail in a background tab. Use a session with its own focused window (`surf session.ensure <name> <url> --window --focused`) or bring the tab to the front.
 
 ## Global Options
 
