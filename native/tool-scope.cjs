@@ -50,6 +50,7 @@ const TAB_TOOLS = new Set([
   "frame.list", "frame.diagnose", "frame.switch", "frame.main", "frame.js",
   "dialog.accept", "dialog.dismiss", "dialog.info",
   "console", "network", "network.get", "network.body", "network.curl", "network.path",
+  "network.wait", "network.replay", "collect",
   "network.origins", "network.clear", "network.stats", "network.export",
   "emulate.network", "emulate.cpu", "emulate.geo", "emulate.device", "emulate.viewport", "emulate.touch",
   "perf.start", "perf.stop", "perf.metrics",

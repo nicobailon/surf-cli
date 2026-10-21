@@ -1,5 +1,7 @@
 const { executeSingleStep, executeWorkflow } = require("./workflow-runtime.cjs");
 const { runWorkflowScript } = require("./workflow-script-runtime.cjs");
+const { runApiHarvest } = require("./api-harvest.cjs");
+const { runCollect } = require("./dom-collect.cjs");
 
 function applyTemplate(value, args) {
   if (typeof value === "string") {
@@ -152,6 +154,23 @@ async function runStrategy(strategy, context) {
   if (strategy.using === "native") {
     if (typeof context.executeNative !== "function") throw new Error("native strategy is not available");
     return context.executeNative(strategy.handler, context.args, { signal: context.signal, markDispatched: context.markDispatched });
+  }
+  if (strategy.using === "api" || strategy.using === "collect") {
+    const { using, extract: _extract, expect: _expect, verify: _verify, ...spec } = strategy;
+    // Field templates ({{author}}) name record fields, not op args, so they stay as written.
+    if (using === "api") {
+      const { fields, ...records } = spec.records;
+      const templated = applyTemplate({ ...spec, records }, context.args);
+      return runApiHarvest({
+        spec: { ...templated, records: { ...templated.records, fields } },
+        executeTool: context.executeTool,
+        sleep: context.sleep,
+        onEvent: context.onEvent,
+        origins: context.allowedOrigins,
+      });
+    }
+    const { fields, key, ...rest } = spec;
+    return runCollect({ spec: { ...applyTemplate(rest, context.args), fields, key }, executeTool: context.executeTool, sleep: context.sleep });
   }
   throw new Error(`unsupported strategy: ${strategy.using}`);
 }

@@ -53,7 +53,7 @@ function runSpec(argv) {
   const parsed = parseCommandArgs(argv.slice(offset));
   const [playbook, op] = parsed.positional;
   if (!playbook || !op) throw new Error(direct ? "Usage: surf use <playbook> <op> [--arg value]" : "Usage: surf pb run <playbook> <op> [--arg value]");
-  const reserved = new Set(["json", "no-lock", "no-wait", "session", "tab-id", "write", "repeat", "retry-attempt", "override-in-doubt", "pin-built-in", "allow-script"]);
+  const reserved = new Set(["json", "no-lock", "no-wait", "session", "tab-id", "write", "repeat", "retry-attempt", "override-in-doubt", "pin-built-in", "allow-script", "format"]);
   const args = Object.fromEntries(Object.entries(parsed.options).filter(([name]) => !reserved.has(name)));
   return { playbook, op, args, options: parsed.options };
 }
@@ -82,6 +82,8 @@ async function handlePlaybookCli(argv, { endpoint, cwd = process.cwd(), session,
   if (!["playbook", "pb", "use"].includes(argv[0])) return { handled: false };
   if (argv[0] === "use" || argv[1] === "run") {
     const spec = runSpec(argv);
+    const format = spec.options.format;
+    if (format !== undefined && format !== "md" && format !== "jsonl") throw new Error("--format must be md or jsonl");
     const timeout = resolveRunTimeout(spec, cwd);
     const args = {
       playbook: spec.playbook,
@@ -95,6 +97,7 @@ async function handlePlaybookCli(argv, { endpoint, cwd = process.cwd(), session,
       overrideInDoubt: spec.options["override-in-doubt"] === true,
       pinBuiltIn: spec.options["pin-built-in"] === true,
       allowScript: spec.options["allow-script"] === true,
+      ...(format ? { format } : {}),
     };
     const value = await requestHost(endpoint, "playbook.run", args, {
       tabId: spec.options["tab-id"],
@@ -103,6 +106,8 @@ async function handlePlaybookCli(argv, { endpoint, cwd = process.cwd(), session,
       admission: spec.options["no-wait"] === true ? { wait: false } : admission,
       timeoutMs: resolveRequestDeadlineMs("playbook.run", args),
     });
+    // With --format the host returns the rendered records as the value.
+    if (format) return { handled: true, value: value.value, json: false };
     return { handled: true, value, json: spec.options.json === true };
   }
   const command = argv[1];
