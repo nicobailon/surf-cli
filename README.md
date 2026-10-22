@@ -972,20 +972,36 @@ Generated manifests declare provenance and authentication environment inputs. Su
 
 ### Threads and Feeds
 
-Get a whole thread or feed as clean records in a few calls, instead of having an agent scroll and re-read the page. Most sites load threads and feeds in pages from their own JSON API, and Surf reads that API directly, through your logged-in browser.
+Get a whole thread or feed as clean records in seconds, instead of having an agent scroll and re-read the page. Sites like X and Bluesky keep only a few posts on screen at a time, so scrolling takes dozens of calls and long posts can come back cut short. The page itself gets its posts as data from the site's own API, a page at a time. Surf reads that data directly through your logged-in browser, so sites that need you signed in work and you don't need API keys.
+
+X threads work out of the box:
 
 ```bash
-# A whole X thread by its author: long posts in full, quoted posts, images, links
+# Every post the author wrote in the thread: long posts in full, quoted posts, images, links
 surf use x thread --url https://x.com/<user>/status/<id> --format md
+```
+
+For any other site, write a recipe once. A recipe is a few dozen lines of JSON, not code, that tell Surf three things:
+
+```
+which request   the API call that holds the posts    /xrpc/app.bsky.feed.getAuthorFeed
+which fields    what to keep from each post          author, time, text, link
+next page       where the next-page cursor is        cursor
+```
+
+Save it in `~/.surf/playbooks/<site>/` (or `.surf/playbooks/<site>/` in a project), and from then on any agent reads that site with one command:
+
+```bash
+surf use bsky feed --url https://bsky.app/profile/bsky.app --format md
 ```
 
 | Run | Browser calls | Time |
 |-----|---------------|------|
 | 13-post X thread, scrolling and re-reading the page | about 30 | — |
 | 13-post X thread, `surf use x thread` | 4 | 4.9 s |
-| 83-post Bluesky feed (3 pages), a short JSON recipe | 14 | 4.3 s |
+| 83-post Bluesky feed (3 pages), `surf use bsky feed` with a recipe | 14 | 4.3 s |
 
-Other sites need a short JSON recipe, not code. The same building blocks also work on their own:
+To write a recipe, or to grab a single response by hand, the building blocks also work on their own:
 
 ```bash
 surf network.wait --match "/api/*/feed" --open https://example.com/feed   # the page's own API response
@@ -993,7 +1009,7 @@ surf network.replay r_123 --set query.cursor=abc                           # the
 surf collect --item article --key 'a@href' --field title=h2                # scroll and read, when there's no API
 ```
 
-How to write a recipe, the full recipe format, and the limits (scrolling needs a visible tab; replay re-sends only GET and HEAD by default) are in [docs/threads-and-feeds.md](docs/threads-and-feeds.md).
+A step-by-step guide to writing a recipe, the full format, and the limits (scrolling needs a visible tab; replay re-sends only GET and HEAD by default) are in [docs/threads-and-feeds.md](docs/threads-and-feeds.md).
 
 ## Global Options
 

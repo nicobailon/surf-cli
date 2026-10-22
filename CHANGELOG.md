@@ -4,7 +4,7 @@
 
 ### Highlights
 - Get every post the author wrote in an X thread as clean Markdown in about 5 seconds: `surf use x thread --url <post-url> --format md`. Long posts come in full, with images and quoted posts, in 4 browser calls instead of about 30 for scrolling and reading the page.
-- Pull threads and feeds from other sites the same way with a short JSON recipe: Surf reads the data the site already loads and follows the pages for you. A Bluesky feed came back as 83 posts over 3 pages in about 4 seconds. [docs/threads-and-feeds.md](docs/threads-and-feeds.md) shows how to write one.
+- Read feeds from other sites the same way by writing a recipe once: a few dozen lines of JSON, not code, that say which of the site's own requests holds the posts, which fields to keep and where the next page is. After that, one command pulls the whole feed through your logged-in browser. A Bluesky feed came back as 83 posts over 3 pages in about 4 seconds. [docs/threads-and-feeds.md](docs/threads-and-feeds.md) shows how to write one.
 - Upload files on pages that hide their file input, such as LinkedIn job applications: point `surf upload --ref` at the visible upload button.
 - `surf type` enters punctuation exactly. Before, characters such as `.`, `'`, `(` and `#` went missing or scrambled the rest of the text.
 - Semantic commands can also run on Cloudflare's Clef models with your own Cloudflare account. TypeSafe's Jev stays the default and is the most accurate. Only Clef supports `--vision`, which tells icon-only buttons apart: `semantic.find` picked the right icon in 30 of 30 test runs, against 0 of 30 without it.
