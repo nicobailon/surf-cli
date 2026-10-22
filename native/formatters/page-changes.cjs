@@ -77,7 +77,8 @@ function formatPageChanges(pageChanges) {
     // The cap cuts the document-order tail, so the last group shown is the one the omitted changes most likely continue.
     const root = [...groups].pop();
     const hints = [`surf locate.role ${role || "<role>"} --name "<text>"`];
-    if (root) hints.push(`surf read --ref ${root.ref} --no-text`);
+    // --all: list items like role="option" without tabindex fall outside the default interactive filter.
+    if (root) hints.push(`surf read --ref ${root.ref} --all --no-text`);
     lines.push(`+${omitted} more changes${role ? `, mostly ${role}` : ""}. Narrow instead of re-reading: ${hints.join(" | ")}`);
   }
   return lines;

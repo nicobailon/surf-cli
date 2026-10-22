@@ -132,7 +132,7 @@ describe("formatPageChanges", () => {
       omitted: 220,
     });
     expect(lines.at(-1)).toBe(
-      '+220 more changes, mostly option. Narrow instead of re-reading: surf locate.role option --name "<text>" | surf read --ref e200 --no-text',
+      '+220 more changes, mostly option. Narrow instead of re-reading: surf locate.role option --name "<text>" | surf read --ref e200 --all --no-text',
     );
   });
 
@@ -162,7 +162,7 @@ describe("formatPageChanges", () => {
       omitted: 5,
     });
     expect(lines.at(-1)).toBe(
-      '+5 more changes. Narrow instead of re-reading: surf locate.role <role> --name "<text>" | surf read --ref e10 --no-text',
+      '+5 more changes. Narrow instead of re-reading: surf locate.role <role> --name "<text>" | surf read --ref e10 --all --no-text',
     );
   });
 
