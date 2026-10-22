@@ -6,8 +6,8 @@
 - Semantic commands can now run on Cloudflare's Clef and Clef-flash models as well as TypeSafe's Jev, using your Cloudflare account.
 - `semantic.find` and `semantic.act` can now tell icon-only buttons apart with `--vision` on Clef models.
 - Every semantic result now says which provider and model answered, how many provider calls it made, and how long they took.
-- Read a whole X thread in 4 browser calls instead of about 30: `surf use x thread --url <post-url> --format md` reads X's own API instead of scrolling the page.
-- Other sites need a short JSON recipe, not code. New `network.wait`, `network.replay` and `collect` commands, and `api`/`collect` playbook strategies, read threads and feeds on other sites (a Bluesky feed: 83 posts over 3 pages in 14 calls).
+- Get a whole X thread as clean Markdown with one command: `surf use x thread --url <post-url> --format md`. You get every post the author wrote in the thread, in order, with long posts in full, images and quoted posts. Surf reads the data X's page loads instead of scrolling, so it takes about 5 seconds instead of an agent scrolling and re-reading the page about 30 times.
+- Do the same on other sites with a short JSON recipe instead of code. Most sites load threads and feeds from their own API. The recipe says which response to read and which fields to keep, and Surf fetches the next pages for you through your logged-in browser and returns one record per post. A Bluesky profile feed came back as 83 posts over 3 pages in about 4 seconds. [docs/threads-and-feeds.md](docs/threads-and-feeds.md) shows how to write one.
 - `surf upload` can now upload through the visible upload button, so a file input the page keeps hidden no longer blocks it.
 
 ### Added
