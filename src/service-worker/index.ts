@@ -495,8 +495,12 @@ async function uploadFilesThroughControl(tabId: number, ref: string, selector: s
     await cdp.sendCommand(tabId, "Page.setInterceptFileChooserDialog", { enabled: true });
     // Click from the page with userGesture: a script-driven click (as in CLICK_ELEMENT) has no
     // user activation, so the site's own input.click() would not open a chooser.
-    const clicked = await cdp.sendCommand(tabId, "Runtime.evaluate", {
-      expression: `(() => { const el = document.querySelector(${JSON.stringify(selector)}); if (!el) return false; el.click(); return true; })()`,
+    // The selector goes in as an argument to fixed code, never spliced into the source.
+    const doc = await cdp.sendCommand(tabId, "Runtime.evaluate", { expression: "document" });
+    const clicked = await cdp.sendCommand(tabId, "Runtime.callFunctionOn", {
+      objectId: doc?.result?.objectId,
+      functionDeclaration: "function (selector) { const el = this.querySelector(selector); if (!el) return false; el.click(); return true; }",
+      arguments: [{ value: selector }],
       userGesture: true,
       returnByValue: true,
     });

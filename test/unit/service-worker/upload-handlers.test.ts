@@ -218,7 +218,10 @@ describe("UPLOAD_FILE through an upload control", () => {
       isFileInput: false,
     });
     chrome.debugger.sendCommand.mockImplementation(async (_target: any, method: string) => {
-      if (method !== "Runtime.evaluate") {
+      if (method === "Runtime.evaluate") {
+        return { result: { objectId: "document" } };
+      }
+      if (method !== "Runtime.callFunctionOn") {
         return {};
       }
       if (opensChooser) {
