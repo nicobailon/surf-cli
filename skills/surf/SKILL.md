@@ -572,7 +572,10 @@ surf select e5 --by index 2                  # By index (0-based)
 ```bash
 surf upload --ref e5 --files "/path/to/file.txt"
 surf upload --ref e5 --files "/path/file1.txt,/path/file2.txt"
+surf upload --ref e640 --files ./resume.pdf      # e640 is the "Upload resume" button
 ```
+
+Pass the button's ref when `page.read` shows only the upload button and not its hidden file input (e.g. LinkedIn Easy Apply). Surf clicks it and answers the file chooser it opens.
 
 ## Iframe Handling
 

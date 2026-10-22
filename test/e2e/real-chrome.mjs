@@ -189,6 +189,25 @@ function fixturePages(request, { crossOriginBase }) {
 <button id="confirm" onclick="document.querySelector('#answer').textContent = confirm('Sure?') ? 'yes' : 'no'">Confirm</button>
 <p id="answer">none</p></main></body></html>`;
   }
+  if (url.pathname === "/upload") {
+    return `<!doctype html><html><head><title>Upload fixture</title>
+<script>
+  addEventListener("DOMContentLoaded", () => {
+    const report = (input, target) => input.addEventListener("change", () => {
+      document.querySelector(target).textContent = "Uploaded " + input.files.length + " file: " + input.files[0].name;
+    });
+    const hidden = document.querySelector("#hidden-input");
+    report(hidden, "#resume");
+    report(document.querySelector("#cover-input"), "#cover");
+    document.querySelector("#upload-button").addEventListener("click", () => hidden.click());
+  });
+</script></head>
+<body><main><h1>Apply</h1>
+<button id="upload-button">Upload resume</button><p id="resume">No resume</p>
+<button id="nothing">Does nothing</button>
+<input type="file" id="cover-input" aria-label="Cover letter"><p id="cover">No cover letter</p>
+</main><input type="file" id="hidden-input" style="display:none"></body></html>`;
+  }
   if (url.pathname === "/list") {
     const empty = url.searchParams.get("empty") === "1";
     const items = empty
@@ -913,6 +932,38 @@ try {
   }
   await runSurf("tab.close", "--id", refDialogTab, "--json");
 
+  // Upload through the visible button that opens a hidden file input's chooser (#363).
+  const uploadTab = String(tabIdFromOutput(await runSurf("tab.new", `${baseUrl}/upload`)));
+  await runSurf("wait.ready", "--json", "--tab-id", uploadTab, "--selector", "#upload-button");
+  const uploadFile = join(scratch, "resume.txt");
+  writeFileSync(uploadFile, "resume\n");
+  const uploadRead = await runSurf("page.read", "--tab-id", uploadTab);
+  const uploadRef = (label) => {
+    const ref = uploadRead.match(new RegExp(`"${label}" \\[(e\\d+)\\]`))?.[1];
+    if (!ref) throw new Error(`page.read did not list "${label}": ${uploadRead}`);
+    return ref;
+  };
+  await runSurf("upload", "--ref", uploadRef("Upload resume"), "--files", uploadFile, "--tab-id", uploadTab);
+  if (!(await runSurf("page.text", "--tab-id", uploadTab)).includes("Uploaded 1 file: resume.txt")) {
+    throw new Error("upload --ref <button> did not set the file on the hidden input it opens");
+  }
+  const coverFile = join(scratch, "cover.txt");
+  writeFileSync(coverFile, "cover\n");
+  await runSurf("upload", "--ref", uploadRef("Cover letter"), "--files", coverFile, "--tab-id", uploadTab);
+  if (!(await runSurf("page.text", "--tab-id", uploadTab)).includes("Uploaded 1 file: cover.txt")) {
+    throw new Error("upload --ref <file input> no longer sets the file");
+  }
+  const noChooserStart = Date.now();
+  const noChooser = await runSurfExpectingFailure("upload", "--ref", uploadRef("Does nothing"), "--files", uploadFile, "--tab-id", uploadTab);
+  const noChooserMs = Date.now() - noChooserStart;
+  if (noChooserMs > 15_000 || !`${noChooser.stdout}${noChooser.stderr}`.includes("No file chooser opened")) {
+    throw new Error(`upload --ref <button that opens nothing> did not fail naming the file chooser (${noChooserMs}ms): ${JSON.stringify(noChooser)}`);
+  }
+  if (!(await runSurf("page.read", "--tab-id", uploadTab)).includes("Upload resume")) {
+    throw new Error("page.read failed on the tab after a failed upload");
+  }
+  await runSurf("tab.close", "--id", uploadTab, "--json");
+
   await runSurf("screenshot", "--output", screenshotPath);
   const png = readFileSync(screenshotPath);
   if (png.length < 100 || png.subarray(0, 8).toString("hex") !== "89504e470d0a1a0a") {
@@ -1049,6 +1100,7 @@ try {
         frameDiagnoseWarnings: diagnosis.warnings.length,
         scriptOptions: { js: jsOutput.total, frameJs: frameOutput.total, frozen: frameInline.frozen },
         pageChanges: { noopLatency },
+        upload: { viaButton: "resume.txt", viaInput: "cover.txt", noChooserMs },
         harvest: { replay: replayed.value.length, drive: driven.value.length, collect: collected.length },
         screenshotBytes: png.length,
         serviceWorker: workerTarget.url(),

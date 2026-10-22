@@ -215,6 +215,8 @@ surf --remote "$SURF_REMOTE" --remote-credential "$SURF_REMOTE_CREDENTIAL" \
   network.export --output remote:/var/tmp/network.har --har
 ```
 
+`upload --ref` takes the ref of the file input or of the visible button that opens the file picker. With a button, surf clicks it and answers the native file chooser, so a hidden `input[type=file]` does not need a ref.
+
 Client-local inputs are staged privately on the host and removed after the request. Client-local outputs are downloaded with size/hash verification and atomic destination replacement. `surf js --file` and `perf-audit --output` are handled by the client itself. `network.export` defaults to a generated client-local `.json`, `.jsonl`, or `.har` path. Gemini edits default to client-local `edited.png`. Successful remote actions transfer their automatic screenshot to a generated client-local path; `--auto-capture` on failure remains a separate screenshot and console diagnostic.
 
 The remote single-file boundary supports one `upload` file, one ChatGPT attachment, or one Gemini attachment/edit input, plus one screenshot, network export, or Gemini image output. Transfers are limited to 256 MiB per file, 512 MiB and 32 files per connection, with 256 KiB decoded chunks. Remote `record`, `video`, `aistudio.build`, smoke screenshot directories, directory transfer, and multi-file inputs are intentionally rejected. A `remote:` path bypasses transfer and gives the trusted client direct authority over that absolute host path.

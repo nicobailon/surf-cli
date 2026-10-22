@@ -827,6 +827,25 @@ describe("accessibility tree", () => {
     expect(button.clicked).toBe(false);
   });
 
+  it("tags an upload button for the file chooser instead of rejecting it as not a file input", () => {
+    const button = element("button");
+    button.append(text("Upload resume"));
+    const input = new FakeInputElement("input");
+    input.setAttribute("type", "file");
+    (document.body as unknown as FakeElement).append(button, input);
+    (window as any).__piRefs = { e1: button, e2: input };
+
+    const forButton = sendMessage({ type: "GET_FILE_INPUT_SELECTOR", ref: "e1" });
+    expect(forButton).toEqual({ selector: expect.any(String), isFileInput: false });
+    expect(forButton.selector).toBe(
+      `[data-pi-file-id="${button.getAttribute("data-pi-file-id")}"]`,
+    );
+
+    const forInput = sendMessage({ type: "GET_FILE_INPUT_SELECTOR", ref: "e2" });
+    expect(forInput).toEqual({ selector: expect.any(String), isFileInput: true });
+    expect(forInput.selector).toBe(`[data-pi-file-id="${input.getAttribute("data-pi-file-id")}"]`);
+  });
+
   it("rejects stale guarded fills without changing the control value", () => {
     const input = new FakeInputElement("input");
     input.setAttribute("type", "email");

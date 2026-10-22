@@ -255,7 +255,7 @@ const TOOL_SCHEMAS = {
   upload: {
     desc: "Upload file(s) to input",
     schema: {
-      ref: z.string().describe("Element ref (e.g., e5)"),
+      ref: z.string().describe("Element ref: the file input, or the visible upload control that opens the file picker (e.g., e5, or e640 for an \"Upload resume\" button)"),
       files: z.string().describe("File path(s) comma-separated")
     }
   },

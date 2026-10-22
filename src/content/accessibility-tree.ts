@@ -2710,13 +2710,10 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         sendResponse({ error });
         return true;
       }
-      if (!(el instanceof HTMLInputElement) || el.type !== "file") {
-        sendResponse({ error: "Element is not a file input" });
-        return true;
-      }
+      const isFileInput = el instanceof HTMLInputElement && el.type === "file";
       const uniqueId = `__pi_file_${Date.now()}`;
       el.setAttribute("data-pi-file-id", uniqueId);
-      sendResponse({ selector: `[data-pi-file-id="${uniqueId}"]` });
+      sendResponse({ selector: `[data-pi-file-id="${uniqueId}"]`, isFileInput });
       return true;
     }
     case "WAIT_FOR_NETWORK_IDLE": {

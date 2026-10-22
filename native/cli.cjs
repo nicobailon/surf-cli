@@ -1257,8 +1257,11 @@ const TOOLS = {
       "upload": {
         desc: "Upload file(s) to input",
         args: [],
-        opts: { ref: "Element ref", files: "File path(s) comma-separated" },
-        examples: [{ cmd: 'upload --ref e5 --files "/path/to/file.pdf"', desc: "Upload file" }]
+        opts: { ref: "Element ref: the file input, or the visible upload control that opens the file picker", files: "File path(s) comma-separated" },
+        examples: [
+          { cmd: 'upload --ref e5 --files "/path/to/file.pdf"', desc: "Upload file" },
+          { cmd: "upload --ref e640 --files ./resume.pdf", desc: 'e640 is the "Upload resume" button' },
+        ]
       },
     }
   },

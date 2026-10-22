@@ -476,6 +476,42 @@ async function uploadFilesWithChooser(
   }
 }
 
+async function uploadFilesThroughControl(tabId: number, ref: string, selector: string, files: string[]): Promise<void> {
+  const timeoutMs = 10000;
+  let timeoutId: ReturnType<typeof setTimeout> | undefined;
+  let onOpened: (backendNodeId?: number) => void = () => {};
+  const opened = new Promise<number | undefined>((resolve, reject) => {
+    onOpened = resolve;
+    timeoutId = setTimeout(() => reject(new Error(
+      `No file chooser opened within ${timeoutMs / 1000}s after clicking ${ref}. Pass the ref of the file input itself, or of a control that opens a file picker.`,
+    )), timeoutMs);
+  });
+  opened.catch(() => {});
+  const handler = (source: chrome.debugger.Debuggee, method: string, params: any) => {
+    if (source.tabId === tabId && method === "Page.fileChooserOpened") onOpened(params?.backendNodeId);
+  };
+  chrome.debugger.onEvent.addListener(handler);
+  try {
+    await cdp.sendCommand(tabId, "Page.setInterceptFileChooserDialog", { enabled: true });
+    // Click from the page with userGesture: a script-driven click (as in CLICK_ELEMENT) has no
+    // user activation, so the site's own input.click() would not open a chooser.
+    const clicked = await cdp.sendCommand(tabId, "Runtime.evaluate", {
+      expression: `(() => { const el = document.querySelector(${JSON.stringify(selector)}); if (!el) return false; el.click(); return true; })()`,
+      userGesture: true,
+      returnByValue: true,
+    });
+    if (clicked?.result?.value !== true) throw new Error(`Could not click ${ref} to open its file chooser`);
+    const backendNodeId = await opened;
+    if (!backendNodeId) throw new Error("The file chooser did not identify its file input");
+    await cdp.sendCommand(tabId, "DOM.setFileInputFiles", { files, backendNodeId });
+  } finally {
+    // Always stop intercepting: a tab left intercepting silently swallows the user's own file pickers.
+    clearTimeout(timeoutId);
+    chrome.debugger.onEvent.removeListener(handler);
+    try { await cdp.sendCommand(tabId, "Page.setInterceptFileChooserDialog", { enabled: false }); } catch {}
+  }
+}
+
 async function uploadFilesToProviderTab(
   provider: "gemini" | "chatgpt",
   tabId: number,
@@ -2362,6 +2398,10 @@ export async function handleMessage(
         ref: message.ref,
       }, { frameId: getFrameIdForTab(tabId, message) });
       if (selectorResult.error) throw new Error(selectorResult.error);
+      if (selectorResult.isFileInput === false) {
+        await uploadFilesThroughControl(tabId, message.ref, selectorResult.selector, message.files);
+        return { success: true, filesSet: message.files.length };
+      }
       const setResult = await cdp.setFileInputBySelector(tabId, selectorResult.selector, message.files);
       if (!setResult.success) throw new Error(setResult.error);
       return { success: true, filesSet: message.files.length };
