@@ -80,7 +80,7 @@ jobs:
         run: npm ci
 
       - name: Install pinned Chrome for Testing
-        run: npx puppeteer browsers install chrome@154.0.8037.57
+        run: npx puppeteer browsers install chrome@155.0.8059.79
 
       - name: Build extension
         run: npm run build
