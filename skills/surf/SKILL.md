@@ -847,6 +847,8 @@ surf wait.element ".missing" --auto-capture --timeout 2000
 --timeout <ms>        # Override default timeout
 --settle <ms>         # Max wait before actions report page changes (default 2000, max 30000, surf.json settleMs)
 --no-diff             # Skip the page-change report after actions
+                      # A cut-short report ends with "+N more changes..." naming
+                      # surf locate.role <role> --name "<text>" or surf read --ref <ref> --no-text; use those, not a full read
 ```
 
 ## Tips

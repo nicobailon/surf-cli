@@ -22,6 +22,7 @@
 
 ### Changed
 - **Breaking: `SURF_JEV_MODEL` is replaced by `SURF_SEMANTIC_MODEL`** - Surf no longer reads `SURF_JEV_MODEL`. If you set it, rename it to `SURF_SEMANTIC_MODEL`. The value must be `jev-1.13.0`, `clef` or `clef-flash`; any other value is an error.
+- **Cut-short page-change reports point at a small follow-up** - When an action changes more than the report shows, its last line no longer says `Run surf read`. It names `surf locate.role <role> --name "<text>"`, with the role filled in when most added elements share one, and `surf read --ref <ref> --no-text` for the added dialog or region, so finding one item in a long list takes one small call instead of a full page read. Thanks to [@morgan55555](https://github.com/morgan55555) for [#364](https://github.com/nicobailon/surf-cli/issues/364).
 
 ### Fixed
 - **`network.body` after navigation** - It now returns the body Surf already captured instead of failing with "No resource with given identifier found" once Chrome has dropped it. When neither has the body, the error says why (for example, it was larger than the per-body cap) and how to get it.

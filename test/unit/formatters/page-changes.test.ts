@@ -110,8 +110,60 @@ describe("formatPageChanges", () => {
       '  - button "Undo"',
       "  main: +3 text",
       "  aside: +1 -2 text",
-      "+12 more changes. Run surf read",
+      '+12 more changes. Narrow instead of re-reading: surf locate.role <role> --name "<text>"',
     ]);
+  });
+
+  it("points a truncated diff at the added group root and its dominant role", () => {
+    const options = Array.from({ length: 28 }, (_, i) => ({
+      kind: "added",
+      ref: `e${202 + i}`,
+      role: "option",
+      name: `Country ${i}`,
+      within: "e200",
+    }));
+    const lines = formatPageChanges({
+      ...base,
+      changes: [
+        { kind: "added", ref: "e200", role: "dialog", name: "Choose country" },
+        { kind: "added", ref: "e201", role: "listbox", name: "Country", within: "e200" },
+        ...options,
+      ],
+      omitted: 220,
+    });
+    expect(lines.at(-1)).toBe(
+      '+220 more changes, mostly option. Narrow instead of re-reading: surf locate.role option --name "<text>" | surf read --ref e200 --no-text',
+    );
+  });
+
+  it("names the dominant role when no added group was shown", () => {
+    const lines = formatPageChanges({
+      ...base,
+      changes: [
+        { kind: "added", ref: "e1", role: "row", name: "a" },
+        { kind: "added", ref: "e2", role: "row", name: "b" },
+        { kind: "added", ref: "e3", role: "link", name: "c" },
+      ],
+      omitted: 40,
+    });
+    expect(lines.at(-1)).toBe(
+      '+40 more changes, mostly row. Narrow instead of re-reading: surf locate.role row --name "<text>"',
+    );
+  });
+
+  it("keeps the role a placeholder when shown added changes are mixed", () => {
+    const lines = formatPageChanges({
+      ...base,
+      changes: [
+        { kind: "added", ref: "e10", role: "region", name: "Results" },
+        { kind: "added", ref: "e11", role: "link", name: "a", within: "e10" },
+        { kind: "added", ref: "e12", role: "button", name: "b", within: "e10" },
+      ],
+      omitted: 5,
+    });
+    expect(lines.at(-1)).toBe(
+      '+5 more changes. Narrow instead of re-reading: surf locate.role <role> --name "<text>" | surf read --ref e10 --no-text',
+    );
   });
 
   it("reports no visible change with the quiet window", () => {

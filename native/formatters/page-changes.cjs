@@ -70,7 +70,16 @@ function formatPageChanges(pageChanges) {
     }
   }
   lines.push(...textLines);
-  if (omitted > 0) lines.push(`+${omitted} more changes. Run surf read`);
+  if (omitted > 0) {
+    const roleCounts = new Map();
+    for (const change of added.values()) roleCounts.set(change.role, (roleCounts.get(change.role) || 0) + 1);
+    const role = [...roleCounts].find(([, count]) => count * 3 >= added.size * 2)?.[0];
+    // The cap cuts the document-order tail, so the last group shown is the one the omitted changes most likely continue.
+    const root = [...groups].pop();
+    const hints = [`surf locate.role ${role || "<role>"} --name "<text>"`];
+    if (root) hints.push(`surf read --ref ${root.ref} --no-text`);
+    lines.push(`+${omitted} more changes${role ? `, mostly ${role}` : ""}. Narrow instead of re-reading: ${hints.join(" | ")}`);
+  }
   return lines;
 }
 
