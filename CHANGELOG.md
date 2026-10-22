@@ -3,12 +3,13 @@
 ## [Unreleased]
 
 ### Highlights
-- Semantic commands can now run on Cloudflare's Clef and Clef-flash models as well as TypeSafe's Jev, using your Cloudflare account.
-- `semantic.find` and `semantic.act` can now tell icon-only buttons apart with `--vision` on Clef models.
-- Every semantic result now says which provider and model answered, how many provider calls it made, and how long they took.
-- Get a whole X thread as clean Markdown with one command: `surf use x thread --url <post-url> --format md`. You get every post the author wrote in the thread, in order, with long posts in full, images and quoted posts. Surf reads the data X's page loads instead of scrolling, so it takes about 5 seconds instead of an agent scrolling and re-reading the page about 30 times.
-- Do the same on other sites with a short JSON recipe instead of code. Most sites load threads and feeds from their own API. The recipe says which response to read and which fields to keep, and Surf fetches the next pages for you through your logged-in browser and returns one record per post. A Bluesky profile feed came back as 83 posts over 3 pages in about 4 seconds. [docs/threads-and-feeds.md](docs/threads-and-feeds.md) shows how to write one.
-- `surf upload` can now upload through the visible upload button, so a file input the page keeps hidden no longer blocks it.
+- Get every post the author wrote in an X thread as clean Markdown in about 5 seconds: `surf use x thread --url <post-url> --format md`. Long posts come in full, with images and quoted posts, in 4 browser calls instead of about 30 for scrolling and reading the page.
+- Pull threads and feeds from other sites the same way with a short JSON recipe: Surf reads the data the site already loads and follows the pages for you. A Bluesky feed came back as 83 posts over 3 pages in about 4 seconds. [docs/threads-and-feeds.md](docs/threads-and-feeds.md) shows how to write one.
+- Upload files on pages that hide their file input, such as LinkedIn job applications: point `surf upload --ref` at the visible upload button.
+- `surf type` enters punctuation exactly. Before, characters such as `.`, `'`, `(` and `#` went missing or scrambled the rest of the text.
+- Semantic commands can also run on Cloudflare's Clef models with your own Cloudflare account. TypeSafe's Jev stays the default and is the most accurate. Only Clef supports `--vision`, which tells icon-only buttons apart: `semantic.find` picked the right icon in 30 of 30 test runs, against 0 of 30 without it.
+- Every semantic result says which model answered, how many calls it made and how long they took.
+- **Breaking:** if you set `SURF_JEV_MODEL`, rename it to `SURF_SEMANTIC_MODEL`. Surf no longer reads the old name.
 
 ### Added
 - **Choose the semantic model** - `semantic.find`, `semantic.filter`, `semantic.verify` and `semantic.act` take `--model jev-1.13.0|clef|clef-flash`. `SURF_SEMANTIC_MODEL` sets the default, and it is the only way to pick the model for semantic `surf do` steps. With nothing set, Surf uses `jev-1.13.0` as before. Page-derived text goes to the provider of the selected model: TypeSafe (`api.typesafe.ai`) for Jev, Cloudflare Workers AI (`api.cloudflare.com`) for Clef. Each model has its own measured confidence thresholds. How they were chosen, and how the models compared on accuracy and latency, is in [docs/semantic-models.md](docs/semantic-models.md). See [#354](https://github.com/nicobailon/surf-cli/issues/354).
