@@ -200,3 +200,74 @@ describe("provider upload handlers", () => {
     });
   });
 });
+
+describe("UPLOAD_FILE through an upload control", () => {
+  beforeEach(() => {
+    resetChromeMock();
+  });
+
+  async function uploadThroughButton(opensChooser: boolean) {
+    const handleMessage = await loadHandleMessage();
+    const chrome = (globalThis as any).chrome;
+    const handlers: Array<(source: { tabId: number }, method: string, params: any) => void> = [];
+    chrome.debugger.onEvent.addListener.mockImplementation((handler: (typeof handlers)[number]) => {
+      handlers.push(handler);
+    });
+    chrome.tabs.sendMessage.mockResolvedValue({
+      selector: '[data-pi-file-id="x"]',
+      isFileInput: false,
+    });
+    chrome.debugger.sendCommand.mockImplementation(async (_target: any, method: string) => {
+      if (method !== "Runtime.evaluate") {
+        return {};
+      }
+      if (opensChooser) {
+        setTimeout(() => {
+          for (const handler of handlers) {
+            handler({ tabId: 42 }, "Page.fileChooserOpened", { backendNodeId: 7 });
+          }
+        }, 0);
+      }
+      return { result: { value: true } };
+    });
+    const result = handleMessage(
+      { type: "UPLOAD_FILE", tabId: 42, ref: "e640", files: ["/tmp/resume.pdf"] },
+      {},
+    );
+    const interceptCalls = () =>
+      chrome.debugger.sendCommand.mock.calls
+        .filter(([, method]: [unknown, string]) => method === "Page.setInterceptFileChooserDialog")
+        .map(([, , params]: [unknown, string, { enabled: boolean }]) => params.enabled);
+    return { chrome, result, interceptCalls };
+  }
+
+  it("sets the files on the input the opened chooser names, then stops intercepting", async () => {
+    const { chrome, result, interceptCalls } = await uploadThroughButton(true);
+
+    await expect(result).resolves.toEqual({ success: true, filesSet: 1 });
+    expect(chrome.debugger.sendCommand).toHaveBeenCalledWith(
+      { tabId: 42 },
+      "DOM.setFileInputFiles",
+      {
+        files: ["/tmp/resume.pdf"],
+        backendNodeId: 7,
+      },
+    );
+    expect(interceptCalls()).toEqual([true, false]);
+  });
+
+  it("fails after 10s when no chooser opens and still stops intercepting", async () => {
+    vi.useFakeTimers();
+    try {
+      const { result, interceptCalls } = await uploadThroughButton(false);
+      const failed = expect(result).rejects.toThrow(
+        "No file chooser opened within 10s after clicking e640",
+      );
+      await vi.advanceTimersByTimeAsync(10_000);
+      await failed;
+      expect(interceptCalls()).toEqual([true, false]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
