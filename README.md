@@ -47,7 +47,7 @@ Surf takes a different approach:
 | CLI interface | Yes | No | No | No | No |
 | Free | Yes | No | No | Yes | Yes |
 | AI via browser cookies | Yes | No | No | No | No |
-| Threads and feeds from the site's own API | Yes | No | No | Partial (reads responses) | No |
+| Whole threads and feeds as records, via the site's own API | Yes | No | No | Partial (reads responses) | No |
 
 ## Installation
 
@@ -963,25 +963,28 @@ Generated manifests declare provenance and authentication environment inputs. Su
 
 ### Threads and Feeds
 
-Long threads and feeds usually load in pages from the site's own JSON API, while the page shows only a few items at a time. Surf can read that API instead of scrolling and re-reading the page.
+Get a whole thread or feed as clean records in a few calls, instead of having an agent scroll and re-read the page. Most sites load threads and feeds in pages from their own JSON API, and Surf reads that API directly, through your logged-in browser.
 
 ```bash
-# A whole X thread by its author: long posts in full, quoted posts, images
+# A whole X thread by its author: long posts in full, quoted posts, images, links
 surf use x thread --url https://x.com/<user>/status/<id> --format md
-
-# Wait for the page's own API response (capture starts before --open)
-surf network.wait --match "/api/*/feed" --open https://example.com/feed --json
-
-# Re-send it from inside the tab with the next cursor
-surf network.replay r_123 --set query.cursor=abc
-
-# Or scroll a list and collect one record per item
-surf collect --item article --key 'a@href' --field title=h2 --field link=a@href
 ```
 
-Playbooks can use the same steps as `api` and `collect` strategies. An `api` strategy re-sends the page's request with each next cursor. If the site rejects that, it scrolls the page and reads each new response instead. `surf use <playbook> <op> --format md|jsonl` prints the records as Markdown or JSON lines.
+| Run | Browser calls | Time |
+|-----|---------------|------|
+| 13-post X thread, scrolling and re-reading the page | about 30 | — |
+| 13-post X thread, `surf use x thread` | 4 | 4.9 s |
+| 83-post Bluesky feed (3 pages), a short JSON recipe | 14 | 4.3 s |
 
-`network.replay` only re-sends GET and HEAD requests unless you pass `--allow-post`, and request header values never appear in its output or errors. Scrolling needs a visible tab: `collect`, and an `api` strategy that has to scroll, fail in a background tab. Use a session with its own focused window (`surf session.ensure <name> <url> --window --focused`) or bring the tab to the front.
+Other sites need a short JSON recipe, not code. The same building blocks also work on their own:
+
+```bash
+surf network.wait --match "/api/*/feed" --open https://example.com/feed   # the page's own API response
+surf network.replay r_123 --set query.cursor=abc                           # the next page, re-sent from the tab
+surf collect --item article --key 'a@href' --field title=h2                # scroll and read, when there's no API
+```
+
+How to write a recipe, the full recipe format, and the limits (scrolling needs a visible tab; replay re-sends only GET and HEAD by default) are in [docs/threads-and-feeds.md](docs/threads-and-feeds.md).
 
 ## Global Options
 

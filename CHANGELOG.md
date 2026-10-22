@@ -6,7 +6,8 @@
 - Semantic commands can now run on Cloudflare's Clef and Clef-flash models as well as TypeSafe's Jev, using your Cloudflare account.
 - `semantic.find` and `semantic.act` can now tell icon-only buttons apart with `--vision` on Clef models.
 - Every semantic result now says which provider and model answered, how many provider calls it made, and how long they took.
-- `surf use x thread --url <post-url> --format md` reads a whole X thread in a few calls, from X's own API instead of scrolling.
+- Read a whole X thread in 4 browser calls instead of about 30: `surf use x thread --url <post-url> --format md` reads X's own API instead of scrolling the page.
+- Other sites need a short JSON recipe, not code. New `network.wait`, `network.replay` and `collect` commands, and `api`/`collect` playbook strategies, read threads and feeds on other sites (a Bluesky feed: 83 posts over 3 pages in 14 calls).
 
 ### Added
 - **Choose the semantic model** - `semantic.find`, `semantic.filter`, `semantic.verify` and `semantic.act` take `--model jev-1.13.0|clef|clef-flash`. `SURF_SEMANTIC_MODEL` sets the default, and it is the only way to pick the model for semantic `surf do` steps. With nothing set, Surf uses `jev-1.13.0` as before. Page-derived text goes to the provider of the selected model: TypeSafe (`api.typesafe.ai`) for Jev, Cloudflare Workers AI (`api.cloudflare.com`) for Clef. Each model has its own measured confidence thresholds. How they were chosen, and how the models compared on accuracy and latency, is in [docs/semantic-models.md](docs/semantic-models.md). See [#354](https://github.com/nicobailon/surf-cli/issues/354).
@@ -17,7 +18,7 @@
 - **`network.wait`** - Waits for the page's next response whose URL matches a glob such as `/api/*/feed` and prints its JSON. With `--open <url>`, capture starts before the page loads. If nothing matches, the error lists the API paths it did see.
 - **`network.replay`** - Re-sends a captured request from inside its tab with edits such as `--set query.cursor=abc` or `--set query.variables.cursor=abc` (a field inside a JSON query param), and prints the response. Only GET and HEAD are re-sent unless you pass `--allow-post`. Request header values never appear in its output or errors.
 - **`collect`** - Scrolls a list, including virtualized lists that keep only a few items on the page, and returns one record per item, deduped by key: `surf collect --item article --key 'a@href' --field title=h2`. It needs a visible tab and fails in a background tab.
-- **`api` and `collect` playbook strategies** - Playbooks can map the site's own JSON responses to records and follow its pagination cursor, or scroll and collect items from the page. `surf use <playbook> <op> --format md|jsonl` prints the records as Markdown or JSON lines.
+- **`api` and `collect` playbook strategies** - Playbooks can map the site's own JSON responses to records and follow its pagination cursor, or scroll and collect items from the page. `surf use <playbook> <op> --format md|jsonl` prints the records as Markdown or JSON lines. How to write a recipe, with a working Bluesky example, is in [docs/threads-and-feeds.md](docs/threads-and-feeds.md).
 
 ### Changed
 - **Breaking: `SURF_JEV_MODEL` is replaced by `SURF_SEMANTIC_MODEL`** - Surf no longer reads `SURF_JEV_MODEL`. If you set it, rename it to `SURF_SEMANTIC_MODEL`. The value must be `jev-1.13.0`, `clef` or `clef-flash`; any other value is an error.
