@@ -396,6 +396,96 @@ describe("playbook resolution and strategies", () => {
     expect(statuses).toEqual(["dispatched", "indeterminate"]);
   });
 
+  it("runs an api strategy with op args in its options and record fields in its templates", async () => {
+    const entries: Array<Record<string, unknown>> = [];
+    const executeTool = vi.fn(async (tool: string, args: Record<string, unknown>) => {
+      if (tool === "navigate") {
+        entries.push({
+          id: "r_1",
+          url: "https://site.test/api/item?id=7",
+          status: 200,
+          _loadingFinished: true,
+        });
+        return { success: true };
+      }
+      if (tool === "network") {
+        return { entries };
+      }
+      if (tool === "network.body") {
+        return { body: JSON.stringify({ item: { id: "7", owner: "ann" } }) };
+      }
+      throw new Error(`unexpected ${tool} ${JSON.stringify(args)}`);
+    });
+    const op = playbooks.validateOp(
+      {
+        id: "item",
+        args: { url: { required: true }, owner: { required: true } },
+        run: [
+          {
+            using: "api",
+            open: "{{url}}",
+            match: "/api/item",
+            records: {
+              find: { exists: ["id"] },
+              key: "id",
+              fields: {
+                id: "id",
+                owner: "owner",
+                link: { template: "https://site.test/{{owner}}/{{id}}" },
+              },
+              keep: { owner: "{{owner}}" },
+            },
+          },
+        ],
+      },
+      { origins: [] },
+    );
+    const result = await runtime.runPlaybookOp({
+      playbook: { id: "site", provenance: { scope: "test" } },
+      op,
+      args: { url: "https://site.test/item/7", owner: "ann" },
+      executeTool,
+      sleep: async () => undefined,
+    });
+    expect(result.value).toEqual([{ id: "7", owner: "ann", link: "https://site.test/ann/7" }]);
+    expect(executeTool).toHaveBeenCalledWith("navigate", { url: "https://site.test/item/7" });
+  });
+
+  it("rejects malformed api and collect strategies and markdown specs", () => {
+    const validate = (fields: Record<string, unknown>) =>
+      playbooks.validateOp(
+        {
+          id: "read",
+          run: [
+            {
+              using: "api",
+              match: "/api/*",
+              records: { find: { exists: ["id"] }, key: "id", fields: { id: "id" } },
+            },
+          ],
+          ...fields,
+        },
+        { origins: [] },
+      );
+    expect(() => validate({})).not.toThrow();
+    const api = (strategy: Record<string, unknown>) =>
+      validate({ run: [{ using: "api", ...strategy }] });
+    expect(() =>
+      api({
+        match: "api/*",
+        records: { find: { exists: ["id"] }, key: "id", fields: { id: "id" } },
+      }),
+    ).toThrow(/op read api strategy: match "api\/\*" must start with \//);
+    expect(() => api({ match: "/api/*" })).toThrow(/api strategy needs records/);
+    expect(() => api({ match: "/api/*", pages: 3, records: {} })).toThrow(/unknown key "pages"/);
+    expect(() => validate({ run: [{ using: "collect", item: "li", key: ":scope" }] })).toThrow(
+      /op read collect strategy: collect fields must map at least one field/,
+    );
+    expect(() => validate({ markdown: { body: "text", color: "red" } })).toThrow(
+      /op read markdown has unknown key "color"/,
+    );
+  });
+
   it("exports and imports validated playbook directories", () => {
     const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "surf-playbook-project-"));
     const home = fs.mkdtempSync(path.join(os.tmpdir(), "surf-playbook-home-"));

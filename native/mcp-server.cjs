@@ -332,6 +332,35 @@ const TOOL_SCHEMAS = {
       jsonl: z.boolean().optional().describe("Write JSONL"),
       har: z.boolean().optional().describe("Write HAR 1.2")
     }
+  },
+  "network.wait": {
+    desc: "Wait for the page's next response whose URL matches a glob; returns {id, url, status, json | body}",
+    schema: {
+      match: z.string().describe("URL glob without query string: a path (/api/*/items) or a full URL; * stays within one segment, ** matches anything"),
+      open: z.string().optional().describe("Navigate here after capture starts"),
+      timeout: z.number().optional().describe("Seconds to wait (default: 30)")
+    }
+  },
+  "network.replay": {
+    desc: "Re-send a captured request from inside its tab with edits; returns {status, url, json | body}",
+    schema: {
+      id: z.string().describe("Request id from network or network.wait"),
+      set: z.record(z.string(), z.unknown()).optional().describe("Edits: query.<param>, query.<param>.<json.path>, body, body.<json.path>"),
+      allowPost: z.boolean().optional().describe("Allow methods other than GET/HEAD (can repeat a write)")
+    }
+  },
+  collect: {
+    desc: "Scroll a list and collect one record per item, deduped by key. Needs a visible tab (fails in a background tab)",
+    schema: {
+      item: z.string().describe("Selector for one list item"),
+      key: z.string().describe("Field spec that identifies an item"),
+      fields: z.record(z.string(), z.string()).describe("name -> spec: 'sel' (text), 'sel@attr', 'sel@attr[]', 'sel[]', ':scope'"),
+      max: z.number().optional().describe("Stop after this many records (default: 500)"),
+      idle: z.number().optional().describe("Stop after this many scrolls without new items (default: 3)"),
+      expand: z.string().optional().describe("Buttons inside items to click before reading"),
+      open: z.string().optional().describe("Navigate here first"),
+      format: z.enum(["json", "jsonl"]).optional().describe("Output format (default: json)")
+    }
   }
 };
 

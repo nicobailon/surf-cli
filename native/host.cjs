@@ -61,6 +61,9 @@ const {
 } = require("./playbook-records.cjs");
 const { resolveArgs, runPlaybookOp } = require("./playbook-runtime.cjs");
 const { resolveOp } = require("./playbooks.cjs");
+const { replay, waitForResponse } = require("./api-harvest.cjs");
+const { runCollect } = require("./dom-collect.cjs");
+const { formatRecords } = require("./record-format.cjs");
 const { commandMetadata, redactCommandArgs } = require("./workflow-definition.cjs");
 const { BrowserScheduler } = require("./browser-scheduler.cjs");
 const { BrowserSessionStore, parseDurationMs, validateSessionName } = require("./browser-session-store.cjs");
@@ -1507,6 +1510,9 @@ async function handleNamedTabCommand(tool, args, request) {
 }
 
 async function executeMappedHostTool(request, tool, args, tabId) {
+  if (tool === "network.wait" || tool === "network.replay" || tool === "collect") {
+    return { output: await runHarvestTool(tool, args || {}, { tabId }, request) };
+  }
   const extensionMsg = mapToolToMessage(tool, args, tabId);
   if (!extensionMsg) throw new Error(`Unknown tool: ${tool}`);
   if (request.target?.strict) extensionMsg.strictTarget = true;
@@ -1563,7 +1569,7 @@ async function runHostPlaybook(msg, request) {
     appendActivity(event);
     appendRecordEvent(event);
   };
-  return runPlaybookOp({
+  const result = await runPlaybookOp({
     playbook,
     op,
     args: runArgs,
@@ -1577,6 +1583,27 @@ async function runHostPlaybook(msg, request) {
     afterDispatch: async ({ status, error }) => updateReceipt(receipt, status, { error }),
     allowScript: params.allowScript === true,
   });
+  if (params.format === undefined) return result;
+  return { ...result, value: formatRecords(result.value, params.format, { markdown: op.markdown, args: runArgs }) };
+}
+
+// network.wait, network.replay, collect: composed host tools over the mapped extension tools.
+async function runHarvestTool(tool, args, msg, request) {
+  const executeTool = (name, toolArgs) => executeMappedHostTool(request, name, toolArgs, msg.tabId);
+  const sleep = (ms) => abortableDelay(ms, request.signal);
+  if (tool === "network.wait") {
+    const seconds = args.timeout === undefined ? 30 : Number(args.timeout);
+    if (!Number.isFinite(seconds) || seconds <= 0) throw new Error("--timeout must be a positive number of seconds");
+    return JSON.stringify(await waitForResponse({ executeTool, sleep, match: args.match, open: args.open, timeoutMs: seconds * 1000 }));
+  }
+  if (tool === "network.replay") {
+    if (typeof args.id !== "string" || !args.id) throw new Error("network.replay requires a request id");
+    const allowPost = args["allow-post"] === true || args.allowPost === true;
+    return JSON.stringify(await replay({ executeTool, sleep, id: args.id, set: args.set, allowPost }));
+  }
+  const spec = { item: args.item, key: args.key, fields: args.fields, open: args.open, maxItems: args.max, idleRounds: args.idle, expand: args.expand };
+  const records = await runCollect({ executeTool, sleep, spec: Object.fromEntries(Object.entries(spec).filter(([, value]) => value !== undefined)) });
+  return formatRecords(records, args.format ?? "json");
 }
 
 async function handleRecordRequest(tool, args, msg, request) {
@@ -1943,6 +1970,12 @@ function handleToolRequest(msg, socket, requestContext = requestStorage.getStore
     handleRecordRequest(tool, args || {}, msg, requestContext)
       .then((result) => sendToolResponse(socket, originalId, result, null))
       .catch((error) => sendToolResponse(socket, originalId, null, error.message));
+    return;
+  }
+  if (tool === "network.wait" || tool === "network.replay" || tool === "collect") {
+    runHarvestTool(tool, args || {}, msg, requestContext)
+      .then((output) => sendToolResponse(socket, originalId, { output }, null))
+      .catch((error) => sendToolResponse(socket, originalId, null, error));
     return;
   }
   if (tool.startsWith("video.")) {

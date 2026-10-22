@@ -47,6 +47,7 @@ Surf takes a different approach:
 | CLI interface | Yes | No | No | No | No |
 | Free | Yes | No | No | Yes | Yes |
 | AI via browser cookies | Yes | No | No | No | No |
+| Whole threads and feeds as records, via the site's own API | Yes | No | No | Partial (reads responses) | No |
 
 ## Installation
 
@@ -959,6 +960,31 @@ surf pb client verify ./client
 ```
 
 Generated manifests declare provenance and authentication environment inputs. Surf excludes cookies, bearer tokens, and captured credentials and does not export write-capable clients without explicit review.
+
+### Threads and Feeds
+
+Get a whole thread or feed as clean records in a few calls, instead of having an agent scroll and re-read the page. Most sites load threads and feeds in pages from their own JSON API, and Surf reads that API directly, through your logged-in browser.
+
+```bash
+# A whole X thread by its author: long posts in full, quoted posts, images, links
+surf use x thread --url https://x.com/<user>/status/<id> --format md
+```
+
+| Run | Browser calls | Time |
+|-----|---------------|------|
+| 13-post X thread, scrolling and re-reading the page | about 30 | — |
+| 13-post X thread, `surf use x thread` | 4 | 4.9 s |
+| 83-post Bluesky feed (3 pages), a short JSON recipe | 14 | 4.3 s |
+
+Other sites need a short JSON recipe, not code. The same building blocks also work on their own:
+
+```bash
+surf network.wait --match "/api/*/feed" --open https://example.com/feed   # the page's own API response
+surf network.replay r_123 --set query.cursor=abc                           # the next page, re-sent from the tab
+surf collect --item article --key 'a@href' --field title=h2                # scroll and read, when there's no API
+```
+
+How to write a recipe, the full recipe format, and the limits (scrolling needs a visible tab; replay re-sends only GET and HEAD by default) are in [docs/threads-and-feeds.md](docs/threads-and-feeds.md).
 
 ## Global Options
 

@@ -1,0 +1,7 @@
+{
+  "id": "x",
+  "name": "X",
+  "version": "1.0.0",
+  "description": "Read X posts and threads from X's own API responses, with a scroll-and-read fallback",
+  "origins": ["https://x.com"]
+}

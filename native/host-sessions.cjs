@@ -29,6 +29,8 @@ const PROVIDER_DEFAULT_TIMEOUT_SECONDS = {
   perplexity: 120,
   "oracle.result": 300,
   "playbook.run": 600,
+  "network.wait": 30,
+  collect: 300,
 };
 
 function resolveRequestDeadlineMs(tool, args = {}) {

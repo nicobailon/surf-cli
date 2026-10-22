@@ -1134,6 +1134,15 @@ describe("CDPController", () => {
         bodyCapture: { mode: "text", complete: true, capturedBytes: 13 },
       });
 
+      await emitRequest("req-big", 2000);
+      expect(controller.getNetworkEntries(tabId)[1].bodyCapture).toEqual({
+        mode: "text",
+        complete: false,
+        reason: "per-body-cap",
+        sizeBytes: 2000,
+        limitBytes: 1024,
+      });
+
       controller.clearNetworkRequests(tabId);
       await controller.enableNetworkTracking(tabId, { bodyMode: "none" });
       await emitRequest("req-2", 10);

@@ -1,0 +1,79 @@
+{
+  "id": "thread",
+  "description": "Read a thread: the author's posts in order, long posts in full, quoted posts, and images",
+  "effect": "read",
+  "args": {
+    "url": { "required": true, "desc": "Post URL, e.g. https://x.com/<user>/status/<id>" }
+  },
+  "run": [
+    {
+      "using": "api",
+      "open": "{{url}}",
+      "match": "/i/api/graphql/*/TweetDetail",
+      "mode": "auto",
+      "records": {
+        "find": { "exists": ["rest_id", "legacy.full_text"] },
+        "key": "rest_id",
+        "fields": {
+          "id": "rest_id",
+          "author": "core.user_results.result.core.screen_name ?? core.user_results.result.legacy.screen_name",
+          "name": "core.user_results.result.core.name ?? core.user_results.result.legacy.name",
+          "time": "legacy.created_at",
+          "text": "note_tweet.note_tweet_results.result.text ?? legacy.full_text",
+          "replyTo": "legacy.in_reply_to_status_id_str",
+          "media": "legacy.extended_entities.media[*].media_url_https",
+          "quoted": {
+            "path": "quoted_status_result.result.tweet ?? quoted_status_result.result",
+            "fields": {
+              "id": "rest_id",
+              "author": "core.user_results.result.core.screen_name ?? core.user_results.result.legacy.screen_name",
+              "name": "core.user_results.result.core.name ?? core.user_results.result.legacy.name",
+              "time": "legacy.created_at",
+              "text": "note_tweet.note_tweet_results.result.text ?? legacy.full_text",
+              "media": "legacy.extended_entities.media[*].media_url_https"
+            }
+          },
+          "url": { "template": "https://x.com/{{author}}/status/{{id}}" }
+        },
+        "keep": { "author": "@first" }
+      },
+      "cursor": {
+        "find": { "equals": { "cursorType": "Bottom" } },
+        "path": "value",
+        "into": "query.variables.cursor"
+      },
+      "expect": { "minItems": 1 }
+    },
+    {
+      "using": "collect",
+      "open": "{{url}}",
+      "item": "article[data-testid=\"tweet\"]",
+      "key": { "selector": "a:has(> time)", "attr": "href", "match": "/status/(\\d+)" },
+      "fields": {
+        "id": { "selector": "a:has(> time)", "attr": "href", "match": "/status/(\\d+)" },
+        "author": { "selector": "a:has(> time)", "attr": "href", "match": "x\\.com/([^/]+)/status/" },
+        "name": { "selector": "[data-testid=\"User-Name\"]", "match": "^([^\\n]+)" },
+        "time": "a:has(> time) > time@datetime",
+        "text": "[data-testid=\"tweetText\"]",
+        "media": "[data-testid=\"tweetPhoto\"]:not([role=\"link\"] [data-testid=\"tweetPhoto\"]) img@src[]",
+        "quoted.author": { "selector": "div[role=\"link\"] [data-testid=\"User-Name\"]", "match": "@(\\w+)" },
+        "quoted.name": { "selector": "div[role=\"link\"] [data-testid=\"User-Name\"]", "match": "^([^\\n]+)" },
+        "quoted.time": "div[role=\"link\"] time@datetime",
+        "quoted.text": "div[role=\"link\"] [data-testid=\"tweetText\"]",
+        "quoted.media": "div[role=\"link\"] [data-testid=\"tweetPhoto\"] img@src[]",
+        "url": { "template": "https://x.com/{{author}}/status/{{id}}" }
+      },
+      "expand": "[data-testid=\"tweet-text-show-more-link\"]",
+      "keep": { "author": "@first" },
+      "expect": { "minItems": 1 }
+    }
+  ],
+  "markdown": {
+    "title": "Thread by @{{author}}",
+    "heading": "{{name}} (@{{author}}) · {{time}}",
+    "link": "{{url}}",
+    "body": "text",
+    "quote": "quoted",
+    "images": "media"
+  }
+}

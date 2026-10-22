@@ -2,6 +2,9 @@ const fs = require("fs");
 const os = require("os");
 const path = require("path");
 const { atomicWriteJson } = require("./private-state.cjs");
+const { validateApiSpec } = require("./api-harvest.cjs");
+const { validateCollectSpec } = require("./dom-collect.cjs");
+const { validateMarkdownSpec } = require("./record-format.cjs");
 const { assertNoEmbeddedSecrets, assertUrlHasNoEmbeddedSecrets } = require("./redaction.cjs");
 const { commandMetadata, normalizeStep } = require("./workflow-definition.cjs");
 
@@ -111,6 +114,17 @@ function validateStrategy(strategy, effect, opId) {
     if (typeof strategy.handler !== "string" || !strategy.handler) throw new Error("native strategy requires handler");
     return strategy;
   }
+  if (strategy.using === "api" || strategy.using === "collect") {
+    if (effect === "write") throw new Error(`write op ${opId} ${strategy.using} strategy is not supported`);
+    const { using, extract: _extract, expect: _expect, verify: _verify, ...spec } = strategy;
+    try {
+      if (using === "api") validateApiSpec(spec);
+      else validateCollectSpec(spec);
+    } catch (error) {
+      throw new Error(`op ${opId} ${using} strategy: ${error.message}`);
+    }
+    return strategy;
+  }
   throw new Error(`unsupported playbook strategy: ${strategy.using}`);
 }
 
@@ -135,6 +149,13 @@ function validateOp(value, manifest) {
   }
   const auth = value.auth === undefined ? {} : value.auth;
   if (!auth || typeof auth !== "object" || Array.isArray(auth)) throw new Error(`op ${id} auth must be an object`);
+  if (value.markdown !== undefined) {
+    try {
+      validateMarkdownSpec(value.markdown);
+    } catch (error) {
+      throw new Error(`op ${id} ${error.message}`);
+    }
+  }
   const origins = validateOrigins(auth.origins || value.origins || manifest.origins);
   return {
     ...value,

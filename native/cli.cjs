@@ -19,6 +19,7 @@ const {
 } = require("./workflow-definition.cjs");
 const { executeDoSteps, semanticRequestContext, sendDoRequest } = require("./do-executor.cjs");
 const { runExtraction, renderExtractionMarkdown } = require("./extract.cjs");
+const { parseSetArgument } = require("./api-harvest.cjs");
 const { applyOptionsPrelude, parseScriptOptions } = require("./script-options.cjs");
 const { openClientTransport } = require("./client-transport.cjs");
 const { version: VERSION } = require("../package.json");
@@ -934,7 +935,7 @@ const TOOLS = {
     }
   },
   extract: {
-    desc: "Scripted extraction in an owned tab",
+    desc: "Extraction and list harvesting",
     commands: {
       "extract": {
         desc: "Open a URL in a fresh tab, wait until it is ready, run a page-side script that returns JSON, print rows",
@@ -963,6 +964,24 @@ const TOOLS = {
           { cmd: 'extract "https://example.com/list" --file rows.js --ready-selector ".item"', desc: "Fresh tab, wait for items, print a Markdown table" },
           { cmd: 'extract "https://example.com/search?q=x" --file rows.js --options \'{"limit": 20}\' --empty-text "No results" --json', desc: "Options prelude, explicit empty state, JSON output" },
           { cmd: "extract --tab-id 42 --code 'return [...document.querySelectorAll(\"h2\")].map(h => ({ title: h.textContent }))'", desc: "Read an existing tab in place" },
+        ]
+      },
+      "collect": {
+        desc: "Scroll a list (virtualized or not) and collect one record per item, deduped by key. Needs a visible tab: a background tab fails; use a `session.ensure <name> <url> --window --focused` session or bring the tab to the front",
+        args: [],
+        opts: {
+          item: "Selector for one list item",
+          key: "Field spec that identifies an item (dedupe key)",
+          field: "name=spec (repeatable). spec: 'sel' (text), 'sel@attr', 'sel@attr[]' or 'sel[]' (all matches), ':scope' (the item itself)",
+          max: "Stop after this many records (default: 500)",
+          idle: "Stop after this many scrolls without new items (default: 3)",
+          expand: "Selector of buttons inside items to click before reading (never links)",
+          open: "Navigate here first",
+          format: "json (default) or jsonl",
+        },
+        examples: [
+          { cmd: "collect --item article --key 'a@href' --field title=h2 --field link=a@href", desc: "Titles and links of every article" },
+          { cmd: "collect --item '[role=row]' --key ':scope@data-id' --field cells='[role=cell][]' --format jsonl", desc: "Rows of a virtualized grid as JSON lines" },
         ]
       },
     }
@@ -1047,6 +1066,33 @@ const TOOLS = {
         examples: [
           { cmd: "network.body r_001", desc: "Get response body" },
           { cmd: "network.body r_001 | jq .", desc: "Pipe JSON to jq" }
+        ]
+      },
+      "network.wait": {
+        desc: "Wait for the page's next response whose URL matches a glob and print its JSON (or text)",
+        args: ["match"],
+        opts: {
+          match: "URL glob without query string: a path (/api/*/items) or a full URL (https://site/api/**); * stays within one path segment, ** matches anything",
+          open: "Navigate to this URL after capture starts, so responses during page load count",
+          timeout: "Seconds to wait (default: 30)",
+          json: "Print {id, url, status, json | body}",
+        },
+        examples: [
+          { cmd: 'network.wait --match "/i/api/graphql/*/TweetDetail" --open "https://x.com/user/status/1"', desc: "Open a page and print its API response" },
+          { cmd: 'network.wait "/api/**" --json', desc: "Next API response with its request id (for network.replay)" },
+        ]
+      },
+      "network.replay": {
+        desc: "Re-send a captured request from inside its tab (same cookies and headers) and print the response",
+        args: ["id"],
+        opts: {
+          set: "Edit before sending (repeatable): query.<param>=v, query.<param>.<json.path>=v, body=v, body.<json.path>=v; values are parsed as JSON when valid",
+          "allow-post": "Allow methods other than GET/HEAD (re-sending a POST can repeat a write)",
+          json: "Print {status, url, json | body}",
+        },
+        examples: [
+          { cmd: "network.replay r_001", desc: "Re-send a request" },
+          { cmd: "network.replay r_001 --set query.variables.cursor=abc", desc: "Next page: set a field inside a JSON query param" },
         ]
       },
       "network.curl": {
@@ -1751,6 +1797,7 @@ const ALL_SOCKET_TOOLS = [
   "click", "hover", "drag",
   "js", "console", "network",
   "network.get", "network.body", "network.curl", "network.origins",
+  "network.wait", "network.replay", "collect",
   "network.clear", "network.stats", "network.export", "network.path",
   "dialog.accept", "dialog.dismiss", "dialog.info",
   "emulate.network", "emulate.cpu", "emulate.geo", "emulate.device", "emulate.viewport", "emulate.touch",
@@ -3051,7 +3098,7 @@ if (args[0] === "workflow.validate") {
   }
 }
 
-const BOOLEAN_FLAGS = ["auto-capture", "json", "stream", "dry-run", "stop-on-error", "fail-fast", "clear", "submit", "all", "include-hidden", "case-sensitive", "hard", "annotate", "fullpage", "full-page", "reset", "no-screenshot", "no-diff", "full", "soft-fail", "has-body", "exclude-static", "v", "vv", "request", "by-tab", "har", "jsonl", "no-save", "no-auto-wait", "no-lock", "no-wait", "window", "tab", "focused", "unfocused", "keep-target", "close-target", "replace", "refresh"];
+const BOOLEAN_FLAGS = ["auto-capture", "json", "stream", "dry-run", "stop-on-error", "fail-fast", "clear", "submit", "all", "include-hidden", "case-sensitive", "hard", "annotate", "fullpage", "full-page", "reset", "no-screenshot", "no-diff", "full", "soft-fail", "has-body", "exclude-static", "v", "vv", "request", "by-tab", "har", "jsonl", "no-save", "no-auto-wait", "no-lock", "no-wait", "window", "tab", "focused", "unfocused", "keep-target", "close-target", "replace", "refresh", "allow-post"];
 
 const parseArgs = (rawArgs) => {
   const result = { positional: [], options: {} };
@@ -3241,6 +3288,8 @@ const PRIMARY_ARG_MAP = {
   "history.search": "query",
   "network.get": "id",
   "network.body": "id",
+  "network.replay": "id",
+  "network.wait": "match",
   "network.curl": "id",
   "network.path": "id",
   "window.new": "url",
@@ -3262,6 +3311,29 @@ const PRIMARY_ARG_MAP = {
 };
 
 let toolArgs = { ...options };
+
+// Repeatable options: `network.replay --set path=value ...`, `collect --field name=spec ...`.
+if (tool === "network.replay" || tool === "collect") {
+  const flag = tool === "collect" ? "--field" : "--set";
+  const values = [];
+  for (let i = 0; i < args.length; i++) {
+    if (args[i] === flag && args[i + 1] !== undefined) values.push(args[++i]);
+  }
+  delete toolArgs[flag.slice(2)];
+  try {
+    if (tool === "network.replay" && values.length) toolArgs.set = Object.fromEntries(values.map(parseSetArgument));
+    if (tool === "collect" && values.length) {
+      toolArgs.fields = Object.fromEntries(values.map((value) => {
+        const index = value.indexOf("=");
+        if (index < 1) throw new Error(`--field needs name=spec, got ${JSON.stringify(value)}`);
+        return [value.slice(0, index), value.slice(index + 1)];
+      }));
+    }
+  } catch (e) {
+    console.error(`Error: ${e.message}`);
+    process.exit(1);
+  }
+}
 
 if (tool === "scroll" && firstArg) {
   if (firstArg === "top" || firstArg === "bottom") {
@@ -4386,6 +4458,11 @@ async function handleResponse(response) {
   } else if (tool === "network.body" && data?.body !== undefined) {
     // Raw body for piping
     process.stdout.write(data.body);
+  } else if ((tool === "network.wait" || tool === "network.replay") && data && typeof data === "object" && ("json" in data || "body" in data)) {
+    if (data.json !== undefined) console.log(JSON.stringify(data.json, null, 2));
+    else process.stdout.write(data.body);
+  } else if (tool === "collect" && typeof result === "string") {
+    console.log(result);
   } else if (tool === "network.curl" && data?.curl) {
     console.log(data.curl);
   } else if (tool === "network.curl" && data?.entry) {
