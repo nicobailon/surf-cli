@@ -124,40 +124,17 @@ function compileTemplate(template, where) {
 /** ISO 8601 UTC for the two accepted shapes; undefined for anything else, including impossible dates. */
 function toDatetime(value) {
   if (typeof value !== "string") return undefined;
-  // year, month, day, hour, minute, second, milliseconds, zone as ±HHMM
-  let parts;
-  const iso = value.match(ISO_DATETIME);
-  const x = iso ? null : value.match(X_DATETIME);
-  if (iso) {
-    const [, year, month, day, hour, minute, second = "0", fraction = "", zone] = iso;
-    const ms = fraction.slice(0, 3).padEnd(3, "0");
-    parts = [year, month, day, hour, minute, second, ms, zone === "Z" ? "+0000" : zone.replace(":", "")];
-  } else if (x) {
-    const [, month, day, hour, minute, second, zone, year] = x;
-    parts = [year, MONTHS.indexOf(month) + 1, day, hour, minute, second, 0, zone];
-  } else {
-    return undefined;
-  }
-  const [year, month, day, hour, minute, second, ms] = parts.slice(0, 7).map(Number);
-  const zone = parts[7];
-  const offsetHours = Number(zone.slice(1, 3));
-  const offsetMinutes = Number(zone.slice(3));
-  if (offsetHours > 23 || offsetMinutes > 59) return undefined;
-  // Date rolls impossible values over (Feb 30 becomes Mar 1), so read the parts back and compare.
-  // setUTCFullYear keeps years below 100 as written; Date.UTC would read them as 19xx.
-  const local = new Date(0);
-  local.setUTCFullYear(year, month - 1, day);
-  local.setUTCHours(hour, minute, second, ms);
-  const sameParts =
-    local.getUTCFullYear() === year &&
-    local.getUTCMonth() === month - 1 &&
-    local.getUTCDate() === day &&
-    local.getUTCHours() === hour &&
-    local.getUTCMinutes() === minute &&
-    local.getUTCSeconds() === second;
-  if (!sameParts) return undefined;
-  const offset = (zone[0] === "-" ? -1 : 1) * (offsetHours * 60 + offsetMinutes);
-  return new Date(local.getTime() - offset * 60_000).toISOString();
+  // X's form becomes ISO: Mon Jan 01 10:00:00 +0000 2024 -> 2024-01-01T10:00:00+00:00.
+  const x = value.match(X_DATETIME);
+  const month = x && String(MONTHS.indexOf(x[1]) + 1).padStart(2, "0");
+  const text = x ? `${x[7]}-${month}-${x[2]}T${x[3]}:${x[4]}:${x[5]}${x[6].slice(0, 3)}:${x[6].slice(3)}` : value;
+  const iso = text.match(ISO_DATETIME);
+  if (!iso) return undefined;
+  // Date.parse rolls Feb 30 over to Mar 1 and reads hour 24 as the next day; V8 rejects the other out-of-range fields.
+  const [, year, mm, day, hour] = iso;
+  if (new Date(Date.UTC(year, mm - 1, day)).getUTCDate() !== Number(day) || Number(hour) > 23) return undefined;
+  const time = Date.parse(text);
+  return Number.isNaN(time) ? undefined : new Date(time).toISOString();
 }
 
 function compileField(spec, where) {
