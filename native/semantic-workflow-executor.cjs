@@ -1,6 +1,6 @@
 const crypto = require("node:crypto");
 const { getPrivateStateRoot } = require("./private-state.cjs");
-const { SEMANTIC_POLICY, semanticModel } = require("./semantic-core.cjs");
+const { SEMANTIC_POLICY } = require("./semantic-core.cjs");
 const { createExtractionEvaluator, createSemanticEvaluator } = require("./semantic-evaluator.cjs");
 const { resolveModel } = require("./semantic-provider.cjs");
 const { createSemanticWorkflowRuntime, WORKFLOW_POLICY } = require("./semantic-workflow.cjs");
@@ -20,14 +20,20 @@ function createConcreteSemanticExecutor({ request, workflow, inputs = {}, env = 
   const extracts = workflow.steps.some((step) => step.args?.op === "extract");
   evaluator = decisions ? evaluator ?? createSemanticEvaluator({ model, env }) : null;
   extractionEvaluator = extracts ? extractionEvaluator ?? createExtractionEvaluator({ model: SEMANTIC_POLICY.defaultExtractionModel, env }) : null;
-  const decisionSummary = () => evaluator?.summary() ?? { provider: semanticModel(model).provider, model, providerCalls: 0, providerLatencyMs: 0 };
+  // With no decision step, SURF_SEMANTIC_MODEL is only reported: an unknown name must not block the run.
+  const decisionSummary = () => evaluator?.summary() ?? {
+    provider: Object.hasOwn(SEMANTIC_POLICY.models, model) ? SEMANTIC_POLICY.models[model].provider : null,
+    model,
+    providerCalls: 0,
+    providerLatencyMs: 0,
+  };
   const digest = crypto.createHash("sha256").update(JSON.stringify(workflow)).digest("hex");
   const createAttemptStore = attemptStore ? undefined : ({ runId, workflowDigest }) =>
     createSemanticWorkflowStateStore({ root: getPrivateStateRoot(env), clock, runId, workflowDigest });
   const runtime = createSemanticWorkflowRuntime({
     request,
     evaluate: evaluator?.evaluate,
-    model: evaluator?.model ?? model,
+    model: evaluator?.model ?? SEMANTIC_POLICY.model,
     evaluateExtraction: extractionEvaluator?.evaluate,
     extractionModelId: extractionEvaluator?.model,
     attemptStore,

@@ -356,6 +356,29 @@ describe("semantic workflow extract step through the executor", () => {
     }
   });
 
+  it("ignores an unregistered SURF_SEMANTIC_MODEL in an extract-only workflow", async () => {
+    vi.stubGlobal("fetch", cloudflareFetch());
+    try {
+      const execute = createConcreteSemanticExecutor({
+        request: browser(),
+        attemptStore: { acquire: vi.fn(), checkpoint: vi.fn(), release: vi.fn() },
+        workflow: { semantic: { version: 1 }, steps: [extractStep] },
+        env: { ...cloudflare, SURF_SEMANTIC_MODEL: "clairic" },
+      });
+      const result = await execute(extractStep);
+      expect(result.kind).toBe("success");
+      expect(result.semantic).toMatchObject({
+        provider: null,
+        model: "clairic",
+        providerCalls: 0,
+        providerLatencyMs: 0,
+        extraction: { model: "clairic", providerCalls: 1 },
+      });
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
   it("needs Cloudflare credentials for extract before any browser request", async () => {
     const request = browser();
     const result = await executeDoSteps([doStep(extractStep)], {
