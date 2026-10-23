@@ -213,7 +213,9 @@ function parseSemanticArgs(argv) {
   if (result.vision && command !== "semantic.find" && command !== "semantic.act") throw new Error(`--vision does not apply to ${command}`);
   for (const name of Object.keys(THRESHOLD_KEYS)) {
     if (Object.hasOwn(result.thresholds, THRESHOLD_KEYS[name]) && !COMMAND_THRESHOLD_KEYS[command].has(name)) {
-      throw new Error(`--threshold ${name} does not apply to ${command}`);
+      const message = `--threshold ${name} does not apply to ${command}`;
+      if (extracting) invalidRequest(message);
+      throw new Error(message);
     }
   }
   if (!extracting) result.goal = positionals[0].trim();

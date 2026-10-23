@@ -2823,7 +2823,12 @@ describe("semantic.extract CLI", () => {
     [["--field", "total:number", "--threshold", "find=0.5"], "does not apply to semantic.extract"],
     [["--field", "total:number", "--reference-date", "2026-02-30"], "YYYY-MM-DD"],
   ])("rejects semantic.extract %j", (args, message) => {
-    expect(() => semantic.parseSemanticArgs(["semantic.extract", ...args])).toThrow(message);
+    expect(() => semantic.parseSemanticArgs(["semantic.extract", ...args])).toThrow(
+      expect.objectContaining({
+        code: "semantic_invalid_request",
+        message: expect.stringContaining(message),
+      }),
+    );
   });
 
   it("parses list types and --fields-json, naming each field's type for the output", () => {
