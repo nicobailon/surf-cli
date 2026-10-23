@@ -1,9 +1,28 @@
 import { describe, expect, it } from "vitest";
 
 const definition = require("../../native/workflow-definition.cjs");
+const { parseSemanticArgs } = require("../../native/semantic-cli.cjs");
 
 function semanticWorkflow(steps: Array<Record<string, unknown>>) {
   return { semantic: { version: 1 }, steps };
+}
+
+function extractStep(fields: unknown, as: string | undefined = "order") {
+  return {
+    id: "read",
+    tool: "semantic.step",
+    ...(as ? { as } : {}),
+    args: { op: "extract", fields },
+  };
+}
+
+function errorMessage(run: () => unknown): string {
+  try {
+    run();
+  } catch (error) {
+    return (error as Error).message;
+  }
+  throw new Error("expected an error");
 }
 
 describe("semantic workflow definition", () => {
@@ -98,5 +117,139 @@ describe("semantic workflow definition", () => {
     ],
   ])("rejects invalid semantic structure before execution: %s", (_label, workflow) => {
     expect(() => definition.normalizeWorkflow(workflow)).toThrow();
+  });
+
+  it("accepts an extract step and prints it for a dry run", () => {
+    const workflow = definition.normalizeWorkflow(
+      semanticWorkflow([extractStep({ total: { type: "number", decimals: 2 } })]),
+    );
+    expect(
+      workflow.steps.map((step: Record<string, unknown>) => definition.formatStep(step)),
+    ).toEqual([
+      'semantic.step op="extract" fields={"total":{"type":"number","decimals":2}} → order',
+    ]);
+  });
+
+  const seventeen = Object.fromEntries(
+    Array.from({ length: 17 }, (_, index) => [`f${index}`, { type: "text" }]),
+  );
+  it.each([
+    [
+      "as missing",
+      [extractStep({ total: { type: "number" } }, "")],
+      "steps[0].as is required for extract",
+    ],
+    [
+      "unknown argument",
+      [
+        {
+          ...extractStep({ total: { type: "number" } }),
+          args: { op: "extract", fields: { total: { type: "number" } }, target: { query: "x" } },
+        },
+      ],
+      "steps[0].args.target is not allowed",
+    ],
+    ["no fields", [extractStep({})], "steps[0].args.fields must be an object with 1 to 16 fields"],
+    [
+      "fields array",
+      [extractStep([{ type: "text" }])],
+      "steps[0].args.fields must be an object with 1 to 16 fields",
+    ],
+    [
+      "too many fields",
+      [extractStep(seventeen)],
+      "steps[0].args.fields must be an object with 1 to 16 fields",
+    ],
+    [
+      "bad field name",
+      [extractStep({ "1total": { type: "number" } })],
+      'steps[0].args.fields: field name "1total" must match [A-Za-z_][A-Za-z0-9_.-]{0,63}',
+    ],
+    [
+      "reserved field name",
+      [extractStep(JSON.parse('{"__proto__":{"type":"text"}}'))],
+      "steps[0].args.fields: field name __proto__ is reserved",
+    ],
+    [
+      "field spec",
+      [extractStep({ total: { type: "number", decimals: 7 } })],
+      "steps[0].args.fields.total: decimals must be an integer from 0 to 6",
+    ],
+    ...["target", "expect", "predicate"].map((key) => [
+      `extract binding as ${key}`,
+      [
+        extractStep({ total: { type: "number" } }),
+        key === "target"
+          ? {
+              id: "open",
+              tool: "semantic.step",
+              args: { op: "open", target: { binding: "order" } },
+            }
+          : {
+              id: "check",
+              tool: "semantic.step",
+              args:
+                key === "expect"
+                  ? {
+                      op: "click",
+                      target: { query: "Pay" },
+                      expect: { kind: "visible", target: { binding: "order" } },
+                    }
+                  : {
+                      op: "assert",
+                      mode: "local",
+                      predicate: { kind: "visible", target: { binding: "order" } },
+                    },
+            },
+      ],
+      "steps[1] binding 'order' is an extract result; only a value assert can use it",
+    ]),
+    [
+      "extract binding in bindings",
+      [
+        extractStep({ total: { type: "number" } }),
+        {
+          id: "check",
+          tool: "semantic.step",
+          args: { op: "assert", mode: "semantic", claim: "Paid", bindings: ["order"] },
+        },
+      ],
+      "steps[1] binding 'order' is an extract result; only a value assert can use it",
+    ],
+  ] as Array<[string, Array<Record<string, unknown>>, string]>)(
+    "rejects an invalid extract step: %s",
+    (_label, steps, message) => {
+      expect(errorMessage(() => definition.normalizeWorkflow(semanticWorkflow(steps)))).toBe(
+        message,
+      );
+    },
+  );
+
+  it.each([
+    { n: "not an object" },
+    { n: { type: "estimate" } },
+    { n: { type: "text", unit: "USD" } },
+    { n: { type: "text", instructions: 3 } },
+    { n: { type: "duration", unit: "fortnights" } },
+    { n: { type: "number", integer: "yes" } },
+    { n: { type: "number", decimals: 1.5 } },
+    { n: { type: "date", null_threshold: 2 } },
+    { n: { type: "list" } },
+    { n: { type: "list", items: "date", decimals: 2 } },
+    { "bad name": { type: "text" } },
+    JSON.parse('{"__proto__":{"type":"text"}}'),
+  ])("words each field error as --fields-json does: %j", (fields) => {
+    const cli = errorMessage(() =>
+      parseSemanticArgs(["semantic.extract", "--fields-json", JSON.stringify(fields)]),
+    );
+    const workflow = errorMessage(() =>
+      definition.normalizeWorkflow(semanticWorkflow([extractStep(fields)])),
+    );
+    const name = Object.keys(fields)[0];
+    expect(workflow).toBe(
+      cli.startsWith(`--fields-json ${name}`)
+        ? cli.replace(`--fields-json ${name}`, `steps[0].args.fields.${name}`)
+        : `steps[0].args.fields: ${cli}`,
+    );
   });
 });

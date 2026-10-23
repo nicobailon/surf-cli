@@ -1391,7 +1391,7 @@ const TOOLS = {
           "no-auto-wait": "Disable automatic waits between steps",
           "step-delay": "Delay between steps in ms (default: 100)",
           "dry-run": "Parse and validate without executing",
-          "allow-semantic": "Allow bounded semantic model decisions (model: SURF_SEMANTIC_MODEL, default jev-1.13.0)",
+          "allow-semantic": "Allow bounded semantic model decisions (model: SURF_SEMANTIC_MODEL, default jev-1.13.0); extract steps always use clairic (Cloudflare)",
           "allow-write": "Allow declared semantic fill/check/click steps",
           "inputs-stdin": "Read bounded private input slots as one JSON object from stdin",
         },

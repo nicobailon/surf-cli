@@ -224,3 +224,229 @@ describe("semantic workflow integration seam", () => {
     }
   });
 });
+
+describe("semantic workflow extract step through the executor", () => {
+  const cloudflare = {
+    CLOUDFLARE_ACCOUNT_ID: "0123456789abcdef0123456789abcdef",
+    CLOUDFLARE_API_TOKEN: "fake-token",
+  };
+  const fields = { total: { type: "number", decimals: 2 }, code: { type: "text" } };
+  const extractStep = {
+    id: "read",
+    tool: "semantic.step",
+    as: "order",
+    args: { op: "extract", fields },
+  };
+  const findStep = {
+    id: "find",
+    tool: "semantic.step",
+    as: "product",
+    args: { op: "find", target: { query: "Blue bottle", role: "link" } },
+  };
+  const doStep = ({ id, as, args }: Record<string, any>) => ({
+    id,
+    as,
+    cmd: "semantic.step",
+    args,
+  });
+  const ok = (result: unknown) => new Response(JSON.stringify({ success: true, result }));
+  function cloudflareFetch() {
+    return vi.fn(async (url: string, _init: unknown) => {
+      if (url.endsWith("/clairic")) {
+        return ok({
+          answers: {
+            total: { type: "number", value: 4219.37, confidence: 0.97, p_null: 0.01 },
+            code: { type: "text", value: "ZX-7731-Q", confidence: 0.95, p_null: 0.02 },
+          },
+          truncated: false,
+          usage: { input_tokens: 7, output_tokens: 3 },
+        });
+      }
+      return ok({
+        model: "clef-flash",
+        usage: { input_tokens: 2, output_tokens: 1 },
+        answers: {
+          target: {
+            type: "choice",
+            choice: "e2",
+            confidence: 0.9,
+            probabilities: { e2: 0.99, none: 0.01 },
+          },
+        },
+      });
+    });
+  }
+
+  it("keeps the decision model and Clairic apart, and reports each summary", async () => {
+    const fetch = cloudflareFetch();
+    vi.stubGlobal("fetch", fetch);
+    try {
+      const steps = [findStep, extractStep];
+      const result = await executeDoSteps(steps.map(doStep), {
+        quiet: true,
+        stepDelay: 0,
+        executeTool: vi.fn(),
+        createSemanticExecutor: () =>
+          createConcreteSemanticExecutor({
+            request: browser(),
+            attemptStore: { acquire: vi.fn(), checkpoint: vi.fn(), release: vi.fn() },
+            workflow: { semantic: { version: 1 }, steps },
+            env: { ...cloudflare, SURF_SEMANTIC_MODEL: "clef-flash" },
+          }),
+      });
+      expect(result.status).toBe("completed");
+      expect(fetch.mock.calls.map(([url]) => url.replace(/^.*\/ai\/run\//, ""))).toEqual([
+        "@cf/cloudflare/clef-flash",
+        "@cf/cloudflare/clairic",
+      ]);
+      expect(result.semantic).toMatchObject({
+        stepId: "read",
+        provider: "cloudflare",
+        model: "clef-flash",
+        providerCalls: 1,
+        extraction: {
+          provider: "cloudflare",
+          model: "clairic",
+          providerCalls: 1,
+          providerLatencyMs: expect.any(Number),
+        },
+        usage: { providerCalls: 2, semanticDecisions: 1, extractions: 1, observations: 2 },
+      });
+      expect(result.results[0].semantic).toMatchObject({ extraction: { providerCalls: 0 } });
+      expect(result.vars.order).toMatchObject({
+        status: "extracted",
+        fields: {
+          total: { type: "number", status: "extracted", value: 4219.37 },
+          code: { type: "text", status: "extracted", value: "ZX-7731-Q" },
+        },
+        appliedThresholds: { extract: 0.8, null: 0.5 },
+        referenceDate: expect.stringMatching(/^\d{4}-\d{2}-\d{2}$/),
+        page: { origin: "https://example.test", title: "Shop" },
+        omitted: { candidates: 0, chunks: 0 },
+      });
+      expect(result.vars.order).not.toHaveProperty("usage");
+      const body = JSON.parse((fetch.mock.calls[1][1] as { body: string }).body);
+      expect(Object.keys(body).sort()).toEqual(["fields", "model", "reference_date", "state"]);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("runs an extract-only workflow with Cloudflare credentials and no TypeSafe key", async () => {
+    vi.stubGlobal("fetch", cloudflareFetch());
+    try {
+      const execute = createConcreteSemanticExecutor({
+        request: browser(),
+        attemptStore: { acquire: vi.fn(), checkpoint: vi.fn(), release: vi.fn() },
+        workflow: { semantic: { version: 1 }, steps: [extractStep] },
+        env: cloudflare,
+      });
+      const result = await execute(extractStep);
+      expect(result.kind).toBe("success");
+      expect(result.semantic).toMatchObject({
+        provider: "typesafe",
+        model: "jev-1.13.0",
+        providerCalls: 0,
+        providerLatencyMs: 0,
+        extraction: { model: "clairic", providerCalls: 1 },
+      });
+      expect(result.publicResult.fields.total.value).toBe(4219.37);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("needs Cloudflare credentials for extract before any browser request", async () => {
+    const request = browser();
+    const result = await executeDoSteps([doStep(extractStep)], {
+      quiet: true,
+      stepDelay: 0,
+      executeTool: vi.fn(),
+      createSemanticExecutor: () =>
+        createConcreteSemanticExecutor({
+          request,
+          workflow: { semantic: { version: 1 }, steps: [extractStep] },
+          env: { TYPESAFE_API_KEY: "test-key" },
+        }),
+    });
+    expect(result.status).toBe("failed");
+    expect(result.error).toBe(
+      "Clairic needs Cloudflare credentials: set CLOUDFLARE_ACCOUNT_ID and CLOUDFLARE_API_TOKEN, or run: surf semantic auth set --provider cloudflare",
+    );
+    expect(request).not.toHaveBeenCalled();
+  });
+
+  it("never builds the Clairic evaluator for a workflow without extract", async () => {
+    const evaluator = createSemanticEvaluator({
+      model: "jev-1.13.0",
+      env: { TYPESAFE_API_KEY: "test-key" },
+      loadSdk: () => ({
+        TypeSafeClient: class {
+          systemOne = vi.fn(async () => ({
+            model: "jev-test",
+            usage: { input_tokens: 2, output_tokens: 1 },
+            answers: {
+              target: {
+                type: "choice",
+                choice: "e2",
+                confidence: 0.9,
+                probabilities: { e2: 0.99, none: 0.01 },
+              },
+            },
+          }));
+        },
+      }),
+    });
+    const execute = createConcreteSemanticExecutor({
+      request: browser(),
+      evaluator,
+      attemptStore: { acquire: vi.fn(), checkpoint: vi.fn(), release: vi.fn() },
+      workflow: { semantic: { version: 1 }, steps: [findStep] },
+      env: {},
+    });
+    const result = await execute(findStep);
+    expect(result.kind).toBe("success");
+    expect(result.semantic).not.toHaveProperty("extraction");
+    expect(result.semantic.usage).toMatchObject({ providerCalls: 1, extractions: 0 });
+  });
+
+  it("writes no extracted value to the workflow state files", async () => {
+    const fs = require("node:fs");
+    const os = require("node:os");
+    const path = require("node:path");
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "surf-semantic-state-"));
+    vi.stubGlobal("fetch", cloudflareFetch());
+    try {
+      const result = await executeDoSteps([doStep(extractStep)], {
+        quiet: true,
+        stepDelay: 0,
+        executeTool: vi.fn(),
+        createSemanticExecutor: () =>
+          createConcreteSemanticExecutor({
+            request: browser(),
+            workflow: { semantic: { version: 1 }, steps: [extractStep] },
+            env: { ...cloudflare, SURF_STATE_DIR: root },
+          }),
+      });
+      expect(result.status).toBe("completed");
+      expect(result.vars.order.fields.code.value).toBe("ZX-7731-Q");
+      const files = (fs.readdirSync(root, { recursive: true }) as string[])
+        .map((name) => path.join(root, name))
+        .filter((file) => fs.statSync(file).isFile());
+      expect(files.map((file) => path.basename(file)).sort()).toEqual([
+        "checkpoint.json",
+        "run.json",
+      ]);
+      const checkpoint = files.find((file) => file.endsWith("checkpoint.json")) as string;
+      expect(JSON.parse(fs.readFileSync(checkpoint, "utf8")).completedSteps).toEqual(["read"]);
+      for (const file of files) {
+        const text = fs.readFileSync(file, "utf8");
+        expect(text).not.toContain("4219");
+        expect(text).not.toContain("ZX-7731");
+      }
+    } finally {
+      vi.unstubAllGlobals();
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+});

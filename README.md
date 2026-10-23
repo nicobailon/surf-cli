@@ -752,7 +752,7 @@ surf do 'go "url" | click e5 | screenshot' --dry-run
 - `--step-delay <ms>` - Delay between steps (default: 100, use 0 to disable)
 - `--no-auto-wait` - Disable automatic waits between steps
 - `--json` - Output structured JSON result
-- `--allow-semantic` - Opt in to bounded model decisions for a semantic workflow (model from `SURF_SEMANTIC_MODEL`, default `jev-1.13.0`)
+- `--allow-semantic` - Opt in to bounded model decisions for a semantic workflow (model from `SURF_SEMANTIC_MODEL`, default `jev-1.13.0`; `extract` steps always use `clairic` with Cloudflare credentials)
 - `--allow-write` - Additionally authorize declared `fill`, `ensureChecked`, and `click` steps
 - `--inputs-stdin` - Read one bounded JSON object of private local input slots from stdin
 - `--<arg> <value>` - Pass arguments to workflow (e.g., `--url "..."`)
@@ -853,7 +853,7 @@ surf workflow.validate ./my-workflow.json
 
 Semantic workflow files declare `"semantic": { "version": 1 }` and use only
 linear `semantic.step` operations: `find`, `open`, `ensureChecked`, `fill`,
-`click`, and `assert`. Validate or dry-run them offline, then opt in explicitly:
+`click`, `assert`, and `extract`. Validate or dry-run them offline, then opt in explicitly:
 
 ```bash
 surf workflow.validate ./product.json
@@ -895,9 +895,31 @@ printf '%s' '{"quantity":"2"}' | SURF_SESSION=shopping surf do \
 }
 ```
 
-This example includes every supported operation and the required `claim` for a
-semantic `assert`. Use it as a valid starting shape, then remove steps the task
-does not need.
+This example includes every supported operation except `extract` (shown below)
+and the required `claim` for a semantic `assert`. Use it as a valid starting
+shape, then remove steps the task does not need.
+
+`extract` reads typed values off the current page in one step, the same way
+`semantic.extract` does. Its `fields` object uses the `--fields-json` grammar,
+and the step needs an `as` name:
+
+```json
+{ "id": "read-order", "tool": "semantic.step", "as": "order", "args": {
+  "op": "extract", "fields": {
+    "total": { "type": "number", "decimals": 2, "instructions": "Order total including tax" },
+    "delivered": { "type": "date", "instructions": "Estimated delivery date" }
+  }
+} }
+```
+
+It reads one observation of the visible page and makes one call to Cloudflare's
+Clairic model, which counts against `maxProviderCalls`. It needs Cloudflare
+credentials and doesn't need `--allow-write`. A workflow without decision steps,
+such as one that only extracts, needs no TypeSafe key. The step completes for
+any valid answer, including `null` and `uncertain` fields. The result appears
+under `vars.<as>` in `surf do --json` output, with the same shape as
+`semantic.extract`. Extracted values are never written to the workflow's state
+files or checkpoints, and an extract result can't be used as a step `target`.
 
 `open` performs freshly validated same-origin HTTP(S) navigation; it never falls
 back to a click. Model-derived writes retain the `0.95` gate, dispatch at most
@@ -908,10 +930,11 @@ sent only to their browser fill/compare operation, not to the model provider, wo
 variables, events, output, or checkpoints. A new run can repeat an external
 effect: Surf does not claim exactly-once server behavior or automatic resume.
 Each semantic step result's `semantic` block reports `provider`, `model`,
-`providerCalls`, and `providerLatencyMs` for the run so far.
+`providerCalls`, and `providerLatencyMs` for the run so far. Workflows with an
+`extract` step also report Clairic's own totals under `semantic.extraction`.
 
 **Supported commands:** Ordinary workflows support all Surf commands. Semantic
-v1 workflows intentionally support only the six closed operations above.
+v1 workflows intentionally support only the seven closed operations above.
 
 ### Playbooks
 

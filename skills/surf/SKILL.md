@@ -161,10 +161,13 @@ printf '%s' '{"quantity":"2"}' | SURF_SESSION=shopping surf do --file flow.json 
 ```
 
 The closed operations are `find`, same-origin direct `open`, `ensureChecked`,
-`fill`, one-shot `click` with an explicit expectation, and `assert`. Search is
-bounded overlapping coverage, not global ranking. Unknown write outcomes stop
+`fill`, one-shot `click` with an explicit expectation, `assert`, and `extract`,
+which reads typed values from the page with Clairic (Cloudflare credentials).
+Search is bounded overlapping coverage, not global ranking. Unknown write outcomes stop
 without replay; a later new run can still repeat an external effect. Input
 values never enter provider state, workflow variables, events, or checkpoints.
+Extracted values appear only in `surf do --json` `vars.<as>`; they are never
+written to the workflow's state files or checkpoints.
 
 Required argument shapes:
 
@@ -175,10 +178,11 @@ ensureChecked  target + checked
 fill           target + input
 click          target + expect
 assert         mode + claim (semantic) or predicate (local)
+extract        fields (the --fields-json object) + "as"; not usable as a target
 ```
 
-The complete valid six-operation example in the README uses these shapes; start
-from it instead of inventing fields.
+The complete valid example in the README uses these shapes, with a separate
+`extract` example; start from them instead of inventing fields.
 
 Every click/fill requires `--allow-write`; repeat `--allow-ref` to narrow it.
 Broad writes use threshold `0.95`; exactly one allowed ref with one applicable

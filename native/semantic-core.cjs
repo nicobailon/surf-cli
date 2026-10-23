@@ -445,6 +445,54 @@ function validExtractedValue(spec, value) {
   return typeof value === "string" && EXTRACTION_VALUE_PATTERNS[spec.type].test(value);
 }
 
+// Field names key plain objects in the request and the output, so __proto__ would vanish from them.
+function extractionFieldName(name, prefix = "") {
+  if (!/^[A-Za-z_][A-Za-z0-9_.-]{0,63}$/.test(name)) fail(`${prefix}field name ${JSON.stringify(name)} must match [A-Za-z_][A-Za-z0-9_.-]{0,63}`);
+  if (name === "__proto__") fail(`${prefix}field name __proto__ is reserved`);
+}
+
+const FIELDS_JSON_KEYS = Object.freeze({
+  text: ["instructions", "null_threshold"],
+  number: ["instructions", "unit", "integer", "decimals", "null_threshold"],
+  date: ["instructions", "null_threshold"],
+  time: ["instructions", "null_threshold"],
+  datetime: ["instructions", "null_threshold"],
+  duration: ["instructions", "unit", "integer", "decimals", "null_threshold"],
+  list: ["instructions", "items", "decimals"],
+});
+
+// Parses one Clairic field spec (the --fields-json grammar); label names the field in error messages.
+function fieldsJsonField(name, spec, label) {
+  if (!spec || typeof spec !== "object" || Array.isArray(spec)) fail(`${label} must be an object`);
+  if (!Object.hasOwn(FIELDS_JSON_KEYS, spec.type)) {
+    fail(`${label} has unknown type ${JSON.stringify(spec.type)}; valid types: ${Object.keys(FIELDS_JSON_KEYS).join(", ")}`);
+  }
+  const extra = Object.keys(spec).find((key) => key !== "type" && !FIELDS_JSON_KEYS[spec.type].includes(key));
+  if (extra) fail(`${label}: ${extra} does not apply to ${spec.type} fields`);
+  const { instructions, unit, integer, decimals, items, null_threshold: nullThreshold } = spec;
+  if (instructions !== undefined && typeof instructions !== "string") fail(`${label}: instructions must be a string`);
+  if (unit !== undefined && (typeof unit !== "string" || !unit.trim() || (spec.type === "duration" && !Object.hasOwn(EXTRACTION_FIELD_TYPES, `duration.${unit}`)))) {
+    fail(`${label}: unit must be a nonblank string, and for durations one of seconds, minutes, hours, days, weeks, months, years`);
+  }
+  if (integer !== undefined && typeof integer !== "boolean") fail(`${label}: integer must be true or false`);
+  if (decimals !== undefined && !(Number.isInteger(decimals) && decimals >= 0 && decimals <= 6)) fail(`${label}: decimals must be an integer from 0 to 6`);
+  if (nullThreshold !== undefined && !(Number.isFinite(nullThreshold) && nullThreshold >= 0 && nullThreshold <= 1)) fail(`${label}: null_threshold must be between 0 and 1`);
+  if (spec.type === "list") {
+    if (!["text", "number", "date"].includes(items)) fail(`${label}: list fields need items text, number or date`);
+    if (decimals !== undefined && items !== "number") fail(`${label}: decimals applies only to number lists`);
+  }
+  let type = spec.type;
+  if (spec.type === "list") type = items === "text" ? "list" : `list.${items}`;
+  else if (spec.type === "number" && integer) type = "integer";
+  else if (spec.type === "duration" && unit) type = `duration.${unit}`;
+  return { name, type, spec: { ...spec } };
+}
+
+// The default reference date: the local calendar date as YYYY-MM-DD.
+function localReferenceDate(date) {
+  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
+}
+
 function optionalProbability(value) {
   return value === undefined || (Number.isFinite(value) && value >= 0 && value <= 1);
 }
@@ -542,4 +590,4 @@ async function extract({ state, fields, referenceDate, thresholds = {}, model = 
   };
 }
 
-module.exports = { EXTRACTION_FIELD_TYPES, SEMANTIC_POLICY, SemanticError, chooseAction, extract, extractionModel, filter, find, semanticModel, verify };
+module.exports = { EXTRACTION_FIELD_TYPES, SEMANTIC_POLICY, SemanticError, chooseAction, extract, extractionFieldName, extractionModel, fieldsJsonField, filter, find, localReferenceDate, semanticModel, verify };

@@ -642,3 +642,170 @@ describe("bounded semantic workflow runtime", () => {
     expect(["success", "failure"]).toContain(result.kind);
   });
 });
+
+describe("semantic workflow extract step", () => {
+  const fields = { total: { type: "number", decimals: 2 }, note: { type: "text" } };
+  function extractor() {
+    return vi.fn(async (_text: string, _requested: Record<string, unknown>, _options: unknown) => ({
+      answers: {
+        total: { type: "number", value: 42.1, confidence: 0.99, p_null: 0.01 },
+        note: { type: "text", value: null, confidence: 0.2, p_null: 0.9 },
+      },
+      truncated: false,
+      usage: { input_tokens: 5, output_tokens: 4 },
+    }));
+  }
+
+  it("reads one observation, makes one extraction call, and keeps the values in memory", async () => {
+    const request = boundary();
+    const evaluate = provider();
+    const evaluateExtraction = extractor();
+    const attemptStore = store();
+    const local = new Date(2026, 9, 23, 23, 30).getTime();
+    const runtime = createSemanticWorkflowRuntime({
+      request,
+      evaluate,
+      evaluateExtraction,
+      attemptStore,
+      now: () => local,
+    });
+    const context = runtime.createContext({ maxProviderCalls: 2 });
+    const result = await runtime.executeStep(
+      { id: "read", as: "order", op: "extract", fields },
+      context,
+    );
+    const extraction = {
+      status: "partial",
+      fields: {
+        total: {
+          type: "number",
+          status: "extracted",
+          value: 42.1,
+          confidence: 0.99,
+          pNull: 0.01,
+          source: null,
+        },
+        note: {
+          type: "text",
+          status: "null",
+          value: null,
+          confidence: 0.2,
+          pNull: 0.9,
+          source: null,
+        },
+      },
+      appliedThresholds: { extract: 0.8, null: 0.5 },
+      referenceDate: "2026-10-23",
+      truncated: false,
+      page: { origin: "https://example.test", title: "Shop" },
+      omitted: { candidates: 0, chunks: 0 },
+    };
+    expect(result).toEqual({ kind: "success", status: "completed", extraction });
+    expect(context.bindings.get("order")).toEqual({
+      kind: "extraction",
+      handle: "order",
+      specs: [
+        { name: "total", type: "number", spec: fields.total },
+        { name: "note", type: "text", spec: fields.note },
+      ],
+      result: extraction,
+    });
+    expect(request.mock.calls.map(([tool, args]) => [tool, args])).toEqual([
+      ["page.read", { semanticObservation: true }],
+    ]);
+    expect(evaluate).not.toHaveBeenCalled();
+    expect(evaluateExtraction).toHaveBeenCalledOnce();
+    expect(evaluateExtraction.mock.calls[0][1]).toEqual({
+      total: { type: "number", decimals: 2, null_threshold: 0.5 },
+      note: { type: "text", null_threshold: 0.5 },
+    });
+    expect(evaluateExtraction.mock.calls[0][2]).toMatchObject({
+      referenceDate: "2026-10-23",
+      timeoutMs: 5_000,
+    });
+    expect(context.usage).toEqual({
+      providerCalls: 1,
+      inputTokens: 5,
+      outputTokens: 4,
+      partial: false,
+      browserCommands: 1,
+      semanticDecisions: 0,
+      extractions: 1,
+      observations: 1,
+    });
+    expect(attemptStore.reserve).not.toHaveBeenCalled();
+    expect(attemptStore.dispatchIntent).not.toHaveBeenCalled();
+    expect(context.completedSteps).toEqual(["read"]);
+  });
+
+  it("charges the extraction call to the shared provider-call budget", async () => {
+    const evaluateExtraction = extractor();
+    const runtime = createSemanticWorkflowRuntime({
+      request: boundary(),
+      evaluate: provider("e1"),
+      evaluateExtraction,
+    });
+    const context = runtime.createContext({ maxProviderCalls: 1 });
+    expect(
+      await runtime.executeStep(
+        { id: "find", as: "button", op: "find", target: { query: "Add" } },
+        context,
+      ),
+    ).toMatchObject({ kind: "success" });
+    expect(
+      await runtime.executeStep({ id: "read", as: "order", op: "extract", fields }, context),
+    ).toMatchObject({ kind: "failure", reason: "budget_exhaustion" });
+    expect(evaluateExtraction).not.toHaveBeenCalled();
+    expect(context.usage).toMatchObject({ providerCalls: 2, semanticDecisions: 1, extractions: 0 });
+    expect(context.bindings.has("order")).toBe(false);
+  });
+
+  it("stops with budget_exhaustion when the deadline runs out before the extraction call", async () => {
+    let clock = 1_000;
+    const read = boundary();
+    const request = vi.fn(async (tool: string, args: Record<string, any>) => {
+      clock += 2_000;
+      return read(tool, args);
+    });
+    const evaluateExtraction = extractor();
+    const runtime = createSemanticWorkflowRuntime({
+      request,
+      evaluateExtraction,
+      now: () => clock,
+    });
+    const context = runtime.createContext({ deadlineMs: 1_000 });
+    expect(
+      await runtime.executeStep({ id: "read", as: "order", op: "extract", fields }, context),
+    ).toMatchObject({ kind: "failure", reason: "budget_exhaustion" });
+    expect(evaluateExtraction).not.toHaveBeenCalled();
+  });
+
+  it("fails closed with invalid_binding when an extract result is used as a target", async () => {
+    const request = boundary();
+    const runtime = createSemanticWorkflowRuntime({
+      request,
+      evaluate: provider(),
+      evaluateExtraction: extractor(),
+    });
+    const context = runtime.createContext();
+    await runtime.executeStep({ id: "read", as: "order", op: "extract", fields }, context);
+    expect(
+      await runtime.executeStep({ id: "open", op: "open", target: { binding: "order" } }, context),
+    ).toEqual({ kind: "failure", status: "blocked", reason: "invalid_binding" });
+    expect(request).toHaveBeenCalledOnce();
+  });
+
+  it("passes provider failures through as the step reason", async () => {
+    const runtime = createSemanticWorkflowRuntime({
+      request: boundary(),
+      evaluateExtraction: vi.fn(async () => {
+        throw Object.assign(new Error("slow"), { code: "provider_timeout" });
+      }),
+    });
+    const context = runtime.createContext();
+    expect(
+      await runtime.executeStep({ id: "read", as: "order", op: "extract", fields }, context),
+    ).toEqual({ kind: "failure", status: "blocked", reason: "provider_timeout" });
+    expect(context.usage).toMatchObject({ providerCalls: 1, extractions: 1, partial: true });
+  });
+});

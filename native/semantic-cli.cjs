@@ -1,7 +1,7 @@
 const crypto = require("node:crypto");
 const { performance } = require("node:perf_hooks");
 const { openClientTransport } = require("./client-transport.cjs");
-const { EXTRACTION_FIELD_TYPES, SEMANTIC_POLICY, SemanticError, chooseAction, extract, extractionModel, filter, find, semanticModel, verify } = require("./semantic-core.cjs");
+const { EXTRACTION_FIELD_TYPES, SEMANTIC_POLICY, SemanticError, chooseAction, extract, extractionFieldName, extractionModel, fieldsJsonField, filter, find, localReferenceDate, semanticModel, verify } = require("./semantic-core.cjs");
 const { resolveModel } = require("./semantic-provider.cjs");
 const {
   clearStoredCloudflareCredential,
@@ -39,50 +39,6 @@ const EXTRACT_ONLY_OPTIONS = Object.freeze(["--field", "--fields-json", "--refer
 
 function invalidRequest(message) {
   throw new SemanticError("semantic_invalid_request", message);
-}
-
-// Field names key plain objects in the request and the output, so __proto__ would vanish from them.
-function extractionFieldName(name) {
-  if (!/^[A-Za-z_][A-Za-z0-9_.-]{0,63}$/.test(name)) invalidRequest(`field name ${JSON.stringify(name)} must match [A-Za-z_][A-Za-z0-9_.-]{0,63}`);
-  if (name === "__proto__") invalidRequest("field name __proto__ is reserved");
-}
-
-const FIELDS_JSON_KEYS = Object.freeze({
-  text: ["instructions", "null_threshold"],
-  number: ["instructions", "unit", "integer", "decimals", "null_threshold"],
-  date: ["instructions", "null_threshold"],
-  time: ["instructions", "null_threshold"],
-  datetime: ["instructions", "null_threshold"],
-  duration: ["instructions", "unit", "integer", "decimals", "null_threshold"],
-  list: ["instructions", "items", "decimals"],
-});
-
-function fieldsJsonField(name, spec) {
-  extractionFieldName(name);
-  const label = `--fields-json ${name}`;
-  if (!spec || typeof spec !== "object" || Array.isArray(spec)) invalidRequest(`${label} must be an object`);
-  if (!Object.hasOwn(FIELDS_JSON_KEYS, spec.type)) {
-    invalidRequest(`${label} has unknown type ${JSON.stringify(spec.type)}; valid types: ${Object.keys(FIELDS_JSON_KEYS).join(", ")}`);
-  }
-  const extra = Object.keys(spec).find((key) => key !== "type" && !FIELDS_JSON_KEYS[spec.type].includes(key));
-  if (extra) invalidRequest(`${label}: ${extra} does not apply to ${spec.type} fields`);
-  const { instructions, unit, integer, decimals, items, null_threshold: nullThreshold } = spec;
-  if (instructions !== undefined && typeof instructions !== "string") invalidRequest(`${label}: instructions must be a string`);
-  if (unit !== undefined && (typeof unit !== "string" || !unit.trim() || (spec.type === "duration" && !Object.hasOwn(EXTRACTION_FIELD_TYPES, `duration.${unit}`)))) {
-    invalidRequest(`${label}: unit must be a nonblank string, and for durations one of seconds, minutes, hours, days, weeks, months, years`);
-  }
-  if (integer !== undefined && typeof integer !== "boolean") invalidRequest(`${label}: integer must be true or false`);
-  if (decimals !== undefined && !(Number.isInteger(decimals) && decimals >= 0 && decimals <= 6)) invalidRequest(`${label}: decimals must be an integer from 0 to 6`);
-  if (nullThreshold !== undefined && !(Number.isFinite(nullThreshold) && nullThreshold >= 0 && nullThreshold <= 1)) invalidRequest(`${label}: null_threshold must be between 0 and 1`);
-  if (spec.type === "list") {
-    if (!["text", "number", "date"].includes(items)) invalidRequest(`${label}: list fields need items text, number or date`);
-    if (decimals !== undefined && items !== "number") invalidRequest(`${label}: decimals applies only to number lists`);
-  }
-  let type = spec.type;
-  if (spec.type === "list") type = items === "text" ? "list" : `list.${items}`;
-  else if (spec.type === "number" && integer) type = "integer";
-  else if (spec.type === "duration" && unit) type = `duration.${unit}`;
-  return { name, type, spec: { ...spec } };
 }
 
 const SEMANTIC_HELP = `Usage:
@@ -188,7 +144,10 @@ function parseSemanticArgs(argv) {
         let parsed;
         try { parsed = JSON.parse(value); } catch { invalidRequest("--fields-json must be a JSON object"); }
         if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) invalidRequest("--fields-json must be a JSON object");
-        for (const [name, spec] of Object.entries(parsed)) result.fields.push(fieldsJsonField(name, spec));
+        for (const [name, spec] of Object.entries(parsed)) {
+          extractionFieldName(name);
+          result.fields.push(fieldsJsonField(name, spec, `--fields-json ${name}`));
+        }
       }
       if (arg === "--reference-date") {
         if (result.referenceDate) invalidRequest("duplicate --reference-date");
@@ -716,12 +675,10 @@ async function runBrowserSemantic(options, { request, evaluate, now = () => perf
   let observation = await observe();
   let state = providerState(observation);
   if (options.command === "semantic.extract") {
-    const date = new Date();
-    const today = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
     const { usage, ...result } = await extract({
       state,
       fields: options.fields,
-      referenceDate: options.referenceDate ?? today,
+      referenceDate: options.referenceDate ?? localReferenceDate(new Date()),
       thresholds: options.thresholds,
       model: options.model,
       evaluate: evaluator,

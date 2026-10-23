@@ -2,6 +2,7 @@ const fs = require("fs");
 const os = require("os");
 const path = require("path");
 const { isSensitiveName, redactSensitiveFields, redactUrlSecrets } = require("./redaction.cjs");
+const { SEMANTIC_POLICY, extractionFieldName, fieldsJsonField } = require("./semantic-core.cjs");
 
 const COMMANDS = {
   ai: { primaryArg: "query", effect: "read", argKinds: { query: "user-input" }, sensitiveArgs: ["query"] },
@@ -286,7 +287,7 @@ function normalizeStep(step) {
   return { cmd: ALIASES[cmd] || cmd, args: step.args || {}, ...(step.id ? { id: step.id } : {}), ...(step.as ? { as: step.as } : {}) };
 }
 
-const SEMANTIC_OPS = new Set(["find", "open", "ensureChecked", "fill", "click", "assert"]);
+const SEMANTIC_OPS = new Set(["find", "open", "ensureChecked", "fill", "click", "assert", "extract"]);
 const SEMANTIC_ID = /^[a-zA-Z0-9][a-zA-Z0-9._-]{0,63}$/;
 const SEMANTIC_STEP_FIELDS = new Set(["id", "tool", "args", "as"]);
 const SEMANTIC_ARG_FIELDS = {
@@ -296,6 +297,7 @@ const SEMANTIC_ARG_FIELDS = {
   fill: new Set(["op", "target", "input", "expect"]),
   click: new Set(["op", "target", "expect"]),
   assert: new Set(["op", "mode", "claim", "bindings", "target", "predicate"]),
+  extract: new Set(["op", "fields"]),
 };
 
 function assertClosedObject(value, allowed, path) {
@@ -359,7 +361,20 @@ function validateSemanticStep(step, index, priorBindings, ids, policy) {
         throw new Error(`${path}.args.search.maxObservations must be an integer from 1 to ${policy.maxSearchObservations}`);
       }
     }
-  } else if (op !== "assert") validateTarget(step.args.target, `${path}.args.target`);
+  } else if (op !== "assert" && op !== "extract") validateTarget(step.args.target, `${path}.args.target`);
+
+  if (op === "extract") {
+    if (step.as === undefined) throw new Error(`${path}.as is required for extract`);
+    const fields = step.args.fields;
+    const count = fields && typeof fields === "object" && !Array.isArray(fields) ? Object.keys(fields).length : 0;
+    if (count < 1 || count > SEMANTIC_POLICY.limits.extractFields) {
+      throw new Error(`${path}.args.fields must be an object with 1 to ${SEMANTIC_POLICY.limits.extractFields} fields`);
+    }
+    for (const [name, spec] of Object.entries(fields)) {
+      extractionFieldName(name, `${path}.args.fields: `);
+      fieldsJsonField(name, spec, `${path}.args.fields.${name}`);
+    }
+  }
 
   if (op === "ensureChecked" && typeof step.args.checked !== "boolean") throw new Error(`${path}.args.checked must be a boolean`);
   if (op === "fill") assertSemanticName(step.args.input, `${path}.args.input`);
@@ -383,9 +398,10 @@ function validateSemanticStep(step, index, priorBindings, ids, policy) {
   for (const binding of references) {
     assertSemanticName(binding, `${path} binding`);
     if (!priorBindings.has(binding)) throw new Error(`${path} binding '${binding}' must refer to a prior step output`);
+    if (priorBindings.get(binding) === "extraction") throw new Error(`${path} binding '${binding}' is an extract result; only a value assert can use it`);
   }
   if (step.as !== undefined) {
-    priorBindings.add(step.as);
+    priorBindings.set(step.as, op === "extract" ? "extraction" : "target");
   }
 }
 
@@ -400,7 +416,7 @@ function validateSemanticWorkflow(workflow) {
   if (workflow.semantic.maxProviderCalls !== undefined && (!Number.isInteger(workflow.semantic.maxProviderCalls) || workflow.semantic.maxProviderCalls < 1 || workflow.semantic.maxProviderCalls > WORKFLOW_POLICY.maxProviderCalls)) {
     throw new Error(`semantic.maxProviderCalls must be an integer from 1 to ${WORKFLOW_POLICY.maxProviderCalls}`);
   }
-  const priorBindings = new Set();
+  const priorBindings = new Map();
   const ids = new Set();
   workflow.steps.forEach((step, index) => validateSemanticStep(step, index, priorBindings, ids, WORKFLOW_POLICY));
 }

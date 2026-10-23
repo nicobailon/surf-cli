@@ -1,20 +1,35 @@
 const crypto = require("node:crypto");
 const { getPrivateStateRoot } = require("./private-state.cjs");
-const { createSemanticEvaluator } = require("./semantic-evaluator.cjs");
+const { SEMANTIC_POLICY, semanticModel } = require("./semantic-core.cjs");
+const { createExtractionEvaluator, createSemanticEvaluator } = require("./semantic-evaluator.cjs");
 const { resolveModel } = require("./semantic-provider.cjs");
 const { createSemanticWorkflowRuntime, WORKFLOW_POLICY } = require("./semantic-workflow.cjs");
 const { createSemanticWorkflowStateStore } = require("./semantic-workflow-state.cjs");
 
-function createConcreteSemanticExecutor({ request, workflow, inputs = {}, env = process.env, clock = () => Date.now(), evaluator, attemptStore }) {
+const DECISION_OPS = new Set(["find", "open", "ensureChecked", "fill", "click"]);
+
+// Decides from the declared steps which evaluators a run needs, so a workflow never asks for a provider it doesn't call.
+function needsDecisions(args = {}) {
+  return DECISION_OPS.has(args.op) || (args.op === "assert" && (args.mode === "local" || args.mode === "semantic"));
+}
+
+function createConcreteSemanticExecutor({ request, workflow, inputs = {}, env = process.env, clock = () => Date.now(), evaluator, extractionEvaluator, attemptStore }) {
   if (typeof request !== "function") throw new TypeError("semantic workflow browser request is required");
-  evaluator ??= createSemanticEvaluator({ model: resolveModel(env), env });
+  const model = resolveModel(env);
+  const decisions = workflow.steps.some((step) => needsDecisions(step.args));
+  const extracts = workflow.steps.some((step) => step.args?.op === "extract");
+  evaluator = decisions ? evaluator ?? createSemanticEvaluator({ model, env }) : null;
+  extractionEvaluator = extracts ? extractionEvaluator ?? createExtractionEvaluator({ model: SEMANTIC_POLICY.defaultExtractionModel, env }) : null;
+  const decisionSummary = () => evaluator?.summary() ?? { provider: semanticModel(model).provider, model, providerCalls: 0, providerLatencyMs: 0 };
   const digest = crypto.createHash("sha256").update(JSON.stringify(workflow)).digest("hex");
   const createAttemptStore = attemptStore ? undefined : ({ runId, workflowDigest }) =>
     createSemanticWorkflowStateStore({ root: getPrivateStateRoot(env), clock, runId, workflowDigest });
   const runtime = createSemanticWorkflowRuntime({
     request,
-    evaluate: evaluator.evaluate,
-    model: evaluator.model,
+    evaluate: evaluator?.evaluate,
+    model: evaluator?.model ?? model,
+    evaluateExtraction: extractionEvaluator?.evaluate,
+    extractionModelId: extractionEvaluator?.model,
     attemptStore,
     createAttemptStore,
     now: clock,
@@ -29,13 +44,19 @@ function createConcreteSemanticExecutor({ request, workflow, inputs = {}, env = 
   const execute = async (step) => {
     const result = await runtime.executeStep({ id: step.id, as: step.as, ...step.args }, context);
     if (result.kind !== "success") failed = true;
+    let publicResult;
+    if (result.extraction) publicResult = result.extraction;
+    else if (result.binding || result.coverage || result.probability !== undefined) {
+      publicResult = { binding: result.binding, coverage: result.coverage, probability: result.probability };
+    }
     return {
       ...result,
       semantic: {
         runId: context.runId,
         stepId: step.id,
         checkpoint: context.runId,
-        ...evaluator.summary(),
+        ...decisionSummary(),
+        ...(extractionEvaluator ? { extraction: extractionEvaluator.summary() } : {}),
         ...(result.reason ? { reason: result.reason } : {}),
         ...(result.write ? { write: result.write } : {}),
         ...(result.coverage ? { coverage: result.coverage } : {}),
@@ -46,9 +67,7 @@ function createConcreteSemanticExecutor({ request, workflow, inputs = {}, env = 
           maxSearchObservationsCeiling: WORKFLOW_POLICY.maxSearchObservations,
         },
       },
-      ...(result.binding || result.coverage || result.probability !== undefined
-        ? { publicResult: { binding: result.binding, coverage: result.coverage, probability: result.probability } }
-        : {}),
+      ...(publicResult ? { publicResult } : {}),
     };
   };
   execute.close = async () => runtime.closeContext(context, failed ? { reason: "workflow_failed", state: "failed" } : { state: "completed" });
