@@ -2907,6 +2907,15 @@ describe("semantic.extract CLI", () => {
     expect(() =>
       semantic.parseSemanticArgs(["semantic.verify", "goal", "--field", "total:number"]),
     ).toThrow("--field does not apply to semantic.verify");
+    for (const [option, value, command] of [
+      ["--field", "9x:text", "semantic.find"],
+      ["--fields-json", '{"x":1}', "semantic.act"],
+      ["--reference-date", "2026-02-30", "semantic.filter"],
+    ]) {
+      expect(() => semantic.parseSemanticArgs([command, "goal", option, value])).toThrow(
+        `${option} does not apply to ${command}`,
+      );
+    }
   });
 
   it("extracts typed values with Clairic, ignoring SURF_SEMANTIC_MODEL, and reports the run summary", async () => {

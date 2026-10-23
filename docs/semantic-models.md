@@ -245,7 +245,7 @@ Surf maps back to the chunk or control the value came from. There are two
 thresholds:
 
 - `extract`: the minimum `confidence` for a value to be reported as `extracted`. Below it, Surf withholds the value and reports it as `guess` with status `uncertain`.
-- `null`: sent as Clairic's per-field `null_threshold`. Surf uses Clairic's default of 0.5.
+- `null`: sent as Clairic's per-field `null_threshold` on non-list fields (list fields take none). Surf uses Clairic's default of 0.5.
 
 ### Method
 
@@ -303,12 +303,12 @@ used the shipped values and returned the same answers on every field.
 
 ### Results (shipped thresholds, 10 repetitions × 14 pages)
 
-| Fields | Correct | Correct null | Withheld | Wrong extracted | Wrong withheld | Errors | Text source match |
+| Field results | Correct | Correct null | Withheld | Wrong extracted | Wrong withheld | Errors | Text source match |
 | --- | --- | --- | --- | --- | --- | --- | --- |
 | 300 | 250 | 30 | 10 | 0 | 10 | 0 | 70/70 |
 
 Clairic returned the same answer for each field on all 10 repetitions. The
-20 fields that were not correct come from two fields:
+20 results that were not correct come from two fields:
 
 - **Withheld:** the invoice number `INV-2291` came back right at confidence 0.549, every run.
 - **Wrong withheld:** the cart item names included a fourth item, `Up`, taken from "Upcoming deliveries", at 0.444. Surf withheld it.

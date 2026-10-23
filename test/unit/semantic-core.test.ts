@@ -785,8 +785,24 @@ describe("semantic extraction core", () => {
       { field: { type: "date", value: null, confidence: 1.5 } },
     ],
     ["a span past the state", "text", { field: { type: "text", value: "x", span: [0, 999] } }],
-  ])("rejects %s as provider_invalid_response", async (_label, type, answers) => {
-    const { result } = run([{ name: "field", type }], () => answers);
+    [
+      "a list item of the wrong type",
+      "list.date",
+      { field: { type: "list", value: ["2026-09-28", "Sept 28"] } },
+    ],
+    [
+      "spans that do not align with the items",
+      "list",
+      { field: { type: "list", value: ["a", "b"], spans: [[0, 1]] } },
+    ],
+    [
+      "a response that does not report truncation",
+      "number",
+      { field: { type: "number", value: 1 } },
+      { truncated: undefined },
+    ],
+  ])("rejects %s as provider_invalid_response", async (_label, type, answers, response?) => {
+    const { result } = run([{ name: "field", type }], () => answers, { response });
     await expect(result).rejects.toMatchObject({ code: "provider_invalid_response" });
   });
 
@@ -865,25 +881,5 @@ describe("semantic extraction core", () => {
         { chunks: ["c1"], refs: ["e2"] },
       ],
     });
-  });
-
-  it.each([
-    ["a list item of the wrong type", { type: "list", value: ["2026-09-28", "Sept 28"] }],
-    [
-      "spans that do not align with the items",
-      { type: "list", value: ["a", "b"], spans: [[0, 1]] },
-    ],
-  ])("rejects %s as provider_invalid_response", async (_label, answer) => {
-    const { result } = run([{ name: "dates", type: "list.date" }], () => ({ dates: answer }));
-    await expect(result).rejects.toMatchObject({ code: "provider_invalid_response" });
-  });
-
-  it("rejects a response that does not report truncation", async () => {
-    const { result } = run(
-      [{ name: "total", type: "number" }],
-      () => ({ total: { type: "number", value: 1 } }),
-      { response: { truncated: undefined } },
-    );
-    await expect(result).rejects.toMatchObject({ code: "provider_invalid_response" });
   });
 });

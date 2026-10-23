@@ -1151,8 +1151,9 @@ from, when Surf can match it exactly.
 
 It runs on Cloudflare's Clairic extraction model (a preview), uses the same
 Cloudflare credentials as `clef`, and sends the same value-free page text to
-Cloudflare. `SURF_SEMANTIC_MODEL` doesn't apply to it. On the 300 test fields
-used to set its threshold, it reported no wrong value as extracted; see
+Cloudflare. `SURF_SEMANTIC_MODEL` doesn't apply to it. On 300 field results (30
+fields, 10 runs each) used to set its threshold, it reported no wrong value as
+extracted; see
 [Extraction (Clairic)](docs/semantic-models.md#extraction-clairic).
 
 #### Icon-only controls (`--vision`)

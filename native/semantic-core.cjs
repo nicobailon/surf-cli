@@ -466,11 +466,12 @@ function extractionState(state) {
   for (const candidate of state.candidates) {
     if (candidate.name) add(`${candidate.role} "${candidate.name}"`, { refs: [candidate.id] });
   }
-  return { text: lines.join("\n"), pieces, codePoints: offset };
+  const text = lines.join("\n");
+  return { text, pieces, codePoints: [...text] };
 }
 
-function spanSource(extraction, codePoints, span, expected) {
-  if (!span || codePoints.slice(span[0], span[1]).join("") !== expected) return null;
+function spanSource(extraction, span, expected) {
+  if (!span || extraction.codePoints.slice(span[0], span[1]).join("") !== expected) return null;
   const overlapped = extraction.pieces.filter((piece) => piece.start < span[1] && piece.end > span[0]);
   if (!overlapped.length) return null;
   return {
@@ -496,8 +497,7 @@ async function extract({ state, fields, referenceDate, thresholds = {}, model = 
   if (!response || typeof response !== "object" || Array.isArray(response)) providerInvalid("provider response must be an object");
   if (typeof response.truncated !== "boolean") providerInvalid("provider response must report truncated");
   exactKeys(response.answers, Object.keys(requested), "extraction answers");
-  const codePoints = [...extraction.text];
-  const validSpan = (pair) => Array.isArray(pair) && pair.length === 2 && pair.every(Number.isInteger) && pair[0] >= 0 && pair[0] <= pair[1] && pair[1] <= extraction.codePoints;
+  const validSpan = (pair) => Array.isArray(pair) && pair.length === 2 && pair.every(Number.isInteger) && pair[0] >= 0 && pair[0] <= pair[1] && pair[1] <= extraction.codePoints.length;
   const results = {};
   for (const { name, type } of fields) {
     const spec = requested[name];
@@ -527,8 +527,8 @@ async function extract({ state, fields, referenceDate, thresholds = {}, model = 
       ...(answer.confidence !== undefined ? { confidence: answer.confidence } : {}),
       ...(answer.p_null !== undefined ? { pNull: answer.p_null } : {}),
       ...(list
-        ? { sources: mapped ? value.map((item, index) => spanSource(extraction, codePoints, spans?.[index], String(item))) : null }
-        : { source: mapped && spec.type === "text" ? spanSource(extraction, codePoints, span, value) : null }),
+        ? { sources: mapped ? value.map((item, index) => spanSource(extraction, spans?.[index], String(item))) : null }
+        : { source: mapped && spec.type === "text" ? spanSource(extraction, span, value) : null }),
     };
   }
   const extractedCount = Object.values(results).filter((result) => result.status === "extracted").length;

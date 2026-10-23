@@ -35,6 +35,7 @@ const COMMAND_THRESHOLD_KEYS = Object.freeze({
 });
 const AUTH_PROVIDERS = Object.freeze(["typesafe", "cloudflare"]);
 const EXTRACT_REJECTED_OPTIONS = Object.freeze(["--vision", "--allow-write", "--allow-ref", "--input", "--max-steps", "--top"]);
+const EXTRACT_ONLY_OPTIONS = Object.freeze(["--field", "--fields-json", "--reference-date"]);
 
 function invalidRequest(message) {
   throw new SemanticError("semantic_invalid_request", message);
@@ -95,7 +96,7 @@ const SEMANTIC_HELP = `Usage:
 
 Models: jev-1.13.0 (TypeSafe, api.typesafe.ai), clef and clef-flash (Cloudflare Workers AI, api.cloudflare.com). --model wins over SURF_SEMANTIC_MODEL; the default is jev-1.13.0. Semantic commands send a bounded, value-free page observation to the provider of the selected model. Every result reports provider, model, providerCalls and providerLatencyMs. semantic.act allows only same-origin navigation, fixed scroll/wait actions, and (with --allow-write) clicks/fills. --allow-write authorizes mutation-capable clicks, including submit/purchase/delete/send/publish; repeatable --allow-ref narrows this authority. Repeatable --threshold overrides applicable confidence thresholds for this run only; defaults remain safer and write authority is unchanged. Names: find, filter, verify-positive, verify-negative, prerequisite-supported, prerequisite-blocked, write, exact-ref-write.
 
-semantic.extract sends the same value-free page observation to Cloudflare Workers AI (Clairic, preview) and returns typed values with confidence. Field types: text, number, integer, date, time, datetime, duration, duration.<seconds|minutes|hours|days|weeks|months|years>, list, list.number, list.date. --fields-json takes a Clairic fields map instead of --field, for unit, decimals, integer, items and null_threshold; estimate and forecast are not supported. It always uses an extraction model (clairic), so SURF_SEMANTIC_MODEL does not apply; its only --threshold name is extract. --reference-date anchors dates written without a year (default: today).
+semantic.extract sends the same value-free page observation to Cloudflare Workers AI (Clairic, preview) and returns typed values with confidence. Field types: text, number, integer, date, time, datetime, duration, duration.<seconds|minutes|hours|days|weeks|months|years>, list, list.number, list.date. --fields-json takes a Clairic fields map instead of --field, for unit, decimals, integer, items and null_threshold; estimate and forecast are not supported. It always uses an extraction model (clairic), so SURF_SEMANTIC_MODEL does not apply; its only --threshold name is extract. --reference-date anchors relative dates and dates written without a year (default: today).
 
 --vision (semantic.find and semantic.act, with clef or clef-flash) also sends the provider one image of the controls that have no name, such as icon-only buttons. Each tile is drawn from the control's own icon (its SVG, image, icon-font glyph, CSS mask or background image) on a blank canvas; no screenshot of the page is sent, so field content and anything else on the page can't appear in it. Controls whose icon can't be drawn are counted as skipped: canvas icons, CSS gradients, content: url(), external <use> files, text not in a loaded icon font, cross-origin masks without CORS, images that fail to load, and controls in child frames. Icon fonts lose their variable axes (Material Symbols FILL/wght), and <use> symbol children styled only by page style sheet selectors lose those styles. Results report vision: {tiles, skipped}, and "tile": true on a returned candidate or action that was shown as a tile. Thresholds, --allow-write and --allow-ref are unchanged.`;
 
@@ -128,6 +129,7 @@ function parseSemanticArgs(argv) {
   for (let i = 1; i < args.length; i++) {
     const arg = args[i];
     if (extracting && EXTRACT_REJECTED_OPTIONS.includes(arg)) invalidRequest(`${arg} does not apply to semantic.extract`);
+    if (!extracting && EXTRACT_ONLY_OPTIONS.includes(arg)) throw new Error(`${arg} does not apply to ${command}`);
     if (arg === "--json") result.json = true;
     else if (arg === "--no-wait") result.noWait = true;
     else if (arg === "--allow-write") result.allowWrite = true;
@@ -203,11 +205,7 @@ function parseSemanticArgs(argv) {
     if (positionals.length) invalidRequest("semantic.extract takes no goal; describe each value with --field <name>:<type>:<instructions>");
     if (!result.fields.length) invalidRequest("semantic.extract requires at least one --field");
     if (result.fields.length > SEMANTIC_POLICY.limits.extractFields) invalidRequest(`semantic.extract supports at most ${SEMANTIC_POLICY.limits.extractFields} fields`);
-  } else {
-    if (positionals.length !== 1 || !positionals[0].trim()) throw new Error(`${command} requires exactly one goal or outcome`);
-    if (fieldFlag) throw new Error(`${fieldFlag} does not apply to ${command}`);
-    if (result.referenceDate) throw new Error(`--reference-date does not apply to ${command}`);
-  }
+  } else if (positionals.length !== 1 || !positionals[0].trim()) throw new Error(`${command} requires exactly one goal or outcome`);
   if (result.session && result.tabId) throw new Error("use either --session or --tab-id, not both");
   if (result.maxSteps > SEMANTIC_POLICY.limits.maxSteps) throw new Error(`--max-steps must not exceed ${SEMANTIC_POLICY.limits.maxSteps}`);
   if (Object.keys(result.inputs).length > SEMANTIC_POLICY.limits.inputSlots) throw new Error(`--input supports at most ${SEMANTIC_POLICY.limits.inputSlots} slots`);
@@ -716,8 +714,8 @@ async function runBrowserSemantic(options, { request, evaluate, now = () => perf
   let observation = await observe();
   let state = providerState(observation);
   if (options.command === "semantic.extract") {
-    const now = new Date();
-    const today = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`;
+    const date = new Date();
+    const today = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
     const { usage, ...result } = await extract({
       state,
       fields: options.fields,
