@@ -168,6 +168,8 @@ without replay; a later new run can still repeat an external effect. Input
 values never enter provider state, workflow variables, events, or checkpoints.
 Extracted values appear only in `surf do --json` `vars.<as>`; they are never
 written to the workflow's state files or checkpoints.
+Check one with `assert` mode `value`: a `null` or `uncertain` field always
+fails, `guess` is never compared, and failures report only a reason code.
 
 Required argument shapes:
 
@@ -177,12 +179,13 @@ open           target
 ensureChecked  target + checked
 fill           target + input
 click          target + expect
-assert         mode + claim (semantic) or predicate (local)
+assert         mode + claim (semantic), predicate (local), or binding + field +
+               (equals | input | min/max) (value; binding = an extract's "as")
 extract        fields (the --fields-json object) + "as"; not usable as a target
 ```
 
-The complete valid example in the README uses these shapes, with a separate
-`extract` example; start from them instead of inventing fields.
+The complete valid example in the README uses these shapes, with separate
+`extract` and value `assert` examples; start from them instead of inventing fields.
 
 Every click/fill requires `--allow-write`; repeat `--allow-ref` to narrow it.
 Broad writes use threshold `0.95`; exactly one allowed ref with one applicable

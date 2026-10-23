@@ -472,4 +472,71 @@ describe("semantic workflow extract step through the executor", () => {
       fs.rmSync(root, { recursive: true, force: true });
     }
   });
+
+  it.each([
+    ["4219.37", "completed", undefined],
+    ["4300.55", "failed", "assertion_mismatch"],
+  ])(
+    "checks the extracted total against input %s without printing a value",
+    async (expected, status, reason) => {
+      const checkStep = {
+        id: "check",
+        tool: "semantic.step",
+        args: {
+          op: "assert",
+          mode: "value",
+          binding: "order",
+          field: "total",
+          input: "expectedTotal",
+        },
+      };
+      const steps = [extractStep, checkStep];
+      const request = browser();
+      const fetch = cloudflareFetch();
+      vi.stubGlobal("fetch", fetch);
+      const printed: string[] = [];
+      const { stdout } = require("node:process") as { stdout: { write(chunk: unknown): boolean } };
+      const write = vi.spyOn(stdout, "write").mockImplementation((chunk: unknown) => {
+        printed.push(String(chunk));
+        return true;
+      });
+      const log = vi.spyOn(console, "log").mockImplementation((...items) => {
+        printed.push(items.join(" "));
+      });
+      try {
+        const result = await executeDoSteps(steps.map(doStep), {
+          stepDelay: 0,
+          executeTool: vi.fn(),
+          createSemanticExecutor: () =>
+            createConcreteSemanticExecutor({
+              request,
+              attemptStore: { acquire: vi.fn(), checkpoint: vi.fn(), release: vi.fn() },
+              workflow: { semantic: { version: 1 }, steps },
+              inputs: { expectedTotal: expected },
+              env: cloudflare,
+            }),
+        });
+        expect(result.status).toBe(status);
+        expect(result.error).toBe(reason);
+        expect(result.results[1]).not.toHaveProperty("output");
+        expect(result.vars).not.toHaveProperty("check");
+        expect(request).toHaveBeenCalledOnce();
+        expect(fetch).toHaveBeenCalledOnce();
+        expect(result.semantic).toMatchObject({
+          stepId: "check",
+          usage: { providerCalls: 1, observations: 1 },
+        });
+        // The extract result in vars is the only place a page value may appear.
+        const output = JSON.stringify({ ...result, vars: undefined }) + printed.join("");
+        for (const value of ["4219", "ZX-7731", expected]) {
+          expect(output).not.toContain(value);
+        }
+        expect(printed.join("")).toContain('input="expectedTotal"');
+      } finally {
+        write.mockRestore();
+        log.mockRestore();
+        vi.unstubAllGlobals();
+      }
+    },
+  );
 });

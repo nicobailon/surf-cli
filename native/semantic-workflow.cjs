@@ -25,6 +25,71 @@ function failure(reason, detail = {}) {
   return { kind: "failure", status: "blocked", reason, ...detail };
 }
 
+const VALUE_KINDS = Object.freeze({
+  text: "a string",
+  number: "a finite number",
+  integer: "an integer",
+  date: "a date as YYYY-MM-DD",
+  time: "a time as HH:MM or HH:MM:SS",
+  datetime: "a datetime as YYYY-MM-DDTHH:MM or YYYY-MM-DDTHH:MM:SS",
+});
+
+// The literal kind a value assert compares an extracted field as; null for list fields, which it can't check.
+function valueKind(spec) {
+  if (spec.type === "number" || spec.type === "duration") return spec.integer ? "integer" : "number";
+  return Object.hasOwn(VALUE_KINDS, spec.type) ? spec.type : null;
+}
+
+function normalTime(value) {
+  const match = /^(\d{2}):(\d{2})(?::(\d{2}))?$/.exec(value);
+  if (!match || match[1] > "23" || match[2] > "59" || (match[3] ?? "00") > "59") return undefined;
+  return `${match[1]}:${match[2]}:${match[3] ?? "00"}`;
+}
+
+function normalDate(value) {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return undefined;
+  const parsed = new Date(`${value}T00:00:00Z`);
+  return !Number.isNaN(parsed.getTime()) && parsed.toISOString().slice(0, 10) === value ? value : undefined;
+}
+
+// Returns a value in the comparable form of its kind (times gain :SS), or undefined when it doesn't fit the kind.
+function valueLiteral(kind, value) {
+  if (kind === "text") return typeof value === "string" ? value : undefined;
+  if (kind === "number") return Number.isFinite(value) ? value : undefined;
+  if (kind === "integer") return Number.isInteger(value) ? value : undefined;
+  if (typeof value !== "string") return undefined;
+  if (kind === "date") return normalDate(value);
+  if (kind === "time") return normalTime(value);
+  if (kind === "datetime") {
+    const [date, time, extra] = value.split("T");
+    const normal = extra === undefined && time !== undefined && normalDate(date) && normalTime(time);
+    return normal ? `${date}T${normal}` : undefined;
+  }
+  return undefined;
+}
+
+// Input slots hold strings, numbers or booleans; number-like strings count as numbers.
+function inputLiteral(kind, value) {
+  if (kind === "text") return value === undefined ? undefined : String(value);
+  if ((kind === "number" || kind === "integer") && typeof value === "string" && /^-?\d+(\.\d+)?$/.test(value)) value = Number(value);
+  return valueLiteral(kind, value);
+}
+
+// Checks one extracted field against a value assert. Never reads guess, and never returns a value.
+function compareValue(field, spec, kind, { equals, min, max }) {
+  if (field.status === "null") return "value_null";
+  if (field.status !== "extracted") return "value_uncertain";
+  const scale = (kind === "number" || kind === "integer") && Number.isInteger(spec.decimals) ? 10 ** spec.decimals : null;
+  const comparable = (value) => scale ? Math.round(value * scale) : value;
+  const actual = valueLiteral(kind, field.value);
+  if (actual === undefined) return "assertion_mismatch";
+  const value = comparable(actual);
+  const matches = (equals === undefined || value === comparable(equals)) &&
+    (min === undefined || value >= comparable(min)) &&
+    (max === undefined || value <= comparable(max));
+  return matches ? null : "assertion_mismatch";
+}
+
 function success(status, detail = {}) {
   return { kind: "success", status, ...detail };
 }
@@ -370,6 +435,26 @@ function createSemanticWorkflowRuntime(dependencies) {
         const arrived = await observe(context);
         return new URL(arrived.identity.fullUrl).href === url ? success("verified") : failure("assertion_mismatch");
       }
+      if (step.op === "assert" && step.mode === "value") {
+        // A value assert only reads the in-memory extract result: no browser request and no provider call.
+        const binding = context.bindings.get(step.binding);
+        const spec = binding?.kind === "extraction" ? binding.specs.find((item) => item.name === step.field)?.spec : undefined;
+        if (!spec) return failure("invalid_binding");
+        const kind = valueKind(spec);
+        const expected = {};
+        for (const key of ["equals", "min", "max"]) {
+          if (step[key] !== undefined) expected[key] = valueLiteral(kind, step[key]);
+          if (step[key] !== undefined && expected[key] === undefined) return failure("validation_failure");
+        }
+        if (step.input !== undefined) {
+          if (!Object.hasOwn(context.inputs, step.input)) return failure("validation_failure");
+          expected.equals = inputLiteral(kind, context.inputs[step.input]);
+          if (expected.equals === undefined) return failure("validation_failure");
+        }
+        if (!kind || !Object.keys(expected).length) return failure("validation_failure");
+        const reason = compareValue(binding.result.fields[step.field], spec, kind, expected);
+        return reason ? failure(reason) : success("verified");
+      }
       if (step.op === "assert" && step.mode === "semantic") {
         const observation = await observe(context);
         const state = providerState(observation);
@@ -432,4 +517,4 @@ function createSemanticWorkflowRuntime(dependencies) {
   return { closeContext, createContext, executeStep };
 }
 
-module.exports = { WORKFLOW_POLICY, createSemanticWorkflowRuntime };
+module.exports = { VALUE_KINDS, WORKFLOW_POLICY, createSemanticWorkflowRuntime, valueKind, valueLiteral };

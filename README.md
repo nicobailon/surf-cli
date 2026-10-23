@@ -921,6 +921,31 @@ under `vars.<as>` in `surf do --json` output, with the same shape as
 `semantic.extract`. Extracted values are never written to the workflow's state
 files or checkpoints, and an extract result can't be used as a step `target`.
 
+To check an extracted value, add an `assert` step with `"mode": "value"`. It
+names the extract step's `as` in `binding` and one of its fields in `field`,
+then gives `equals`, an `input` slot to compare with, or an inclusive `min`
+and/or `max`:
+
+```json
+{ "id": "check-total", "tool": "semantic.step", "args": {
+  "op": "assert", "mode": "value", "binding": "order", "field": "total", "input": "expectedTotal"
+} },
+{ "id": "check-delivery", "tool": "semantic.step", "args": {
+  "op": "assert", "mode": "value", "binding": "order", "field": "delivered",
+  "min": "2026-10-01", "max": "2026-10-31"
+} }
+```
+
+Run it with `surf do --file check-order.json --expectedTotal 42.10 --allow-semantic --json`.
+Numbers are compared after rounding both sides to the field's `decimals`,
+durations are in the field's unit, dates are `YYYY-MM-DD`, times `HH:MM[:SS]`,
+datetimes `YYYY-MM-DDTHH:MM[:SS]`, and text must match exactly. List fields
+can't be checked. A `null` or `uncertain` field always fails the check
+(`value_null`, `value_uncertain`), even when its `guess` would match; a value
+that doesn't match fails with `assertion_mismatch`. A value assert makes no
+browser request and no model call, and a failure reports only its reason, never
+the extracted, expected or input value.
+
 `open` performs freshly validated same-origin HTTP(S) navigation; it never falls
 back to a click. Model-derived writes retain the `0.95` gate, dispatch at most
 once in a run, and require local/read-only verification. A stopped or uncertain

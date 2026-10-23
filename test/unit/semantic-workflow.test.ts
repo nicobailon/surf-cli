@@ -809,3 +809,130 @@ describe("semantic workflow extract step", () => {
     expect(context.usage).toMatchObject({ providerCalls: 1, extractions: 1, partial: true });
   });
 });
+
+describe("semantic workflow value assert", () => {
+  const money = { type: "number", decimals: 2 };
+  const count = { type: "number", integer: true };
+  const days = { type: "duration", unit: "days" };
+  const text = { type: "text" };
+  const date = { type: "date" };
+  const time = { type: "time" };
+  const datetime = { type: "datetime" };
+  const got = (value: unknown) => ({ status: "extracted", value });
+  async function check(
+    spec: Record<string, unknown>,
+    field: Record<string, unknown>,
+    args: Record<string, unknown>,
+    inputs: Record<string, unknown> = {},
+  ) {
+    const request = boundary();
+    const evaluate = provider();
+    const evaluateExtraction = vi.fn();
+    const runtime = createSemanticWorkflowRuntime({ request, evaluate, evaluateExtraction });
+    const context = runtime.createContext({ inputs });
+    const result = { fields: { f: field } };
+    context.bindings.set("order", {
+      kind: "extraction",
+      handle: "order",
+      specs: [{ name: "f", spec }],
+      result,
+    });
+    const step = {
+      id: "check",
+      op: "assert",
+      mode: "value",
+      binding: "order",
+      field: "f",
+      ...args,
+    };
+    const outcome = await runtime.executeStep(step, context);
+    const calls = [request, evaluate, evaluateExtraction].map((fn) => fn.mock.calls.length);
+    const { providerCalls, browserCommands, observations } = context.usage;
+    return { outcome, io: [...calls, providerCalls, browserCommands, observations] };
+  }
+
+  it.each([
+    [money, got(42.1), { equals: 42.1 }, "verified"],
+    [money, got(42.1), { equals: 42.104 }, "verified"],
+    [money, got(42.106), { equals: 42.11 }, "verified"],
+    // Both sides round half up to the field's 2 decimals: Math.round(4210.5) is 4211.
+    [money, got(42.105), { equals: 42.11 }, "verified"],
+    [money, got(42.105), { equals: 42.1 }, "assertion_mismatch"],
+    [money, got(42.1), { min: 42.1, max: 42.1 }, "verified"],
+    [{ type: "number" }, got(42.1), { equals: 42.104 }, "assertion_mismatch"],
+    [count, got(3), { equals: 3 }, "verified"],
+    [count, got(3), { min: 4 }, "assertion_mismatch"],
+    [days, got(2.5), { min: 2, max: 3 }, "verified"],
+    [days, got(2.5), { max: 2 }, "assertion_mismatch"],
+    [date, got("2026-10-27"), { min: "2026-10-27", max: "2026-10-31" }, "verified"],
+    [date, got("2026-10-27"), { max: "2026-10-26" }, "assertion_mismatch"],
+    [time, got("09:30"), { equals: "09:30:00" }, "verified"],
+    [time, got("09:30:05"), { max: "09:30" }, "assertion_mismatch"],
+    [datetime, got("2026-10-27T09:30"), { max: "2026-10-27T09:30:00" }, "verified"],
+    [datetime, got("2026-10-27T09:30"), { min: "2026-10-27T09:30:01" }, "assertion_mismatch"],
+    [text, got("Paid"), { equals: "Paid" }, "verified"],
+    [text, got("Paid"), { equals: "paid" }, "assertion_mismatch"],
+    [money, { status: "null", value: null, guess: 42.1 }, { equals: 42.1 }, "value_null"],
+    [money, { status: "uncertain", value: null, guess: 42.1 }, { equals: 42.1 }, "value_uncertain"],
+    [money, got(42.1), { input: "expected" }, "verified", { expected: "42.10" }],
+    [money, got(42.1), { input: "expected" }, "verified", { expected: 42.1 }],
+    [money, got(42.1), { input: "expected" }, "assertion_mismatch", { expected: "42.2" }],
+    [money, got(42.1), { input: "expected" }, "validation_failure", { expected: "42.1 USD" }],
+    [money, got(42.1), { input: "expected" }, "validation_failure", { expected: true }],
+    [money, got(42.1), { input: "expected" }, "validation_failure", {}],
+    [count, got(3), { input: "expected" }, "validation_failure", { expected: "3.5" }],
+    [date, got("2026-10-27"), { input: "expected" }, "verified", { expected: "2026-10-27" }],
+    [
+      date,
+      got("2026-10-27"),
+      { input: "expected" },
+      "validation_failure",
+      { expected: "27/10/2026" },
+    ],
+    [text, got("42"), { input: "expected" }, "verified", { expected: 42 }],
+    // A bad input wins over a null value, as the failure order requires.
+    [money, { status: "null", value: null }, { input: "expected" }, "validation_failure", {}],
+  ] as Array<
+    [
+      Record<string, unknown>,
+      Record<string, unknown>,
+      Record<string, unknown>,
+      string,
+      Record<string, unknown>?,
+    ]
+  >)("%j value %j with %j gives %s", async (spec, field, args, expected, inputs) => {
+    const { outcome, io } = await check(spec, field, args, inputs);
+    // No browser request, decision call or extraction call, and nothing charged to the budgets.
+    expect(io).toEqual([0, 0, 0, 0, 0, 0]);
+    // Outcomes carry only the reason code: never the page value, guess, literal or input.
+    expect(outcome).toEqual(
+      expected === "verified"
+        ? { kind: "success", status: "verified" }
+        : { kind: "failure", status: "blocked", reason: expected },
+    );
+  });
+
+  it("fails with invalid_binding for a missing binding, a target binding or an unknown field", async () => {
+    const runtime = createSemanticWorkflowRuntime({ request: boundary(), evaluate: provider() });
+    const context = runtime.createContext();
+    context.bindings.set("product", { kind: "target", handle: "product" });
+    context.bindings.set("order", {
+      kind: "extraction",
+      specs: [{ name: "f", spec: money }],
+      result: { fields: { f: got(1) } },
+    });
+    for (const [binding, field] of [
+      ["missing", "f"],
+      ["product", "f"],
+      ["order", "g"],
+      ["order", "constructor"],
+    ]) {
+      expect(
+        await runtime.executeStep(
+          { id: "check", op: "assert", mode: "value", binding, field, equals: 1 },
+          context,
+        ),
+      ).toEqual({ kind: "failure", status: "blocked", reason: "invalid_binding" });
+    }
+  });
+});
