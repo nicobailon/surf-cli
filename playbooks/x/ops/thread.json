@@ -18,7 +18,7 @@
           "id": "rest_id",
           "author": "core.user_results.result.core.screen_name ?? core.user_results.result.legacy.screen_name",
           "name": "core.user_results.result.core.name ?? core.user_results.result.legacy.name",
-          "time": "legacy.created_at",
+          "time": { "path": "legacy.created_at", "as": "datetime" },
           "text": "note_tweet.note_tweet_results.result.text ?? legacy.full_text",
           "replyTo": "legacy.in_reply_to_status_id_str",
           "media": "legacy.extended_entities.media[*].media_url_https",
@@ -28,7 +28,7 @@
               "id": "rest_id",
               "author": "core.user_results.result.core.screen_name ?? core.user_results.result.legacy.screen_name",
               "name": "core.user_results.result.core.name ?? core.user_results.result.legacy.name",
-              "time": "legacy.created_at",
+              "time": { "path": "legacy.created_at", "as": "datetime" },
               "text": "note_tweet.note_tweet_results.result.text ?? legacy.full_text",
               "media": "legacy.extended_entities.media[*].media_url_https"
             }

@@ -4,6 +4,13 @@ const { isDeepStrictEqual } = require("node:util");
 
 const SEGMENT = /^([^[\]\s?*]*)((?:\[(?:\d+|\*)\])*)$/;
 const TEMPLATE_NAME = /\{\{([a-zA-Z0-9._-]+)\}\}/g;
+const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+// ISO 8601 date-time with an explicit zone, e.g. 2024-01-01T10:00:00.000Z or 2024-01-01T12:00+02:00.
+const ISO_DATETIME = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})(?::(\d{2})(?:\.(\d+))?)?(Z|[+-]\d{2}:\d{2})$/;
+// X's created_at, e.g. Mon Jan 01 10:00:00 +0000 2024.
+const X_DATETIME = new RegExp(
+  `^(?:Sun|Mon|Tue|Wed|Thu|Fri|Sat) (${MONTHS.join("|")}) (\\d{2}) (\\d{2}):(\\d{2}):(\\d{2}) ([+-]\\d{4}) (\\d{4})$`,
+);
 
 function isPlainObject(value) {
   return value !== null && typeof value === "object" && !Array.isArray(value);
@@ -114,12 +121,57 @@ function compileTemplate(template, where) {
   };
 }
 
+/** ISO 8601 UTC for the two accepted shapes; undefined for anything else, including impossible dates. */
+function toDatetime(value) {
+  if (typeof value !== "string") return undefined;
+  // year, month, day, hour, minute, second, milliseconds, zone as ±HHMM
+  let parts;
+  const iso = value.match(ISO_DATETIME);
+  const x = iso ? null : value.match(X_DATETIME);
+  if (iso) {
+    const [, year, month, day, hour, minute, second = "0", fraction = "", zone] = iso;
+    const ms = fraction.slice(0, 3).padEnd(3, "0");
+    parts = [year, month, day, hour, minute, second, ms, zone === "Z" ? "+0000" : zone.replace(":", "")];
+  } else if (x) {
+    const [, month, day, hour, minute, second, zone, year] = x;
+    parts = [year, MONTHS.indexOf(month) + 1, day, hour, minute, second, 0, zone];
+  } else {
+    return undefined;
+  }
+  const [year, month, day, hour, minute, second, ms] = parts.slice(0, 7).map(Number);
+  const zone = parts[7];
+  const offsetHours = Number(zone.slice(1, 3));
+  const offsetMinutes = Number(zone.slice(3));
+  if (offsetHours > 23 || offsetMinutes > 59) return undefined;
+  // Date rolls impossible values over (Feb 30 becomes Mar 1), so read the parts back and compare.
+  // setUTCFullYear keeps years below 100 as written; Date.UTC would read them as 19xx.
+  const local = new Date(0);
+  local.setUTCFullYear(year, month - 1, day);
+  local.setUTCHours(hour, minute, second, ms);
+  const sameParts =
+    local.getUTCFullYear() === year &&
+    local.getUTCMonth() === month - 1 &&
+    local.getUTCDate() === day &&
+    local.getUTCHours() === hour &&
+    local.getUTCMinutes() === minute &&
+    local.getUTCSeconds() === second;
+  if (!sameParts) return undefined;
+  const offset = (zone[0] === "-" ? -1 : 1) * (offsetHours * 60 + offsetMinutes);
+  return new Date(local.getTime() - offset * 60_000).toISOString();
+}
+
 function compileField(spec, where) {
   if (typeof spec === "string") return compilePath(spec);
-  checkKeys(spec, ["path", "match", "fields"], where);
+  checkKeys(spec, ["path", "match", "fields", "as"], where);
   if (typeof spec.path !== "string") throw new Error(`${where} needs a path or a template`);
   if (spec.match !== undefined && spec.fields !== undefined) throw new Error(`${where} cannot combine match and fields`);
+  if (spec.as !== undefined) {
+    if (spec.as !== "datetime") throw new Error(`${where}.as must be "datetime"`);
+    if (spec.fields !== undefined) throw new Error(`${where} cannot combine as and fields`);
+    if (spec.path.includes("[*]")) throw new Error(`${where}.as needs a single value, not a [*] path`);
+  }
   const get = compilePath(spec.path);
+  let read = get;
   if (spec.match !== undefined) {
     if (typeof spec.match !== "string") throw new Error(`${where}.match must be a regex string`);
     let regex;
@@ -128,7 +180,7 @@ function compileField(spec, where) {
     } catch (error) {
       throw new Error(`${where}.match is not a valid regex: ${error.message}`);
     }
-    return (object) => {
+    read = (object) => {
       const value = get(object);
       const found = typeof value === "string" ? value.match(regex) : null;
       if (!found) return undefined;
@@ -143,7 +195,7 @@ function compileField(spec, where) {
       return isPlainObject(value) ? map(value) : undefined;
     };
   }
-  return get;
+  return spec.as === undefined ? read : (object) => toDatetime(read(object));
 }
 
 function compileFields(fields, where) {

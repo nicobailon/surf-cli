@@ -19,7 +19,7 @@ If a site has no usable API, the `collect` strategy scrolls the page and reads t
 surf use x thread --url https://x.com/<user>/status/<id> --format md
 ```
 
-You get the thread author's posts in order, each with `id`, `author`, `name`, `time`, `text` (long posts in full), `replyTo`, `media` (image URLs), `quoted` (the quoted post) and `url`. Use `--format jsonl` for one post per line, or `--json` for the full result. If reading X's `TweetDetail` response fails, the op falls back to `collect` on the page.
+You get the thread author's posts in order, each with `id`, `author`, `name`, `time` (ISO 8601, UTC), `text` (long posts in full), `replyTo`, `media` (image URLs), `quoted` (the quoted post) and `url`. Use `--format jsonl` for one post per line, or `--json` for the full result. If reading X's `TweetDetail` response fails, the op falls back to `collect` on the page.
 
 ## Write a recipe for another site
 
@@ -131,6 +131,7 @@ Paging stops when there is no cursor, the cursor repeats, `maxPages` is reached,
 **Field objects:**
 
 - `{ "path": "...", "match": "regex" }` keeps the regex's first capture group;
+- `{ "path": "...", "as": "datetime" }` turns an ISO 8601 date-time with a zone (`2024-01-01T12:00+02:00`) or X's form (`Mon Jan 01 10:00:00 +0000 2024`) into ISO 8601 UTC (`2024-01-01T10:00:00.000Z`), and leaves anything else out. With `match`, the regex runs first;
 - `{ "template": "https://site/{{author}}/{{id}}" }` builds a value from the record's other fields;
 - `{ "path": "...", "fields": { ... } }` maps a nested object, or each object in a list, into a nested record.
 

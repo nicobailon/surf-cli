@@ -85,6 +85,74 @@ describe("records", () => {
     expect(() => records.createRecordSet({ ...spec, fields: {} })).toThrow(/at least one field/);
   });
 
+  it("converts as: datetime fields to ISO 8601 UTC and leaves out anything else", () => {
+    const read = (value: unknown) => {
+      const set = records.createRecordSet({
+        find: { exists: ["id"] },
+        key: "id",
+        fields: { time: { path: "value", as: "datetime" } },
+      });
+      set.add({ id: 1, value });
+      return set.records()[0];
+    };
+    expect(read("2024-01-01T10:00:00Z")).toEqual({ time: "2024-01-01T10:00:00.000Z" });
+    expect(read("2024-01-01T12:30+02:00")).toEqual({ time: "2024-01-01T10:30:00.000Z" });
+    expect(read("2024-02-29T23:59:59.123456-05:00")).toEqual({ time: "2024-03-01T04:59:59.123Z" });
+    expect(read("0050-06-01T00:00:00Z")).toEqual({ time: "0050-06-01T00:00:00.000Z" });
+    expect(read("Mon Jan 01 10:00:00 +0000 2024")).toEqual({ time: "2024-01-01T10:00:00.000Z" });
+    expect(read("Sun Dec 31 23:30:00 -0130 2023")).toEqual({ time: "2024-01-01T01:00:00.000Z" });
+    for (const value of [
+      "Oct 3",
+      "3h",
+      "2024-01-01",
+      "2024-01-01T10:00:00",
+      "2024-02-30T00:00:00Z",
+      "2024-01-01T24:00:00Z",
+      "Fri Feb 30 10:00:00 +0000 2024",
+      1704103200000,
+      null,
+    ]) {
+      expect(read(value)).toStrictEqual({});
+    }
+  });
+
+  it("runs match before as: datetime, and converts inside nested fields", () => {
+    const set = records.createRecordSet({
+      find: { exists: ["id"] },
+      key: "id",
+      fields: {
+        posted: { path: "label", match: "^posted (.+)$", as: "datetime" },
+        quoted: { path: "quoted", fields: { time: { path: "created_at", as: "datetime" } } },
+      },
+    });
+    set.add({
+      id: 1,
+      label: "posted 2024-01-01T10:00:00Z",
+      quoted: { created_at: "Mon Jan 01 09:00:00 +0000 2024" },
+    });
+    set.add({ id: 2, label: "posted yesterday", quoted: { created_at: "3h" } });
+    expect(set.records()).toStrictEqual([
+      { posted: "2024-01-01T10:00:00.000Z", quoted: { time: "2024-01-01T09:00:00.000Z" } },
+      { quoted: {} },
+    ]);
+  });
+
+  it("rejects malformed as: datetime fields", () => {
+    const withField = (field: unknown) => ({ ...spec, fields: { time: field } });
+    expect(() => records.createRecordSet(withField({ path: "t", as: "date" }))).toThrow(
+      'records.fields.time.as must be "datetime"',
+    );
+    expect(() =>
+      records.createRecordSet(withField({ path: "q", as: "datetime", fields: { id: "rest_id" } })),
+    ).toThrow("records.fields.time cannot combine as and fields");
+    expect(() => records.createRecordSet(withField({ path: "t[*].at", as: "datetime" }))).toThrow(
+      "records.fields.time.as needs a single value, not a [*] path",
+    );
+    expect(() =>
+      records.createRecordSet(withField({ path: "q", fields: { t: { path: "t", as: 1 } } })),
+    ).toThrow('records.fields.time.fields.t.as must be "datetime"');
+  });
+
   it("reads the cursor from the first matching object", () => {
     const cursor = {
       find: { equals: { cursorType: "Bottom" } },
