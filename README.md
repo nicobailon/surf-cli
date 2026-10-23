@@ -919,7 +919,7 @@ such as one that only extracts, needs no TypeSafe key. The step completes for
 any valid answer, including `null` and `uncertain` fields. The result appears
 under `vars.<as>` in `surf do --json` output, with the same shape as
 `semantic.extract`. Extracted values are never written to the workflow's state
-files or checkpoints, and an extract result can't be used as a step `target`.
+files or checkpoints, and only a value assert can read an extract result.
 
 To check an extracted value, add an `assert` step with `"mode": "value"`. It
 names the extract step's `as` in `binding` and one of its fields in `field`,

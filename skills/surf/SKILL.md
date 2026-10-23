@@ -181,7 +181,7 @@ fill           target + input
 click          target + expect
 assert         mode + claim (semantic), predicate (local), or binding + field +
                (equals | input | min/max) (value; binding = an extract's "as")
-extract        fields (the --fields-json object) + "as"; not usable as a target
+extract        fields (the --fields-json object) + "as"; only a value assert can read it
 ```
 
 The complete valid example in the README uses these shapes, with separate

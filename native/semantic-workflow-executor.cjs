@@ -9,7 +9,7 @@ const { createSemanticWorkflowStateStore } = require("./semantic-workflow-state.
 const DECISION_OPS = new Set(["find", "open", "ensureChecked", "fill", "click"]);
 
 // Decides from the declared steps which evaluators a run needs, so a workflow never asks for a provider it doesn't call.
-function needsDecisions(args = {}) {
+function needsDecisions(args) {
   return DECISION_OPS.has(args.op) || (args.op === "assert" && (args.mode === "local" || args.mode === "semantic"));
 }
 
@@ -17,7 +17,7 @@ function createConcreteSemanticExecutor({ request, workflow, inputs = {}, env = 
   if (typeof request !== "function") throw new TypeError("semantic workflow browser request is required");
   const model = resolveModel(env);
   const decisions = workflow.steps.some((step) => needsDecisions(step.args));
-  const extracts = workflow.steps.some((step) => step.args?.op === "extract");
+  const extracts = workflow.steps.some((step) => step.args.op === "extract");
   evaluator = decisions ? evaluator ?? createSemanticEvaluator({ model, env }) : null;
   extractionEvaluator = extracts ? extractionEvaluator ?? createExtractionEvaluator({ model: SEMANTIC_POLICY.defaultExtractionModel, env }) : null;
   // With no decision step, SURF_SEMANTIC_MODEL is only reported: an unknown name must not block the run.

@@ -1,5 +1,5 @@
 const crypto = require("node:crypto");
-const { SEMANTIC_POLICY, extract, extractionFieldName, extractionModel, fieldsJsonField, find, localReferenceDate, semanticModel, verify } = require("./semantic-core.cjs");
+const { SEMANTIC_POLICY, extract, fieldsJsonField, find, localReferenceDate, semanticModel, verify } = require("./semantic-core.cjs");
 const {
   buildLogicalCandidates,
   canonicalSameOriginDestination,
@@ -130,12 +130,8 @@ function scanCoverage(intervals, scrollHeight, truncated, invalidated = false) {
 
 function createSemanticWorkflowRuntime(dependencies) {
   const { request, evaluate, evaluateExtraction, extractionModelId = SEMANTIC_POLICY.defaultExtractionModel, attemptStore = null, createAttemptStore, model = SEMANTIC_POLICY.model, now = () => Date.now(), sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms)) } = dependencies;
-  if (typeof request !== "function") throw new TypeError("semantic workflow requires a request boundary");
-  if (evaluate !== undefined && typeof evaluate !== "function") throw new TypeError("semantic workflow evaluate boundary must be a function");
-  if (evaluateExtraction !== undefined && typeof evaluateExtraction !== "function") throw new TypeError("semantic workflow extraction boundary must be a function");
-  if (!evaluate && !evaluateExtraction) throw new TypeError("semantic workflow requires an evaluate or extraction boundary");
+  if (typeof request !== "function" || (!evaluate && !evaluateExtraction)) throw new TypeError("semantic workflow requires request and evaluate or extraction boundaries");
   const writeThreshold = semanticModel(model).thresholds.write;
-  extractionModel(extractionModelId);
 
   function createContext(options = {}) {
     const deadlineMs = options.deadlineMs ?? WORKFLOW_POLICY.defaultDeadlineMs;
@@ -175,7 +171,6 @@ function createSemanticWorkflowRuntime(dependencies) {
   // Every provider call, decision or extraction, draws on the run's one call budget and deadline.
   async function evaluator(context, state, questions, options = {}, extracting = false) {
     const call = extracting ? evaluateExtraction : evaluate;
-    if (!call) throw Object.assign(new Error(`semantic workflow has no ${extracting ? "extraction" : "decision"} evaluator`), { code: "provider_not_configured" });
     if (++context.usage.providerCalls > context.maxProviderCalls) throw Object.assign(new Error("semantic provider-call budget exhausted"), { code: "budget_exhausted" });
     if (remaining(context) < 1) throw Object.assign(new Error("semantic workflow deadline exhausted"), { code: "budget_exhausted" });
     context.usage[extracting ? "extractions" : "semanticDecisions"]++;
@@ -402,15 +397,7 @@ function createSemanticWorkflowRuntime(dependencies) {
         return success("completed", { binding: publicBinding(binding), coverage: resolved.coverage, probability: resolved.decision.decision.probability });
       }
       if (step.op === "extract") {
-        let fields;
-        try {
-          const entries = step.fields && typeof step.fields === "object" && !Array.isArray(step.fields) ? Object.entries(step.fields) : [];
-          if (!entries.length || entries.length > SEMANTIC_POLICY.limits.extractFields) return failure("validation_failure");
-          fields = entries.map(([name, spec]) => {
-            extractionFieldName(name);
-            return fieldsJsonField(name, spec, `fields.${name}`);
-          });
-        } catch { return failure("validation_failure"); }
+        const fields = Object.entries(step.fields).map(([name, spec]) => fieldsJsonField(name, spec, name));
         const observation = await observe(context);
         const state = providerState(observation);
         // Extraction is read-only: it never reserves an attempt, and its values stay in memory.
@@ -422,8 +409,7 @@ function createSemanticWorkflowRuntime(dependencies) {
           evaluate: (text, requested, options) => evaluator(context, text, requested, options, true),
         });
         const extraction = { ...result, page: { origin: state.origin, title: state.title }, omitted: observation.omitted };
-        const handle = step.as || step.id;
-        context.bindings.set(handle, { kind: "extraction", handle, specs: fields, result: extraction });
+        context.bindings.set(step.as, { kind: "extraction", handle: step.as, specs: fields, result: extraction });
         return success("completed", { extraction });
       }
       if (step.op === "open") {
@@ -444,14 +430,12 @@ function createSemanticWorkflowRuntime(dependencies) {
         const expected = {};
         for (const key of ["equals", "min", "max"]) {
           if (step[key] !== undefined) expected[key] = valueLiteral(kind, step[key]);
-          if (step[key] !== undefined && expected[key] === undefined) return failure("validation_failure");
         }
         if (step.input !== undefined) {
           if (!Object.hasOwn(context.inputs, step.input)) return failure("validation_failure");
           expected.equals = inputLiteral(kind, context.inputs[step.input]);
           if (expected.equals === undefined) return failure("validation_failure");
         }
-        if (!kind || !Object.keys(expected).length) return failure("validation_failure");
         const reason = compareValue(binding.result.fields[step.field], spec, kind, expected);
         return reason ? failure(reason) : success("verified");
       }

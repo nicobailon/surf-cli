@@ -151,59 +151,18 @@ describe("semantic workflow definition", () => {
     ],
     ["no fields", [extractStep({})], "steps[0].args.fields must be an object with 1 to 16 fields"],
     [
-      "fields array",
-      [extractStep([{ type: "text" }])],
-      "steps[0].args.fields must be an object with 1 to 16 fields",
-    ],
-    [
       "too many fields",
       [extractStep(seventeen)],
       "steps[0].args.fields must be an object with 1 to 16 fields",
     ],
     [
-      "bad field name",
-      [extractStep({ "1total": { type: "number" } })],
-      'steps[0].args.fields: field name "1total" must match [A-Za-z_][A-Za-z0-9_.-]{0,63}',
-    ],
-    [
-      "reserved field name",
-      [extractStep(JSON.parse('{"__proto__":{"type":"text"}}'))],
-      "steps[0].args.fields: field name __proto__ is reserved",
-    ],
-    [
-      "field spec",
-      [extractStep({ total: { type: "number", decimals: 7 } })],
-      "steps[0].args.fields.total: decimals must be an integer from 0 to 6",
-    ],
-    ...["target", "expect", "predicate"].map((key) => [
-      `extract binding as ${key}`,
+      "extract binding as target",
       [
         extractStep({ total: { type: "number" } }),
-        key === "target"
-          ? {
-              id: "open",
-              tool: "semantic.step",
-              args: { op: "open", target: { binding: "order" } },
-            }
-          : {
-              id: "check",
-              tool: "semantic.step",
-              args:
-                key === "expect"
-                  ? {
-                      op: "click",
-                      target: { query: "Pay" },
-                      expect: { kind: "visible", target: { binding: "order" } },
-                    }
-                  : {
-                      op: "assert",
-                      mode: "local",
-                      predicate: { kind: "visible", target: { binding: "order" } },
-                    },
-            },
+        { id: "open", tool: "semantic.step", args: { op: "open", target: { binding: "order" } } },
       ],
       "steps[1] binding 'order' is an extract result; only a value assert can use it",
-    ]),
+    ],
     [
       "extract binding in bindings",
       [

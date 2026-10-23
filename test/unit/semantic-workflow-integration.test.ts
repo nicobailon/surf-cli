@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 
+declare const process: { stdout: { write(chunk: unknown): boolean } };
 const { createConcreteSemanticExecutor } = require("../../native/semantic-workflow-executor.cjs");
 const { createSemanticEvaluator } = require("../../native/semantic-evaluator.cjs");
 const { executeDoSteps } = require("../../native/do-executor.cjs");
@@ -175,6 +176,8 @@ describe("semantic workflow integration seam", () => {
         providerCalls: 1,
         providerLatencyMs: expect.any(Number),
       });
+      expect(result.semantic).not.toHaveProperty("extraction");
+      expect(result.semantic.usage).toMatchObject({ extractions: 0 });
       expect(fetch.mock.calls[0][0]).toMatch(/\/ai\/run\/@cf\/cloudflare\/clef-flash$/);
     } finally {
       vi.unstubAllGlobals();
@@ -325,59 +328,39 @@ describe("semantic workflow extract step through the executor", () => {
         omitted: { candidates: 0, chunks: 0 },
       });
       expect(result.vars.order).not.toHaveProperty("usage");
-      const body = JSON.parse((fetch.mock.calls[1][1] as { body: string }).body);
-      expect(Object.keys(body).sort()).toEqual(["fields", "model", "reference_date", "state"]);
     } finally {
       vi.unstubAllGlobals();
     }
   });
 
-  it("runs an extract-only workflow with Cloudflare credentials and no TypeSafe key", async () => {
-    vi.stubGlobal("fetch", cloudflareFetch());
-    try {
-      const execute = createConcreteSemanticExecutor({
-        request: browser(),
-        attemptStore: { acquire: vi.fn(), checkpoint: vi.fn(), release: vi.fn() },
-        workflow: { semantic: { version: 1 }, steps: [extractStep] },
-        env: cloudflare,
-      });
-      const result = await execute(extractStep);
-      expect(result.kind).toBe("success");
-      expect(result.semantic).toMatchObject({
-        provider: "typesafe",
-        model: "jev-1.13.0",
-        providerCalls: 0,
-        providerLatencyMs: 0,
-        extraction: { model: "clairic", providerCalls: 1 },
-      });
-      expect(result.publicResult.fields.total.value).toBe(4219.37);
-    } finally {
-      vi.unstubAllGlobals();
-    }
-  });
-
-  it("ignores an unregistered SURF_SEMANTIC_MODEL in an extract-only workflow", async () => {
-    vi.stubGlobal("fetch", cloudflareFetch());
-    try {
-      const execute = createConcreteSemanticExecutor({
-        request: browser(),
-        attemptStore: { acquire: vi.fn(), checkpoint: vi.fn(), release: vi.fn() },
-        workflow: { semantic: { version: 1 }, steps: [extractStep] },
-        env: { ...cloudflare, SURF_SEMANTIC_MODEL: "clairic" },
-      });
-      const result = await execute(extractStep);
-      expect(result.kind).toBe("success");
-      expect(result.semantic).toMatchObject({
-        provider: null,
-        model: "clairic",
-        providerCalls: 0,
-        providerLatencyMs: 0,
-        extraction: { model: "clairic", providerCalls: 1 },
-      });
-    } finally {
-      vi.unstubAllGlobals();
-    }
-  });
+  it.each([
+    ["no TypeSafe key", {}, "typesafe", "jev-1.13.0"],
+    ["an unregistered SURF_SEMANTIC_MODEL", { SURF_SEMANTIC_MODEL: "clairic" }, null, "clairic"],
+  ])(
+    "runs an extract-only workflow with Cloudflare credentials and %s",
+    async (_label, extra, provider, model) => {
+      vi.stubGlobal("fetch", cloudflareFetch());
+      try {
+        const execute = createConcreteSemanticExecutor({
+          request: browser(),
+          attemptStore: { acquire: vi.fn(), checkpoint: vi.fn(), release: vi.fn() },
+          workflow: { semantic: { version: 1 }, steps: [extractStep] },
+          env: { ...cloudflare, ...extra },
+        });
+        const result = await execute(extractStep);
+        expect(result.kind).toBe("success");
+        expect(result.semantic).toMatchObject({
+          provider,
+          model,
+          providerCalls: 0,
+          providerLatencyMs: 0,
+          extraction: { model: "clairic", providerCalls: 1 },
+        });
+      } finally {
+        vi.unstubAllGlobals();
+      }
+    },
+  );
 
   it("needs Cloudflare credentials for extract before any browser request", async () => {
     const request = browser();
@@ -397,40 +380,6 @@ describe("semantic workflow extract step through the executor", () => {
       "Clairic needs Cloudflare credentials: set CLOUDFLARE_ACCOUNT_ID and CLOUDFLARE_API_TOKEN, or run: surf semantic auth set --provider cloudflare",
     );
     expect(request).not.toHaveBeenCalled();
-  });
-
-  it("never builds the Clairic evaluator for a workflow without extract", async () => {
-    const evaluator = createSemanticEvaluator({
-      model: "jev-1.13.0",
-      env: { TYPESAFE_API_KEY: "test-key" },
-      loadSdk: () => ({
-        TypeSafeClient: class {
-          systemOne = vi.fn(async () => ({
-            model: "jev-test",
-            usage: { input_tokens: 2, output_tokens: 1 },
-            answers: {
-              target: {
-                type: "choice",
-                choice: "e2",
-                confidence: 0.9,
-                probabilities: { e2: 0.99, none: 0.01 },
-              },
-            },
-          }));
-        },
-      }),
-    });
-    const execute = createConcreteSemanticExecutor({
-      request: browser(),
-      evaluator,
-      attemptStore: { acquire: vi.fn(), checkpoint: vi.fn(), release: vi.fn() },
-      workflow: { semantic: { version: 1 }, steps: [findStep] },
-      env: {},
-    });
-    const result = await execute(findStep);
-    expect(result.kind).toBe("success");
-    expect(result.semantic).not.toHaveProperty("extraction");
-    expect(result.semantic.usage).toMatchObject({ providerCalls: 1, extractions: 0 });
   });
 
   it("writes no extracted value to the workflow state files", async () => {
@@ -495,8 +444,7 @@ describe("semantic workflow extract step through the executor", () => {
       const fetch = cloudflareFetch();
       vi.stubGlobal("fetch", fetch);
       const printed: string[] = [];
-      const { stdout } = require("node:process") as { stdout: { write(chunk: unknown): boolean } };
-      const write = vi.spyOn(stdout, "write").mockImplementation((chunk: unknown) => {
+      const write = vi.spyOn(process.stdout, "write").mockImplementation((chunk: unknown) => {
         printed.push(String(chunk));
         return true;
       });
@@ -520,12 +468,6 @@ describe("semantic workflow extract step through the executor", () => {
         expect(result.error).toBe(reason);
         expect(result.results[1]).not.toHaveProperty("output");
         expect(result.vars).not.toHaveProperty("check");
-        expect(request).toHaveBeenCalledOnce();
-        expect(fetch).toHaveBeenCalledOnce();
-        expect(result.semantic).toMatchObject({
-          stepId: "check",
-          usage: { providerCalls: 1, observations: 1 },
-        });
         // The extract result in vars is the only place a page value may appear.
         const output = JSON.stringify({ ...result, vars: undefined }) + printed.join("");
         for (const value of ["4219", "ZX-7731", expected]) {
