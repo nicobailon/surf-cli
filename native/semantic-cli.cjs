@@ -40,6 +40,12 @@ function invalidRequest(message) {
   throw new SemanticError("semantic_invalid_request", message);
 }
 
+// Field names key plain objects in the request and the output, so __proto__ would vanish from them.
+function extractionFieldName(name) {
+  if (!/^[A-Za-z_][A-Za-z0-9_.-]{0,63}$/.test(name)) invalidRequest(`field name ${JSON.stringify(name)} must match [A-Za-z_][A-Za-z0-9_.-]{0,63}`);
+  if (name === "__proto__") invalidRequest("field name __proto__ is reserved");
+}
+
 const SEMANTIC_HELP = `Usage:
   surf semantic.find <goal> [--model <id>] [--vision] [--threshold find=<0-1>] [--session <name> | --tab-id <id>] [--json]
   surf semantic.verify <outcome> [--model <id>] [--threshold verify-positive=<0-1>] [--threshold verify-negative=<0-1>] [--session <name> | --tab-id <id>] [--json]
@@ -126,7 +132,7 @@ function parseSemanticArgs(argv) {
         const name = first < 0 ? value : value.slice(0, first);
         const type = first < 0 ? "" : value.slice(first + 1, second < 0 ? undefined : second);
         const instructions = second < 0 ? "" : value.slice(second + 1).trim();
-        if (!/^[A-Za-z_][A-Za-z0-9_.-]{0,63}$/.test(name)) invalidRequest(`--field name ${JSON.stringify(name)} must match [A-Za-z_][A-Za-z0-9_.-]{0,63}`);
+        extractionFieldName(name);
         if (!Object.hasOwn(EXTRACTION_FIELD_TYPES, type)) {
           invalidRequest(`--field ${name} has unknown type ${JSON.stringify(type)}; valid types: ${Object.keys(EXTRACTION_FIELD_TYPES).join(", ")}`);
         }

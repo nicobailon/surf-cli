@@ -2805,6 +2805,7 @@ describe("semantic.extract CLI", () => {
     [["--field", "items:list"], 'unknown type "list"'],
     [["--field", "price:estimate"], 'unknown type "estimate"'],
     [["--field", "9total:number"], "must match"],
+    [["--field", "__proto__:text"], "field name __proto__ is reserved"],
     [["--field", "total:number", "--field", "total:text"], "duplicate --field: total"],
     [manyFields, "at most 16 fields"],
     [[], "requires at least one --field"],
