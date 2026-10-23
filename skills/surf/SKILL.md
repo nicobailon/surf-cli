@@ -119,6 +119,13 @@ the provider of the selected model: `jev-1.13.0` (default) goes to TypeSafe
 only way for `surf do`). Every result reports `provider`, `model`,
 `providerCalls`, and `providerLatencyMs`.
 
+To read specific values (a total, a date, an order id) instead of a full
+`read`, use `semantic.extract --field name:type[:instructions]`. Each value
+comes back with a `confidence`; it is `null` when the value isn't on the page,
+and withheld as `guess` when the confidence is below the threshold. It always
+uses `clairic` on Cloudflare Workers AI, with the same Cloudflare credentials as
+`clef`.
+
 For icon-only buttons with no name, add `--vision` to `semantic.find` or
 `semantic.act` with `--model clef` or `clef-flash`. It also sends one image of
 those controls, each drawn from its own icon (SVG, image or icon-font glyph); no
@@ -135,6 +142,7 @@ surf semantic.act "Fill email" --input email="$EMAIL" --allow-write --allow-ref 
 surf semantic.act 'Add the selected item to the cart' --allow-write --threshold write=0.85
 surf semantic.find "the export button" --model clef-flash
 surf semantic.find "the download icon" --model clef --vision
+surf semantic.extract --field total:number:"Order total including tax" --field delivered:date
 printf '%s\n' "$TYPESAFE_KEY" | surf semantic auth set
 printf '%s\n%s\n' "$CLOUDFLARE_ACCOUNT_ID" "$CLOUDFLARE_API_TOKEN" | surf semantic auth set --provider cloudflare
 surf semantic auth status          # both providers unless --provider is given

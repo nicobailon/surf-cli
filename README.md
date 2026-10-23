@@ -1076,6 +1076,7 @@ semantic.find     select one control matching a goal
 semantic.filter   rank the page regions relevant to a goal
 semantic.verify   check whether one outcome is visible
 semantic.act      run the bounded observe/choose/act/verify loop
+semantic.extract  read typed values (prices, dates, ids) off the page
 ```
 
 This is most useful when the agent does not yet know a site's structure or happy
@@ -1087,7 +1088,8 @@ reliable for repeated execution.
 
 Semantic commands are an explicit remote-AI boundary: only `surf semantic.*`
 (and semantic `surf do` steps) send a bounded, value-free current-page
-observation, and it goes to the provider of the selected model. Existing Surf
+observation, and it goes to the provider of the selected model
+(`semantic.extract` always sends it to Cloudflare Workers AI). Existing Surf
 commands do not read a provider credential, load the SDK, or make provider calls.
 
 | Model | Provider | Endpoint | Credentials |
@@ -1095,6 +1097,7 @@ commands do not read a provider credential, load the SDK, or make provider calls
 | `jev-1.13.0` (default) | TypeSafe | `api.typesafe.ai` | `TYPESAFE_API_KEY` or `surf semantic auth set` |
 | `clef` | Cloudflare Workers AI | `api.cloudflare.com` | `CLOUDFLARE_ACCOUNT_ID` + `CLOUDFLARE_API_TOKEN`, or `surf semantic auth set --provider cloudflare` |
 | `clef-flash` | Cloudflare Workers AI | `api.cloudflare.com` | same as `clef` |
+| `clairic` (only `semantic.extract`) | Cloudflare Workers AI | `api.cloudflare.com` | same as `clef` |
 
 Pick a model with `--model <id>` on `semantic.find`, `semantic.filter`,
 `semantic.verify`, and `semantic.act`, or with `SURF_SEMANTIC_MODEL` (the only
@@ -1115,6 +1118,8 @@ surf semantic.act "Fill the email field" --input email="$EMAIL" --allow-write
 surf semantic.act 'Add the selected item to the cart' --allow-write --threshold write=0.85
 surf semantic.find "the export button" --model clef-flash
 SURF_SEMANTIC_MODEL=clef surf semantic.verify "Settings were saved"
+surf semantic.extract --field total:number:"Order total including tax" --field delivered:date
+surf semantic.extract --fields-json '{"total":{"type":"number","unit":"USD","decimals":2},"items":{"type":"list","items":"text"}}'
 surf semantic auth set       # TypeSafe key: hidden prompt, or exactly one stdin line
 surf semantic auth set --provider cloudflare   # account id, then hidden token
 surf semantic auth status    # each provider's source and redacted fingerprint only
@@ -1129,6 +1134,26 @@ printf '%s\n' "$TYPESAFE_KEY" | surf semantic auth set
 # Cloudflare: two stdin lines, account id then token
 printf '%s\n%s\n' "$CLOUDFLARE_ACCOUNT_ID" "$CLOUDFLARE_API_TOKEN" | surf semantic auth set --provider cloudflare
 ```
+
+#### Reading values (`semantic.extract`)
+
+`semantic.extract` reads specific values off the page, such as a price, a date
+or an order id, so the agent doesn't have to read the whole page to find them.
+Name each value with `--field name:type[:instructions]`. The types are `text`,
+`number`, `integer`, `date`, `time`, `datetime`, `duration` (or a unit such as
+`duration.minutes`), `list`, `list.number` and `list.date`. `--fields-json`
+takes the same fields as JSON when you need units, decimals or a per-field null
+threshold. Each value comes back with a `confidence` and a status: `extracted`;
+`null` when the value isn't on the page; or `uncertain` when the confidence is
+below the threshold, in which case the value is withheld and reported as
+`guess`. A text value also names the page text chunk or control ref it came
+from, when Surf can match it exactly.
+
+It runs on Cloudflare's Clairic extraction model (a preview), uses the same
+Cloudflare credentials as `clef`, and sends the same value-free page text to
+Cloudflare. `SURF_SEMANTIC_MODEL` doesn't apply to it. On the 300 test fields
+used to set its threshold, it reported no wrong value as extracted; see
+[Extraction (Clairic)](docs/semantic-models.md#extraction-clairic).
 
 #### Icon-only controls (`--vision`)
 
