@@ -1,7 +1,7 @@
 const crypto = require("node:crypto");
 const { performance } = require("node:perf_hooks");
 const { openClientTransport } = require("./client-transport.cjs");
-const { SEMANTIC_POLICY, SemanticError, chooseAction, filter, find, semanticModel, verify } = require("./semantic-core.cjs");
+const { EXTRACTION_FIELD_TYPES, SEMANTIC_POLICY, SemanticError, chooseAction, extract, extractionModel, filter, find, semanticModel, verify } = require("./semantic-core.cjs");
 const { resolveModel } = require("./semantic-provider.cjs");
 const {
   clearStoredCloudflareCredential,
@@ -10,7 +10,7 @@ const {
   setCloudflareCredentialFromInput,
   setTypeSafeCredentialFromInput,
 } = require("./semantic-credentials.cjs");
-const { createSemanticEvaluator } = require("./semantic-evaluator.cjs");
+const { createExtractionEvaluator, createSemanticEvaluator } = require("./semantic-evaluator.cjs");
 
 const FIELD_ROLES = new Set(["textbox", "searchbox", "combobox", "spinbutton"]);
 const CLICK_ROLES = new Set(["button", "link", "checkbox", "radio"]);
@@ -24,24 +24,34 @@ const THRESHOLD_KEYS = Object.freeze({
   "prerequisite-blocked": "prerequisiteBlocked",
   write: "write",
   "exact-ref-write": "exactRefWrite",
+  extract: "extract",
 });
 const COMMAND_THRESHOLD_KEYS = Object.freeze({
   "semantic.find": new Set(["find"]),
   "semantic.filter": new Set(["filter"]),
   "semantic.verify": new Set(["verify-positive", "verify-negative"]),
   "semantic.act": new Set(["find", "write", "exact-ref-write", "verify-positive", "verify-negative", "prerequisite-supported", "prerequisite-blocked"]),
+  "semantic.extract": new Set(["extract"]),
 });
 const AUTH_PROVIDERS = Object.freeze(["typesafe", "cloudflare"]);
+const EXTRACT_REJECTED_OPTIONS = Object.freeze(["--vision", "--allow-write", "--allow-ref", "--input", "--max-steps", "--top"]);
+
+function invalidRequest(message) {
+  throw new SemanticError("semantic_invalid_request", message);
+}
 
 const SEMANTIC_HELP = `Usage:
   surf semantic.find <goal> [--model <id>] [--vision] [--threshold find=<0-1>] [--session <name> | --tab-id <id>] [--json]
   surf semantic.verify <outcome> [--model <id>] [--threshold verify-positive=<0-1>] [--threshold verify-negative=<0-1>] [--session <name> | --tab-id <id>] [--json]
   surf semantic.filter <goal> [--model <id>] [--top <1-12>] [--threshold filter=<0-1>] [--session <name> | --tab-id <id>] [--json]
   surf semantic.act <goal> [--model <id>] [--vision] [--max-steps <1-8>] [--allow-write] [--allow-ref <ref>...] [--input <name=value>...] [--threshold <name=value>...] [--session <name> | --tab-id <id>] [--json]
+  surf semantic.extract --field <name>:<type>[:<instructions>]... [--reference-date YYYY-MM-DD] [--model clairic] [--threshold extract=<0-1>] [--session <name> | --tab-id <id>] [--json]
   surf semantic auth set [--provider typesafe|cloudflare]     (default: typesafe)
   surf semantic auth status|clear [--provider typesafe|cloudflare]   (default: both)
 
 Models: jev-1.13.0 (TypeSafe, api.typesafe.ai), clef and clef-flash (Cloudflare Workers AI, api.cloudflare.com). --model wins over SURF_SEMANTIC_MODEL; the default is jev-1.13.0. Semantic commands send a bounded, value-free page observation to the provider of the selected model. Every result reports provider, model, providerCalls and providerLatencyMs. semantic.act allows only same-origin navigation, fixed scroll/wait actions, and (with --allow-write) clicks/fills. --allow-write authorizes mutation-capable clicks, including submit/purchase/delete/send/publish; repeatable --allow-ref narrows this authority. Repeatable --threshold overrides applicable confidence thresholds for this run only; defaults remain safer and write authority is unchanged. Names: find, filter, verify-positive, verify-negative, prerequisite-supported, prerequisite-blocked, write, exact-ref-write.
+
+semantic.extract sends the same value-free page observation to Cloudflare Workers AI (Clairic, preview) and returns typed values with confidence. Field types: text, number, integer, date, time, datetime, duration, duration.<seconds|minutes|hours|days|weeks|months|years>. It always uses an extraction model (clairic), so SURF_SEMANTIC_MODEL does not apply; its only --threshold name is extract. --reference-date anchors dates written without a year (default: today).
 
 --vision (semantic.find and semantic.act, with clef or clef-flash) also sends the provider one image of the controls that have no name, such as icon-only buttons. Each tile is drawn from the control's own icon (its SVG, image, icon-font glyph, CSS mask or background image) on a blank canvas; no screenshot of the page is sent, so field content and anything else on the page can't appear in it. Controls whose icon can't be drawn are counted as skipped: canvas icons, CSS gradients, content: url(), external <use> files, text not in a loaded icon font, cross-origin masks without CORS, images that fail to load, and controls in child frames. Icon fonts lose their variable axes (Material Symbols FILL/wght), and <use> symbol children styled only by page style sheet selectors lose those styles. Results report vision: {tiles, skipped}, and "tile": true on a returned candidate or action that was shown as a tile. Thresholds, --allow-write and --allow-ref are unchanged.`;
 
@@ -66,22 +76,25 @@ function parseSemanticArgs(argv) {
     }
     return result;
   }
-  if (!["semantic.find", "semantic.verify", "semantic.filter", "semantic.act"].includes(command)) throw new Error(`unknown semantic command: ${command}`);
-  const result = { command, json: false, allowWrite: false, allowRefs: [], inputs: {}, thresholds: {}, maxSteps: SEMANTIC_POLICY.limits.defaultSteps };
+  if (!["semantic.find", "semantic.verify", "semantic.filter", "semantic.act", "semantic.extract"].includes(command)) throw new Error(`unknown semantic command: ${command}`);
+  const extracting = command === "semantic.extract";
+  const result = { command, json: false, allowWrite: false, allowRefs: [], inputs: {}, thresholds: {}, fields: [], maxSteps: SEMANTIC_POLICY.limits.defaultSteps };
   const positionals = [];
   for (let i = 1; i < args.length; i++) {
     const arg = args[i];
+    if (extracting && EXTRACT_REJECTED_OPTIONS.includes(arg)) invalidRequest(`${arg} does not apply to semantic.extract`);
     if (arg === "--json") result.json = true;
     else if (arg === "--no-wait") result.noWait = true;
     else if (arg === "--allow-write") result.allowWrite = true;
     else if (arg === "--vision") result.vision = true;
-    else if (["--session", "--tab-id", "--top", "--max-steps", "--allow-ref", "--input", "--threshold", "--model"].includes(arg)) {
+    else if (["--session", "--tab-id", "--top", "--max-steps", "--allow-ref", "--input", "--threshold", "--model", "--field", "--reference-date"].includes(arg)) {
       const value = args[++i];
       if (!value || value.startsWith("--")) throw new Error(`${arg} requires a value`);
       if (arg === "--session") result.session = value;
       if (arg === "--model") {
         if (result.model) throw new Error("duplicate --model");
-        semanticModel(value);
+        if (extracting) extractionModel(value);
+        else semanticModel(value);
         result.model = value;
       }
       if (arg === "--tab-id") result.tabId = positiveInteger(value, arg);
@@ -107,10 +120,39 @@ function parseSemanticArgs(argv) {
         if (Buffer.byteLength(inputValue, "utf8") > SEMANTIC_POLICY.limits.inputValueBytes) throw new Error(`--input ${name} exceeds ${SEMANTIC_POLICY.limits.inputValueBytes} bytes`);
         result.inputs[name] = inputValue;
       }
+      if (arg === "--field") {
+        const first = value.indexOf(":");
+        const second = first < 0 ? -1 : value.indexOf(":", first + 1);
+        const name = first < 0 ? value : value.slice(0, first);
+        const type = first < 0 ? "" : value.slice(first + 1, second < 0 ? undefined : second);
+        const instructions = second < 0 ? "" : value.slice(second + 1).trim();
+        if (!/^[A-Za-z_][A-Za-z0-9_.-]{0,63}$/.test(name)) invalidRequest(`--field name ${JSON.stringify(name)} must match [A-Za-z_][A-Za-z0-9_.-]{0,63}`);
+        if (!Object.hasOwn(EXTRACTION_FIELD_TYPES, type)) {
+          invalidRequest(`--field ${name} has unknown type ${JSON.stringify(type)}; valid types: ${Object.keys(EXTRACTION_FIELD_TYPES).join(", ")}`);
+        }
+        if (result.fields.some((field) => field.name === name)) invalidRequest(`duplicate --field: ${name}`);
+        result.fields.push({ name, type, ...(instructions ? { instructions } : {}) });
+      }
+      if (arg === "--reference-date") {
+        if (result.referenceDate) invalidRequest("duplicate --reference-date");
+        const parsed = new Date(`${value}T00:00:00Z`);
+        if (!/^\d{4}-\d{2}-\d{2}$/.test(value) || Number.isNaN(parsed.getTime()) || parsed.toISOString().slice(0, 10) !== value) {
+          invalidRequest("--reference-date must be a calendar date as YYYY-MM-DD");
+        }
+        result.referenceDate = value;
+      }
     } else if (arg.startsWith("--")) throw new Error(`unknown semantic option: ${arg}`);
     else positionals.push(arg);
   }
-  if (positionals.length !== 1 || !positionals[0].trim()) throw new Error(`${command} requires exactly one goal or outcome`);
+  if (extracting) {
+    if (positionals.length) invalidRequest("semantic.extract takes no goal; describe each value with --field <name>:<type>:<instructions>");
+    if (!result.fields.length) invalidRequest("semantic.extract requires at least one --field");
+    if (result.fields.length > SEMANTIC_POLICY.limits.extractFields) invalidRequest(`semantic.extract supports at most ${SEMANTIC_POLICY.limits.extractFields} fields`);
+  } else {
+    if (positionals.length !== 1 || !positionals[0].trim()) throw new Error(`${command} requires exactly one goal or outcome`);
+    if (result.fields.length) throw new Error(`--field does not apply to ${command}`);
+    if (result.referenceDate) throw new Error(`--reference-date does not apply to ${command}`);
+  }
   if (result.session && result.tabId) throw new Error("use either --session or --tab-id, not both");
   if (result.maxSteps > SEMANTIC_POLICY.limits.maxSteps) throw new Error(`--max-steps must not exceed ${SEMANTIC_POLICY.limits.maxSteps}`);
   if (Object.keys(result.inputs).length > SEMANTIC_POLICY.limits.inputSlots) throw new Error(`--input supports at most ${SEMANTIC_POLICY.limits.inputSlots} slots`);
@@ -121,7 +163,7 @@ function parseSemanticArgs(argv) {
       throw new Error(`--threshold ${name} does not apply to ${command}`);
     }
   }
-  result.goal = positionals[0].trim();
+  if (!extracting) result.goal = positionals[0].trim();
   return result;
 }
 
@@ -618,6 +660,19 @@ async function runBrowserSemantic(options, { request, evaluate, now = () => perf
   };
   let observation = await observe();
   let state = providerState(observation);
+  if (options.command === "semantic.extract") {
+    const now = new Date();
+    const today = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`;
+    const { usage, ...result } = await extract({
+      state,
+      fields: options.fields,
+      referenceDate: options.referenceDate ?? today,
+      thresholds: options.thresholds,
+      model: options.model,
+      evaluate: evaluator,
+    });
+    return { ...result, page: { origin: state.origin, title: state.title }, omitted: observation.omitted, usage };
+  }
   if (options.command === "semantic.find") {
     const vision = visionInput(observation);
     const logicalCandidates = buildLogicalCandidates(observation, state.candidates)
@@ -800,11 +855,12 @@ async function handleSemanticCli(argv, { endpoint, env = process.env, input = pr
     ]));
     return { handled: true, value: { cleared, status: credentialStatus(env, options.provider) }, json: options.json, auth: "clear" };
   }
-  const model = options.model ?? resolveModel(env);
+  const extracting = options.command === "semantic.extract";
+  const model = options.model ?? (extracting ? SEMANTIC_POLICY.defaultExtractionModel : resolveModel(env));
   if (options.vision && !semanticModel(model).images) {
     throw new SemanticError("semantic_invalid_request", "--vision needs an image-capable model such as --model clef");
   }
-  const evaluator = createSemanticEvaluator({ model, env });
+  const evaluator = extracting ? createExtractionEvaluator({ model, env }) : createSemanticEvaluator({ model, env });
   let id = 0;
   const environmentSession = !options.session && !options.tabId && typeof env.SURF_SESSION === "string" && env.SURF_SESSION.trim() ? env.SURF_SESSION.trim() : undefined;
   const target = {

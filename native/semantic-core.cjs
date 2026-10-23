@@ -22,6 +22,15 @@ const SEMANTIC_POLICY = Object.freeze({
       thresholds: Object.freeze({ find: 0.7, filter: 0.65, verifyPositive: 0.85, verifyNegative: 0.94, prerequisiteSupported: 0.75, prerequisiteBlocked: 0.9, write: 0.95, exactRefWrite: 0.65 }),
     }),
   }),
+  defaultExtractionModel: "clairic",
+  // Extraction models answer with typed values, not choices, so they keep their own registry and thresholds.
+  extractionModels: Object.freeze({
+    clairic: Object.freeze({
+      provider: "cloudflare",
+      images: false,
+      thresholds: Object.freeze({ extract: 0.8, null: 0.5 }),
+    }),
+  }),
   limits: Object.freeze({
     stateBytes: 24 * 1024,
     candidates: 64,
@@ -31,6 +40,7 @@ const SEMANTIC_POLICY = Object.freeze({
     filterTop: 12,
     inputSlots: 16,
     inputValueBytes: 16 * 1024,
+    extractFields: 16,
     defaultSteps: 5,
     maxSteps: 8,
     defaultWallMs: 30_000,
@@ -71,6 +81,13 @@ function semanticModel(id) {
 
 function modelThreshold(model, overrides, key) {
   return overrides[key] ?? semanticModel(model).thresholds[key];
+}
+
+function extractionModel(id) {
+  if (typeof id !== "string" || !Object.hasOwn(SEMANTIC_POLICY.extractionModels, id)) {
+    fail(`unknown extraction model: ${id} (valid extraction models: ${Object.keys(SEMANTIC_POLICY.extractionModels).join(", ")})`);
+  }
+  return SEMANTIC_POLICY.extractionModels[id];
 }
 
 function assertOpaqueId(value, field) {
@@ -400,4 +417,115 @@ async function chooseAction({ state, goal, actions, origin, allowWrite = false, 
   };
 }
 
-module.exports = { SEMANTIC_POLICY, SemanticError, chooseAction, filter, find, semanticModel, verify };
+const DURATION_UNITS = ["seconds", "minutes", "hours", "days", "weeks", "months", "years"];
+const EXTRACTION_FIELD_TYPES = Object.freeze({
+  text: { type: "text" },
+  number: { type: "number" },
+  integer: { type: "number", integer: true },
+  date: { type: "date" },
+  time: { type: "time" },
+  datetime: { type: "datetime" },
+  duration: { type: "duration" },
+  ...Object.fromEntries(DURATION_UNITS.map((unit) => [`duration.${unit}`, { type: "duration", unit }])),
+});
+const EXTRACTION_VALUE_PATTERNS = Object.freeze({
+  date: /^\d{4}-\d{2}-\d{2}$/,
+  time: /^\d{2}:\d{2}(?::\d{2})?$/,
+  datetime: /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2})?$/,
+});
+
+function validExtractedValue(spec, value) {
+  if (spec.type === "text") return typeof value === "string";
+  if (spec.type === "number" || spec.type === "duration") return Number.isFinite(value) && (!spec.integer || Number.isInteger(value));
+  return typeof value === "string" && EXTRACTION_VALUE_PATTERNS[spec.type].test(value);
+}
+
+function optionalProbability(value) {
+  return value === undefined || (Number.isFinite(value) && value >= 0 && value <= 1);
+}
+
+// Clairic text spans are code-point offsets into the state string, so pieces are measured in code points.
+function extractionState(state) {
+  const lines = [];
+  const pieces = [];
+  let offset = 0;
+  const add = (text, piece) => {
+    if (lines.length) offset += 1;
+    const length = [...text].length;
+    pieces.push({ ...piece, start: offset, end: offset + length });
+    lines.push(text);
+    offset += length;
+  };
+  if (state.title) add(state.title, { chunk: "title", refs: [] });
+  for (const chunk of state.chunks) add(chunk.text, { chunk: chunk.id, refs: chunk.refs });
+  for (const candidate of state.candidates) {
+    if (candidate.name) add(`${candidate.role} "${candidate.name}"`, { refs: [candidate.id] });
+  }
+  return { text: lines.join("\n"), pieces, codePoints: offset };
+}
+
+function spanSource(extraction, codePoints, span, expected) {
+  if (!span || codePoints.slice(span[0], span[1]).join("") !== expected) return null;
+  const overlapped = extraction.pieces.filter((piece) => piece.start < span[1] && piece.end > span[0]);
+  if (!overlapped.length) return null;
+  return {
+    chunks: overlapped.flatMap((piece) => piece.chunk ? [piece.chunk] : []),
+    refs: [...new Set(overlapped.flatMap((piece) => piece.refs))],
+  };
+}
+
+async function extract({ state, fields, referenceDate, thresholds = {}, model = SEMANTIC_POLICY.defaultExtractionModel, evaluate }) {
+  const registered = extractionModel(model);
+  if (!Array.isArray(fields) || !fields.length || fields.length > SEMANTIC_POLICY.limits.extractFields) {
+    fail(`extraction needs 1 to ${SEMANTIC_POLICY.limits.extractFields} fields`);
+  }
+  if (fields.some(({ type }) => !Object.hasOwn(EXTRACTION_FIELD_TYPES, type))) fail("extraction field has an unknown type");
+  const appliedThresholds = { extract: thresholds.extract ?? registered.thresholds.extract, null: registered.thresholds.null };
+  const requested = Object.fromEntries(fields.map(({ name, type, instructions }) => [name, {
+    ...EXTRACTION_FIELD_TYPES[type],
+    ...(instructions ? { instructions } : {}),
+    null_threshold: appliedThresholds.null,
+  }]));
+  const extraction = extractionState(state);
+  const response = await evaluate(extraction.text, requested, { referenceDate });
+  if (!response || typeof response !== "object" || Array.isArray(response)) providerInvalid("provider response must be an object");
+  if (typeof response.truncated !== "boolean") providerInvalid("provider response must report truncated");
+  exactKeys(response.answers, Object.keys(requested), "extraction answers");
+  const codePoints = [...extraction.text];
+  const results = {};
+  for (const { name, type } of fields) {
+    const spec = requested[name];
+    const answer = response.answers[name];
+    if (!answer || typeof answer !== "object" || Array.isArray(answer) || answer.type !== spec.type || !Object.hasOwn(answer, "value")) {
+      providerInvalid(`extraction answer ${name} does not match its requested type`);
+    }
+    if (answer.value !== null && !validExtractedValue(spec, answer.value)) providerInvalid(`extraction answer ${name} has an invalid ${spec.type} value`);
+    if (!optionalProbability(answer.confidence) || !optionalProbability(answer.p_null)) providerInvalid(`extraction answer ${name} has an invalid probability`);
+    const { span } = answer;
+    if (span !== undefined && !(Array.isArray(span) && span.length === 2 && span.every(Number.isInteger) && span[0] >= 0 && span[0] <= span[1] && span[1] <= extraction.codePoints)) {
+      providerInvalid(`extraction answer ${name} has an invalid span`);
+    }
+    const status = answer.value === null ? "null" : answer.confidence >= appliedThresholds.extract ? "extracted" : "uncertain";
+    const guess = status === "uncertain" ? answer.value : answer.guess;
+    results[name] = {
+      type,
+      status,
+      value: status === "extracted" ? answer.value : null,
+      ...(status !== "extracted" && guess !== undefined ? { guess } : {}),
+      ...(answer.confidence !== undefined ? { confidence: answer.confidence } : {}),
+      ...(answer.p_null !== undefined ? { pNull: answer.p_null } : {}),
+      source: status !== "null" && spec.type === "text" ? spanSource(extraction, codePoints, span, answer.value) : null,
+    };
+  }
+  const extractedCount = Object.values(results).filter((result) => result.status === "extracted").length;
+  return {
+    status: extractedCount === fields.length ? "extracted" : extractedCount ? "partial" : "uncertain",
+    fields: results,
+    appliedThresholds,
+    referenceDate,
+    truncated: response.truncated,
+    usage: response.usage,
+  };
+}
+
+module.exports = { EXTRACTION_FIELD_TYPES, SEMANTIC_POLICY, SemanticError, chooseAction, extract, extractionModel, filter, find, semanticModel, verify };

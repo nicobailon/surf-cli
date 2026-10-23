@@ -1673,6 +1673,7 @@ Tips:
     content: `Optional model-backed commands. Only these send page-derived text, and only to the selected model's provider:
 jev-1.13.0 (default) -> TypeSafe (api.typesafe.ai); clef, clef-flash -> Cloudflare Workers AI (api.cloudflare.com).
 Choose with --model <id> or SURF_SEMANTIC_MODEL. Results report provider, model, providerCalls, providerLatencyMs.
+semantic.extract always uses clairic (Cloudflare Workers AI, preview) and returns typed values with confidence.
   semantic.find "the notification control"
   semantic.verify "Notification preferences were saved"
   semantic.filter "notification preferences"
@@ -1680,6 +1681,7 @@ Choose with --model <id> or SURF_SEMANTIC_MODEL. Results report provider, model,
   semantic.act "Fill email" --input email="$EMAIL" --allow-write
   semantic.find "the export button" --model clef-flash
   semantic.find "the download icon" --model clef --vision
+  semantic.extract --field total:number:"Order total" --field delivered:date
   semantic auth set|status|clear [--provider typesafe|cloudflare]
 
 --vision (find and act, clef or clef-flash only) also sends one image of the controls that have no
@@ -1886,6 +1888,7 @@ Common Commands:
   page.read          Get page accessibility tree (alias: read)
   semantic.find      Optional model-powered candidate selection
   semantic.act       Bounded semantic browser action controller
+  semantic.extract   Optional model-powered typed values from the page
   locate.role <role> Find element by ARIA role
   search <term>      Search for text in page (alias: find)
   window.new <url>   Create isolated browser window
@@ -1966,6 +1969,7 @@ Usage: surf <command> [args] [options]
 Semantic (optional TypeSafe/Jev):
   surf semantic.find|verify|filter <goal> [--json]
   surf semantic.act <goal> [--allow-write] [--allow-ref <ref>] [--input <name=value>]
+  surf semantic.extract --field <name>:<type>[:<instructions>]... [--reference-date YYYY-MM-DD]
   surf semantic auth <set|status|clear>
 
 Oracle:

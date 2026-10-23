@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 const {
   BASE_URL,
   createCloudflareEvaluator,
+  createCloudflareExtractor,
   createJevEvaluator,
   mapProviderError,
   resolveModel,
@@ -302,5 +303,54 @@ describe("Cloudflare Workers AI provider boundary", () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+});
+
+describe("Cloudflare Workers AI extraction boundary", () => {
+  const result = {
+    model: "clairic",
+    answers: { total: { type: "number", value: 701.1, confidence: 0.99 } },
+    truncated: false,
+    usage: { input_tokens: 504, output_tokens: 0 },
+  };
+  const fields = { total: { type: "number", null_threshold: 0.5 } };
+
+  function extractor(fetch: unknown) {
+    return createCloudflareExtractor({
+      accountId: "acct123",
+      apiToken: "cf-token",
+      model: "clairic",
+      fetch,
+    }) as (state: string, fields: unknown, options?: { referenceDate?: string }) => Promise<any>;
+  }
+
+  it("posts model, state, fields, and reference_date to the Clairic endpoint", async () => {
+    const fetch = vi.fn(
+      async (_url: string, _init: RequestInit) =>
+        new Response(JSON.stringify({ success: true, errors: [], result })),
+    );
+    const response = await extractor(fetch)("Total $701.10", fields, {
+      referenceDate: "2026-10-23",
+    });
+
+    expect(response).toEqual(result);
+    const [url, init] = fetch.mock.calls[0];
+    expect(url).toBe(
+      "https://api.cloudflare.com/client/v4/accounts/acct123/ai/run/@cf/cloudflare/clairic",
+    );
+    expect(JSON.parse(init.body as string)).toEqual({
+      model: "clairic",
+      state: "Total $701.10",
+      fields,
+      reference_date: "2026-10-23",
+    });
+  });
+
+  it("maps Workers AI status errors like the decision models", async () => {
+    const fetch = vi.fn(async () => new Response("{}", { status: 401 }));
+    await expect(extractor(fetch)("x", fields, {})).rejects.toMatchObject({
+      code: "provider_authentication",
+      status: 401,
+    });
   });
 });

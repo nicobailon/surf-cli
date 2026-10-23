@@ -65,11 +65,11 @@ function createJevEvaluator({ apiKey, model = SEMANTIC_POLICY.model, loadSdk = (
   };
 }
 
-function createCloudflareEvaluator({ accountId, apiToken, model, fetch = globalThis.fetch } = {}) {
+function createCloudflareRun({ accountId, apiToken, model, fetch = globalThis.fetch }) {
   const url = `${CLOUDFLARE_API_URL}/accounts/${accountId}/ai/run/@cf/cloudflare/${model}`;
   const authorization = `Bearer ${apiToken.trim()}`;
 
-  return async function evaluate(state, questions, options = {}) {
+  return async function run(body, options = {}) {
     const controller = new AbortController();
     let timedOut = false;
     const timer = setTimeout(() => {
@@ -86,12 +86,7 @@ function createCloudflareEvaluator({ accountId, apiToken, model, fetch = globalT
         response = await fetch(url, {
           method: "POST",
           headers: { Authorization: authorization, "Content-Type": "application/json" },
-          body: JSON.stringify({
-            model,
-            state,
-            questions,
-            ...(options.images ? { images: options.images.map(({ mimeType, data }) => ({ content_type: mimeType, base64: data })) } : {}),
-          }),
+          body: JSON.stringify(body),
           signal: controller.signal,
         });
         text = await response.text();
@@ -120,4 +115,19 @@ function createCloudflareEvaluator({ accountId, apiToken, model, fetch = globalT
   };
 }
 
-module.exports = { BASE_URL, createCloudflareEvaluator, createJevEvaluator, mapProviderError, resolveModel };
+function createCloudflareEvaluator({ accountId, apiToken, model, fetch } = {}) {
+  const run = createCloudflareRun({ accountId, apiToken, model, fetch });
+  return (state, questions, options = {}) => run({
+    model,
+    state,
+    questions,
+    ...(options.images ? { images: options.images.map(({ mimeType, data }) => ({ content_type: mimeType, base64: data })) } : {}),
+  }, options);
+}
+
+function createCloudflareExtractor({ accountId, apiToken, model, fetch } = {}) {
+  const run = createCloudflareRun({ accountId, apiToken, model, fetch });
+  return (state, fields, options = {}) => run({ model, state, fields, reference_date: options.referenceDate }, options);
+}
+
+module.exports = { BASE_URL, createCloudflareEvaluator, createCloudflareExtractor, createJevEvaluator, mapProviderError, resolveModel };
