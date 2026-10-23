@@ -1,21 +1,27 @@
 # Semantic model evaluation
 
 Surf's semantic commands (`semantic.find`, `semantic.filter`, `semantic.verify`,
-`semantic.act`, and semantic `surf do` steps) can run on three decision models:
+`semantic.act`, and semantic `surf do` steps) can run on three decision models,
+and `semantic.extract` runs on one extraction model:
 
 | Model | Provider | Endpoint |
 | --- | --- | --- |
 | `jev-1.13.0` (default) | TypeSafe | `https://api.typesafe.ai` |
 | `clef` | Cloudflare Workers AI | `https://api.cloudflare.com/client/v4/accounts/{id}/ai/run/@cf/cloudflare/clef` |
 | `clef-flash` | Cloudflare Workers AI | `https://api.cloudflare.com/client/v4/accounts/{id}/ai/run/@cf/cloudflare/clef-flash` |
+| `clairic` (`semantic.extract` only) | Cloudflare Workers AI | `https://api.cloudflare.com/client/v4/accounts/{id}/ai/run/@cf/cloudflare/clairic` |
 
-Each model has its own set of eight confidence thresholds. Surf accepts only
-models in its registry, and a model enters the registry only with all eight
-thresholds measured, so no model runs with partial or borrowed thresholds.
+`clairic` is an extraction model, not a decision model, and is used only by
+`semantic.extract`. It has its own two thresholds, measured in
+[Extraction (Clairic)](#extraction-clairic).
+
+Each decision model has its own set of eight confidence thresholds. Surf
+accepts only models in its registry, and a model enters the registry only with
+all its thresholds measured, so no model runs with partial or borrowed thresholds.
 
 This page explains how the Clef thresholds were chosen and how the three models
-compared on the same fixtures. The last section measures what `--vision` adds
-for icon-only controls.
+compared on the same fixtures. Later sections measure what `--vision` adds for
+icon-only controls and how the Clairic thresholds were chosen.
 
 ## Method
 
@@ -227,3 +233,102 @@ control, not by default.
 - One small synthetic page with distinct, common icons, at device pixel ratio 1. Real toolbars have look-alike icons, smaller targets and busier backgrounds.
 - Tiles are never upscaled: each 40 px button reaches the model as a 40 px tile.
 - This page's icons are inline SVGs, so the eval covers that kind only. `npm run test:e2e:vision` checks in real Chrome that every supported icon kind draws a non-empty tile, that unsupported kinds (canvas, CSS gradients, `content: url()`, external `<use>`, plain-text glyphs, a failed icon font, a cross-origin mask without CORS) are counted as skipped, that a read without `--vision` draws and fetches nothing, and that tiles of icon buttons under a typed input, open date pickers in the page and in a cross-origin iframe, a validation message, a sandboxed `srcdoc` frame and a popover are byte-identical to the same buttons' tiles on an otherwise blank page.
+
+## Extraction (Clairic)
+
+`semantic.extract` asks an extraction model for typed values instead of a
+choice. Surf sends the page's value-free observation as one string (the title,
+each text chunk, then each named control as `role "name"`, one per line) and
+the requested fields with their types. Clairic answers each field with a value
+or `null`, plus `confidence` and `p_null`. Text values also carry a span, which
+Surf maps back to the chunk or control the value came from. There are two
+thresholds:
+
+- `extract`: the minimum `confidence` for a value to be reported as `extracted`. Below it, Surf withholds the value and reports it as `guess` with status `uncertain`.
+- `null`: sent as Clairic's per-field `null_threshold`. Surf uses Clairic's default of 0.5.
+
+### Method
+
+The harness is `test/eval/real-extract.mjs`. It makes real network calls, so it
+refuses to run unless `SURF_REAL_SEMANTIC=1` is set:
+
+```bash
+SURF_REAL_SEMANTIC=1 CLOUDFLARE_ACCOUNT_ID=... CLOUDFLARE_API_TOKEN=... \
+npm run eval:extract -- --repeat 10
+```
+
+- **Fixtures.** There are 14 synthetic pages with 30 fields, and every request uses the reference date 2026-10-23:
+  - an order summary: order id, a total next to a subtotal and tax, the tax, a delivery date written without a year, and the carrier;
+  - an invoice whose due date is computed from "Issued Sept 2, 2026 · Terms: net 30";
+  - an ordinary settings page asked for a coupon code, a tracking number and a gift message, which should all be null;
+  - a value that appears only in a button name (`button "Pay $42.10"`);
+  - a booking: departure datetime, "2h 35m" as `duration.minutes`, and the gate;
+  - order, ship and delivery dates side by side;
+  - a European price, "€1.299,00";
+  - "Delivered yesterday", and an integer ("3 items in your cart");
+  - an emoji before the value (`🎉 Order #B-1001 confirmed`), and "Store closes at 9 PM" as a time;
+  - a product price among six recommended-product prices;
+  - cart lists: item names, item prices, and upcoming delivery dates;
+  - a help-center page of 47 chunks, near the observation cap, with an order id and total in the middle.
+- **Same code path.** The harness builds each observation with the CLI's `providerState`, and calls the same `extract` function and extraction evaluator the CLI uses. Each page is one provider call; 10 repetitions make 140 calls.
+- **Comparison.**
+  - Numbers and durations: within 0.005.
+  - Dates: by ISO string. Datetimes: to the minute. Times: as `HH:MM`.
+  - Text: trimmed, case-sensitive. Lists: element by element, in order.
+  - For text fields with a known origin, the harness also checks that the reported `source` names the expected chunk or control.
+- **Outcomes.**
+  - `correct`: extracted and equal to the expected value.
+  - `correct null`: expected null, reported `null` or `uncertain`.
+  - `withheld`: Clairic's value was right, but its confidence was below `extract`.
+  - `wrong extracted`: extracted and not equal to the expected value, including a value where none was expected.
+  - `wrong withheld`: a wrong value below `extract`, which Surf did not report as extracted.
+
+### Calibration rule
+
+> extract = max(0.80, highest confidence of any non-null value that is not the expected value + 0.05), rounded up to two decimals.
+
+Every wrong value counts, whether or not it passed the threshold in the
+calibration run. `null` stays at Clairic's default of 0.5, unless a field
+expected to be null came back with a value at or above the new `extract`.
+
+The calibration run used `extract` 0.80 and `null` 0.50. The confirmation run
+used the shipped values and returned the same answers on every field.
+
+### Chosen thresholds
+
+| Key | Floor or default | Highest wrong | Shipped |
+| --- | --- | --- | --- |
+| extract | 0.80 | 0.4445 | 0.80 (floor) |
+| null | 0.50 (Clairic default) | no expected-null field returned a value | 0.50 (default) |
+
+### Results (shipped thresholds, 10 repetitions × 14 pages)
+
+| Fields | Correct | Correct null | Withheld | Wrong extracted | Wrong withheld | Errors | Text source match |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| 300 | 250 | 30 | 10 | 0 | 10 | 0 | 70/70 |
+
+Clairic returned the same answer for each field on all 10 repetitions. The
+20 fields that were not correct come from two fields:
+
+- **Withheld:** the invoice number `INV-2291` came back right at confidence 0.549, every run.
+- **Wrong withheld:** the cart item names included a fourth item, `Up`, taken from "Upcoming deliveries", at 0.444. Surf withheld it.
+
+Every correct value had confidence 0.979 or higher. Every field expected to be
+null came back null, with `p_null` 0.9991 or higher. Item sources are mapped
+only for text lists. Clairic returned no spans for the number list, and the
+page writes the delivery dates as "Oct 27, 2026", so they never equal the ISO item.
+
+Provider latency per call, in ms (median / p95):
+
+| Pages | Calls | Latency |
+| --- | --- | --- |
+| 13 ordinary pages | 130 | 179 / 481 |
+| Help-center page (47 chunks, 19,701-byte observation) | 10 | 396 / 511 |
+
+The calibration run measured 176 / 260 ms and 390 / 430 ms, and had no errors either.
+
+### Limits
+
+- These are 14 synthetic fixtures, measured from one machine on 2026-10-23. Real pages are noisier, and latency depends on your network path to Cloudflare.
+- Clairic is a preview checkpoint. Its answers and confidence may change between checkpoints.
+- Cloudflare says Clairic is weak at multi-step arithmetic and at adding things up across many rows, so do that math in code. The computed values here are a two-step total and a date plus 30 days.

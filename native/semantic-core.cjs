@@ -23,7 +23,8 @@ const SEMANTIC_POLICY = Object.freeze({
     }),
   }),
   defaultExtractionModel: "clairic",
-  // Extraction models answer with typed values, not choices, so they keep their own registry and thresholds.
+  // Extraction models answer with typed values, not choices, so they keep their own registry and measured
+  // thresholds; see "Extraction (Clairic)" in docs/semantic-models.md.
   extractionModels: Object.freeze({
     clairic: Object.freeze({
       provider: "cloudflare",
