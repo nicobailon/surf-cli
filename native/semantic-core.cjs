@@ -427,7 +427,11 @@ const EXTRACTION_FIELD_TYPES = Object.freeze({
   datetime: { type: "datetime" },
   duration: { type: "duration" },
   ...Object.fromEntries(DURATION_UNITS.map((unit) => [`duration.${unit}`, { type: "duration", unit }])),
+  list: { type: "list", items: "text" },
+  "list.number": { type: "list", items: "number" },
+  "list.date": { type: "list", items: "date" },
 });
+const EXTRACTION_SPEC_TYPES = new Set(Object.values(EXTRACTION_FIELD_TYPES).map((spec) => spec.type));
 const EXTRACTION_VALUE_PATTERNS = Object.freeze({
   date: /^\d{4}-\d{2}-\d{2}$/,
   time: /^\d{2}:\d{2}(?::\d{2})?$/,
@@ -479,19 +483,20 @@ async function extract({ state, fields, referenceDate, thresholds = {}, model = 
   if (!Array.isArray(fields) || !fields.length || fields.length > SEMANTIC_POLICY.limits.extractFields) {
     fail(`extraction needs 1 to ${SEMANTIC_POLICY.limits.extractFields} fields`);
   }
-  if (fields.some(({ type }) => !Object.hasOwn(EXTRACTION_FIELD_TYPES, type))) fail("extraction field has an unknown type");
+  if (fields.some(({ spec }) => !EXTRACTION_SPEC_TYPES.has(spec?.type))) fail("extraction field has an unknown type");
   const appliedThresholds = { extract: thresholds.extract ?? registered.thresholds.extract, null: registered.thresholds.null };
-  const requested = Object.fromEntries(fields.map(({ name, type, instructions }) => [name, {
-    ...EXTRACTION_FIELD_TYPES[type],
-    ...(instructions ? { instructions } : {}),
-    null_threshold: appliedThresholds.null,
-  }]));
+  // Lists take no null_threshold; an explicit one from --fields-json wins over the registry value.
+  const requested = Object.fromEntries(fields.map(({ name, spec }) => [
+    name,
+    spec.type === "list" || spec.null_threshold !== undefined ? { ...spec } : { ...spec, null_threshold: appliedThresholds.null },
+  ]));
   const extraction = extractionState(state);
   const response = await evaluate(extraction.text, requested, { referenceDate });
   if (!response || typeof response !== "object" || Array.isArray(response)) providerInvalid("provider response must be an object");
   if (typeof response.truncated !== "boolean") providerInvalid("provider response must report truncated");
   exactKeys(response.answers, Object.keys(requested), "extraction answers");
   const codePoints = [...extraction.text];
+  const validSpan = (pair) => Array.isArray(pair) && pair.length === 2 && pair.every(Number.isInteger) && pair[0] >= 0 && pair[0] <= pair[1] && pair[1] <= extraction.codePoints;
   const results = {};
   for (const { name, type } of fields) {
     const spec = requested[name];
@@ -499,22 +504,30 @@ async function extract({ state, fields, referenceDate, thresholds = {}, model = 
     if (!answer || typeof answer !== "object" || Array.isArray(answer) || answer.type !== spec.type || !Object.hasOwn(answer, "value")) {
       providerInvalid(`extraction answer ${name} does not match its requested type`);
     }
-    if (answer.value !== null && !validExtractedValue(spec, answer.value)) providerInvalid(`extraction answer ${name} has an invalid ${spec.type} value`);
+    const list = spec.type === "list";
+    const { value, span, spans } = answer;
+    const typed = list
+      ? Array.isArray(value) && value.every((item) => validExtractedValue({ type: spec.items }, item))
+      : validExtractedValue(spec, value);
+    if (value !== null && !typed) providerInvalid(`extraction answer ${name} has an invalid ${spec.type} value`);
     if (!optionalProbability(answer.confidence) || !optionalProbability(answer.p_null)) providerInvalid(`extraction answer ${name} has an invalid probability`);
-    const { span } = answer;
-    if (span !== undefined && !(Array.isArray(span) && span.length === 2 && span.every(Number.isInteger) && span[0] >= 0 && span[0] <= span[1] && span[1] <= extraction.codePoints)) {
-      providerInvalid(`extraction answer ${name} has an invalid span`);
+    if (span !== undefined && !validSpan(span)) providerInvalid(`extraction answer ${name} has an invalid span`);
+    if (spans !== undefined && !(Array.isArray(spans) && spans.every(validSpan) && (!Array.isArray(value) || spans.length === value.length))) {
+      providerInvalid(`extraction answer ${name} has invalid spans`);
     }
-    const status = answer.value === null ? "null" : answer.confidence >= appliedThresholds.extract ? "extracted" : "uncertain";
-    const guess = status === "uncertain" ? answer.value : answer.guess;
+    const status = value === null || (list && !value.length) ? "null" : answer.confidence >= appliedThresholds.extract ? "extracted" : "uncertain";
+    const guess = status === "uncertain" ? value : answer.guess;
+    const mapped = status !== "null";
     results[name] = {
       type,
       status,
-      value: status === "extracted" ? answer.value : null,
+      value: status === "extracted" ? value : null,
       ...(status !== "extracted" && guess !== undefined ? { guess } : {}),
       ...(answer.confidence !== undefined ? { confidence: answer.confidence } : {}),
       ...(answer.p_null !== undefined ? { pNull: answer.p_null } : {}),
-      source: status !== "null" && spec.type === "text" ? spanSource(extraction, codePoints, span, answer.value) : null,
+      ...(list
+        ? { sources: mapped ? value.map((item, index) => spanSource(extraction, codePoints, spans?.[index], String(item))) : null }
+        : { source: mapped && spec.type === "text" ? spanSource(extraction, codePoints, span, value) : null }),
     };
   }
   const extractedCount = Object.values(results).filter((result) => result.status === "extracted").length;

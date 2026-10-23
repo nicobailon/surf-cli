@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 
 const {
   SEMANTIC_POLICY,
+  EXTRACTION_FIELD_TYPES,
   chooseAction,
   extract,
   filter,
@@ -614,11 +615,16 @@ describe("semantic extraction core", () => {
   }
 
   function run(
-    fields: Array<{ name: string; type: string; instructions?: string }>,
+    fields: Array<{
+      name: string;
+      type: string;
+      instructions?: string;
+      spec?: Record<string, unknown>;
+    }>,
     answers: (text: string) => Record<string, unknown>,
     options: { thresholds?: Record<string, number>; response?: Record<string, unknown> } = {},
   ) {
-    const evaluate = vi.fn(async (text: string) => ({
+    const evaluate = vi.fn(async (text: string, _fields: unknown, _options: unknown) => ({
       model: "clairic",
       answers: answers(text),
       truncated: false,
@@ -627,7 +633,14 @@ describe("semantic extraction core", () => {
     }));
     const result = extract({
       state,
-      fields,
+      fields: fields.map(({ name, type, instructions, spec }) => ({
+        name,
+        type,
+        spec: spec ?? {
+          ...EXTRACTION_FIELD_TYPES[type],
+          ...(instructions ? { instructions } : {}),
+        },
+      })),
       referenceDate: "2026-10-23",
       thresholds: options.thresholds,
       evaluate,
@@ -774,6 +787,94 @@ describe("semantic extraction core", () => {
     ["a span past the state", "text", { field: { type: "text", value: "x", span: [0, 999] } }],
   ])("rejects %s as provider_invalid_response", async (_label, type, answers) => {
     const { result } = run([{ name: "field", type }], () => answers);
+    await expect(result).rejects.toMatchObject({ code: "provider_invalid_response" });
+  });
+
+  it("passes field options through and fills the registry null threshold only when absent", async () => {
+    const { result, evaluate } = run(
+      [
+        {
+          name: "total",
+          type: "number",
+          spec: { type: "number", unit: "USD", decimals: 2, null_threshold: 0.3 },
+        },
+        { name: "count", type: "integer", spec: { type: "number", integer: true } },
+        { name: "codes", type: "list", spec: { type: "list", items: "text" } },
+      ],
+      () => ({
+        total: { type: "number", value: null },
+        count: { type: "number", value: null },
+        codes: { type: "list", value: [] },
+      }),
+    );
+    expect((await result).fields.codes).toEqual({
+      type: "list",
+      status: "null",
+      value: null,
+      sources: null,
+    });
+    expect(evaluate.mock.calls[0][1]).toEqual({
+      total: { type: "number", unit: "USD", decimals: 2, null_threshold: 0.3 },
+      count: { type: "number", integer: true, null_threshold: 0.5 },
+      codes: { type: "list", items: "text" },
+    });
+  });
+
+  it("maps each list item to its own source and withholds an uncertain list", async () => {
+    const fields = [
+      { name: "codes", type: "list" },
+      { name: "amounts", type: "list.number" },
+    ];
+    const answers = (confidence: number) => (text: string) => ({
+      codes: {
+        type: "list",
+        value: ["📦", "A-88412"],
+        spans: [spanOf(text, "📦"), spanOf(text, "A-88412")],
+        confidence,
+      },
+      amounts: { type: "list", value: [701.1], spans: [spanOf(text, "701.10")], confidence },
+    });
+
+    expect((await run(fields, answers(0.9)).result).fields).toEqual({
+      codes: {
+        type: "list",
+        status: "extracted",
+        value: ["📦", "A-88412"],
+        confidence: 0.9,
+        sources: [
+          { chunks: ["c1"], refs: ["e2"] },
+          { chunks: ["c1"], refs: ["e2"] },
+        ],
+      },
+      amounts: {
+        type: "list.number",
+        status: "extracted",
+        value: [701.1],
+        confidence: 0.9,
+        sources: [null],
+      },
+    });
+    expect((await run(fields, answers(0.44)).result).fields.codes).toEqual({
+      type: "list",
+      status: "uncertain",
+      value: null,
+      guess: ["📦", "A-88412"],
+      confidence: 0.44,
+      sources: [
+        { chunks: ["c1"], refs: ["e2"] },
+        { chunks: ["c1"], refs: ["e2"] },
+      ],
+    });
+  });
+
+  it.each([
+    ["a list item of the wrong type", { type: "list", value: ["2026-09-28", "Sept 28"] }],
+    [
+      "spans that do not align with the items",
+      { type: "list", value: ["a", "b"], spans: [[0, 1]] },
+    ],
+  ])("rejects %s as provider_invalid_response", async (_label, answer) => {
+    const { result } = run([{ name: "dates", type: "list.date" }], () => ({ dates: answer }));
     await expect(result).rejects.toMatchObject({ code: "provider_invalid_response" });
   });
 

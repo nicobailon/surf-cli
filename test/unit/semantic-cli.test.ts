@@ -2791,8 +2791,12 @@ describe("semantic.extract CLI", () => {
     ).toMatchObject({
       command: "semantic.extract",
       fields: [
-        { name: "eta", type: "datetime", instructions: "Arrival time, as HH:MM" },
-        { name: "wait", type: "duration.days" },
+        {
+          name: "eta",
+          type: "datetime",
+          spec: { type: "datetime", instructions: "Arrival time, as HH:MM" },
+        },
+        { name: "wait", type: "duration.days", spec: { type: "duration", unit: "days" } },
       ],
       referenceDate: "2026-10-01",
       model: "clairic",
@@ -2802,7 +2806,7 @@ describe("semantic.extract CLI", () => {
 
   const manyFields = Array.from({ length: 17 }, (_, index) => ["--field", `f${index}:text`]).flat();
   it.each([
-    [["--field", "items:list"], 'unknown type "list"'],
+    [["--field", "items:list.time"], 'unknown type "list.time"'],
     [["--field", "price:estimate"], 'unknown type "estimate"'],
     [["--field", "9total:number"], "must match"],
     [["--field", "__proto__:text"], "field name __proto__ is reserved"],
@@ -2820,6 +2824,77 @@ describe("semantic.extract CLI", () => {
     [["--field", "total:number", "--reference-date", "2026-02-30"], "YYYY-MM-DD"],
   ])("rejects semantic.extract %j", (args, message) => {
     expect(() => semantic.parseSemanticArgs(["semantic.extract", ...args])).toThrow(message);
+  });
+
+  it("parses list types and --fields-json, naming each field's type for the output", () => {
+    expect(
+      semantic.parseSemanticArgs([
+        "semantic.extract",
+        "--field",
+        "items:list",
+        "--field",
+        "prices:list.number",
+        "--field",
+        "dates:list.date",
+      ])?.fields,
+    ).toEqual([
+      { name: "items", type: "list", spec: { type: "list", items: "text" } },
+      { name: "prices", type: "list.number", spec: { type: "list", items: "number" } },
+      { name: "dates", type: "list.date", spec: { type: "list", items: "date" } },
+    ]);
+    const total = { type: "number", unit: "USD", decimals: 2, null_threshold: 0.3 };
+    expect(
+      semantic.parseSemanticArgs([
+        "semantic.extract",
+        "--fields-json",
+        JSON.stringify({
+          total,
+          count: { type: "number", integer: true },
+          wait: { type: "duration", unit: "days" },
+          prices: { type: "list", items: "number", decimals: 2 },
+        }),
+      ])?.fields,
+    ).toEqual([
+      { name: "total", type: "number", spec: total },
+      { name: "count", type: "integer", spec: { type: "number", integer: true } },
+      { name: "wait", type: "duration.days", spec: { type: "duration", unit: "days" } },
+      {
+        name: "prices",
+        type: "list.number",
+        spec: { type: "list", items: "number", decimals: 2 },
+      },
+    ]);
+  });
+
+  it.each([
+    [{ t: { type: "text", unit: "USD" } }, "unit does not apply to text fields"],
+    [{ p: { type: "estimate", min: 0, max: 9 } }, 'unknown type "estimate"'],
+    [{ l: { type: "list" } }, "list fields need items text, number or date"],
+    [
+      { l: { type: "list", items: "text", null_threshold: 0.2 } },
+      "null_threshold does not apply to list fields",
+    ],
+    [{ n: { type: "number", decimals: 7 } }, "decimals must be an integer from 0 to 6"],
+    [JSON.parse('{"__proto__":{"type":"text"}}'), "field name __proto__ is reserved"],
+  ])("rejects --fields-json %j", (fields, message) => {
+    expect(() =>
+      semantic.parseSemanticArgs(["semantic.extract", "--fields-json", JSON.stringify(fields)]),
+    ).toThrow(message);
+  });
+
+  it("rejects malformed --fields-json and mixing it with --field", () => {
+    expect(() =>
+      semantic.parseSemanticArgs(["semantic.extract", "--fields-json", "{total: number}"]),
+    ).toThrow("--fields-json must be a JSON object");
+    expect(() =>
+      semantic.parseSemanticArgs([
+        "semantic.extract",
+        "--field",
+        "total:number",
+        "--fields-json",
+        '{"items":{"type":"list","items":"text"}}',
+      ]),
+    ).toThrow("--fields-json can't be combined with --field");
   });
 
   it("keeps extraction options and models out of the decision commands", () => {
@@ -2946,6 +3021,6 @@ describe("semantic.extract CLI", () => {
 
   it("lists semantic.extract in the semantic help", async () => {
     const { value } = await handleSemanticCli(["semantic", "--help"], {});
-    expect(value).toContain("surf semantic.extract --field <name>:<type>[:<instructions>]");
+    expect(value).toContain("surf semantic.extract (--field <name>:<type>[:<instructions>]");
   });
 });

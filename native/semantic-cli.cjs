@@ -46,18 +46,56 @@ function extractionFieldName(name) {
   if (name === "__proto__") invalidRequest("field name __proto__ is reserved");
 }
 
+const FIELDS_JSON_KEYS = Object.freeze({
+  text: ["instructions", "null_threshold"],
+  number: ["instructions", "unit", "integer", "decimals", "null_threshold"],
+  date: ["instructions", "null_threshold"],
+  time: ["instructions", "null_threshold"],
+  datetime: ["instructions", "null_threshold"],
+  duration: ["instructions", "unit", "integer", "decimals", "null_threshold"],
+  list: ["instructions", "items", "decimals"],
+});
+
+function fieldsJsonField(name, spec) {
+  extractionFieldName(name);
+  const label = `--fields-json ${name}`;
+  if (!spec || typeof spec !== "object" || Array.isArray(spec)) invalidRequest(`${label} must be an object`);
+  if (!Object.hasOwn(FIELDS_JSON_KEYS, spec.type)) {
+    invalidRequest(`${label} has unknown type ${JSON.stringify(spec.type)}; valid types: ${Object.keys(FIELDS_JSON_KEYS).join(", ")}`);
+  }
+  const extra = Object.keys(spec).find((key) => key !== "type" && !FIELDS_JSON_KEYS[spec.type].includes(key));
+  if (extra) invalidRequest(`${label}: ${extra} does not apply to ${spec.type} fields`);
+  const { instructions, unit, integer, decimals, items, null_threshold: nullThreshold } = spec;
+  if (instructions !== undefined && typeof instructions !== "string") invalidRequest(`${label}: instructions must be a string`);
+  if (unit !== undefined && (typeof unit !== "string" || !unit.trim() || (spec.type === "duration" && !Object.hasOwn(EXTRACTION_FIELD_TYPES, `duration.${unit}`)))) {
+    invalidRequest(`${label}: unit must be a nonblank string, and for durations one of seconds, minutes, hours, days, weeks, months, years`);
+  }
+  if (integer !== undefined && typeof integer !== "boolean") invalidRequest(`${label}: integer must be true or false`);
+  if (decimals !== undefined && !(Number.isInteger(decimals) && decimals >= 0 && decimals <= 6)) invalidRequest(`${label}: decimals must be an integer from 0 to 6`);
+  if (nullThreshold !== undefined && !(Number.isFinite(nullThreshold) && nullThreshold >= 0 && nullThreshold <= 1)) invalidRequest(`${label}: null_threshold must be between 0 and 1`);
+  if (spec.type === "list") {
+    if (!["text", "number", "date"].includes(items)) invalidRequest(`${label}: list fields need items text, number or date`);
+    if (decimals !== undefined && items !== "number") invalidRequest(`${label}: decimals applies only to number lists`);
+  }
+  let type = spec.type;
+  if (spec.type === "list") type = items === "text" ? "list" : `list.${items}`;
+  else if (spec.type === "number" && integer) type = "integer";
+  else if (spec.type === "duration" && unit) type = `duration.${unit}`;
+  return { name, type, spec: { ...spec } };
+}
+
 const SEMANTIC_HELP = `Usage:
   surf semantic.find <goal> [--model <id>] [--vision] [--threshold find=<0-1>] [--session <name> | --tab-id <id>] [--json]
   surf semantic.verify <outcome> [--model <id>] [--threshold verify-positive=<0-1>] [--threshold verify-negative=<0-1>] [--session <name> | --tab-id <id>] [--json]
   surf semantic.filter <goal> [--model <id>] [--top <1-12>] [--threshold filter=<0-1>] [--session <name> | --tab-id <id>] [--json]
   surf semantic.act <goal> [--model <id>] [--vision] [--max-steps <1-8>] [--allow-write] [--allow-ref <ref>...] [--input <name=value>...] [--threshold <name=value>...] [--session <name> | --tab-id <id>] [--json]
-  surf semantic.extract --field <name>:<type>[:<instructions>]... [--reference-date YYYY-MM-DD] [--model clairic] [--threshold extract=<0-1>] [--session <name> | --tab-id <id>] [--json]
+  surf semantic.extract (--field <name>:<type>[:<instructions>]... | --fields-json '<json>') [--reference-date YYYY-MM-DD] [--model clairic] [--threshold extract=<0-1>] [--session <name> | --tab-id <id>] [--json]
   surf semantic auth set [--provider typesafe|cloudflare]     (default: typesafe)
   surf semantic auth status|clear [--provider typesafe|cloudflare]   (default: both)
 
 Models: jev-1.13.0 (TypeSafe, api.typesafe.ai), clef and clef-flash (Cloudflare Workers AI, api.cloudflare.com). --model wins over SURF_SEMANTIC_MODEL; the default is jev-1.13.0. Semantic commands send a bounded, value-free page observation to the provider of the selected model. Every result reports provider, model, providerCalls and providerLatencyMs. semantic.act allows only same-origin navigation, fixed scroll/wait actions, and (with --allow-write) clicks/fills. --allow-write authorizes mutation-capable clicks, including submit/purchase/delete/send/publish; repeatable --allow-ref narrows this authority. Repeatable --threshold overrides applicable confidence thresholds for this run only; defaults remain safer and write authority is unchanged. Names: find, filter, verify-positive, verify-negative, prerequisite-supported, prerequisite-blocked, write, exact-ref-write.
 
-semantic.extract sends the same value-free page observation to Cloudflare Workers AI (Clairic, preview) and returns typed values with confidence. Field types: text, number, integer, date, time, datetime, duration, duration.<seconds|minutes|hours|days|weeks|months|years>. It always uses an extraction model (clairic), so SURF_SEMANTIC_MODEL does not apply; its only --threshold name is extract. --reference-date anchors dates written without a year (default: today).
+semantic.extract sends the same value-free page observation to Cloudflare Workers AI (Clairic, preview) and returns typed values with confidence. Field types: text, number, integer, date, time, datetime, duration, duration.<seconds|minutes|hours|days|weeks|months|years>, list, list.number, list.date. --fields-json takes a Clairic fields map instead of --field, for unit, decimals, integer, items and null_threshold; estimate and forecast are not supported. It always uses an extraction model (clairic), so SURF_SEMANTIC_MODEL does not apply; its only --threshold name is extract. --reference-date anchors dates written without a year (default: today).
 
 --vision (semantic.find and semantic.act, with clef or clef-flash) also sends the provider one image of the controls that have no name, such as icon-only buttons. Each tile is drawn from the control's own icon (its SVG, image, icon-font glyph, CSS mask or background image) on a blank canvas; no screenshot of the page is sent, so field content and anything else on the page can't appear in it. Controls whose icon can't be drawn are counted as skipped: canvas icons, CSS gradients, content: url(), external <use> files, text not in a loaded icon font, cross-origin masks without CORS, images that fail to load, and controls in child frames. Icon fonts lose their variable axes (Material Symbols FILL/wght), and <use> symbol children styled only by page style sheet selectors lose those styles. Results report vision: {tiles, skipped}, and "tile": true on a returned candidate or action that was shown as a tile. Thresholds, --allow-write and --allow-ref are unchanged.`;
 
@@ -86,6 +124,7 @@ function parseSemanticArgs(argv) {
   const extracting = command === "semantic.extract";
   const result = { command, json: false, allowWrite: false, allowRefs: [], inputs: {}, thresholds: {}, fields: [], maxSteps: SEMANTIC_POLICY.limits.defaultSteps };
   const positionals = [];
+  let fieldFlag;
   for (let i = 1; i < args.length; i++) {
     const arg = args[i];
     if (extracting && EXTRACT_REJECTED_OPTIONS.includes(arg)) invalidRequest(`${arg} does not apply to semantic.extract`);
@@ -93,7 +132,7 @@ function parseSemanticArgs(argv) {
     else if (arg === "--no-wait") result.noWait = true;
     else if (arg === "--allow-write") result.allowWrite = true;
     else if (arg === "--vision") result.vision = true;
-    else if (["--session", "--tab-id", "--top", "--max-steps", "--allow-ref", "--input", "--threshold", "--model", "--field", "--reference-date"].includes(arg)) {
+    else if (["--session", "--tab-id", "--top", "--max-steps", "--allow-ref", "--input", "--threshold", "--model", "--field", "--fields-json", "--reference-date"].includes(arg)) {
       const value = args[++i];
       if (!value || value.startsWith("--")) throw new Error(`${arg} requires a value`);
       if (arg === "--session") result.session = value;
@@ -127,6 +166,8 @@ function parseSemanticArgs(argv) {
         result.inputs[name] = inputValue;
       }
       if (arg === "--field") {
+        if (fieldFlag === "--fields-json") invalidRequest("--fields-json can't be combined with --field");
+        fieldFlag = arg;
         const first = value.indexOf(":");
         const second = first < 0 ? -1 : value.indexOf(":", first + 1);
         const name = first < 0 ? value : value.slice(0, first);
@@ -137,7 +178,15 @@ function parseSemanticArgs(argv) {
           invalidRequest(`--field ${name} has unknown type ${JSON.stringify(type)}; valid types: ${Object.keys(EXTRACTION_FIELD_TYPES).join(", ")}`);
         }
         if (result.fields.some((field) => field.name === name)) invalidRequest(`duplicate --field: ${name}`);
-        result.fields.push({ name, type, ...(instructions ? { instructions } : {}) });
+        result.fields.push({ name, type, spec: { ...EXTRACTION_FIELD_TYPES[type], ...(instructions ? { instructions } : {}) } });
+      }
+      if (arg === "--fields-json") {
+        if (fieldFlag) invalidRequest(fieldFlag === arg ? "duplicate --fields-json" : "--fields-json can't be combined with --field");
+        fieldFlag = arg;
+        let parsed;
+        try { parsed = JSON.parse(value); } catch { invalidRequest("--fields-json must be a JSON object"); }
+        if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) invalidRequest("--fields-json must be a JSON object");
+        for (const [name, spec] of Object.entries(parsed)) result.fields.push(fieldsJsonField(name, spec));
       }
       if (arg === "--reference-date") {
         if (result.referenceDate) invalidRequest("duplicate --reference-date");
@@ -156,7 +205,7 @@ function parseSemanticArgs(argv) {
     if (result.fields.length > SEMANTIC_POLICY.limits.extractFields) invalidRequest(`semantic.extract supports at most ${SEMANTIC_POLICY.limits.extractFields} fields`);
   } else {
     if (positionals.length !== 1 || !positionals[0].trim()) throw new Error(`${command} requires exactly one goal or outcome`);
-    if (result.fields.length) throw new Error(`--field does not apply to ${command}`);
+    if (fieldFlag) throw new Error(`${fieldFlag} does not apply to ${command}`);
     if (result.referenceDate) throw new Error(`--reference-date does not apply to ${command}`);
   }
   if (result.session && result.tabId) throw new Error("use either --session or --tab-id, not both");
