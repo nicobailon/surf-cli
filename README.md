@@ -943,8 +943,8 @@ datetimes `YYYY-MM-DDTHH:MM[:SS]`, and text must match exactly. List fields
 can't be checked. A `null` or `uncertain` field always fails the check
 (`value_null`, `value_uncertain`), even when its `guess` would match; a value
 that doesn't match fails with `assertion_mismatch`. A value assert makes no
-browser request and no model call, and a failure reports only its reason, never
-the extracted, expected or input value.
+browser request and no model call, and its failure message is only a reason
+code, never the extracted, expected or input value.
 
 `open` performs freshly validated same-origin HTTP(S) navigation; it never falls
 back to a click. Model-derived writes retain the `0.95` gate, dispatch at most

@@ -169,7 +169,7 @@ values never enter provider state, workflow variables, events, or checkpoints.
 Extracted values appear only in `surf do --json` `vars.<as>`; they are never
 written to the workflow's state files or checkpoints.
 Check one with `assert` mode `value`: a `null` or `uncertain` field always
-fails, `guess` is never compared, and failures report only a reason code.
+fails, `guess` is never compared, and a failure message is only a reason code.
 
 Required argument shapes:
 
