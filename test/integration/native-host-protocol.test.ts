@@ -2190,6 +2190,9 @@ describe("native host protocol integration", () => {
     expect(result.stdout).toContain('button "Item 0" [e1]');
     expect(result.stdout).not.toContain('"Item 2999"');
     expect(Buffer.byteLength(result.stdout)).toBeLessThan(50_500);
+    expect(result.stdout).toContain(
+      " Raise the limit with --max-bytes <n>, or narrow with --ref <ref> or --depth <n>.]",
+    );
     const fullPath = result.stdout.match(/Full tree: (\S+)\./)?.[1] as string;
     expect(fs.readFileSync(fullPath, "utf8")).toBe(tree);
     if (process.platform !== "win32") {
