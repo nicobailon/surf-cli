@@ -2085,15 +2085,32 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           menu: ['[role="menu"]'],
           menuitem: ['[role="menuitem"]'],
         };
+        // Markup that page.read may report with these roles; only elements that resolve to the role are kept.
+        const markupRoles: Record<string, string> = {
+          spinbutton: 'input[type="number"]',
+          slider: 'input[type="range"]',
+          searchbox: 'input[type="search"]',
+          status: 'output',
+          region: 'section',
+          banner: 'header',
+          contentinfo: 'footer',
+          complementary: 'aside',
+          form: 'form',
+          search: 'search',
+        };
         
         // Build selectors for the role
-        const selectors = implicitRoles[role] || [`[role="${role}"]`];
-        const candidates: Element[] = [];
+        const markup = markupRoles[role];
+        const selectors = implicitRoles[role] || [markup ? `[role="${role}"], ${markup}` : `[role="${role}"]`];
+        let candidates: Element[] = [];
         
         for (const sel of selectors) {
           try {
             candidates.push(...document.querySelectorAll(sel));
           } catch {}
+        }
+        if (markup) {
+          candidates = candidates.filter(el => getResolvedRole(el) === role);
         }
         
         // Filter by visibility
