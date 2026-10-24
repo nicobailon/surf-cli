@@ -1,7 +1,6 @@
 {
   "manifest_version": 3,
   "name": "Surf",
-  "version": "2.6.0",
   "description": "Browser automation CLI for AI agents",
   "options_page": "options/options.html",
   "icons": {

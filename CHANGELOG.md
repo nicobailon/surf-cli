@@ -4,6 +4,7 @@
 
 ### Fixed
 - **`surf drag --from x,y --to x,y` drags again** - The points never reached the browser, so a drag from the CLI or `surf do` moved nothing. A missing or malformed point now fails with `drag needs --from x,y and --to x,y` instead of sending an empty drag. See [#399](https://github.com/nicobailon/surf-cli/issues/399).
+- **The extension shows the real version** - Browsers listed Surf as 2.6.0 no matter which version was installed, because the extension's version was never updated after 2.6.0. The build now gives the extension the same version as the npm package.
 
 ## [2.23.0] - 2026-10-24
 

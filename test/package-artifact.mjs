@@ -83,6 +83,10 @@ try {
     );
   }
 
+  const packedPackage = JSON.parse(readFileSync(join(temporaryDirectory, "package/package.json"), "utf8"));
+  const packedManifest = JSON.parse(readFileSync(join(packedDist, "manifest.json"), "utf8"));
+  assert.equal(packedManifest.version, packedPackage.version, "extension version differs from the npm version");
+
   const serviceWorker = readFileSync(
     join(packedDist, "service-worker/index.js"),
     "utf8"

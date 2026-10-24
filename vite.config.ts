@@ -1,6 +1,6 @@
 import { defineConfig } from "vite";
 import { resolve } from "path";
-import { cpSync, mkdirSync, existsSync, rmSync } from "fs";
+import { cpSync, mkdirSync, existsSync, readFileSync, rmSync, writeFileSync } from "fs";
 import { fileURLToPath } from "url";
 import { nodePolyfills } from "vite-plugin-node-polyfills";
 
@@ -44,9 +44,12 @@ export default defineConfig({
     {
       name: "copy-extension-files",
       writeBundle() {
-        cpSync(
-          resolve(__dirname, "manifest.json"),
-          resolve(__dirname, "dist/manifest.json")
+        // The extension reports the npm package version; manifest.json carries no version of its own.
+        const manifest = JSON.parse(readFileSync(resolve(__dirname, "manifest.json"), "utf8"));
+        const { version } = JSON.parse(readFileSync(resolve(__dirname, "package.json"), "utf8"));
+        writeFileSync(
+          resolve(__dirname, "dist/manifest.json"),
+          `${JSON.stringify({ ...manifest, version }, null, 2)}\n`
         );
 
         cpSync(
