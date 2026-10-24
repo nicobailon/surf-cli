@@ -26,6 +26,8 @@ It is one tab in its own background window, and its commands run in order. Sessi
 
 **API before scroll.** For feeds and threads, read the site's own API: `use x thread`, or `network.wait` then `network.replay --set`. `collect` scrolls the page when there is no API and needs a visible tab (`session.ensure <name> <url> --window --focused`).
 
+**Values, not pages.** To read a few values (a total, a date, a count), use `semantic.extract`: it returns typed values without a full page read.
+
 **Pipe multi-step work.** `surf do` runs steps with waits between them; run it with `--dry-run` first.
 
 **Rich editors** (ChatGPT, Notion, other contenteditable fields): `type --method js`.
