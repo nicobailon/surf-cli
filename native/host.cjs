@@ -1767,7 +1767,7 @@ async function truncatePageRead(context, request, output) {
     await fs.promises.writeFile(fullPath, full, { mode: 0o600, flag: "wx" });
     note += ` Full tree: ${fullPath}.`;
   }
-  note += " Narrow with --ref <ref> or --depth <n>.]";
+  note += " Raise the limit with --max-bytes <n>, or narrow with --ref <ref> or --depth <n>.]";
   return { ...output, pageContent: `${kept}\n\n${note}` };
 }
 

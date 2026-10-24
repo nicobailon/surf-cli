@@ -1361,6 +1361,46 @@ describe("accessibility tree", () => {
     });
   });
 
+  it.each([
+    { role: "spinbutton", name: "Quantity", tag: "input" },
+    { role: "region", name: "Billing", tag: "section" },
+    { role: "complementary", name: "Related", tag: "aside" },
+  ])("locate.role $role finds the $tag that page.read reports as $role", ({ role, name }) => {
+    const body = document.body as unknown as FakeElement;
+    const unnamedSection = element("section");
+    unnamedSection.append(text("Billing details"));
+    body.append(
+      unnamedSection,
+      element("input", { type: "number", "aria-label": "Quantity" }),
+      element("section", { "aria-label": "Billing" }),
+      element("aside", { "aria-label": "Related" }),
+    );
+    const descendants = (node: FakeElement): FakeElement[] =>
+      node.children.flatMap((child) => [child, ...descendants(child)]);
+    const matches = (el: FakeElement, selector: string) =>
+      selector.split(",").some((part) => {
+        const parsed = part.trim().match(/^([a-z]*)(?:\[(\w+)="([^"]+)"\])?$/);
+        if (!parsed) {
+          return false;
+        }
+        const [, tagName, attr, value] = parsed;
+        return (
+          (!tagName || el.tagName === tagName.toUpperCase()) &&
+          (!attr || el.getAttribute(attr) === value)
+        );
+      });
+    (document as any).querySelectorAll = (selector: string) =>
+      descendants(body).filter((el) => matches(el, selector));
+
+    const located = sendMessage({ type: "LOCATE_ROLE", role, name, all: true });
+    expect(located.matches).toHaveLength(1);
+    const tree = sendMessage({
+      type: "GENERATE_ACCESSIBILITY_TREE",
+      options: { filter: "all" },
+    }).pageContent;
+    expect(tree).toContain(`${role} "${name}" [${located.matches[0].ref}]`);
+  });
+
   it("returns the whole visible text so the host can mark a cut", () => {
     const long = "😀".repeat(30000);
     (document.body as unknown as FakeElement).append(text(long));
