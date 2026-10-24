@@ -151,6 +151,38 @@ describe("semantic decision core", () => {
     expect(await broad(0.84)).toMatchObject({ status: "uncertain", appliedThreshold: 0.85 });
     expect(await broad(0.85)).toMatchObject({ status: "selected", appliedThreshold: 0.85 });
 
+    const supported = (probability: number) =>
+      chooseAction({
+        state: {},
+        goal: "save",
+        actions: [click],
+        origin: "https://example.test",
+        allowWrite: true,
+        model: "clef",
+        evaluate: vi.fn(async (_state: unknown, questions: Questions) => {
+          const response = responseFor(
+            questions,
+            { action: "click", prerequisites: "supported" },
+            0.9,
+          );
+          response.answers.prerequisites.probabilities = {
+            supported: probability,
+            blocked: 0,
+            uncertain: 1 - probability,
+          };
+          return response;
+        }),
+      });
+    expect(await supported(0.69)).toMatchObject({
+      status: "uncertain",
+      prerequisiteStatus: "uncertain",
+      prerequisiteThresholds: { supported: 0.7, blocked: 0.9 },
+    });
+    expect(await supported(0.7)).toMatchObject({
+      status: "selected",
+      prerequisiteStatus: "supported",
+    });
+
     const negative = (probability: number) =>
       verify({
         state: {},

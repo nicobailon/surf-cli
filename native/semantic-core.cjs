@@ -14,7 +14,7 @@ const SEMANTIC_POLICY = Object.freeze({
     clef: Object.freeze({
       provider: "cloudflare",
       images: true,
-      thresholds: Object.freeze({ find: 0.7, filter: 0.65, verifyPositive: 0.85, verifyNegative: 0.85, prerequisiteSupported: 0.75, prerequisiteBlocked: 0.9, write: 0.85, exactRefWrite: 0.79 }),
+      thresholds: Object.freeze({ find: 0.7, filter: 0.65, verifyPositive: 0.85, verifyNegative: 0.85, prerequisiteSupported: 0.7, prerequisiteBlocked: 0.9, write: 0.85, exactRefWrite: 0.79 }),
     }),
     "clef-flash": Object.freeze({
       provider: "cloudflare",

@@ -90,8 +90,9 @@ A write threshold ships only if the model's wrong-write count is no higher than
 Jev's on this set. All three models had zero wrong writes, so both Clef models
 ship write thresholds.
 
-One value breaks the floor on purpose: `clef` `write` is 0.85, not Jev's 0.95.
-At 0.95, Clef declined correct clicks and fills because it is less confident
+Two values break the floor on purpose: `clef` `write` is 0.85, not Jev's 0.95,
+and `clef` `prerequisiteSupported` is 0.70, not 0.75. At 0.95, Clef declined
+correct clicks and fills because it is less confident
 than Jev in its right answers: a fixture fill at 0.946, a labeled Save button at
 0.909, and DuckDuckGo's settings menu at 0.914.
 [Why `clef` writes at 0.85](#why-clef-writes-at-085) has the evidence.
@@ -104,14 +105,15 @@ than Jev in its right answers: a fixture fill at 0.946, a labeled Save button at
 | filter | 0.65 | none | 0.65 (floor) | none | 0.65 (floor) |
 | verifyPositive | 0.85 | none | 0.85 (floor) | none | 0.85 (floor) |
 | verifyNegative | 0.85 | none | 0.85 (floor) | 0.8845 | **0.94 (measured)** |
-| prerequisiteSupported | 0.75 | none | 0.75 (floor) | none | 0.75 (floor) |
+| prerequisiteSupported | 0.75 | none | **0.70 (below the floor, see below)** | none | 0.75 (floor) |
 | prerequisiteBlocked | 0.90 | none | 0.90 (floor) | none | 0.90 (floor) |
 | write | 0.95 | 0.7373 | **0.85 (below the floor, see below)** | 0.5856 | 0.95 (floor) |
 | exactRefWrite | 0.65 | 0.7373 (pooled) | **0.79 (measured)** | 0.5856 (pooled) | 0.65 (floor) |
 
 Two values come from the measurements: `clef` `exactRefWrite` 0.79 and
-`clef-flash` `verifyNegative` 0.94. `clef` `write` 0.85 was set below the floor
-after the real-page check described below. Every other Clef value is Jev's floor.
+`clef-flash` `verifyNegative` 0.94. `clef` `write` 0.85 and
+`prerequisiteSupported` 0.70 were set below the floor after the real-page checks
+described below. Every other Clef value is Jev's floor.
 
 The wrong writes behind the `write` column came from the two unsatisfiable
 goals. There, both Clef models picked "Add to cart" (`clef` at 0.737,
@@ -127,7 +129,8 @@ the write threshold, and a write also requires the prerequisite to be `supported
 | `clef` | 89.5% (170/190) | 0 | 0 | 40/40 | 30/30 | 40/40 | 60/80 |
 | `clef-flash` | 52.6% (100/190) | 0 | 0 | 40/40 | 30/30 | 10/40 | 20/80 |
 
-The `clef` row is from 2026-10-23, after `write` moved to 0.85. At 0.95 it was
+The `clef` row is from 2026-10-23, after `write` moved to 0.85. A rerun with
+`prerequisiteSupported` at 0.70 gave the same result. At `write` 0.95 it was
 84.2% (160/190, act 50/80). The other rows are from 2026-10-05.
 
 Provider latency per decision, in ms (median / p95):
@@ -173,7 +176,7 @@ real page. These are the checks behind 0.85, run with `clef` on 2026-10-23:
 | --- | --- | --- | --- |
 | 19 fixtures × 10 runs (above) | 170/190 runs pass | 160/190 | 0 |
 | Toolbar, labeled "Save", text only, 10 runs | 10/10 (0.895) | 0/10 (0.909 on 2026-10-06) | 0 |
-| Toolbar icons with `--vision`, 30 runs | 10/30 | 10/30 on 2026-10-06 | 0 |
+| Toolbar icons with `--vision`, 30 runs | 10/30 (20/30 with `prerequisiteSupported` 0.70) | 10/30 on 2026-10-06 | 0 |
 | DuckDuckGo settings, "Open the menu", 2 runs | 2/2 (0.914) | 0/2: 0.914 is below the bar | 0 |
 | X post page, 6 goals × 3 runs | 0/18 (0.20–0.75) | 0/18 | 0 |
 
@@ -200,10 +203,18 @@ Repost only opens a sign-in prompt.
 - **`exactRefWrite` 0.79:** that same check is what stops the pick under this lower bar too, which applies when the user names the one allowed ref.
 - **Real pages:** no wrong pick came near 0.85, and Clef stopped on every impossible goal.
 
+**The `supported` check, at 0.70.** Before a `semantic.act` click or fill, Surf also asks the
+model whether the goal can be done on this page. It writes only if the answer is
+`supported` with probability of at least `prerequisiteSupported`.
+- **At Jev's 0.75:** on the toolbar, 20 of the 30 right `--vision` icon picks cleared 0.85, download at 0.937 and share at 0.866. They still stopped, because Clef rated each goal `supported` below 0.75 (download at 0.731).
+- **Fixtures:** Clef never answered `supported` for a goal that couldn't be done. Its correct `supported` answers were 0.889–0.963, so `clef` uses 0.70. The fixture rerun at 0.70 still passed 170/190, with 0 wrong writes.
+- **Toolbar at 0.70:** download is clicked (10/10, at 0.946). Share still stops, because Clef rated it `supported` at about 0.66 in a separate run.
+- **Real pages at 0.70:** nothing wrong was clicked.
+  - **X:** still no clicks. Logged out, Clef judged Like and Repost `blocked`, and stopped on both impossible goals.
+  - **DuckDuckGo:** the menu was clicked 3/3, and "Delete my DuckDuckGo account" stopped.
+
 **What still stops `clef`.**
-- **The `supported` check:**
-  - On the toolbar, 20 of the 30 right `--vision` icon picks cleared 0.85: download at 0.937 and share at 0.866.
-  - They still stopped, because Clef rated the goal `supported` at only 0.731, below `prerequisiteSupported` 0.75.
+- **The `supported` check:** below 0.70, as for share above.
 - **`--vision` on a labeled button:** it lowered "Save" to 0.844, so it was not clicked.
 - **Busy pages:** as on X above.
 
