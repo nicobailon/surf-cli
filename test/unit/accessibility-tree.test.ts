@@ -842,7 +842,7 @@ describe("accessibility tree", () => {
     );
 
     const forInput = sendMessage({ type: "GET_FILE_INPUT_SELECTOR", ref: "e2" });
-    expect(forInput).toEqual({ selector: expect.any(String), isFileInput: true });
+    expect(forInput).toEqual({ selector: expect.any(String), isFileInput: true, multiple: false });
     expect(forInput.selector).toBe(`[data-pi-file-id="${input.getAttribute("data-pi-file-id")}"]`);
   });
 

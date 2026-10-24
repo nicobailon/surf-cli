@@ -479,8 +479,8 @@ async function uploadFilesWithChooser(
 async function uploadFilesThroughControl(tabId: number, ref: string, selector: string, files: string[]): Promise<void> {
   const timeoutMs = 10000;
   let timeoutId: ReturnType<typeof setTimeout> | undefined;
-  let onOpened: (backendNodeId?: number) => void = () => {};
-  const opened = new Promise<number | undefined>((resolve, reject) => {
+  let onOpened: (params?: { backendNodeId?: number; mode?: string }) => void = () => {};
+  const opened = new Promise<{ backendNodeId?: number; mode?: string } | undefined>((resolve, reject) => {
     onOpened = resolve;
     timeoutId = setTimeout(() => reject(new Error(
       `No file chooser opened within ${timeoutMs / 1000}s after clicking ${ref}. Pass the ref of the file input itself, or of a control that opens a file picker.`,
@@ -488,7 +488,7 @@ async function uploadFilesThroughControl(tabId: number, ref: string, selector: s
   });
   opened.catch(() => {});
   const handler = (source: chrome.debugger.Debuggee, method: string, params: any) => {
-    if (source.tabId === tabId && method === "Page.fileChooserOpened") onOpened(params?.backendNodeId);
+    if (source.tabId === tabId && method === "Page.fileChooserOpened") onOpened(params);
   };
   chrome.debugger.onEvent.addListener(handler);
   try {
@@ -505,8 +505,12 @@ async function uploadFilesThroughControl(tabId: number, ref: string, selector: s
       returnByValue: true,
     });
     if (clicked?.result?.value !== true) throw new Error(`Could not click ${ref} to open its file chooser`);
-    const backendNodeId = await opened;
+    const chooser = await opened;
+    const backendNodeId = chooser?.backendNodeId;
     if (!backendNodeId) throw new Error("The file chooser did not identify its file input");
+    if (chooser?.mode === "selectSingle" && files.length > 1) {
+      throw new Error(`${ref} accepts one file, but ${files.length} were given`);
+    }
     await cdp.sendCommand(tabId, "DOM.setFileInputFiles", { files, backendNodeId });
   } finally {
     // Always stop intercepting: a tab left intercepting silently swallows the user's own file pickers.
@@ -2405,6 +2409,9 @@ export async function handleMessage(
       if (selectorResult.isFileInput === false) {
         await uploadFilesThroughControl(tabId, message.ref, selectorResult.selector, message.files);
         return { success: true, filesSet: message.files.length };
+      }
+      if (selectorResult.multiple === false && message.files.length > 1) {
+        throw new Error(`${message.ref} accepts one file, but ${message.files.length} were given`);
       }
       const setResult = await cdp.setFileInputBySelector(tabId, selectorResult.selector, message.files);
       if (!setResult.success) throw new Error(setResult.error);

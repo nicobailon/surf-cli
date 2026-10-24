@@ -2713,7 +2713,10 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       const isFileInput = el instanceof HTMLInputElement && el.type === "file";
       const uniqueId = `__pi_file_${Date.now()}`;
       el.setAttribute("data-pi-file-id", uniqueId);
-      sendResponse({ selector: `[data-pi-file-id="${uniqueId}"]`, isFileInput });
+      const selector = `[data-pi-file-id="${uniqueId}"]`;
+      sendResponse(isFileInput
+        ? { selector, isFileInput, multiple: el.hasAttribute("multiple") }
+        : { selector, isFileInput });
       return true;
     }
     case "WAIT_FOR_NETWORK_IDLE": {

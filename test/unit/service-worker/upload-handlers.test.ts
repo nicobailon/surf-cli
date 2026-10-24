@@ -206,7 +206,11 @@ describe("UPLOAD_FILE through an upload control", () => {
     resetChromeMock();
   });
 
-  async function uploadThroughButton(opensChooser: boolean) {
+  async function uploadThroughButton(
+    opensChooser: boolean,
+    files = ["/tmp/resume.pdf"],
+    mode?: string,
+  ) {
     const handleMessage = await loadHandleMessage();
     const chrome = (globalThis as any).chrome;
     const handlers: Array<(source: { tabId: number }, method: string, params: any) => void> = [];
@@ -227,16 +231,13 @@ describe("UPLOAD_FILE through an upload control", () => {
       if (opensChooser) {
         setTimeout(() => {
           for (const handler of handlers) {
-            handler({ tabId: 42 }, "Page.fileChooserOpened", { backendNodeId: 7 });
+            handler({ tabId: 42 }, "Page.fileChooserOpened", { backendNodeId: 7, mode });
           }
         }, 0);
       }
       return { result: { value: true } };
     });
-    const result = handleMessage(
-      { type: "UPLOAD_FILE", tabId: 42, ref: "e640", files: ["/tmp/resume.pdf"] },
-      {},
-    );
+    const result = handleMessage({ type: "UPLOAD_FILE", tabId: 42, ref: "e640", files }, {});
     const interceptCalls = () =>
       chrome.debugger.sendCommand.mock.calls
         .filter(([, method]: [unknown, string]) => method === "Page.setInterceptFileChooserDialog")
@@ -257,6 +258,51 @@ describe("UPLOAD_FILE through an upload control", () => {
       },
     );
     expect(interceptCalls()).toEqual([true, false]);
+  });
+
+  it("refuses several files for a single-file chooser and still stops intercepting", async () => {
+    const { chrome, result, interceptCalls } = await uploadThroughButton(
+      true,
+      ["/tmp/a.pdf", "/tmp/b.pdf"],
+      "selectSingle",
+    );
+
+    await expect(result).rejects.toThrow("e640 accepts one file, but 2 were given");
+    const methods = chrome.debugger.sendCommand.mock.calls.map(
+      ([, method]: [unknown, string]) => method,
+    );
+    expect(methods).not.toContain("DOM.setFileInputFiles");
+    expect(interceptCalls()).toEqual([true, false]);
+  });
+
+  it("refuses several files for a file input without multiple", async () => {
+    const handleMessage = await loadHandleMessage();
+    const chrome = (globalThis as any).chrome;
+    chrome.tabs.sendMessage.mockResolvedValue({
+      selector: '[data-pi-file-id="x"]',
+      isFileInput: true,
+      multiple: false,
+    });
+    chrome.debugger.sendCommand.mockImplementation(async (_target: any, method: string) => {
+      if (method === "DOM.getDocument") {
+        return { root: { nodeId: 1 } };
+      }
+      if (method === "DOM.querySelector") {
+        return { nodeId: 5 };
+      }
+      return {};
+    });
+
+    await expect(
+      handleMessage(
+        { type: "UPLOAD_FILE", tabId: 42, ref: "e12", files: ["/tmp/a.pdf", "/tmp/b.pdf"] },
+        {},
+      ),
+    ).rejects.toThrow("e12 accepts one file, but 2 were given");
+    const methods = chrome.debugger.sendCommand.mock.calls.map(
+      ([, method]: [unknown, string]) => method,
+    );
+    expect(methods).not.toContain("DOM.setFileInputFiles");
   });
 
   it("fails after 10s when no chooser opens and still stops intercepting", async () => {
