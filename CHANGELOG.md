@@ -4,6 +4,10 @@
 
 ### Fixed
 - **Sessions stay in their own window** - `surf session.ensure <name> <url>` opened a new window, but its tab was then moved into the window you were using, next to your tabs and behind the one you were looking at. Commands that need a visible tab, like `drag`, clicks by coordinates and `collect`, then did nothing. The tab now stays in the session's window. See [#403](https://github.com/nicobailon/surf-cli/issues/403).
+- **`surf gemini` works again** - Every `surf gemini` request failed with `Header overflow`, because gemini.google.com sends more response headers than Node accepts by default. The client now accepts them.
+
+### Security
+- **`surf gemini` checks Google's HTTPS certificate** - The Gemini client turned off certificate checks on the requests that carry your Google session cookies, so anyone able to intercept your network traffic, such as on public Wi-Fi, could pose as Google and read those cookies. It now rejects a certificate that is self-signed, expired or issued for another host, like any other HTTPS request.
 
 ## [2.24.0] - 2026-10-24
 

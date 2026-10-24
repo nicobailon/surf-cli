@@ -29,6 +29,7 @@ const MODEL_HEADERS = {
 };
 
 const REQUIRED_COOKIES = ["__Secure-1PSID", "__Secure-1PSIDTS"];
+const MAX_HEADER_BYTES = 256 * 1024;
 
 const ALL_COOKIE_NAMES = [
   "__Secure-1PSID",
@@ -110,7 +111,7 @@ function httpsGet(url, headers, opts = {}) {
         "user-agent": USER_AGENT,
         ...headers,
       },
-      rejectUnauthorized: false, // Required for Gemini API
+      maxHeaderSize: MAX_HEADER_BYTES,
       timeout: timeoutMs,
     };
 
@@ -177,7 +178,7 @@ function httpsSend(method, url, headers, body, opts = {}) {
         ...headers,
         ...(bodyBuffer && !hasLength ? { "content-length": String(bodyBuffer.length) } : {}),
       },
-      rejectUnauthorized: false, // Required for Gemini API
+      maxHeaderSize: MAX_HEADER_BYTES,
       timeout: timeoutMs,
     };
 
