@@ -2,6 +2,9 @@
 
 ## [Unreleased]
 
+### Fixed
+- **Sessions stay in their own window** - `surf session.ensure <name> <url>` opened a new window, but its tab was then moved into the window you were using, next to your tabs and behind the one you were looking at. Commands that need a visible tab, like `drag`, clicks by coordinates and `collect`, then did nothing. The tab now stays in the session's window. See [#403](https://github.com/nicobailon/surf-cli/issues/403).
+
 ## [2.24.0] - 2026-10-24
 
 ### Highlights
