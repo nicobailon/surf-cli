@@ -85,6 +85,15 @@ class FakeElement extends FakeNode {
     return null;
   }
 
+  contains(other: FakeElement | null): boolean {
+    for (let node = other; node; node = node.parentElement) {
+      if (node === this) {
+        return true;
+      }
+    }
+    return false;
+  }
+
   querySelector(): FakeElement | null {
     return null;
   }
@@ -1352,6 +1361,46 @@ describe("accessibility tree", () => {
     });
   });
 
+  it.each([
+    { role: "spinbutton", name: "Quantity", tag: "input" },
+    { role: "region", name: "Billing", tag: "section" },
+    { role: "complementary", name: "Related", tag: "aside" },
+  ])("locate.role $role finds the $tag that page.read reports as $role", ({ role, name }) => {
+    const body = document.body as unknown as FakeElement;
+    const unnamedSection = element("section");
+    unnamedSection.append(text("Billing details"));
+    body.append(
+      unnamedSection,
+      element("input", { type: "number", "aria-label": "Quantity" }),
+      element("section", { "aria-label": "Billing" }),
+      element("aside", { "aria-label": "Related" }),
+    );
+    const descendants = (node: FakeElement): FakeElement[] =>
+      node.children.flatMap((child) => [child, ...descendants(child)]);
+    const matches = (el: FakeElement, selector: string) =>
+      selector.split(",").some((part) => {
+        const parsed = part.trim().match(/^([a-z]*)(?:\[(\w+)="([^"]+)"\])?$/);
+        if (!parsed) {
+          return false;
+        }
+        const [, tagName, attr, value] = parsed;
+        return (
+          (!tagName || el.tagName === tagName.toUpperCase()) &&
+          (!attr || el.getAttribute(attr) === value)
+        );
+      });
+    (document as any).querySelectorAll = (selector: string) =>
+      descendants(body).filter((el) => matches(el, selector));
+
+    const located = sendMessage({ type: "LOCATE_ROLE", role, name, all: true });
+    expect(located.matches).toHaveLength(1);
+    const tree = sendMessage({
+      type: "GENERATE_ACCESSIBILITY_TREE",
+      options: { filter: "all" },
+    }).pageContent;
+    expect(tree).toContain(`${role} "${name}" [${located.matches[0].ref}]`);
+  });
+
   it("returns the whole visible text so the host can mark a cut", () => {
     const long = "😀".repeat(30000);
     (document.body as unknown as FakeElement).append(text(long));
@@ -1362,6 +1411,52 @@ describe("accessibility tree", () => {
     });
 
     expect(response).toEqual({ text: long, title: "Example", url: "https://example.test/page" });
+  });
+
+  it("reports the innermost registered element that contains a search match", () => {
+    const dialog = element("div", { role: "dialog" });
+    const listbox = element("div", { role: "listbox" });
+    const option = element("div", { role: "option" });
+    const label = text("Italy");
+    Object.assign(label, { parentElement: option });
+    option.append(label);
+    listbox.append(option);
+    dialog.append(listbox);
+    (document.body as unknown as FakeElement).append(dialog);
+
+    (globalThis as any).NodeFilter = { SHOW_TEXT: 4 };
+    (document as any).createTreeWalker = () => {
+      const nodes = [label];
+      return {
+        currentNode: null as FakeText | null,
+        nextNode() {
+          this.currentNode = nodes.shift() ?? null;
+          return this.currentNode;
+        },
+      };
+    };
+    (document as any).createRange = () => ({
+      setStart: vi.fn(),
+      setEnd: vi.fn(),
+      getBoundingClientRect: () => ({ x: 5, y: 5, width: 30, height: 12 }),
+    });
+    const register = (node: FakeElement, role: string) => ({
+      element: new WeakRef(node as unknown as Element),
+      role,
+      name: "",
+    });
+    // The dialog is registered first and the listbox after the option, so map order cannot pick the answer.
+    window.__piElementMap = {
+      e1: register(dialog, "dialog"),
+      e2: register(option, "option"),
+      e3: register(listbox, "listbox"),
+    };
+
+    const response = sendMessage({ type: "SEARCH_PAGE", term: "italy" });
+
+    expect(response.matches).toEqual([
+      expect.objectContaining({ text: "Italy", elementRef: "e2" }),
+    ]);
   });
 
   it("types into a selector in the content-script frame", () => {

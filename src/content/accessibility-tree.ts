@@ -2085,15 +2085,32 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           menu: ['[role="menu"]'],
           menuitem: ['[role="menuitem"]'],
         };
+        // Markup that page.read may report with these roles; only elements that resolve to the role are kept.
+        const markupRoles: Record<string, string> = {
+          spinbutton: 'input[type="number"]',
+          slider: 'input[type="range"]',
+          searchbox: 'input[type="search"]',
+          status: 'output',
+          region: 'section',
+          banner: 'header',
+          contentinfo: 'footer',
+          complementary: 'aside',
+          form: 'form',
+          search: 'search',
+        };
         
         // Build selectors for the role
-        const selectors = implicitRoles[role] || [`[role="${role}"]`];
-        const candidates: Element[] = [];
+        const markup = markupRoles[role];
+        const selectors = implicitRoles[role] || [markup ? `[role="${role}"], ${markup}` : `[role="${role}"]`];
+        let candidates: Element[] = [];
         
         for (const sel of selectors) {
           try {
             candidates.push(...document.querySelectorAll(sel));
           } catch {}
+        }
+        if (markup) {
+          candidates = candidates.filter(el => getResolvedRole(el) === role);
         }
         
         // Filter by visibility
@@ -2916,11 +2933,14 @@ function searchPageText(term: string, caseSensitive: boolean, limit: number) {
       const context = fullText.slice(contextStart, contextEnd).trim();
       
       let elementRef: string | null = null;
+      let elementRefTarget: Element | null = null;
       for (const [ref, entry] of Object.entries(elementMap)) {
         const el = entry.element.deref();
-        if (el && (el === parent || el.contains(parent))) {
+        if (!el || !(el === parent || el.contains(parent))) continue;
+        // Keep the innermost registered container; map order says nothing about nesting.
+        if (!elementRefTarget || (el !== elementRefTarget && elementRefTarget.contains(el))) {
           elementRef = ref;
-          break;
+          elementRefTarget = el;
         }
       }
       
