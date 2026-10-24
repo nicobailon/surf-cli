@@ -8,10 +8,10 @@ disable-model-invocation: true
 
 This directory contains skill files for AI coding agents:
 
-- **`surf/`** — the core browser-automation reference: every surf command, workflows, AI assistants, troubleshooting.
+- **`surf/`** — the core browser-automation skill: rules, everyday commands and the name of every command in `SKILL.md`, with semantic, oracle, remote, workflow and troubleshooting details in `references/`.
 - **`deep-x-research/`** — a research procedure built on surf: exhaustive, multi-angle X (Twitter) research with categorized findings and full post-URL traceability. Requires x.com login in Chrome.
 
-Install each skill folder the same way (symlink or copy).
+Install each skill as a whole folder (symlink or copy). `surf/SKILL.md` points to files in `surf/references/`, so copying `SKILL.md` alone leaves those pointers broken.
 
 ## Pi Agent
 
@@ -30,4 +30,4 @@ The skills will be available when pi detects browser automation or X research ta
 
 ## Other Agents
 
-Each `SKILL.md` file can be adapted for other AI coding agents (Claude Code, Codex) or used as documentation for LLM prompts — copy the skill folder into the agent's skills directory (e.g. `~/.claude/skills/`, `~/.agents/skills/`).
+Other agents (Claude Code, Codex) load the same folders: copy or symlink each whole skill folder into the agent's skills directory (e.g. `~/.claude/skills/`, `~/.agents/skills/`).

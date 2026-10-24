@@ -728,7 +728,7 @@ Execute multi-step browser automation as a single command:
 
 ```bash
 # Inline workflow (pipe-separated)
-surf do 'go "https://example.com" | click e5 | screenshot'
+surf do 'go "https://example.com" | read | click e5 | screenshot'
 
 # Multi-step login flow
 surf do 'go "https://example.com/login" | type "user@example.com" --selector "#email" | type "pass" --selector "#password" | click --selector "button[type=submit]"'
@@ -740,7 +740,7 @@ surf do --file workflow.json
 surf do my-workflow --url "https://example.com" --max_items 10
 
 # Validate without executing
-surf do 'go "url" | click e5 | screenshot' --dry-run
+surf do 'go "url" | read | click e5 | screenshot' --dry-run
 ```
 
 **Why workflows?** Instead of 6-8 separate CLI calls with LLM orchestration between each step, a workflow executes deterministically with smart auto-waits. Faster, cheaper, and more reliable.

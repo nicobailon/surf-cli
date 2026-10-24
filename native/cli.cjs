@@ -1452,10 +1452,10 @@ const TOOLS = {
           "inputs-stdin": "Read bounded private input slots as one JSON object from stdin",
         },
         examples: [
-          { cmd: 'do \'go "https://example.com" | click e5 | screenshot\'', desc: "Inline workflow" },
+          { cmd: 'do \'go "https://example.com" | read | click e5 | screenshot\'', desc: "Inline workflow" },
           { cmd: 'do -f login.json', desc: "From JSON file" },
           { cmd: 'do github-login --email "x" --password "y"', desc: "Named workflow with args" },
-          { cmd: 'do \'go "url" | click e5\' --dry-run', desc: "Validate without running" },
+          { cmd: 'do \'go "url" | read | click e5\' --dry-run', desc: "Validate without running" },
         ]
       },
       "workflow.list": {
@@ -2824,7 +2824,7 @@ if (args[0] === "do") {
 
   if (!commandsInput && !fileInput) {
     console.error("Error: commands string, workflow name, or --file required");
-    console.error('Usage: surf do \'go "url" | click e5\'');
+    console.error('Usage: surf do \'go "url" | read | click e5\'');
     console.error("       surf do --file workflow.json");
     console.error("       surf do my-workflow --arg1 value1 --arg2 value2");
     process.exit(1);

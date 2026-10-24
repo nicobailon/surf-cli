@@ -1,900 +1,112 @@
 ---
 name: surf
-description: Control Chrome browser via CLI for testing, automation, and debugging. Use when the user needs browser automation, screenshots, form filling, page inspection, network/CPU emulation, DevTools streaming, or AI queries via ChatGPT/Gemini/Perplexity/Grok/AI Studio.
+description: Drive the user's logged-in Chrome from the shell. Use for browser automation (open, read, click, fill, upload, screenshot), reading a site's feed or API, or asking ChatGPT, Gemini, Perplexity or Grok through the browser.
 ---
 
-# Surf Browser Automation
+# Surf
 
-Control Chrome browser via CLI or Unix socket.
+`surf` controls the user's real, logged-in Chrome. Below: the rules, the everyday commands in full, examples of the tricky shapes, and every other command by name. Before the first use of a command not shown in full, run `surf <cmd> --help` (flags, allowed values, examples). `surf --find <term>` searches commands; `surf --help-topic <topic>` explains refs, selectors, frames and more.
 
-Ordinary socket-backed CLI commands report top-level host tool-response errors on stderr with a supplied `[code]` on the first line and exit 1. `--json` additionally writes `{error:{code,message,details?}}` on stdout (missing code becomes `"error"`). `--soft-fail` instead keeps the original stderr warning, empty stdout and exit 0, even with `--json`. This does not cover local validation, transport/parser failures or compound-command errors: do not assume every failure produces JSON. Connection failures remain stderr-only and exit 1, including with `--soft-fail`.
+## Rules
 
-## Native Host / Socket Notes
-
-For WSL2 with Windows Chrome, run `surf install <extension-id>` inside WSL2. Surf detects WSL2 and writes the Windows-side native messaging manifest plus a wrapper that launches the WSL host. Use `surf install <extension-id> --target linux` only for Linux browsers running inside WSLg.
-
-On macOS, Chrome reads the native messaging manifest at `~/Library/Application Support/Google/Chrome/NativeMessagingHosts/surf.browser.host.json`. If native messaging fails, confirm that file exists, its `allowed_origins` extension ID matches `chrome://extensions`, then rerun `surf install <extension-id>`, restart Chrome, and reload the extension. Open Surf's service-worker console from `chrome://extensions`; in **Details > Extension options**, enable **Debug Mode**, reproduce the failure, then disable it when finished.
-
-If a command reports `Socket connect failed`, run `surf doctor` first, then check the `Attempted socket:` line. Default sockets are `/tmp/surf.sock` on macOS/Linux/WSL2 and `//./pipe/surf` on Windows. If `SURF_SOCKET` is set, the browser-launched host and the shell running `surf` must use the same value.
-
-For opt-in POSIX group sharing, install with `surf install <extension-id> --socket-mode 660 --socket-group <group>`. The default remains `0600`; mode `660` grants every member of that group full Surf authority, so use a dedicated narrow group. Re-run `surf install` without those flags to clear the wrapper settings. Remote Surf credentials remain the revocable per-client alternative.
-
-## Remote Surf
-
-Remote clients require a per-client credential; Tailnet reachability alone is not authorization. On the POSIX browser host, authorize the client before installing the listener:
+**Own a session.** Once per agent shell, before any browser command:
 
 ```bash
-surf remote authorize agent-macbook --output ~/agent-macbook.surf-credential.json
-surf install <extension-id> --listen 100.101.102.103:4321
-surf remote list
+export SURF_SESSION="$(basename "$PWD")-<agent-id>"
+surf session.ensure "$SURF_SESSION" about:blank   # creates, reuses or reopens
 ```
 
-Move the mode-0600 credential to the client through a secure channel. It grants full trusted Surf authority. Use it explicitly or through `SURF_REMOTE` and `SURF_REMOTE_CREDENTIAL`:
+It is one tab in its own background window, and its commands run in order. Sessions share the Chrome profile (cookies, logins, downloads). On `tab_gone` or `session_epoch_stale`, run the command the error prints after `Recovery:`.
+
+**Read → act on refs → read the diff.** `page.read` gives refs (`e5`); act on refs, not CSS. Each action prints what changed; when the report ends `+N more changes...`, run the smaller command it suggests instead of a full read.
+
+**Errors** print `[code]` on stderr and exit 1; `--json` adds `{error:{code,message}}` on stdout.
+
+**Fail fast on walls.** `wait.ready` returns when the page is ready and fails with `page_login|page_challenge|page_not_found|page_error|page_timeout`; `--accept login` returns that state instead.
+
+**API before scroll.** For feeds and threads, read the site's own API: `use x thread`, or `network.wait` then `network.replay --set`. `collect` scrolls the page when there is no API and needs a visible tab (`session.ensure <name> <url> --window --focused`).
+
+**Pipe multi-step work.** `surf do` runs steps with waits between them; run it with `--dry-run` first.
+
+**Rich editors** (ChatGPT, Notion, other contenteditable fields): `type --method js`.
+
+**AI sites** (`chatgpt gemini perplexity grok kimi aistudio`, `oracle ask`) use the user's login, no API key, and take the whole browser while they run; a waiting message means queued. Reasoning models take 60 s or more.
+
+**Semantic commands are optional model calls.**
+- `semantic.*` sends page text, without field values, to TypeSafe (`jev-1.13.0`, the default) or Cloudflare Workers AI (`clef`, `clef-flash`, and `clairic` for `semantic.extract`).
+- Clicks and fills need `--allow-write`; `--allow-ref` limits which elements it can touch.
+- Each write has to clear a confidence threshold. `--threshold` changes it for one run and never grants write permission.
+
+## Everyday commands
+
+`<x>` required, `[--f <v>]` optional, `a|b` allowed values, `=v` default, `…` repeatable. Global flags: `--session <n> --tab-id <id> --json --no-diff`.
+
+```text commands
+session.ensure <name> <url> [--window|--tab] [--focused]
+navigate <url>                    # alias go
+page.read [--ref e5] [--all] [--no-text] [--depth <n>] [--compact] [--summary]   # alias read
+click <ref> | --selector <css> [--index <n>] | --x <n> --y <n>   [--button left|right|double|triple]
+type <text> [--ref e5|--into <css>] [--submit] [--clear] [--method cdp|js]
+key <key> [--repeat <n>]          # Enter, Escape, cmd+a
+select <ref|css> <value>… [--by value|label|index]
+locate.role <role> [--name <text>] [--action click|fill|hover|text] [--value <v>]
+wait.ready [--selector <css>] [--text <t>] [--url-prefix <u>] [--accept login,challenge,…] [--timeout <ms>=20000]
+screenshot [--output <f>] [--full-page] [--annotate] [--no-save]   # auto-saves to /tmp
+js <code> [--file <f>]            # `return` a value
+scroll up|down|left|right [<px>] | scroll.top | scroll.bottom
+frame.switch --selector <css>|--name <n>|--index <i> | frame.main
+tab.list | tab.new <url> | tab.switch <id> | tab.close <id> | tab.reload [--hard]
+cookie.get <name>
+emulate.viewport --width <px> --height <px> [--mobile]
+console [--limit <n>] [--stream [--level error]]
+chatgpt|gemini|perplexity|grok <prompt> [--with-page] [--model <m>]   # --file <f>: chatgpt, gemini
+doctor [--browser all]            # can't connect
+```
+
+## Examples of the tricky shapes
 
 ```bash
-surf --remote 100.101.102.103:4321 \
-  --remote-credential ~/.config/surf/agent-macbook.json \
-  page.read
-
-# TLS is client-side and requires a TLS-terminating reverse proxy in front of SURF_LISTEN
-surf --remote surf.example.com:443 --remote-tls \
-  --remote-tls-ca ~/.config/surf/private-ca.pem \
-  --remote-credential ~/.config/surf/agent-macbook.json page.read
-
-surf remote revoke agent-macbook  # Run on the browser host
+surf do 'go "https://example.com" | read | click e5 | screenshot'   # refs reset on navigation; read assigns them again
+surf form.fill --data '[{"ref":"e1","value":"John"},{"ref":"e7","value":true}]'
+surf upload --ref e12 --files ./resume.pdf          # e12 may be the "Upload" button
+surf drag --from 100,200 --to 300,200
+surf use x thread --url https://x.com/<user>/status/<id> --format md
+surf network.wait "/api/**/feed" --json             # prints the response and its request id
+surf network.replay r_001 --set query.cursor=abc    # next page
+surf collect --item article --key 'a@href' --field title=h2 --field url=a@href
+surf semantic.extract --field total:number:"Order total incl. tax" --field delivery:date
+surf semantic.act "add 2 to the cart" --allow-write --allow-ref e14 --allow-ref e15
+surf oracle ask "Review this design" --files 'src/**/*.ts' --effort pro --detach --json   # keep .id
+surf oracle result <id> --wait --json
 ```
 
-Environment equivalents are `SURF_REMOTE_TLS=1`, `SURF_REMOTE_TLS_CA`, and
-`SURF_REMOTE_TLS_SERVER_NAME`. A custom CA replaces system roots; Ed25519 credentials remain
-mandatory after TLS validation.
+## Every other command
 
-Remote paths are client-local by default. `local:./file` is explicit client-local syntax; only `remote:/absolute/path` accesses the browser host directly. Remote transfer supports one upload or ChatGPT/Gemini input and one screenshot, network-export, or Gemini image output. Limits are 256 MiB per file, 512 MiB and 32 files per connection, and 256 KiB decoded chunks. `record`, `aistudio.build`, smoke screenshot directories, directories, and multi-file inputs are not supported remotely. Successful action screenshots and failure `--auto-capture` diagnostics are transferred back to client-local paths.
-
-## CLI Quick Reference
-
-```bash
-surf --help                    # Basic help
-surf <group>                   # Group help (tab, scroll, page, wait, dialog, emulate, form, perf, ai)
-surf --help-full               # All commands
-surf --find <term>             # Search tools
-surf --help-topic <topic>      # Topic guide (refs, semantic, frames, devices, windows)
+```text index
+session: session.new session.list session.info session.close session.rebind session.reopen session.cleanup
+nav: back forward
+tab: tab.move tab.name tab.unname tab.named tab.group tab.ungroup tab.groups
+window: window.new window.list window.focus window.close window.resize resize zoom
+read: page.text page.html page.save page.state page.readiness search locate.text locate.label element.styles frame.list frame.diagnose frame.js
+act: hover smart_type dialog.info dialog.accept dialog.dismiss scroll.to scroll.info
+wait: wait wait.element wait.network wait.url wait.dom wait.load
+capture: snap record video.start video.stop video.status video.restart animate-audit perf-audit perf.start perf.stop perf.metrics
+data: extract network network.get network.body network.curl network.path network.origins network.stats network.clear network.export
+browser: cookie.list cookie.set cookie.clear history.list history.search bookmark.list bookmark.add bookmark.remove
+emulate: emulate.network emulate.cpu emulate.geo emulate.device emulate.touch
+ai: kimi aistudio aistudio.build ai
+semantic: semantic.find semantic.filter semantic.verify | semantic auth set | semantic auth status | semantic auth clear
+oracle: oracle follow | oracle status | oracle list
+playbook: playbook list | playbook show | playbook ops | playbook run | playbook suggest | playbook save | playbook record start | playbook record mark | playbook record stop | playbook record status | playbook trace export | playbook export | playbook import | playbook client derive | playbook client export | playbook client verify
+workflow: batch workflow.list workflow.info workflow.validate
+setup: install uninstall config server extension-path health smoke remote authorize | remote list | remote revoke
 ```
 
-## First Command for Independent Agents
-
-Before the first browser command in each independent agent shell, choose a unique valid session name and ensure its target exists:
-
-```bash
-export SURF_SESSION="$(basename "$PWD" | sed 's/[^A-Za-z0-9._-]/-/g')"
-surf session.ensure "$SURF_SESSION" about:blank
-```
-
-`session.ensure` is idempotent. It creates a missing session, reuses a live binding, and reopens a stale or closed tab. Keep `SURF_SESSION` set for every later tab-scoped command in that shell. Use a distinct worktree/directory name per agent; when agents share one directory, append a stable agent identifier. Use `surf session.info "$SURF_SESSION"` to inspect the target and queue state.
-
-## Core Workflow
-
-```bash
-# 1. Navigate to page
-surf navigate "https://example.com"
-
-# 2. Read page to get element refs
-surf page.read
-
-# 3. Click by ref or coordinates
-surf click --ref "e1"
-surf click --x 100 --y 200
-
-# 4. Type text
-surf type --text "hello"
-
-# 5. Full-page screenshot
-surf screenshot --full-page --output /tmp/shot.png
-
-# Inspect animation/style changes as JSON
-surf animate-audit --selector ".thing" --duration 2000 --fps 10
-```
-
-## Optional semantic decisions
-
-`semantic.act` is a bounded, goal-driven website controller. It repeatedly
-observes the page, lets a decision model select the next action from Surf's allowed menu,
-validates and executes that action, and checks the overall goal:
-
-```text
-goal -> observe -> choose -> validate + act -> verify
-           ^                              |
-           +-------- incomplete ----------+
-```
-
-It returns when the goal is complete, a decision is uncertain, or a configured
-budget is exhausted. Use `semantic.find` for one control, `semantic.filter` for
-relevant page regions, and
-`semantic.verify` for one outcome. Use these when the page or happy path is
-unfamiliar; once the path is stable, prefer deterministic Surf commands for
-repeated runs. The agent owns the goal and final confirmation, while Surf retains
-execution authority. Only `semantic.*` sends bounded, value-free page text to
-the provider of the selected model: `jev-1.13.0` (default) goes to TypeSafe
-(api.typesafe.ai); `clef` and `clef-flash` go to Cloudflare Workers AI
-(api.cloudflare.com). Choose with `--model <id>` or `SURF_SEMANTIC_MODEL` (the
-only way for `surf do`). Every result reports `provider`, `model`,
-`providerCalls`, and `providerLatencyMs`.
-
-To read specific values (a total, a date, an order id) instead of a full
-`read`, use `semantic.extract --field name:type[:instructions]`. Each value
-comes back with a `confidence`; it is `null` when the value isn't on the page,
-and withheld as `guess` when the confidence is below the threshold. It always
-uses `clairic` on Cloudflare Workers AI, with the same Cloudflare credentials as
-`clef`.
-
-For icon-only buttons with no name, add `--vision` to `semantic.find` or
-`semantic.act` with `--model clef` or `clef-flash`. It also sends one image of
-those controls, each drawn from its own icon (SVG, image or icon-font glyph); no
-page screenshot is sent. Controls whose icon can't be drawn count as skipped.
-Results carry `vision: { tiles, skipped }` and `"tile": true` on a target that
-was shown as a tile; screenshot before relying on a tiled write target.
-
-```bash
-surf semantic.find "the settings control"
-surf semantic.verify "Settings were saved" --json
-surf semantic.filter "settings"
-surf semantic.act "Open settings" --max-steps 5
-surf semantic.act "Fill email" --input email="$EMAIL" --allow-write --allow-ref e3
-surf semantic.act 'Add the selected item to the cart' --allow-write --threshold write=0.85
-surf semantic.find "the export button" --model clef-flash
-surf semantic.find "the download icon" --model clef --vision
-surf semantic.extract --field total:number:"Order total including tax" --field delivered:date
-printf '%s\n' "$TYPESAFE_KEY" | surf semantic auth set
-printf '%s\n%s\n' "$CLOUDFLARE_ACCOUNT_ID" "$CLOUDFLARE_API_TOKEN" | surf semantic auth set --provider cloudflare
-surf semantic auth status          # both providers unless --provider is given
-surf semantic auth clear --provider cloudflare
-```
-
-For reusable bounded recipes, put only linear `semantic.step` operations in a
-workflow with `"semantic":{"version":1}`. Check it offline with
-`surf workflow.validate flow.json` or `surf do --file flow.json --dry-run`, then
-run with `--allow-semantic`; declared fill/check/click operations also require
-`--allow-write`. Supply private fill slots as a bounded JSON object on stdin:
-
-```bash
-printf '%s' '{"quantity":"2"}' | SURF_SESSION=shopping surf do --file flow.json \
-  --inputs-stdin --allow-semantic --allow-write --json
-```
-
-The closed operations are `find`, same-origin direct `open`, `ensureChecked`,
-`fill`, one-shot `click` with an explicit expectation, `assert`, and `extract`,
-which reads typed values from the page with Clairic (Cloudflare credentials).
-Search is bounded overlapping coverage, not global ranking. Unknown write outcomes stop
-without replay; a later new run can still repeat an external effect. Input
-values never enter provider state, workflow variables, events, or checkpoints.
-Extracted values appear only in `surf do --json` `vars.<as>`; they are never
-written to the workflow's state files or checkpoints.
-Check one with `assert` mode `value`: a `null` or `uncertain` field always
-fails, `guess` is never compared, and a failure message is only a reason code.
-
-Required argument shapes:
-
-```text
-find           target (+ optional search), usually save with "as"
-open           target
-ensureChecked  target + checked
-fill           target + input
-click          target + expect
-assert         mode + claim (semantic), predicate (local), or binding + field +
-               (equals | input | min/max) (value; binding = an extract's "as")
-extract        fields (the --fields-json object) + "as"; only a value assert can read it
-```
-
-The complete valid example in the README uses these shapes, with separate
-`extract` and value `assert` examples; start from them instead of inventing fields.
-
-Every click/fill requires `--allow-write`; repeat `--allow-ref` to narrow it.
-Broad writes use threshold `0.95` (`0.85` for `clef`); exactly one allowed ref with one applicable
-write uses `0.65` (`0.79` for `clef`). The applied threshold is included in decision/trace output.
-Repeatable `--threshold name=value` overrides applicable confidence thresholds
-for one run only; defaults remain safer, and overrides never grant write authority.
-`TYPESAFE_API_KEY` is the ephemeral/CI override.
-The shared credential schema is `{"version":1,"apiKey":"..."}` at
-`${XDG_CONFIG_HOME:-~/.config}/typesafe/credentials.json` (Unix/macOS) or
-`%APPDATA%\TypeSafe\credentials.json` (Windows), independent of Surf state and
-the project. POSIX directories/files use `0700`/`0600`; Windows relies on the
-current user's profile ACL. `TYPESAFE_API_KEY` wins. Status reveals only source
-and fingerprint; clear affects all clients using the shared file.
-Cloudflare credentials use `CLOUDFLARE_ACCOUNT_ID` + `CLOUDFLARE_API_TOKEN`
-(both or neither) or a separate private record under
-`${XDG_CONFIG_HOME:-~/.config}/surf/`.
-
-## AI Assistants (No API Keys)
-
-Query AI models using your browser's logged-in session. Must be logged into the respective service in Chrome.
-
-### ChatGPT
-```bash
-surf chatgpt "explain this code"
-surf chatgpt "summarize" --with-page              # Include current page context
-surf chatgpt "review" --model gpt-5.5             # Specify model
-surf chatgpt "analyze" --file document.pdf        # With file attachment
-```
-
-### Oracle
-
-Use `surf chatgpt` for quick one-shot questions. Use `surf oracle` for long-running or Pro coding consults that need a durable job, explicit model and effort selection, file context, a direct local attachment, recovery, or follow-up turns. Oracle is local-only.
-
-For agent workflows, detach after dispatch and keep the returned `.id`:
-
-```bash
-surf oracle ask "Review this change and identify release risks" \
-  --files "src/**/*.ts" --files "package.json" \
-  --model gpt-5.5 --effort pro --file ./design.md --github --detach --json
-
-surf oracle status <job-id> --json
-surf oracle result <job-id> --json
-# Or let Surf keep polling until capture:
-surf oracle result <job-id> --wait --json
-```
-
-`status` reads persisted state without touching Chrome. `result` attempts to harvest the answer and returns the job object with `response` once its state is `captured`. A Ctrl-C during waiting exits with status 130 and prints `Recover with: surf oracle result <id>`. Once the job is `awaiting`, the persisted ChatGPT conversation URL is its durable key, so `surf oracle result <id>` can recover after CLI exit, native-host restart, or Chrome restart by reopening that conversation.
-
-Treat Pro quota as scarce. Oracle never selects Pro effort implicitly; request it with `--effort pro`. ChatGPT model aliases include `gpt-6-astra`, `latest`, `gpt-5.6-sol`, and `gpt-5.5`; `latest` is an explicit floating choice, while `gpt-6-astra` must read back as model 6 before submission. Accepted `--effort` values are `instant`, `medium`, `high`, `xhigh`/`extra-high`, and `pro`. Use `--model gpt-6-astra --effort pro` for GPT-6 Astra with Pro effort. Requested model and effort selections are read back before submission, and an unverifiable selection fails with `model_verification_failed` instead of silently continuing. Capacity is one non-terminal oracle job. A `capacity` error includes the in-flight job ID; poll that job or wait for it to finish rather than submitting the same consult again.
-
-ChatGPT can hide the model version at lower effort settings. Use `--model latest` if floating model selection is intended; do not retry an unverifiable `gpt-6-astra` request as `latest` without the user's approval.
-
-When loaded as a Pi extension, Surf also registers a `surf-oracle` external-job provider when the runtime exposes that bridge. The provider maps `start`, `status`, `result`, and `reattach` to durable Surf Oracle jobs and returns pi-subagents' external-job contract shape: `providerJobId`, a contract state (`queued`, `running`, `completed`, `failed`), the conversation URL, the captured result text as `output`, and failure code and message. It honors `options.model`, `options.effort`, `options.file`, and `options.github` for starts and follow-ups, so `model: gpt-6-astra` plus `effort: pro` selects ChatGPT GPT-6 Astra with Pro effort through the browser, while `github: true` requires Chat mode and the connected GitHub tool. `reattach` only harvests an existing job by ID; it never submits the prompt again.
-
-When Surf is installed as a Pi package, it exposes an optional `gpt-pro` package agent for `pi-subagents`. That profile uses `runner.type: external-job`, provider `surf-oracle`, `options.model: gpt-6-astra`, and `options.effort: pro`. Surf remains useful without Pi or `pi-subagents`.
-
-Context comes from repeatable `--files` globs. Use `--file <path>` for one additional local attachment; `--github` requires Chat mode and a connected GitHub tool. Surf fails closed when a glob matches nothing or a matched file is unreadable, binary, or invalid UTF-8. It also blocks gitignored files and basenames matching `.env*`, `*.pem`, `*.key`, `id_rsa*`, `id_ed25519*`, `*.p12`, `*.pfx`, `credentials*`, or `secrets*`. Use `--allow-sensitive` only after intentionally reviewing those files; it overrides the block rather than redacting content. Context up to 60,000 evidence characters is inserted inline, while larger context becomes one private text attachment. The assembly manifest records each path, byte count, SHA-256, inline or bundle disposition, and deny-list outcome.
-
-Continue a captured consult with `follow`. Use the ID returned by each turn for the next turn:
-
-```bash
-surf oracle follow <job-id> "Challenge your recommendation. What could invalidate it?" --file ./follow-up.md --github --detach --json
-surf oracle result <follow-job-id> --wait --json
-surf oracle follow <follow-job-id> "Give the final decision and concrete next steps." --detach --json
-```
-
-### Gemini
-```bash
-surf gemini "explain quantum computing"
-surf gemini "summarize" --with-page               # Include page context
-surf gemini "analyze" --file data.csv             # Attach file
-surf gemini "a robot surfing" --generate-image /tmp/robot.png
-surf gemini "add sunglasses" --edit-image photo.jpg --output out.jpg
-surf gemini "summarize" --youtube "https://youtube.com/..."
-surf gemini "hello" --model gemini-3.5-flash      # Models: gemini-3.1-pro (default), gemini-3.5-flash, gemini-3.1-flash-lite
-surf gemini "wide banner" --generate-image /tmp/banner.png --aspect-ratio 16:9
-```
-
-### Perplexity
-```bash
-surf perplexity "what is quantum computing"
-surf perplexity "explain this page" --with-page   # Include page context
-surf perplexity "deep dive" --mode research       # Research mode (Pro)
-surf perplexity "latest news" --model sonar       # Model selection (Pro)
-```
-
-### Grok (via x.com - requires X.com login in Chrome)
-```bash
-surf grok "what are the latest AI trends on X"    # Search X posts
-surf grok "analyze @username recent activity"     # Profile analysis  
-surf grok "summarize this page" --with-page       # Include page context
-surf grok "find viral AI posts" --deep-search     # DeepSearch mode
-surf grok "quick question" --model fast           # Models: auto, fast, expert, grok-4.20-beta
-```
-
-For exhaustive, multi-angle X research with categorized findings and full post-URL traceability, use the `deep-x-research` skill (`skills/deep-x-research/`) instead of a single Grok query.
-
-**Grok Validation & Troubleshooting:**
-```bash
-# Validate Grok UI and check available models (no query sent)
-surf grok --validate
-
-# If models changed, save discovered models to surf.json config
-surf grok --validate --save-models
-```
-
-### AI Studio (via aistudio.google.com - requires Google login in Chrome)
-```bash
-surf aistudio "explain quantum computing"
-surf aistudio "redteam this" --with-page          # Include current page context
-surf aistudio "quick answer" --model gemini-3-flash-preview  # Model selection
-surf aistudio "analyze" --timeout 600             # Custom timeout (default: 300s)
-```
-
-**Why AI Studio over Gemini?** AI Studio gives access to less restricted Gemini models. For Gemini 3 Pro the difference can be significant with certain prompts. Downside: aggressive per-day rate limits on Pro and Flash models.
-
-**Model selection is best-effort:** Pass any AI Studio model id (e.g. `gemini-3.1-pro-preview`, `gemini-3-flash-preview`, `gemini-flash-lite-latest`). If the model isn't found, AI Studio uses whatever model was last selected in the UI.
-
-### AI Studio App Builder
-```bash
-surf aistudio.build "build a portfolio site"
-surf aistudio.build "todo app" --model gemini-3.1-pro-preview   # Model override
-surf aistudio.build "crm dashboard" --output ./out              # Extract zip to directory
-surf aistudio.build "game" --keep-open --timeout 600            # Keep tab open, 10min timeout
-```
-
-Automates AI Studio's App Builder at `aistudio.google.com/apps`. Types your prompt, clicks Build, waits for completion, downloads the generated zip, and optionally extracts it.
-
-- `--output <dir>` extracts the zip to a directory
-- `--model <id>` overrides the model in Advanced Settings
-- `--timeout <seconds>` build timeout (default: 600s)
-- `--keep-open` leaves the AI Studio tab open after completion
-
-Returns `zipPath`, `extractedPath`, `model`, `buildDuration`, and `tookMs`.
-
-### AI Tool Troubleshooting
-
-When AI queries fail, check these common issues:
-
-1. **Not logged in**: The error "login required" means you need to log into the service in Chrome (chatgpt.com, gemini.google.com, perplexity.ai, x.com, or aistudio.google.com)
-2. **Model selection failed**: The UI may have changed. Run `surf grok --validate` to check
-3. **Response timeout**: Reasoning-heavy models (ChatGPT o1, Grok Expert) can take 45+ seconds. AI Studio builds can take several minutes.
-4. **Element not found**: The service's UI changed. Check for surf-cli updates
-
-**Debugging workflow for agents:**
-```bash
-# 1. Check if the service is accessible and UI is valid
-surf grok --validate
-
-# 2. If models mismatch, update the local settings
-surf grok --validate --save-models
-
-# 3. Retry with explicit model name from validation output
-surf grok "query" --model <model-from-validation>
-
-# 4. If still failing, try with longer timeout
-surf grok "query" --timeout 600
-```
-
-## Tab Management
-
-```bash
-surf tab.list
-surf tab.new "https://google.com"
-surf tab.switch 12345
-surf tab.close 12345
-surf tab.move 12345 --to-window 67890
-surf tab.reload                # Reload current tab
-
-# Named tabs (aliases)
-surf tab.name myapp            # Name current tab
-surf tab.switch myapp          # Switch by name
-surf tab.named                 # List named tabs
-surf tab.unname myapp          # Remove name
-
-# Tab groups
-surf tab.group                 # Create/add to tab group
-surf tab.ungroup               # Remove from group
-surf tab.groups                # List all tab groups
-```
-
-## Window Management
-
-```bash
-surf window.list                              # List all windows
-surf resize 1280 720                         # Resize current browser window
-surf resize 1280                             # Set current window width only
-surf window.list --tabs                       # Include tab details
-surf window.new                               # New window
-surf window.new --url "https://example.com"   # New window with URL
-surf window.new --incognito                   # New incognito window
-surf window.new --unfocused                   # Don't focus new window
-surf window.focus 12345                       # Focus window by ID
-surf window.close 12345                       # Close window
-surf window.resize --id 123 --width 1920 --height 1080
-surf window.resize --id 123 --state maximized # States: normal, minimized, maximized, fullscreen
-```
-
-**Concurrent agent sessions:**
-
-```bash
-# Required first command rule for each independent agent shell
-export SURF_SESSION="$(basename "$PWD" | sed 's/[^A-Za-z0-9._-]/-/g')"
-surf session.ensure "$SURF_SESSION" about:blank
-
-# Explicit form when an environment variable is inconvenient
-surf --session research go "https://example.com"
-surf --session research read
-
-# Inspect bindings and scheduler state
-surf session.list --refresh
-surf session.info research --refresh
-```
-
-Each session owns one explicit tab and defaults to a separate unfocused window. Commands for the same tab are FIFO; different session tabs may run concurrently. Browser-wide writers wait for tab lanes to drain. `--no-wait` returns `tab_busy` or `browser_busy` immediately. On `tab_gone` or `session_epoch_stale`, run the exact command printed after `Recovery:`—normally `surf session.reopen <name>`.
-
-Browser-login provider commands (`chatgpt`, `gemini`, `perplexity`, `grok`, `kimi`, `aistudio`, and `oracle ask`) take exclusive browser access and print a warning before dispatch. Do not assume Surf is hung while that warning is visible; inspect `surf session.info <name>` from another shell to see the active writer.
-
-Sessions share cookies, authentication, same-origin storage, downloads, history, bookmarks, and other Chrome-profile state. Use separate browser/profile instances and `SURF_SOCKET` values only when hard isolation is required. Explicit `--tab-id`, `--window-id`, and named tabs remain available for one-off targeting.
-
-## Input Methods
-
-```bash
-# CDP method (real events) types at the current focus
-surf type --text "hello"
-surf click --x 100 --y 200
-
-# Selector/ref targets use frame-aware DOM input
-surf type "hello" --into "#input"
-surf type "hello" --ref e5
-
-# Keys
-surf key Enter
-surf key "cmd+a"
-surf key.repeat --key Tab --count 5           # Repeat key presses
-
-# Hover and drag
-surf hover --ref e5
-surf drag --from-x 100 --from-y 100 --to-x 200 --to-y 200
-```
-
-## Page Inspection
-
-```bash
-surf page.read                 # Accessibility tree with refs + page text
-surf page.read --all           # Every visible element, including offscreen
-surf page.read --include-hidden # Also hidden and aria-hidden elements
-surf page.read --no-text       # Interactive elements only (no text content)
-surf animate-audit --selector ".thing" --duration 2000 --fps 10  # JSON animation timeline
-surf page.read --ref e5        # Get specific element details
-surf page.read --depth 3       # Limit tree depth
-surf page.read --compact       # Minimal output for LLM efficiency
-surf page.read --max-bytes 2000 # Cap the tree and visible text at 2000 bytes
-surf page.read --summary       # Short overview: headings, control counts per region, dialogs (no refs)
-surf page.text                 # Plain text content only
-surf page.html --strip-scripts # Rendered HTML without scripts
-surf page.save --selector "#artifact" --strip-scripts --output page.html # Save one static element
-surf page.state                # Modals, loading state, scroll info
-surf frame.diagnose            # Why a selector misses: DOM iframes (incl. open shadow roots) vs extension frames vs CDP tree, with warnings; out-of-process frames need frame.switch, not frame.js
-```
-
-### Export Rendered HTML
-
-Use `page.html` when the user wants a static copy of the current rendered DOM. This works for Claude artifact pages and ordinary web pages.
-
-```bash
-# Save the active page as HTML.
-surf page.save --output page.html
-
-# Save a Claude artifact or other preview page after it loads, without scripts.
-surf wait.dom --stable 500
-surf page.html --selector "#artifact" --strip-scripts > artifact.html
-```
-
-Use `--selector <css>` to export its matching element only. A selector miss fails with an error. `--strip-scripts` removes scripts from exported markup without changing the page. Without `--selector`, `page.html` exports the whole document with its doctype. Use `page.read` first when you need refs or visible text.
-
-## Semantic Element Location
-
-Find and act on elements by role, text, or label instead of refs:
-
-```bash
-# Find by ARIA role
-surf locate.role button --name "Submit" --action click
-surf locate.role textbox --name "Email" --action fill --value "test@example.com"
-surf locate.role link --all                    # Return all matches
-
-# Find by text content
-surf locate.text "Sign In" --action click
-surf locate.text "Accept" --exact --action click
-
-# Find form field by label
-surf locate.label "Username" --action fill --value "john"
-surf locate.label "Password" --action fill --value "secret"
-```
-
-**Actions:** `click`, `fill`, `hover`, `text` (get text content)
-
-## Text Search
-
-```bash
-surf search "login"                    # Find text in page
-surf search "Error" --case-sensitive   # Case-sensitive
-surf search "button" --limit 5         # Limit results
-surf find "login"                      # Alias for search
-```
-
-## Element Inspection
-
-```bash
-surf element.styles e5                 # Get computed styles by ref
-surf element.styles ".card"            # Or by CSS selector
-# Returns: font, color, background, border, padding, bounding box
-```
-
-## Scrolling
-
-```bash
-surf scroll down 800           # Scroll down 800px
-surf scroll up 400             # Scroll up 400px
-surf scroll bottom             # Scroll to bottom
-surf scroll top                # Scroll to top
-surf scroll.bottom             # Dot command form also works
-surf scroll.top
-surf scroll.to --ref e5        # Scroll element into view
-surf scroll.info               # Get scroll position
-```
-
-## Waiting
-
-```bash
-surf wait 2                    # Wait 2 seconds
-surf wait.element ".loaded"    # Wait for element
-surf wait.network              # Wait for network idle
-surf wait.url "/success"       # Wait for URL pattern
-surf wait.dom --stable 100     # Wait for DOM stability
-surf wait.load                 # Wait for page load complete
-surf wait.ready --selector ".results"                 # Ready, or fail fast: login / challenge / not-found / error
-surf wait.ready --url-prefix "https://app.example.com/" --empty-text "No results"  # empty vs blocked
-surf wait.ready --accept login --json                 # Return the negative state instead of failing
-surf page.readiness --json     # Classify the current page once (state + evidence)
-```
-
-Typed readiness states replace "the selector never appeared": exit codes carry `page_login`, `page_challenge`, `page_not_found`, `page_error` or `page_timeout`. Detection uses visible UI (a rendered password field, a login route, the page's wording, a URL outside `--url-prefix`), not site selectors.
-
-## Dialog Handling
-
-```bash
-surf dialog.info               # Get current dialog type/message
-surf dialog.accept             # Accept (OK)
-surf dialog.accept --text "response"  # Accept prompt with text
-surf dialog.dismiss            # Dismiss (Cancel)
-```
-
-## Device/Network Emulation
-
-```bash
-# Network throttling
-surf emulate.network slow-3g   # Presets: slow-3g, fast-3g, 4g, offline
-surf emulate.network reset     # Disable throttling
-
-# CPU throttling  
-surf emulate.cpu 4             # 4x slower
-surf emulate.cpu 1             # Reset
-
-# Device emulation (19 presets)
-surf emulate.device "iPhone 14"
-surf emulate.device "Pixel 7"
-surf emulate.device --list     # List available devices
-
-# Custom viewport
-surf emulate.viewport --width 1280 --height 720
-surf emulate.touch --enable    # Enable touch emulation
-
-# Geolocation
-surf emulate.geo --lat 37.7749 --lon -122.4194
-surf emulate.geo --clear
-```
-
-## Form Automation
-
-```bash
-surf page.read                 # Get element refs first
-
-# Fill by ref
-surf form.fill --data '[{"ref":"e1","value":"John"},{"ref":"e2","value":"john@example.com"}]'
-
-# Checkboxes: true/false
-surf form.fill --data '[{"ref":"e7","value":true}]'
-
-# Dropdown selection
-surf select e5 "Option A"                    # By value (default)
-surf select e5 "Option A" "Option B"         # Multi-select
-surf select e5 --by label "Display Text"     # By visible label
-surf select e5 --by index 2                  # By index (0-based)
-```
-
-## File Upload
-
-```bash
-surf upload --ref e5 --files "/path/to/file.txt"
-surf upload --ref e5 --files "/path/file1.txt,/path/file2.txt"
-surf upload --ref e640 --files ./resume.pdf      # e640 is the "Upload resume" button
-```
-
-Pass the button's ref when `page.read` shows only the upload button and not its hidden file input (e.g. LinkedIn Easy Apply). Surf clicks it and answers the file chooser it opens.
-
-## Iframe Handling
-
-```bash
-surf frame.list                # List frames with IDs
-surf frame.switch --selector "#payment-iframe"
-surf frame.switch --name "checkout"
-surf frame.switch --index 0    # First iframe
-surf frame.main                # Return to main frame
-surf frame.js "return document.title" --id "CDP_FRAME_ID"
-
-# Page and interaction commands follow frame.switch:
-surf frame.switch --selector "#payment-iframe"
-surf page.read                 # Reads iframe content
-surf page.text                 # Reads raw iframe text
-surf page.state                # Inspects iframe UI state
-surf click --selector "#pay"   # Clicks in iframe
-surf frame.main                # Back to main page
-```
-
-Selected frames include reachable out-of-process iframes. `js` fails with `UNSUPPORTED_FRAME_EXECUTION` until `frame.main`. `frame.js --id` ignores `frame.switch`, takes a CDP frame ID, and cannot reach frames missing from the CDP tree. Tab, window, browser, and network commands are not frame-scoped.
-
-## Network Inspection
-
-```bash
-surf network                   # List captured requests
-surf network --stream          # Real-time network events
-surf network.get --id "req-123"   # Full request details
-surf network.body --id "req-123"  # Get response body
-surf network.curl --id "req-123"  # Generate curl command
-surf network.origins           # List origins with stats
-surf network.stats             # Capture statistics
-surf network -vv --body-mode text --per-body-bytes 65536
-surf network.export --har --output ./trace.har
-surf network.clear             # Clear captured requests
-surf network.wait --match "/api/*/feed" --open <url> --json   # Next matching response (id, url, status, json)
-surf network.replay r_123 --set query.cursor=abc   # Re-send it from the tab with edits (GET/HEAD unless --allow-post)
-surf collect --item article --key 'a@href' --field title=h2 --format jsonl   # Scroll a list, one record per item
-```
-
-Response-body capture supports `none`, `text`, and `all` modes plus per-body and per-tab-session byte caps. HAR exports carry body completeness metadata. Persistent network state is private under `~/.surf/state/network/` by default; configure `SURF_NETWORK_PATH` in the native host environment to change it.
-
-For long threads and feeds, prefer the page's own API over scrolling and re-reading: `network.wait` gets one response, `network.replay` fetches the next page with `--set <cursor-param>=<cursor>`, and an `api` playbook strategy does both in a loop. `collect` scrolls and reads items when there is no usable API. Scrolling needs a visible tab, so in a background session `collect` fails with a "needs a visible tab" error; use `surf session.ensure <name> <url> --window --focused`.
-
-## Console
-
-```bash
-surf console                   # Get console messages
-surf console --stream          # Real-time console
-surf console --stream --level error  # Errors only
-```
-
-## JavaScript Execution
-
-```bash
-surf js "return document.title"
-surf js "document.querySelector('.btn').click()"
-```
-
-## Performance
-
-```bash
-surf perf.metrics              # Current metrics snapshot
-surf perf.start                # Start trace
-surf perf.stop                 # Stop and get results
-```
-
-## Screenshots
-
-```bash
-surf screenshot                           # Auto-saves to /tmp/surf-snap-*.png
-surf screenshot --output /tmp/shot.png    # Save to specific file
-surf screenshot --selector ".card"        # Element only
-surf screenshot --full-page               # Full page scroll capture
-surf screenshot --full-page /tmp/full.png # Full page saved to path
-surf screenshot --no-save                 # Return base64 only, don't save file
-```
-
-## Zoom
-
-```bash
-surf zoom                      # Get current zoom level
-surf zoom 1.5                  # Set zoom to 150%
-surf zoom 1                    # Reset to 100%
-```
-
-## Cookies & Storage
-
-```bash
-surf cookie list               # List cookies for current page
-surf cookie list --domain .google.com
-surf cookie set --name "token" --value "abc123"
-surf cookie get "token"
-surf cookie clear --all        # Clear all cookies
-surf cookie delete "token"     # Clear one cookie
-```
-
-## History & Bookmarks
-
-```bash
-surf history --query "github" --max 20
-surf bookmarks --query "docs"
-surf bookmark.add --url "https://..." --title "My Bookmark"
-surf bookmark.remove
-```
-
-## Health Checks & Smoke Tests
-
-```bash
-surf health --url "http://localhost:3000"
-surf smoke --urls "http://localhost:3000" "http://localhost:3000/about"
-surf smoke --urls "..." --screenshot /tmp/smoke
-```
-
-## Workflows
-
-Execute multi-step browser automation as a single command with smart auto-waits.
-
-### Inline Workflows
-
-```bash
-# Pipe-separated commands
-surf do 'go "https://example.com" | click e5 | screenshot'
-
-# Multi-step login flow
-surf do 'go "https://example.com/login" | type "user@example.com" --selector "#email" | type "pass" --selector "#password" | click --selector "button[type=submit]"'
-
-# JSON action batch. Uses SURF_SESSION when it is set.
-surf batch --actions '[{"type":"frame.switch","index":0},{"type":"click","selector":"#pay"}]'
-
-# Validate without executing
-surf do 'go "url" | click e5' --dry-run
-```
-
-### Named Workflows
-
-Save workflows as JSON files in `~/.surf/workflows/` (user) or `./.surf/workflows/` (project):
-
-```bash
-# List available workflows
-surf workflow.list
-
-# Show workflow details
-surf workflow.info my-workflow
-
-# Run by name with arguments
-surf do my-workflow --email "user@example.com" --password "secret"
-
-# Validate workflow file
-surf workflow.validate workflow.json
-```
-
-### Workflow JSON Format
-
-```json
-{
-  "name": "Login Flow",
-  "description": "Automate login process",
-  "args": {
-    "email": { "required": true },
-    "password": { "required": true },
-    "url": { "default": "https://example.com/login" }
-  },
-  "steps": [
-    { "tool": "navigate", "args": { "url": "%{url}" } },
-    { "tool": "type", "args": { "text": "%{email}", "selector": "input[name=email]" } },
-    { "tool": "type", "args": { "text": "%{password}", "selector": "input[name=password]" } },
-    { "tool": "click", "args": { "selector": "button[type=submit]" } },
-    { "tool": "screenshot", "args": {}, "as": "result" }
-  ]
-}
-```
-
-### Loops and Step Outputs
-
-```json
-{
-  "steps": [
-    // Capture step output for later use
-    { "tool": "js", "args": { "code": "return [1,2,3]" }, "as": "items" },
-    
-    // Fixed iterations
-    { "repeat": 5, "steps": [
-      { "tool": "click", "args": { "ref": "e5" } }
-    ]},
-    
-    // Iterate over array
-    { "each": "%{items}", "as": "item", "steps": [
-      { "tool": "js", "args": { "code": "console.log('%{item}')" } }
-    ]},
-    
-    // Repeat until condition
-    { "repeat": 20, "until": { "tool": "js", "args": { "code": "return done" } }, "steps": [...] }
-  ]
-}
-```
-
-### Workflow Options
-
-```bash
---file, -f <path>     # Load from JSON file
---dry-run             # Parse and validate without executing
---on-error stop|continue  # Error handling (default: stop)
---step-delay <ms>     # Delay between steps (default: 100, 0 to disable)
---no-auto-wait        # Disable automatic waits
---json                # Structured JSON output
-```
-
-**Auto-waits:** Commands automatically wait for completion:
-- Navigation (`go`, `back`, `forward`) → waits for page load
-- Clicks, key presses, form fills → waits for DOM stability
-- Tab switches → waits for tab to load
-
-**Why use `do`?** Instead of 6-8 separate CLI calls with LLM orchestration between each, a workflow executes deterministically. Faster, cheaper, and more reliable.
-
-## Playbooks
-
-Use `surf do` for a direct command sequence. Use a playbook for a reusable site capability with provenance, browser-session network execution, workflow fallback, and write-safety policy.
-
-```bash
-surf playbook list
-surf pb show page
-surf pb ops page
-surf use page read --json
-surf use x thread --url https://x.com/<user>/status/<id> --format md   # Whole X thread, from X's own API
-surf use <playbook> <op> --format jsonl   # Records one per line (md for Markdown)
-```
-
-Resolution order is project (`./.surf/playbooks/`), user (`~/.surf/playbooks/`), then built-in. Provider compatibility commands stay on their validated command paths until provider playbooks have real login-flow validation. A write op requires `--write`; Surf records semantic intent before dispatch so a timeout or concurrent retry cannot silently double-submit.
-
-Author from redacted recent activity when it contains only read/navigation behavior, or use an explicit record for richer evidence:
-
-```bash
-surf pb suggest --since 1h
-surf pb save example --op read --from-recent 1h
-surf pb record start example --op read --network --watch
-surf pb record mark "loaded results"
-surf pb record stop --draft
-surf pb save --from-record <record-id>
-surf pb trace export --from-record <record-id> --har ./trace.har
-surf pb export example --out ./example-playbook
-surf pb import ./example-playbook
-```
-
-Records, trace slices, receipts, and the bounded activity journal are private Surf state. Inputs and authentication headers are redacted by default. Use `--include-input-values` only when the saved values are necessary and acceptable.
-
-Client projections replay a validated read endpoint and never embed captured browser credentials:
-
-```bash
-surf pb client derive example --op read --from-record <record-id> --request-id <request-id> --out ./client
-surf pb client export example --op read --out ./client
-surf pb client verify ./client
-```
-
-## Error Diagnostics
-
-```bash
-# Auto-capture screenshot + console on failure
-surf wait.element ".missing" --auto-capture --timeout 2000
-# Saves to /tmp/surf-error-*.png
-```
-
-## Common Options
-
-```bash
---session <name>      # Target a durable named session (or set SURF_SESSION)
---tab-id <id>         # Target a specific tab
---window-id <id>      # Target a specific window
---no-wait             # Return tab_busy/browser_busy instead of queueing
---json                # Raw JSON including target metadata
---auto-capture        # Screenshot + console on error
---timeout <ms>        # Override default timeout
---settle <ms>         # Max wait before actions report page changes (default 2000, max 30000, surf.json settleMs)
---no-diff             # Skip the page-change report after actions
-                      # A cut-short report ends with "+N more changes..." naming
-                      # surf locate.role <role> --name "<text>" or surf read --ref <ref> --all --no-text; use those, not a full read
-```
-
-## Tips
-
-1. **First CDP operation is slow** (~5-8s) - debugger attachment overhead, subsequent calls fast
-2. **Use refs from page.read** for reliable element targeting over CSS selectors
-3. **JS method for contenteditable** - Modern editors (ChatGPT, Claude, Notion) need `--method js`
-4. **Named tabs for workflows** - `tab.name app` then `tab.switch app`
-5. **Auto-capture for debugging** - `--auto-capture` saves diagnostics on failure
-6. **AI tools use browser session** - Must be logged into the service (ChatGPT, Gemini, Perplexity, Grok, AI Studio), no API keys needed
-7. **Grok validation** - Run `surf grok --validate` if queries fail to check UI changes
-8. **Long timeouts for reasoning-heavy models** - ChatGPT o1 and Grok Expert can take 60+ seconds. AI Studio builds default to 600s.
-9. **AI Studio for unrestricted Gemini** - `surf aistudio` gives less filtered responses than `surf gemini` for the same models
-10. **Use `surf do` for multi-step tasks** - Reduces token overhead and improves reliability
-11. **Dry-run workflows first** - `surf do '...' --dry-run` validates without executing
-12. **Session first** - Set a unique `SURF_SESSION` and run `session.ensure` before the first browser command in every independent agent shell
-13. **Queue diagnostics** - `session.info` distinguishes the session's own tab queue, other active tabs, and browser-wide writers; use `--no-wait` for immediate busy errors
-14. **Native host diagnostics** - If commands fail with socket/native-host errors, run `surf doctor` or `surf doctor --browser all` before guessing at reinstall steps
-15. **HTML export** - Use `surf page.html > artifact.html` to save Claude artifacts or any rendered page as static HTML
-16. **Animation capture** - Use `surf record --duration 2000 --fps 10 --output /tmp/anim.gif` when the agent needs to see motion; use `animate-audit` for numeric timelines and `perf-audit` for jank/layout-shift snapshots
-17. **Hard isolation** - Sessions share a Chrome profile; use separate browser/profile instances plus separate `SURF_SOCKET` values when profile state must not be shared
-18. **Semantic locators** - `locate.role`, `locate.text`, `locate.label` for more robust element finding
-19. **Frame context** - Use `frame.switch` before interacting with iframe content
-
-## Socket API
-
-For programmatic access:
-
-```bash
-echo '{"type":"tool_request","method":"execute_tool","params":{"tool":"tab.list","args":{}},"id":"1"}' | nc -U /tmp/surf.sock
-```
+## Read when the case applies
+
+- iframes → `surf --help-topic frames`
+- can't connect, AI-site errors, slow first call → [references/troubleshooting.md](references/troubleshooting.md)
+- semantic credentials, models, thresholds, workflow steps → [references/semantic.md](references/semantic.md)
+- oracle jobs, files, Pro quota → [references/oracle.md](references/oracle.md)
+- browser on another machine → [references/remote.md](references/remote.md)
+- workflow JSON, playbooks → [references/workflows.md](references/workflows.md)
