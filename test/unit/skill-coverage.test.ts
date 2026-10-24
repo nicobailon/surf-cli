@@ -85,7 +85,8 @@ function blockSegments(text: string) {
   const segments: { kind: string; words: string[] }[] = [];
   for (const [, kind, body] of text.matchAll(/```text (commands|index)\n([\s\S]*?)```/g)) {
     for (const rawLine of body.split("\n")) {
-      const line = rawLine.replace(/\s#.*$/, "").replace(kind === "index" ? /^[a-z]+: / : /^$/, "");
+      const uncommented = rawLine.replace(/\s#.*$/, "");
+      const line = kind === "index" ? uncommented.replace(/^[a-z]+: /, "") : uncommented;
       for (const segment of line.split(" | ")) {
         segments.push({ kind, words: leadingWords(segment.replace(/^surf /, "")) });
       }
