@@ -2147,7 +2147,7 @@ Usage: surf <command> [args] [options]
     for (const [cmd, info] of Object.entries(group.commands)) {
       if (info.alias) continue;
       const argStr = info.args?.length ? `<${info.args.join("> <")}>` : "";
-      const line = `  ${cmd} ${argStr}`.padEnd(32);
+      const line = `${`  ${cmd} ${argStr}`.padEnd(31)} `;
       console.log(`${line}${info.desc}`);
     }
     console.log();
@@ -3414,7 +3414,9 @@ const knownTool =
   Object.values(TOOLS).some((group) => group.commands[tool]) ||
   ALL_SOCKET_TOOLS.includes(tool) ||
   [toolScope.PROVIDER_TOOLS, toolScope.HOST_TOOLS, toolScope.BROWSER_READ_TOOLS, toolScope.BROWSER_WRITE_TOOLS, toolScope.BROWSER_WRITE_TARGETED_TOOLS, toolScope.TAB_TOOLS].some((set) => set.has(tool)) ||
-  /^(oracle|playbook|session|video|semantic)\./.test(tool);
+  /^(oracle|playbook|session|video|semantic)\./.test(tool) ||
+  // Legacy MCP names the host still maps (host-helpers.cjs) but --list omits.
+  tool === "get_network_entries" || tool === "get_network_entry";
 if (!knownTool) reportUnknownCommand(tool);
 
 // Auto-save screenshots to temp file when no --output specified

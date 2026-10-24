@@ -69,6 +69,15 @@ describe("CLI help for commands outside the main tool list", () => {
     expect(surf("key.repeat", "--help").stderr).toContain("Did you mean: key?");
   });
 
+  it.each(["computer", "go", "get_network_entries", "get_network_entry"])(
+    "sends the host-only or aliased name %s to the host",
+    (name) => {
+      const { stderr } = surf(name);
+      expect(stderr).toContain("Socket connect failed");
+      expect(stderr).not.toContain("Unknown command");
+    },
+  );
+
   it("keeps the socket tool list free of local commands", () => {
     const { stdout } = surf("--list");
     expect(stdout).toContain("page.read");
