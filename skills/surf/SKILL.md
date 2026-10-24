@@ -12,7 +12,7 @@ description: Drive the user's logged-in Chrome from the shell. Use for browser a
 **Own a session.** Once per agent shell, before any browser command:
 
 ```bash
-export SURF_SESSION="$(basename "$PWD")-<agent-id>"
+export SURF_SESSION="$(basename "$PWD" | sed 's/[^A-Za-z0-9._-]/-/g; s/^[^A-Za-z0-9]*//')-<agent-id>"   # letters, digits . _ - only
 surf session.ensure "$SURF_SESSION" about:blank   # creates, reuses or reopens
 ```
 
@@ -20,7 +20,7 @@ It is one tab in its own background window, and its commands run in order. Sessi
 
 **Read → act on refs → read the diff.** `page.read` gives refs (`e5`); act on refs, not CSS. Each action prints what changed; when the report ends `+N more changes...`, run the smaller command it suggests instead of a full read.
 
-**Errors** print `[code]` on stderr and exit 1; `--json` adds `{error:{code,message}}` on stdout.
+**Errors** from the browser print `[code]` on stderr and exit 1; `--json` adds `{error:{code,message}}` on stdout. Usage and connection errors are plain stderr.
 
 **Fail fast on walls.** `wait.ready` returns when the page is ready and fails with `page_login|page_challenge|page_not_found|page_error|page_timeout`; `--accept login` returns that state instead.
 
@@ -30,7 +30,7 @@ It is one tab in its own background window, and its commands run in order. Sessi
 
 **Pipe multi-step work.** `surf do` runs steps with waits between them; run it with `--dry-run` first.
 
-**Rich editors** (ChatGPT, Notion, other contenteditable fields): `type --method js`.
+**Rich editors** (ChatGPT, Notion, other contenteditable fields): target the field, `type <text> --ref e5` or `--into <css>`, instead of typing at the cursor.
 
 **AI sites** (`chatgpt gemini perplexity grok kimi aistudio`, `oracle ask`) use the user's login, no API key, and take the whole browser while they run; a waiting message means queued. Reasoning models take 60 s or more.
 

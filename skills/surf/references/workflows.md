@@ -10,7 +10,7 @@ surf do --file login.json --email me@example.com      # or a saved name: surf do
 surf batch --actions '[{"type":"frame.switch","index":0},{"type":"click","selector":"#pay"}]'
 ```
 
-Steps wait on their own: for the page to load after `go`, `back` and `forward`; for the DOM to settle after clicks, typing, keys and fills; for the tab after a switch. `--on-error continue` keeps going after a failed step, `--step-delay <ms>` (default 100) spaces steps, `--no-auto-wait` turns the waits off. Saved workflows live in `./.surf/workflows/` and `~/.surf/workflows/` (`surf workflow.list`, `surf workflow.info <name>`, `surf workflow.validate <file>`).
+Steps wait on their own: for the page to load after `go`, `back` and `forward`; for the DOM to settle after clicks, keys and fills; for the tab after a switch. `--on-error continue` keeps going after a failed step, `--step-delay <ms>` (default 100) spaces steps, `--no-auto-wait` turns the waits off. Saved workflows live in `./.surf/workflows/` and `~/.surf/workflows/` (`surf workflow.list`, `surf workflow.info <name>`, `surf workflow.validate <file>`).
 
 Workflow file:
 
@@ -52,7 +52,7 @@ surf playbook export example --out ./example-playbook
 surf playbook import ./example-playbook
 ```
 
-Records, traces and the activity journal are private. Typed inputs and auth headers are redacted unless you pass `--include-input-values`.
+Records, traces and the activity journal are private. Auth headers are always dropped. Typed inputs and request bodies are redacted unless you pass `--include-input-values`.
 
 A generated client replays a read endpoint without the browser and never contains browser credentials:
 

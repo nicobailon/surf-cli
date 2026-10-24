@@ -24,7 +24,7 @@ surf --remote 100.101.102.103:4321 --remote-credential ./laptop.json page.read
 - Paths are on the client by default (`local:./file` says so explicitly); `remote:/absolute/path` means a file on the browser host.
 - Per command: one upload or AI-site input file, plus one screenshot, network export or image output. Action screenshots and `--auto-capture` files come back to client paths.
 - Limits: 256 MiB per file, 512 MiB and 32 files per connection.
-- Not available remotely: `record`, `aistudio.build`, smoke screenshot folders, folders, and several input files at once.
+- Not available remotely: `record`, `video.*`, `aistudio.build`, smoke screenshot folders, folders, and several input files at once.
 
 ## Sharing locally instead
 
