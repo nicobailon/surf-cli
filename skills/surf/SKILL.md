@@ -188,7 +188,7 @@ The complete valid example in the README uses these shapes, with separate
 `extract` and value `assert` examples; start from them instead of inventing fields.
 
 Every click/fill requires `--allow-write`; repeat `--allow-ref` to narrow it.
-Broad writes use threshold `0.95`; exactly one allowed ref with one applicable
+Broad writes use threshold `0.95` (`0.85` for `clef`); exactly one allowed ref with one applicable
 write uses `0.65` (`0.79` for `clef`). The applied threshold is included in decision/trace output.
 Repeatable `--threshold name=value` overrides applicable confidence thresholds
 for one run only; defaults remain safer, and overrides never grant write authority.

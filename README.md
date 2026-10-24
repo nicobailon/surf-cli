@@ -947,7 +947,8 @@ browser request and no model call, and its failure message is only a reason
 code, never the extracted, expected or input value.
 
 `open` performs freshly validated same-origin HTTP(S) navigation; it never falls
-back to a click. Model-derived writes retain the `0.95` gate, dispatch at most
+back to a click. Model-derived writes keep the model's write gate (`0.95`, or
+`0.85` with `clef`), dispatch at most
 once in a run, and require local/read-only verification. A stopped or uncertain
 step fails the workflow. Search reports bounded overlapping coverage and does
 not prove global ranking or absence outside that scope. Local input values are
@@ -1274,7 +1275,8 @@ excluded unless `--allow-write` is present. That flag intentionally permits
 high-impact submit, purchase, delete, send, and publish controls; repeat
 `--allow-ref <ref>` to narrow authorization to exact current refs. Fill values
 come only from named `--input name=value` slots and are never sent to the model provider or
-included in traces. Broad and ambiguous writes require probability `0.95`. With
+included in traces. Broad and ambiguous writes require probability `0.95`
+(`0.85` with `clef`). With
 `jev-1.13.0` the threshold is `0.65` (`clef`: `0.79`) only when exactly one `--allow-ref` names exactly one
 applicable click, or one fill with one input slot; the applied threshold appears
 in decision/trace output and never grants authority. Repeatable

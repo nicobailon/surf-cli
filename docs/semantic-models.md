@@ -48,7 +48,7 @@ npm run eval:semantic -- --models jev-1.13.0,clef,clef-flash --repeat 10
     - two goals the page cannot satisfy: a sold-out color and a different product
 - **Repetitions.** Each case ran 10 times per model, one call at a time.
 - **Decisions.** The harness calls the same `find`, `filter`, `verify`, and `chooseAction` functions the CLI uses, through the same evaluator factory, with the selected model's thresholds.
-- **Latency.** Provider latency is the round trip of each provider call, measured by the shared evaluator that every semantic command uses. It was measured from one developer machine on 2026-10-05, so it includes that machine's network path to each API.
+- **Latency.** Provider latency is the round trip of each provider call, measured by the shared evaluator that every semantic command uses. It was measured from one developer machine on 2026-10-05 (the `clef` row on 2026-10-23), so it includes that machine's network path to each API.
 - **Determinism.** All three models returned identical probabilities on every repetition. Repetitions therefore inform latency and reliability, not decision variance.
 
 ### Definitions
@@ -90,6 +90,12 @@ A write threshold ships only if the model's wrong-write count is no higher than
 Jev's on this set. All three models had zero wrong writes, so both Clef models
 ship write thresholds.
 
+One value breaks the floor on purpose: `clef` `write` is 0.85, not Jev's 0.95.
+At 0.95, Clef declined correct clicks and fills because it is less confident
+than Jev in its right answers: a fixture fill at 0.946, a labeled Save button at
+0.909, and DuckDuckGo's settings menu at 0.914.
+[Why `clef` writes at 0.85](#why-clef-writes-at-085) has the evidence.
+
 ### Chosen thresholds
 
 | Key | Jev (floor) | `clef` highest wrong | `clef` | `clef-flash` highest wrong | `clef-flash` |
@@ -100,11 +106,12 @@ ship write thresholds.
 | verifyNegative | 0.85 | none | 0.85 (floor) | 0.8845 | **0.94 (measured)** |
 | prerequisiteSupported | 0.75 | none | 0.75 (floor) | none | 0.75 (floor) |
 | prerequisiteBlocked | 0.90 | none | 0.90 (floor) | none | 0.90 (floor) |
-| write | 0.95 | 0.7373 | 0.95 (floor) | 0.5856 | 0.95 (floor) |
+| write | 0.95 | 0.7373 | **0.85 (below the floor, see below)** | 0.5856 | 0.95 (floor) |
 | exactRefWrite | 0.65 | 0.7373 (pooled) | **0.79 (measured)** | 0.5856 (pooled) | 0.65 (floor) |
 
 Two values come from the measurements: `clef` `exactRefWrite` 0.79 and
-`clef-flash` `verifyNegative` 0.94. Every other Clef value is Jev's floor.
+`clef-flash` `verifyNegative` 0.94. `clef` `write` 0.85 was set below the floor
+after the real-page check described below. Every other Clef value is Jev's floor.
 
 The wrong writes behind the `write` column came from the two unsatisfiable
 goals. There, both Clef models picked "Add to cart" (`clef` at 0.737,
@@ -117,15 +124,18 @@ the write threshold, and a write also requires the prerequisite to be `supported
 | Model | Pass rate | Wrong writes | Errors | find | filter | verify | act |
 | --- | --- | --- | --- | --- | --- | --- | --- |
 | `jev-1.13.0` | 100% (190/190) | 0 | 0 | 40/40 | 30/30 | 40/40 | 80/80 |
-| `clef` | 84.2% (160/190) | 0 | 0 | 40/40 | 30/30 | 40/40 | 50/80 |
+| `clef` | 89.5% (170/190) | 0 | 0 | 40/40 | 30/30 | 40/40 | 60/80 |
 | `clef-flash` | 52.6% (100/190) | 0 | 0 | 40/40 | 30/30 | 10/40 | 20/80 |
+
+The `clef` row is from 2026-10-23, after `write` moved to 0.85. At 0.95 it was
+84.2% (160/190, act 50/80). The other rows are from 2026-10-05.
 
 Provider latency per decision, in ms (median / p95):
 
 | Model | find | filter | verify | act |
 | --- | --- | --- | --- | --- |
 | `jev-1.13.0` | 101 / 195 | 97 / 239 | 92 / 150 | 101 / 174 |
-| `clef` | 407 / 697 | 481 / 911 | 379 / 708 | 459 / 766 |
+| `clef` | 332 / 564 | 319 / 559 | 329 / 547 | 334 / 565 |
 | `clef-flash` | 220 / 521 | 225 / 580 | 217 / 523 | 206 / 529 |
 
 In the calibration run, Clef had one `provider_timeout` (the 5 s limit) in 190
@@ -137,9 +147,7 @@ Every failing Clef case failed the same way on all 10 repetitions. None of the
 failures is a wrong write; each one is a rejection: Surf reported `uncertain`
 and did nothing.
 
-- **`clef`: 3 failing cases, all caused by the Jev floor.**
-  - The fill was chosen correctly at 0.946, below `write` 0.95.
-  - Both unsatisfiable goals were judged `blocked` correctly, at 0.805 and 0.825, below `prerequisiteBlocked` 0.90. They report `uncertain` instead of `blocked`.
+- **`clef`: 2 failing cases, both caused by the Jev floor.** Both unsatisfiable goals were judged `blocked` correctly, at 0.866 and 0.803 on 2026-10-23, below `prerequisiteBlocked` 0.90. They report `uncertain` instead of `blocked`. At `write` 0.95 a third case failed: the fill was chosen correctly at 0.946.
 - **`clef-flash`: 9 failing cases.**
   - Six are caused by the Jev floor:
     - Four correct writes were chosen at 0.910–0.946, below `write` 0.95.
@@ -149,9 +157,57 @@ and did nothing.
 
 On these fixtures, Clef's probabilities are less extreme than Jev's. Jev puts
 about 0.99–1.00 on correct answers; Clef puts 0.94–0.99 and Clef-flash
-0.88–0.98. So Jev's write floor of 0.95 rejects many correct Clef writes. A
-user who accepts that trade-off for a run can pass `--threshold write=<value>`;
-the override never grants write authority.
+0.88–0.98. So Jev's write floor of 0.95 rejects many correct Clef writes, which
+is why `clef` now uses 0.85. `clef-flash` keeps 0.95. A user who accepts a
+lower bar for one run can pass `--threshold write=<value>`; the override never
+grants write authority.
+
+## Why `clef` writes at 0.85
+
+`semantic.act` clicks or fills only when the model's probability for that
+action reaches the model's `write` threshold. With Jev's 0.95, Clef often picked
+the right control and then declined to click it, on the test toolbar and on a
+real page. These are the checks behind 0.85, run with `clef` on 2026-10-23:
+
+| Check | Clicked at 0.85 | At 0.95 | Wrong clicks or fills |
+| --- | --- | --- | --- |
+| 19 fixtures × 10 runs (above) | 170/190 runs pass | 160/190 | 0 |
+| Toolbar, labeled "Save", text only, 10 runs | 10/10 (0.895) | 0/10 (0.909 on 2026-10-06) | 0 |
+| Toolbar icons with `--vision`, 30 runs | 10/30 | 10/30 on 2026-10-06 | 0 |
+| DuckDuckGo settings, "Open the menu", 2 runs | 2/2 (0.914) | 0/2: 0.914 is below the bar | 0 |
+| X post page, 6 goals × 3 runs | 0/18 (0.20–0.75) | 0/18 | 0 |
+
+**Real pages.** Pages were loaded logged out in the harness's headless Chrome
+(`test/e2e/vision-chrome.mjs`) in a 1280×1600 window, with a desktop user
+agent, because X answers 403 to `HeadlessChrome`. Every run used
+`semantic.act --allow-write --max-steps 1`. Logged out, a click on Like or
+Repost only opens a sign-in prompt.
+
+- **X post page (64 controls).** The post and each reply have their own Reply, Repost, Like, Bookmark and Share buttons.
+  - **Right picks:** in all 18 runs Clef picked the right button, including the Like button of one specific reply.
+  - **Impossible goals:** it stopped on both ("Delete the main post", "Unfollow Nick").
+  - **No clicks:** its probabilities were only 0.20–0.75, so it clicked nothing. With this many controls, Clef spreads its probability across them, and no threshold that stays safe would let these clicks through.
+  - **Jev:** it did the same at its 0.95: right picks at 0.64–0.90 in 12 of 12 runs, and no clicks.
+- **DuckDuckGo settings (30 controls).**
+  - **"Open the menu":** picked at 0.914 and clicked.
+  - **"Open the Appearance settings":** right at 0.789, so not clicked.
+  - **"Delete my DuckDuckGo account":** stopped.
+
+**Margin.** The fixture run on 2026-10-23 saw a higher wrong pick than calibration did:
+- **The pick:** "Add to cart" at 0.811, for a product that isn't on the page.
+- **What the rule above would give:** 0.87 (0.811 + 0.05, rounded up). 0.85 is a deliberate choice below that.
+- **Why it still can't click:** it is below 0.85. Also, Surf writes only when the model judges the goal `supported` on the page, and Clef answered `blocked` (0.803).
+- **`exactRefWrite` 0.79:** that same check is what stops the pick under this lower bar too, which applies when the user names the one allowed ref.
+- **Real pages:** no wrong pick came near 0.85, and Clef stopped on every impossible goal.
+
+**What still stops `clef`.**
+- **The `supported` check:**
+  - On the toolbar, 20 of the 30 right `--vision` icon picks cleared 0.85: download at 0.937 and share at 0.866.
+  - They still stopped, because Clef rated the goal `supported` at only 0.731, below `prerequisiteSupported` 0.75.
+- **`--vision` on a labeled button:** it lowered "Save" to 0.844, so it was not clicked.
+- **Busy pages:** as on X above.
+
+`clef-flash` keeps 0.95; it was not re-measured.
 
 ## Limits
 
@@ -207,14 +263,14 @@ control's own icon (`npm run eval:vision -- --models clef,clef-flash --repeat 10
 
 - **Without `--vision`**, the three icons are identical `button | Toolbar` entries. On `find`, both models answered `none`, so every run was `uncertain`. On `act`, every run stopped as `uncertain` without a click. `clef`'s 10 correct picks are "Share the report" choosing share at 0.41: a guess that happened to be right, and it was rejected.
 - **With `--vision`**, both models picked the right icon on `find` every run: `clef` at 0.969–0.983 and `clef-flash` at 0.868–0.951, all above the 0.70 `find` threshold.
-- **`act` with `--vision`** picked the right icon on 59 of 60 runs (`clef` at 0.865–0.971, `clef-flash` at 0.902–0.920). One `clef` "Share the report" run chose `stop`. Only `clef`'s settings pick (0.971) cleared the 0.95 `write` floor and was clicked, so `act` clicked the right icon 10/30 times on `clef` and 0/30 on `clef-flash`. As in the model eval, the Jev write floor is what limits Clef here; `--threshold write=<value>` lowers it for one run.
+- **`act` with `--vision`** picked the right icon on 59 of 60 runs (`clef` at 0.865–0.971, `clef-flash` at 0.902–0.920). One `clef` "Share the report" run chose `stop`. Only `clef`'s settings pick (0.971) cleared the 0.95 `write` floor and was clicked, so `act` clicked the right icon 10/30 times on `clef` and 0/30 on `clef-flash`. These runs used `clef` `write` 0.95; [Why `clef` writes at 0.85](#why-clef-writes-at-085) has the same runs at 0.85.
 - **No wrong results.** In 320 runs, neither mode returned or clicked a wrong button.
 
 The labeled "Save" control (10 runs per row) was found every time in both
 modes, but `--vision` lowered its probability: `find` 0.985 → 0.860 on `clef`
 and 0.965 → 0.828 on `clef-flash`; `act` 0.909 → 0.907 and 0.894 → 0.820. No
 "Save" act ran in either mode, because every probability was below the 0.95
-write floor. Use `--vision` when the target is likely to be an icon-only
+write floor (at `clef`'s 0.85, text-only "Save" is clicked). Use `--vision` when the target is likely to be an icon-only
 control, not by default.
 
 ### Cost

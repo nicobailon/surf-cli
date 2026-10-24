@@ -137,6 +137,20 @@ describe("semantic decision core", () => {
     expect(await exactRef(0.78)).toMatchObject({ status: "uncertain", appliedThreshold: 0.79 });
     expect(await exactRef(0.79)).toMatchObject({ status: "selected", appliedThreshold: 0.79 });
 
+    const broad = (probability: number) =>
+      chooseAction({
+        state: {},
+        goal: "save",
+        actions: [click],
+        origin: "https://example.test",
+        allowWrite: true,
+        allowRefs: [],
+        model: "clef",
+        evaluate: evaluateWith({ action: "click" }, probability),
+      });
+    expect(await broad(0.84)).toMatchObject({ status: "uncertain", appliedThreshold: 0.85 });
+    expect(await broad(0.85)).toMatchObject({ status: "selected", appliedThreshold: 0.85 });
+
     const negative = (probability: number) =>
       verify({
         state: {},
