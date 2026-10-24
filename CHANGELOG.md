@@ -33,6 +33,7 @@
 - **`network.body` after navigation** - It now returns the body Surf already captured instead of failing with "No resource with given identifier found" once Chrome has dropped it. When neither has the body, the error says why (for example, it was larger than the per-body cap) and how to get it.
 - **Malformed TypeSafe credential file** - A damaged `typesafe/credentials.json` now fails with "stored TypeSafe credential is invalid" instead of a JSON parse error that could print part of the key.
 - **`surf type` enters punctuation exactly** - Typing text such as `john.smith-private's (a&b)#1!%$"` now enters it unchanged. Before, `.`, `'`, `(`, `&`, `#`, `%`, `$` and similar characters were sent as Delete, arrow, Home or End presses, so they were dropped or moved the caret and scrambled the rest of the text. `surf key .` now presses the period key instead of Delete. See [#358](https://github.com/nicobailon/surf-cli/issues/358).
+- **`surf search` points at the element that matched** - Each match's element ref used to name the first outer container holding the text, such as a dialog or list, so a search for "Italy" in a country picker returned the picker instead of the "Italy" option. It now names the closest element around the text that has a ref. See [#392](https://github.com/nicobailon/surf-cli/issues/392).
 
 ## [2.22.0] - 2026-09-29
 

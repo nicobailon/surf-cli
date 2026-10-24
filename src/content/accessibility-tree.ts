@@ -2913,11 +2913,14 @@ function searchPageText(term: string, caseSensitive: boolean, limit: number) {
       const context = fullText.slice(contextStart, contextEnd).trim();
       
       let elementRef: string | null = null;
+      let elementRefTarget: Element | null = null;
       for (const [ref, entry] of Object.entries(elementMap)) {
         const el = entry.element.deref();
-        if (el && (el === parent || el.contains(parent))) {
+        if (!el || !(el === parent || el.contains(parent))) continue;
+        // Keep the innermost registered container; map order says nothing about nesting.
+        if (!elementRefTarget || (el !== elementRefTarget && elementRefTarget.contains(el))) {
           elementRef = ref;
-          break;
+          elementRefTarget = el;
         }
       }
       

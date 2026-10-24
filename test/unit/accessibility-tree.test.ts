@@ -85,6 +85,15 @@ class FakeElement extends FakeNode {
     return null;
   }
 
+  contains(other: FakeElement | null): boolean {
+    for (let node = other; node; node = node.parentElement) {
+      if (node === this) {
+        return true;
+      }
+    }
+    return false;
+  }
+
   querySelector(): FakeElement | null {
     return null;
   }
@@ -1362,6 +1371,52 @@ describe("accessibility tree", () => {
     });
 
     expect(response).toEqual({ text: long, title: "Example", url: "https://example.test/page" });
+  });
+
+  it("reports the innermost registered element that contains a search match", () => {
+    const dialog = element("div", { role: "dialog" });
+    const listbox = element("div", { role: "listbox" });
+    const option = element("div", { role: "option" });
+    const label = text("Italy");
+    Object.assign(label, { parentElement: option });
+    option.append(label);
+    listbox.append(option);
+    dialog.append(listbox);
+    (document.body as unknown as FakeElement).append(dialog);
+
+    (globalThis as any).NodeFilter = { SHOW_TEXT: 4 };
+    (document as any).createTreeWalker = () => {
+      const nodes = [label];
+      return {
+        currentNode: null as FakeText | null,
+        nextNode() {
+          this.currentNode = nodes.shift() ?? null;
+          return this.currentNode;
+        },
+      };
+    };
+    (document as any).createRange = () => ({
+      setStart: vi.fn(),
+      setEnd: vi.fn(),
+      getBoundingClientRect: () => ({ x: 5, y: 5, width: 30, height: 12 }),
+    });
+    const register = (node: FakeElement, role: string) => ({
+      element: new WeakRef(node as unknown as Element),
+      role,
+      name: "",
+    });
+    // The dialog is registered first and the listbox after the option, so map order cannot pick the answer.
+    window.__piElementMap = {
+      e1: register(dialog, "dialog"),
+      e2: register(option, "option"),
+      e3: register(listbox, "listbox"),
+    };
+
+    const response = sendMessage({ type: "SEARCH_PAGE", term: "italy" });
+
+    expect(response.matches).toEqual([
+      expect.objectContaining({ text: "Italy", elementRef: "e2" }),
+    ]);
   });
 
   it("types into a selector in the content-script frame", () => {
