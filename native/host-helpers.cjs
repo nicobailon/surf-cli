@@ -516,6 +516,13 @@ function readinessExpectations(a) {
   return expect;
 }
 
+function parsePoint(value, flag) {
+  if (value === undefined) return undefined;
+  const match = /^\s*(-?\d+(?:\.\d+)?)\s*,\s*(-?\d+(?:\.\d+)?)\s*$/.exec(String(value));
+  if (!match) throw new Error(`${flag} must be x,y (got ${JSON.stringify(value)})`);
+  return [Number(match[1]), Number(match[2])];
+}
+
 /**
  * Map computer action to extension message
  */
@@ -604,16 +611,20 @@ function mapComputerAction(args, tabId) {
       return { type: "EXECUTE_HOVER", x: coordinate?.[0], y: coordinate?.[1], ...baseMsg };
     
     case "left_click_drag":
-    case "drag":
+    case "drag": {
+      const start = start_coordinate || parsePoint(a.from, "--from");
+      const end = a.coordinate || parsePoint(a.to, "--to") || coordinate;
+      if (!start || !end) throw new Error("drag needs --from x,y and --to x,y");
       return { 
         type: "EXECUTE_DRAG", 
-        startX: start_coordinate?.[0], 
-        startY: start_coordinate?.[1],
-        endX: coordinate?.[0],
-        endY: coordinate?.[1],
+        startX: start[0], 
+        startY: start[1],
+        endX: end[0],
+        endY: end[1],
         modifiers,
         ...baseMsg 
       };
+    }
     
     case "wait":
       return { type: "LOCAL_WAIT", seconds: Math.min(30, duration || 1) };

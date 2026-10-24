@@ -471,6 +471,30 @@ describe("mapToolToMessage", () => {
     });
   });
 
+  describe("drag command", () => {
+    it("maps the CLI's --from and --to points to drag coordinates", () => {
+      expect(
+        helpers.mapToolToMessage("drag", { from: "100,120", to: "250,120" }, 123),
+      ).toMatchObject({
+        type: "EXECUTE_DRAG",
+        startX: 100,
+        startY: 120,
+        endX: 250,
+        endY: 120,
+        tabId: 123,
+      });
+    });
+
+    it("rejects a drag without both points", () => {
+      expect(() => helpers.mapToolToMessage("drag", { from: "100,120" }, 123)).toThrow(
+        "drag needs --from x,y and --to x,y",
+      );
+      expect(() => helpers.mapToolToMessage("drag", { from: "100", to: "2,2" }, 123)).toThrow(
+        "--from must be x,y",
+      );
+    });
+  });
+
   describe("error cases", () => {
     it("returns null for unknown tool", () => {
       expect(helpers.mapToolToMessage("unknown.command", {})).toBeNull();

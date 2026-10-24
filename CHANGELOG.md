@@ -2,6 +2,9 @@
 
 ## [Unreleased]
 
+### Fixed
+- **`surf drag --from x,y --to x,y` drags again** - The points never reached the browser, so a drag from the CLI or `surf do` moved nothing. A missing or malformed point now fails with `drag needs --from x,y and --to x,y` instead of sending an empty drag. See [#399](https://github.com/nicobailon/surf-cli/issues/399).
+
 ## [2.23.0] - 2026-10-24
 
 ### Highlights
