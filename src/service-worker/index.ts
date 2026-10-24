@@ -157,9 +157,11 @@ async function resolveDefaultTarget(windowId?: number, allowCreate = true): Prom
   return { tab, autoCreated };
 }
 
-async function labelSessionTab(tabId: number, name: string): Promise<number | undefined> {
+// Without createProperties.windowId, Chrome creates the group in the last-focused window and moves
+// the tab there, which pulls an unfocused session window's tab into the user's window.
+async function labelSessionTab(tabId: number, windowId: number, name: string): Promise<number | undefined> {
   try {
-    const groupId = await chrome.tabs.group({ tabIds: tabId });
+    const groupId = await chrome.tabs.group({ tabIds: tabId, createProperties: { windowId } });
     await chrome.tabGroups.update(groupId, {
       title: `Surf: ${name}`,
       color: "blue",
@@ -930,7 +932,7 @@ export async function handleMessage(
       if (!createdTab?.id || createdWindowId === undefined) {
         throw new BrowserCommandError("target_create_failed", `Failed to create target for session ${name}`);
       }
-      const groupId = await labelSessionTab(createdTab.id, name);
+      const groupId = await labelSessionTab(createdTab.id, createdWindowId, name);
       const inspected = await inspectTarget(createdTab.id);
       return { ...inspected, mode, groupId };
     }

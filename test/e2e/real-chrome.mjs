@@ -523,6 +523,15 @@ try {
     throw new Error(`tab.list did not report the navigated fixture tab: ${JSON.stringify(tabs)}`);
   }
 
+  // A window-mode session keeps its tab in its own window, not the focused one (#403).
+  const sessionUrl = `${fixtureUrl}?session-window`;
+  await runSurf("session.ensure", "e2e-window", sessionUrl, "--json");
+  const sessionTab = JSON.parse(await runSurf("tab.list", "--json")).find((tab) => tab.url === sessionUrl);
+  if (!sessionTab?.windowId || sessionTab.windowId === fixtureTab.windowId) {
+    throw new Error(`session.ensure put its tab in the existing window: ${JSON.stringify({ sessionTab, fixtureTab })}`);
+  }
+  await runSurf("session.close", "e2e-window", "--json");
+
   const fixturePage = (await browser.pages()).find((page) => page.url() === navigationUrl);
   if (!fixturePage) throw new Error("Puppeteer could not find the navigated fixture page");
   let contentRealm;

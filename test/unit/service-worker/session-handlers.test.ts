@@ -48,6 +48,10 @@ describe("browser session handlers", () => {
       focused: false,
       type: "normal",
     });
+    expect(chrome.tabs.group).toHaveBeenCalledWith({
+      tabIds: 41,
+      createProperties: { windowId: 9 },
+    });
     expect(chrome.tabGroups.update).toHaveBeenCalledWith(7, {
       title: "Surf: research",
       color: "blue",
