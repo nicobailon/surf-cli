@@ -130,7 +130,7 @@ function assertAllowedOptions(command, options) {
 function parseOracleCommand(argv) {
   if (argv[0] !== "oracle") return { handled: false };
   const command = argv[1];
-  if (!command || command === "help" || command === "--help" || command === "-h") {
+  if (!command || command === "help" || argv.includes("--help") || argv.includes("-h")) {
     return { handled: true, command: "help", json: false };
   }
   if (!["ask", "follow", "status", "result", "list"].includes(command)) {

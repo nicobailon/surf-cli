@@ -566,7 +566,7 @@ function mapComputerAction(args, tabId) {
       if (typeSelector) {
         return { type: "SMART_TYPE", selector: typeSelector, text, clear: a.clear ?? true, submit: a.submit ?? false, ...baseMsg };
       }
-      return { type: "EXECUTE_TYPE", text, ...baseMsg };
+      return { type: a.submit ? "TYPE_SUBMIT" : "EXECUTE_TYPE", text, ...baseMsg };
     }
     
     case "key": {
@@ -1159,8 +1159,12 @@ function mapToolToMessage(tool, args, tabId) {
     case "drag":
     case "scroll":
       return mapComputerAction({ ...a, action: tool }, tabId);
-    case "click":
-      return mapComputerAction({ ...a, action: "left_click" }, tabId);
+    case "click": {
+      const clickAction = { left: "left_click", right: "right_click", double: "double_click", triple: "triple_click" }[a.button ?? "left"];
+      if (!clickAction) throw new Error(`--button must be left, right, double, or triple (got ${JSON.stringify(a.button)})`);
+      // --button applies to refs and coordinates; a CSS selector click is always a left click.
+      return mapComputerAction({ ...a, action: a.selector ? "left_click" : clickAction }, tabId);
+    }
     case "cookie.list":
       return { type: "COOKIE_LIST", ...baseMsg };
     case "cookie.get":

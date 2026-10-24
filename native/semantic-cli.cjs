@@ -59,7 +59,7 @@ semantic.extract sends the same value-free page observation to Cloudflare Worker
 function normalizeSemanticArgs(argv) {
   if (argv[0] !== "semantic") return argv;
   if (!argv[1] || argv[1].startsWith("-")) return argv;
-  if (argv[1] === "auth" && argv[2]) return [`semantic.auth.${argv[2]}`, ...argv.slice(3)];
+  if (argv[1] === "auth" && argv[2] && !argv[2].startsWith("-")) return [`semantic.auth.${argv[2]}`, ...argv.slice(3)];
   return [`semantic.${argv[1]}`, ...argv.slice(2)];
 }
 

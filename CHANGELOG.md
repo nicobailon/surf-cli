@@ -2,8 +2,12 @@
 
 ## [Unreleased]
 
+### Changed
+- **`--help` and `--find` cover every command** - `surf use --help`, `surf pb --help`, `surf pb record start --help`, `surf remote --help`, `surf semantic auth --help`, `surf oracle ask --help` and `surf config --help` now print usage instead of an error, and none of them starts any work. `surf --find` and `surf --help-full` list the oracle, semantic, playbook, remote and setup commands, so `surf --find thread` points at `surf use x thread`. A mistyped command such as `surf bookmarks` fails at once with the closest names (`Did you mean: bookmark.add, bookmark.list, bookmark.remove?`) instead of `Unknown tool` from the browser. Help now lists only flags that work, with examples for commands like `form.fill`, `drag` and `emulate.network`, and `surf network --help` shows just that command instead of the whole group. See [#399](https://github.com/nicobailon/surf-cli/issues/399).
+
 ### Fixed
 - **`surf drag --from x,y --to x,y` drags again** - The points never reached the browser, so a drag from the CLI or `surf do` moved nothing. A missing or malformed point now fails with `drag needs --from x,y and --to x,y` instead of sending an empty drag. See [#399](https://github.com/nicobailon/surf-cli/issues/399).
+- **`click --button` and `type --submit` do what their help says** - `surf click e5 --button right` (or `double`, `triple`) used to left-click; it now uses that button for refs and coordinates, and an unknown button is an error. `surf type "text" --submit` now presses Enter after typing at the cursor instead of ignoring `--submit`. See [#399](https://github.com/nicobailon/surf-cli/issues/399).
 - **The extension shows the real version** - Browsers listed Surf as 2.6.0 no matter which version was installed, because the extension's version was never updated after 2.6.0. The build now gives the extension the same version as the npm package.
 
 ## [2.23.0] - 2026-10-24

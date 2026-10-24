@@ -36,7 +36,8 @@ const { acquireBrowserLock } = require("./browser-lock.cjs");
 const { selectEndpoint, connectEndpoint, formatEndpointError } = require("./endpoint.cjs");
 const { createFrameParser, createSocketWriter, writeFrame } = require("./remote-transport.cjs");
 const { resolveRequestDeadlineMs } = require("./host-sessions.cjs");
-const { classifyTool } = require("./tool-scope.cjs");
+const toolScope = require("./tool-scope.cjs");
+const { classifyTool } = toolScope;
 const { parseVideoFps, validateVideoOutputPath } = require("./video-recorder.cjs");
 const { AUTO_SCREENSHOT_TOOLS, MAX_SETTLE_MS, PAGE_CHANGES_TOOLS, isSettleMs, prepareRemoteTool, validateLocalToolPaths } = require("./file-transfer.cjs");
 const { authorizeClient, listClients, revokeClient, getStateDir } = require("./remote-auth.cjs");
@@ -160,7 +161,9 @@ function resizeImage(filePath, maxSize) {
   }
 }
 let args = process.argv.slice(2);
-if (args[0] === "remote") {
+// --help/-h anywhere is a help request: local dispatchers below hand it to the help renderer instead of running.
+const helpRequested = () => args.includes("--help") || args.includes("-h");
+if (args[0] === "remote" && !helpRequested()) {
   const remoteArgs = args.slice(1);
   const subcommand = remoteArgs[0];
   const stateDir = getStateDir();
@@ -225,7 +228,7 @@ if (args[0] === "semantic" || args[0]?.startsWith("semantic.")) {
 }
 
 if (args[0] === "oracle") {
-  if (args[1] === "ask" || args[1] === "follow") {
+  if ((args[1] === "ask" || args[1] === "follow") && !helpRequested()) {
     console.error("[surf] Oracle requires exclusive browser access while dispatching; other sessions will queue.");
   }
   handleOracleCli(args, {
@@ -245,7 +248,7 @@ if (args[0] === "oracle") {
   return;
 }
 
-if (["playbook", "pb", "use"].includes(args[0])) {
+if (["playbook", "pb", "use"].includes(args[0]) && !helpRequested()) {
   const targetOptions = resolveEarlyTargetOptions(args, { allowWindow: false });
   handlePlaybookCli(args, { endpoint, cwd: process.cwd(), ...targetOptions })
     .then((result) => {
@@ -345,6 +348,7 @@ const TOOLS = {
           "idle-after": "Required threshold such as 30s, 5m, 1h, or 1d",
           "dry-run": "Report matches without removing bindings or closing targets",
         },
+        examples: [{ cmd: "session.cleanup --idle-after 1h --dry-run", desc: "Preview sessions idle for an hour" }],
       },
       "session.info": {
         desc: "Show one session, target, and scheduler queue state",
@@ -358,11 +362,13 @@ const TOOLS = {
           "keep-target": "Unbind without closing the target",
           "close-target": "Close an adopted target too",
         },
+        examples: [{ cmd: "session.close research --keep-target", desc: "Forget the session, keep its tab" }],
       },
       "session.rebind": {
         desc: "Bind a stale or gone session to an explicit existing tab",
         args: ["name"],
         opts: { "tab-id": "Existing tab ID", replace: "Replace a live binding" },
+        examples: [{ cmd: "session.rebind research --tab-id 123", desc: "Bind to tab 123" }],
       },
       "session.reopen": {
         desc: "Create a replacement target using the stored or supplied URL",
@@ -550,7 +556,7 @@ const TOOLS = {
       "tab.group": {
         desc: "Create/add to tab group",
         args: [],
-        opts: { name: "Group name", tabs: "Tab IDs (comma-separated)", color: "Group color" },
+        opts: { name: "Group name", tabs: "Tab IDs (comma-separated)", color: "grey|blue|red|yellow|green|pink|purple|cyan|orange (default: blue)" },
         examples: [
           { cmd: 'tab.group --name "Work" --color blue', desc: "Group current tab" },
           { cmd: 'tab.group --name "Research" --tabs 1,2,3', desc: "Group multiple" },
@@ -593,7 +599,6 @@ const TOOLS = {
         args: [],
         opts: {
           output: "Save to file",
-          selector: "Capture specific element",
           annotate: "Draw element labels",
           fullpage: "Capture full page",
           "full-page": "Capture full page (alias for --fullpage)",
@@ -860,7 +865,7 @@ const TOOLS = {
         opts: { timeout: "Timeout in ms" },
         examples: [{ cmd: 'wait.url "/dashboard"', desc: "Wait for URL pattern" }]
       },
-      "wait.dom": { desc: "Wait for DOM to stabilize", args: [], opts: { stable: "Stability window in ms (default: 100)", timeout: "Max wait time in ms" } },
+      "wait.dom": { desc: "Wait for DOM to stabilize", args: [], opts: { stable: "Stability window in ms (default: 100)", timeout: "Max wait time in ms (default: 5000)" } },
       "wait.load": { desc: "Wait for page to fully load", args: [], opts: { timeout: "Max wait time in ms (default: 30000)" } },
       "wait.ready": {
         desc: "Wait until the page is ready, or fail fast with a typed state (challenge, login, not-found, error)",
@@ -892,7 +897,7 @@ const TOOLS = {
           ref: "Element ref",
           x: "X coordinate",
           y: "Y coordinate",
-          button: "left|right|double|triple",
+          button: "left|right|double|triple (refs and coordinates; selector clicks are left)",
           selector: "CSS selector",
           index: "Which match (0-indexed) for selector",
         },
@@ -909,8 +914,8 @@ const TOOLS = {
         opts: {
           into: "Target selector",
           ref: "Element ref (uses JS DOM method, more reliable for modals)",
-          submit: "Press enter after",
-          clear: "Clear first",
+          submit: "Press Enter after (at the cursor or with --into; not with --ref)",
+          clear: "Clear the field first (with --into)",
           method: "cdp|js (cursor typing uses CDP; selector/ref targets use JS)"
         },
         examples: [
@@ -919,19 +924,39 @@ const TOOLS = {
           { cmd: 'type "search query" --submit', desc: "Type and press Enter" },
         ]
       },
-      "smart_type": { desc: "Type into specific element (js method)", args: [], opts: { selector: "CSS selector", text: "Text to type", clear: "Clear first (default: true)", submit: "Submit after" } },
+      "smart_type": {
+        desc: "Type into specific element (js method)",
+        args: ["text"],
+        opts: { selector: "CSS selector", text: "Text to type", clear: "Clear first (default: true)", submit: "Press Enter after" },
+        examples: [{ cmd: 'smart_type --selector "#email" --text "a@b.co" --submit', desc: "Fill and submit" }],
+      },
       "key": {
         desc: "Press key",
         args: ["key"],
+        opts: { repeat: "Press it N times (max 100)" },
         examples: [
           { cmd: "key Enter", desc: "Press Enter" },
           { cmd: "key Escape", desc: "Press Escape" },
           { cmd: "key cmd+a", desc: "Select all (Mac)" },
           { cmd: "key ctrl+shift+p", desc: "Key combo" },
+          { cmd: "key Tab --repeat 5", desc: "Press Tab 5 times" },
         ]
       },
-      "hover": { desc: "Hover over element", args: [], opts: { ref: "Element ref", x: "X coordinate", y: "Y coordinate" } },
-      "drag": { desc: "Drag between points", args: [], opts: { from: "Start x,y", to: "End x,y" } },
+      "hover": {
+        desc: "Hover over element",
+        args: [],
+        opts: { ref: "Element ref", x: "X coordinate", y: "Y coordinate" },
+        examples: [
+          { cmd: "hover --ref e5", desc: "Hover an element" },
+          { cmd: "hover --x 100 --y 200", desc: "Hover coordinates" },
+        ],
+      },
+      "drag": {
+        desc: "Drag between points",
+        args: [],
+        opts: { from: "Start point x,y", to: "End point x,y" },
+        examples: [{ cmd: "drag --from 100,200 --to 300,200", desc: "Drag 200px right" }],
+      },
     }
   },
   extract: {
@@ -1008,11 +1033,10 @@ const TOOLS = {
       "console": {
         desc: "Read console messages",
         args: [],
-        opts: { clear: "Clear after reading", stream: "Continuous output", level: "Filter by level (log,warn,error)", limit: "Max messages" },
+        opts: { clear: "Clear after reading", stream: "Continuous output", level: "With --stream: log,warn,error", limit: "Max messages" },
         examples: [
           { cmd: "console", desc: "Get recent messages" },
-          { cmd: "console --level error", desc: "Only errors" },
-          { cmd: "console --stream", desc: "Stream live" },
+          { cmd: "console --stream --level error", desc: "Stream errors live" },
         ]
       },
     }
@@ -1026,21 +1050,16 @@ const TOOLS = {
         opts: {
           origin: "Filter by origin (domain)",
           method: "Filter by method (GET,POST,...)",
-          status: "Filter by status (200, 4xx, 5xx)",
+          status: "Filter by exact status code (e.g. 404)",
           type: "Filter by content type (json, html, proto)",
-          since: "Show requests since (5m, 1h, timestamp)",
-          last: "Show last N requests",
-          "has-body": "Only requests with body",
-          "exclude-static": "Exclude images/fonts/css/js",
-          filter: "URL pattern filter",
-          format: "Output format: compact, urls, curl, raw",
-          all: "Show all (no limit)",
+          last: "Show N requests (default: 100)",
+          filter: "With --stream: URL pattern filter",
+          format: "compact|urls|curl|raw (default: compact)",
           v: "Verbose output",
           vv: "Very verbose output",
           "body-mode": "Response bodies: none, text, or all (default: text)",
           "per-body-bytes": "Maximum captured bytes per response body",
           "total-body-bytes": "Maximum captured response-body bytes per tab session",
-          clear: "Clear after reading",
           stream: "Continuous output"
         },
         examples: [
@@ -1181,13 +1200,23 @@ const TOOLS = {
   smoke: {
     desc: "Smoke testing",
     commands: {
-      "smoke": { desc: "Run smoke tests on URLs", args: [], opts: { urls: "URLs to test (space-separated)", routes: "Route group from config", screenshot: "Directory to save screenshots", "fail-fast": "Stop on first error" } },
+      "smoke": {
+        desc: "Run smoke tests on URLs",
+        args: [],
+        opts: { urls: "URLs to test (space-separated)", routes: "Route group from config", screenshot: "Directory to save screenshots", "fail-fast": "Stop on first error" },
+        examples: [{ cmd: "smoke --urls https://example.com https://example.com/about --fail-fast", desc: "Check two pages" }],
+      },
     }
   },
   dialog: {
     desc: "Browser dialog handling",
     commands: {
-      "dialog.accept": { desc: "Accept current dialog", args: [], opts: { text: "Text for prompt input" } },
+      "dialog.accept": {
+        desc: "Accept current dialog",
+        args: [],
+        opts: { text: "Text for prompt input" },
+        examples: [{ cmd: 'dialog.accept --text "my answer"', desc: "Answer a prompt() and accept" }],
+      },
       "dialog.dismiss": {
         desc: "Dismiss current dialog",
         args: [],
@@ -1203,9 +1232,31 @@ const TOOLS = {
   emulate: {
     desc: "Device/network emulation",
     commands: {
-      "emulate.network": { desc: "Emulate network conditions", args: ["preset"], opts: {} },
-      "emulate.cpu": { desc: "CPU throttling (rate >= 1)", args: ["rate"], opts: {} },
-      "emulate.geo": { desc: "Override geolocation", args: [], opts: { lat: "Latitude", lon: "Longitude", accuracy: "Accuracy in meters (default: 100)", clear: "Clear override" } },
+      "emulate.network": {
+        desc: "Emulate network conditions: offline, slow-3g, fast-3g, 4g, or reset",
+        args: ["preset"],
+        examples: [
+          { cmd: "emulate.network slow-3g", desc: "Throttle to slow 3G" },
+          { cmd: "emulate.network reset", desc: "Back to normal" },
+        ],
+      },
+      "emulate.cpu": {
+        desc: "Slow the CPU by a factor (1 = no throttle, 4 = 4x slower)",
+        args: ["rate"],
+        examples: [
+          { cmd: "emulate.cpu 4", desc: "4x slower" },
+          { cmd: "emulate.cpu 1", desc: "Back to normal" },
+        ],
+      },
+      "emulate.geo": {
+        desc: "Override geolocation",
+        args: [],
+        opts: { lat: "Latitude", lon: "Longitude", accuracy: "Accuracy in meters (default: 100)", clear: "Clear override" },
+        examples: [
+          { cmd: "emulate.geo --lat 37.7749 --lon -122.4194", desc: "San Francisco" },
+          { cmd: "emulate.geo --clear", desc: "Remove the override" },
+        ],
+      },
       "emulate.device": {
         desc: "Emulate mobile device",
         args: ["device"],
@@ -1240,7 +1291,12 @@ const TOOLS = {
   form: {
     desc: "Form automation",
     commands: {
-      "form.fill": { desc: "Batch fill form fields", args: [], opts: { data: "JSON array of {ref, value}" } },
+      "form.fill": {
+        desc: "Batch fill form fields",
+        args: [],
+        opts: { data: "JSON array of {ref, value}; true/false sets a checkbox" },
+        examples: [{ cmd: `form.fill --data '[{"ref":"e1","value":"John"},{"ref":"e7","value":true}]'`, desc: "Text field and checkbox" }],
+      },
     }
   },
   perf: {
@@ -1460,9 +1516,9 @@ const TOOLS = {
   bookmark: {
     desc: "Bookmark management",
     commands: {
-      "bookmark.add": { desc: "Bookmark current page", args: [], opts: { folder: "Folder name" } },
-      "bookmark.remove": { desc: "Remove bookmark for current page", args: [] },
-      "bookmark.list": { desc: "List bookmarks", args: [], opts: { folder: "Folder name", limit: "Max results" } },
+      "bookmark.add": { desc: "Bookmark the current page (its URL and title)", args: [], opts: { folder: "Existing folder name" } },
+      "bookmark.remove": { desc: "Remove the bookmark for the current page's URL", args: [] },
+      "bookmark.list": { desc: "List bookmarks", args: [], opts: { folder: "Folder name", limit: "Max results (default: 50)" } },
     }
   },
   history: {
@@ -1477,6 +1533,7 @@ const TOOLS = {
       "history.search": {
         desc: "Search history",
         args: ["query"],
+        opts: { limit: "Max results (default: 20)" },
         examples: [{ cmd: 'history.search "github"', desc: "Search history" }]
       },
     }
@@ -1533,6 +1590,124 @@ const TOOLS = {
         ]
       },
     }
+  },
+  // Groups below run outside the socket tool path (local dispatchers). Their entries
+  // feed --find, --help-full and <cmd> --help; oracle and semantic answer --help
+  // themselves from their own modules, so those entries list names only.
+  semantic: {
+    desc: "Semantic page decisions and typed extraction (TypeSafe or Cloudflare models)",
+    commands: {
+      "semantic.find": { desc: "Find the element that matches a goal described in plain words", args: ["goal"] },
+      "semantic.filter": { desc: "Rank page elements against a goal", args: ["goal"] },
+      "semantic.verify": { desc: "Check whether the page shows an outcome", args: ["outcome"] },
+      "semantic.act": { desc: "Reach a goal in observe/choose/act steps; clicks and fills need --allow-write", args: ["goal"] },
+      "semantic.extract": { desc: "Read named, typed values off the page (--field name:type[:instructions])", args: [] },
+      "semantic auth set": { desc: "Save a TypeSafe key or Cloudflare credentials from stdin", args: [] },
+      "semantic auth status": { desc: "Show where semantic credentials come from (fingerprint only)", args: [] },
+      "semantic auth clear": { desc: "Remove saved semantic credentials", args: [] },
+    },
+  },
+  oracle: {
+    desc: "Durable ChatGPT consults with model/effort, file context and recovery",
+    commands: {
+      "oracle ask": { desc: "Start a ChatGPT consult and wait for its response (--detach returns at once)", args: ["prompt"] },
+      "oracle follow": { desc: "Continue a captured consult", args: ["id", "prompt"] },
+      "oracle status": { desc: "Show a consult job (newest when id is omitted)", args: [] },
+      "oracle result": { desc: "Capture a consult result, optionally waiting (--wait)", args: ["id"] },
+      "oracle list": { desc: "List consult jobs newest-first", args: [] },
+    },
+  },
+  playbook: {
+    desc: "Reusable site operations: threads, feeds and recorded flows",
+    commands: {
+      use: {
+        desc: "Run a playbook operation, such as reading a whole X thread",
+        args: ["playbook", "op"],
+        opts: {
+          "<arg>": "Operation input, e.g. --url <post-url> (see: surf pb ops <playbook>)",
+          format: "md or jsonl instead of JSON",
+          write: "Authorize a write operation",
+          "allow-script": "Allow the playbook's trusted script strategy",
+          repeat: "Repeat a write whose last attempt was verified",
+          "retry-attempt": "Retry this write attempt id",
+          "override-in-doubt": "Write again after an indeterminate attempt",
+          "pin-built-in": "Use the built-in playbook even if a user or project copy exists",
+          json: "Output raw JSON",
+        },
+        examples: [
+          { cmd: "use x thread --url https://x.com/<user>/status/<id> --format md", desc: "Whole X thread as Markdown" },
+          { cmd: "use page read --json", desc: "Read the current page" },
+        ],
+      },
+      pb: { alias: "playbook" },
+      "playbook list": { desc: "List playbooks (project, user, built-in)", args: [], opts: { json: "Output raw JSON" } },
+      "playbook show": { desc: "Show a playbook's source and ops", args: ["playbook"], opts: { json: "Output raw JSON" } },
+      "playbook ops": { desc: "List a playbook's operations", args: ["playbook"], opts: { json: "Output raw JSON" } },
+      "playbook run": { desc: "Same as surf use <playbook> <op>", args: ["playbook", "op"] },
+      "playbook suggest": { desc: "Suggest playbooks from recent activity", args: [], opts: { since: "Look-back window (default: 1h)" } },
+      "playbook save": {
+        desc: "Save a playbook op from recent activity or a record",
+        args: ["playbook"],
+        opts: {
+          op: "Operation name",
+          "from-recent": "Use activity from this window (default: 1h)",
+          "from-record": "Use this record id",
+          project: "Save in ./.surf/playbooks instead of ~/.surf/playbooks",
+        },
+        examples: [
+          { cmd: "pb save example --op read --from-recent 1h", desc: "From recent activity" },
+          { cmd: "pb save --from-record <record-id>", desc: "From a record" },
+        ],
+      },
+      "playbook record start": {
+        desc: "Start recording a playbook op",
+        args: ["playbook"],
+        opts: { op: "Operation name", network: "Record network requests", watch: "Watch page changes", "include-input-values": "Keep typed values (redacted by default)" },
+        examples: [{ cmd: "pb record start example --op read --network --watch", desc: "Record with network" }],
+      },
+      "playbook record mark": { desc: "Add a note to the recording", args: ["note"] },
+      "playbook record stop": { desc: "Stop recording", args: [], opts: { draft: "Save a draft playbook from the record" } },
+      "playbook record status": { desc: "Show the recording state (also: pause, resume, discard)", args: [] },
+      "playbook trace export": { desc: "Export a record as HAR", args: [], opts: { "from-record": "Record id", har: "Output .har path" } },
+      "playbook export": { desc: "Export a playbook directory", args: ["playbook"], opts: { out: "Output directory" } },
+      "playbook import": { desc: "Import a playbook directory", args: ["dir"], opts: { project: "Import into ./.surf/playbooks" } },
+      "playbook client derive": {
+        desc: "Generate a standalone client from an observed request",
+        args: ["playbook"],
+        opts: { op: "Operation name", "from-record": "Record id", "request-id": "Request id in the record", out: "Output directory" },
+      },
+      "playbook client export": { desc: "Export a client for a playbook op", args: ["playbook"], opts: { op: "Operation name", out: "Output directory" } },
+      "playbook client verify": { desc: "Verify a generated client", args: ["dir"], opts: { live: "Also call the live endpoint" } },
+    },
+  },
+  remote: {
+    desc: "Remote access credentials (run on the browser host)",
+    commands: {
+      "remote authorize": {
+        desc: "Create a credential file for a remote client (full Surf authority, mode 0600)",
+        args: ["label"],
+        opts: { output: "Credential file to write (required)" },
+        examples: [{ cmd: "remote authorize laptop --output ./laptop.json", desc: "Authorize a client" }],
+      },
+      "remote list": { desc: "List authorized remote clients", args: [] },
+      "remote revoke": { desc: "Revoke a remote client", args: ["label"] },
+    },
+  },
+  setup: {
+    desc: "Install, configure and serve",
+    commands: {
+      install: { desc: "Install the native messaging host for a browser extension id", args: ["extension-id"] },
+      uninstall: { desc: "Remove the native messaging host configuration", args: [] },
+      config: {
+        desc: "Print the surf.json config in use",
+        args: [],
+        opts: { init: "Create a starter surf.json", path: "Print the config file path" },
+        examples: [{ cmd: "config --init", desc: "Create a starter config" }],
+      },
+      server: { desc: "Start the MCP server (stdio) for Claude Desktop/Cursor", args: [] },
+      "extension-path": { desc: "Print the path of the unpacked extension (dist/) to load in the browser", args: [] },
+      path: { alias: "extension-path" },
+    },
   },
 };
 
@@ -1937,12 +2112,12 @@ Wait for real content: surf wait.ready --selector ".results"   # fails fast with
 Read DOM/refs: surf page.read --depth 3 --compact # alias: surf read
 Refs: use e1/e2 refs from page.read; prefer refs over CSS when available.
 Click ref: surf click e5
-Click selector/coords: surf click --selector ".btn" | surf click 100 200
+Click selector/coords: surf click --selector ".btn" | surf click --x 100 --y 200
 Type: surf type "text" --submit                  # use --ref e5 to target a field
 Screenshot: surf screenshot /tmp/shot.png         # auto-saves to /tmp if no path
 Full page screenshot: surf screenshot --full-page /tmp/full.png
 Record animation: surf record --duration 2000 --fps 10 --output /tmp/anim.gif
-Video recording: surf video start ./demo.webm --fps 30; surf video stop
+Video recording: surf video.start ./demo.webm --fps 30; surf video.stop
 Animation audit: surf animate-audit --selector ".thing" --duration 2000 --fps 10
 Performance audit: surf perf-audit --duration 3000 --trigger "click:.cta" --output /tmp/perf.json
 JavaScript: surf js "return document.title"
@@ -1965,19 +2140,6 @@ const showFullHelp = () => {
   console.log(`surf v${VERSION} - Browser automation CLI
 
 Usage: surf <command> [args] [options]
-
-Semantic (optional TypeSafe/Jev):
-  surf semantic.find|verify|filter <goal> [--json]
-  surf semantic.act <goal> [--allow-write] [--allow-ref <ref>] [--input <name=value>]
-  surf semantic.extract --field <name>:<type>[:<instructions>]... [--reference-date YYYY-MM-DD]
-  surf semantic auth <set|status|clear>
-
-Oracle:
-  surf oracle <ask|status|result|follow|list>
-
-Playbooks:
-  surf playbook|pb <list|show|ops|run|record|suggest|save|client|trace|export|import>
-  surf use <playbook> <op> [--arg value]
 
 `);
   for (const [groupName, group] of Object.entries(TOOLS)) {
@@ -2015,11 +2177,6 @@ Host details, when present, are included without redundant code/message fields.
 Missing codes use "error" in JSON. --soft-fail keeps the original warning text.
 This is not a universal error format: local validation, transport and parser
 failures keep their existing output/status; --soft-fail does not mask them.
-
-Remote Credentials (run on the browser host):
-  surf remote authorize <label> --output <credential-file>
-  surf remote list
-  surf remote revoke <label>
 
 Script Mode:
   surf --script <file>     Run workflow from JSON
@@ -2121,7 +2278,43 @@ const showToolHelp = (toolName) => {
     }
     return;
   }
-  console.error(`Unknown command: ${toolName}`);
+  reportUnknownCommand(toolName);
+};
+
+const editDistance = (a, b) => {
+  let previous = Array.from({ length: b.length + 1 }, (_, index) => index);
+  for (let i = 1; i <= a.length; i++) {
+    const current = [i];
+    for (let j = 1; j <= b.length; j++) {
+      current[j] = Math.min(previous[j] + 1, current[j - 1] + 1, previous[j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1));
+    }
+    previous = current;
+  }
+  return previous[b.length];
+};
+
+// Closest public names, comparing the whole name and its group part (`bookmarks` -> bookmark.*, `key.repeat` -> key).
+const suggestCommands = (name) => {
+  const head = (value) => value.split(/[.\s]/)[0];
+  const scored = [];
+  for (const group of Object.values(TOOLS)) {
+    for (const [cmd, info] of Object.entries(group.commands)) {
+      if (info.alias) continue;
+      const whole = editDistance(name, cmd);
+      const heads = editDistance(head(name), head(cmd));
+      if (whole <= Math.max(2, Math.floor(name.length / 3)) || heads <= Math.floor(head(name).length / 3)) {
+        scored.push({ cmd, score: Math.min(whole, heads), whole });
+      }
+    }
+  }
+  return scored.sort((a, b) => a.score - b.score || a.whole - b.whole).slice(0, 3).map((entry) => entry.cmd);
+};
+
+const reportUnknownCommand = (name) => {
+  console.error(`Unknown command: ${name}`);
+  const suggestions = suggestCommands(name);
+  if (suggestions.length) console.error(`Did you mean: ${suggestions.join(", ")}?`);
+  console.error("See: surf --find <term> | surf --help-full");
   process.exit(1);
 };
 
@@ -2244,7 +2437,7 @@ if (args[0] === "server") {
   return;
 }
 
-if (args[0] === "extension-path" || args[0] === "path") {
+if ((args[0] === "extension-path" || args[0] === "path") && !helpRequested()) {
   const distPath = process.env.SURF_EXTENSION_PATH || path.resolve(__dirname, "../dist");
   console.log(distPath);
   process.exit(0);
@@ -2334,12 +2527,14 @@ Examples:
 }
 
 if (args.includes("--help") || args.includes("-h")) {
-  const tool = args[0];
-  if (TOOLS[tool]) {
-    showGroupHelp(tool);
-  } else {
-    showToolHelp(tool);
-  }
+  // Subcommand help (`pb record start --help`) matches the longest leading words that name a command.
+  const words = [args[0] === "pb" ? "playbook" : args[0], ...args.slice(1).filter((arg) => !arg.startsWith("-"))];
+  const isCommand = (name) => Object.values(TOOLS).some((group) => group.commands[name]);
+  const subcommand = [words.slice(0, 3), words.slice(0, 2)].filter((w) => w.length > 1).map((w) => w.join(" ")).find(isCommand);
+  if (subcommand) showToolHelp(subcommand);
+  // A command that shares its group's name (network, ai, upload) shows its own help; `surf <group>` shows the group.
+  else if (TOOLS[words[0]] && !isCommand(words[0])) showGroupHelp(words[0]);
+  else showToolHelp(words[0]);
   process.exit(0);
 }
 
@@ -3213,6 +3408,14 @@ if (REMOVED_COMMANDS[tool]) {
 }
 
 tool = ALIASES[tool] || tool;
+
+// Names the CLI, the socket API or the host accepts; anything else fails here with suggestions instead of reaching the host.
+const knownTool =
+  Object.values(TOOLS).some((group) => group.commands[tool]) ||
+  ALL_SOCKET_TOOLS.includes(tool) ||
+  [toolScope.PROVIDER_TOOLS, toolScope.HOST_TOOLS, toolScope.BROWSER_READ_TOOLS, toolScope.BROWSER_WRITE_TOOLS, toolScope.BROWSER_WRITE_TARGETED_TOOLS, toolScope.TAB_TOOLS].some((set) => set.has(tool)) ||
+  /^(oracle|playbook|session|video|semantic)\./.test(tool);
+if (!knownTool) reportUnknownCommand(tool);
 
 // Auto-save screenshots to temp file when no --output specified
 // This ensures agents always get a usable file path, not just an in-memory ID

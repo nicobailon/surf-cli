@@ -332,6 +332,37 @@ describe("mapToolToMessage", () => {
       expect(msg.type).toBe("EXECUTE_TYPE");
       expect(msg.text).toBe("hello");
     });
+
+    it("presses Enter after cursor typing with --submit", () => {
+      const msg = helpers.mapToolToMessage("type", { text: "hello", submit: true }, 7);
+      expect(msg).toMatchObject({ type: "TYPE_SUBMIT", text: "hello", tabId: 7 });
+    });
+  });
+
+  describe("click --button", () => {
+    it("sends the requested button for a ref or coordinates", () => {
+      expect(helpers.mapToolToMessage("click", { ref: "e5", button: "right" }, 7)).toMatchObject({
+        type: "CLICK_REF",
+        ref: "e5",
+        button: "right",
+      });
+      expect(
+        helpers.mapToolToMessage("click", { x: 10, y: 20, button: "double" }, 7),
+      ).toMatchObject({ type: "EXECUTE_DOUBLE_CLICK", x: 10, y: 20 });
+    });
+
+    it("keeps a plain click and a selector click as left clicks", () => {
+      expect(helpers.mapToolToMessage("click", { ref: "e5" }, 7).button).toBe("left");
+      expect(
+        helpers.mapToolToMessage("click", { selector: ".b", button: "right" }, 7),
+      ).toMatchObject({ type: "CLICK_SELECTOR", button: "left" });
+    });
+
+    it("rejects an unknown button", () => {
+      expect(() => helpers.mapToolToMessage("click", { ref: "e5", button: "middle" }, 7)).toThrow(
+        "--button must be left, right, double, or triple",
+      );
+    });
   });
 
   describe("screenshot commands", () => {
