@@ -2,6 +2,9 @@
 
 ## [Unreleased]
 
+### Added
+- **Cloudflare AI Gateway routing** - Set `CLOUDFLARE_GATEWAY_ID` and Surf sends its Clef and Clairic calls through that AI Gateway, so they show up in the gateway's logs and analytics and follow its rate limits and caching. It uses the Cloudflare token you already set up; no second token is needed.
+
 ## [2.24.1] - 2026-10-24
 
 ### Highlights

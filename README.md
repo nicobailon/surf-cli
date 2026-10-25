@@ -1269,6 +1269,14 @@ writes, and symlink rejection. `CLOUDFLARE_ACCOUNT_ID` and
 Status never prints the account id or token, only `environment`, `stored`, or
 `not-configured` plus a fingerprint.
 
+Set `CLOUDFLARE_GATEWAY_ID` to send every Clef and Clairic call through one of
+your [AI Gateways](https://developers.cloudflare.com/ai-gateway/) for its logs,
+analytics, rate limits and caching. Surf calls the same Workers AI endpoint
+with the same token and adds a `cf-aig-gateway-id` header, so no second token is
+needed. The gateway logs each request, including the page observation (page text
+and control names, never typed field values), unless you turn logging off in
+the gateway.
+
 `semantic.act` is bounded to observed same-origin HTTP(S) links, fixed scrolling
 and waits, and observed refs. Every DOM click and fill is mutation-capable and is
 excluded unless `--allow-write` is present. That flag intentionally permits
@@ -1317,6 +1325,7 @@ SURF_EXTENSION_PATH       # Path to extension dist/ directory
 TYPESAFE_API_KEY          # Optional Jev credential; overrides the shared store
 CLOUDFLARE_ACCOUNT_ID     # Optional Clef credential (with CLOUDFLARE_API_TOKEN); overrides the stored record
 CLOUDFLARE_API_TOKEN      # Optional Clef credential (with CLOUDFLARE_ACCOUNT_ID)
+CLOUDFLARE_GATEWAY_ID     # Optional AI Gateway id for Clef and Clairic calls
 SURF_SEMANTIC_MODEL       # Semantic model: jev-1.13.0 (default), clef, or clef-flash
 XDG_CONFIG_HOME           # Unix/macOS base for semantic provider credentials (default: ~/.config)
 ```
@@ -1337,6 +1346,7 @@ XDG_CONFIG_HOME           # Unix/macOS base for semantic provider credentials (d
 - `SURF_EXTENSION_PATH`: Package managers that create stable symlinks instead of changing paths on reinstall
 - `TYPESAFE_API_KEY`: Used only by explicit `semantic.*` networked commands with a Jev model. Otherwise use `surf semantic auth set` for the provider-neutral shared store.
 - `CLOUDFLARE_ACCOUNT_ID` / `CLOUDFLARE_API_TOKEN`: Used only by semantic commands with a Clef model. Otherwise use `surf semantic auth set --provider cloudflare`.
+- `CLOUDFLARE_GATEWAY_ID`: Routes Clef and Clairic calls through that Cloudflare AI Gateway. Unset means direct Workers AI calls.
 - `SURF_SEMANTIC_MODEL`: Default model for semantic commands and the model for semantic `surf do` steps; `--model` overrides it on commands. Replaces `SURF_JEV_MODEL`, which is no longer read.
 
 **Example (Nix):**

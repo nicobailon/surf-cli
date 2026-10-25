@@ -13,6 +13,7 @@ Use them on unfamiliar pages; once the path is known, switch to plain commands (
 
 - TypeSafe: `TYPESAFE_API_KEY` (wins; use it in CI), or the shared file `${XDG_CONFIG_HOME:-~/.config}/typesafe/credentials.json` (Windows `%APPDATA%\TypeSafe\credentials.json`), which other TypeSafe clients also read, so clearing it signs them all out.
 - Cloudflare: `CLOUDFLARE_ACCOUNT_ID` and `CLOUDFLARE_API_TOKEN` (both or neither), or the private file `${XDG_CONFIG_HOME:-~/.config}/surf/cloudflare-credentials.json` (Windows `%APPDATA%\surf\cloudflare-credentials.json`).
+- `CLOUDFLARE_GATEWAY_ID` (optional) sends Clef and Clairic calls through that Cloudflare AI Gateway with the same token; the gateway logs page observations.
 - Save from stdin, never as an argument:
 
 ```bash
