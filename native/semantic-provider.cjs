@@ -65,9 +65,14 @@ function createJevEvaluator({ apiKey, model = SEMANTIC_POLICY.model, loadSdk = (
   };
 }
 
-function createCloudflareRun({ accountId, apiToken, model, fetch = globalThis.fetch }) {
+function createCloudflareRun({ accountId, apiToken, gatewayId, model, fetch = globalThis.fetch }) {
   const url = `${CLOUDFLARE_API_URL}/accounts/${accountId}/ai/run/@cf/cloudflare/${model}`;
-  const authorization = `Bearer ${apiToken.trim()}`;
+  const headers = {
+    Authorization: `Bearer ${apiToken.trim()}`,
+    "Content-Type": "application/json",
+    // The REST endpoint routes through this AI Gateway with the same Workers AI token.
+    ...(gatewayId ? { "cf-aig-gateway-id": gatewayId } : {}),
+  };
 
   return async function run(body, options = {}) {
     const controller = new AbortController();
@@ -85,7 +90,7 @@ function createCloudflareRun({ accountId, apiToken, model, fetch = globalThis.fe
       try {
         response = await fetch(url, {
           method: "POST",
-          headers: { Authorization: authorization, "Content-Type": "application/json" },
+          headers,
           body: JSON.stringify(body),
           signal: controller.signal,
         });
@@ -115,8 +120,8 @@ function createCloudflareRun({ accountId, apiToken, model, fetch = globalThis.fe
   };
 }
 
-function createCloudflareEvaluator({ accountId, apiToken, model, fetch } = {}) {
-  const run = createCloudflareRun({ accountId, apiToken, model, fetch });
+function createCloudflareEvaluator({ accountId, apiToken, gatewayId, model, fetch } = {}) {
+  const run = createCloudflareRun({ accountId, apiToken, gatewayId, model, fetch });
   return (state, questions, options = {}) => run({
     model,
     state,
@@ -125,8 +130,8 @@ function createCloudflareEvaluator({ accountId, apiToken, model, fetch } = {}) {
   }, options);
 }
 
-function createCloudflareExtractor({ accountId, apiToken, model, fetch } = {}) {
-  const run = createCloudflareRun({ accountId, apiToken, model, fetch });
+function createCloudflareExtractor({ accountId, apiToken, gatewayId, model, fetch } = {}) {
+  const run = createCloudflareRun({ accountId, apiToken, gatewayId, model, fetch });
   return (state, fields, options = {}) => run({ model, state, fields, reference_date: options.referenceDate }, options);
 }
 

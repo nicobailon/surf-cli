@@ -3,7 +3,10 @@ const { SemanticError, extractionModel, semanticModel } = require("./semantic-co
 const { resolveCloudflareCredential, resolveTypeSafeCredential } = require("./semantic-credentials.cjs");
 const { createCloudflareEvaluator, createCloudflareExtractor, createJevEvaluator } = require("./semantic-provider.cjs");
 
-function cloudflareCredential(env, name) {
+// Gateway ids are account-scoped names; the pattern also keeps the env value header-safe.
+const CLOUDFLARE_GATEWAY_ID_PATTERN = /^[A-Za-z0-9_-]{1,64}$/;
+
+function cloudflareRoute(env, name) {
   const credential = resolveCloudflareCredential(env);
   if (!credential) {
     throw new SemanticError(
@@ -11,13 +14,16 @@ function cloudflareCredential(env, name) {
       `${name} needs Cloudflare credentials: set CLOUDFLARE_ACCOUNT_ID and CLOUDFLARE_API_TOKEN, or run: surf semantic auth set --provider cloudflare`,
     );
   }
-  return credential;
+  const gatewayId = typeof env.CLOUDFLARE_GATEWAY_ID === "string" ? env.CLOUDFLARE_GATEWAY_ID.trim() : "";
+  if (gatewayId && !CLOUDFLARE_GATEWAY_ID_PATTERN.test(gatewayId)) {
+    throw new SemanticError("provider_not_configured", "CLOUDFLARE_GATEWAY_ID must be 1-64 letters, digits, hyphens or underscores");
+  }
+  return { accountId: credential.accountId, apiToken: credential.apiToken, gatewayId: gatewayId || undefined };
 }
 
 function providerEvaluator(provider, model, env, { fetch, loadSdk }) {
   if (provider === "cloudflare") {
-    const credential = cloudflareCredential(env, "Clef");
-    return createCloudflareEvaluator({ accountId: credential.accountId, apiToken: credential.apiToken, model, fetch });
+    return createCloudflareEvaluator({ ...cloudflareRoute(env, "Clef"), model, fetch });
   }
   const credential = resolveTypeSafeCredential(env);
   if (!credential) {
@@ -55,8 +61,7 @@ function createSemanticEvaluator({ model, env = process.env, fetch, loadSdk, now
 
 function createExtractionEvaluator({ model, env = process.env, fetch, now = () => performance.now() }) {
   const { provider } = extractionModel(model);
-  const credential = cloudflareCredential(env, "Clairic");
-  const extract = createCloudflareExtractor({ accountId: credential.accountId, apiToken: credential.apiToken, model, fetch });
+  const extract = createCloudflareExtractor({ ...cloudflareRoute(env, "Clairic"), model, fetch });
   return countedEvaluator(provider, model, extract, now);
 }
 

@@ -3,7 +3,10 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
-const { createSemanticEvaluator } = require("../../native/semantic-evaluator.cjs");
+const {
+  createExtractionEvaluator,
+  createSemanticEvaluator,
+} = require("../../native/semantic-evaluator.cjs");
 
 const accountId = "0123456789abcdef0123456789abcdef";
 const roots: string[] = [];
@@ -77,5 +80,35 @@ describe("semantic evaluator factory", () => {
       providerCalls: 2,
       providerLatencyMs: 80,
     });
+  });
+
+  it("routes Clef and Clairic through the AI Gateway named by CLOUDFLARE_GATEWAY_ID", async () => {
+    const fetch = vi.fn(
+      async (_url: string, _init: { headers: Record<string, string> }) =>
+        new Response(JSON.stringify({ success: true, result: { answers: {} } })),
+    );
+    const credentials = { CLOUDFLARE_ACCOUNT_ID: accountId, CLOUDFLARE_API_TOKEN: "fake-token" };
+    const env = { ...credentials, CLOUDFLARE_GATEWAY_ID: " surf-gw " };
+
+    await createSemanticEvaluator({ model: "clef", env, fetch }).evaluate({}, {}, {});
+    await createExtractionEvaluator({ model: "clairic", env, fetch }).evaluate("", {}, {});
+    await createExtractionEvaluator({ model: "clairic", env: credentials, fetch }).evaluate(
+      "",
+      {},
+      {},
+    );
+
+    expect(fetch.mock.calls.map(([, init]) => init.headers["cf-aig-gateway-id"])).toEqual([
+      "surf-gw",
+      "surf-gw",
+      undefined,
+    ]);
+    expect(() =>
+      createSemanticEvaluator({
+        model: "clef",
+        env: { ...credentials, CLOUDFLARE_GATEWAY_ID: "a\nb" },
+        fetch,
+      }),
+    ).toThrow(expect.objectContaining({ code: "provider_not_configured" }));
   });
 });
