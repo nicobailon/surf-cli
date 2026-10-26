@@ -1,4 +1,9 @@
 #!/usr/bin/env node
+// Commands print and then call process.exit(). Node writes to a full pipe asynchronously, so
+// exiting drops whatever is still queued; blocking writes keep piped output complete.
+for (const stream of [process.stdout, process.stderr]) {
+  stream._handle?.setBlocking?.(true);
+}
 const fs = require("fs");
 const path = require("path");
 const { execFileSync, execSync } = require("child_process");

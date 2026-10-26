@@ -5,6 +5,9 @@
 ### Added
 - **Cloudflare AI Gateway routing** - Set `CLOUDFLARE_GATEWAY_ID` and Surf sends its Clef and Clairic calls through that AI Gateway, so they show up in the gateway's logs and analytics and follow its rate limits and caching. It uses the Cloudflare token you already set up; no second token is needed.
 
+### Fixed
+- **Piped output is no longer cut off** - When you piped Surf's output to another program, such as `surf page.read | head` or an agent reading `surf --help-full`, the output could stop partway through if the reader was slower than Surf. Surf now waits until all of its output has been written before it exits.
+
 ## [2.24.1] - 2026-10-24
 
 ### Highlights
