@@ -103,6 +103,14 @@ async function clickRef(tabId: number, frameId: number, ref: string, button: str
   }
   const clicks = button === "double" ? 2 : button === "triple" ? 3 : 1;
   await cdp.click(tabId, target.x, target.y, button === "right" ? "right" : "left", clicks);
+  // A click on what draws a hidden checkbox or radio only counts if the control changed.
+  if (target.viaDrawer && target.checkable) {
+    const after = await chrome.tabs.sendMessage(tabId, { type: "CLICK_POINT", ref, stateOnly: true }, { frameId });
+    const changed = target.checkable === "radio" ? after?.checked === true : after?.checked !== target.checked;
+    if (!changed) {
+      return { error: `Clicked ${target.viaDrawer} where ${ref} sits, but ${ref} did not change. Click the element that draws it by ref, or check the page.` };
+    }
+  }
   return { success: true };
 }
 
