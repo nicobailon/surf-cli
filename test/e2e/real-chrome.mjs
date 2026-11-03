@@ -1036,6 +1036,7 @@ try {
 
   // A command cut short by a navigation names the navigation, not a missing content script.
   const leavingTab = String(tabIdFromOutput(await runSurf("tab.new", `${baseUrl}/navigates-away`)));
+  await runSurf("wait.ready", "--json", "--tab-id", leavingTab, "--selector", "p");
   const cutShort = await runSurfExpectingFailure("wait.element", "#never", "--timeout", "15000", "--tab-id", leavingTab);
   if (cutShort.stderr.includes("Content script not loaded") || !cutShort.stderr.includes("The page navigated or closed")) {
     throw new Error(`a wait cut short by navigation did not report the navigation: ${JSON.stringify(cutShort)}`);
