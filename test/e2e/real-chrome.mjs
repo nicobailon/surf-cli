@@ -285,6 +285,20 @@ ${stories}</main>
     return `<!doctype html><html><head><title>Surf type fixture</title></head>
 <body><input id="plain" type="text"><textarea id="notes"></textarea></body></html>`;
   }
+  if (url.pathname === "/type-limits") {
+    return `<!doctype html><html><head><title>Surf type limits fixture</title></head>
+<body><input id="code" aria-label="Code" maxlength="4"><input id="locked" aria-label="Locked" readonly value="orig">
+<input id="reverted" aria-label="Reverted" value="draft"><input id="wiped" aria-label="Wiped" value="draft">
+<fieldset disabled><input id="off" aria-label="Off" value="orig"></fieldset>
+<input id="shout" aria-label="Shout"><input id="name" aria-label="Name">
+<script>
+  const on = (id, edit) => document.getElementById(id).addEventListener("input", (event) => { event.target.value = edit(event.target.value); });
+  on("reverted", () => "draft");
+  on("wiped", () => "");
+  on("shout", (value) => value.toUpperCase());
+</script>
+</body></html>`;
+  }
   if (url.pathname === "/harvest") {
     // A feed that loads a cursor-paginated JSON API with a token header set by page JS and
     // renders a virtualized list (about five rows in the DOM). `?nonce` adds a one-time nonce
@@ -811,6 +825,42 @@ try {
     }
   }
   await runSurf("tab.close", "--id", typeTabId, "--json");
+
+  // type refuses text a field can't take and fails when the page doesn't keep the value
+  const limitsTabId = String(tabIdFromOutput(await runSurf("tab.new", `${baseUrl}/type-limits`)));
+  await runSurf("wait.element", "#name", "--tab-id", limitsTabId, "--json");
+  const limitsRead = await runSurf("read", "--tab-id", limitsTabId);
+  const limitsRef = (name) => {
+    const ref = limitsRead.match(new RegExp(`textbox "${name}" \\[(e\\d+)\\]`))?.[1];
+    if (!ref) throw new Error(`read did not list the ${name} field: ${limitsRead}`);
+    return ref;
+  };
+  for (const [name, text, reason] of [
+    ["Code", "ABCDEFGH", "accepts at most 4 characters, but 8 were given"],
+    ["Locked", "new", "is read-only"],
+    ["Reverted", "hello", "did not keep the typed text"],
+    ["Wiped", "hello", "did not keep the typed text"],
+    ["Off", "new", "is disabled"],
+  ]) {
+    const ref = limitsRef(name);
+    const refused = await runSurfExpectingFailure("type", text, "--ref", ref, "--tab-id", limitsTabId, "--no-screenshot");
+    if (!refused.stderr.includes(`${ref} ${reason}`)) throw new Error(`type into ${name} did not fail with "${reason}": ${JSON.stringify(refused)}`);
+  }
+  const intoRefused = await runSurfExpectingFailure("type", "new", "--into", "#locked", "--tab-id", limitsTabId, "--no-screenshot");
+  if (!intoRefused.stderr.includes("#locked is read-only")) throw new Error(`type --into a read-only field did not fail: ${JSON.stringify(intoRefused)}`);
+  // A field that reformats the text (a mask) still counts as typed.
+  await runSurf("type", "ada", "--ref", limitsRef("Shout"), "--tab-id", limitsTabId, "--no-screenshot", "--json");
+  const fillData = JSON.stringify([{ ref: limitsRef("Name"), value: "Ada" }, { ref: limitsRef("Locked"), value: "new" }]);
+  const partial = await runSurfExpectingFailure("form.fill", "--data", fillData, "--tab-id", limitsTabId, "--no-screenshot");
+  if (!partial.stderr.includes("Filled 1 of 2 fields.") || !partial.stderr.includes(`${limitsRef("Locked")} is read-only`)) {
+    throw new Error(`form.fill did not report its partial fill: ${JSON.stringify(partial)}`);
+  }
+  const limitsPage = (await browser.pages()).find((page) => page.url() === `${baseUrl}/type-limits`);
+  const limitValues = await limitsPage?.evaluate(() => [...document.querySelectorAll("input")].map((input) => `${input.id}=${input.value}`).join(" "));
+  if (limitValues !== "code= locked=orig reverted=draft wiped= off=orig shout=ADA name=Ada") {
+    throw new Error(`type changed fields it refused or missed the ones it may fill: ${limitValues}`);
+  }
+  await runSurf("tab.close", "--id", limitsTabId, "--json");
 
   // js --file with statements and --options
   const optionsScript = join(repo, "test/e2e/fixtures/list-items.js");

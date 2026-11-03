@@ -85,6 +85,10 @@ class FakeElement extends FakeNode {
     return null;
   }
 
+  matches(): boolean {
+    return false;
+  }
+
   contains(other: FakeElement | null): boolean {
     for (let node = other; node; node = node.parentElement) {
       if (node === this) {
