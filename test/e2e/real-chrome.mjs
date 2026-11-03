@@ -918,6 +918,10 @@ try {
     JSON.parse(await runSurf("tab.list", "--json")).find((tab) => String(tab.id) === refsTabId)?.title;
   const backTitle = await titleOfRefsTab();
   if (backTitle !== "restored") throw new Error(`surf back did not restore page A from the back/forward cache (title=${backTitle})`);
+  const staleOnRestored = await runSurfExpectingFailure("click", deleteRef, ...refsTab);
+  if (!staleOnRestored.stderr.includes(`${deleteRef} is from an earlier page in this tab (${baseUrl}/refs-b).`)) {
+    throw new Error(`a restored page did not name the page visited after it: ${JSON.stringify(staleOnRestored)}`);
+  }
   // The same document, so its own refs still work.
   await runSurf("click", keepRef, ...refsTab);
   if ((await titleOfRefsTab()) !== "kept") throw new Error("a restored page did not accept its own ref");
