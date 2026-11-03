@@ -285,6 +285,18 @@ ${stories}</main>
   function log(entry) { const out = document.querySelector("#log"); out.textContent = out.textContent ? out.textContent + "|" + entry : entry; }
 </script></body></html>`;
   }
+  if (url.pathname === "/custom-controls") {
+    // Custom controls name themselves from text in a child element, or from text under 3 characters.
+    return `<!doctype html><html><head><title>Surf custom controls fixture</title></head>
+<body><output id="log"></output>
+<div role="button" onclick="log('save draft')"><span>Save draft</span></div>
+<div role="button" onclick="log('save')"><span>Save</span></div>
+<div role="button" onclick="log('ok')">OK</div>
+<div role="button" onclick="log('new item')"><span class="icon" aria-hidden="true">add</span>New item</div>
+<script>
+  function log(entry) { const out = document.querySelector("#log"); out.textContent = out.textContent ? out.textContent + "|" + entry : entry; }
+</script></body></html>`;
+  }
   if (url.pathname === "/click") {
     // Each button only reports a click a user could have made.
     return `<!doctype html><html><head><title>Surf click fixture</title></head>
@@ -846,6 +858,22 @@ try {
     throw new Error(`ambiguous locate.label filled a field: ${JSON.stringify({ ambiguousLabel, emailValues })}`);
   }
   await runSurf("tab.close", "--id", locateTabId, "--json");
+
+  // Custom controls take their name from their content, so read lists them and locate picks the exact one
+  const controlsTabId = String(tabIdFromOutput(await runSurf("tab.new", `${baseUrl}/custom-controls`)));
+  await runSurf("wait.element", "[role=button]", "--tab-id", controlsTabId, "--json");
+  const controlsRead = await runSurf("read", "--no-text", "--tab-id", controlsTabId);
+  for (const name of ["Save draft", "Save", "OK", "New item"]) {
+    if (!new RegExp(`button "${name}" \\[e\\d+\\]`).test(controlsRead)) {
+      throw new Error(`read did not name the custom button "${name}": ${controlsRead}`);
+    }
+  }
+  await runSurf("locate.role", "button", "--name", "Save", "--action", "click", "--tab-id", controlsTabId, "--no-screenshot");
+  const controlsLog = await runSurf("js", 'return document.querySelector("#log").textContent', "--tab-id", controlsTabId);
+  if (controlsLog.trim().split("\n").at(-1) !== '"save"') {
+    throw new Error(`locate --name Save did not click only the custom "Save" button: ${controlsLog}`);
+  }
+  await runSurf("tab.close", "--id", controlsTabId, "--json");
 
   // A ref click waits for a click a user could make, then clicks with trusted input
   const clickTabId = String(tabIdFromOutput(await runSurf("tab.new", `${baseUrl}/click`)));

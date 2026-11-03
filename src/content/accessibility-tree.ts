@@ -487,6 +487,22 @@ function getResolvedRole(element: Element): string {
   return explicitRole;
 }
 
+// ARIA roles whose accessible name comes from the element's content when nothing else names it.
+const NAME_FROM_CONTENT_ROLES = new Set([
+  "button", "cell", "checkbox", "columnheader", "gridcell", "heading", "link", "menuitem",
+  "menuitemcheckbox", "menuitemradio", "option", "radio", "rowheader", "switch", "tab", "tooltip", "treeitem",
+]);
+
+// Text a name from content uses: like textContent, but without aria-hidden or hidden subtrees (icon glyphs).
+function contentText(node: Node): string {
+  if (node.nodeType === Node.TEXT_NODE) return node.textContent || "";
+  if (node.nodeType !== Node.ELEMENT_NODE) return "";
+  const element = node as Element;
+  if (element.getAttribute("aria-hidden") === "true" || element.hasAttribute("hidden")) return "";
+  if (["script", "style", "template"].includes(element.tagName.toLowerCase())) return "";
+  return Array.from(element.childNodes, contentText).join("");
+}
+
 function getName(element: Element): string {
   const tag = element.tagName.toLowerCase();
 
@@ -534,17 +550,9 @@ function getName(element: Element): string {
     if (input.value && input.value.length < 50 && input.value.trim()) return input.value.trim();
   }
 
-  if (["button", "a", "summary"].includes(tag)) {
-    const textContent = element.textContent || "";
-    if (textContent.trim()) return textContent.trim();
-  }
-
-  if (/^h[1-6]$/.test(tag)) {
-    const text = element.textContent;
-    if (text?.trim()) {
-      const t = text.trim();
-      return t.length > 100 ? t.substring(0, 100) + "..." : t;
-    }
+  if (["button", "a", "summary"].includes(tag) || NAME_FROM_CONTENT_ROLES.has(getResolvedRole(element))) {
+    const text = contentText(element).replace(/\s+/g, " ").trim();
+    if (text) return text.length > 100 ? text.substring(0, 100) + "..." : text;
   }
 
   if (tag === "img") return "";
