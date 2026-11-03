@@ -900,7 +900,7 @@ try {
   }
   const pageB = (await browser.pages()).find((page) => page.url() === `${baseUrl}/refs-b`);
   const staleKeep = await runSurfExpectingFailure("click", keepRef, ...refsTab);
-  if (!staleKeep.stderr.includes(`${keepRef} is from an earlier page in this tab.`)) {
+  if (!staleKeep.stderr.includes(`${keepRef} is from an earlier page in this tab (${baseUrl}/refs-a).`)) {
     throw new Error(`a ref from page A was not refused on page B: ${JSON.stringify(staleKeep)}`);
   }
   if ((await pageB.evaluate(() => document.querySelector("#log").textContent)) !== "") {
@@ -909,7 +909,7 @@ try {
   await runSurf("tab.reload", ...refsTab);
   await runSurf("wait.ready", "--json", "--tab-id", refsTabId, "--selector", "a[href=\"/refs-a\"]");
   const staleDelete = await runSurfExpectingFailure("click", deleteRef, ...refsTab);
-  if (!staleDelete.stderr.includes(`${deleteRef} is from an earlier page in this tab.`)) {
+  if (!staleDelete.stderr.includes(`${deleteRef} is from an earlier page in this tab (${baseUrl}/refs-b).`)) {
     throw new Error(`a ref from before a reload was not refused: ${JSON.stringify(staleDelete)}`);
   }
   await runSurf("back", ...refsTab);
