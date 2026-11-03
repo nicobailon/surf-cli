@@ -59,12 +59,14 @@ async function contentScriptError(tabId: number, frameId: number, err: unknown):
   return "Content script not loaded. Try refreshing the page.";
 }
 
-let refHighsLoad: Promise<Record<number, number>> | undefined;
+// Per tab: the highest ref issued, and where each document started numbering (to name the page
+// an old ref came from). In session storage so a service-worker restart can't reset it.
+type RefTab = { high: number; pages: Array<{ frameId: number; from: number; url: string }> };
+let refTabsLoad: Promise<Record<number, RefTab>> | undefined;
 
-// Each tab's highest ref, in session storage so a service-worker restart can't reset it.
-function loadRefHighs(): Promise<Record<number, number>> {
-  refHighsLoad ??= chrome.storage.session.get("refHighs").then((stored) => (stored.refHighs ?? {}) as Record<number, number>);
-  return refHighsLoad;
+function loadRefTabs(): Promise<Record<number, RefTab>> {
+  refTabsLoad ??= chrome.storage.session.get("refTabs").then((stored) => (stored.refTabs ?? {}) as Record<number, RefTab>);
+  return refTabsLoad;
 }
 
 const CLICK_WAIT_MS = 5000;
@@ -927,12 +929,19 @@ export async function handleMessage(
       if (sender.id !== chrome.runtime.id || typeof refTabId !== "number") {
         throw new Error(`${message.type} is only for content scripts`);
       }
-      const highs = await loadRefHighs();
-      if (message.type === "REF_FLOOR") return { floor: highs[refTabId] ?? 0 };
-      if (!Number.isInteger(message.high)) throw new Error("REF_HIGH needs an integer high");
-      highs[refTabId] = Math.max(highs[refTabId] ?? 0, message.high);
-      void chrome.storage.session.set({ refHighs: highs });
-      return { success: true };
+      const tabs = await loadRefTabs();
+      const tab = (tabs[refTabId] ??= { high: 0, pages: [] });
+      const frameId = sender.frameId ?? 0;
+      let reply: unknown = { success: true };
+      if (message.type === "REF_FLOOR") {
+        reply = { floor: tab.high, pages: tab.pages.filter((page) => page.frameId === frameId) };
+        tab.pages = [...tab.pages, { frameId, from: tab.high, url: sender.url ?? "" }].slice(-50);
+      } else {
+        if (!Number.isInteger(message.high)) throw new Error("REF_HIGH needs an integer high");
+        tab.high = Math.max(tab.high, message.high);
+      }
+      void chrome.storage.session.set({ refTabs: tabs });
+      return reply;
     }
 
     case "TARGET_INSPECT": {

@@ -577,6 +577,8 @@ const refIdentities: Record<string, { role: string; name: string }> = {};
 let globalRefCounter = 0;
 // Every ref numbered at or below this was issued by an earlier page in this tab.
 let refFloor = 0;
+// Earlier documents in this frame, oldest first, with the number each started above.
+let earlierPages: Array<{ from: number; url: string }> = [];
 let refHighQueued = false;
 let refFloorReady: Promise<void> | null = null;
 let refFloorKnown = false;
@@ -586,8 +588,9 @@ let refFloorKnown = false;
 // pages Surf never touches send nothing.
 function requestRefFloor(): Promise<void> {
   refFloorReady ??= chrome.runtime.sendMessage({ type: "REF_FLOOR" })
-    .then((reply: { floor: number }) => {
+    .then((reply: { floor: number; pages: typeof earlierPages }) => {
       refFloor = reply.floor;
+      earlierPages = reply.pages;
       globalRefCounter = Math.max(globalRefCounter, refFloor);
       refFloorKnown = true;
     })
@@ -840,7 +843,10 @@ function resolveRef(ref: string): { element: Element; error?: undefined } | { el
   const identity = refIdentities[ref];
   if (!identity) {
     if (Number(ref.slice(1)) <= refFloor) {
-      return { error: `${ref} is from an earlier page in this tab. Run surf read to get current refs.` };
+      // Each document numbers above every earlier one, so the ref belongs to the last that started below it.
+      const page = [...earlierPages].reverse().find((p) => p.from < Number(ref.slice(1)));
+      const where = page ? ` (${page.url})` : "";
+      return { error: `${ref} is from an earlier page in this tab${where}. Run surf read to get current refs.` };
     }
     return { error: `Element ${ref} not found. Run surf read to get current refs.` };
   }

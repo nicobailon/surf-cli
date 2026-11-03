@@ -208,7 +208,7 @@ describe("accessibility tree", () => {
     (globalThis as any).chrome = {
       runtime: {
         sendMessage: vi.fn(async (message: { type: string }) =>
-          message.type === "REF_FLOOR" ? { floor: 0 } : { success: true },
+          message.type === "REF_FLOOR" ? { floor: 0, pages: [] } : { success: true },
         ),
         onMessage: {
           addListener: (handler: typeof messageHandler) => {
