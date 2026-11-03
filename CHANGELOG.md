@@ -2,6 +2,9 @@
 
 ## [Unreleased]
 
+### Fixed
+- **`locate` no longer acts on the wrong element** - `surf locate.role`, `locate.text` and `locate.label` with `--action` used to act on the first element whose name contained your words, and printed `OK`. So `surf locate.role button --name "Save" --action click` could click "Save draft", and `--name "Delete"` on a list clicked the first row's Delete button. Now an element whose name is exactly what you asked for wins over partial matches, and when more than one element still matches, nothing is clicked or filled: the command fails and lists each match with its ref, so you can act on the one you mean with `surf click <ref>`.
+
 ## [2.25.0] - 2026-10-25
 
 ### Highlights

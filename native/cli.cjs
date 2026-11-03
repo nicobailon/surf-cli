@@ -1892,7 +1892,9 @@ By form label:
   locate.label "Password" --action fill --value "secret"
 
 Available actions: click, fill, hover, text
-Without --action, returns the ref for later use.`
+Without --action, returns the ref for later use.
+An exact name match wins over partial ones. With --action, if more than one element
+still matches, nothing is done and the error lists each match with its ref.`
   },
   frames: {
     title: "Iframe Navigation",

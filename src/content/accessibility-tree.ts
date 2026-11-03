@@ -829,6 +829,44 @@ function resolveRef(ref: string): { element: Element; error?: undefined } | { el
   return { error: `Element ${ref} no longer exists. Did you mean ${suggested} (${identity.role} ${label})? Otherwise run surf read.` };
 }
 
+function normalizeLocatorText(value: string | null | undefined): string {
+  return (value || "").replace(/\s+/g, " ").trim().toLowerCase();
+}
+
+function isLocatable(el: Element): boolean {
+  const style = window.getComputedStyle(el);
+  return style.display !== "none" && style.visibility !== "hidden" &&
+    (el as HTMLElement).offsetWidth > 0 && (el as HTMLElement).offsetHeight > 0;
+}
+
+function registerLocatedRef(el: Element): string {
+  const role = getResolvedRole(el);
+  const name = getName(el);
+  const ref = getOrAssignRef(el, role, name);
+  window.__piRefs = window.__piRefs || {};
+  window.__piRefs[ref] = el;
+  getElementMap()[ref] = { element: new WeakRef(el), role, name };
+  return ref;
+}
+
+// Exact matches outrank partial ones. When the caller is about to act, two or more remaining
+// matches are refused instead of acting on whichever came first in the document.
+function narrowLocated(
+  matches: Element[],
+  isExact: (el: Element) => boolean,
+  unique: boolean,
+  query: string,
+): Element[] | string {
+  const exact = matches.filter(isExact);
+  const elements = exact.length ? exact : matches;
+  if (!unique || elements.length < 2) return elements;
+  const listed = elements.slice(0, 10).map((el) =>
+    `  ${registerLocatedRef(el)} ${getResolvedRole(el)} ${JSON.stringify(getName(el).replace(/\s+/g, " "))}`);
+  if (elements.length > 10) listed.push(`  ...and ${elements.length - 10} more`);
+  return `${elements.length} elements match ${query}, so nothing was done. ` +
+    `Act on one of them by ref (for example surf click <ref>), or narrow the query:\n${listed.join("\n")}`;
+}
+
 function generateAccessibilityTree(
   filter: "all" | "interactive" = "interactive",
   maxDepth = 15,
@@ -2062,8 +2100,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     }
     case "LOCATE_ROLE": {
       try {
-        const { role, name, all } = message;
-        const elementMap = getElementMap();
+        const { role, name, all, unique } = message;
         
         // Mapping of role to possible selectors
         const implicitRoles: Record<string, string[]> = {
@@ -2113,49 +2150,39 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           candidates = candidates.filter(el => getResolvedRole(el) === role);
         }
         
-        // Filter by visibility
-        const visible = candidates.filter(el => {
-          const style = window.getComputedStyle(el);
-          return style.display !== 'none' && 
-                 style.visibility !== 'hidden' && 
-                 (el as HTMLElement).offsetWidth > 0 &&
-                 (el as HTMLElement).offsetHeight > 0;
-        });
-        
+        // One element can match several selectors; it is still one candidate.
+        const visible = [...new Set(candidates)].filter(isLocatable);
+
         // Filter by name if provided
         let matches = visible;
-        if (name) {
-          const lowerName = name.toLowerCase();
-          matches = visible.filter(el => {
-            const ariaLabel = el.getAttribute('aria-label')?.toLowerCase();
-            const text = el.textContent?.trim().toLowerCase();
-            const title = el.getAttribute('title')?.toLowerCase();
-            const placeholder = (el as HTMLInputElement).placeholder?.toLowerCase();
-            const value = (el as HTMLInputElement).value?.toLowerCase();
-            
-            return ariaLabel?.includes(lowerName) || 
-                   text?.includes(lowerName) || 
-                   title?.includes(lowerName) ||
-                   placeholder?.includes(lowerName) ||
-                   value?.includes(lowerName);
-          });
+        const query = normalizeLocatorText(name);
+        if (query) {
+          matches = visible.filter(el => [
+            getName(el),
+            el.getAttribute('aria-label'),
+            el.textContent,
+            el.getAttribute('title'),
+            (el as HTMLInputElement).placeholder,
+            (el as HTMLInputElement).value,
+          ].some(field => normalizeLocatorText(field).includes(query)));
         }
-        
-        if (matches.length === 0) {
+
+        const narrowed = narrowLocated(
+          matches,
+          el => query !== "" && normalizeLocatorText(getName(el)) === query,
+          unique,
+          `role "${role}"${name ? ` and name "${name}"` : ''}`,
+        );
+        if (typeof narrowed === "string") {
+          sendResponse({ error: narrowed });
+          break;
+        }
+        if (narrowed.length === 0) {
           sendResponse({ error: `No element found with role "${role}"${name ? ` and name "${name}"` : ''}` });
           break;
         }
-        
-        // Generate refs for matches
-        const results = matches.map(el => {
-          const elRole = getResolvedRole(el);
-          const elName = getName(el);
-          const ref = getOrAssignRef(el, elRole, elName);
-          window.__piRefs = window.__piRefs || {};
-          window.__piRefs[ref] = el;
-          elementMap[ref] = { element: new WeakRef(el), role: elRole, name: elName };
-          return { ref, text: el.textContent?.trim().slice(0, 50) };
-        });
+
+        const results = narrowed.map(el => ({ ref: registerLocatedRef(el), text: el.textContent?.trim().slice(0, 50) }));
         
         if (all) {
           sendResponse({ matches: results });
@@ -2169,49 +2196,33 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     }
     case "LOCATE_TEXT": {
       try {
-        const { text, exact } = message;
-        const elementMap = getElementMap();
+        const { text, exact, unique } = message;
+        const query = normalizeLocatorText(text);
         
         // Find elements containing the text
         const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
-        const matches: Element[] = [];
-        
+        const matches = new Set<Element>();
         while (walker.nextNode()) {
           const nodeText = walker.currentNode.textContent || '';
-          const hasMatch = exact 
-            ? nodeText.trim() === text 
-            : nodeText.toLowerCase().includes(text.toLowerCase());
-          
-          if (hasMatch) {
-            const parent = walker.currentNode.parentElement;
-            if (parent && !matches.includes(parent)) {
-              // Check visibility
-              const style = window.getComputedStyle(parent);
-              if (style.display !== 'none' && style.visibility !== 'hidden') {
-                matches.push(parent);
-              }
-            }
-          }
+          const hasMatch = exact ? nodeText.trim() === text : normalizeLocatorText(nodeText).includes(query);
+          const parent = walker.currentNode.parentElement;
+          if (hasMatch && parent && isLocatable(parent)) matches.add(parent);
         }
         
-        if (matches.length === 0) {
+        // Most specific (smallest) element first
+        const sorted = [...matches].sort((a, b) => (a.textContent?.length || 0) - (b.textContent?.length || 0));
+        const narrowed = narrowLocated(sorted, el => normalizeLocatorText(el.textContent) === query, unique, `text "${text}"`);
+        if (typeof narrowed === "string") {
+          sendResponse({ error: narrowed });
+          break;
+        }
+        if (narrowed.length === 0) {
           sendResponse({ error: `No element found with text "${text}"` });
           break;
         }
         
-        // Pick the most specific (smallest) element
-        const el = matches.sort((a, b) => 
-          (a.textContent?.length || 0) - (b.textContent?.length || 0)
-        )[0];
-        
-        const role = getResolvedRole(el);
-        const name = getName(el);
-        const ref = getOrAssignRef(el, role, name);
-        window.__piRefs = window.__piRefs || {};
-        window.__piRefs[ref] = el;
-        elementMap[ref] = { element: new WeakRef(el), role, name };
-        
-        sendResponse({ ref, text: el.textContent?.trim().slice(0, 50) });
+        const el = narrowed[0];
+        sendResponse({ ref: registerLocatedRef(el), text: el.textContent?.trim().slice(0, 50) });
       } catch (err) {
         sendResponse({ error: err instanceof Error ? err.message : String(err) });
       }
@@ -2219,52 +2230,42 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     }
     case "LOCATE_LABEL": {
       try {
-        const { label } = message;
-        const elementMap = getElementMap();
+        const { label, unique } = message;
+        const query = normalizeLocatorText(label);
+        const fields: Element[] = [];
+        const exactFields = new Set<Element>();
+        const addField = (field: Element | null, exactMatch: boolean) => {
+          if (!field) return;
+          if (!fields.includes(field)) fields.push(field);
+          if (exactMatch) exactFields.add(field);
+        };
         
-        // Find label element
-        const labels = document.querySelectorAll('label');
-        let input: Element | null = null;
+        for (const lbl of document.querySelectorAll('label')) {
+          const lblText = normalizeLocatorText(lbl.textContent);
+          if (!lblText.includes(query)) continue;
+          const forId = lbl.getAttribute('for');
+          addField((forId && document.getElementById(forId)) || lbl.querySelector('input, select, textarea'), lblText === query);
+        }
         
-        for (const lbl of labels) {
-          const lblText = lbl.textContent?.trim().toLowerCase();
-          if (lblText?.includes(label.toLowerCase())) {
-            // Check for 'for' attribute
-            const forId = lbl.getAttribute('for');
-            if (forId) {
-              input = document.getElementById(forId);
-            }
-            // Check for nested input
-            if (!input) {
-              input = lbl.querySelector('input, select, textarea');
-            }
-            if (input) break;
+        // Fields named only by aria-label or placeholder
+        if (fields.length === 0) {
+          for (const field of document.querySelectorAll('input, textarea, select')) {
+            const names = [field.getAttribute('aria-label'), field.getAttribute('placeholder')].map(normalizeLocatorText);
+            if (names.some(fieldName => fieldName.includes(query))) addField(field, names.includes(query));
           }
         }
         
-        // Also check aria-label and placeholder
-        if (!input) {
-          const lowerLabel = label.toLowerCase();
-          input = document.querySelector(
-            `input[aria-label*="${label}" i], input[placeholder*="${label}" i], ` +
-            `textarea[aria-label*="${label}" i], textarea[placeholder*="${label}" i], ` +
-            `select[aria-label*="${label}" i]`
-          );
+        const narrowed = narrowLocated(fields, field => exactFields.has(field), unique, `label "${label}"`);
+        if (typeof narrowed === "string") {
+          sendResponse({ error: narrowed });
+          break;
         }
-        
-        if (!input) {
+        if (narrowed.length === 0) {
           sendResponse({ error: `No form field found with label "${label}"` });
           break;
         }
         
-        const role = getResolvedRole(input);
-        const name = getName(input);
-        const ref = getOrAssignRef(input, role, name);
-        window.__piRefs = window.__piRefs || {};
-        window.__piRefs[ref] = input;
-        elementMap[ref] = { element: new WeakRef(input), role, name };
-        
-        sendResponse({ ref, label });
+        sendResponse({ ref: registerLocatedRef(narrowed[0]), label });
       } catch (err) {
         sendResponse({ error: err instanceof Error ? err.message : String(err) });
       }

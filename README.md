@@ -293,6 +293,8 @@ surf locate.text "Accept" --exact                 # Exact match only
 surf locate.label "Email" --action fill --value "test@example.com"
 ```
 
+An exact name match wins over partial ones, so `--name "Save"` picks a "Save" button over "Save draft". With `--action`, if more than one element still matches, Surf does nothing and lists each match with its ref, so you can act on the one you mean with `surf click <ref>`.
+
 ### Iframe Support
 
 Work with content inside iframes:
