@@ -90,11 +90,10 @@ async function clickRef(tabId: number, frameId: number, ref: string, button: str
   } catch (err) {
     attachFailure = err instanceof Error ? err.message : String(err);
   }
-  // CDP points are main-frame viewport coordinates, a hidden tab does not process CDP input, and a
-  // control drawn by its wrapper has no point of its own. Those clicks go in the page, and say so.
+  // CDP points are main-frame viewport coordinates and a hidden tab does not process CDP input,
+  // so those clicks go in the page, and say so.
   const inPageReason = frameId !== 0 ? "it is inside a frame"
-    : target?.inPage ? "its tab is hidden (a background tab, or a window behind other windows). If nothing happened, bring the window to the front and retry"
-    : target?.drawnBy ? `it is drawn by ${target.drawnBy}`
+    : target?.inPage ? `its tab is hidden (a background tab, or a window behind other windows). If nothing happened, switch to the tab (surf tab.switch ${tabId}) or bring its window to the front and retry`
     : attachFailure ? `Surf could not attach its debugger (${attachFailure.replace(/\.$/, "")})`
     : "";
   if (inPageReason) {
