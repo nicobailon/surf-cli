@@ -867,6 +867,69 @@ function narrowLocated(
     `Act on one of them by ref (for example surf click <ref>), or narrow the query:\n${listed.join("\n")}`;
 }
 
+function describeElement(el: Element): string {
+  const name = getName(el).replace(/\s+/g, " ");
+  if (name) return `${getResolvedRole(el)} ${JSON.stringify(name.length > 60 ? `${name.slice(0, 60)}...` : name)}`;
+  const id = el.id ? `#${el.id}` : "";
+  const cls = typeof el.className === "string" && el.className.trim() ? `.${el.className.trim().split(/\s+/).join(".")}` : "";
+  return `${el.tagName.toLowerCase()}${id}${cls}`;
+}
+
+// The topmost element at a point, descending into open shadow roots.
+function deepElementFromPoint(x: number, y: number): Element | null {
+  let hit = document.elementFromPoint(x, y);
+  while (hit?.shadowRoot) {
+    const inner = hit.shadowRoot.elementFromPoint(x, y);
+    if (!inner || inner === hit) break;
+    hit = inner;
+  }
+  return hit;
+}
+
+function isInside(node: Element, target: Element): boolean {
+  for (let at: Node | null = node; at; at = at.parentNode ?? (at as ShadowRoot).host ?? null) {
+    if (at === target) return true;
+  }
+  return false;
+}
+
+// Where a user's click on `target` would land, or why it can't: the point must hit the target,
+// something inside it, or one of its labels (styled checkboxes hide the input behind its label).
+function clickPoint(target: Element): { x: number; y: number } | { reason: string } {
+  if (target.matches(":disabled") || target.closest('[aria-disabled="true"]')) return { reason: "is disabled" };
+  const labels = [...((target as HTMLInputElement).labels ?? [])];
+  const reaches = (hit: Element | null) => !!hit && (isInside(hit, target) || labels.some((label) => isInside(hit, label)));
+  const shown = (el: Element) => el.checkVisibility({ visibilityProperty: true }) &&
+    el.getBoundingClientRect().width > 0 && el.getBoundingClientRect().height > 0;
+  const candidates = [target, ...labels].filter(shown);
+  if (!candidates.length) return { reason: "is not visible" };
+  const find = () => {
+    for (const el of candidates) {
+      const r = el.getBoundingClientRect();
+      for (const [fx, fy] of [[0.5, 0.5], [0.25, 0.25], [0.75, 0.25], [0.25, 0.75], [0.75, 0.75]]) {
+        const x = r.left + r.width * fx;
+        const y = r.top + r.height * fy;
+        if (x >= 0 && y >= 0 && x < window.innerWidth && y < window.innerHeight && reaches(deepElementFromPoint(x, y))) {
+          return { x, y };
+        }
+      }
+    }
+    return null;
+  };
+  let point = find();
+  if (!point) {
+    candidates[0].scrollIntoView({ block: "center", inline: "center", behavior: "instant" });
+    point = find();
+  }
+  if (point) return point;
+  const r = candidates[0].getBoundingClientRect();
+  const x = r.left + r.width / 2;
+  const y = r.top + r.height / 2;
+  if (x < 0 || y < 0 || x >= window.innerWidth || y >= window.innerHeight) return { reason: "is outside the visible page" };
+  const cover = deepElementFromPoint(x, y);
+  return { reason: cover ? `is covered by ${describeElement(cover)}` : "is not visible" };
+}
+
 function generateAccessibilityTree(
   filter: "all" | "interactive" = "interactive",
   maxDepth = 15,
@@ -2017,6 +2080,21 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     }
     case "SCROLL_TO_POSITION": {
       sendResponse(scrollToPosition(message.position, message.selector || null));
+      break;
+    }
+    case "CLICK_POINT": {
+      const { element, error } = resolveRef(message.ref);
+      const guardError = semanticGuardError(element, message.expectedIdentity);
+      if (guardError) {
+        sendResponse({ error: guardError, code: guardError });
+        break;
+      }
+      if (!element) {
+        sendResponse({ error });
+        break;
+      }
+      // Trusted CDP input lands where it is sent, which is only right for a visible top-level page.
+      sendResponse({ ...clickPoint(element), inPage: document.visibilityState === "hidden" });
       break;
     }
     case "CLICK_ELEMENT": {
