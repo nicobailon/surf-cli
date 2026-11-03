@@ -285,6 +285,27 @@ ${stories}</main>
   function log(entry) { const out = document.querySelector("#log"); out.textContent = out.textContent ? out.textContent + "|" + entry : entry; }
 </script></body></html>`;
   }
+  if (url.pathname === "/click") {
+    // Each button only reports a click a user could have made.
+    return `<!doctype html><html><head><title>Surf click fixture</title></head>
+<body><output id="log"></output>
+<button id="submit" disabled onclick="log('submit')">Submit order</button>
+<div style="position:relative"><button onclick="log('delete')">Delete order</button>
+<div role="dialog" aria-label="Cookie consent" style="position:absolute;inset:0;background:#0003"></div></div>
+<button id="pay">Pay now</button>
+<div id="clip" style="height:40px;overflow:hidden"><div style="height:200px"></div><button onclick="log('archive')">Archive order</button></div>
+<button id="arm">Arm</button> <button id="confirm" onclick="log('confirm')">Confirm order</button>
+<button oncontextmenu="event.preventDefault(); log('menu')">Options</button>
+<script>
+  function log(entry) { const out = document.querySelector("#log"); out.textContent = out.textContent ? out.textContent + "|" + entry : entry; }
+  document.querySelector("#pay").addEventListener("click", (event) => { if (event.isTrusted) log("pay"); });
+  document.querySelector("#arm").addEventListener("click", () => {
+    const confirm = document.querySelector("#confirm");
+    confirm.disabled = true;
+    setTimeout(() => { confirm.disabled = false; }, 1500);
+  });
+</script></body></html>`;
+  }
   if (url.pathname === "/type") {
     return `<!doctype html><html><head><title>Surf type fixture</title></head>
 <body><input id="plain" type="text"><textarea id="notes"></textarea></body></html>`;
@@ -813,6 +834,37 @@ try {
     throw new Error(`ambiguous locate.label filled a field: ${JSON.stringify({ ambiguousLabel, emailValues })}`);
   }
   await runSurf("tab.close", "--id", locateTabId, "--json");
+
+  // A ref click waits for a click a user could make, then clicks with trusted input
+  const clickTabId = String(tabIdFromOutput(await runSurf("tab.new", `${baseUrl}/click`)));
+  await runSurf("wait.element", "#confirm", "--tab-id", clickTabId, "--json");
+  const clickPage = (await browser.pages()).find((page) => page.url() === `${baseUrl}/click`);
+  const clickLog = () => clickPage.evaluate(() => document.querySelector("#log").textContent);
+  const clickRead = await runSurf("page.read", "--all", "--no-text", "--tab-id", clickTabId);
+  const clickRef = (name) => {
+    const ref = clickRead.match(new RegExp(`button "${name}" \\[(e\\d+)\\]`))?.[1];
+    if (!ref) throw new Error(`page.read did not list button "${name}": ${clickRead}`);
+    return ref;
+  };
+  const clickTab = ["--tab-id", clickTabId, "--no-screenshot"];
+  const disabledClick = await runSurfExpectingFailure("click", clickRef("Submit order"), ...clickTab);
+  if (!disabledClick.stderr.includes(`${clickRef("Submit order")} is disabled, so it was not clicked`)) {
+    throw new Error(`a disabled button was not refused: ${JSON.stringify(disabledClick)}`);
+  }
+  const coveredClick = await runSurfExpectingFailure("click", clickRef("Delete order"), ...clickTab);
+  if (!coveredClick.stderr.includes('is covered by dialog "Cookie consent", so it was not clicked')) {
+    throw new Error(`a covered button was not refused: ${JSON.stringify(coveredClick)}`);
+  }
+  if ((await clickLog()) !== "") throw new Error(`a refused click fired anyway (log=${await clickLog()})`);
+  await runSurf("click", clickRef("Pay now"), ...clickTab);
+  await runSurf("click", clickRef("Archive order"), ...clickTab);
+  await runSurf("click", "--selector", "#arm", ...clickTab);
+  await runSurf("click", clickRef("Confirm order"), ...clickTab);
+  await runSurf("click", clickRef("Options"), "--button", "right", ...clickTab);
+  if ((await clickLog()) !== "pay|archive|confirm|menu") {
+    throw new Error(`ref clicks did not reach trusted, clipped, late-enabled and right-click buttons (log=${await clickLog()})`);
+  }
+  await runSurf("tab.close", "--id", clickTabId, "--json");
 
   // CDP type enters punctuation and non-ASCII exactly
   const typeTabId = String(tabIdFromOutput(await runSurf("tab.new", `${baseUrl}/type`)));

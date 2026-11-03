@@ -59,6 +59,33 @@ async function contentScriptError(tabId: number, frameId: number, err: unknown):
   return "Content script not loaded. Try refreshing the page.";
 }
 
+const CLICK_WAIT_MS = 5000;
+
+// Waits until a user could click the ref (visible, enabled, not covered), then clicks it with
+// trusted input. A missing ref or stale observation fails at once; nothing is clicked on failure.
+async function clickRef(tabId: number, frameId: number, ref: string, button: string, expectedIdentity?: unknown): Promise<any> {
+  const deadline = Date.now() + CLICK_WAIT_MS;
+  let target: any;
+  while (true) {
+    target = await chrome.tabs.sendMessage(tabId, { type: "CLICK_POINT", ref, expectedIdentity }, { frameId });
+    if (target?.error) return { error: target.error, code: target.code };
+    if (!target?.reason || Date.now() >= deadline) break;
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  if (target?.reason) return { error: `${ref} ${target.reason}, so it was not clicked (waited ${CLICK_WAIT_MS / 1000}s).` };
+  await cdp.attachForDialogs(tabId);
+  // Frames and hidden tabs keep the in-page click: CDP points are main-frame viewport
+  // coordinates, and a background tab does not process CDP input. So does a tab whose
+  // debugger could not be attached (another debugger, such as DevTools, owns it).
+  if (frameId !== 0 || target?.inPage || !cdp.isAttached(tabId)) {
+    const result = await chrome.tabs.sendMessage(tabId, { type: "CLICK_ELEMENT", ref, button, expectedIdentity }, { frameId });
+    return result.error ? { error: result.error, code: result.code } : { success: true };
+  }
+  const clicks = button === "double" ? 2 : button === "triple" ? 3 : 1;
+  await cdp.click(tabId, target.x, target.y, button === "right" ? "right" : "left", clicks);
+  return { success: true };
+}
+
 async function validateRequestedFrame(tabId: number, value: unknown): Promise<void> {
   const frameId = Number(value);
   if (!Number.isInteger(frameId) || frameId <= 0) return;
@@ -825,11 +852,7 @@ async function performLocateAction(
 ): Promise<any> {
   switch (action) {
     case "click": {
-      const result = await chrome.tabs.sendMessage(tabId, {
-        type: "CLICK_ELEMENT",
-        ref,
-        button: "left",
-      }, { frameId });
+      const result = await clickRef(tabId, frameId, ref, "left");
       return result.error ? result : { success: true, action: "click", ref };
     }
     case "fill": {
@@ -1878,14 +1901,7 @@ export async function handleMessage(
       if (!tabId) throw new Error("No tabId provided");
       const frameId = getFrameIdForTab(tabId, message);
       try {
-        const result = await chrome.tabs.sendMessage(tabId, {
-          type: "CLICK_ELEMENT",
-          ref: message.ref,
-          button: message.button || "left",
-          expectedIdentity: message.expectedIdentity,
-        }, { frameId });
-        if (result.error) return { error: result.error, code: result.code };
-        return { success: true };
+        return await clickRef(tabId, frameId, message.ref, message.button || "left", message.expectedIdentity);
       } catch (err) {
         return { error: await contentScriptError(tabId, frameId, err) };
       }
