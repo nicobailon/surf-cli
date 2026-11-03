@@ -68,7 +68,7 @@ doctor [--browser all]            # can't connect
 ## Examples of the tricky shapes
 
 ```bash
-surf do 'go "https://example.com" | read | click e5 | screenshot'   # refs reset on navigation; read assigns them again
+surf do 'go "https://example.com" | read | click e5 | screenshot'   # refs from before a navigation stop working; read assigns new ones
 surf form.fill --data '[{"ref":"e1","value":"John"},{"ref":"e7","value":true}]'
 surf upload --ref e12 --files ./resume.pdf          # e12 may be the "Upload" button
 surf drag --from 100,200 --to 300,200

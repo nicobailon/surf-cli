@@ -575,6 +575,33 @@ const elementRefs = new WeakMap<Element, ElementRef>();
 // Unlike __piElementMap entries, these outlive the element so a stale ref can name its replacement.
 const refIdentities: Record<string, { role: string; name: string }> = {};
 let globalRefCounter = 0;
+// Every ref numbered at or below this was issued by an earlier page in this tab.
+let refFloor = 0;
+let refHighQueued = false;
+let refFloorReady: Promise<void> | null = null;
+let refFloorKnown = false;
+
+// Ref numbers continue from the tab's high-water mark, so a ref from an earlier page can never
+// name an element here. Surf's first message to a document waits for the starting number, so
+// pages Surf never touches send nothing.
+function requestRefFloor(): Promise<void> {
+  refFloorReady ??= chrome.runtime.sendMessage({ type: "REF_FLOOR" })
+    .then((reply: { floor: number }) => {
+      refFloor = reply.floor;
+      globalRefCounter = Math.max(globalRefCounter, refFloor);
+      refFloorKnown = true;
+    })
+    // An unreachable extension (reloaded) can't send commands here either; the next message retries.
+    .catch(() => {})
+    .finally(() => {
+      refFloorReady = null;
+    });
+  return refFloorReady;
+}
+// A page restored from the back/forward cache numbers new refs above the pages visited meanwhile.
+window.addEventListener("pageshow", (event) => {
+  if (event.persisted) refFloorKnown = false;
+});
 
 function getOrAssignRef(element: Element, role: string, name: string): string {
   const existing = elementRefs.get(element);
@@ -585,6 +612,13 @@ function getOrAssignRef(element: Element, role: string, name: string): string {
   const ref = `e${++globalRefCounter}`;
   elementRefs.set(element, { role, name, ref });
   refIdentities[ref] = { role, name };
+  if (!refHighQueued) {
+    refHighQueued = true;
+    queueMicrotask(() => {
+      refHighQueued = false;
+      chrome.runtime.sendMessage({ type: "REF_HIGH", high: globalRefCounter }).catch(() => {});
+    });
+  }
   return ref;
 }
 
@@ -804,7 +838,12 @@ function resolveRef(ref: string): { element: Element; error?: undefined } | { el
   // A re-rendered node stays reachable through __piRefs; acting on it would silently do nothing.
   if (element?.isConnected) return { element };
   const identity = refIdentities[ref];
-  if (!identity) return { error: `Element ${ref} not found. Run surf read to get current refs.` };
+  if (!identity) {
+    if (Number(ref.slice(1)) <= refFloor) {
+      return { error: `${ref} is from an earlier page in this tab. Run surf read to get current refs.` };
+    }
+    return { error: `Element ${ref} not found. Run surf read to get current refs.` };
+  }
 
   const matches: Element[] = [];
   const pending: Element[] = identity.name ? [document.body] : [];
@@ -1902,6 +1941,28 @@ function waitForPageSettle(session: PageChangeSession, capMs: number, quietMs: n
 }
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+  if (refFloorKnown) return handleContentMessage(message, sender, sendResponse);
+  requestRefFloor().then(() => {
+    let answered = false;
+    let keptOpen = false;
+    try {
+      keptOpen = handleContentMessage(message, sender, (response) => {
+        answered = true;
+        sendResponse(response);
+      });
+    } finally {
+      // Chrome would have closed the channel for a handler that kept nothing open or threw.
+      if (!keptOpen && !answered) sendResponse(undefined);
+    }
+  });
+  return true;
+});
+
+function handleContentMessage(
+  message: any,
+  sender: chrome.runtime.MessageSender,
+  sendResponse: (response?: any) => void,
+): boolean {
   switch (message.type) {
     case "PLAYBOOK_WATCH_START":
       playbookWatch = { includeInputValues: message.includeInputValues === true };
@@ -2983,7 +3044,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       return false;
   }
   return false;
-});
+}
 
 function searchPageText(term: string, caseSensitive: boolean, limit: number) {
   const matches: Array<{
