@@ -2094,7 +2094,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         break;
       }
       // Trusted CDP input lands where it is sent, which is only right for a visible top-level page.
-      sendResponse({ ...clickPoint(element), inPage: window !== window.top || document.visibilityState === "hidden" });
+      sendResponse({ ...clickPoint(element), inPage: document.visibilityState === "hidden" });
       break;
     }
     case "CLICK_ELEMENT": {
