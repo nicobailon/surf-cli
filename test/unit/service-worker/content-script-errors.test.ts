@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { createChromeMock } from "../../mocks/chrome";
 
 vi.mock("../../../src/native/port-manager", () => ({
@@ -21,8 +21,6 @@ async function clickWithFailure(failure: Error, pingAnswers: boolean) {
 }
 
 describe("failed content-script commands", () => {
-  beforeEach(() => vi.clearAllMocks());
-
   it("says the content script is not loaded only when the frame ignores a PING", async () => {
     const result = await clickWithFailure(
       new Error("Could not establish connection. Receiving end does not exist."),

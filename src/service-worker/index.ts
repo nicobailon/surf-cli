@@ -45,11 +45,8 @@ function getFrameIdForTab(_tabId: number, message?: { frameId?: unknown }): numb
   return Number.isInteger(frameId) && frameId > 0 ? frameId : 0;
 }
 
-/**
- * Explains a failed content-script command. "Not loaded" is only claimed when the frame
- * also ignores a PING; a closed message channel means the document went away mid-command,
- * and a PING then would race the next document's content script.
- */
+// "Not loaded" only when the frame also ignores a PING. A closed channel means the document
+// went away mid-command; a PING then would race the next document's content script.
 async function contentScriptError(tabId: number, frameId: number, err: unknown): Promise<string> {
   const reason = err instanceof Error ? err.message : String(err);
   if (/message (port|channel) (is )?closed|back\/forward cache/i.test(reason)) {
