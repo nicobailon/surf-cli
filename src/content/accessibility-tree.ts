@@ -1408,6 +1408,22 @@ function getElementCoordinates(ref: string): { x: number; y: number; error?: str
   return { x, y };
 }
 
+// Writes text into an input or textarea and returns why it failed, or null. Refuses before writing when the
+// field can't take the text, and fails when the page kept the old value. Never echoes values: fields may be secret.
+function writeTextField(field: HTMLInputElement | HTMLTextAreaElement, text: string, label: string): string | null {
+  if (field.matches(":disabled")) return `${label} is disabled`;
+  if (field.readOnly) return `${label} is read-only`;
+  const limited = field instanceof HTMLTextAreaElement || /^(text|search|url|tel|email|password)$/.test(field.type);
+  if (limited && field.maxLength >= 0 && text.length > field.maxLength) {
+    return `${label} accepts at most ${field.maxLength} characters, but ${text.length} were given`;
+  }
+  const before = field.value;
+  setNativeValue(field, text);
+  // A changed value that differs from the text (an input mask) is fine; an unchanged one means the page refused it.
+  if (field.value === before && before !== text) return `${label} did not keep the typed text; it still holds its previous value`;
+  return null;
+}
+
 function setFormValue(ref: string, value: string | boolean | number): { success: boolean; error?: string } {
   const { element, error } = resolveRef(ref);
   if (!element) {
@@ -1425,10 +1441,12 @@ function setFormValue(ref: string, value: string | boolean | number): { success:
         input.checked = Boolean(value);
         input.dispatchEvent(new Event("change", { bubbles: true }));
       } else {
-        setNativeValue(input, String(value));
+        const failure = writeTextField(input, String(value), ref);
+        if (failure) return { success: false, error: failure };
       }
     } else if (tagName === "textarea") {
-      setNativeValue(element as HTMLTextAreaElement, String(value));
+      const failure = writeTextField(element as HTMLTextAreaElement, String(value), ref);
+      if (failure) return { success: false, error: failure };
     } else if (tagName === "select") {
       const select = element as HTMLSelectElement;
       const strValue = String(value);
@@ -1478,7 +1496,12 @@ function smartType(selector: string, text: string, clear = true, submit = false)
     } else {
       // Assigning a value always replaces the previous one, so `clear` only
       // matters for the contenteditable branch above.
-      setNativeValue(target as HTMLInputElement | HTMLTextAreaElement, text);
+      if (target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement) {
+        const failure = writeTextField(target, text, selector);
+        if (failure) return { success: false, error: failure };
+      } else {
+        setNativeValue(target as HTMLInputElement, text);
+      }
     }
 
     if (submit) {
@@ -2677,21 +2700,15 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           continue;
         }
         try {
-          if (el instanceof HTMLInputElement) {
-            const inputType = el.type.toLowerCase();
-            if (inputType === "checkbox" || inputType === "radio") {
-              const shouldCheck = value === true || value === "true" || value === "1" || value === "checked";
-              el.checked = shouldCheck;
-              el.dispatchEvent(new Event("change", { bubbles: true }));
-            } else {
-              el.focus();
-              setNativeValue(el, String(value));
-            }
+          if (el instanceof HTMLInputElement && ["checkbox", "radio"].includes(el.type.toLowerCase())) {
+            const shouldCheck = value === true || value === "true" || value === "1" || value === "checked";
+            el.checked = shouldCheck;
+            el.dispatchEvent(new Event("change", { bubbles: true }));
             results.push({ ref, success: true });
-          } else if (el instanceof HTMLTextAreaElement) {
+          } else if (el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement) {
             el.focus();
-            setNativeValue(el, String(value));
-            results.push({ ref, success: true });
+            const failure = writeTextField(el, String(value), ref);
+            results.push(failure ? { ref, success: false, error: failure } : { ref, success: true });
           } else if (el instanceof HTMLSelectElement) {
             el.value = String(value);
             el.dispatchEvent(new Event("change", { bubbles: true }));
@@ -2709,9 +2726,13 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         }
       }
       const failed = results.filter(r => !r.success);
+      const filled = results.length - failed.length;
+      // A top-level error makes the CLI exit non-zero instead of printing a failed result as output.
+      const error = [...(filled ? [`Filled ${filled} of ${results.length} fields.`] : []), ...failed.map((r) => r.error)].join("\n");
       sendResponse({
         success: failed.length === 0,
-        filled: results.filter(r => r.success).length,
+        ...(failed.length ? { error } : {}),
+        filled,
         failed: failed.length,
         results,
       });
