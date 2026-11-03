@@ -455,7 +455,8 @@ function formatToolContent(result, log = () => {}) {
 
   if (result.autoScreenshot) {
     const { path: ssPath, pending } = result.autoScreenshot;
-    return text(pending ? `OK\nScreenshot (pending): ${ssPath}` : `OK\nScreenshot saved: ${ssPath}`);
+    const hint = result._hint ? `\n[hint] ${result._hint}` : "";
+    return text(pending ? `OK${hint}\nScreenshot (pending): ${ssPath}` : `OK${hint}\nScreenshot saved: ${ssPath}`);
   }
 
   // Bug fix: Handle success with metrics/frames/readyState/hint in one block

@@ -904,6 +904,15 @@ try {
   if ((await clickLog()) !== "pay|archive|confirm|menu") {
     throw new Error(`ref clicks did not reach trusted, clipped, late-enabled and right-click buttons (log=${await clickLog()})`);
   }
+  // A click that can't be a real mouse click goes in the page and says why, before its screenshot line.
+  const frontTabId = String(tabIdFromOutput(await runSurf("tab.new", `${baseUrl}/type`)));
+  const hiddenClick = await runSurf("click", clickRef("Archive order"), "--tab-id", clickTabId);
+  const hintAt = hiddenClick.indexOf(`because its tab is hidden`);
+  if (hintAt === -1 || !hiddenClick.includes(`surf tab.switch ${clickTabId}`)
+    || hintAt > hiddenClick.indexOf("Screenshot (pending):") || !(await clickLog()).endsWith("|archive")) {
+    throw new Error(`a click in a background tab did not go in the page with a note: ${hiddenClick} (log=${await clickLog()})`);
+  }
+  await runSurf("tab.close", "--id", frontTabId, "--json");
   await runSurf("tab.close", "--id", clickTabId, "--json");
 
   // A ref from an earlier page in the tab never resolves on a later one, even when both pages
