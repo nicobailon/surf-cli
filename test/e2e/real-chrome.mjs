@@ -292,6 +292,7 @@ ${stories}</main>
 <div role="button" onclick="log('save draft')"><span>Save draft</span></div>
 <div role="button" onclick="log('save')"><span>Save</span></div>
 <div role="button" onclick="log('ok')">OK</div>
+<div role="button" onclick="log('new item')"><span class="icon" aria-hidden="true">add</span>New item</div>
 <script>
   function log(entry) { const out = document.querySelector("#log"); out.textContent = out.textContent ? out.textContent + "|" + entry : entry; }
 </script></body></html>`;
@@ -862,14 +863,16 @@ try {
   const controlsTabId = String(tabIdFromOutput(await runSurf("tab.new", `${baseUrl}/custom-controls`)));
   await runSurf("wait.element", "[role=button]", "--tab-id", controlsTabId, "--json");
   const controlsRead = await runSurf("read", "--no-text", "--tab-id", controlsTabId);
-  for (const name of ["Save draft", "Save", "OK"]) {
+  for (const name of ["Save draft", "Save", "OK", "New item"]) {
     if (!new RegExp(`button "${name}" \\[e\\d+\\]`).test(controlsRead)) {
       throw new Error(`read did not name the custom button "${name}": ${controlsRead}`);
     }
   }
   await runSurf("locate.role", "button", "--name", "Save", "--action", "click", "--tab-id", controlsTabId, "--no-screenshot");
   const controlsLog = await runSurf("js", 'return document.querySelector("#log").textContent', "--tab-id", controlsTabId);
-  if (!controlsLog.includes('"save"')) throw new Error(`locate --name Save did not click the custom "Save" button: ${controlsLog}`);
+  if (controlsLog.trim().split("\n").at(-1) !== '"save"') {
+    throw new Error(`locate --name Save did not click only the custom "Save" button: ${controlsLog}`);
+  }
   await runSurf("tab.close", "--id", controlsTabId, "--json");
 
   // A ref click waits for a click a user could make, then clicks with trusted input
