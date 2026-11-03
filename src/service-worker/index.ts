@@ -1715,6 +1715,7 @@ export async function handleMessage(
           role: message.role,
           name: message.name,
           all: message.all,
+          unique: Boolean(message.action),
         }, { frameId: locateFrameId });
 
         if (result.error) return result;
@@ -1740,6 +1741,7 @@ export async function handleMessage(
           type: "LOCATE_TEXT",
           text: message.text,
           exact: message.exact,
+          unique: Boolean(message.action),
         }, { frameId: textFrameId });
 
         if (result.error) return result;
@@ -1764,6 +1766,7 @@ export async function handleMessage(
         const result = await chrome.tabs.sendMessage(tabId, {
           type: "LOCATE_LABEL",
           label: message.label,
+          unique: Boolean(message.action),
         }, { frameId: labelFrameId });
 
         if (result.error) return result;

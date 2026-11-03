@@ -268,6 +268,19 @@ ${stories}</main>
   });
 </script></body></html>`;
   }
+  if (url.pathname === "/locate") {
+    // "Save draft" comes first, so a substring match picks it; role="button" matches two selectors.
+    return `<!doctype html><html><head><title>Surf locate fixture</title></head>
+<body><output id="log"></output>
+<button onclick="log('save draft')">Save draft</button>
+<button role="button" onclick="log('save')">Save</button>
+<ul><li>Invoice 1001 <button onclick="log('delete 1001')">Delete</button></li>
+<li>Invoice 1002 <button onclick="log('delete 1002')">Delete</button></li></ul>
+<label>Email <input id="work-email"></label> <label>Email <input id="home-email"></label>
+<script>
+  function log(entry) { const out = document.querySelector("#log"); out.textContent = out.textContent ? out.textContent + "|" + entry : entry; }
+</script></body></html>`;
+  }
   if (url.pathname === "/type") {
     return `<!doctype html><html><head><title>Surf type fixture</title></head>
 <body><input id="plain" type="text"><textarea id="notes"></textarea></body></html>`;
@@ -756,6 +769,32 @@ try {
   const rerenderLog = await rerenderPage?.evaluate(() => document.querySelector("#log")?.textContent);
   if (rerenderLog !== "saved") throw new Error(`suggested ref click did not reach the new button (log=${rerenderLog})`);
   await runSurf("tab.close", "--id", rerenderTabId, "--json");
+
+  // Locators act only on an element the query names uniquely
+  const locateTabId = String(tabIdFromOutput(await runSurf("tab.new", `${baseUrl}/locate`)));
+  await runSurf("wait.element", "#home-email", "--tab-id", locateTabId, "--json");
+  const locatePage = (await browser.pages()).find((page) => page.url() === `${baseUrl}/locate`);
+  const locateLog = () => locatePage.evaluate(() => document.querySelector("#log").textContent);
+  await runSurf("locate.role", "button", "--name", "Save", "--action", "click", "--tab-id", locateTabId, "--no-screenshot");
+  if ((await locateLog()) !== "save") throw new Error(`locate --name Save did not click the exact "Save" (log=${await locateLog()})`);
+  const ambiguousDelete = await runSurfExpectingFailure(
+    "locate.role", "button", "--name", "Delete", "--action", "click", "--tab-id", locateTabId, "--no-screenshot",
+  );
+  const deleteRefs = [...ambiguousDelete.stderr.matchAll(/^ {2}(e\d+) button "Delete"$/gm)].map((match) => match[1]);
+  if (!ambiguousDelete.stderr.includes('2 elements match role "button" and name "Delete", so nothing was done') || deleteRefs.length !== 2) {
+    throw new Error(`ambiguous locate did not list both candidates: ${JSON.stringify(ambiguousDelete)}`);
+  }
+  if ((await locateLog()) !== "save") throw new Error(`ambiguous locate acted anyway (log=${await locateLog()})`);
+  await runSurf("click", deleteRefs[1], "--tab-id", locateTabId, "--no-screenshot");
+  if ((await locateLog()) !== "save|delete 1002") throw new Error(`listed ref did not reach the second row (log=${await locateLog()})`);
+  const ambiguousLabel = await runSurfExpectingFailure(
+    "locate.label", "Email", "--action", "fill", "--value", "x@example.com", "--tab-id", locateTabId, "--no-screenshot",
+  );
+  const emailValues = await locatePage.evaluate(() => [...document.querySelectorAll("input")].map((input) => input.value));
+  if (!ambiguousLabel.stderr.includes('2 elements match label "Email"') || emailValues.some(Boolean)) {
+    throw new Error(`ambiguous locate.label filled a field: ${JSON.stringify({ ambiguousLabel, emailValues })}`);
+  }
+  await runSurf("tab.close", "--id", locateTabId, "--json");
 
   // CDP type enters punctuation and non-ASCII exactly
   const typeTabId = String(tabIdFromOutput(await runSurf("tab.new", `${baseUrl}/type`)));
