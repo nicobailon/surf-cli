@@ -1434,19 +1434,11 @@ function setFormValue(ref: string, value: string | boolean | number): { success:
   const tagName = element.tagName.toLowerCase();
 
   try {
-    if (tagName === "input") {
-      const input = element as HTMLInputElement;
-      const type = input.type.toLowerCase();
-
-      if (type === "checkbox" || type === "radio") {
-        input.checked = Boolean(value);
-        input.dispatchEvent(new Event("change", { bubbles: true }));
-      } else {
-        const failure = writeTextField(input, String(value), ref);
-        if (failure) return { success: false, error: failure };
-      }
-    } else if (tagName === "textarea") {
-      const failure = writeTextField(element as HTMLTextAreaElement, String(value), ref);
+    if (tagName === "input" && ["checkbox", "radio"].includes((element as HTMLInputElement).type.toLowerCase())) {
+      (element as HTMLInputElement).checked = Boolean(value);
+      element.dispatchEvent(new Event("change", { bubbles: true }));
+    } else if (tagName === "input" || tagName === "textarea") {
+      const failure = writeTextField(element as HTMLInputElement | HTMLTextAreaElement, String(value), ref);
       if (failure) return { success: false, error: failure };
     } else if (tagName === "select") {
       const select = element as HTMLSelectElement;
@@ -1497,12 +1489,8 @@ function smartType(selector: string, text: string, clear = true, submit = false)
     } else {
       // Assigning a value always replaces the previous one, so `clear` only
       // matters for the contenteditable branch above.
-      if (target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement) {
-        const failure = writeTextField(target, text, selector);
-        if (failure) return { success: false, error: failure };
-      } else {
-        setNativeValue(target as HTMLInputElement, text);
-      }
+      const failure = writeTextField(target as HTMLInputElement, text, selector);
+      if (failure) return { success: false, error: failure };
     }
 
     if (submit) {
