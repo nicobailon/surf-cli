@@ -916,11 +916,11 @@ try {
   await runSurf("wait.ready", "--json", "--tab-id", refsTabId, "--selector", "button");
   const titleOfRefsTab = async () =>
     JSON.parse(await runSurf("tab.list", "--json")).find((tab) => String(tab.id) === refsTabId)?.title;
-  if ((await titleOfRefsTab()) === "restored") {
-    // Back from the back/forward cache: the same document, so its own refs still work.
-    await runSurf("click", keepRef, ...refsTab);
-    if ((await titleOfRefsTab()) !== "kept") throw new Error("a restored page did not accept its own ref");
-  }
+  const backTitle = await titleOfRefsTab();
+  if (backTitle !== "restored") throw new Error(`surf back did not restore page A from the back/forward cache (title=${backTitle})`);
+  // The same document, so its own refs still work.
+  await runSurf("click", keepRef, ...refsTab);
+  if ((await titleOfRefsTab()) !== "kept") throw new Error("a restored page did not accept its own ref");
   await runSurf("tab.close", "--id", refsTabId, "--json");
 
   // CDP type enters punctuation and non-ASCII exactly

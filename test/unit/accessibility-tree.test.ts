@@ -219,8 +219,9 @@ describe("accessibility tree", () => {
     };
 
     await import("../../src/content/accessibility-tree");
-    // Surf's first message to a page waits for the page's starting ref number; let that reply arrive.
-    sendMessage({ type: "PING" });
+    // Surf's first message to a page waits for the page's starting ref number; send a harmless
+    // one and let that reply arrive.
+    sendMessage({ type: "PLAYBOOK_WATCH_STOP" });
     await new Promise((resolve) => setTimeout(resolve, 0));
   });
 

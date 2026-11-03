@@ -1944,12 +1944,16 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (refFloorKnown) return handleContentMessage(message, sender, sendResponse);
   requestRefFloor().then(() => {
     let answered = false;
-    const keptOpen = handleContentMessage(message, sender, (response) => {
-      answered = true;
-      sendResponse(response);
-    });
-    // Chrome would have closed the channel for a handler that kept nothing open.
-    if (!keptOpen && !answered) sendResponse(undefined);
+    let keptOpen = false;
+    try {
+      keptOpen = handleContentMessage(message, sender, (response) => {
+        answered = true;
+        sendResponse(response);
+      });
+    } finally {
+      // Chrome would have closed the channel for a handler that kept nothing open or threw.
+      if (!keptOpen && !answered) sendResponse(undefined);
+    }
   });
   return true;
 });
