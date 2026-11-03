@@ -282,7 +282,7 @@ Find and interact with elements by role, text, or label - no refs or selectors n
 # By ARIA role
 surf locate.role button --name "Submit"           # Find button
 surf locate.role button --name "Submit" --action click  # Find and click
-surf locate.role textbox --action fill --value "hello"  # Find and fill
+surf locate.role textbox --name "Search" --action fill --value "hello"  # Find and fill
 surf locate.role link --all                       # List all links
 
 # By text content  
@@ -311,7 +311,7 @@ surf page.text                      # Read raw iframe text
 surf page.state                     # Inspect iframe UI state
 surf click e5                       # Click in iframe
 surf type "4242" --into "#card-number"
-surf locate.role button --action click
+surf locate.role button --name "Pay" --action click
 
 surf frame.main                     # Return to main page
 ```
