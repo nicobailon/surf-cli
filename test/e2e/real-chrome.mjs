@@ -183,6 +183,10 @@ function fixturePages(request, { crossOriginBase }) {
   if (url.pathname === "/changes-target") {
     return `<!doctype html><html><head><title>Changes target</title></head><body><main><h1>Target</h1></main></body></html>`;
   }
+  if (url.pathname === "/navigates-away") {
+    return `<!doctype html><html><head><title>Navigates away</title></head><body><p>Leaving</p>
+<script>setTimeout(() => { location.href = "/changes-target"; }, 1500);</script></body></html>`;
+  }
   if (url.pathname === "/native-dialog") {
     return `<!doctype html><html><head><title>Native dialog fixture</title></head>
 <body><main><button id="alert" onclick="alert('hi')">Alert</button>
@@ -1029,6 +1033,15 @@ try {
     }
   }
   await runSurf("tab.close", "--id", refDialogTab, "--json");
+
+  // A command cut short by a navigation names the navigation, not a missing content script.
+  const leavingTab = String(tabIdFromOutput(await runSurf("tab.new", `${baseUrl}/navigates-away`)));
+  await runSurf("wait.ready", "--json", "--tab-id", leavingTab, "--selector", "p");
+  const cutShort = await runSurfExpectingFailure("wait.element", "#never", "--timeout", "15000", "--tab-id", leavingTab);
+  if (cutShort.stderr.includes("Content script not loaded") || !cutShort.stderr.includes("The page navigated or closed")) {
+    throw new Error(`a wait cut short by navigation did not report the navigation: ${JSON.stringify(cutShort)}`);
+  }
+  await runSurf("tab.close", "--id", leavingTab, "--json");
 
   // Upload through the visible button that opens a hidden file input's chooser (#363).
   const uploadTab = String(tabIdFromOutput(await runSurf("tab.new", `${baseUrl}/upload`)));
