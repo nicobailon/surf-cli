@@ -1409,7 +1409,8 @@ function getElementCoordinates(ref: string): { x: number; y: number; error?: str
 }
 
 // Writes text into an input or textarea and returns why it failed, or null. Refuses before writing when the
-// field can't take the text, and fails when the page kept the old value. Never echoes values: fields may be secret.
+// field can't take the text, and fails when the page kept the old value or emptied the field. Never echoes values:
+// fields may be secret.
 function writeTextField(field: HTMLInputElement | HTMLTextAreaElement, text: string, label: string): string | null {
   if (field.matches(":disabled")) return `${label} is disabled`;
   if (field.readOnly) return `${label} is read-only`;
@@ -1419,8 +1420,8 @@ function writeTextField(field: HTMLInputElement | HTMLTextAreaElement, text: str
   }
   const before = field.value;
   setNativeValue(field, text);
-  // A changed value that differs from the text (an input mask) is fine; an unchanged one means the page refused it.
-  if (field.value === before && before !== text) return `${label} did not keep the typed text; it still holds its previous value`;
+  // A changed value that differs from the text (an input mask) is fine; an unchanged or empty one means the page refused it.
+  if (field.value !== text && (field.value === before || field.value === "")) return `${label} did not keep the typed text`;
   return null;
 }
 
