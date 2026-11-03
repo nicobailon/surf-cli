@@ -948,7 +948,7 @@ function isInside(node: Element, target: Element): boolean {
 
 // Where a user's click on `target` would land, or why it can't: the point must hit the target,
 // something inside it, or one of its labels (styled checkboxes hide the input behind its label).
-function clickPoint(target: Element): { x: number; y: number } | { reason: string } {
+function clickPoint(target: Element): { x: number; y: number; drawnBy?: string } | { reason: string } {
   if (target.matches(":disabled") || target.closest('[aria-disabled="true"]')) return { reason: "is disabled" };
   const labels = [...((target as HTMLInputElement).labels ?? [])];
   const reaches = (hit: Element | null) => !!hit && (isInside(hit, target) || labels.some((label) => isInside(hit, label)));
@@ -980,6 +980,13 @@ function clickPoint(target: Element): { x: number; y: number } | { reason: strin
   const y = r.top + r.height / 2;
   if (x < 0 || y < 0 || x >= window.innerWidth || y >= window.innerHeight) return { reason: "is outside the visible page" };
   const cover = deepElementFromPoint(x, y);
+  // A visually hidden (1px, sr-only) control drawn by its wrapper or a sibling is the one the user means.
+  const page: Element[] = [document.body, document.documentElement];
+  const wrapper = target.parentElement;
+  if (cover && !page.includes(cover) && r.width <= 1 && r.height <= 1 &&
+    ((wrapper && !page.includes(wrapper) && isInside(cover, wrapper)) || isInside(target, cover))) {
+    return { x, y, drawnBy: describeElement(cover) };
+  }
   return { reason: cover ? `is covered by ${describeElement(cover)}` : "is not visible" };
 }
 

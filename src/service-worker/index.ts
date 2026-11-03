@@ -83,13 +83,24 @@ async function clickRef(tabId: number, frameId: number, ref: string, button: str
     await new Promise((resolve) => setTimeout(resolve, 100));
   }
   if (target?.reason) return { error: `${ref} ${target.reason}, so it was not clicked (waited ${CLICK_WAIT_MS / 1000}s).` };
-  await cdp.attachForDialogs(tabId);
-  // Frames and hidden tabs keep the in-page click: CDP points are main-frame viewport
-  // coordinates, and a background tab does not process CDP input. So does a tab whose
-  // debugger could not be attached (another debugger, such as DevTools, owns it).
-  if (frameId !== 0 || target?.inPage || !cdp.isAttached(tabId)) {
+  // Attach even after the user cancelled the debugging bar: a dismissed bar is not a refusal.
+  let attachFailure = "";
+  try {
+    await cdp.attach(tabId);
+  } catch (err) {
+    attachFailure = err instanceof Error ? err.message : String(err);
+  }
+  // CDP points are main-frame viewport coordinates, a hidden tab does not process CDP input, and a
+  // control drawn by its wrapper has no point of its own. Those clicks go in the page, and say so.
+  const inPageReason = frameId !== 0 ? "it is inside a frame"
+    : target?.inPage ? "its tab is hidden (a background tab, or a window behind other windows). If nothing happened, bring the window to the front and retry"
+    : target?.drawnBy ? `it is drawn by ${target.drawnBy}`
+    : attachFailure ? `Surf could not attach its debugger (${attachFailure.replace(/\.$/, "")})`
+    : "";
+  if (inPageReason) {
     const result = await chrome.tabs.sendMessage(tabId, { type: "CLICK_ELEMENT", ref, button, expectedIdentity }, { frameId });
-    return result.error ? { error: result.error, code: result.code } : { success: true };
+    if (result.error) return { error: result.error, code: result.code };
+    return { success: true, _hint: `Clicked ${ref} inside the page, not with the mouse, because ${inPageReason}.` };
   }
   const clicks = button === "double" ? 2 : button === "triple" ? 3 : 1;
   await cdp.click(tabId, target.x, target.y, button === "right" ? "right" : "left", clicks);
@@ -863,7 +874,7 @@ async function performLocateAction(
   switch (action) {
     case "click": {
       const result = await clickRef(tabId, frameId, ref, "left");
-      return result.error ? result : { success: true, action: "click", ref };
+      return result.error ? result : { success: true, action: "click", ref, _hint: result._hint };
     }
     case "fill": {
       if (!value) return { error: "fill action requires --value" };
@@ -4647,7 +4658,7 @@ initNativeMessaging(async (msg) => {
     ? () => returnOnNativeDialog(tabId, msg.watchDialogs === true, handle)
     : handle;
   const result = tabId && msg.pageChanges ? await runWithPageChanges(tabId, msg, runAction) : await runAction();
-  const hints: string[] = [];
+  const hints: string[] = result?._hint ? [result._hint] : [];
   if (autoCreatedTab) {
     hints.push(`Auto-created tab in window ${windowId} (no usable tabs existed). Navigate to your target URL.`);
   }

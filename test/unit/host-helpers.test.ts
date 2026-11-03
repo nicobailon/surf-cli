@@ -785,6 +785,17 @@ describe("truncatePageText", () => {
 });
 
 describe("formatToolContent", () => {
+  it("keeps an action's hint before its pending screenshot line", () => {
+    const content = helpers.formatToolContent({
+      success: true,
+      _hint: "Clicked e1 inside the page, not with the mouse, because it is inside a frame.",
+      autoScreenshot: { path: "/tmp/shot.png", pending: true },
+    });
+    expect(content[0].text).toBe(
+      "OK\n[hint] Clicked e1 inside the page, not with the mouse, because it is inside a frame.\nScreenshot (pending): /tmp/shot.png",
+    );
+  });
+
   it("preserves internal semantic compare and scroll-scope responses", () => {
     const compare = { success: true, matches: false, reason: "compared", identity: { ref: "e1" } };
     const scope = { success: true, scopeToken: "opaque", geometry: { scrollTop: 0 } };

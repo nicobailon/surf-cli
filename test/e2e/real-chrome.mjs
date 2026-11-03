@@ -308,6 +308,8 @@ ${stories}</main>
 <div id="clip" style="height:40px;overflow:hidden"><div style="height:200px"></div><button onclick="log('archive')">Archive order</button></div>
 <button id="arm">Arm</button> <button id="confirm" onclick="log('confirm')">Confirm order</button>
 <button oncontextmenu="event.preventDefault(); log('menu')">Options</button>
+<div id="remember" style="position:relative;display:inline-block;padding:4px"><input type="checkbox" id="remember-box" aria-label="Remember me"
+  style="position:absolute;width:1px;height:1px;margin:-1px;overflow:hidden;clip-path:inset(50%)"><span>[ ] Remember me</span></div>
 <script>
   function log(entry) { const out = document.querySelector("#log"); out.textContent = out.textContent ? out.textContent + "|" + entry : entry; }
   document.querySelector("#pay").addEventListener("click", (event) => { if (event.isTrusted) log("pay"); });
@@ -904,6 +906,19 @@ try {
   if ((await clickLog()) !== "pay|archive|confirm|menu") {
     throw new Error(`ref clicks did not reach trusted, clipped, late-enabled and right-click buttons (log=${await clickLog()})`);
   }
+  // A click that can't be a real mouse click goes in the page and says why.
+  const rememberRef = clickRead.match(/checkbox "Remember me" \[(e\d+)\]/)?.[1];
+  const drawnClick = await runSurf("click", rememberRef, ...clickTab);
+  if (!drawnClick.includes(`Clicked ${rememberRef} inside the page, not with the mouse, because it is drawn by`)
+    || !(await clickPage.evaluate(() => document.querySelector("#remember-box").checked))) {
+    throw new Error(`a checkbox drawn by its wrapper was not clicked in the page with a note: ${drawnClick}`);
+  }
+  const frontTabId = String(tabIdFromOutput(await runSurf("tab.new", `${baseUrl}/type`)));
+  const hiddenClick = await runSurf("click", clickRef("Archive order"), ...clickTab);
+  if (!hiddenClick.includes("because its tab is hidden") || !(await clickLog()).endsWith("|archive")) {
+    throw new Error(`a click in a background tab did not go in the page with a note: ${hiddenClick} (log=${await clickLog()})`);
+  }
+  await runSurf("tab.close", "--id", frontTabId, "--json");
   await runSurf("tab.close", "--id", clickTabId, "--json");
 
   // A ref from an earlier page in the tab never resolves on a later one, even when both pages
