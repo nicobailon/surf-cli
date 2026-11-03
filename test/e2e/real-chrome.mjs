@@ -310,6 +310,18 @@ ${stories}</main>
     return `<!doctype html><html><head><title>Surf type fixture</title></head>
 <body><input id="plain" type="text"><textarea id="notes"></textarea></body></html>`;
   }
+  if (url.pathname === "/refs-a") {
+    // The title says when the page came back from the back/forward cache instead of reloading.
+    return `<!doctype html><html><head><title>Surf refs page A</title></head>
+<body><a href="/refs-b">Billing settings</a> <button onclick="document.title = 'kept'">Keep my plan</button>
+<script>addEventListener("pageshow", (event) => { if (event.persisted) document.title = "restored"; });</script>
+</body></html>`;
+  }
+  if (url.pathname === "/refs-b") {
+    return `<!doctype html><html><head><title>Surf refs page B</title></head>
+<body><output id="log"></output> <a href="/refs-a">Back to plan</a>
+<button onclick="document.querySelector('#log').textContent = 'deleted'">Delete account</button></body></html>`;
+  }
   if (url.pathname === "/type-limits") {
     return `<!doctype html><html><head><title>Surf type limits fixture</title></head>
 <body><input id="code" aria-label="Code" maxlength="4"><input id="locked" aria-label="Locked" readonly value="orig">
@@ -865,6 +877,51 @@ try {
     throw new Error(`ref clicks did not reach trusted, clipped, late-enabled and right-click buttons (log=${await clickLog()})`);
   }
   await runSurf("tab.close", "--id", clickTabId, "--json");
+
+  // A ref from an earlier page in the tab never resolves on a later one, even when both pages
+  // number their elements the same way, and a reload counts as a later page.
+  const refsTabId = String(tabIdFromOutput(await runSurf("tab.new", `${baseUrl}/refs-a`)));
+  const refsTab = ["--tab-id", refsTabId, "--no-screenshot"];
+  await runSurf("wait.ready", "--json", "--tab-id", refsTabId, "--selector", "button");
+  const refOf = (read, line) => {
+    const ref = read.match(new RegExp(`${line} \\[(e\\d+)\\]`))?.[1];
+    if (!ref) throw new Error(`read did not list ${line}: ${read}`);
+    return ref;
+  };
+  const refNumbers = (read) => [...read.matchAll(/\[e(\d+)\]/g)].map((match) => Number(match[1]));
+  const readA = await runSurf("read", "--no-text", ...refsTab);
+  const keepRef = refOf(readA, 'button "Keep my plan"');
+  await runSurf("click", refOf(readA, 'link "Billing settings"'), ...refsTab);
+  await runSurf("wait.ready", "--json", "--tab-id", refsTabId, "--selector", "a[href=\"/refs-a\"]");
+  const readB = await runSurf("read", "--no-text", ...refsTab);
+  const deleteRef = refOf(readB, 'button "Delete account"');
+  if (Math.min(...refNumbers(readB)) <= Math.max(...refNumbers(readA))) {
+    throw new Error(`page B reused page A's ref numbers: ${JSON.stringify({ readA, readB })}`);
+  }
+  const pageB = (await browser.pages()).find((page) => page.url() === `${baseUrl}/refs-b`);
+  const staleKeep = await runSurfExpectingFailure("click", keepRef, ...refsTab);
+  if (!staleKeep.stderr.includes(`${keepRef} is from an earlier page in this tab.`)) {
+    throw new Error(`a ref from page A was not refused on page B: ${JSON.stringify(staleKeep)}`);
+  }
+  if ((await pageB.evaluate(() => document.querySelector("#log").textContent)) !== "") {
+    throw new Error("a ref from page A clicked an element on page B");
+  }
+  await runSurf("tab.reload", ...refsTab);
+  await runSurf("wait.ready", "--json", "--tab-id", refsTabId, "--selector", "a[href=\"/refs-a\"]");
+  const staleDelete = await runSurfExpectingFailure("click", deleteRef, ...refsTab);
+  if (!staleDelete.stderr.includes(`${deleteRef} is from an earlier page in this tab.`)) {
+    throw new Error(`a ref from before a reload was not refused: ${JSON.stringify(staleDelete)}`);
+  }
+  await runSurf("back", ...refsTab);
+  await runSurf("wait.ready", "--json", "--tab-id", refsTabId, "--selector", "button");
+  const titleOfRefsTab = async () =>
+    JSON.parse(await runSurf("tab.list", "--json")).find((tab) => String(tab.id) === refsTabId)?.title;
+  if ((await titleOfRefsTab()) === "restored") {
+    // Back from the back/forward cache: the same document, so its own refs still work.
+    await runSurf("click", keepRef, ...refsTab);
+    if ((await titleOfRefsTab()) !== "kept") throw new Error("a restored page did not accept its own ref");
+  }
+  await runSurf("tab.close", "--id", refsTabId, "--json");
 
   // CDP type enters punctuation and non-ASCII exactly
   const typeTabId = String(tabIdFromOutput(await runSurf("tab.new", `${baseUrl}/type`)));

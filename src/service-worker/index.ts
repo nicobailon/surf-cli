@@ -59,6 +59,16 @@ async function contentScriptError(tabId: number, frameId: number, err: unknown):
   return "Content script not loaded. Try refreshing the page.";
 }
 
+let refHighsLoad: Promise<Record<number, number>> | undefined;
+
+// The highest ref each tab has issued: every document starts above it, so a ref from an earlier
+// page never names an element on a later one. Kept in session storage so a service-worker restart
+// can't reset it. Callers mutate after the one shared load, so updates apply in arrival order.
+function loadRefHighs(): Promise<Record<number, number>> {
+  refHighsLoad ??= chrome.storage.session.get("refHighs").then((stored) => (stored.refHighs ?? {}) as Record<number, number>);
+  return refHighsLoad;
+}
+
 const CLICK_WAIT_MS = 5000;
 
 // Waits until a user could click the ref (visible, enabled, not covered), then clicks it with
@@ -808,6 +818,10 @@ chrome.tabs.onRemoved.addListener((tabId) => {
     }
   }
   if (activeVideoRecorder?.tabId === tabId) activeVideoRecorder = null;
+  void loadRefHighs().then((highs) => {
+    delete highs[tabId];
+    void chrome.storage.session.set({ refHighs: highs });
+  });
 });
 
 chrome.windows.onRemoved.addListener((windowId) => {
@@ -910,6 +924,21 @@ export async function handleMessage(
         throw new Error("SEMANTIC_VISION_ICON_FETCH is only for content scripts");
       }
       return fetchSemanticVisionIcon(message.url);
+    }
+
+    case "REF_FLOOR":
+    case "REF_HIGH": {
+      // Only this extension's content scripts number refs; each reports for its own tab.
+      const refTabId = sender.tab?.id;
+      if (sender.id !== chrome.runtime.id || typeof refTabId !== "number") {
+        throw new Error(`${message.type} is only for content scripts`);
+      }
+      const highs = await loadRefHighs();
+      if (message.type === "REF_FLOOR") return { floor: highs[refTabId] ?? 0 };
+      if (!Number.isInteger(message.high)) throw new Error("REF_HIGH needs an integer high");
+      highs[refTabId] = Math.max(highs[refTabId] ?? 0, message.high);
+      void chrome.storage.session.set({ refHighs: highs });
+      return { success: true };
     }
 
     case "TARGET_INSPECT": {
