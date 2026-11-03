@@ -61,9 +61,7 @@ async function contentScriptError(tabId: number, frameId: number, err: unknown):
 
 let refHighsLoad: Promise<Record<number, number>> | undefined;
 
-// The highest ref each tab has issued: every document starts above it, so a ref from an earlier
-// page never names an element on a later one. Kept in session storage so a service-worker restart
-// can't reset it. Callers mutate after the one shared load, so updates apply in arrival order.
+// Each tab's highest ref, in session storage so a service-worker restart can't reset it.
 function loadRefHighs(): Promise<Record<number, number>> {
   refHighsLoad ??= chrome.storage.session.get("refHighs").then((stored) => (stored.refHighs ?? {}) as Record<number, number>);
   return refHighsLoad;
@@ -818,10 +816,6 @@ chrome.tabs.onRemoved.addListener((tabId) => {
     }
   }
   if (activeVideoRecorder?.tabId === tabId) activeVideoRecorder = null;
-  void loadRefHighs().then((highs) => {
-    delete highs[tabId];
-    void chrome.storage.session.set({ refHighs: highs });
-  });
 });
 
 chrome.windows.onRemoved.addListener((windowId) => {
