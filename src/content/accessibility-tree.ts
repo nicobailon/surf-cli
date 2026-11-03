@@ -948,30 +948,10 @@ function isInside(node: Element, target: Element): boolean {
 
 // Where a user's click on `target` would land, or why it can't: the point must hit the target,
 // something inside it, or one of its labels (styled checkboxes hide the input behind its label).
-// A 1px (sr-only) control is also reached through what draws it: an ancestor or an adjacent sibling,
-// never another control or a dialog. Such a point carries `viaDrawer` so the click can be checked.
-function clickPoint(target: Element): { x: number; y: number; viaDrawer?: string } | { reason: string } {
+function clickPoint(target: Element): { x: number; y: number } | { reason: string } {
   if (target.matches(":disabled") || target.closest('[aria-disabled="true"]')) return { reason: "is disabled" };
   const labels = [...((target as HTMLInputElement).labels ?? [])];
-  const box = target.getBoundingClientRect();
-  const tiny = box.width <= 1 && box.height <= 1;
-  const drawers = [target.previousElementSibling, target.nextElementSibling].filter((el): el is Element => !!el);
-  const actsOnItsOwn = (el: Element) => el.matches(
-    'button, a[href], input, select, textarea, dialog, [role=button], [role=link], [role=checkbox], [role=radio], ' +
-    '[role=switch], [role=menuitem], [role=tab], [role=dialog], [role=alertdialog], [aria-modal=true]');
-  // Only the path from the hit up to the drawer counts, so a control inside a dialog still works.
-  const plainPath = (hit: Element, drawer: Element) => {
-    for (let at: Element | null = hit; at; at = at.parentElement) {
-      if (actsOnItsOwn(at)) return false;
-      if (at === drawer) return true;
-    }
-    return false;
-  };
-  const drawnBy = (hit: Element) => tiny && hit !== document.body && hit !== document.documentElement &&
-    (isInside(target, hit) ? !actsOnItsOwn(hit) : drawers.some((drawer) => isInside(hit, drawer) && plainPath(hit, drawer)));
-  const reach = (hit: Element | null) => !hit ? null
-    : isInside(hit, target) || labels.some((label) => isInside(hit, label)) ? {}
-    : drawnBy(hit) ? { viaDrawer: describeElement(hit) } : null;
+  const reaches = (hit: Element | null) => !!hit && (isInside(hit, target) || labels.some((label) => isInside(hit, label)));
   const shown = (el: Element) => el.checkVisibility({ visibilityProperty: true }) &&
     el.getBoundingClientRect().width > 0 && el.getBoundingClientRect().height > 0;
   const candidates = [target, ...labels].filter(shown);
@@ -982,8 +962,9 @@ function clickPoint(target: Element): { x: number; y: number; viaDrawer?: string
       for (const [fx, fy] of [[0.5, 0.5], [0.25, 0.25], [0.75, 0.25], [0.25, 0.75], [0.75, 0.75]]) {
         const x = r.left + r.width * fx;
         const y = r.top + r.height * fy;
-        const how = x >= 0 && y >= 0 && x < window.innerWidth && y < window.innerHeight ? reach(deepElementFromPoint(x, y)) : null;
-        if (how) return { x, y, ...how };
+        if (x >= 0 && y >= 0 && x < window.innerWidth && y < window.innerHeight && reaches(deepElementFromPoint(x, y))) {
+          return { x, y };
+        }
       }
     }
     return null;
@@ -2187,14 +2168,8 @@ function handleContentMessage(
         sendResponse({ error });
         break;
       }
-      const checkable = element instanceof HTMLInputElement && ["checkbox", "radio"].includes(element.type) ? element : null;
-      const state = checkable ? { checkable: checkable.type, checked: checkable.checked } : {};
-      if (message.stateOnly) {
-        sendResponse(state);
-        break;
-      }
       // Trusted CDP input lands where it is sent, which is only right for a visible top-level page.
-      sendResponse({ ...clickPoint(element), ...state, inPage: document.visibilityState === "hidden" });
+      sendResponse({ ...clickPoint(element), inPage: document.visibilityState === "hidden" });
       break;
     }
     case "CLICK_ELEMENT": {

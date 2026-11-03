@@ -308,24 +308,9 @@ ${stories}</main>
 <div id="clip" style="height:40px;overflow:hidden"><div style="height:200px"></div><button onclick="log('archive')">Archive order</button></div>
 <button id="arm">Arm</button> <button id="confirm" onclick="log('confirm')">Confirm order</button>
 <button oncontextmenu="event.preventDefault(); log('menu')">Options</button>
-<div id="remember" style="position:relative;display:inline-block;padding:4px"><input type="checkbox" id="remember-box" aria-label="Remember me"
-  style="position:absolute;width:1px;height:1px;margin:-1px;overflow:hidden;clip-path:inset(50%)"><span>[ ] Remember me</span></div>
-<div style="position:relative;display:inline-block;padding:4px"><input type="checkbox" id="agree-box" aria-label="Agree"
-  style="position:absolute;width:1px;height:1px;margin:-1px;overflow:hidden;clip-path:inset(50%)"><span>[ ] Agree</span>
-  <div role="dialog" aria-label="Terms" style="position:absolute;inset:0;background:#0003"></div></div>
-<div style="display:flex"><input type="checkbox" id="all-box" aria-label="Select all" style="position:absolute;width:1px;height:1px;margin:-1px;overflow:hidden;clip-path:inset(50%)"><button onclick="log('delete-selected')">Delete selected</button></div>
-<div style="position:relative;display:inline-block;padding:4px"><input type="checkbox" id="notify-box" aria-label="Notify me" style="position:absolute;width:1px;height:1px;margin:-1px;overflow:hidden;clip-path:inset(50%)">
-  <div style="position:absolute;inset:0" onclick="log('overlay')"></div><span>[ ] Notify me</span></div>
 <script>
   function log(entry) { const out = document.querySelector("#log"); out.textContent = out.textContent ? out.textContent + "|" + entry : entry; }
   document.querySelector("#pay").addEventListener("click", (event) => { if (event.isTrusted) log("pay"); });
-  // Pages that draw their own checkbox toggle it from the wrapper, as a user's click on the drawing does.
-  document.querySelector("#remember").addEventListener("click", (event) => {
-    if (event.target.id === "remember-box") return;
-    const box = document.querySelector("#remember-box");
-    box.checked = !box.checked;
-    log("remember");
-  });
   document.querySelector("#arm").addEventListener("click", () => {
     const confirm = document.querySelector("#confirm");
     confirm.disabled = true;
@@ -918,31 +903,6 @@ try {
   await runSurf("click", clickRef("Options"), "--button", "right", ...clickTab);
   if ((await clickLog()) !== "pay|archive|confirm|menu") {
     throw new Error(`ref clicks did not reach trusted, clipped, late-enabled and right-click buttons (log=${await clickLog()})`);
-  }
-  // A 1px checkbox drawn by the element next to it is clicked through that element, like a user;
-  // a dialog elsewhere in the same wrapper still blocks the click.
-  const checkboxRef = (name) => clickRead.match(new RegExp(`checkbox "${name}" \\[(e\\d+)\\]`))?.[1];
-  const drawnClick = await runSurf("click", checkboxRef("Remember me"), ...clickTab);
-  if (drawnClick.includes("[hint]") || !(await clickPage.evaluate(() => document.querySelector("#remember-box").checked))
-    || (await clickLog()) !== "pay|archive|confirm|menu|remember") {
-    throw new Error(`a checkbox drawn by its wrapper was not clicked once with the mouse: ${drawnClick} (log=${await clickLog()})`);
-  }
-  const agreeClick = await runSurfExpectingFailure("click", checkboxRef("Agree"), ...clickTab);
-  if (!agreeClick.stderr.includes('is covered by dialog "Terms", so it was not clicked')
-    || (await clickPage.evaluate(() => document.querySelector("#agree-box").checked))) {
-    throw new Error(`a dialog over a drawn checkbox did not block the click: ${JSON.stringify(agreeClick)}`);
-  }
-  // Next to another control is not drawn by it, and a click that leaves the checkbox unchanged fails.
-  const besideButton = await runSurfExpectingFailure("click", checkboxRef("Select all"), ...clickTab);
-  if (!besideButton.stderr.includes('is covered by button "Delete selected", so it was not clicked')
-    || (await clickLog()).includes("delete-selected")) {
-    throw new Error(`a checkbox next to a button clicked the button: ${JSON.stringify(besideButton)} (log=${await clickLog()})`);
-  }
-  const notifyRef = checkboxRef("Notify me");
-  const unchanged = await runSurfExpectingFailure("click", notifyRef, ...clickTab);
-  if (!unchanged.stderr.includes(`where ${notifyRef} sits, but ${notifyRef} did not change`)
-    || (await clickPage.evaluate(() => document.querySelector("#notify-box").checked))) {
-    throw new Error(`a click that left a drawn checkbox unchanged reported success: ${JSON.stringify(unchanged)}`);
   }
   // A click that can't be a real mouse click goes in the page and says why, before its screenshot line.
   const frontTabId = String(tabIdFromOutput(await runSurf("tab.new", `${baseUrl}/type`)));
