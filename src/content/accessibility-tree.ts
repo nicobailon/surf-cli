@@ -487,6 +487,12 @@ function getResolvedRole(element: Element): string {
   return explicitRole;
 }
 
+// ARIA roles whose accessible name comes from the element's content when nothing else names it.
+const NAME_FROM_CONTENT_ROLES = new Set([
+  "button", "cell", "checkbox", "columnheader", "gridcell", "heading", "link", "menuitem",
+  "menuitemcheckbox", "menuitemradio", "option", "radio", "rowheader", "switch", "tab", "tooltip", "treeitem",
+]);
+
 function getName(element: Element): string {
   const tag = element.tagName.toLowerCase();
 
@@ -539,12 +545,9 @@ function getName(element: Element): string {
     if (textContent.trim()) return textContent.trim();
   }
 
-  if (/^h[1-6]$/.test(tag)) {
-    const text = element.textContent;
-    if (text?.trim()) {
-      const t = text.trim();
-      return t.length > 100 ? t.substring(0, 100) + "..." : t;
-    }
+  if (NAME_FROM_CONTENT_ROLES.has(getResolvedRole(element))) {
+    const text = (element.textContent || "").replace(/\s+/g, " ").trim();
+    if (text) return text.length > 100 ? text.substring(0, 100) + "..." : text;
   }
 
   if (tag === "img") return "";
