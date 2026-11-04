@@ -51,6 +51,7 @@ click <ref> | --selector <css> [--index <n>] | --x <n> --y <n>   [--button left|
 type <text> [--ref e5|--into <css>] [--submit] [--clear] [--method cdp|js]
 key <key> [--repeat <n>]          # Enter, Escape, cmd+a
 select <ref|css> <value>… [--by value|label|index]
+check <ref> | uncheck <ref>       # sets the state; already set = nothing clicked
 locate.role <role> [--name <text>] [--action click|fill|hover|text] [--value <v>]
 wait.ready [--selector <css>] [--text <t>] [--url-prefix <u>] [--accept login,challenge,…] [--timeout <ms>=20000]
 screenshot [--output <f>] [--full-page] [--annotate] [--no-save]   # auto-saves to /tmp

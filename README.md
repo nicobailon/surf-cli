@@ -366,6 +366,13 @@ surf select e5 --by label "United States"   # Select by visible text
 surf select e5 --by index 0                 # Select first option
 ```
 
+Set a checkbox, switch or radio to a state (nothing is clicked if it is already there):
+
+```bash
+surf check e6                               # Checked afterwards, or the command fails
+surf uncheck e6                             # Unchecked afterwards
+```
+
 Upload files:
 
 ```bash

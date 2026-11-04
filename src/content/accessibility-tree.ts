@@ -987,6 +987,22 @@ function isInside(node: Element, target: Element): boolean {
   return false;
 }
 
+// The checked state of a checkbox, switch or radio (native or ARIA), or why `check`/`uncheck` can't set it.
+// A label stands for its control: styled checkboxes hide the input inside or behind the label `read` lists.
+function checkedState(target: Element, ref: string): { checked: boolean | "mixed"; radio: boolean } | { error: string } {
+  const element = target instanceof HTMLLabelElement && target.control ? target.control : target;
+  if (element instanceof HTMLInputElement && (element.type === "checkbox" || element.type === "radio")) {
+    return { checked: element.indeterminate ? "mixed" : element.checked, radio: element.type === "radio" };
+  }
+  const role = getResolvedRole(element);
+  if (["checkbox", "radio", "switch", "menuitemcheckbox", "menuitemradio"].includes(role)) {
+    const state = element.getAttribute("aria-checked");
+    return { checked: state === "mixed" ? "mixed" : state === "true", radio: role === "radio" || role === "menuitemradio" };
+  }
+  const dropdown = element.tagName === "SELECT" || role === "combobox" || role === "listbox";
+  return { error: `${ref} is a ${role || element.tagName.toLowerCase()}, not a checkbox, switch or radio.${dropdown ? ` Use surf select ${ref} <value> for a dropdown.` : ""}` };
+}
+
 // Where a user's click on `target` would land, or why it can't: the point must hit the target,
 // something inside it, or one of its labels (styled checkboxes hide the input behind its label).
 function clickPoint(target: Element): { x: number; y: number } | { reason: string } {
@@ -2232,6 +2248,16 @@ function handleContentMessage(
       sendResponse({ ...clickPoint(element), inPage: document.visibilityState === "hidden" });
       break;
     }
+    case "CHECKED_STATE": {
+      const { element, error } = resolveRef(message.ref);
+      const guardError = semanticGuardError(element, message.expectedIdentity);
+      if (guardError) {
+        sendResponse({ error: guardError, code: guardError });
+        break;
+      }
+      sendResponse(element ? checkedState(element, message.ref) : { error });
+      break;
+    }
     case "CLICK_ELEMENT": {
       const { element, error } = resolveRef(message.ref);
       const guardError = semanticGuardError(element, message.expectedIdentity);
@@ -2586,14 +2612,7 @@ function handleContentMessage(
           }
         }
         
-        // Clear current selection for multi-select
-        if (selectEl.multiple) {
-          for (const opt of selectEl.options) {
-            opt.selected = false;
-          }
-        }
-        
-        const selected: string[] = [];
+        const matched: HTMLOptionElement[] = [];
         const notFound: string[] = [];
         
         // For single-select, only use the first value
@@ -2615,8 +2634,7 @@ function handleContentMessage(
             }
             
             if (matches) {
-              opt.selected = true;
-              selected.push(opt.value);
+              matched.push(opt);
               found = true;
               break;  // Found match for this value, move to next
             }
@@ -2624,18 +2642,18 @@ function handleContentMessage(
           
           if (!found) notFound.push(val);
         }
-        
-        // Dispatch change event
-        selectEl.dispatchEvent(new Event('change', { bubbles: true }));
-        
+
+        // Select nothing unless every value matched, so a typo can't leave a half-changed dropdown.
         if (notFound.length > 0) {
-          sendResponse({ 
-            selected, 
-            warning: `Values not found: ${notFound.join(', ')}` 
-          });
-        } else {
-          sendResponse({ selected });
+          sendResponse({ error: `${selector} has no option matching ${notFound.map((v: string) => JSON.stringify(v)).join(", ")} (by ${by || "value"}), so nothing was selected.` });
+          break;
         }
+        if (selectEl.multiple) {
+          for (const opt of selectEl.options) opt.selected = false;
+        }
+        for (const opt of matched) opt.selected = true;
+        selectEl.dispatchEvent(new Event('change', { bubbles: true }));
+        sendResponse({ selected: matched.map((opt) => opt.value) });
       } catch (err) {
         sendResponse({ error: err instanceof Error ? err.message : String(err) });
       }
@@ -2918,9 +2936,13 @@ function handleContentMessage(
             const failure = writeTextField(el, String(value), ref);
             results.push(failure ? { ref, success: false, error: failure } : { ref, success: true });
           } else if (el instanceof HTMLSelectElement) {
-            el.value = String(value);
-            el.dispatchEvent(new Event("change", { bubbles: true }));
-            results.push({ ref, success: true });
+            const options = [...el.options];
+            const option = options.find((opt) => opt.value === String(value)) ?? options.find((opt) => opt.textContent?.trim() === String(value));
+            if (option) {
+              el.value = option.value;
+              el.dispatchEvent(new Event("change", { bubbles: true }));
+            }
+            results.push(option ? { ref, success: true } : { ref, success: false, error: `${ref} has no option with value or text ${JSON.stringify(String(value))}, so nothing was selected.` });
           } else if (el.isContentEditable) {
             el.focus();
             el.textContent = String(value);
