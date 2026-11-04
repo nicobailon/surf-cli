@@ -622,6 +622,50 @@ try {
   const navigationUrl = `${fixtureUrl}?navigated`;
   const baseUrl = `http://127.0.0.1:${address.port}`;
 
+  // Opt-in autostart (#424): with no Surf host running, `surf go <url>` starts the browser from
+  // surf.json browser.command (here Chrome for Testing through Puppeteer), opening <url>, then runs.
+  const autostartProfileDir = join(scratch, "profile-autostart");
+  const autostartPidPath = join(scratch, "autostart-launcher.pid");
+  const autostartLauncher = join(scratch, "autostart-launcher.mjs");
+  mkdirSync(join(autostartProfileDir, "NativeMessagingHosts"), { recursive: true });
+  cpSync(standardManifest, join(autostartProfileDir, "NativeMessagingHosts/surf.browser.host.json"));
+  writeFileSync(autostartLauncher, `import { writeFileSync } from "node:fs";
+import puppeteer from ${JSON.stringify(import.meta.resolve("puppeteer"))};
+writeFileSync(${JSON.stringify(autostartPidPath)}, String(process.pid));
+const launched = await puppeteer.launch({
+  headless: true,
+  handleSIGTERM: false,
+  executablePath: ${JSON.stringify(chromeExecutablePath)},
+  enableExtensions: [${JSON.stringify(extensionDir)}],
+  userDataDir: ${JSON.stringify(autostartProfileDir)},
+  args: [...${JSON.stringify(process.platform === "linux" ? ["--no-sandbox"] : [])}, ...process.argv.slice(2)],
+});
+process.on("SIGTERM", () => launched.close().finally(() => process.exit(0)));
+setInterval(() => {}, 60_000);
+`);
+  writeFileSync(
+    join(home, "surf.json"),
+    JSON.stringify({ browser: { autostart: true, command: [process.execPath, autostartLauncher], timeoutMs: 45_000 } }),
+  );
+  const autostartUrl = `${fixtureUrl}?autostart`;
+  await execFileAsync(process.execPath, [join(repo, "native/cli.cjs"), "go", autostartUrl, "--no-screenshot"], {
+    cwd: repo,
+    env,
+    timeout: 60_000,
+  });
+  const autostartTabs = JSON.parse(await runSurf("tab.list", "--json"));
+  if (!autostartTabs.some((tab) => tab.url === autostartUrl && tab.active)) {
+    throw new Error(`autostart did not open the go URL as the active tab: ${JSON.stringify(autostartTabs)}`);
+  }
+  rmSync(join(home, "surf.json"));
+  await terminateProcess(Number.parseInt(readFileSync(autostartPidPath, "utf8"), 10), "autostart launcher");
+  await terminateProcessesUsingProfile();
+  if (existsSync(hostPidPath)) {
+    await terminateProcess(Number.parseInt(readFileSync(hostPidPath, "utf8"), 10), "autostarted native host");
+  }
+  rmSync(hostPidPath, { force: true });
+  rmSync(socketPath, { force: true });
+
   browser = await puppeteer.launch({
     headless: true,
     enableExtensions: [extensionDir],
