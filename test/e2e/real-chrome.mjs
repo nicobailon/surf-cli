@@ -302,7 +302,9 @@ ${stories}</main>
     return `<!doctype html><html><head><title>Surf field values fixture</title></head>
 <body><input type="email" placeholder="hello@example.com">
 <label>Password <input type="password"></label>
-<textarea placeholder="Notes"></textarea></body></html>`;
+<textarea placeholder="Notes"></textarea>
+<input type="text" aria-label="SSN" style="-webkit-text-security:disc">
+<input type="text" aria-label="Quote"></body></html>`;
   }
   if (url.pathname === "/click") {
     // Each button only reports a click a user could have made.
@@ -895,13 +897,19 @@ try {
     [/textbox "hello@example\.com" \[(e\d+)\]/, "hello22"],
     [/textbox \[(e\d+)\] type="password"/, "s3cret-434"],
     [/textbox "Notes" \[(e\d+)\]/, "call back tomorrow"],
+    [/textbox "SSN" \[(e\d+)\]/, "masked-434"],
+    [/textbox "Quote" \[(e\d+)\]/, 'say "hi" \\'],
   ]) {
     await runSurf("type", text, "--ref", fieldRef(pattern), "--tab-id", valuesTabId, "--no-screenshot", "--json");
   }
   const filledFields = await runSurf("read", "--no-text", "--tab-id", valuesTabId);
   if (!/textbox "hello@example\.com" \[e\d+\] type="email" placeholder="hello@example\.com" value="hello22"/.test(filledFields) ||
-      !filledFields.includes('value="call back tomorrow"') || filledFields.includes("s3cret") || !filledFields.includes("[value hidden]")) {
+      !filledFields.includes('value="call back tomorrow"') || filledFields.includes("s3cret") || !filledFields.includes("[value hidden]") ||
+      !filledFields.includes('value="say \\"hi\\" \\\\"')) {
     throw new Error(`read did not show field values without the password: ${filledFields}`);
+  }
+  if (filledFields.includes("masked-434") || !/textbox "SSN" \[e\d+\] type="text" \[value hidden\]/.test(filledFields)) {
+    throw new Error(`read showed a field the page masks on screen: ${filledFields}`);
   }
   await runSurf("tab.close", "--id", valuesTabId, "--json");
 
