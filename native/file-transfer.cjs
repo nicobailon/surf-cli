@@ -326,7 +326,7 @@ function rewriteTransferPaths(value, rewrites, depth = 0, seen = new Set(), budg
   return result;
 }
 
-const AUTO_SCREENSHOT_TOOLS = Object.freeze(["click", "type", "key", "smart_type", "form.fill", "form_input", "drag", "hover", "scroll", "scroll.top", "scroll.bottom", "scroll.to", "dialog.accept", "dialog.dismiss", "eval"]);
+const AUTO_SCREENSHOT_TOOLS = Object.freeze(["click", "check", "uncheck", "type", "key", "smart_type", "form.fill", "form_input", "drag", "hover", "scroll", "scroll.top", "scroll.bottom", "scroll.to", "dialog.accept", "dialog.dismiss", "eval"]);
 const PAGE_CHANGES_TOOLS = Object.freeze([...AUTO_SCREENSHOT_TOOLS, "select"]);
 // Keeps BEGIN, settle, capture and the reply inside the host's 60s request deadline.
 const MAX_SETTLE_MS = 30000;

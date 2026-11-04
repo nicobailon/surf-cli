@@ -1949,6 +1949,29 @@ export async function handleMessage(
       }
     }
 
+    case "SET_CHECKED": {
+      if (!tabId) throw new Error("No tabId provided");
+      const frameId = getFrameIdForTab(tabId, message);
+      const { ref, checked } = message;
+      const stateOf = (state: any) => state.checked === "mixed" ? "partly checked" : state.checked ? "checked" : "unchecked";
+      try {
+        const before = await chrome.tabs.sendMessage(tabId, { type: "CHECKED_STATE", ref, expectedIdentity: message.expectedIdentity }, { frameId });
+        if (before?.error) return { error: before.error, code: before.code };
+        if (before.checked === checked) return { success: true, _hint: `${ref} was already ${stateOf(before)}; nothing clicked.` };
+        if (!checked && before.radio) {
+          return { error: `${ref} is a radio button, and clicking a checked radio doesn't uncheck it. Check another option in its group instead.` };
+        }
+        const clicked = await clickRef(tabId, frameId, ref, "left", message.expectedIdentity);
+        if (clicked.error) return clicked;
+        const after = await chrome.tabs.sendMessage(tabId, { type: "CHECKED_STATE", ref }, { frameId });
+        if (after?.error) return { error: after.error, code: after.code };
+        if (after.checked !== checked) return { error: `${ref} is still ${stateOf(after)} after clicking it.` };
+        return clicked;
+      } catch (err) {
+        return { error: await contentScriptError(tabId, frameId, err) };
+      }
+    }
+
     case "HOVER_REF": {
       if (!tabId) throw new Error("No tabId provided");
       const frameId = getFrameIdForTab(tabId, message);

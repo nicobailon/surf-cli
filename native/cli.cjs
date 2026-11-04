@@ -844,6 +844,16 @@ const TOOLS = {
           { cmd: 'select e5 --by index 0', desc: "Select first option" },
         ]
       },
+      "check": {
+        desc: "Check a checkbox, switch or radio; does nothing if it is already checked",
+        args: ["ref"],
+        examples: [{ cmd: "check e6", desc: "Check e6 (clicks it only if it is unchecked)" }]
+      },
+      "uncheck": {
+        desc: "Uncheck a checkbox or switch; does nothing if it is already unchecked",
+        args: ["ref"],
+        examples: [{ cmd: "uncheck e6", desc: "Uncheck e6 (clicks it only if it is checked)" }]
+      },
     }
   },
   wait: {
@@ -3527,6 +3537,8 @@ const PRIMARY_ARG_MAP = {
   "frame.js": "code",
   "element.styles": "selector",
   "select": "selector",
+  "check": "ref",
+  "uncheck": "ref",
 };
 
 let toolArgs = { ...options };
