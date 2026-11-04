@@ -136,6 +136,11 @@ function isSemanticControl(element: Element): boolean {
   return ["input", "textarea", "select", "option", "button"].includes(tag) || element.getAttribute("contenteditable") === "true";
 }
 
+// Styled checkboxes and radios draw their own box over a transparent real input, which still takes clicks.
+function hiddenByOpacity(element: Element, style: CSSStyleDeclaration): boolean {
+  return style.opacity === "0" && !["input", "select", "textarea"].includes(element.tagName.toLowerCase());
+}
+
 function isVisibleSemanticElement(element: Element): boolean {
   const style = window.getComputedStyle(element);
   const rect = element.getBoundingClientRect();
@@ -897,7 +902,7 @@ function resolveRef(ref: string): { element: Element; error?: undefined } | { el
     if (getResolvedRole(candidate) !== identity.role || getName(candidate) !== identity.name) continue;
     const style = window.getComputedStyle(candidate);
     if (
-      style.display !== "none" && style.visibility !== "hidden" && style.opacity !== "0" &&
+      style.display !== "none" && style.visibility !== "hidden" && !hiddenByOpacity(candidate, style) &&
       (candidate as HTMLElement).offsetWidth > 0 && (candidate as HTMLElement).offsetHeight > 0
     ) matches.push(candidate);
   }
@@ -1153,7 +1158,7 @@ function generateAccessibilityTree(
       return (
         style.display !== "none" &&
         style.visibility !== "hidden" &&
-        style.opacity !== "0" &&
+        !hiddenByOpacity(element, style) &&
         (element as HTMLElement).offsetWidth > 0 &&
         (element as HTMLElement).offsetHeight > 0
       );
@@ -1432,7 +1437,7 @@ function generateYamlTree(
       return (
         style.display !== "none" &&
         style.visibility !== "hidden" &&
-        style.opacity !== "0" &&
+        !hiddenByOpacity(element, style) &&
         (element as HTMLElement).offsetWidth > 0 &&
         (element as HTMLElement).offsetHeight > 0
       );
@@ -1943,7 +1948,7 @@ function capturePageSnapshot(): { snapshot: PageSnapshot; elements: Element[] } 
     const tag = element.tagName.toLowerCase();
     if (["script", "style", "noscript", "template"].includes(tag) || element.id.startsWith("pi-agent-")) return;
     const style = window.getComputedStyle(element);
-    if (element.getAttribute("aria-hidden") === "true" || style.display === "none" || style.opacity === "0") return;
+    if (element.getAttribute("aria-hidden") === "true" || style.display === "none" || hiddenByOpacity(element, style)) return;
     const shown = style.visibility !== "hidden";
     const role = getResolvedRole(element);
     let childContainer = container;

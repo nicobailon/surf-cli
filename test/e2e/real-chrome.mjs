@@ -389,6 +389,12 @@ ${stories}</main>
   });
 </script></body></html>`;
   }
+  if (url.pathname === "/transparent-field") {
+    // Tilda-style consent box: the page draws the indicator and leaves the real checkbox transparent on top of it.
+    return `<!doctype html><html><head><title>Surf transparent field fixture</title></head>
+<body><label style="position:relative;display:inline-flex;gap:8px"><input type="checkbox" style="opacity:0;position:absolute;margin:0;width:16px;height:16px"> <div class="indicator" style="width:16px;height:16px;border:1px solid"></div> I agree</label>
+<div role="button" style="opacity:0">Faded action</div></body></html>`;
+  }
   if (url.pathname === "/type") {
     return `<!doctype html><html><head><title>Surf type fixture</title></head>
 <body><input id="plain" type="text"><textarea id="notes"></textarea></body></html>`;
@@ -1206,6 +1212,18 @@ setInterval(() => {}, 60_000);
     throw new Error(`check/uncheck/select did not set the requested state: ${JSON.stringify({ termsAccepted, alreadyChecked, alreadyUnchecked, radioUncheck, missingOption, checkState })}`);
   }
   await runSurf("tab.close", "--id", checkTabId, "--json");
+
+  // A form field the page leaves transparent over its own drawing is still listed and its changes reported
+  const transparentTab = ["--tab-id", String(tabIdFromOutput(await runSurf("tab.new", `${baseUrl}/transparent-field`)))];
+  await runSurf("wait.element", ".indicator", ...transparentTab, "--json");
+  const transparentRead = await runSurf("read", "--no-text", ...transparentTab);
+  const transparentRef = transparentRead.match(/checkbox(?: "[^"]*")? \[(e\d+)\]/)?.[1];
+  const transparentCheck = transparentRef ? await runSurf("check", transparentRef, ...transparentTab, "--no-screenshot") : "";
+  if (!transparentRef || transparentRead.includes("Faded action")
+    || !new RegExp(`${transparentRef} checkbox[^\\n]* now checked`).test(transparentCheck)) {
+    throw new Error(`a transparent form field was not listed or its change not reported: ${JSON.stringify({ transparentRead, transparentCheck })}`);
+  }
+  await runSurf("tab.close", "--id", transparentTab[1], "--json");
 
   // A ref from an earlier page in the tab never resolves on a later one, even when both pages
   // number their elements the same way, and a reload counts as a later page.
