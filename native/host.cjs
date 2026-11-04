@@ -68,6 +68,7 @@ const { commandMetadata, redactCommandArgs } = require("./workflow-definition.cj
 const { BrowserScheduler } = require("./browser-scheduler.cjs");
 const { BrowserSessionStore, parseDurationMs, validateSessionName } = require("./browser-session-store.cjs");
 const { applySocketPermissions, resolveSocketPermissions } = require("./socket-permissions.cjs");
+const { version: HOST_VERSION } = require("../package.json");
 const { classifyTool } = require("./tool-scope.cjs");
 const { fromExtensionError, surfError } = require("./surf-error.cjs");
 const {
@@ -3297,6 +3298,12 @@ const handleClient = (socket) => {
     if (isRemote && msg.type && msg.type.startsWith("transfer_")) {
       transferState ||= await ensureTransferState();
       await transferState.handle(msg);
+      return;
+    }
+
+    // Answered here, without the extension, so `surf doctor` can compare versions.
+    if (msg.type === "versions_request") {
+      await sendSocket(socket, { type: "versions_response", host: HOST_VERSION, extension: browserIdentity?.extensionVersion ?? null });
       return;
     }
 

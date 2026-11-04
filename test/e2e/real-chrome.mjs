@@ -652,6 +652,16 @@ try {
     throw new Error(`page.text did not contain fixture text: ${initialText}`);
   }
 
+  const packageVersion = JSON.parse(readFileSync(join(repo, "package.json"), "utf8")).version;
+  const doctorReport = JSON.parse(await runSurf("doctor", "--json"));
+  if (
+    doctorReport.versions?.cli !== packageVersion ||
+    doctorReport.versions?.host !== packageVersion ||
+    doctorReport.versions?.extension !== packageVersion
+  ) {
+    throw new Error(`doctor did not report matching versions: ${JSON.stringify(doctorReport.versions)}`);
+  }
+
   const pageHtml = await runSurf("page.html");
   if (!pageHtml.startsWith("<!doctype html>") || !pageHtml.includes("<h1>Surf real Chrome fixture</h1>")) {
     throw new Error(`page.html without --selector did not return the document: ${pageHtml.slice(0, 300)}`);

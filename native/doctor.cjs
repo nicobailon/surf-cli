@@ -16,6 +16,7 @@ const {
   probeWindowsWrapper,
 } = require("./native-host-launch-probe.cjs");
 const { findNode, getHostPath } = require("../scripts/install-native-host.cjs");
+const { version: CLI_VERSION } = require("../package.json");
 
 const HOST_NAME = "surf.browser.host";
 
@@ -450,12 +451,35 @@ async function checkSocket(socketPath, context) {
     message: connection.ok ? "Connected to native host socket" : `Could not connect to socket: ${connection.message}`,
     code: connection.code,
   });
-  return checks;
+  const versions = { cli: CLI_VERSION, host: connection.versions?.host ?? null, extension: connection.versions?.extension ?? null };
+  if (connection.ok) {
+    if (!connection.versions) {
+      checks.push({
+        id: "version-skew",
+        status: "warn",
+        message: `The native host did not report its version, so it is older than this CLI (${CLI_VERSION}). Reinstall Surf with npm and reload the extension in chrome://extensions.`,
+      });
+    } else {
+      const match = versions.host === CLI_VERSION && versions.extension === CLI_VERSION;
+      checks.push({
+        id: "version-skew",
+        status: match ? "pass" : "fail",
+        message: match
+          ? `CLI, native host and extension are all version ${CLI_VERSION}`
+          : `Versions differ: CLI ${CLI_VERSION}, native host ${versions.host}, extension ${versions.extension ?? "unknown"}. Reinstall Surf with npm and reload the extension in chrome://extensions.`,
+      });
+    }
+  }
+  return { checks, versions };
 }
 
+// Connects, then asks the host for its own and the extension's version. A host that answers
+// with an error, closes, or never replies predates the versions_request.
 function connectSocket(socketPath, timeoutMs) {
   return new Promise((resolve) => {
     let settled = false;
+    let connected = false;
+    let buffer = "";
     const socket = net.createConnection(socketPath);
     const finish = (result) => {
       if (settled) return;
@@ -464,15 +488,29 @@ function connectSocket(socketPath, timeoutMs) {
       socket.destroy();
       resolve(result);
     };
-    const timeout = setTimeout(() => {
+    let timeout = setTimeout(() => {
       finish({ ok: false, code: "ETIMEDOUT", message: `timed out after ${timeoutMs}ms` });
     }, timeoutMs);
-    socket.once("connect", () => finish({ ok: true, message: "connected" }));
-    socket.once("error", (error) => finish({
-      ok: false,
-      code: error.code,
-      message: error && error.message ? error.message : String(error),
-    }));
+    socket.once("connect", () => {
+      connected = true;
+      clearTimeout(timeout);
+      timeout = setTimeout(() => finish({ ok: true, message: "connected", versions: null }), timeoutMs);
+      socket.write(`${JSON.stringify({ type: "versions_request" })}\n`);
+    });
+    socket.on("data", (chunk) => {
+      buffer += chunk.toString("utf8");
+      const newline = buffer.indexOf("\n");
+      if (newline === -1) return;
+      let reply = null;
+      try {
+        reply = JSON.parse(buffer.slice(0, newline));
+      } catch {}
+      const versions = reply?.type === "versions_response" ? { host: reply.host, extension: reply.extension ?? null } : null;
+      finish({ ok: true, message: "connected", versions });
+    });
+    socket.once("error", (error) => finish(connected
+      ? { ok: true, message: "connected", versions: null }
+      : { ok: false, code: error.code, message: error && error.message ? error.message : String(error) }));
   });
 }
 
@@ -538,6 +576,9 @@ function buildRecommendations(report) {
   }
   if (failedIds.has("socket-file") || failedIds.has("socket-connect")) {
     recommendations.push("Make sure the browser is running with the Surf extension enabled, then restart the browser after install changes.");
+  }
+  if (failedIds.has("version-skew")) {
+    recommendations.push("Reinstall Surf with the npm that owns this install, then reload the Surf extension in chrome://extensions so the CLI, native host and extension match.");
   }
   if ([...failedIds].some((id) => debugRelevantIds.has(id))) {
     recommendations.push("Open chrome://extensions and inspect Surf's service worker console. In Surf's Details > Extension options, enable Debug Mode, reproduce the failure, then disable Debug Mode when finished.");
@@ -645,7 +686,8 @@ async function runDoctor(rawOptions = {}, deps = {}) {
   checks.push({ id: "target", status: "info", message: `Install target: ${effectiveTarget === "wsl-windows" ? "Windows browser from WSL2" : effectiveTarget}` });
   checks.push({ id: "socket-path", status: "info", message: `Socket path: ${options.socket}`, path: options.socket });
 
-  checks.push(...await checkSocket(options.socket, context));
+  const socketResult = await checkSocket(options.socket, context);
+  checks.push(...socketResult.checks);
 
   const manifests = [];
   for (const browserKey of browsers) {
@@ -708,6 +750,7 @@ async function runDoctor(rawOptions = {}, deps = {}) {
       socketOverrideSet: Boolean(rawOptions.socket),
       browsers,
     },
+    versions: socketResult.versions,
     manifests,
     checks,
   };
@@ -731,6 +774,9 @@ function formatDoctorReport(report) {
   }
   if (report.environment.socketPath) lines.push(`Socket: ${report.environment.socketPath}`);
   if (report.environment.browsers.length) lines.push(`Browsers: ${report.environment.browsers.join(", ")}`);
+  if (report.versions) {
+    lines.push(`Versions: CLI ${report.versions.cli}, host ${report.versions.host ?? "unknown"}, extension ${report.versions.extension ?? "unknown"}`);
+  }
   lines.push("");
 
   for (const check of report.checks.filter((item) => item.status !== "info")) {
