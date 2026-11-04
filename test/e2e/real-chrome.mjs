@@ -327,8 +327,20 @@ ${stories}</main>
 <input type="radio" name="size" id="small" checked><label for="small">Small</label>
 <input type="radio" name="size" id="large"><label for="large">Large</label>
 <select id="country"><option value="us">United States</option><option value="fr">France</option></select>
+<button role="switch" id="frame-switch" aria-checked="false">Animated</button>
+<button role="switch" id="saved-switch" aria-checked="false">Saved</button>
+<select id="qty" aria-label="Qty"><option value="0">1</option><option value="1">2</option></select>
+<label><input type="checkbox" id="styled" style="position:absolute;opacity:0;width:16px;height:16px"><span style="display:inline-block;width:16px;height:16px;border:1px solid"></span>Remember me</label>
+<input type="checkbox" id="all"><label for="all">Select all</label>
 <script>
   function log(entry) { const out = document.querySelector("#log"); out.textContent = out.textContent ? out.textContent + "|" + entry : entry; }
+  // These switches commit their state a frame later and after a 400ms save, like animated or server-backed toggles.
+  const flip = (el) => el.setAttribute("aria-checked", String(el.getAttribute("aria-checked") !== "true"));
+  const frameSwitch = document.querySelector("#frame-switch");
+  frameSwitch.addEventListener("click", () => requestAnimationFrame(() => flip(frameSwitch)));
+  const savedSwitch = document.querySelector("#saved-switch");
+  savedSwitch.addEventListener("click", () => setTimeout(() => flip(savedSwitch), 400));
+  document.querySelector("#all").indeterminate = true;
   document.querySelector("#news").addEventListener("click", () => log("news"));
   document.querySelector("#terms").addEventListener("click", (event) => {
     document.querySelector("#terms-state").textContent = event.target.checked ? "accepted" : "not accepted";
@@ -951,6 +963,22 @@ try {
   await runSurf("uncheck", checkRef("checkbox", "Terms"), ...checkTab);
   const alreadyUnchecked = await runSurf("uncheck", checkRef("checkbox", "Terms"), ...checkTab);
   const radioUncheck = await runSurfExpectingFailure("uncheck", checkRef("radio", "Small"), ...checkTab);
+  // Late state updates, a label standing for its hidden input, a partly checked box, and an option value that
+  // is another option's text. Each runs even if an earlier one fails, so one failure lists every broken case.
+  const lateRuns = [];
+  for (const args of [
+    ["check", checkRef("switch", "Animated")], ["check", checkRef("switch", "Saved")],
+    ["check", checkRef("generic", "Remember me")], ["uncheck", checkRef("checkbox", "Select all")],
+    ["form.fill", "--data", JSON.stringify([{ ref: checkRef("combobox", "1"), value: "1" }])],
+  ]) lateRuns.push(await runSurf(...args, ...checkTab).then(() => "ok", (error) => `${args[0]}: ${error.stderr?.trim().split("\n").at(-1)}`));
+  const lateState = await checkPage.evaluate(() => [
+    document.querySelector("#frame-switch").getAttribute("aria-checked"), document.querySelector("#saved-switch").getAttribute("aria-checked"),
+    document.querySelector("#styled").checked, document.querySelector("#all").checked, document.querySelector("#all").indeterminate,
+    document.querySelector("#qty").value,
+  ].join(","));
+  if (lateRuns.some((run) => run !== "ok") || lateState !== "true,true,true,false,false,1") {
+    throw new Error(`late, label, partly checked or option-value cases failed: ${JSON.stringify({ lateRuns, lateState })}`);
+  }
   const checkState = await checkPage.evaluate(() => ({
     news: document.querySelector("#news").checked,
     terms: document.querySelector("#terms").checked,

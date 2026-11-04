@@ -947,7 +947,9 @@ function isInside(node: Element, target: Element): boolean {
 }
 
 // The checked state of a checkbox, switch or radio (native or ARIA), or why `check`/`uncheck` can't set it.
-function checkedState(element: Element, ref: string): { checked: boolean | "mixed"; radio: boolean } | { error: string } {
+// A label stands for its control: styled checkboxes hide the input inside or behind the label `read` lists.
+function checkedState(target: Element, ref: string): { checked: boolean | "mixed"; radio: boolean } | { error: string } {
+  const element = target instanceof HTMLLabelElement && target.control ? target.control : target;
   if (element instanceof HTMLInputElement && (element.type === "checkbox" || element.type === "radio")) {
     return { checked: element.indeterminate ? "mixed" : element.checked, radio: element.type === "radio" };
   }
@@ -2868,7 +2870,8 @@ function handleContentMessage(
             const failure = writeTextField(el, String(value), ref);
             results.push(failure ? { ref, success: false, error: failure } : { ref, success: true });
           } else if (el instanceof HTMLSelectElement) {
-            const option = [...el.options].find((opt) => opt.value === String(value) || opt.textContent?.trim() === String(value));
+            const options = [...el.options];
+            const option = options.find((opt) => opt.value === String(value)) ?? options.find((opt) => opt.textContent?.trim() === String(value));
             if (option) {
               el.value = option.value;
               el.dispatchEvent(new Event("change", { bubbles: true }));
