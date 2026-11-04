@@ -561,7 +561,7 @@ function getName(element: Element): string {
     const root = element.getRootNode() as Document | ShadowRoot;
     const label = root.querySelector(`label[for="${CSS.escape(element.id)}"]`);
     const text = label ? contentText(label).replace(/\s+/g, " ").trim() : "";
-    if (text) return text.length > 100 ? text.substring(0, 100) + "..." : text;
+    if (text) return text;
   }
 
   if (tag === "input") {
@@ -580,9 +580,16 @@ function getName(element: Element): string {
   if (tag === "img") return "";
 
   let directText = "";
-  for (const node of element.childNodes) {
+  // Direct text as rendered: a shadow host's light text is drawn through a slot, and the element
+  // holding that slot is named by it, so the host is not named by it again.
+  const source = element.shadowRoot ? element.shadowRoot.childNodes : element.childNodes;
+  for (const node of source) {
     if (node.nodeType === Node.TEXT_NODE) {
       directText += node.textContent;
+    } else if ((node as Element).tagName === "SLOT" && typeof (node as HTMLSlotElement).assignedNodes === "function") {
+      for (const assigned of (node as HTMLSlotElement).assignedNodes({ flatten: true })) {
+        if (assigned.nodeType === Node.TEXT_NODE) directText += assigned.textContent;
+      }
     }
   }
   if (directText?.trim() && directText.trim().length >= 3) {
@@ -2444,7 +2451,7 @@ function handleContentMessage(
         
         const roots = openRoots();
         for (const lbl of roots.flatMap(root => Array.from(root.querySelectorAll('label')))) {
-          const lblText = normalizeLocatorText(lbl.textContent);
+          const lblText = normalizeLocatorText(contentText(lbl));
           if (!lblText.includes(query)) continue;
           const forId = lbl.getAttribute('for');
           // Resolve `for` in the label's own root: a shadow host may carry the same id as its inner field.

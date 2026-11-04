@@ -302,23 +302,29 @@ ${stories}</main>
     // The host carries the same id as its inner input, and a light-DOM wrapper listens for input bubbling out.
     return `<!doctype html><html><head><title>Surf shadow form fixture</title></head>
 <body><output id="log"></output>
-<spl-input id="first-name"></spl-input>
+<x-title>Personal information</x-title>
+<spl-input id="first-name" label="First name"></spl-input>
 <spl-button>Submit application</spl-button>
+<input type="checkbox" id="agree"><label for="agree">I have read and agree to the Terms of Service, the Privacy Policy, and the Acceptable Use Policy of this example website</label>
 <script>
   function log(entry) { const out = document.querySelector("#log"); out.textContent = out.textContent ? out.textContent + "|" + entry : entry; }
   class SplInput extends HTMLElement {
     connectedCallback() {
       const id = this.id;
       const root = this.attachShadow({ mode: "open", delegatesFocus: true });
-      root.innerHTML = '<label for="' + id + '">First name<span aria-hidden="true">*</span></label><input id="' + id + '" type="text" autocomplete="given-name">';
+      root.innerHTML = '<label for="' + id + '">' + this.getAttribute("label") + '<span aria-hidden="true">*</span></label><input id="' + id + '" type="text" autocomplete="given-name">';
       this.addEventListener("input", () => log("input:" + root.querySelector("input").value));
     }
   }
   class SplButton extends HTMLElement {
     connectedCallback() { this.attachShadow({ mode: "open" }).innerHTML = '<button><slot></slot></button>'; }
   }
+  class XTitle extends HTMLElement {
+    connectedCallback() { this.attachShadow({ mode: "open" }).innerHTML = '<h3><slot></slot></h3>'; }
+  }
   customElements.define("spl-input", SplInput);
   customElements.define("spl-button", SplButton);
+  customElements.define("x-title", XTitle);
 </script></body></html>`;
   }
   if (url.pathname === "/click") {
@@ -908,6 +914,14 @@ try {
   if (!/button "Submit application" \[e\d+\]/.test(shadowRead)) {
     throw new Error(`read did not name the shadow-root slotted button "Submit application": ${shadowRead}`);
   }
+  // Text drawn through a slot names the element holding the slot, not the shadow host as well.
+  const shadowReadAll = await runSurf("read", "--all", "--no-text", "--tab-id", shadowTabId);
+  for (const text of ["Personal information", "Submit application"]) {
+    if (shadowReadAll.split(`"${text}"`).length !== 2) throw new Error(`read --all did not list "${text}" exactly once: ${shadowReadAll}`);
+  }
+  if (!/heading "Personal information" \[e\d+\]/.test(shadowReadAll)) {
+    throw new Error(`read --all did not list the slotted title as the heading: ${shadowReadAll}`);
+  }
   await runSurf("type", "Ada", "--ref", fieldRef, "--tab-id", shadowTabId, "--no-screenshot");
   const shadowValue = await runSurf("js", 'return document.querySelector("spl-input").shadowRoot.querySelector("input").value', "--tab-id", shadowTabId);
   if (shadowValue.trim() !== '"Ada"') throw new Error(`type --ref did not reach the inner shadow input: ${shadowValue}`);
@@ -937,6 +951,12 @@ try {
     await runSurf(...locator, "--action", "click", "--tab-id", shadowLocateTabId, "--no-screenshot");
     if (!(await innerFocused())) throw new Error(`${locator.join(" ")} --action click did not focus the shadow-root input`);
   }
+  // "First name" names its label exactly (the aria-hidden "*" is not part of it), so a longer label does not make it ambiguous.
+  await runSurf(
+    "js",
+    'const spouse = document.createElement("spl-input"); spouse.id = "spouse-name"; spouse.setAttribute("label", "First name of spouse"); document.body.append(spouse); return true',
+    "--tab-id", shadowLocateTabId,
+  );
   await runSurf(
     "locate.label", "First name", "--action", "fill", "--value", "Ada", "--tab-id", shadowLocateTabId, "--no-screenshot",
   );
@@ -948,6 +968,11 @@ try {
   if (JSON.stringify(JSON.parse(filled)) !== '["Ada","input:Ada"]') {
     throw new Error(`locate.label fill did not reach the inner shadow input and its light-DOM listener: ${filled}`);
   }
+  // A label over 100 characters names its field in full, so locate --name with the whole label finds it.
+  const agreeLabel = "I have read and agree to the Terms of Service, the Privacy Policy, and the Acceptable Use Policy of this example website";
+  await runSurf("locate.role", "checkbox", "--name", agreeLabel, "--action", "click", "--tab-id", shadowLocateTabId, "--no-screenshot");
+  const agreed = await runSurf("js", 'return document.querySelector("#agree").checked', "--tab-id", shadowLocateTabId);
+  if (agreed.trim() !== "true") throw new Error(`locate.role checkbox --name <full 120-character label> did not check it: ${agreed}`);
   await runSurf("tab.close", "--id", shadowLocateTabId, "--json");
 
   // A ref click waits for a click a user could make, then clicks with trusted input
