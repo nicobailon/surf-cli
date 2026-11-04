@@ -20,6 +20,8 @@ const COMMANDS = {
   js: { primaryArg: "code", effect: "unknown", recordable: false, argKinds: { code: "code" }, sensitiveArgs: ["code"] },
   javascript_tool: { primaryArg: "code", effect: "unknown", recordable: false, argKinds: { code: "code" }, sensitiveArgs: ["code"] },
   click: { effect: "page-write", argKinds: { ref: "element-ref", selector: "selector", x: "number", y: "number" } },
+  check: { primaryArg: "ref", effect: "page-write", argKinds: { ref: "element-ref" } },
+  uncheck: { primaryArg: "ref", effect: "page-write", argKinds: { ref: "element-ref" } },
   key: { primaryArg: "key", effect: "page-write", argKinds: { key: "key" } },
   submit: { effect: "page-write" },
   hover: { effect: "read", argKinds: { ref: "element-ref", selector: "selector" } },

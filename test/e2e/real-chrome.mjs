@@ -308,6 +308,36 @@ ${stories}</main>
   function log(entry) { const out = document.querySelector("#log"); out.textContent = out.textContent ? out.textContent + "|" + entry : entry; }
 </script></body></html>`;
   }
+  if (url.pathname === "/shadow-form") {
+    // Form fields live inside open shadow roots of custom elements, like SmartRecruiters' spl-* components.
+    // The host carries the same id as its inner input, and a light-DOM wrapper listens for input bubbling out.
+    return `<!doctype html><html><head><title>Surf shadow form fixture</title></head>
+<body><output id="log"></output>
+<x-title>Personal information</x-title>
+<spl-input id="first-name" label="First name"></spl-input>
+<spl-button>Submit application</spl-button>
+<input type="checkbox" id="agree"><label for="agree">I have read and agree to the Terms of Service, the Privacy Policy, and the Acceptable Use Policy of this example website</label>
+<script>
+  function log(entry) { const out = document.querySelector("#log"); out.textContent = out.textContent ? out.textContent + "|" + entry : entry; }
+  class SplInput extends HTMLElement {
+    connectedCallback() {
+      const id = this.id;
+      const root = this.attachShadow({ mode: "open", delegatesFocus: true });
+      root.innerHTML = '<label for="' + id + '">' + this.getAttribute("label") + '<span aria-hidden="true">*</span></label><input id="' + id + '" type="text" autocomplete="given-name">';
+      this.addEventListener("input", () => log("input:" + root.querySelector("input").value));
+    }
+  }
+  class SplButton extends HTMLElement {
+    connectedCallback() { this.attachShadow({ mode: "open" }).innerHTML = '<button><slot></slot></button>'; }
+  }
+  class XTitle extends HTMLElement {
+    connectedCallback() { this.attachShadow({ mode: "open" }).innerHTML = '<h3><slot></slot></h3>'; }
+  }
+  customElements.define("spl-input", SplInput);
+  customElements.define("spl-button", SplButton);
+  customElements.define("x-title", XTitle);
+</script></body></html>`;
+  }
   if (url.pathname === "/field-values") {
     // read shows what a field holds, except a secret: the password sits in a wrapping label with no other name.
     return `<!doctype html><html><head><title>Surf field values fixture</title></head>
@@ -335,6 +365,36 @@ ${stories}</main>
     const confirm = document.querySelector("#confirm");
     confirm.disabled = true;
     setTimeout(() => { confirm.disabled = false; }, 1500);
+  });
+</script></body></html>`;
+  }
+  if (url.pathname === "/check") {
+    // "Terms" keeps its app state in click events, the way React does, and shows it in #terms-state.
+    return `<!doctype html><html><head><title>Surf check fixture</title></head>
+<body><output id="log"></output>
+<input type="checkbox" id="news" checked><label for="news">Newsletter</label>
+<input type="checkbox" id="terms"><label for="terms">Terms</label> <span id="terms-state">not accepted</span>
+<input type="radio" name="size" id="small" checked><label for="small">Small</label>
+<input type="radio" name="size" id="large"><label for="large">Large</label>
+<select id="country"><option value="us">United States</option><option value="fr">France</option></select>
+<button role="switch" id="frame-switch" aria-checked="false">Animated</button>
+<button role="switch" id="saved-switch" aria-checked="false">Saved</button>
+<select id="qty" aria-label="Qty"><option value="0">1</option><option value="1">2</option></select>
+<label><input type="checkbox" id="styled" style="position:absolute;opacity:0;width:16px;height:16px"><span style="display:inline-block;width:16px;height:16px;border:1px solid"></span>Remember me</label>
+<input type="checkbox" id="all"><label for="all">Select all</label>
+<script>
+  function log(entry) { const out = document.querySelector("#log"); out.textContent = out.textContent ? out.textContent + "|" + entry : entry; }
+  // These switches commit their state a frame later and after a 400ms save, like animated or server-backed toggles.
+  const flip = (el) => el.setAttribute("aria-checked", String(el.getAttribute("aria-checked") !== "true"));
+  const frameSwitch = document.querySelector("#frame-switch");
+  frameSwitch.addEventListener("click", () => requestAnimationFrame(() => flip(frameSwitch)));
+  const savedSwitch = document.querySelector("#saved-switch");
+  savedSwitch.addEventListener("click", () => setTimeout(() => flip(savedSwitch), 400));
+  document.querySelector("#all").indeterminate = true;
+  document.querySelector("#news").addEventListener("click", () => log("news"));
+  document.querySelector("#terms").addEventListener("click", (event) => {
+    document.querySelector("#terms-state").textContent = event.target.checked ? "accepted" : "not accepted";
+    log("terms:" + event.isTrusted);
   });
 </script></body></html>`;
   }
@@ -591,6 +651,50 @@ try {
   const fixtureUrl = `http://127.0.0.1:${address.port}/fixture`;
   const navigationUrl = `${fixtureUrl}?navigated`;
   const baseUrl = `http://127.0.0.1:${address.port}`;
+
+  // Opt-in autostart (#424): with no Surf host running, `surf go <url>` starts the browser from
+  // surf.json browser.command (here Chrome for Testing through Puppeteer), opening <url>, then runs.
+  const autostartProfileDir = join(scratch, "profile-autostart");
+  const autostartPidPath = join(scratch, "autostart-launcher.pid");
+  const autostartLauncher = join(scratch, "autostart-launcher.mjs");
+  mkdirSync(join(autostartProfileDir, "NativeMessagingHosts"), { recursive: true });
+  cpSync(standardManifest, join(autostartProfileDir, "NativeMessagingHosts/surf.browser.host.json"));
+  writeFileSync(autostartLauncher, `import { writeFileSync } from "node:fs";
+import puppeteer from ${JSON.stringify(import.meta.resolve("puppeteer"))};
+writeFileSync(${JSON.stringify(autostartPidPath)}, String(process.pid));
+const launched = await puppeteer.launch({
+  headless: true,
+  handleSIGTERM: false,
+  executablePath: ${JSON.stringify(chromeExecutablePath)},
+  enableExtensions: [${JSON.stringify(extensionDir)}],
+  userDataDir: ${JSON.stringify(autostartProfileDir)},
+  args: [...${JSON.stringify(process.platform === "linux" ? ["--no-sandbox"] : [])}, ...process.argv.slice(2)],
+});
+process.on("SIGTERM", () => launched.close().finally(() => process.exit(0)));
+setInterval(() => {}, 60_000);
+`);
+  writeFileSync(
+    join(home, "surf.json"),
+    JSON.stringify({ browser: { autostart: true, command: [process.execPath, autostartLauncher], timeoutMs: 45_000 } }),
+  );
+  const autostartUrl = `${fixtureUrl}?autostart`;
+  await execFileAsync(process.execPath, [join(repo, "native/cli.cjs"), "go", autostartUrl, "--no-screenshot"], {
+    cwd: repo,
+    env,
+    timeout: 60_000,
+  });
+  const autostartTabs = JSON.parse(await runSurf("tab.list", "--json"));
+  if (!autostartTabs.some((tab) => tab.url === autostartUrl && tab.active)) {
+    throw new Error(`autostart did not open the go URL as the active tab: ${JSON.stringify(autostartTabs)}`);
+  }
+  rmSync(join(home, "surf.json"));
+  await terminateProcess(Number.parseInt(readFileSync(autostartPidPath, "utf8"), 10), "autostart launcher");
+  await terminateProcessesUsingProfile();
+  if (existsSync(hostPidPath)) {
+    await terminateProcess(Number.parseInt(readFileSync(hostPidPath, "utf8"), 10), "autostarted native host");
+  }
+  rmSync(hostPidPath, { force: true });
+  rmSync(socketPath, { force: true });
 
   browser = await puppeteer.launch({
     headless: true,
@@ -909,6 +1013,75 @@ try {
   }
   await runSurf("tab.close", "--id", controlsTabId, "--json");
 
+  // Form fields inside open shadow roots are listed, named from their shadow label, and typable by ref.
+  const shadowTabId = String(tabIdFromOutput(await runSurf("tab.new", `${baseUrl}/shadow-form`)));
+  await runSurf("wait.element", "spl-input", "--tab-id", shadowTabId, "--json");
+  const shadowRead = await runSurf("read", "--no-text", "--tab-id", shadowTabId);
+  const shadowFieldRef = shadowRead.match(/textbox "First name" \[(e\d+)\]/)?.[1];
+  if (!shadowFieldRef) throw new Error(`read did not list the shadow-root field "First name": ${shadowRead}`);
+  if (!/button "Submit application" \[e\d+\]/.test(shadowRead)) {
+    throw new Error(`read did not name the shadow-root slotted button "Submit application": ${shadowRead}`);
+  }
+  // Text drawn through a slot names the element holding the slot, not the shadow host as well.
+  const shadowReadAll = await runSurf("read", "--all", "--no-text", "--tab-id", shadowTabId);
+  for (const text of ["Personal information", "Submit application"]) {
+    if (shadowReadAll.split(`"${text}"`).length !== 2) throw new Error(`read --all did not list "${text}" exactly once: ${shadowReadAll}`);
+  }
+  if (!/heading "Personal information" \[e\d+\]/.test(shadowReadAll)) {
+    throw new Error(`read --all did not list the slotted title as the heading: ${shadowReadAll}`);
+  }
+  await runSurf("type", "Ada", "--ref", shadowFieldRef, "--tab-id", shadowTabId, "--no-screenshot");
+  const shadowValue = await runSurf("js", 'return document.querySelector("spl-input").shadowRoot.querySelector("input").value', "--tab-id", shadowTabId);
+  if (shadowValue.trim() !== '"Ada"') throw new Error(`type --ref did not reach the inner shadow input: ${shadowValue}`);
+  const shadowLog = await runSurf("js", 'return document.querySelector("#log").textContent', "--tab-id", shadowTabId);
+  if (shadowLog.trim() !== '"input:Ada"') throw new Error(`a light-DOM wrapper did not see the composed input event: ${shadowLog}`);
+  await runSurf("tab.close", "--id", shadowTabId, "--json");
+
+  // Locators reach fields inside open shadow roots and act on the inner input, not the host that shares its id.
+  const shadowLocateTabId = String(tabIdFromOutput(await runSurf("tab.new", `${baseUrl}/shadow-form`)));
+  await runSurf("wait.element", "spl-input", "--tab-id", shadowLocateTabId, "--json");
+  const innerRef = (await runSurf("read", "--no-text", "--tab-id", shadowLocateTabId)).match(/textbox "First name" \[(e\d+)\]/)?.[1];
+  const locatedLabel = JSON.parse(await runSurf("locate.label", "First name", "--tab-id", shadowLocateTabId, "--json")).result;
+  if (!innerRef || locatedLabel.ref !== innerRef) {
+    throw new Error(`locate.label did not find the shadow-root input ${innerRef}: ${JSON.stringify(locatedLabel)}`);
+  }
+  const innerFocused = async () => (await runSurf(
+    "js",
+    'const host = document.querySelector("spl-input"); return document.activeElement === host && host.shadowRoot.activeElement === host.shadowRoot.querySelector("input")',
+    "--tab-id", shadowLocateTabId,
+  )).trim() === "true";
+  const blurInner = () => runSurf(
+    "js", 'document.querySelector("spl-input").shadowRoot.querySelector("input").blur(); return true', "--tab-id", shadowLocateTabId,
+  );
+  for (const locator of [["locate.role", "textbox", "--name", "First name"], ["locate.text", "First name"]]) {
+    await blurInner();
+    if (await innerFocused()) throw new Error("the shadow input stayed focused after blur");
+    await runSurf(...locator, "--action", "click", "--tab-id", shadowLocateTabId, "--no-screenshot");
+    if (!(await innerFocused())) throw new Error(`${locator.join(" ")} --action click did not focus the shadow-root input`);
+  }
+  // "First name" names its label exactly (the aria-hidden "*" is not part of it), so a longer label does not make it ambiguous.
+  await runSurf(
+    "js",
+    'const spouse = document.createElement("spl-input"); spouse.id = "spouse-name"; spouse.setAttribute("label", "First name of spouse"); document.body.append(spouse); return true',
+    "--tab-id", shadowLocateTabId,
+  );
+  await runSurf(
+    "locate.label", "First name", "--action", "fill", "--value", "Ada", "--tab-id", shadowLocateTabId, "--no-screenshot",
+  );
+  const filled = await runSurf(
+    "js",
+    'return [document.querySelector("spl-input").shadowRoot.querySelector("input").value, document.querySelector("#log").textContent]',
+    "--tab-id", shadowLocateTabId,
+  );
+  if (JSON.stringify(JSON.parse(filled)) !== '["Ada","input:Ada"]') {
+    throw new Error(`locate.label fill did not reach the inner shadow input and its light-DOM listener: ${filled}`);
+  }
+  // A label over 100 characters names its field in full, so locate --name with the whole label finds it.
+  const agreeLabel = "I have read and agree to the Terms of Service, the Privacy Policy, and the Acceptable Use Policy of this example website";
+  await runSurf("locate.role", "checkbox", "--name", agreeLabel, "--action", "click", "--tab-id", shadowLocateTabId, "--no-screenshot");
+  const agreed = await runSurf("js", 'return document.querySelector("#agree").checked', "--tab-id", shadowLocateTabId);
+  if (agreed.trim() !== "true") throw new Error(`locate.role checkbox --name <full 120-character label> did not check it: ${agreed}`);
+  await runSurf("tab.close", "--id", shadowLocateTabId, "--json");
   // read shows a field's current value, and never a password's
   const valuesTabId = String(tabIdFromOutput(await runSurf("tab.new", `${baseUrl}/field-values`)));
   await runSurf("wait.element", "textarea", "--tab-id", valuesTabId, "--json");
@@ -989,6 +1162,55 @@ try {
   }
   await runSurf("tab.close", "--id", frontTabId, "--json");
   await runSurf("tab.close", "--id", clickTabId, "--json");
+
+  // check/uncheck set a state: clicking only when it differs, with a trusted click the page's app state follows
+  const checkTabId = String(tabIdFromOutput(await runSurf("tab.new", `${baseUrl}/check`)));
+  await runSurf("wait.element", "#country", "--tab-id", checkTabId, "--json");
+  const checkPage = (await browser.pages()).find((page) => page.url() === `${baseUrl}/check`);
+  const checkRead = await runSurf("page.read", "--all", "--no-text", "--tab-id", checkTabId);
+  const checkRef = (role, name) => {
+    const ref = checkRead.match(new RegExp(`${role} "${name}" \\[(e\\d+)\\]`))?.[1];
+    if (!ref) throw new Error(`page.read did not list ${role} "${name}": ${checkRead}`);
+    return ref;
+  };
+  const checkTab = ["--tab-id", checkTabId, "--no-screenshot"];
+  const missingOption = await runSurfExpectingFailure("select", checkRef("combobox", "United States"), "nowhere", ...checkTab);
+  const alreadyChecked = await runSurf("check", checkRef("checkbox", "Newsletter"), ...checkTab);
+  await runSurf("check", checkRef("checkbox", "Terms"), ...checkTab);
+  const termsAccepted = await checkPage.evaluate(() => document.querySelector("#terms").checked && document.querySelector("#terms-state").textContent);
+  await runSurf("uncheck", checkRef("checkbox", "Terms"), ...checkTab);
+  const alreadyUnchecked = await runSurf("uncheck", checkRef("checkbox", "Terms"), ...checkTab);
+  const radioUncheck = await runSurfExpectingFailure("uncheck", checkRef("radio", "Small"), ...checkTab);
+  // Late state updates, a label standing for its hidden input, a partly checked box, and an option value that
+  // is another option's text. Each runs even if an earlier one fails, so one failure lists every broken case.
+  const lateRuns = [];
+  for (const args of [
+    ["check", checkRef("switch", "Animated")], ["check", checkRef("switch", "Saved")],
+    ["check", checkRef("generic", "Remember me")], ["uncheck", checkRef("checkbox", "Select all")],
+    ["form.fill", "--data", JSON.stringify([{ ref: checkRef("combobox", "1"), value: "1" }])],
+  ]) lateRuns.push(await runSurf(...args, ...checkTab).then(() => "ok", (error) => `${args[0]}: ${error.stderr?.trim().split("\n").at(-1)}`));
+  const lateState = await checkPage.evaluate(() => [
+    document.querySelector("#frame-switch").getAttribute("aria-checked"), document.querySelector("#saved-switch").getAttribute("aria-checked"),
+    document.querySelector("#styled").checked, document.querySelector("#all").checked, document.querySelector("#all").indeterminate,
+    document.querySelector("#qty").value,
+  ].join(","));
+  if (lateRuns.some((run) => run !== "ok") || lateState !== "true,true,true,false,false,1") {
+    throw new Error(`late, label, partly checked or option-value cases failed: ${JSON.stringify({ lateRuns, lateState })}`);
+  }
+  const checkState = await checkPage.evaluate(() => ({
+    news: document.querySelector("#news").checked,
+    terms: document.querySelector("#terms").checked,
+    small: document.querySelector("#small").checked,
+    country: document.querySelector("#country").value,
+    log: document.querySelector("#log").textContent,
+    termsState: document.querySelector("#terms-state").textContent,
+  }));
+  if (termsAccepted !== "accepted" || !alreadyChecked.includes("was already checked; nothing clicked") || !alreadyUnchecked.includes("was already unchecked; nothing clicked")
+    || !radioUncheck.stderr.includes("is a radio button") || !missingOption.stderr.includes('no option matching "nowhere"')
+    || JSON.stringify(checkState) !== JSON.stringify({ news: true, terms: false, small: true, country: "us", log: "terms:true|terms:true", termsState: "not accepted" })) {
+    throw new Error(`check/uncheck/select did not set the requested state: ${JSON.stringify({ termsAccepted, alreadyChecked, alreadyUnchecked, radioUncheck, missingOption, checkState })}`);
+  }
+  await runSurf("tab.close", "--id", checkTabId, "--json");
 
   // A ref from an earlier page in the tab never resolves on a later one, even when both pages
   // number their elements the same way, and a reload counts as a later page.

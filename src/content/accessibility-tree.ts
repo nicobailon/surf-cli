@@ -500,16 +500,36 @@ function contentText(node: Node): string {
   const element = node as Element;
   if (element.getAttribute("aria-hidden") === "true" || element.hasAttribute("hidden")) return "";
   if (["script", "style", "template"].includes(element.tagName.toLowerCase())) return "";
+  if (element.tagName === "SLOT" && typeof (element as HTMLSlotElement).assignedNodes === "function") {
+    const assigned = (element as HTMLSlotElement).assignedNodes({ flatten: true });
+    if (assigned.length) return assigned.map(contentText).join("");
+  }
   return Array.from(element.childNodes, contentText).join("");
 }
 
+// Children as the browser renders them: an open shadow root replaces the host's light children,
+// and a <slot> stands in for the light-DOM elements assigned to it (or its own fallback children).
+// Closed shadow roots expose no shadowRoot here, so their contents stay unreachable, as before.
+function renderedChildren(element: Element): Element[] {
+  const source = element.shadowRoot ? element.shadowRoot.children : element.children;
+  const result: Element[] = [];
+  for (const child of source) {
+    if (child.tagName === "SLOT" && typeof (child as HTMLSlotElement).assignedElements === "function") {
+      const assigned = (child as HTMLSlotElement).assignedElements({ flatten: true });
+      result.push(...(assigned.length ? assigned : Array.from(child.children)));
+    } else {
+      result.push(child);
+    }
+  }
+  return result;
+}
 function getName(element: Element): string {
   const tag = element.tagName.toLowerCase();
 
   const labelledBy = element.getAttribute('aria-labelledby');
   if (labelledBy) {
     const names = labelledBy.split(/\s+/).map(id => {
-      const el = document.getElementById(id);
+      const el = (element.getRootNode() as Document | ShadowRoot).getElementById(id);
       return el?.textContent?.trim() || '';
     }).filter(Boolean);
     if (names.length) {
@@ -538,8 +558,10 @@ function getName(element: Element): string {
   if (alt?.trim()) return alt.trim();
 
   if (element.id) {
-    const label = document.querySelector(`label[for="${element.id}"]`);
-    if (label?.textContent?.trim()) return label.textContent.trim();
+    const root = element.getRootNode() as Document | ShadowRoot;
+    const label = root.querySelector(`label[for="${CSS.escape(element.id)}"]`);
+    const text = label ? contentText(label).replace(/\s+/g, " ").trim() : "";
+    if (text) return text;
   }
 
   if (tag === "input") {
@@ -558,9 +580,16 @@ function getName(element: Element): string {
   if (tag === "img") return "";
 
   let directText = "";
-  for (const node of element.childNodes) {
+  // Direct text as rendered: a shadow host's light text is drawn through a slot, and the element
+  // holding that slot is named by it, so the host is not named by it again.
+  const source = element.shadowRoot ? element.shadowRoot.childNodes : element.childNodes;
+  for (const node of source) {
     if (node.nodeType === Node.TEXT_NODE) {
       directText += node.textContent;
+    } else if ((node as Element).tagName === "SLOT" && typeof (node as HTMLSlotElement).assignedNodes === "function") {
+      for (const assigned of (node as HTMLSlotElement).assignedNodes({ flatten: true })) {
+        if (assigned.nodeType === Node.TEXT_NODE) directText += assigned.textContent;
+      }
     }
   }
   if (directText?.trim() && directText.trim().length >= 3) {
@@ -892,6 +921,18 @@ function isLocatable(el: Element): boolean {
     (el as HTMLElement).offsetWidth > 0 && (el as HTMLElement).offsetHeight > 0;
 }
 
+// The document and every open shadow root inside it, outermost first, so locators can query each.
+// Closed shadow roots expose no shadowRoot, so their contents stay unreachable.
+function openRoots(): (Document | ShadowRoot)[] {
+  const roots: (Document | ShadowRoot)[] = [document];
+  for (let i = 0; i < roots.length; i++) {
+    for (const el of roots[i].querySelectorAll("*")) {
+      if (el.shadowRoot) roots.push(el.shadowRoot);
+    }
+  }
+  return roots;
+}
+
 function registerLocatedRef(el: Element): string {
   const role = getResolvedRole(el);
   const name = getName(el);
@@ -944,6 +985,22 @@ function isInside(node: Element, target: Element): boolean {
     if (at === target) return true;
   }
   return false;
+}
+
+// The checked state of a checkbox, switch or radio (native or ARIA), or why `check`/`uncheck` can't set it.
+// A label stands for its control: styled checkboxes hide the input inside or behind the label `read` lists.
+function checkedState(target: Element, ref: string): { checked: boolean | "mixed"; radio: boolean } | { error: string } {
+  const element = target instanceof HTMLLabelElement && target.control ? target.control : target;
+  if (element instanceof HTMLInputElement && (element.type === "checkbox" || element.type === "radio")) {
+    return { checked: element.indeterminate ? "mixed" : element.checked, radio: element.type === "radio" };
+  }
+  const role = getResolvedRole(element);
+  if (["checkbox", "radio", "switch", "menuitemcheckbox", "menuitemradio"].includes(role)) {
+    const state = element.getAttribute("aria-checked");
+    return { checked: state === "mixed" ? "mixed" : state === "true", radio: role === "radio" || role === "menuitemradio" };
+  }
+  const dropdown = element.tagName === "SELECT" || role === "combobox" || role === "listbox";
+  return { error: `${ref} is a ${role || element.tagName.toLowerCase()}, not a checkbox, switch or radio.${dropdown ? ` Use surf select ${ref} <value> for a dropdown.` : ""}` };
 }
 
 // Where a user's click on `target` would land, or why it can't: the point must hit the target,
@@ -1208,7 +1265,7 @@ function generateAccessibilityTree(
       }
 
       if (depth < maxDepth) {
-        for (const child of element.children) {
+        for (const child of renderedChildren(element)) {
           lines.push(...traverse(child, include ? depth + 1 : depth));
         }
       }
@@ -1476,7 +1533,7 @@ function generateYamlTree(
         const props = getElementProps(element);
         
         const children: Element[] = [];
-        for (const child of element.children) {
+        for (const child of renderedChildren(element)) {
           children.push(child);
         }
         
@@ -1495,7 +1552,7 @@ function generateYamlTree(
           }
         }
       } else {
-        for (const child of element.children) {
+        for (const child of renderedChildren(element)) {
           traverse(child, depth, parentIncluded);
         }
       }
@@ -2191,6 +2248,16 @@ function handleContentMessage(
       sendResponse({ ...clickPoint(element), inPage: document.visibilityState === "hidden" });
       break;
     }
+    case "CHECKED_STATE": {
+      const { element, error } = resolveRef(message.ref);
+      const guardError = semanticGuardError(element, message.expectedIdentity);
+      if (guardError) {
+        sendResponse({ error: guardError, code: guardError });
+        break;
+      }
+      sendResponse(element ? checkedState(element, message.ref) : { error });
+      break;
+    }
     case "CLICK_ELEMENT": {
       const { element, error } = resolveRef(message.ref);
       const guardError = semanticGuardError(element, message.expectedIdentity);
@@ -2324,10 +2391,11 @@ function handleContentMessage(
         const markup = markupRoles[role];
         const selectors = implicitRoles[role] || [markup ? `[role="${role}"], ${markup}` : `[role="${role}"]`];
         let candidates: Element[] = [];
+        const roots = openRoots();
         
         for (const sel of selectors) {
           try {
-            candidates.push(...document.querySelectorAll(sel));
+            for (const root of roots) candidates.push(...root.querySelectorAll(sel));
           } catch {}
         }
         if (markup) {
@@ -2384,13 +2452,15 @@ function handleContentMessage(
         const query = normalizeLocatorText(text);
         
         // Find elements containing the text
-        const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
         const matches = new Set<Element>();
-        while (walker.nextNode()) {
-          const nodeText = walker.currentNode.textContent || '';
-          const hasMatch = exact ? nodeText.trim() === text : normalizeLocatorText(nodeText).includes(query);
-          const parent = walker.currentNode.parentElement;
-          if (hasMatch && parent && isLocatable(parent)) matches.add(parent);
+        for (const root of openRoots()) {
+          const walker = document.createTreeWalker(root === document ? document.body : root, NodeFilter.SHOW_TEXT);
+          while (walker.nextNode()) {
+            const nodeText = walker.currentNode.textContent || '';
+            const hasMatch = exact ? nodeText.trim() === text : normalizeLocatorText(nodeText).includes(query);
+            const parent = walker.currentNode.parentElement;
+            if (hasMatch && parent && isLocatable(parent)) matches.add(parent);
+          }
         }
         
         // Most specific (smallest) element first
@@ -2424,16 +2494,19 @@ function handleContentMessage(
           if (exactMatch) exactFields.add(field);
         };
         
-        for (const lbl of document.querySelectorAll('label')) {
-          const lblText = normalizeLocatorText(lbl.textContent);
+        const roots = openRoots();
+        for (const lbl of roots.flatMap(root => Array.from(root.querySelectorAll('label')))) {
+          const lblText = normalizeLocatorText(contentText(lbl));
           if (!lblText.includes(query)) continue;
           const forId = lbl.getAttribute('for');
-          addField((forId && document.getElementById(forId)) || lbl.querySelector('input, select, textarea'), lblText === query);
+          // Resolve `for` in the label's own root: a shadow host may carry the same id as its inner field.
+          const target = forId && (lbl.getRootNode() as Document | ShadowRoot).getElementById(forId);
+          addField(target || lbl.querySelector('input, select, textarea'), lblText === query);
         }
         
         // Fields named only by aria-label or placeholder
         if (fields.length === 0) {
-          for (const field of document.querySelectorAll('input, textarea, select')) {
+          for (const field of roots.flatMap(root => Array.from(root.querySelectorAll('input, textarea, select')))) {
             const names = [field.getAttribute('aria-label'), field.getAttribute('placeholder')].map(normalizeLocatorText);
             if (names.some(fieldName => fieldName.includes(query))) addField(field, names.includes(query));
           }
@@ -2539,14 +2612,7 @@ function handleContentMessage(
           }
         }
         
-        // Clear current selection for multi-select
-        if (selectEl.multiple) {
-          for (const opt of selectEl.options) {
-            opt.selected = false;
-          }
-        }
-        
-        const selected: string[] = [];
+        const matched: HTMLOptionElement[] = [];
         const notFound: string[] = [];
         
         // For single-select, only use the first value
@@ -2568,8 +2634,7 @@ function handleContentMessage(
             }
             
             if (matches) {
-              opt.selected = true;
-              selected.push(opt.value);
+              matched.push(opt);
               found = true;
               break;  // Found match for this value, move to next
             }
@@ -2577,18 +2642,18 @@ function handleContentMessage(
           
           if (!found) notFound.push(val);
         }
-        
-        // Dispatch change event
-        selectEl.dispatchEvent(new Event('change', { bubbles: true }));
-        
+
+        // Select nothing unless every value matched, so a typo can't leave a half-changed dropdown.
         if (notFound.length > 0) {
-          sendResponse({ 
-            selected, 
-            warning: `Values not found: ${notFound.join(', ')}` 
-          });
-        } else {
-          sendResponse({ selected });
+          sendResponse({ error: `${selector} has no option matching ${notFound.map((v: string) => JSON.stringify(v)).join(", ")} (by ${by || "value"}), so nothing was selected.` });
+          break;
         }
+        if (selectEl.multiple) {
+          for (const opt of selectEl.options) opt.selected = false;
+        }
+        for (const opt of matched) opt.selected = true;
+        selectEl.dispatchEvent(new Event('change', { bubbles: true }));
+        sendResponse({ selected: matched.map((opt) => opt.value) });
       } catch (err) {
         sendResponse({ error: err instanceof Error ? err.message : String(err) });
       }
@@ -2871,9 +2936,13 @@ function handleContentMessage(
             const failure = writeTextField(el, String(value), ref);
             results.push(failure ? { ref, success: false, error: failure } : { ref, success: true });
           } else if (el instanceof HTMLSelectElement) {
-            el.value = String(value);
-            el.dispatchEvent(new Event("change", { bubbles: true }));
-            results.push({ ref, success: true });
+            const options = [...el.options];
+            const option = options.find((opt) => opt.value === String(value)) ?? options.find((opt) => opt.textContent?.trim() === String(value));
+            if (option) {
+              el.value = option.value;
+              el.dispatchEvent(new Event("change", { bubbles: true }));
+            }
+            results.push(option ? { ref, success: true } : { ref, success: false, error: `${ref} has no option with value or text ${JSON.stringify(String(value))}, so nothing was selected.` });
           } else if (el.isContentEditable) {
             el.focus();
             el.textContent = String(value);

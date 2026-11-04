@@ -1166,6 +1166,10 @@ function mapToolToMessage(tool, args, tabId) {
       // --button applies to refs and coordinates; a CSS selector click is always a left click.
       return mapComputerAction({ ...a, action: a.selector ? "left_click" : clickAction }, tabId);
     }
+    case "check":
+    case "uncheck":
+      if (!a.ref) throw new Error("ref argument required (e.g. surf check e5)");
+      return { type: "SET_CHECKED", ref: a.ref, checked: tool === "check", ...baseMsg };
     case "cookie.list":
       return { type: "COOKIE_LIST", ...baseMsg };
     case "cookie.get":

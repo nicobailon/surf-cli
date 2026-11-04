@@ -90,6 +90,13 @@ surf install <extension-id> --target linux     # WSLg/Linux browser from WSL2
 
 Supported: `chrome`, `chromium`, `brave`, `edge`, `arc`, `helium`
 
+**Start the browser automatically**
+To have Surf start the browser when it isn't running, add this to `surf.json` (in the current directory or your home directory):
+```json
+{ "browser": { "autostart": true, "app": "chrome" } }
+```
+Most commands that find no running browser then start it, wait for the Surf extension to connect (up to 30 seconds, or `timeoutMs`), and run; streams, `record` and compound commands such as `extract` don't start it. `surf go <url>` opens the browser on that page. `app` is one of the browsers above (default `chrome`); on Linux Surf runs the browser's usual binary from `PATH`. To start it some other way, give the full command instead, for example `"command": ["/usr/bin/chromium", "--profile-directory=Work"]`; Surf adds the URL at the end. Remote mode never starts a browser.
+
 **WSL2 with Windows Chrome**
 When you run `surf install <extension-id>` inside WSL2, Surf detects WSL2 and installs a Windows-side native messaging manifest for Windows Chrome/Brave/Edge by default. The generated Windows wrapper launches the WSL2 host with `wsl.exe`, so `surf` commands run inside WSL2 still connect to the WSL socket.
 
@@ -363,6 +370,13 @@ surf select "#country" "US"                 # Select by CSS selector
 surf select e5 "opt1" "opt2"                # Multi-select
 surf select e5 --by label "United States"   # Select by visible text
 surf select e5 --by index 0                 # Select first option
+```
+
+Set a checkbox, switch or radio to a state (nothing is clicked if it is already there):
+
+```bash
+surf check e6                               # Checked afterwards, or the command fails
+surf uncheck e6                             # Unchecked afterwards
 ```
 
 Upload files:

@@ -35,6 +35,10 @@ const STARTER_CONFIG = {
 //   }
 // }
 
+// Start the browser when no Surf host is running (off unless set):
+// { "browser": { "autostart": true, "app": "chrome", "timeoutMs": 30000 } }
+// "app" is chrome, chromium, brave, edge, arc or helium; "command": ["/path/to/browser", ...] overrides it.
+
 function findConfigPath() {
   const cwdPath = path.join(process.cwd(), CONFIG_NAME);
   if (fs.existsSync(cwdPath)) {
