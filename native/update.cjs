@@ -1,7 +1,7 @@
 const fs = require("fs");
 const net = require("net");
 const path = require("path");
-const { spawn } = require("child_process");
+const childProcess = require("child_process");
 const { SOCKET_PATH } = require("./socket-path.cjs");
 
 const PACKAGE_ROOT = path.resolve(__dirname, "..");
@@ -9,16 +9,25 @@ const MANUAL_RELOAD = "Reload Surf once in chrome://extensions; later `surf upda
 
 // How this surf is installed, from the real path of its package. A global npm install lives in
 // <prefix>/lib/node_modules/surf-cli (<prefix>\node_modules\surf-cli on Windows) and is updated
-// with the npm of that prefix, not whichever npm is first on PATH. A linked repo checkout
-// resolves to the repo itself, which has a .git, and is rebuilt in place.
-function planUpdate(packageRoot = PACKAGE_ROOT, platform = process.platform) {
+// with the npm of that prefix, not whichever npm is first on PATH. A prefix without its own npm
+// (the default %APPDATA%\npm on Windows, or a prefix such as ~/.npm-global) uses the npm next to
+// the running node, once the prefix's `surf` command shows the install is global. A linked repo
+// checkout resolves to the repo itself, which has a .git, and is rebuilt in place.
+function planUpdate(packageRoot = PACKAGE_ROOT, platform = process.platform, nodePath = process.execPath) {
   const root = fs.realpathSync(packageRoot);
   const isWin = platform === "win32";
   const modules = path.dirname(root);
-  if (path.basename(root) === "surf-cli" && path.basename(modules) === "node_modules") {
+  const globalLayout = path.basename(root) === "surf-cli" && path.basename(modules) === "node_modules" &&
+    (isWin || path.basename(path.dirname(modules)) === "lib");
+  if (globalLayout) {
     const prefix = isWin ? path.dirname(modules) : path.dirname(path.dirname(modules));
-    const npm = isWin ? path.join(prefix, "npm.cmd") : path.join(prefix, "bin", "npm");
-    if ((isWin || path.basename(path.dirname(modules)) === "lib") && fs.existsSync(npm)) {
+    const binDir = isWin ? prefix : path.join(prefix, "bin");
+    const npmName = isWin ? "npm.cmd" : "npm";
+    const besideNode = path.join(path.dirname(nodePath), npmName);
+    const npm = fs.existsSync(path.join(binDir, npmName))
+      ? path.join(binDir, npmName)
+      : fs.existsSync(path.join(binDir, isWin ? "surf.cmd" : "surf")) && fs.existsSync(besideNode) ? besideNode : null;
+    if (npm) {
       // npm_config_prefix keeps the install in this prefix even if npm's shebang finds another node.
       return {
         kind: "npm",
@@ -26,7 +35,6 @@ function planUpdate(packageRoot = PACKAGE_ROOT, platform = process.platform) {
         steps: [{ command: npm, args: ["install", "-g", "surf-cli@latest"], cwd: prefix, env: { npm_config_prefix: prefix } }],
       };
     }
-    throw new Error(`surf is installed in ${root}, but there is no npm at ${npm} to update it. Update it with the npm you installed it with: npm install -g surf-cli@latest`);
   }
   if (fs.existsSync(path.join(root, ".git"))) {
     const npm = isWin ? "npm.cmd" : "npm";
@@ -39,19 +47,17 @@ function planUpdate(packageRoot = PACKAGE_ROOT, platform = process.platform) {
       ],
     };
   }
-  throw new Error(`surf in ${root} is neither a global npm install nor a git checkout, so surf update changed nothing. Update it the way you installed it.`);
+  throw new Error(`surf in ${root} is neither a global npm install nor a git checkout, so surf update changed nothing. Update it with the package manager that installed it.`);
 }
 
-// Runs one step with its output on stderr, so stdout stays the update's own report.
-function runStep(step) {
+// Runs one step with its output on stderr, so stdout stays the update's own report. Windows
+// runs a .cmd only through the shell, so then the command and every argument are quoted.
+function runStep(step, { spawn = childProcess.spawn, platform = process.platform } = {}) {
   return new Promise((resolve) => {
-    const isWin = process.platform === "win32";
-    const child = spawn(isWin ? `"${step.command}"` : step.command, step.args, {
-      cwd: step.cwd,
-      env: { ...process.env, ...step.env },
-      stdio: ["ignore", 2, 2],
-      shell: isWin,
-    });
+    const options = { cwd: step.cwd, env: { ...process.env, ...step.env }, stdio: ["ignore", 2, 2] };
+    const child = platform === "win32" && /\.cmd$/i.test(step.command)
+      ? spawn([step.command, ...step.args].map((part) => `"${part}"`).join(" "), { ...options, shell: true })
+      : spawn(step.command, step.args, options);
     child.on("error", (error) => {
       console.error(`surf update: ${error.message}`);
       resolve(1);
@@ -107,8 +113,11 @@ async function reloadExtension({ socketPath = SOCKET_PATH, waitMs = 20000 } = {}
     return { ok: false, message: "No Surf extension is connected, so nothing was reloaded; the browser loads the new version when it starts Surf." };
   }
   if (!reply.ok) {
-    // A host or extension from before `surf update` does not know the reload request.
-    return { ok: false, message: `The running Surf extension could not reload itself (${reply.error || "not supported"}). ${MANUAL_RELOAD}` };
+    // How a host or extension from before `surf update` refuses the reload request.
+    if (/Unsupported request type|explicit tab binding|Unknown message type/.test(reply.error || "")) {
+      return { ok: false, message: `The running Surf extension is older than \`surf update\`, so it can't reload itself. ${MANUAL_RELOAD}` };
+    }
+    return { ok: false, message: `The running Surf extension could not reload itself: ${reply.error || "no reason given"}. ${MANUAL_RELOAD}` };
   }
   const deadline = Date.now() + waitMs;
   while (Date.now() < deadline) {
@@ -159,6 +168,7 @@ async function runUpdateCli(rawArgs, { socketPath = SOCKET_PATH, packageRoot = P
     }
   }
 
+  console.error("surf update: reloading the extension restarts Surf for every session, so commands running in other sessions fail");
   const reload = await reloadExtension({ socketPath });
   steps.push({ step: "reload extension", ok: reload.ok, ...(reload.message ? { message: reload.message } : {}) });
   if (reload.message) console.error(`surf update: ${reload.message}`);
@@ -173,4 +183,4 @@ async function runUpdateCli(rawArgs, { socketPath = SOCKET_PATH, packageRoot = P
   return 0;
 }
 
-module.exports = { planUpdate, reloadExtension, runUpdateCli };
+module.exports = { planUpdate, reloadExtension, runStep, runUpdateCli };
