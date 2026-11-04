@@ -547,7 +547,7 @@ function getName(element: Element): string {
     const type = element.getAttribute("type") || "";
     const value = element.getAttribute("value");
     if (type === "submit" && value?.trim()) return value.trim();
-    if (input.value && input.value.length < 50 && input.value.trim()) return input.value.trim();
+    if (input.value && input.value.length < 50 && input.value.trim() && !isSensitiveField(element)) return input.value.trim();
   }
 
   if (["button", "a", "summary"].includes(tag) || NAME_FROM_CONTENT_ROLES.has(getResolvedRole(element))) {
@@ -1201,6 +1201,9 @@ function generateAccessibilityTree(
         const placeholder = element.getAttribute("placeholder");
         if (placeholder) line += ` placeholder="${placeholder}"`;
 
+        const field = readFieldValue(element);
+        if (field) line += "hidden" in field ? " [value hidden]" : ` value="${field.value.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`;
+
         lines.push(line);
       }
 
@@ -1419,7 +1422,9 @@ function generateYamlTree(
       if (hasCursorPointer(element)) {
         key += ' [cursor=pointer]';
       }
-      
+      const field = readFieldValue(element);
+      if (field && "hidden" in field) key += " [value hidden]";
+
       return key;
     }
 
@@ -1429,6 +1434,8 @@ function generateYamlTree(
       if (href) props.url = href;
       const placeholder = element.getAttribute("placeholder");
       if (placeholder) props.placeholder = placeholder;
+      const field = readFieldValue(element);
+      if (field && "value" in field) props.value = field.value;
       return props;
     }
 
@@ -1792,8 +1799,11 @@ function pageFingerprint(value: string): string {
 
 function isSensitiveField(element: Element): boolean {
   if (element.tagName.toLowerCase() === "input" && semanticElementType(element) === "password") return true;
-  return (element.getAttribute("autocomplete") || "").toLowerCase().split(/\s+/).some((token) =>
-    ["current-password", "new-password", "one-time-code"].includes(token) || token.startsWith("cc-"));
+  if ((element.getAttribute("autocomplete") || "").toLowerCase().split(/\s+/).some((token) =>
+    ["current-password", "new-password", "one-time-code"].includes(token) || token.startsWith("cc-"))) return true;
+  // A page that masks a text field on screen (bullets instead of characters) treats it as a secret.
+  const masking = window.getComputedStyle(element).getPropertyValue("-webkit-text-security");
+  return !!masking && masking !== "none";
 }
 
 function pageFieldValue(element: Element): string | undefined {
@@ -1811,6 +1821,15 @@ function pageFieldValue(element: Element): string | undefined {
   }
   if (element.getAttribute("contenteditable") === "true") return element.textContent || "";
   return undefined;
+}
+
+// The current value `read` shows for a text field. A select already shows its selection as its
+// name, and a secret is only reported as hidden.
+function readFieldValue(element: Element): { value: string } | { hidden: true } | undefined {
+  if (element.tagName.toLowerCase() === "select") return undefined;
+  const value = boundedText(pageFieldValue(element), 81);
+  if (!value) return undefined;
+  return isSensitiveField(element) ? { hidden: true } : { value: value.length > 80 ? `${value.slice(0, 80)}...` : value };
 }
 
 function pageNodeName(element: Element, role: string): string {
