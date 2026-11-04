@@ -4318,6 +4318,11 @@ function printResponseContext(response) {
   if (response.notice && finalClassification.scope !== "provider") {
     console.error(`[surf] ${response.notice}`);
   }
+  // A host older than this check sends no versions, and an unknown version is not a mismatch.
+  const { host = null, extension = null } = response.versions || {};
+  if ((host && host !== VERSION) || (extension && extension !== VERSION)) {
+    console.error(`surf: version mismatch (cli ${VERSION}, host ${host ?? "unknown"}, extension ${extension ?? "unknown"}). Reinstall Surf with npm and reload the extension in chrome://extensions.`);
+  }
 }
 
 function queueSummary(queue) {

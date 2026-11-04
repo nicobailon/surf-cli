@@ -106,6 +106,9 @@ async function runSurf(...args) {
     timeout: 20_000,
     maxBuffer: 10 * 1024 * 1024,
   });
+  if (result.stderr.includes("surf: version mismatch")) {
+    throw new Error(`surf ${args.join(" ")} warned about versions that match: ${result.stderr}`);
+  }
   return result.stdout;
 }
 
@@ -304,6 +307,15 @@ ${stories}</main>
 <script>
   function log(entry) { const out = document.querySelector("#log"); out.textContent = out.textContent ? out.textContent + "|" + entry : entry; }
 </script></body></html>`;
+  }
+  if (url.pathname === "/field-values") {
+    // read shows what a field holds, except a secret: the password sits in a wrapping label with no other name.
+    return `<!doctype html><html><head><title>Surf field values fixture</title></head>
+<body><input type="email" placeholder="hello@example.com">
+<label>Password <input type="password"></label>
+<textarea placeholder="Notes"></textarea>
+<input type="text" aria-label="SSN" style="-webkit-text-security:disc">
+<input type="text" aria-label="Quote"></body></html>`;
   }
   if (url.pathname === "/click") {
     // Each button only reports a click a user could have made.
@@ -521,10 +533,9 @@ try {
       : ".config/google-chrome/NativeMessagingHosts/surf.browser.host.json",
   );
   const nativeManifest = JSON.parse(readFileSync(standardManifest, "utf8"));
-  writeFileSync(
-    nativeManifest.path,
-    `#!/usr/bin/env bash\necho $$ > ${JSON.stringify(hostPidPath)}\nexport SURF_SOCKET=${JSON.stringify(socketPath)}\nexport SURF_TMP=${JSON.stringify(surfTmp)}\nexec ${JSON.stringify(process.execPath)} ${JSON.stringify(join(repo, "native/host.cjs"))} "$@"\n`,
-  );
+  const hostWrapper = (extraExports = "") =>
+    `#!/usr/bin/env bash\necho $$ > ${JSON.stringify(hostPidPath)}\nexport SURF_SOCKET=${JSON.stringify(socketPath)}\nexport SURF_TMP=${JSON.stringify(surfTmp)}\n${extraExports}exec ${JSON.stringify(process.execPath)} ${JSON.stringify(join(repo, "native/host.cjs"))} "$@"\n`;
+  writeFileSync(nativeManifest.path, hostWrapper());
   chmodSync(nativeManifest.path, 0o755);
 
   const testingManifest = join(profileDir, "NativeMessagingHosts/surf.browser.host.json");
@@ -694,6 +705,16 @@ setInterval(() => {}, 60_000);
   const initialText = await runSurf("page.text");
   if (!initialText.includes("Surf real Chrome fixture") || !initialText.includes("Waiting for Surf")) {
     throw new Error(`page.text did not contain fixture text: ${initialText}`);
+  }
+
+  const packageVersion = JSON.parse(readFileSync(join(repo, "package.json"), "utf8")).version;
+  const doctorReport = JSON.parse(await runSurf("doctor", "--json"));
+  if (
+    doctorReport.versions?.cli !== packageVersion ||
+    doctorReport.versions?.host !== packageVersion ||
+    doctorReport.versions?.extension !== packageVersion
+  ) {
+    throw new Error(`doctor did not report matching versions: ${JSON.stringify(doctorReport.versions)}`);
   }
 
   const pageHtml = await runSurf("page.html");
@@ -932,6 +953,34 @@ setInterval(() => {}, 60_000);
   }
   await runSurf("tab.close", "--id", controlsTabId, "--json");
 
+  // read shows a field's current value, and never a password's
+  const valuesTabId = String(tabIdFromOutput(await runSurf("tab.new", `${baseUrl}/field-values`)));
+  await runSurf("wait.element", "textarea", "--tab-id", valuesTabId, "--json");
+  const emptyFields = await runSurf("read", "--no-text", "--tab-id", valuesTabId);
+  const fieldRef = (pattern) => {
+    const ref = emptyFields.match(pattern)?.[1];
+    if (!ref) throw new Error(`read did not list ${pattern}: ${emptyFields}`);
+    return ref;
+  };
+  for (const [pattern, text] of [
+    [/textbox "hello@example\.com" \[(e\d+)\]/, "hello22"],
+    [/textbox \[(e\d+)\] type="password"/, "s3cret-434"],
+    [/textbox "Notes" \[(e\d+)\]/, "call back tomorrow"],
+    [/textbox "SSN" \[(e\d+)\]/, "masked-434"],
+    [/textbox "Quote" \[(e\d+)\]/, 'say "hi" \\'],
+  ]) {
+    await runSurf("type", text, "--ref", fieldRef(pattern), "--tab-id", valuesTabId, "--no-screenshot", "--json");
+  }
+  const filledFields = await runSurf("read", "--no-text", "--tab-id", valuesTabId);
+  if (!/textbox "hello@example\.com" \[e\d+\] type="email" placeholder="hello@example\.com" value="hello22"/.test(filledFields) ||
+      !filledFields.includes('value="call back tomorrow"') || filledFields.includes("s3cret") || !filledFields.includes("[value hidden]") ||
+      !filledFields.includes('value="say \\"hi\\" \\\\"')) {
+    throw new Error(`read did not show field values without the password: ${filledFields}`);
+  }
+  if (filledFields.includes("masked-434") || !/textbox "SSN" \[e\d+\] type="text" \[value hidden\]/.test(filledFields)) {
+    throw new Error(`read showed a field the page masks on screen: ${filledFields}`);
+  }
+  await runSurf("tab.close", "--id", valuesTabId, "--json");
   // Page text is the rendered text: no CSS rules, script bodies, noscript text or hidden content
   const textTabId = String(tabIdFromOutput(await runSurf("tab.new", `${baseUrl}/page-text`)));
   await runSurf("wait.element", "h1", "--tab-id", textTabId, "--json");
@@ -1418,6 +1467,28 @@ setInterval(() => {}, 60_000);
   );
   if (firstFeedPage.json?.data?.items?.[0]?.id !== "item-1" || secondPage.status !== 200 || secondPage.json?.data?.items?.[0]?.id !== "item-5") {
     throw new Error(`network.wait/network.replay failed: ${JSON.stringify({ firstFeedPage, secondPage })}`);
+  }
+
+  // Last, because it restarts the native host: a host reporting another version makes
+  // each command print one stderr line, while its stdout stays the same.
+  const tabListBeforeSkew = await runSurf("tab.list");
+  writeFileSync(nativeManifest.path, hostWrapper("export SURF_TEST_HOST_VERSION=0.0.1\n"));
+  const matchingHostPid = Number.parseInt(readFileSync(hostPidPath, "utf8"), 10);
+  rmSync(hostPidPath);
+  await terminateProcess(matchingHostPid, "Surf native host");
+  await waitFor(() => existsSync(hostPidPath), "restarted Surf native-host PID", 30_000);
+  let skewed;
+  await waitFor(async () => {
+    skewed = await execFileAsync(process.execPath, [join(repo, "native/cli.cjs"), "tab.list"], {
+      cwd: repo,
+      env,
+      timeout: 20_000,
+    }).catch(() => null);
+    return skewed !== null;
+  }, "restarted Surf native host to answer", 30_000);
+  const expectedSkewLine = `surf: version mismatch (cli ${packageVersion}, host 0.0.1, extension ${packageVersion}). Reinstall Surf with npm and reload the extension in chrome://extensions.\n`;
+  if (skewed.stderr !== expectedSkewLine || skewed.stdout !== tabListBeforeSkew) {
+    throw new Error(`version mismatch was not reported as one stderr line: ${JSON.stringify(skewed)}`);
   }
 
   console.log(
