@@ -94,6 +94,7 @@ const { Buffer: BufferCtor } = require("node:buffer") as {
     from(value: string, encoding?: string): BufferLike;
   };
 };
+const { version: packageVersion } = require("../../package.json") as { version: string };
 
 const tempDirs: string[] = [];
 const tinyPngBase64 =
@@ -241,7 +242,7 @@ function startHost(socketPath: string, options: FakeHostOptions = {}) {
         writeNativeMessage(child.stdin, {
           type: "EXTENSION_HELLO",
           protocolVersion: 2,
-          extensionVersion: "test",
+          extensionVersion: packageVersion,
           browserInstanceId: "contract-browser",
           browserEpoch: `contract-epoch-${process.pid}`,
           capabilities: ["browser-sessions", "strict-targets", "keyed-lanes"],

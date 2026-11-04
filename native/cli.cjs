@@ -39,6 +39,7 @@ const IS_WIN = process.platform === "win32";
 const { SURF_TMP, formatSocketError } = require("./socket-path.cjs");
 const { acquireBrowserLock } = require("./browser-lock.cjs");
 const { selectEndpoint, connectEndpoint, formatEndpointError } = require("./endpoint.cjs");
+const { launchArgv, launchBrowser } = require("./browser-launch.cjs");
 const { createFrameParser, createSocketWriter, writeFrame } = require("./remote-transport.cjs");
 const { resolveRequestDeadlineMs } = require("./host-sessions.cjs");
 const toolScope = require("./tool-scope.cjs");
@@ -744,7 +745,7 @@ const TOOLS = {
         ]
       },
       "read": { desc: "Alias for page.read", args: [], alias: "page.read" },
-      "page.text": { desc: "Extract all text from page", args: [] },
+      "page.text": { desc: "Extract visible text from page", args: [] },
       "page.html": {
         desc: "Print rendered document HTML",
         args: [],
@@ -4218,50 +4219,88 @@ if (endpoint.kind === "remote") {
   return;
 }
 
-socket = connectEndpoint(endpoint, () => {
-  writeFrame(socket, request).catch((error) => socket.destroy(error));
-});
-
-const requestTimeout = resolveRequestDeadlineMs(finalTool, toolArgs);
-timeout = setTimeout(() => {
-  console.error(`Error: Request timed out (${requestTimeout / 1000}s)`);
-  socket.destroy();
+// surf.json `browser.autostart`: when no Surf host is listening, start the browser (with the URL
+// for `go`, so there is no stray blank tab) and wait for its host before sending the request.
+async function startBrowserIfNeeded(settings) {
+  const probe = () => new Promise((resolve) => {
+    const sock = connectEndpoint(endpoint, () => { sock.destroy(); resolve(null); });
+    sock.on("error", resolve);
+  });
+  let error = await probe();
+  if (!error || !["ENOENT", "ECONNREFUSED"].includes(error.code)) return;
+  const timeoutMs = settings.timeoutMs ?? 30_000;
+  if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) throw new Error("surf.json browser.timeoutMs must be a positive number");
+  const argv = launchArgv({ app: settings.app, command: settings.command, url: finalTool === "navigate" ? toolArgs.url : undefined });
+  const launch = launchBrowser(argv);
+  const deadline = Date.now() + timeoutMs;
+  while (error && !launch.error && Date.now() < deadline) {
+    await new Promise((resolve) => setTimeout(resolve, 250));
+    error = await probe();
+  }
+  if (!error) return;
+  console.error("Error:", formatEndpointError(error, endpoint, formatSocketError));
+  console.error(launch.error
+    ? `Autostart could not run ${argv[0]}: ${launch.error.message}`
+    : `Autostart launched ${settings.command ? argv[0] : settings.app || "chrome"} but Surf did not connect within ${timeoutMs / 1000}s.`);
   process.exit(1);
-}, requestTimeout);
+}
 
-const responseParser = createFrameParser({
-  onFrame(msg) {
-    if (msg.type === "extension_disconnected") {
-      clearTimeout(timeout);
-      console.error(msg.message);
-      socket.end();
-      process.exit(1);
-    }
-    if (msg.id !== request.id) return;
-    handleResponse(msg).catch((err) => {
-      console.error("Handler error:", err.message);
-      process.exit(1);
-    });
-  },
-  onError(error) {
-    clearTimeout(timeout);
-    console.error("Invalid response frame:", error.message);
+function sendLocalRequest() {
+  socket = connectEndpoint(endpoint, () => {
+    writeFrame(socket, request).catch((error) => socket.destroy(error));
+  });
+
+  const requestTimeout = resolveRequestDeadlineMs(finalTool, toolArgs);
+  timeout = setTimeout(() => {
+    console.error(`Error: Request timed out (${requestTimeout / 1000}s)`);
     socket.destroy();
     process.exit(1);
-  },
-});
+  }, requestTimeout);
 
-socket.on("data", (data) => responseParser.push(data));
+  const responseParser = createFrameParser({
+    onFrame(msg) {
+      if (msg.type === "extension_disconnected") {
+        clearTimeout(timeout);
+        console.error(msg.message);
+        socket.end();
+        process.exit(1);
+      }
+      if (msg.id !== request.id) return;
+      handleResponse(msg).catch((err) => {
+        console.error("Handler error:", err.message);
+        process.exit(1);
+      });
+    },
+    onError(error) {
+      clearTimeout(timeout);
+      console.error("Invalid response frame:", error.message);
+      socket.destroy();
+      process.exit(1);
+    },
+  });
 
-socket.on("error", (err) => {
-  clearTimeout(timeout);
-  console.error("Error:", formatEndpointError(err, endpoint, formatSocketError));
-  process.exit(1);
-});
+  socket.on("data", (data) => responseParser.push(data));
 
-socket.on("close", () => {
-  clearTimeout(timeout);
-});
+  socket.on("error", (err) => {
+    clearTimeout(timeout);
+    console.error("Error:", formatEndpointError(err, endpoint, formatSocketError));
+    process.exit(1);
+  });
+
+  socket.on("close", () => {
+    clearTimeout(timeout);
+  });
+}
+
+const autostart = config.browser?.autostart === true ? config.browser : null;
+if (autostart) {
+  startBrowserIfNeeded(autostart).then(sendLocalRequest, (error) => {
+    console.error(`Error: ${error.message}`);
+    process.exit(1);
+  });
+} else {
+  sendLocalRequest();
+}
 
 function formatTargetContext(target) {
   if (!target) return null;
@@ -4278,6 +4317,11 @@ function printResponseContext(response) {
   if (context) console.error(context);
   if (response.notice && finalClassification.scope !== "provider") {
     console.error(`[surf] ${response.notice}`);
+  }
+  // A host older than this check sends no versions, and an unknown version is not a mismatch.
+  const { host = null, extension = null } = response.versions || {};
+  if ((host && host !== VERSION) || (extension && extension !== VERSION)) {
+    console.error(`surf: version mismatch (cli ${VERSION}, host ${host ?? "unknown"}, extension ${extension ?? "unknown"}). Reinstall Surf with npm and reload the extension in chrome://extensions.`);
   }
 }
 

@@ -233,6 +233,85 @@ describe("surf doctor", () => {
       ]),
     );
   });
+  it("fails with a version-skew check and fix when the host reports a different version", async () => {
+    const { version: cliVersion } = require("../../package.json");
+    const homeDir = makeTempDir();
+    const wrapperPath = path.join(homeDir, "wrapper.sh");
+    fs.writeFileSync(wrapperPath, "#!/bin/sh\nexit 0\n");
+    fs.chmodSync(wrapperPath, 0o755);
+    writeChromeManifest(homeDir, {
+      name: "surf.browser.host",
+      type: "stdio",
+      path: wrapperPath,
+      allowed_origins: ["chrome-extension://abcdefghijklmnopabcdefghijklmnop/"],
+    });
+    const socketPath = path.join(homeDir, "surf.sock");
+    const report = await runDoctor(
+      { browser: "chrome", socket: socketPath },
+      {
+        platform: "darwin",
+        homeDir,
+        env: {},
+        fs: {
+          existsSync: (filePath: string) => filePath === socketPath || fs.existsSync(filePath),
+          statSync: (filePath: string) =>
+            filePath === socketPath ? { isSocket: () => true } : fs.statSync(filePath),
+          readFileSync: fs.readFileSync,
+        },
+        connectSocket: async () => ({
+          ok: true,
+          message: "connected",
+          versions: { host: "1.0.0", extension: "1.0.0" },
+        }),
+      },
+    );
+
+    expect(report.ok).toBe(false);
+    expect(report.versions).toEqual({ cli: cliVersion, host: "1.0.0", extension: "1.0.0" });
+    const skew = report.checks.find((check: any) => check.id === "version-skew");
+    expect(skew.status).toBe("fail");
+    expect(skew.message).toContain(`CLI ${cliVersion}`);
+    expect(report.recommendations.join("\n")).toContain("reload the Surf extension");
+  });
+
+  it("reports all three versions and passes when the host and extension match the CLI", async () => {
+    const { version: cliVersion } = require("../../package.json");
+    const homeDir = makeTempDir();
+    const wrapperPath = path.join(homeDir, "wrapper.sh");
+    fs.writeFileSync(wrapperPath, "#!/bin/sh\nexit 0\n");
+    fs.chmodSync(wrapperPath, 0o755);
+    writeChromeManifest(homeDir, {
+      name: "surf.browser.host",
+      type: "stdio",
+      path: wrapperPath,
+      allowed_origins: ["chrome-extension://abcdefghijklmnopabcdefghijklmnop/"],
+    });
+    const socketPath = path.join(homeDir, "surf.sock");
+    const report = await runDoctor(
+      { browser: "chrome", socket: socketPath },
+      {
+        platform: "darwin",
+        homeDir,
+        env: {},
+        fs: {
+          existsSync: (filePath: string) => filePath === socketPath || fs.existsSync(filePath),
+          statSync: (filePath: string) =>
+            filePath === socketPath ? { isSocket: () => true } : fs.statSync(filePath),
+          readFileSync: fs.readFileSync,
+        },
+        connectSocket: async () => ({
+          ok: true,
+          message: "connected",
+          versions: { host: cliVersion, extension: cliVersion },
+        }),
+      },
+    );
+
+    expect(report.ok).toBe(true);
+    expect(report.checks).toEqual(
+      expect.arrayContaining([expect.objectContaining({ id: "version-skew", status: "pass" })]),
+    );
+  });
 
   it("fails when a POSIX manifest wrapper is not executable", async () => {
     const homeDir = makeTempDir();
@@ -641,6 +720,28 @@ describe("surf doctor", () => {
         expect.objectContaining({ id: "manifest-supported", status: "fail", browser: "arc" }),
       ]),
     );
+  });
+
+  it("says on Android that no local browser can work and points at remote mode", async () => {
+    const report = await runDoctor(
+      { browser: "all", socket: "/tmp/surf.sock" },
+      {
+        platform: "android",
+        homeDir: makeTempDir(),
+        env: {},
+        connectSocket: async () => ({ ok: false, code: "ENOENT", message: "missing" }),
+      },
+    );
+
+    expect(report.ok).toBe(false);
+    expect(report.checks).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ id: "platform-unsupported", status: "fail" }),
+      ]),
+    );
+    const recommendations = report.recommendations.join("\n");
+    expect(recommendations).toContain("surf --remote <host>:<port>");
+    expect(recommendations).not.toContain("Make sure the browser is running");
   });
 
   it("routes `surf doctor --help` without requiring a socket", () => {
