@@ -745,7 +745,15 @@ const TOOLS = {
         ]
       },
       "read": { desc: "Alias for page.read", args: [], alias: "page.read" },
-      "page.text": { desc: "Extract visible text from page", args: [] },
+      "page.text": {
+        desc: "Extract visible text from page",
+        args: [],
+        opts: { ref: "One element's whole text, or a field's whole value (never a secret field's)" },
+        examples: [
+          { cmd: "page.text", desc: "Visible text of the page" },
+          { cmd: "page.text --ref e5", desc: "Full value of field e5, newlines kept" },
+        ],
+      },
       "page.html": {
         desc: "Print rendered document HTML",
         args: [],

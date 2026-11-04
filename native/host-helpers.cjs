@@ -1066,7 +1066,7 @@ function mapToolToMessage(tool, args, tabId) {
         ...baseMsg,
       };
     case "page.text":
-      return { type: "GET_PAGE_TEXT", ...baseMsg };
+      return { type: "GET_PAGE_TEXT", ref: a.ref, ...baseMsg };
     case "page.html":
     case "page.save": {
       if (a.selector !== undefined && (typeof a.selector !== "string" || a.selector.length === 0)) {

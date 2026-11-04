@@ -28,7 +28,9 @@ const TOOL_SCHEMAS = {
   },
   "page.text": {
     desc: "Extract all text content from page",
-    schema: {}
+    schema: {
+      ref: z.string().optional().describe("One element's whole text, or a field's whole value (never a secret field's)")
+    }
   },
   "page.state": {
     desc: "Get page state (modals, loading indicators, etc.)",

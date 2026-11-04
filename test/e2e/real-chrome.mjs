@@ -336,7 +336,8 @@ ${stories}</main>
 <label>Password <input type="password"></label>
 <textarea placeholder="Notes"></textarea>
 <input type="text" aria-label="SSN" style="-webkit-text-security:disc">
-<input type="text" aria-label="Quote"></body></html>`;
+<input type="text" aria-label="Quote">
+<p>Check the letter before sending.</p></body></html>`;
   }
   if (url.pathname === "/click") {
     // Each button only reports a click a user could have made.
@@ -1104,6 +1105,26 @@ setInterval(() => {}, 60_000);
   await runSurf("type", "a\\nb\\tc\\\\d", "--ref", notesRef, "--tab-id", valuesTabId, "--no-screenshot", "--json");
   const literal = await notesValue();
   if (literal !== "a\\nb\\tc\\\\d") throw new Error(`type without --escapes did not type the text literally: ${JSON.stringify(literal)}`);
+  // page.text --ref prints a field's whole value with its newlines, an element's text, and never a secret field's value.
+  const letter = `${"A".repeat(998)}\n\n${"B".repeat(996)}END!`;
+  await runSurf("type", letter, "--ref", notesRef, "--tab-id", valuesTabId, "--no-screenshot", "--json");
+  const letterText = await runSurf("page.text", "--ref", notesRef, "--tab-id", valuesTabId);
+  if (letterText !== `${letter}\n`) {
+    throw new Error(`page.text --ref did not print the whole 2,000-character value (got ${letterText.length} chars): ${JSON.stringify(letterText.slice(0, 200))}`);
+  }
+  const passwordRef = fieldRef(/textbox \[(e\d+)\] type="password"/);
+  const secretText = await runSurfExpectingFailure("page.text", "--ref", passwordRef, "--tab-id", valuesTabId);
+  if (!secretText.stderr.includes(`${passwordRef} is a secret field, so its value is not shown`) ||
+      `${secretText.stdout}${secretText.stderr}`.includes("s3cret")) {
+    throw new Error(`page.text --ref on a password field did not refuse without the value: ${JSON.stringify(secretText)}`);
+  }
+  const allFields = await runSurf("read", "--all", "--no-text", "--tab-id", valuesTabId);
+  const paragraphRef = allFields.match(/paragraph "Check the letter before sending\." \[(e\d+)\]/)?.[1];
+  if (!paragraphRef) throw new Error(`read --all did not list the paragraph: ${allFields}`);
+  const paragraphText = await runSurf("page.text", "--ref", paragraphRef, "--tab-id", valuesTabId);
+  if (paragraphText !== "Check the letter before sending.\n") {
+    throw new Error(`page.text --ref on a paragraph did not print its text: ${JSON.stringify(paragraphText)}`);
+  }
   await runSurf("tab.close", "--id", valuesTabId, "--json");
   // Page text is the rendered text: no CSS rules, script bodies, noscript text or hidden content
   const textTabId = String(tabIdFromOutput(await runSurf("tab.new", `${baseUrl}/page-text`)));

@@ -47,6 +47,7 @@ It is one tab in its own background window, and its commands run in order. Sessi
 session.ensure <name> <url> [--window|--tab] [--focused]
 navigate <url>                    # alias go
 page.read [--ref e5] [--all] [--no-text] [--depth <n>] [--compact] [--summary]   # alias read
+page.text [--ref e5]              # page text; --ref: one element's text or a field's whole value, newlines kept (never a secret field)
 click <ref> | --selector <css> [--index <n>] | --x <n> --y <n>   [--button left|right|double|triple]
 type <text> [--ref e5|--into <css>] [--submit] [--clear] [--escapes] [--method cdp|js]   # need newlines or tabs? write \n \t with --escapes
 key <key> [--repeat <n>]          # Enter, Escape, cmd+a
@@ -90,7 +91,7 @@ session: session.new session.list session.info session.close session.rebind sess
 nav: back forward
 tab: tab.move tab.name tab.unname tab.named tab.group tab.ungroup tab.groups
 window: window.new window.list window.focus window.close window.resize resize zoom
-read: page.text page.html page.save page.state page.readiness search locate.text locate.label element.styles frame.list frame.diagnose frame.js
+read: page.html page.save page.state page.readiness search locate.text locate.label element.styles frame.list frame.diagnose frame.js
 act: hover smart_type dialog.info dialog.accept dialog.dismiss scroll.to scroll.info
 wait: wait wait.element wait.network wait.url wait.dom wait.load
 capture: snap record video.start video.stop video.status video.restart animate-audit perf-audit perf.start perf.stop perf.metrics
