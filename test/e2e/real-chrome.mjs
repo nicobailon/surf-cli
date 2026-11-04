@@ -285,6 +285,14 @@ ${stories}</main>
   function log(entry) { const out = document.querySelector("#log"); out.textContent = out.textContent ? out.textContent + "|" + entry : entry; }
 </script></body></html>`;
   }
+  if (url.pathname === "/page-text") {
+    // Tilda-style page: CSS, scripts and hidden form config sit in body next to the visible copy.
+    return `<!doctype html><html><head><title>Surf page text fixture</title></head><body>
+<style>.leak{color:red}</style><h1>Visible heading</h1><p>Visible copy</p>
+<script>var scriptLeak = 1;</script><noscript>noscriptLeak</noscript>
+<div style="display:none"><textarea>[{"lid":"hiddenJsonLeak"}]</textarea></div>
+</body></html>`;
+  }
   if (url.pathname === "/custom-controls") {
     // Custom controls name themselves from text in a child element, or from text under 3 characters.
     return `<!doctype html><html><head><title>Surf custom controls fixture</title></head>
@@ -644,6 +652,11 @@ try {
     throw new Error(`page.text did not contain fixture text: ${initialText}`);
   }
 
+  const pageHtml = await runSurf("page.html");
+  if (!pageHtml.startsWith("<!doctype html>") || !pageHtml.includes("<h1>Surf real Chrome fixture</h1>")) {
+    throw new Error(`page.html without --selector did not return the document: ${pageHtml.slice(0, 300)}`);
+  }
+
   const playbookRead = JSON.parse(
     await runSurf("use", "page", "read", "--json", "--tab-id", String(fixtureTab.id)),
   );
@@ -874,6 +887,19 @@ try {
     throw new Error(`locate --name Save did not click only the custom "Save" button: ${controlsLog}`);
   }
   await runSurf("tab.close", "--id", controlsTabId, "--json");
+
+  // Page text is the rendered text: no CSS rules, script bodies, noscript text or hidden content
+  const textTabId = String(tabIdFromOutput(await runSurf("tab.new", `${baseUrl}/page-text`)));
+  await runSurf("wait.element", "h1", "--tab-id", textTabId, "--json");
+  const pageText = await runSurf("page.text", "--tab-id", textTabId);
+  const readText = (await runSurf("read", "--tab-id", textTabId)).split("--- Page Text ---")[1] ?? "";
+  for (const [command, output] of [["page.text", pageText], ["read", readText]]) {
+    const leak = ["color:red", "scriptLeak", "noscriptLeak", "hiddenJsonLeak"].find((marker) => output.includes(marker));
+    if (!output.includes("Visible copy") || leak) {
+      throw new Error(`${command} page text was not the rendered text (leak: ${leak}): ${output}`);
+    }
+  }
+  await runSurf("tab.close", "--id", textTabId, "--json");
 
   // A ref click waits for a click a user could make, then clicks with trusted input
   const clickTabId = String(tabIdFromOutput(await runSurf("tab.new", `${baseUrl}/click`)));
