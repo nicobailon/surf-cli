@@ -1724,6 +1724,16 @@ function getPageText(): { text: string; title: string; url: string; error?: stri
   }
 }
 
+// One element by ref, whitespace kept: a field's whole current value, or the element's rendered
+// text. A secret field's value is never returned. No title or URL, so the output is the text alone.
+function getRefText(ref: string): { text: string } | { error: string } {
+  const { element, error } = resolveRef(ref);
+  if (!element) return { error };
+  const value = pageFieldValue(element);
+  if (value !== undefined && isSensitiveField(element)) return { error: `${ref} is a secret field, so its value is not shown` };
+  return { text: value ?? (element as HTMLElement).innerText ?? element.textContent ?? "" };
+}
+
 function scrollToElement(ref: string): { success: boolean; error?: string } {
   const { element, error } = resolveRef(ref);
   if (!element) {
@@ -2326,8 +2336,7 @@ function handleContentMessage(
       break;
     }
     case "GET_PAGE_TEXT": {
-      const result = getPageText();
-      sendResponse(result);
+      sendResponse(message.ref ? getRefText(message.ref) : getPageText());
       break;
     }
     case "SMART_TYPE": {

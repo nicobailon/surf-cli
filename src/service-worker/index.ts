@@ -1757,7 +1757,7 @@ export async function handleMessage(
       if (!tabId) throw new Error("No tabId provided");
       const frameId = getFrameIdForTab(tabId, message);
       try {
-        return await chrome.tabs.sendMessage(tabId, { type: "GET_PAGE_TEXT" }, { frameId });
+        return await chrome.tabs.sendMessage(tabId, { type: "GET_PAGE_TEXT", ref: message.ref }, { frameId });
       } catch (err) {
         return { error: await contentScriptError(tabId, frameId, err) };
       }
