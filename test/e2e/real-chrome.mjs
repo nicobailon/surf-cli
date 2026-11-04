@@ -297,6 +297,13 @@ ${stories}</main>
   function log(entry) { const out = document.querySelector("#log"); out.textContent = out.textContent ? out.textContent + "|" + entry : entry; }
 </script></body></html>`;
   }
+  if (url.pathname === "/field-values") {
+    // read shows what a field holds, except a secret: the password sits in a wrapping label with no other name.
+    return `<!doctype html><html><head><title>Surf field values fixture</title></head>
+<body><input type="email" placeholder="hello@example.com">
+<label>Password <input type="password"></label>
+<textarea placeholder="Notes"></textarea></body></html>`;
+  }
   if (url.pathname === "/click") {
     // Each button only reports a click a user could have made.
     return `<!doctype html><html><head><title>Surf click fixture</title></head>
@@ -874,6 +881,29 @@ try {
     throw new Error(`locate --name Save did not click only the custom "Save" button: ${controlsLog}`);
   }
   await runSurf("tab.close", "--id", controlsTabId, "--json");
+
+  // read shows a field's current value, and never a password's
+  const valuesTabId = String(tabIdFromOutput(await runSurf("tab.new", `${baseUrl}/field-values`)));
+  await runSurf("wait.element", "textarea", "--tab-id", valuesTabId, "--json");
+  const emptyFields = await runSurf("read", "--no-text", "--tab-id", valuesTabId);
+  const fieldRef = (pattern) => {
+    const ref = emptyFields.match(pattern)?.[1];
+    if (!ref) throw new Error(`read did not list ${pattern}: ${emptyFields}`);
+    return ref;
+  };
+  for (const [pattern, text] of [
+    [/textbox "hello@example\.com" \[(e\d+)\]/, "hello22"],
+    [/textbox \[(e\d+)\] type="password"/, "s3cret-434"],
+    [/textbox "Notes" \[(e\d+)\]/, "call back tomorrow"],
+  ]) {
+    await runSurf("type", text, "--ref", fieldRef(pattern), "--tab-id", valuesTabId, "--no-screenshot", "--json");
+  }
+  const filledFields = await runSurf("read", "--no-text", "--tab-id", valuesTabId);
+  if (!/textbox "hello@example\.com" \[e\d+\] type="email" placeholder="hello@example\.com" value="hello22"/.test(filledFields) ||
+      !filledFields.includes('value="call back tomorrow"') || filledFields.includes("s3cret") || !filledFields.includes("[value hidden]")) {
+    throw new Error(`read did not show field values without the password: ${filledFields}`);
+  }
+  await runSurf("tab.close", "--id", valuesTabId, "--json");
 
   // A ref click waits for a click a user could make, then clicks with trusted input
   const clickTabId = String(tabIdFromOutput(await runSurf("tab.new", `${baseUrl}/click`)));
