@@ -136,6 +136,11 @@ function isSemanticControl(element: Element): boolean {
   return ["input", "textarea", "select", "option", "button"].includes(tag) || element.getAttribute("contenteditable") === "true";
 }
 
+// Styled checkboxes and radios draw their own box over a transparent real input, which still takes clicks.
+function hiddenByOpacity(element: Element, style: CSSStyleDeclaration): boolean {
+  return style.opacity === "0" && !["input", "select", "textarea"].includes(element.tagName.toLowerCase());
+}
+
 function isVisibleSemanticElement(element: Element): boolean {
   const style = window.getComputedStyle(element);
   const rect = element.getBoundingClientRect();
@@ -897,7 +902,7 @@ function resolveRef(ref: string): { element: Element; error?: undefined } | { el
     if (getResolvedRole(candidate) !== identity.role || getName(candidate) !== identity.name) continue;
     const style = window.getComputedStyle(candidate);
     if (
-      style.display !== "none" && style.visibility !== "hidden" && style.opacity !== "0" &&
+      style.display !== "none" && style.visibility !== "hidden" && !hiddenByOpacity(candidate, style) &&
       (candidate as HTMLElement).offsetWidth > 0 && (candidate as HTMLElement).offsetHeight > 0
     ) matches.push(candidate);
   }
@@ -1052,9 +1057,12 @@ function generateAccessibilityTree(
   error?: string;
   modalStates?: ModalState[];
   modalLimitations?: string;
+  offscreenCount?: number;
 } {
   try {
     window.__piRefs = {};
+    // Controls left out only for being off-screen: what --all would add to the list.
+    let offscreen = 0;
 
     function getRole(element: Element): string {
       return getResolvedRole(element);
@@ -1153,7 +1161,7 @@ function generateAccessibilityTree(
       return (
         style.display !== "none" &&
         style.visibility !== "hidden" &&
-        style.opacity !== "0" &&
+        !hiddenByOpacity(element, style) &&
         (element as HTMLElement).offsetWidth > 0 &&
         (element as HTMLElement).offsetHeight > 0
       );
@@ -1192,6 +1200,7 @@ function generateAccessibilityTree(
       if (options.filter !== "all" && !options.refId) {
         const rect = element.getBoundingClientRect();
         if (!(rect.top < window.innerHeight && rect.bottom > 0 && rect.left < window.innerWidth && rect.right > 0)) {
+          if (isInteractive(element)) offscreen++;
           return false;
         }
       }
@@ -1307,6 +1316,7 @@ function generateAccessibilityTree(
       viewport: { width: window.innerWidth, height: window.innerHeight },
       modalStates: modalStates.length > 0 ? modalStates : undefined,
       modalLimitations: 'Only custom modals ([role=dialog]) detected. Native alert/confirm/prompt dialogs and system file choosers cannot be detected from content scripts.',
+      offscreenCount: offscreen,
     };
   } catch (err) {
     return {
@@ -1432,7 +1442,7 @@ function generateYamlTree(
       return (
         style.display !== "none" &&
         style.visibility !== "hidden" &&
-        style.opacity !== "0" &&
+        !hiddenByOpacity(element, style) &&
         (element as HTMLElement).offsetWidth > 0 &&
         (element as HTMLElement).offsetHeight > 0
       );
@@ -1953,7 +1963,7 @@ function capturePageSnapshot(): { snapshot: PageSnapshot; elements: Element[] } 
     const tag = element.tagName.toLowerCase();
     if (["script", "style", "noscript", "template"].includes(tag) || element.id.startsWith("pi-agent-")) return;
     const style = window.getComputedStyle(element);
-    if (element.getAttribute("aria-hidden") === "true" || style.display === "none" || style.opacity === "0") return;
+    if (element.getAttribute("aria-hidden") === "true" || style.display === "none" || hiddenByOpacity(element, style)) return;
     const shown = style.visibility !== "hidden";
     const role = getResolvedRole(element);
     let childContainer = container;
@@ -2152,7 +2162,8 @@ function handleContentMessage(
           });
         }
       } else {
-        const result = generateAccessibilityTree(
+        // Only read reports the controls left off-screen; the wait.* trees stay as they are.
+        const { offscreenCount, ...result } = generateAccessibilityTree(
           options.filter || "interactive",
           options.depth ?? 15,
           options.refId,
@@ -2166,7 +2177,7 @@ function handleContentMessage(
             (result as typeof result & { semanticVisionTargets: string[] }).semanticVisionTargets = semanticVisionTargets(observation);
           }
         }
-        sendResponse(result);
+        sendResponse(offscreenCount ? { ...result, offscreen: offscreenCount } : result);
       }
       break;
     }

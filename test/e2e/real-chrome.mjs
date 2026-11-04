@@ -287,6 +287,13 @@ ${stories}</main>
 <div style="display:none"><textarea>[{"lid":"hiddenJsonLeak"}]</textarea></div>
 </body></html>`;
   }
+  if (url.pathname === "/offscreen") {
+    // One control on screen, three below the fold.
+    return `<!doctype html><html><head><title>Surf offscreen fixture</title></head><body>
+<button>Top</button><div style="height:5000px"></div>
+<button>Below 1</button><a href="#below">Below 2</a><input aria-label="Below 3">
+</body></html>`;
+  }
   if (url.pathname === "/custom-controls") {
     // Custom controls name themselves from text in a child element, or from text under 3 characters.
     return `<!doctype html><html><head><title>Surf custom controls fixture</title></head>
@@ -389,6 +396,12 @@ ${stories}</main>
     log("terms:" + event.isTrusted);
   });
 </script></body></html>`;
+  }
+  if (url.pathname === "/transparent-field") {
+    // Tilda-style consent box: the page draws the indicator and leaves the real checkbox transparent on top of it.
+    return `<!doctype html><html><head><title>Surf transparent field fixture</title></head>
+<body><label style="position:relative;display:inline-flex;gap:8px"><input type="checkbox" style="opacity:0;position:absolute;margin:0;width:16px;height:16px"> <div class="indicator" style="width:16px;height:16px;border:1px solid"></div> I agree</label>
+<div role="button" style="opacity:0">Faded action</div></body></html>`;
   }
   if (url.pathname === "/type") {
     return `<!doctype html><html><head><title>Surf type fixture</title></head>
@@ -1139,6 +1152,19 @@ setInterval(() => {}, 60_000);
   }
   await runSurf("tab.close", "--id", textTabId, "--json");
 
+  // read ends with how many controls it left off-screen and how to see them; --all lists them instead
+  const offscreenTabId = String(tabIdFromOutput(await runSurf("tab.new", `${baseUrl}/offscreen`)));
+  await runSurf("wait.element", "input", "--tab-id", offscreenTabId, "--json");
+  const onScreenRead = await runSurf("read", "--tab-id", offscreenTabId);
+  if (onScreenRead.trimEnd().split("\n").at(-1) !== "+3 elements off-screen: surf read --all" || onScreenRead.includes('"Below 1" [e')) {
+    throw new Error(`read did not end with the off-screen count: ${onScreenRead}`);
+  }
+  const allRead = await runSurf("read", "--all", "--tab-id", offscreenTabId);
+  if (allRead.includes("off-screen") || !["Below 1", "Below 2", "Below 3"].every((name) => allRead.includes(`"${name}" [e`))) {
+    throw new Error(`read --all did not list the off-screen controls without a count: ${allRead}`);
+  }
+  await runSurf("tab.close", "--id", offscreenTabId, "--json");
+
   // A ref click waits for a click a user could make, then clicks with trusted input
   const clickTabId = String(tabIdFromOutput(await runSurf("tab.new", `${baseUrl}/click`)));
   await runSurf("wait.element", "#confirm", "--tab-id", clickTabId, "--json");
@@ -1227,6 +1253,18 @@ setInterval(() => {}, 60_000);
     throw new Error(`check/uncheck/select did not set the requested state: ${JSON.stringify({ termsAccepted, alreadyChecked, alreadyUnchecked, radioUncheck, missingOption, checkState })}`);
   }
   await runSurf("tab.close", "--id", checkTabId, "--json");
+
+  // A form field the page leaves transparent over its own drawing is still listed and its changes reported
+  const transparentTab = ["--tab-id", String(tabIdFromOutput(await runSurf("tab.new", `${baseUrl}/transparent-field`)))];
+  await runSurf("wait.element", ".indicator", ...transparentTab, "--json");
+  const transparentRead = await runSurf("read", "--no-text", ...transparentTab);
+  const transparentRef = transparentRead.match(/checkbox(?: "[^"]*")? \[(e\d+)\]/)?.[1];
+  const transparentCheck = transparentRef ? await runSurf("check", transparentRef, ...transparentTab, "--no-screenshot") : "";
+  if (!transparentRef || transparentRead.includes("Faded action")
+    || !new RegExp(`${transparentRef} checkbox[^\\n]* now checked`).test(transparentCheck)) {
+    throw new Error(`a transparent form field was not listed or its change not reported: ${JSON.stringify({ transparentRead, transparentCheck })}`);
+  }
+  await runSurf("tab.close", "--id", transparentTab[1], "--json");
 
   // A ref from an earlier page in the tab never resolves on a later one, even when both pages
   // number their elements the same way, and a reload counts as a later page.
