@@ -833,4 +833,45 @@ describe("native host installer", () => {
     expect(result.status).toBe(1);
     expect(result.stderr).toContain("--target linux is only supported on Linux or WSL2");
   });
+
+  it("points the wrapper at its own host even when npm root -g holds another surf-cli", ({
+    skip,
+  }) => {
+    if (process.platform === "win32") {
+      skip();
+    }
+    const tempDir = makeTempDir();
+    const binDir = path.join(tempDir, "bin");
+    const otherHost = path.join(tempDir, "global/surf-cli/native/host.cjs");
+    fs.mkdirSync(binDir);
+    fs.mkdirSync(path.dirname(otherHost), { recursive: true });
+    fs.writeFileSync(otherHost, "");
+    fs.writeFileSync(
+      path.join(binDir, "npm"),
+      `#!/bin/sh\necho "${path.join(tempDir, "global")}"\n`,
+    );
+    fs.chmodSync(path.join(binDir, "npm"), 0o755);
+    const env = {
+      ...envWithoutPersistedSettings(),
+      HOME: tempDir,
+      PATH: `${binDir}:${process.env.PATH}`,
+      SURF_NODE_PATH: process.execPath,
+      SURF_HOST_PATH: undefined,
+      WSL_DISTRO_NAME: undefined,
+    };
+
+    const result = spawnSync(process.execPath, ["scripts/install-native-host.cjs", extensionA], {
+      encoding: "utf8",
+      env,
+    });
+
+    expect(result.status).toBe(0);
+    const wrapperDir =
+      process.platform === "darwin"
+        ? path.join(tempDir, "Library/Application Support/surf-cli")
+        : path.join(tempDir, ".local/share/surf-cli");
+    const wrapper = fs.readFileSync(path.join(wrapperDir, "host-wrapper.sh"), "utf8");
+    expect(wrapper).toContain(`"${path.resolve("native/host.cjs")}"`);
+    expect(wrapper).not.toContain(otherHost);
+  });
 });
