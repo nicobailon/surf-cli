@@ -106,6 +106,9 @@ async function runSurf(...args) {
     timeout: 20_000,
     maxBuffer: 10 * 1024 * 1024,
   });
+  if (result.stderr.includes("surf: version mismatch")) {
+    throw new Error(`surf ${args.join(" ")} warned about versions that match: ${result.stderr}`);
+  }
   return result.stdout;
 }
 
@@ -521,10 +524,9 @@ try {
       : ".config/google-chrome/NativeMessagingHosts/surf.browser.host.json",
   );
   const nativeManifest = JSON.parse(readFileSync(standardManifest, "utf8"));
-  writeFileSync(
-    nativeManifest.path,
-    `#!/usr/bin/env bash\necho $$ > ${JSON.stringify(hostPidPath)}\nexport SURF_SOCKET=${JSON.stringify(socketPath)}\nexport SURF_TMP=${JSON.stringify(surfTmp)}\nexec ${JSON.stringify(process.execPath)} ${JSON.stringify(join(repo, "native/host.cjs"))} "$@"\n`,
-  );
+  const hostWrapper = (extraExports = "") =>
+    `#!/usr/bin/env bash\necho $$ > ${JSON.stringify(hostPidPath)}\nexport SURF_SOCKET=${JSON.stringify(socketPath)}\nexport SURF_TMP=${JSON.stringify(surfTmp)}\n${extraExports}exec ${JSON.stringify(process.execPath)} ${JSON.stringify(join(repo, "native/host.cjs"))} "$@"\n`;
+  writeFileSync(nativeManifest.path, hostWrapper());
   chmodSync(nativeManifest.path, 0o755);
 
   const testingManifest = join(profileDir, "NativeMessagingHosts/surf.browser.host.json");
@@ -1384,6 +1386,28 @@ try {
   );
   if (firstFeedPage.json?.data?.items?.[0]?.id !== "item-1" || secondPage.status !== 200 || secondPage.json?.data?.items?.[0]?.id !== "item-5") {
     throw new Error(`network.wait/network.replay failed: ${JSON.stringify({ firstFeedPage, secondPage })}`);
+  }
+
+  // Last, because it restarts the native host: a host reporting another version makes
+  // each command print one stderr line, while its stdout stays the same.
+  const tabListBeforeSkew = await runSurf("tab.list");
+  writeFileSync(nativeManifest.path, hostWrapper("export SURF_TEST_HOST_VERSION=0.0.1\n"));
+  const matchingHostPid = Number.parseInt(readFileSync(hostPidPath, "utf8"), 10);
+  rmSync(hostPidPath);
+  await terminateProcess(matchingHostPid, "Surf native host");
+  await waitFor(() => existsSync(hostPidPath), "restarted Surf native-host PID", 30_000);
+  let skewed;
+  await waitFor(async () => {
+    skewed = await execFileAsync(process.execPath, [join(repo, "native/cli.cjs"), "tab.list"], {
+      cwd: repo,
+      env,
+      timeout: 20_000,
+    }).catch(() => null);
+    return skewed !== null;
+  }, "restarted Surf native host to answer", 30_000);
+  const expectedSkewLine = `surf: version mismatch (cli ${packageVersion}, host 0.0.1, extension ${packageVersion}). Reinstall Surf with npm and reload the extension in chrome://extensions.\n`;
+  if (skewed.stderr !== expectedSkewLine || skewed.stdout !== tabListBeforeSkew) {
+    throw new Error(`version mismatch was not reported as one stderr line: ${JSON.stringify(skewed)}`);
   }
 
   console.log(

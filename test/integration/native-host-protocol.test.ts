@@ -81,6 +81,7 @@ const remoteAuth = require("../../native/remote-auth.cjs") as any;
 const remoteTransport = require("../../native/remote-transport.cjs") as any;
 const { openClientTransport } = require("../../native/client-transport.cjs") as any;
 const fileTransfer = require("../../native/file-transfer.cjs") as any;
+const { version: packageVersion } = require("../../package.json") as { version: string };
 const crypto = require("node:crypto") as any;
 
 const tempDirs: string[] = [];
@@ -350,7 +351,7 @@ async function startHostHarness(
     encodeNativeMessage({
       type: "EXTENSION_HELLO",
       protocolVersion: 2,
-      extensionVersion: "test",
+      extensionVersion: packageVersion,
       browserInstanceId: "integration-browser",
       browserEpoch: `integration-epoch-${process.pid}`,
       capabilities: ["browser-sessions", "strict-targets", "keyed-lanes"],
@@ -672,6 +673,26 @@ describe("native host protocol integration", () => {
     expect(result.stderr).toBe("");
     expect(result.stdout).toBe("123\tExample\thttps://example.test/\n");
     expect(host.stderr()).toBe("");
+  });
+
+  it("prints one stderr line, and leaves stdout alone, when the host version differs from the CLI", async () => {
+    const host = await startHostHarness({ SURF_TEST_HOST_VERSION: "0.0.1" });
+    const cliPromise = runCli(["tab.list"], host.socketPath);
+    const extensionRequest = await host.waitForMessage(
+      (message) => message.type === "LIST_TABS",
+      "LIST_TABS",
+    );
+    host.send({
+      id: extensionRequest.id,
+      tabs: [{ id: 123, title: "Example", url: "https://example.test/" }],
+    });
+
+    const result = await cliPromise;
+    expect(result.code).toBe(0);
+    expect(result.stdout).toBe("123\tExample\thttps://example.test/\n");
+    expect(result.stderr).toBe(
+      `surf: version mismatch (cli ${packageVersion}, host 0.0.1, extension ${packageVersion}). Reinstall Surf with npm and reload the extension in chrome://extensions.\n`,
+    );
   });
 
   it("routes page text, page state, and JavaScript through the selected frame until frame.main", async () => {
