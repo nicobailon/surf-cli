@@ -2,9 +2,10 @@
 useDefault = true
 
 # manifest.json "key" is the extension's public key (it pins the extension ID); it is not a secret.
-[[allowlists]]
+# The singular [allowlist] form is what gitleaks-action's 8.24.x reads.
+[allowlist]
 description = "Surf extension public key"
-targetRules = ["generic-api-key"]
+condition = "AND"
 paths = ['''^manifest\.json$''']
 regexTarget = "line"
 regexes = ['''^\s*"key": "MIIB[A-Za-z0-9+/]+={0,2}",?$''']
