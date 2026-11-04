@@ -11,7 +11,9 @@ const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
 const { spawnSync } = require("node:child_process");
+const { createHash } = require("node:crypto");
 const {
+  SURF_EXTENSION_ID,
   createWrapper,
   installWithValidatedWrapper,
   installManifest,
@@ -300,6 +302,54 @@ describe("native host installer", () => {
       `chrome-extension://${extensionA}/`,
       `chrome-extension://${extensionB}/`,
     ]);
+  });
+
+  it("pins the extension ID Chrome derives from the manifest key", () => {
+    const { key } = JSON.parse(fs.readFileSync("manifest.json", "utf8"));
+    const digest = createHash("sha256").update(key, "base64").digest();
+    const derived = Array.from(digest.subarray(0, 16) as Uint8Array, (byte) =>
+      String.fromCharCode(97 + (byte >> 4), 97 + (byte & 15)),
+    ).join("");
+
+    expect(derived).toBe(SURF_EXTENSION_ID);
+  });
+
+  it("surf install with no ID adds Surf's pinned ID and keeps earlier IDs", ({ skip }) => {
+    if (process.platform !== "darwin" && process.platform !== "linux") {
+      skip();
+    }
+    const home = makeTempDir();
+    const manifestPath = path.join(
+      home,
+      process.platform === "darwin"
+        ? "Library/Application Support/Google/Chrome/NativeMessagingHosts/surf.browser.host.json"
+        : ".config/google-chrome/NativeMessagingHosts/surf.browser.host.json",
+    );
+    fs.mkdirSync(path.dirname(manifestPath), { recursive: true });
+    fs.writeFileSync(
+      manifestPath,
+      JSON.stringify({ allowed_origins: [`chrome-extension://${extensionA}/`] }),
+    );
+
+    const result = spawnSync(process.execPath, ["native/cli.cjs", "install"], {
+      encoding: "utf8",
+      env: {
+        ...envWithoutPersistedSettings(),
+        HOME: home,
+        SURF_NODE_PATH: process.execPath,
+        SURF_HOST_PATH: undefined,
+        SURF_EXTENSION_PATH: undefined,
+        WSL_DISTRO_NAME: undefined,
+      },
+    });
+
+    expect(result.stderr).toBe("");
+    expect(result.status).toBe(0);
+    expect(JSON.parse(fs.readFileSync(manifestPath, "utf8")).allowed_origins).toEqual([
+      `chrome-extension://${extensionA}/`,
+      `chrome-extension://${SURF_EXTENSION_ID}/`,
+    ]);
+    expect(result.stdout).toContain(`"Load unpacked" and choose:\n  ${path.resolve("dist")}\n`);
   });
 
   it("executes POSIX wrappers with persisted listen defaults and inherited overrides", () => {
@@ -916,6 +966,7 @@ describe("native host installer", () => {
     expect(JSON.parse(fs.readFileSync(manifestPath, "utf8")).allowed_origins).toEqual([
       `chrome-extension://${extensionA}/`,
       `chrome-extension://${extensionB}/`,
+      `chrome-extension://${SURF_EXTENSION_ID}/`,
     ]);
     const wrapper = fs.readFileSync(manifest.path, "utf8");
     expect(wrapper).toContain(`exec "${process.execPath}" "${path.resolve("native/host.cjs")}"`);
@@ -929,6 +980,45 @@ describe("native host installer", () => {
     expect(fs.readlinkSync(path.join(home, ".claude/skills/surf"))).toBe(
       path.resolve("skills/surf"),
     );
+  });
+
+  it("--refresh adds Surf's pinned ID to an install that holds only an old ID", ({ skip }) => {
+    if (process.platform !== "darwin" && process.platform !== "linux") {
+      skip();
+    }
+    const home = makeTempDir();
+    const env = {
+      ...envWithoutPersistedSettings(),
+      HOME: home,
+      SURF_NODE_PATH: process.execPath,
+      SURF_HOST_PATH: undefined,
+      WSL_DISTRO_NAME: undefined,
+    };
+    const install = (...args: string[]) =>
+      spawnSync(process.execPath, ["scripts/install-native-host.cjs", ...args], {
+        encoding: "utf8",
+        env,
+      });
+    expect(install(extensionA).status).toBe(0);
+    const manifestPath = path.join(
+      home,
+      process.platform === "darwin"
+        ? "Library/Application Support/Google/Chrome/NativeMessagingHosts/surf.browser.host.json"
+        : ".config/google-chrome/NativeMessagingHosts/surf.browser.host.json",
+    );
+    expect(JSON.parse(fs.readFileSync(manifestPath, "utf8")).allowed_origins).toEqual([
+      `chrome-extension://${extensionA}/`,
+    ]);
+
+    const result = install("--refresh");
+
+    expect(result.stderr).toBe("");
+    expect(result.status).toBe(0);
+    expect(JSON.parse(fs.readFileSync(manifestPath, "utf8")).allowed_origins).toEqual([
+      `chrome-extension://${extensionA}/`,
+      `chrome-extension://${SURF_EXTENSION_ID}/`,
+    ]);
+    expect(result.stdout).not.toContain("Load unpacked");
   });
 
   describe("agent skill links", () => {

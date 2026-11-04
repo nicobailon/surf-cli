@@ -1,4 +1,3 @@
-import { createHash } from "node:crypto";
 import { execFile } from "node:child_process";
 import {
   chmodSync,
@@ -20,9 +19,8 @@ import { promisify } from "node:util";
 const execFileAsync = promisify(execFile);
 const require = createRequire(import.meta.url);
 const repo = process.cwd();
-const extensionKey =
-  "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEArWZVsRzpoyzuyQFqRzGOnkxv9FNaX/SR/VMw2f9ld+DKmUMxJhi/14olehkLWRJQumFPYTzWr1oqb1LwwI2KhBtn9mbaqzPSrrRGQ1VobTx7ZmxU+ooppXNdb2KGh/WXVqahS0D1nsQplAE6hCqQWPjsPCnXnWjUIH/B0EsInIUDwA8PKfuMG8p2HDlLj8hEpmLwOA48W4aHbl2S6bZHu9O50Lbd0L94aSwJLBNLKuXpBt/kFwlnpHd3zoJme9DIbqnDU/nMNh9SlA+EXRT6FhyiKdo6ZBMdtJeUPLQI2uHeoF8wikkNhIXX/E2EXlBqtZJJaFEi895x2s40+j/iZQIDAQAB"; // gitleaks:allow -- public test manifest key
-const extensionId = "nionemkjcnknfdhdolfloigkhpjnifmf";
+// The shipped extension pins its ID; `surf install` with no ID must register the same one.
+const extensionId = require("../../scripts/install-native-host.cjs").SURF_EXTENSION_ID;
 const pinnedChromeVersion = "156.0.8078.47";
 const scratch = mkdtempSync(join(tmpdir(), "surf-real-chrome-"));
 const home = join(scratch, "home");
@@ -39,13 +37,6 @@ let chromeExecutablePath;
 let puppeteer;
 let server;
 let failure;
-
-function extensionIdForKey(key) {
-  const digest = createHash("sha256").update(Buffer.from(key, "base64")).digest().subarray(0, 16);
-  return Array.from(digest, (byte) =>
-    `${String.fromCharCode(97 + (byte >> 4))}${String.fromCharCode(97 + (byte & 15))}`,
-  ).join("");
-}
 
 function processIsAlive(pid) {
   try {
@@ -575,23 +566,18 @@ try {
     );
   }
 
-  if (extensionIdForKey(extensionKey) !== extensionId) {
-    throw new Error("Stable extension key does not match the expected test extension ID");
-  }
-
   mkdirSync(home, { recursive: true });
   mkdirSync(surfTmp, { recursive: true });
   cpSync(join(repo, "dist"), extensionDir, { recursive: true });
-  const extensionManifestPath = join(extensionDir, "manifest.json");
-  const extensionManifest = JSON.parse(readFileSync(extensionManifestPath, "utf8"));
-  extensionManifest.key = extensionKey;
-  writeFileSync(extensionManifestPath, `${JSON.stringify(extensionManifest, null, 2)}\n`);
 
-  await execFileAsync(
+  const installed = await execFileAsync(
     process.execPath,
-    [join(repo, "scripts/install-native-host.cjs"), extensionId],
+    [join(repo, "native/cli.cjs"), "install"],
     { cwd: repo, env, timeout: 20_000 },
   );
+  if (!installed.stdout.includes(`"Load unpacked" and choose:\n  ${join(repo, "dist")}\n`)) {
+    throw new Error(`surf install did not print the extension folder to load: ${installed.stdout}`);
+  }
 
   const standardManifest = join(
     home,
@@ -1116,6 +1102,15 @@ setInterval(() => {}, 60_000);
   if (filledFields.includes("masked-434") || !/textbox "SSN" \[e\d+\] type="text" \[value hidden\]/.test(filledFields)) {
     throw new Error(`read showed a field the page masks on screen: ${filledFields}`);
   }
+  // type --escapes turns \n, \t and \\ into a newline, a tab and one backslash; without it the text is typed literally.
+  const notesRef = fieldRef(/textbox "Notes" \[(e\d+)\]/);
+  const notesValue = async () => JSON.parse(await runSurf("js", 'return [document.querySelector("textarea").value]', "--tab-id", valuesTabId))[0];
+  await runSurf("type", "a\\nb\\tc\\\\d", "--escapes", "--ref", notesRef, "--tab-id", valuesTabId, "--no-screenshot", "--json");
+  const escaped = await notesValue();
+  if (escaped !== "a\nb\tc\\d") throw new Error(`type --escapes did not type a newline, a tab and one backslash: ${JSON.stringify(escaped)}`);
+  await runSurf("type", "a\\nb\\tc\\\\d", "--ref", notesRef, "--tab-id", valuesTabId, "--no-screenshot", "--json");
+  const literal = await notesValue();
+  if (literal !== "a\\nb\\tc\\\\d") throw new Error(`type without --escapes did not type the text literally: ${JSON.stringify(literal)}`);
   await runSurf("tab.close", "--id", valuesTabId, "--json");
   // Page text is the rendered text: no CSS rules, script bodies, noscript text or hidden content
   const textTabId = String(tabIdFromOutput(await runSurf("tab.new", `${baseUrl}/page-text`)));
