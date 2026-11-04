@@ -932,12 +932,14 @@ const TOOLS = {
           ref: "Element ref (uses JS DOM method, more reliable for modals)",
           submit: "Press Enter after (at the cursor or with --into; not with --ref)",
           clear: "Clear the field first (with --into)",
+          escapes: "Turn \\n, \\t, \\r and \\\\ in the text into newline, tab, carriage return and backslash",
           method: "cdp|js (cursor typing uses CDP; selector/ref targets use JS)"
         },
         examples: [
           { cmd: 'type "hello world"', desc: "Type at cursor (CDP events)" },
           { cmd: 'type "user@example.com" --ref e5', desc: "Type into element by ref (JS DOM)" },
           { cmd: 'type "search query" --submit', desc: "Type and press Enter" },
+          { cmd: 'type "line 1\\nline 2" --ref e7 --escapes', desc: "Type two lines into a textarea" },
         ]
       },
       "smart_type": {
@@ -3330,7 +3332,7 @@ if (args[0] === "workflow.validate") {
   }
 }
 
-const BOOLEAN_FLAGS = ["auto-capture", "json", "stream", "dry-run", "stop-on-error", "fail-fast", "clear", "submit", "all", "include-hidden", "case-sensitive", "hard", "annotate", "fullpage", "full-page", "reset", "no-screenshot", "no-diff", "full", "soft-fail", "has-body", "exclude-static", "v", "vv", "request", "by-tab", "har", "jsonl", "no-save", "no-auto-wait", "no-lock", "no-wait", "window", "tab", "focused", "unfocused", "keep-target", "close-target", "replace", "refresh", "allow-post"];
+const BOOLEAN_FLAGS = ["auto-capture", "json", "stream", "dry-run", "stop-on-error", "fail-fast", "clear", "submit", "escapes", "all", "include-hidden", "case-sensitive", "hard", "annotate", "fullpage", "full-page", "reset", "no-screenshot", "no-diff", "full", "soft-fail", "has-body", "exclude-static", "v", "vv", "request", "by-tab", "har", "jsonl", "no-save", "no-auto-wait", "no-lock", "no-wait", "window", "tab", "focused", "unfocused", "keep-target", "close-target", "replace", "refresh", "allow-post"];
 
 const parseArgs = (rawArgs) => {
   const result = { positional: [], options: {} };
@@ -3700,6 +3702,14 @@ if (tool === "select" && positional.length > 2) {
 if (toolArgs.into && !toolArgs.selector) {
   toolArgs.selector = toolArgs.into;
   delete toolArgs.into;
+}
+
+if (tool === "type" && toolArgs.escapes) {
+  if (typeof toolArgs.text === "string") {
+    const escapes = { n: "\n", t: "\t", r: "\r", "\\": "\\" };
+    toolArgs.text = toolArgs.text.replace(/\\([ntr\\])/g, (_, c) => escapes[c]);
+  }
+  delete toolArgs.escapes;
 }
 
 const globalOpts = {};
