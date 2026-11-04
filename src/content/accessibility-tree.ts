@@ -1631,6 +1631,7 @@ function smartType(selector: string, text: string, clear = true, submit = false)
   }
 }
 
+// Rendered text only (innerText), so <style>/<script> bodies and display:none content stay out.
 // The native host caps the text so it can mark the cut and keep the full copy.
 function getPageText(): { text: string; title: string; url: string; error?: string } {
   try {
@@ -1638,9 +1639,8 @@ function getPageText(): { text: string; title: string; url: string; error?: stri
     const main = document.querySelector("main");
     const content = article || main || document.body;
 
-    const text = content.textContent
-      ?.replace(/\s+/g, " ")
-      .trim() || "";
+    const raw = (content as HTMLElement).innerText ?? content.textContent ?? "";
+    const text = raw.replace(/\s+/g, " ").trim();
 
     return {
       text,

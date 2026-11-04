@@ -744,7 +744,7 @@ const TOOLS = {
         ]
       },
       "read": { desc: "Alias for page.read", args: [], alias: "page.read" },
-      "page.text": { desc: "Extract all text from page", args: [] },
+      "page.text": { desc: "Extract visible text from page", args: [] },
       "page.html": {
         desc: "Print rendered document HTML",
         args: [],
