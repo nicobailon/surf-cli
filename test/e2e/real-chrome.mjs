@@ -1664,9 +1664,35 @@ setInterval(() => {}, 60_000);
     }).catch(() => null);
     return skewed !== null;
   }, "restarted Surf native host to answer", 30_000);
-  const expectedSkewLine = `surf: version mismatch (cli ${packageVersion}, host 0.0.1, extension ${packageVersion}). Reinstall Surf with npm and reload the extension in chrome://extensions.\n`;
+  const expectedSkewLine = `surf: version mismatch (cli ${packageVersion}, host 0.0.1, extension ${packageVersion}). Run \`surf update\`.\n`;
   if (skewed.stderr !== expectedSkewLine || skewed.stdout !== tabListBeforeSkew) {
     throw new Error(`version mismatch was not reported as one stderr line: ${JSON.stringify(skewed)}`);
+  }
+
+  // surf update's reload, through the live host: the extension reloads itself from disk and
+  // starts a fresh native host, now from the restored wrapper, that the extension greets again.
+  // Chrome reloads an unpacked extension only with Developer mode on, as it is for anyone who
+  // clicked "Load unpacked"; this test profile loaded it without, so turn it on first.
+  const extensionsPage = await browser.newPage();
+  await extensionsPage.goto("chrome://extensions");
+  await extensionsPage.evaluate(
+    () => new Promise((resolve) => chrome.developerPrivate.updateProfileConfiguration({ inDeveloperMode: true }, resolve)),
+  );
+  await extensionsPage.close();
+  writeFileSync(nativeManifest.path, hostWrapper());
+  const skewedHostPid = Number.parseInt(readFileSync(hostPidPath, "utf8"), 10);
+  rmSync(hostPidPath);
+  const { reloadExtension } = require(join(repo, "native/update.cjs"));
+  const reload = await reloadExtension({ socketPath });
+  const reloadedHostPid = existsSync(hostPidPath) ? Number.parseInt(readFileSync(hostPidPath, "utf8"), 10) : null;
+  if (
+    !reload.ok ||
+    reload.versions.host !== packageVersion ||
+    reload.versions.extension !== packageVersion ||
+    !reloadedHostPid ||
+    reloadedHostPid === skewedHostPid
+  ) {
+    throw new Error(`the extension did not reload and reconnect: ${JSON.stringify({ reload, skewedHostPid, reloadedHostPid })}`);
   }
 
   console.log(

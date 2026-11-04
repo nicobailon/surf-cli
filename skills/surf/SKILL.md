@@ -102,7 +102,7 @@ semantic: semantic.find semantic.filter semantic.verify | semantic auth set | se
 oracle: oracle follow | oracle status | oracle list
 playbook: playbook list | playbook show | playbook ops | playbook run | playbook suggest | playbook save | playbook record start | playbook record mark | playbook record stop | playbook record status | playbook trace export | playbook export | playbook import | playbook client derive | playbook client export | playbook client verify
 workflow: batch workflow.list workflow.info workflow.validate
-setup: install uninstall config server extension-path health smoke remote authorize | remote list | remote revoke
+setup: install uninstall update config server extension-path health smoke remote authorize | remote list | remote revoke
 ```
 
 ## Read when the case applies
