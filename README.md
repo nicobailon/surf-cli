@@ -70,6 +70,8 @@ surf install <extension-id>
 surf tab.list
 ```
 
+`surf install` also links the agent skill (`~/.claude/skills/surf`, `~/.pi/agent/skills/surf`, where those skills folders exist) to the installed package's `skills/surf`, so the skill matches your surf version; it leaves a skill folder you made yourself alone, and skips pi when pi already loads surf-cli as a package.
+
 ### Multi-Browser Support
 
 ```bash
