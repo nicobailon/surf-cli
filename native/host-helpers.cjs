@@ -291,6 +291,10 @@ function formatToolContent(result, log = () => {}) {
     if (result.text) {
       output += `\n\n--- Page Text ---\n${result.text}`;
     }
+
+    if (result.offscreen > 0) {
+      output += `\n\n+${result.offscreen} element${result.offscreen === 1 ? "" : "s"} off-screen: surf read --all`;
+    }
     
     if (result.screenshot && result.screenshot.base64) {
       const dims = result.screenshot.width && result.screenshot.height 

@@ -296,6 +296,13 @@ ${stories}</main>
 <div style="display:none"><textarea>[{"lid":"hiddenJsonLeak"}]</textarea></div>
 </body></html>`;
   }
+  if (url.pathname === "/offscreen") {
+    // One control on screen, three below the fold.
+    return `<!doctype html><html><head><title>Surf offscreen fixture</title></head><body>
+<button>Top</button><div style="height:5000px"></div>
+<button>Below 1</button><a href="#below">Below 2</a><input aria-label="Below 3">
+</body></html>`;
+  }
   if (url.pathname === "/custom-controls") {
     // Custom controls name themselves from text in a child element, or from text under 3 characters.
     return `<!doctype html><html><head><title>Surf custom controls fixture</title></head>
@@ -1122,6 +1129,19 @@ setInterval(() => {}, 60_000);
     }
   }
   await runSurf("tab.close", "--id", textTabId, "--json");
+
+  // read ends with how many controls it left off-screen and how to see them; --all lists them instead
+  const offscreenTabId = String(tabIdFromOutput(await runSurf("tab.new", `${baseUrl}/offscreen`)));
+  await runSurf("wait.element", "input", "--tab-id", offscreenTabId, "--json");
+  const onScreenRead = await runSurf("read", "--tab-id", offscreenTabId);
+  if (onScreenRead.trimEnd().split("\n").at(-1) !== "+3 elements off-screen: surf read --all" || onScreenRead.includes('"Below 1" [e')) {
+    throw new Error(`read did not end with the off-screen count: ${onScreenRead}`);
+  }
+  const allRead = await runSurf("read", "--all", "--tab-id", offscreenTabId);
+  if (allRead.includes("off-screen") || !["Below 1", "Below 2", "Below 3"].every((name) => allRead.includes(`"${name}" [e`))) {
+    throw new Error(`read --all did not list the off-screen controls without a count: ${allRead}`);
+  }
+  await runSurf("tab.close", "--id", offscreenTabId, "--json");
 
   // A ref click waits for a click a user could make, then clicks with trusted input
   const clickTabId = String(tabIdFromOutput(await runSurf("tab.new", `${baseUrl}/click`)));

@@ -1052,9 +1052,12 @@ function generateAccessibilityTree(
   error?: string;
   modalStates?: ModalState[];
   modalLimitations?: string;
+  offscreenCount?: number;
 } {
   try {
     window.__piRefs = {};
+    // Controls left out only for being off-screen: what --all would add to the list.
+    let offscreen = 0;
 
     function getRole(element: Element): string {
       return getResolvedRole(element);
@@ -1192,6 +1195,7 @@ function generateAccessibilityTree(
       if (options.filter !== "all" && !options.refId) {
         const rect = element.getBoundingClientRect();
         if (!(rect.top < window.innerHeight && rect.bottom > 0 && rect.left < window.innerWidth && rect.right > 0)) {
+          if (isInteractive(element)) offscreen++;
           return false;
         }
       }
@@ -1307,6 +1311,7 @@ function generateAccessibilityTree(
       viewport: { width: window.innerWidth, height: window.innerHeight },
       modalStates: modalStates.length > 0 ? modalStates : undefined,
       modalLimitations: 'Only custom modals ([role=dialog]) detected. Native alert/confirm/prompt dialogs and system file choosers cannot be detected from content scripts.',
+      offscreenCount: offscreen,
     };
   } catch (err) {
     return {
@@ -2142,7 +2147,8 @@ function handleContentMessage(
           });
         }
       } else {
-        const result = generateAccessibilityTree(
+        // Only read reports the controls left off-screen; the wait.* trees stay as they are.
+        const { offscreenCount, ...result } = generateAccessibilityTree(
           options.filter || "interactive",
           options.depth ?? 15,
           options.refId,
@@ -2156,7 +2162,7 @@ function handleContentMessage(
             (result as typeof result & { semanticVisionTargets: string[] }).semanticVisionTargets = semanticVisionTargets(observation);
           }
         }
-        sendResponse(result);
+        sendResponse(offscreenCount ? { ...result, offscreen: offscreenCount } : result);
       }
       break;
     }

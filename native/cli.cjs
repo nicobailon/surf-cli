@@ -725,7 +725,7 @@ const TOOLS = {
         args: [],
         opts: {
           ref: "Get specific element",
-          all: "All visible elements, including offscreen",
+          all: "All visible elements, including offscreen (without it, read ends with \"+N elements off-screen: surf read --all\" when it left any out)",
           "include-hidden": "Also include hidden elements (implies --all)",
           "no-text": "Exclude visible text content",
           depth: "Maximum tree depth (default: unlimited)",
