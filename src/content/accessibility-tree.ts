@@ -914,6 +914,18 @@ function isLocatable(el: Element): boolean {
     (el as HTMLElement).offsetWidth > 0 && (el as HTMLElement).offsetHeight > 0;
 }
 
+// The document and every open shadow root inside it, outermost first, so locators can query each.
+// Closed shadow roots expose no shadowRoot, so their contents stay unreachable.
+function openRoots(): (Document | ShadowRoot)[] {
+  const roots: (Document | ShadowRoot)[] = [document];
+  for (let i = 0; i < roots.length; i++) {
+    for (const el of roots[i].querySelectorAll("*")) {
+      if (el.shadowRoot) roots.push(el.shadowRoot);
+    }
+  }
+  return roots;
+}
+
 function registerLocatedRef(el: Element): string {
   const role = getResolvedRole(el);
   const name = getName(el);
@@ -2327,10 +2339,11 @@ function handleContentMessage(
         const markup = markupRoles[role];
         const selectors = implicitRoles[role] || [markup ? `[role="${role}"], ${markup}` : `[role="${role}"]`];
         let candidates: Element[] = [];
+        const roots = openRoots();
         
         for (const sel of selectors) {
           try {
-            candidates.push(...document.querySelectorAll(sel));
+            for (const root of roots) candidates.push(...root.querySelectorAll(sel));
           } catch {}
         }
         if (markup) {
@@ -2387,13 +2400,15 @@ function handleContentMessage(
         const query = normalizeLocatorText(text);
         
         // Find elements containing the text
-        const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
         const matches = new Set<Element>();
-        while (walker.nextNode()) {
-          const nodeText = walker.currentNode.textContent || '';
-          const hasMatch = exact ? nodeText.trim() === text : normalizeLocatorText(nodeText).includes(query);
-          const parent = walker.currentNode.parentElement;
-          if (hasMatch && parent && isLocatable(parent)) matches.add(parent);
+        for (const root of openRoots()) {
+          const walker = document.createTreeWalker(root === document ? document.body : root, NodeFilter.SHOW_TEXT);
+          while (walker.nextNode()) {
+            const nodeText = walker.currentNode.textContent || '';
+            const hasMatch = exact ? nodeText.trim() === text : normalizeLocatorText(nodeText).includes(query);
+            const parent = walker.currentNode.parentElement;
+            if (hasMatch && parent && isLocatable(parent)) matches.add(parent);
+          }
         }
         
         // Most specific (smallest) element first
@@ -2427,16 +2442,19 @@ function handleContentMessage(
           if (exactMatch) exactFields.add(field);
         };
         
-        for (const lbl of document.querySelectorAll('label')) {
+        const roots = openRoots();
+        for (const lbl of roots.flatMap(root => Array.from(root.querySelectorAll('label')))) {
           const lblText = normalizeLocatorText(lbl.textContent);
           if (!lblText.includes(query)) continue;
           const forId = lbl.getAttribute('for');
-          addField((forId && document.getElementById(forId)) || lbl.querySelector('input, select, textarea'), lblText === query);
+          // Resolve `for` in the label's own root: a shadow host may carry the same id as its inner field.
+          const target = forId && (lbl.getRootNode() as Document | ShadowRoot).getElementById(forId);
+          addField(target || lbl.querySelector('input, select, textarea'), lblText === query);
         }
         
         // Fields named only by aria-label or placeholder
         if (fields.length === 0) {
-          for (const field of document.querySelectorAll('input, textarea, select')) {
+          for (const field of roots.flatMap(root => Array.from(root.querySelectorAll('input, textarea, select')))) {
             const names = [field.getAttribute('aria-label'), field.getAttribute('placeholder')].map(normalizeLocatorText);
             if (names.some(fieldName => fieldName.includes(query))) addField(field, names.includes(query));
           }

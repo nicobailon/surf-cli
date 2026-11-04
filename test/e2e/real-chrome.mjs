@@ -915,6 +915,41 @@ try {
   if (shadowLog.trim() !== '"input:Ada"') throw new Error(`a light-DOM wrapper did not see the composed input event: ${shadowLog}`);
   await runSurf("tab.close", "--id", shadowTabId, "--json");
 
+  // Locators reach fields inside open shadow roots and act on the inner input, not the host that shares its id.
+  const shadowLocateTabId = String(tabIdFromOutput(await runSurf("tab.new", `${baseUrl}/shadow-form`)));
+  await runSurf("wait.element", "spl-input", "--tab-id", shadowLocateTabId, "--json");
+  const innerRef = (await runSurf("read", "--no-text", "--tab-id", shadowLocateTabId)).match(/textbox "First name" \[(e\d+)\]/)?.[1];
+  const locatedLabel = JSON.parse(await runSurf("locate.label", "First name", "--tab-id", shadowLocateTabId, "--json")).result;
+  if (!innerRef || locatedLabel.ref !== innerRef) {
+    throw new Error(`locate.label did not find the shadow-root input ${innerRef}: ${JSON.stringify(locatedLabel)}`);
+  }
+  const innerFocused = async () => (await runSurf(
+    "js",
+    'const host = document.querySelector("spl-input"); return document.activeElement === host && host.shadowRoot.activeElement === host.shadowRoot.querySelector("input")',
+    "--tab-id", shadowLocateTabId,
+  )).trim() === "true";
+  const blurInner = () => runSurf(
+    "js", 'document.querySelector("spl-input").shadowRoot.querySelector("input").blur(); return true', "--tab-id", shadowLocateTabId,
+  );
+  for (const locator of [["locate.role", "textbox", "--name", "First name"], ["locate.text", "First name"]]) {
+    await blurInner();
+    if (await innerFocused()) throw new Error("the shadow input stayed focused after blur");
+    await runSurf(...locator, "--action", "click", "--tab-id", shadowLocateTabId, "--no-screenshot");
+    if (!(await innerFocused())) throw new Error(`${locator.join(" ")} --action click did not focus the shadow-root input`);
+  }
+  await runSurf(
+    "locate.label", "First name", "--action", "fill", "--value", "Ada", "--tab-id", shadowLocateTabId, "--no-screenshot",
+  );
+  const filled = await runSurf(
+    "js",
+    'return [document.querySelector("spl-input").shadowRoot.querySelector("input").value, document.querySelector("#log").textContent]',
+    "--tab-id", shadowLocateTabId,
+  );
+  if (JSON.stringify(JSON.parse(filled)) !== '["Ada","input:Ada"]') {
+    throw new Error(`locate.label fill did not reach the inner shadow input and its light-DOM listener: ${filled}`);
+  }
+  await runSurf("tab.close", "--id", shadowLocateTabId, "--json");
+
   // A ref click waits for a click a user could make, then clicks with trusted input
   const clickTabId = String(tabIdFromOutput(await runSurf("tab.new", `${baseUrl}/click`)));
   await runSurf("wait.element", "#confirm", "--tab-id", clickTabId, "--json");
