@@ -1950,6 +1950,43 @@ export async function handleMessage(
       }
     }
 
+    case "SET_CHECKED": {
+      if (!tabId) throw new Error("No tabId provided");
+      const frameId = getFrameIdForTab(tabId, message);
+      const { ref, checked } = message;
+      const stateOf = (state: any) => state.checked === "mixed" ? "partly checked" : state.checked ? "checked" : "unchecked";
+      try {
+        const before = await chrome.tabs.sendMessage(tabId, { type: "CHECKED_STATE", ref, expectedIdentity: message.expectedIdentity }, { frameId });
+        if (before?.error) return { error: before.error, code: before.code };
+        if (before.checked === checked) return { success: true, _hint: `${ref} was already ${stateOf(before)}; nothing clicked.` };
+        if (!checked && before.radio) {
+          return { error: `${ref} is a radio button, and clicking a checked radio doesn't uncheck it. Check another option in its group instead.` };
+        }
+        let state = before;
+        let clicked: any;
+        // A partly checked box usually turns checked first, so `uncheck` may need a second click.
+        for (let clicks = 0; clicks < (before.checked === "mixed" ? 2 : 1) && state.checked !== checked; clicks++) {
+          clicked = await clickRef(tabId, frameId, ref, "left", message.expectedIdentity);
+          if (clicked.error) return clicked;
+          // Pages may commit the new state a frame or a save request later, so wait up to 1s for it to change.
+          const from = state.checked;
+          const until = Date.now() + 1000;
+          while (true) {
+            state = await chrome.tabs.sendMessage(tabId, { type: "CHECKED_STATE", ref }, { frameId });
+            if (state?.error) return { error: state.error, code: state.code };
+            if (state.checked !== from || Date.now() >= until) break;
+            await sleep(50);
+          }
+        }
+        if (state.checked !== checked) {
+          return { error: `${ref} was ${stateOf(before)} and is ${stateOf(state)} after clicking it (waited 1s for the page).` };
+        }
+        return clicked;
+      } catch (err) {
+        return { error: await contentScriptError(tabId, frameId, err) };
+      }
+    }
+
     case "HOVER_REF": {
       if (!tabId) throw new Error("No tabId provided");
       const frameId = getFrameIdForTab(tabId, message);

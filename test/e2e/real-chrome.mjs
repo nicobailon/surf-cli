@@ -338,6 +338,36 @@ ${stories}</main>
   });
 </script></body></html>`;
   }
+  if (url.pathname === "/check") {
+    // "Terms" keeps its app state in click events, the way React does, and shows it in #terms-state.
+    return `<!doctype html><html><head><title>Surf check fixture</title></head>
+<body><output id="log"></output>
+<input type="checkbox" id="news" checked><label for="news">Newsletter</label>
+<input type="checkbox" id="terms"><label for="terms">Terms</label> <span id="terms-state">not accepted</span>
+<input type="radio" name="size" id="small" checked><label for="small">Small</label>
+<input type="radio" name="size" id="large"><label for="large">Large</label>
+<select id="country"><option value="us">United States</option><option value="fr">France</option></select>
+<button role="switch" id="frame-switch" aria-checked="false">Animated</button>
+<button role="switch" id="saved-switch" aria-checked="false">Saved</button>
+<select id="qty" aria-label="Qty"><option value="0">1</option><option value="1">2</option></select>
+<label><input type="checkbox" id="styled" style="position:absolute;opacity:0;width:16px;height:16px"><span style="display:inline-block;width:16px;height:16px;border:1px solid"></span>Remember me</label>
+<input type="checkbox" id="all"><label for="all">Select all</label>
+<script>
+  function log(entry) { const out = document.querySelector("#log"); out.textContent = out.textContent ? out.textContent + "|" + entry : entry; }
+  // These switches commit their state a frame later and after a 400ms save, like animated or server-backed toggles.
+  const flip = (el) => el.setAttribute("aria-checked", String(el.getAttribute("aria-checked") !== "true"));
+  const frameSwitch = document.querySelector("#frame-switch");
+  frameSwitch.addEventListener("click", () => requestAnimationFrame(() => flip(frameSwitch)));
+  const savedSwitch = document.querySelector("#saved-switch");
+  savedSwitch.addEventListener("click", () => setTimeout(() => flip(savedSwitch), 400));
+  document.querySelector("#all").indeterminate = true;
+  document.querySelector("#news").addEventListener("click", () => log("news"));
+  document.querySelector("#terms").addEventListener("click", (event) => {
+    document.querySelector("#terms-state").textContent = event.target.checked ? "accepted" : "not accepted";
+    log("terms:" + event.isTrusted);
+  });
+</script></body></html>`;
+  }
   if (url.pathname === "/type") {
     return `<!doctype html><html><head><title>Surf type fixture</title></head>
 <body><input id="plain" type="text"><textarea id="notes"></textarea></body></html>`;
@@ -1033,6 +1063,55 @@ setInterval(() => {}, 60_000);
   }
   await runSurf("tab.close", "--id", frontTabId, "--json");
   await runSurf("tab.close", "--id", clickTabId, "--json");
+
+  // check/uncheck set a state: clicking only when it differs, with a trusted click the page's app state follows
+  const checkTabId = String(tabIdFromOutput(await runSurf("tab.new", `${baseUrl}/check`)));
+  await runSurf("wait.element", "#country", "--tab-id", checkTabId, "--json");
+  const checkPage = (await browser.pages()).find((page) => page.url() === `${baseUrl}/check`);
+  const checkRead = await runSurf("page.read", "--all", "--no-text", "--tab-id", checkTabId);
+  const checkRef = (role, name) => {
+    const ref = checkRead.match(new RegExp(`${role} "${name}" \\[(e\\d+)\\]`))?.[1];
+    if (!ref) throw new Error(`page.read did not list ${role} "${name}": ${checkRead}`);
+    return ref;
+  };
+  const checkTab = ["--tab-id", checkTabId, "--no-screenshot"];
+  const missingOption = await runSurfExpectingFailure("select", checkRef("combobox", "United States"), "nowhere", ...checkTab);
+  const alreadyChecked = await runSurf("check", checkRef("checkbox", "Newsletter"), ...checkTab);
+  await runSurf("check", checkRef("checkbox", "Terms"), ...checkTab);
+  const termsAccepted = await checkPage.evaluate(() => document.querySelector("#terms").checked && document.querySelector("#terms-state").textContent);
+  await runSurf("uncheck", checkRef("checkbox", "Terms"), ...checkTab);
+  const alreadyUnchecked = await runSurf("uncheck", checkRef("checkbox", "Terms"), ...checkTab);
+  const radioUncheck = await runSurfExpectingFailure("uncheck", checkRef("radio", "Small"), ...checkTab);
+  // Late state updates, a label standing for its hidden input, a partly checked box, and an option value that
+  // is another option's text. Each runs even if an earlier one fails, so one failure lists every broken case.
+  const lateRuns = [];
+  for (const args of [
+    ["check", checkRef("switch", "Animated")], ["check", checkRef("switch", "Saved")],
+    ["check", checkRef("generic", "Remember me")], ["uncheck", checkRef("checkbox", "Select all")],
+    ["form.fill", "--data", JSON.stringify([{ ref: checkRef("combobox", "1"), value: "1" }])],
+  ]) lateRuns.push(await runSurf(...args, ...checkTab).then(() => "ok", (error) => `${args[0]}: ${error.stderr?.trim().split("\n").at(-1)}`));
+  const lateState = await checkPage.evaluate(() => [
+    document.querySelector("#frame-switch").getAttribute("aria-checked"), document.querySelector("#saved-switch").getAttribute("aria-checked"),
+    document.querySelector("#styled").checked, document.querySelector("#all").checked, document.querySelector("#all").indeterminate,
+    document.querySelector("#qty").value,
+  ].join(","));
+  if (lateRuns.some((run) => run !== "ok") || lateState !== "true,true,true,false,false,1") {
+    throw new Error(`late, label, partly checked or option-value cases failed: ${JSON.stringify({ lateRuns, lateState })}`);
+  }
+  const checkState = await checkPage.evaluate(() => ({
+    news: document.querySelector("#news").checked,
+    terms: document.querySelector("#terms").checked,
+    small: document.querySelector("#small").checked,
+    country: document.querySelector("#country").value,
+    log: document.querySelector("#log").textContent,
+    termsState: document.querySelector("#terms-state").textContent,
+  }));
+  if (termsAccepted !== "accepted" || !alreadyChecked.includes("was already checked; nothing clicked") || !alreadyUnchecked.includes("was already unchecked; nothing clicked")
+    || !radioUncheck.stderr.includes("is a radio button") || !missingOption.stderr.includes('no option matching "nowhere"')
+    || JSON.stringify(checkState) !== JSON.stringify({ news: true, terms: false, small: true, country: "us", log: "terms:true|terms:true", termsState: "not accepted" })) {
+    throw new Error(`check/uncheck/select did not set the requested state: ${JSON.stringify({ termsAccepted, alreadyChecked, alreadyUnchecked, radioUncheck, missingOption, checkState })}`);
+  }
+  await runSurf("tab.close", "--id", checkTabId, "--json");
 
   // A ref from an earlier page in the tab never resolves on a later one, even when both pages
   // number their elements the same way, and a reload counts as a later page.
