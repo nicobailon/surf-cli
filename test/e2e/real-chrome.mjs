@@ -308,6 +308,36 @@ ${stories}</main>
   function log(entry) { const out = document.querySelector("#log"); out.textContent = out.textContent ? out.textContent + "|" + entry : entry; }
 </script></body></html>`;
   }
+  if (url.pathname === "/shadow-form") {
+    // Form fields live inside open shadow roots of custom elements, like SmartRecruiters' spl-* components.
+    // The host carries the same id as its inner input, and a light-DOM wrapper listens for input bubbling out.
+    return `<!doctype html><html><head><title>Surf shadow form fixture</title></head>
+<body><output id="log"></output>
+<x-title>Personal information</x-title>
+<spl-input id="first-name" label="First name"></spl-input>
+<spl-button>Submit application</spl-button>
+<input type="checkbox" id="agree"><label for="agree">I have read and agree to the Terms of Service, the Privacy Policy, and the Acceptable Use Policy of this example website</label>
+<script>
+  function log(entry) { const out = document.querySelector("#log"); out.textContent = out.textContent ? out.textContent + "|" + entry : entry; }
+  class SplInput extends HTMLElement {
+    connectedCallback() {
+      const id = this.id;
+      const root = this.attachShadow({ mode: "open", delegatesFocus: true });
+      root.innerHTML = '<label for="' + id + '">' + this.getAttribute("label") + '<span aria-hidden="true">*</span></label><input id="' + id + '" type="text" autocomplete="given-name">';
+      this.addEventListener("input", () => log("input:" + root.querySelector("input").value));
+    }
+  }
+  class SplButton extends HTMLElement {
+    connectedCallback() { this.attachShadow({ mode: "open" }).innerHTML = '<button><slot></slot></button>'; }
+  }
+  class XTitle extends HTMLElement {
+    connectedCallback() { this.attachShadow({ mode: "open" }).innerHTML = '<h3><slot></slot></h3>'; }
+  }
+  customElements.define("spl-input", SplInput);
+  customElements.define("spl-button", SplButton);
+  customElements.define("x-title", XTitle);
+</script></body></html>`;
+  }
   if (url.pathname === "/field-values") {
     // read shows what a field holds, except a secret: the password sits in a wrapping label with no other name.
     return `<!doctype html><html><head><title>Surf field values fixture</title></head>
@@ -983,6 +1013,75 @@ setInterval(() => {}, 60_000);
   }
   await runSurf("tab.close", "--id", controlsTabId, "--json");
 
+  // Form fields inside open shadow roots are listed, named from their shadow label, and typable by ref.
+  const shadowTabId = String(tabIdFromOutput(await runSurf("tab.new", `${baseUrl}/shadow-form`)));
+  await runSurf("wait.element", "spl-input", "--tab-id", shadowTabId, "--json");
+  const shadowRead = await runSurf("read", "--no-text", "--tab-id", shadowTabId);
+  const shadowFieldRef = shadowRead.match(/textbox "First name" \[(e\d+)\]/)?.[1];
+  if (!shadowFieldRef) throw new Error(`read did not list the shadow-root field "First name": ${shadowRead}`);
+  if (!/button "Submit application" \[e\d+\]/.test(shadowRead)) {
+    throw new Error(`read did not name the shadow-root slotted button "Submit application": ${shadowRead}`);
+  }
+  // Text drawn through a slot names the element holding the slot, not the shadow host as well.
+  const shadowReadAll = await runSurf("read", "--all", "--no-text", "--tab-id", shadowTabId);
+  for (const text of ["Personal information", "Submit application"]) {
+    if (shadowReadAll.split(`"${text}"`).length !== 2) throw new Error(`read --all did not list "${text}" exactly once: ${shadowReadAll}`);
+  }
+  if (!/heading "Personal information" \[e\d+\]/.test(shadowReadAll)) {
+    throw new Error(`read --all did not list the slotted title as the heading: ${shadowReadAll}`);
+  }
+  await runSurf("type", "Ada", "--ref", shadowFieldRef, "--tab-id", shadowTabId, "--no-screenshot");
+  const shadowValue = await runSurf("js", 'return document.querySelector("spl-input").shadowRoot.querySelector("input").value', "--tab-id", shadowTabId);
+  if (shadowValue.trim() !== '"Ada"') throw new Error(`type --ref did not reach the inner shadow input: ${shadowValue}`);
+  const shadowLog = await runSurf("js", 'return document.querySelector("#log").textContent', "--tab-id", shadowTabId);
+  if (shadowLog.trim() !== '"input:Ada"') throw new Error(`a light-DOM wrapper did not see the composed input event: ${shadowLog}`);
+  await runSurf("tab.close", "--id", shadowTabId, "--json");
+
+  // Locators reach fields inside open shadow roots and act on the inner input, not the host that shares its id.
+  const shadowLocateTabId = String(tabIdFromOutput(await runSurf("tab.new", `${baseUrl}/shadow-form`)));
+  await runSurf("wait.element", "spl-input", "--tab-id", shadowLocateTabId, "--json");
+  const innerRef = (await runSurf("read", "--no-text", "--tab-id", shadowLocateTabId)).match(/textbox "First name" \[(e\d+)\]/)?.[1];
+  const locatedLabel = JSON.parse(await runSurf("locate.label", "First name", "--tab-id", shadowLocateTabId, "--json")).result;
+  if (!innerRef || locatedLabel.ref !== innerRef) {
+    throw new Error(`locate.label did not find the shadow-root input ${innerRef}: ${JSON.stringify(locatedLabel)}`);
+  }
+  const innerFocused = async () => (await runSurf(
+    "js",
+    'const host = document.querySelector("spl-input"); return document.activeElement === host && host.shadowRoot.activeElement === host.shadowRoot.querySelector("input")',
+    "--tab-id", shadowLocateTabId,
+  )).trim() === "true";
+  const blurInner = () => runSurf(
+    "js", 'document.querySelector("spl-input").shadowRoot.querySelector("input").blur(); return true', "--tab-id", shadowLocateTabId,
+  );
+  for (const locator of [["locate.role", "textbox", "--name", "First name"], ["locate.text", "First name"]]) {
+    await blurInner();
+    if (await innerFocused()) throw new Error("the shadow input stayed focused after blur");
+    await runSurf(...locator, "--action", "click", "--tab-id", shadowLocateTabId, "--no-screenshot");
+    if (!(await innerFocused())) throw new Error(`${locator.join(" ")} --action click did not focus the shadow-root input`);
+  }
+  // "First name" names its label exactly (the aria-hidden "*" is not part of it), so a longer label does not make it ambiguous.
+  await runSurf(
+    "js",
+    'const spouse = document.createElement("spl-input"); spouse.id = "spouse-name"; spouse.setAttribute("label", "First name of spouse"); document.body.append(spouse); return true',
+    "--tab-id", shadowLocateTabId,
+  );
+  await runSurf(
+    "locate.label", "First name", "--action", "fill", "--value", "Ada", "--tab-id", shadowLocateTabId, "--no-screenshot",
+  );
+  const filled = await runSurf(
+    "js",
+    'return [document.querySelector("spl-input").shadowRoot.querySelector("input").value, document.querySelector("#log").textContent]',
+    "--tab-id", shadowLocateTabId,
+  );
+  if (JSON.stringify(JSON.parse(filled)) !== '["Ada","input:Ada"]') {
+    throw new Error(`locate.label fill did not reach the inner shadow input and its light-DOM listener: ${filled}`);
+  }
+  // A label over 100 characters names its field in full, so locate --name with the whole label finds it.
+  const agreeLabel = "I have read and agree to the Terms of Service, the Privacy Policy, and the Acceptable Use Policy of this example website";
+  await runSurf("locate.role", "checkbox", "--name", agreeLabel, "--action", "click", "--tab-id", shadowLocateTabId, "--no-screenshot");
+  const agreed = await runSurf("js", 'return document.querySelector("#agree").checked', "--tab-id", shadowLocateTabId);
+  if (agreed.trim() !== "true") throw new Error(`locate.role checkbox --name <full 120-character label> did not check it: ${agreed}`);
+  await runSurf("tab.close", "--id", shadowLocateTabId, "--json");
   // read shows a field's current value, and never a password's
   const valuesTabId = String(tabIdFromOutput(await runSurf("tab.new", `${baseUrl}/field-values`)));
   await runSurf("wait.element", "textarea", "--tab-id", valuesTabId, "--json");
