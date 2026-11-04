@@ -1,5 +1,5 @@
 // Shared real-Chrome setup for --vision checks: the built extension, the native host, and a local fixture server.
-// Same stable test key and native-host wiring as test/e2e/real-chrome.mjs. Run `npm run build` first.
+// Loads dist as shipped (its manifest key pins Surf's extension ID), with the same native-host wiring as test/e2e/real-chrome.mjs. Run `npm run build` first.
 import { execFile } from "node:child_process";
 import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
@@ -10,9 +10,7 @@ import { promisify } from "node:util";
 
 const require = createRequire(import.meta.url);
 const execFileAsync = promisify(execFile);
-const extensionKey =
-  "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEArWZVsRzpoyzuyQFqRzGOnkxv9FNaX/SR/VMw2f9ld+DKmUMxJhi/14olehkLWRJQumFPYTzWr1oqb1LwwI2KhBtn9mbaqzPSrrRGQ1VobTx7ZmxU+ooppXNdb2KGh/WXVqahS0D1nsQplAE6hCqQWPjsPCnXnWjUIH/B0EsInIUDwA8PKfuMG8p2HDlLj8hEpmLwOA48W4aHbl2S6bZHu9O50Lbd0L94aSwJLBNLKuXpBt/kFwlnpHd3zoJme9DIbqnDU/nMNh9SlA+EXRT6FhyiKdo6ZBMdtJeUPLQI2uHeoF8wikkNhIXX/E2EXlBqtZJJaFEi895x2s40+j/iZQIDAQAB"; // gitleaks:allow -- public test manifest key
-const extensionId = "nionemkjcnknfdhdolfloigkhpjnifmf";
+const extensionId = require("../../scripts/install-native-host.cjs").SURF_EXTENSION_ID;
 
 /** `pages` maps a URL path to its HTML, or to `{ type, body, headers }` for other content. `args` are extra Chrome flags. */
 export async function launchVisionChrome(repo, pages, { args = [] } = {}) {
@@ -50,10 +48,6 @@ export async function launchVisionChrome(repo, pages, { args = [] } = {}) {
     mkdirSync(home, { recursive: true });
     mkdirSync(surfTmp, { recursive: true });
     cpSync(join(repo, "dist"), extensionDir, { recursive: true });
-    const manifestPath = join(extensionDir, "manifest.json");
-    const manifest = JSON.parse(readFileSync(manifestPath, "utf8"));
-    manifest.key = extensionKey;
-    writeFileSync(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`);
     await execFileAsync(process.execPath, [join(repo, "scripts/install-native-host.cjs"), extensionId], { cwd: repo, env, timeout: 20_000 });
     const standardManifest = join(
       home,
