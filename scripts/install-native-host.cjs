@@ -110,14 +110,6 @@ function findNode() {
   return null;
 }
 
-function findNpmGlobalRoot() {
-  try {
-    return execSync("npm root -g", { encoding: "utf8" }).trim();
-  } catch {
-    return null;
-  }
-}
-
 function getWrapperDir(target = process.platform) {
   const home = os.homedir();
   if (target === "wsl-windows") {
@@ -140,11 +132,8 @@ function getHostPath() {
   if (process.env.SURF_HOST_PATH && fs.existsSync(process.env.SURF_HOST_PATH)) {
     return process.env.SURF_HOST_PATH;
   }
-  const npmRoot = findNpmGlobalRoot();
-  if (npmRoot) {
-    const globalPath = path.join(npmRoot, "surf-cli/native/host.cjs");
-    if (fs.existsSync(globalPath)) return globalPath;
-  }
+  // The host shipped with this installer, not whichever surf-cli `npm root -g` names:
+  // with two installs on PATH, that one may be a different version.
   const localPath = path.resolve(__dirname, "../native/host.cjs");
   if (fs.existsSync(localPath)) return localPath;
   return null;
