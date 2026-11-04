@@ -58,7 +58,8 @@ export function setNativeValue(
     element.value = value;
   }
   for (const name of events) {
-    element.dispatchEvent(new Event(name, { bubbles: name !== "blur" }));
+    // Real `input` events are composed and cross shadow boundaries; `change` and `blur` are not.
+    element.dispatchEvent(new Event(name, { bubbles: name !== "blur", composed: name === "input" }));
   }
   return { method: setter ? "native-setter" : "assignment", events: [...events] };
 }

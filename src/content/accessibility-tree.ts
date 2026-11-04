@@ -500,16 +500,36 @@ function contentText(node: Node): string {
   const element = node as Element;
   if (element.getAttribute("aria-hidden") === "true" || element.hasAttribute("hidden")) return "";
   if (["script", "style", "template"].includes(element.tagName.toLowerCase())) return "";
+  if (element.tagName === "SLOT" && typeof (element as HTMLSlotElement).assignedNodes === "function") {
+    const assigned = (element as HTMLSlotElement).assignedNodes({ flatten: true });
+    if (assigned.length) return assigned.map(contentText).join("");
+  }
   return Array.from(element.childNodes, contentText).join("");
 }
 
+// Children as the browser renders them: an open shadow root replaces the host's light children,
+// and a <slot> stands in for the light-DOM elements assigned to it (or its own fallback children).
+// Closed shadow roots expose no shadowRoot here, so their contents stay unreachable, as before.
+function renderedChildren(element: Element): Element[] {
+  const source = element.shadowRoot ? element.shadowRoot.children : element.children;
+  const result: Element[] = [];
+  for (const child of source) {
+    if (child.tagName === "SLOT" && typeof (child as HTMLSlotElement).assignedElements === "function") {
+      const assigned = (child as HTMLSlotElement).assignedElements({ flatten: true });
+      result.push(...(assigned.length ? assigned : Array.from(child.children)));
+    } else {
+      result.push(child);
+    }
+  }
+  return result;
+}
 function getName(element: Element): string {
   const tag = element.tagName.toLowerCase();
 
   const labelledBy = element.getAttribute('aria-labelledby');
   if (labelledBy) {
     const names = labelledBy.split(/\s+/).map(id => {
-      const el = document.getElementById(id);
+      const el = (element.getRootNode() as Document | ShadowRoot).getElementById(id);
       return el?.textContent?.trim() || '';
     }).filter(Boolean);
     if (names.length) {
@@ -538,8 +558,10 @@ function getName(element: Element): string {
   if (alt?.trim()) return alt.trim();
 
   if (element.id) {
-    const label = document.querySelector(`label[for="${element.id}"]`);
-    if (label?.textContent?.trim()) return label.textContent.trim();
+    const root = element.getRootNode() as Document | ShadowRoot;
+    const label = root.querySelector(`label[for="${CSS.escape(element.id)}"]`);
+    const text = label ? contentText(label).replace(/\s+/g, " ").trim() : "";
+    if (text) return text.length > 100 ? text.substring(0, 100) + "..." : text;
   }
 
   if (tag === "input") {
@@ -1205,7 +1227,7 @@ function generateAccessibilityTree(
       }
 
       if (depth < maxDepth) {
-        for (const child of element.children) {
+        for (const child of renderedChildren(element)) {
           lines.push(...traverse(child, include ? depth + 1 : depth));
         }
       }
@@ -1469,7 +1491,7 @@ function generateYamlTree(
         const props = getElementProps(element);
         
         const children: Element[] = [];
-        for (const child of element.children) {
+        for (const child of renderedChildren(element)) {
           children.push(child);
         }
         
@@ -1488,7 +1510,7 @@ function generateYamlTree(
           }
         }
       } else {
-        for (const child of element.children) {
+        for (const child of renderedChildren(element)) {
           traverse(child, depth, parentIncluded);
         }
       }

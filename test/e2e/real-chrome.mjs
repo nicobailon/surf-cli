@@ -297,6 +297,30 @@ ${stories}</main>
   function log(entry) { const out = document.querySelector("#log"); out.textContent = out.textContent ? out.textContent + "|" + entry : entry; }
 </script></body></html>`;
   }
+  if (url.pathname === "/shadow-form") {
+    // Form fields live inside open shadow roots of custom elements, like SmartRecruiters' spl-* components.
+    // The host carries the same id as its inner input, and a light-DOM wrapper listens for input bubbling out.
+    return `<!doctype html><html><head><title>Surf shadow form fixture</title></head>
+<body><output id="log"></output>
+<spl-input id="first-name"></spl-input>
+<spl-button>Submit application</spl-button>
+<script>
+  function log(entry) { const out = document.querySelector("#log"); out.textContent = out.textContent ? out.textContent + "|" + entry : entry; }
+  class SplInput extends HTMLElement {
+    connectedCallback() {
+      const id = this.id;
+      const root = this.attachShadow({ mode: "open", delegatesFocus: true });
+      root.innerHTML = '<label for="' + id + '">First name<span aria-hidden="true">*</span></label><input id="' + id + '" type="text" autocomplete="given-name">';
+      this.addEventListener("input", () => log("input:" + root.querySelector("input").value));
+    }
+  }
+  class SplButton extends HTMLElement {
+    connectedCallback() { this.attachShadow({ mode: "open" }).innerHTML = '<button><slot></slot></button>'; }
+  }
+  customElements.define("spl-input", SplInput);
+  customElements.define("spl-button", SplButton);
+</script></body></html>`;
+  }
   if (url.pathname === "/click") {
     // Each button only reports a click a user could have made.
     return `<!doctype html><html><head><title>Surf click fixture</title></head>
@@ -874,6 +898,22 @@ try {
     throw new Error(`locate --name Save did not click only the custom "Save" button: ${controlsLog}`);
   }
   await runSurf("tab.close", "--id", controlsTabId, "--json");
+
+  // Form fields inside open shadow roots are listed, named from their shadow label, and typable by ref.
+  const shadowTabId = String(tabIdFromOutput(await runSurf("tab.new", `${baseUrl}/shadow-form`)));
+  await runSurf("wait.element", "spl-input", "--tab-id", shadowTabId, "--json");
+  const shadowRead = await runSurf("read", "--no-text", "--tab-id", shadowTabId);
+  const fieldRef = shadowRead.match(/textbox "First name" \[(e\d+)\]/)?.[1];
+  if (!fieldRef) throw new Error(`read did not list the shadow-root field "First name": ${shadowRead}`);
+  if (!/button "Submit application" \[e\d+\]/.test(shadowRead)) {
+    throw new Error(`read did not name the shadow-root slotted button "Submit application": ${shadowRead}`);
+  }
+  await runSurf("type", "Ada", "--ref", fieldRef, "--tab-id", shadowTabId, "--no-screenshot");
+  const shadowValue = await runSurf("js", 'return document.querySelector("spl-input").shadowRoot.querySelector("input").value', "--tab-id", shadowTabId);
+  if (shadowValue.trim() !== '"Ada"') throw new Error(`type --ref did not reach the inner shadow input: ${shadowValue}`);
+  const shadowLog = await runSurf("js", 'return document.querySelector("#log").textContent', "--tab-id", shadowTabId);
+  if (shadowLog.trim() !== '"input:Ada"') throw new Error(`a light-DOM wrapper did not see the composed input event: ${shadowLog}`);
+  await runSurf("tab.close", "--id", shadowTabId, "--json");
 
   // A ref click waits for a click a user could make, then clicks with trusted input
   const clickTabId = String(tabIdFromOutput(await runSurf("tab.new", `${baseUrl}/click`)));
