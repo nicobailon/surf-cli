@@ -19,6 +19,8 @@ const {
 } = require("../native/native-host-launch-probe.cjs");
 
 const HOST_NAME = "surf.browser.host";
+// Chrome derives this from the public `key` in manifest.json, so every unpacked Surf build has this ID.
+const SURF_EXTENSION_ID = "oaclimdkkglbnpekeignmjenkodkaaka";
 
 const BROWSERS = {
   chrome: {
@@ -432,11 +434,12 @@ function printHelp() {
   console.log(`
 Surf CLI Native Host Installer
 
-Usage: install-native-host.cjs <extension-id> [options]
+Usage: install-native-host.cjs [extension-id] [options]
 
 Arguments:
-  extension-id    Chrome extension ID (32 lowercase letters a-p)
-                  Find at chrome://extensions with Developer Mode enabled
+  extension-id    Chrome extension ID (32 lowercase letters a-p). Optional:
+                  defaults to Surf's own ID, ${SURF_EXTENSION_ID}.
+                  Give one only for a fork or a build with a different ID.
 
 Options:
   -b, --browser   Browser(s) to install for (default: chrome)
@@ -455,39 +458,36 @@ Options:
                   Persist the local Unix socket group for mode 660.
                   Use a dedicated group; this grants full Surf authority.
   --refresh       Rewrite the wrapper and the manifests that already exist, keeping their
-                  extension ids and settings, and relink the agent skill (run by surf update).
+                  extension ids and settings and adding Surf's own ID, and relink the agent
+                  skill (run by surf update).
 
 Examples:
+  node install-native-host.cjs
+  node install-native-host.cjs --browser brave
   node install-native-host.cjs abcdefghijklmnopabcdefghijklmnop
-  node install-native-host.cjs abcdefghijklmnop --browser brave
-  node install-native-host.cjs abcdefghijklmnop --browser all
-  node install-native-host.cjs abcdefghijklmnop --target linux
-  node install-native-host.cjs abcdefghijklmnop --listen 100.64.1.2:4321
-  node install-native-host.cjs abcdefghijklmnop --socket-mode 660 --socket-group surf
+  node install-native-host.cjs --browser all
+  node install-native-host.cjs --target linux
+  node install-native-host.cjs --listen 100.64.1.2:4321
+  node install-native-host.cjs --socket-mode 660 --socket-group surf
 `);
 }
 
 function main() {
   let parsed;
   try { parsed = parseArgs(); } catch (error) { console.error(`Error: ${error.message}`); process.exit(1); }
-  let { extensionId, browsers, target, listen, socketMode, socketGroup, refresh } = parsed;
-  let ids = {};
+  let { browsers, target, listen, socketMode, socketGroup, refresh } = parsed;
+  const pinnedId = !refresh && !parsed.extensionId;
+  // A refresh adds Surf's pinned ID to each install; writeManifest keeps the IDs already there.
+  const extensionId = (!refresh && parsed.extensionId) || SURF_EXTENSION_ID;
   if (refresh) {
+    let ids;
     ({ ids, listen, socketMode, socketGroup } = findInstalled(isWsl() && target !== "linux" ? "wsl-windows" : process.platform));
     browsers = Object.keys(ids);
-    extensionId = Object.values(ids)[0];
-    if (!extensionId) {
-      console.log("No browser has the Surf native host installed; run `surf install <extension-id>` to install it.");
+    if (browsers.length === 0) {
+      console.log("No browser has the Surf native host installed; run `surf install` to install it.");
       for (const line of linkAgentSkills()) console.log(`  ${line}`);
       return;
     }
-  }
-
-  if (!extensionId) {
-    console.error("Error: Extension ID required");
-    console.error("Usage: install-native-host.cjs <extension-id> [--browser chrome|chromium|brave|edge|arc|helium|all] [--target auto|linux|windows]");
-    console.error("\nFind your extension ID at chrome://extensions (enable Developer Mode)");
-    process.exit(1);
   }
 
   if (!/^[a-p]{32}$/.test(extensionId)) {
@@ -586,7 +586,7 @@ function main() {
 
         let result;
         try {
-          result = installManifest(browser, ids[browser] || extensionId, wrapperPath, effectiveTarget);
+          result = installManifest(browser, extensionId, wrapperPath, effectiveTarget);
         } catch (error) {
           throw new Error(`Failed to install ${BROWSERS[browser].name}: ${error.message}`);
         }
@@ -623,6 +623,14 @@ function main() {
     for (const line of skillLines) console.log(`  ${line}`);
   }
 
+  if (pinnedId) {
+    const extensionPath = process.env.SURF_EXTENSION_PATH || path.resolve(__dirname, "../dist");
+    console.log("\nExtension:");
+    console.log("  In chrome://extensions, turn on Developer mode, click \"Load unpacked\" and choose:");
+    console.log(`  ${extensionPath}`);
+    console.log(`  If Surf is already loaded, reload it there instead. chrome://extensions should then show its ID as ${SURF_EXTENSION_ID}.`);
+  }
+
   if (!refresh) console.log("\nDone! Restart your browser for changes to take effect.");
 }
 
@@ -631,6 +639,7 @@ if (require.main === module) {
 }
 
 module.exports = {
+  SURF_EXTENSION_ID,
   createWrapper,
   findNode,
   getHostPath,

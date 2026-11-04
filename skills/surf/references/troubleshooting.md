@@ -6,8 +6,8 @@
 
 1. Run `surf doctor` (`surf doctor --browser all` for Brave, Edge, Arc, Helium and others) and read its `Attempted socket:` line.
 2. The default socket is `/tmp/surf.sock` (Windows `//./pipe/surf`). If `SURF_SOCKET` is set, Chrome's host and your shell must use the same value.
-3. macOS: Chrome reads `~/Library/Application Support/Google/Chrome/NativeMessagingHosts/surf.browser.host.json`. Its `allowed_origins` id must match the extension id on `chrome://extensions`. If not, run `surf install <extension-id>`, restart Chrome, and reload the extension.
-4. WSL2 with Windows Chrome: run `surf install <extension-id>` inside WSL2. Add `--target linux` only for a Linux browser running in WSLg.
+3. macOS: Chrome reads `~/Library/Application Support/Google/Chrome/NativeMessagingHosts/surf.browser.host.json`. Its `allowed_origins` id must match the extension id on `chrome://extensions`. If not, run `surf install`, restart Chrome, and reload the extension.
+4. WSL2 with Windows Chrome: run `surf install` inside WSL2. Add `--target linux` only for a Linux browser running in WSLg.
 5. Extension logs: open Surf's service-worker console from `chrome://extensions`. For more detail, turn on Debug Mode under Details > Extension options, reproduce, then turn it off.
 
 ## Slow or busy

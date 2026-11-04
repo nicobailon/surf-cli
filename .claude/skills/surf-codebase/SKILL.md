@@ -94,7 +94,7 @@ A11y tree assigns e1, e2... during READ_PAGE. Stored window.__piRefs. Reset each
 npm run dev              # Watch mode
 npm run build            # Prod → dist/
 # Load dist/ as unpacked ext
-surf install <ext-id>    # Register native host
+surf install             # Register native host; prints the dist/ folder to load
 ```
 
 ## Gotchas
