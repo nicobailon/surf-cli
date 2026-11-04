@@ -185,7 +185,9 @@ describe("surf doctor", () => {
         expect.objectContaining({ id: "manifest-file", status: "fail", browser: "chrome" }),
       ]),
     );
-    expect(report.recommendations.join("\n")).toContain("surf install <extension-id>");
+    expect(report.recommendations.join("\n")).toContain(
+      "Run `surf install`, then restart the browser.",
+    );
     expect(report.recommendations.join("\n")).toContain("restart the browser");
     expect(report.recommendations.join("\n")).toContain("service worker console");
     expect(report.recommendations.join("\n")).toContain("Details > Extension options");
@@ -592,7 +594,7 @@ describe("surf doctor", () => {
       ]),
     );
     expect(report.checks.find((check: any) => check.id === "wrapper-launch").message).toContain(
-      "surf install <extension-id>",
+      "Run `surf install` to replace it.",
     );
   });
 

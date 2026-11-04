@@ -6,7 +6,7 @@ Drive Chrome on another machine (for example over Tailscale). Network reachabili
 
 ```bash
 surf remote authorize laptop --output ./laptop.json      # mode 0600; move it to the client securely
-surf install <extension-id> --listen 100.101.102.103:4321
+surf install --listen 100.101.102.103:4321
 surf remote list
 surf remote revoke laptop
 ```
@@ -28,4 +28,4 @@ surf --remote 100.101.102.103:4321 --remote-credential ./laptop.json page.read
 
 ## Sharing locally instead
 
-`surf install <extension-id> --socket-mode 660 --socket-group <group>` lets every member of that group use the local socket with full authority, so use a small dedicated group. Run `surf install <extension-id>` without those flags to undo it.
+`surf install --socket-mode 660 --socket-group <group>` lets every member of that group use the local socket with full authority, so use a small dedicated group. Run `surf install` without those flags to undo it.

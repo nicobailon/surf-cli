@@ -1712,7 +1712,7 @@ const TOOLS = {
   setup: {
     desc: "Install, configure and serve",
     commands: {
-      install: { desc: "Install the native messaging host for a browser extension id", args: ["extension-id"] },
+      install: { desc: "Install the native messaging host for Surf's extension (or a given extension id)", args: [] },
       uninstall: { desc: "Remove the native messaging host configuration", args: [] },
       config: {
         desc: "Print the surf.json config in use",
@@ -2472,15 +2472,17 @@ if (args[0] === "install") {
   const scriptPath = require("path").resolve(__dirname, "../scripts/install-native-host.cjs");
   const installArgs = args.slice(1);
 
-  if (installArgs.length === 0 || installArgs[0] === "--help" || installArgs[0] === "-h") {
+  if (installArgs[0] === "--help" || installArgs[0] === "-h") {
     console.log(`
-Usage: surf install <extension-id> [options]
+Usage: surf install [extension-id] [options]
 
-Install native messaging host for browser communication.
+Install native messaging host for browser communication, link the agent skill,
+and print the extension folder to load with "Load unpacked" in chrome://extensions.
 
 Arguments:
-  extension-id    Chrome extension ID (32 lowercase letters a-p)
-                  Find at chrome://extensions with Developer Mode enabled
+  extension-id    Optional. Defaults to Surf's own extension ID, which every
+                  Surf build has. Give one only for a fork or a build with a
+                  different ID (32 lowercase letters a-p, see chrome://extensions).
 
 Options:
   -b, --browser   Browser(s) to install for (default: chrome)
@@ -2496,11 +2498,12 @@ Options:
                   Persist the local POSIX socket group for mode 660.
 
 Examples:
+  surf install
+  surf install --browser brave
+  surf install --browser all
+  surf install --target linux
+  surf install --socket-mode 660 --socket-group surf
   surf install hnfbepgmaoklhekckbpjnleifhahkcpl
-  surf install hnfbepgmaoklhekckbpjnleifhahkcpl --browser brave
-  surf install hnfbepgmaoklhekckbpjnleifhahkcpl --browser all
-  surf install hnfbepgmaoklhekckbpjnleifhahkcpl --target linux
-  surf install hnfbepgmaoklhekckbpjnleifhahkcpl --socket-mode 660 --socket-group surf
 `);
     process.exit(0);
   }

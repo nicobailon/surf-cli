@@ -15,7 +15,7 @@ const {
   renderWslWrapper,
   probeWindowsWrapper,
 } = require("./native-host-launch-probe.cjs");
-const { findNode, getHostPath } = require("../scripts/install-native-host.cjs");
+const { SURF_EXTENSION_ID, findNode, getHostPath } = require("../scripts/install-native-host.cjs");
 const { version: CLI_VERSION } = require("../package.json");
 
 const HOST_NAME = "surf.browser.host";
@@ -329,7 +329,7 @@ function checkWslWrapperLaunch(manifest, context) {
       id: "wrapper-launch",
       status: "warn",
       message:
-        "Skipped launch probe because the manifest does not point to Surf's managed WSL wrapper. Run `surf install <extension-id>` to restore the managed wrapper.",
+        "Skipped launch probe because the manifest does not point to Surf's managed WSL wrapper. Run `surf install` to restore the managed wrapper.",
       path: manifest.path,
     };
   }
@@ -387,7 +387,7 @@ function checkWslWrapperLaunch(manifest, context) {
       id: "wrapper-launch",
       status: "warn",
       message:
-        "Surf's managed WSL wrapper does not match this installation, so it was not executed. Run `surf install <extension-id>` to replace it.",
+        "Surf's managed WSL wrapper does not match this installation, so it was not executed. Run `surf install` to replace it.",
       path: canonicalWindowsPath,
       fsPath: wrapperFsPath,
     };
@@ -557,19 +557,19 @@ function buildRecommendations(report) {
   ]);
 
   if (failedIds.has("windows-registry")) {
-    recommendations.push("Run `surf install <extension-id> --browser <browser>` so Windows registers the native messaging host, then restart the browser.");
+    recommendations.push("Run `surf install --browser <browser>` so Windows registers the native messaging host, then restart the browser.");
   }
   if (failedIds.has("manifest-file") || failedIds.has("manifest-shape")) {
-    recommendations.push("Run `surf install <extension-id>` with the extension ID from chrome://extensions, then restart the browser.");
+    recommendations.push("Run `surf install`, then restart the browser.");
   }
   if (failedIds.has("manifest-origins")) {
-    recommendations.push("Rerun `surf install <extension-id>` after copying the current Surf extension ID from chrome://extensions.");
+    recommendations.push(`Rerun \`surf install\` so the manifest allows Surf's extension ID (${SURF_EXTENSION_ID}). For a fork or a build with a different ID, pass the ID shown in chrome://extensions.`);
   }
   if (failedIds.has("manifest-path") || failedIds.has("manifest-path-executable")) {
     recommendations.push("Reinstall the native host so the manifest path points at the current Surf wrapper.");
   }
   if (failedIds.has("wrapper-launch")) {
-    recommendations.push("Rerun `surf install <extension-id>` from the same WSL distro so Surf can replace and validate the Windows wrapper.");
+    recommendations.push("Rerun `surf install` from the same WSL distro so Surf can replace and validate the Windows wrapper.");
   }
   if (failedIds.has("manifest-supported")) {
     recommendations.push("Choose a browser supported for this target, or rerun with `--browser all` to inspect every supported setup.");
@@ -587,10 +587,10 @@ function buildRecommendations(report) {
     recommendations.push("SURF_SOCKET is set; make sure Chrome launches the native host with the same socket value.");
   }
   if (report.environment.runningInWsl && report.environment.effectiveTarget === "wsl-windows") {
-    recommendations.push("For WSL2 with Windows Chrome, run `surf install <extension-id>` from the same WSL distro and restart Windows Chrome. Use `--target linux` only for a Linux browser in WSLg.");
+    recommendations.push("For WSL2 with Windows Chrome, run `surf install` from the same WSL distro and restart Windows Chrome. Use `--target linux` only for a Linux browser in WSLg.");
   }
   if (report.environment.platform === "darwin") {
-    recommendations.push("On macOS, confirm the extension ID in the manifest matches chrome://extensions and reopen the extension service worker console for native messaging errors.");
+    recommendations.push(`On macOS, confirm chrome://extensions shows Surf's ID as ${SURF_EXTENSION_ID} (or the ID you gave \`surf install\`), that the manifest allows it, and reopen the extension service worker console for native messaging errors.`);
   }
 
   return Array.from(new Set(recommendations));

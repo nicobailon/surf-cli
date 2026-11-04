@@ -22,7 +22,7 @@ function getSocketTroubleshootingHint() {
   }
 
   if (process.platform === "linux") {
-    lines.push("On WSL2 with Windows Chrome, run `surf install <extension-id>` from WSL and restart Windows Chrome.");
+    lines.push("On WSL2 with Windows Chrome, run `surf install` from WSL and restart Windows Chrome.");
   }
 
   return lines.join("\n");

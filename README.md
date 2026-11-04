@@ -57,29 +57,31 @@ Surf takes a different approach:
 # 1. Install globally
 npm install -g surf-cli
 
-# 2. Load extension in Chrome
+# 2. Install the native host; this prints the extension folder to load
+surf install
+
+# 3. Load the extension in Chrome
 #    - Open chrome://extensions
 #    - Enable "Developer mode"
-#    - Click "Load unpacked"
-#    - Paste the path from: surf extension-path
-
-# 3. Install native host (copy extension ID from chrome://extensions)
-surf install <extension-id>
+#    - Click "Load unpacked" and choose the folder `surf install` printed
+#      (`surf extension-path` prints it too)
 
 # 4. Restart Chrome and test
 surf tab.list
 ```
+
+Every Surf build has the same extension ID (`oaclimdkkglbnpekeignmjenkodkaaka`), so `surf install` needs no ID. If you load a fork or another build with a different ID, pass it: `surf install <extension-id>`.
 
 `surf install` also links the agent skill (`~/.claude/skills/surf`, `~/.pi/agent/skills/surf`, where those skills folders exist) to the installed package's `skills/surf`, so the skill matches your surf version; it leaves a skill folder you made yourself alone, and skips pi when pi already loads surf-cli as a package.
 
 ### Multi-Browser Support
 
 ```bash
-surf install <extension-id>                    # Chrome (default)
-surf install <extension-id> --browser brave    # Brave
-surf install <extension-id> --browser helium   # Helium
-surf install <extension-id> --browser all      # All supported browsers
-surf install <extension-id> --target linux     # WSLg/Linux browser from WSL2
+surf install                    # Chrome (default)
+surf install --browser brave    # Brave
+surf install --browser helium   # Helium
+surf install --browser all      # All supported browsers
+surf install --target linux     # WSLg/Linux browser from WSL2
 ```
 
 Supported: `chrome`, `chromium`, `brave`, `edge`, `arc`, `helium`
@@ -92,14 +94,14 @@ To have Surf start the browser when it isn't running, add this to `surf.json` (i
 Most commands that find no running browser then start it, wait for the Surf extension to connect (up to 30 seconds, or `timeoutMs`), and run; streams, `record` and compound commands such as `extract` don't start it. `surf go <url>` opens the browser on that page. `app` is one of the browsers above (default `chrome`); on Linux Surf runs the browser's usual binary from `PATH`. To start it some other way, give the full command instead, for example `"command": ["/usr/bin/chromium", "--profile-directory=Work"]`; Surf adds the URL at the end. Remote mode never starts a browser.
 
 **WSL2 with Windows Chrome**
-When you run `surf install <extension-id>` inside WSL2, Surf detects WSL2 and installs a Windows-side native messaging manifest for Windows Chrome/Brave/Edge by default. The generated Windows wrapper launches the WSL2 host with `wsl.exe`, so `surf` commands run inside WSL2 still connect to the WSL socket.
+When you run `surf install` inside WSL2, Surf detects WSL2 and installs a Windows-side native messaging manifest for Windows Chrome/Brave/Edge by default. The generated Windows wrapper launches the WSL2 host with `wsl.exe`, so `surf` commands run inside WSL2 still connect to the WSL socket.
 
 If you use a Linux browser inside WSLg instead, install with:
 ```bash
-surf install <extension-id> --target linux
+surf install --target linux
 ```
 
-Restart Windows Chrome after installing. If the extension reports `Access to the specified native messaging host is forbidden`, rerun `surf install <extension-id>` from the same WSL distro and confirm the extension ID was copied from `chrome://extensions`.
+Restart Windows Chrome after installing. If the extension reports `Access to the specified native messaging host is forbidden`, rerun `surf install` from the same WSL distro and confirm `chrome://extensions` shows Surf's ID as `oaclimdkkglbnpekeignmjenkodkaaka` (or pass the ID it shows).
 
 **Package Manager Installs (Nix, Homebrew, etc.)**
 If surf is installed via a package manager that stores binaries in non-standard locations, set these environment variables before running `surf install`:
@@ -127,7 +129,7 @@ On the browser host, authorize a client before installing the listener:
 ```bash
 surf remote authorize agent-macbook --output ~/agent-macbook.surf-credential.json
 surf remote list
-surf install <extension-id> --listen 100.101.102.103:4321
+surf install --listen 100.101.102.103:4321
 ```
 
 `authorize` creates a mode-0600 credential containing the client's Ed25519 private identity and the pinned host identity. Move it to that client through an existing secure channel, then remove the generated copy from the host if it is no longer needed there. The host keeps only the client's public identity in `~/.surf/remote/remote-clients.json`.
@@ -180,7 +182,7 @@ surf remote list
 
 `surf install --listen` persists the explicit Tailnet address in the native-host wrapper. Re-run `surf install` without `--listen` to remove it. The address must be a Tailscale IPv4 or IPv6 address with a port; Surf does not bind every interface. Remote listeners currently require a POSIX browser host and are not supported by Windows native-host wrappers.
 
-For advanced local-only sharing, `surf install <extension-id> --socket-mode 660 --socket-group <group>` persists an opt-in group-owned socket. The default remains mode `600`; mode `660` gives every account in that group full Surf authority, so use a dedicated narrow group. Re-run `surf install` without these flags to clear persisted socket settings. Remote Surf credentials remain the revocable per-client alternative.
+For advanced local-only sharing, `surf install --socket-mode 660 --socket-group <group>` persists an opt-in group-owned socket. The default remains mode `600`; mode `660` gives every account in that group full Surf authority, so use a dedicated narrow group. Re-run `surf install` without these flags to clear persisted socket settings. Remote Surf credentials remain the revocable per-client alternative.
 
 Keep Tailscale policy restrictions as defense in depth. For example:
 
@@ -1389,15 +1391,15 @@ surf doctor --json
 Read the `Attempted socket:` line first. The CLI and native host must agree on the same socket path. By default this is `/tmp/surf.sock` on macOS/Linux/WSL2 and `//./pipe/surf` on Windows.
 
 Common fixes:
-- Restart the browser after `surf install <extension-id>`.
-- Confirm the Surf extension is enabled and the extension ID matches the one passed to `surf install`.
-- On WSL2 with Windows Chrome, run `surf install <extension-id>` from WSL2 and restart Windows Chrome. Use `--target linux` only for a Linux browser running inside WSLg.
+- Restart the browser after `surf install`.
+- Confirm the Surf extension is enabled and its ID is `oaclimdkkglbnpekeignmjenkodkaaka` (or the ID you passed to `surf install`).
+- On WSL2 with Windows Chrome, run `surf install` from WSL2 and restart Windows Chrome. Use `--target linux` only for a Linux browser running inside WSLg.
 - If `SURF_SOCKET` is set, set the same value for both the browser-launched native host and the shell running `surf`.
 
 macOS checklist:
 - Confirm Chrome has a native messaging manifest at `~/Library/Application Support/Google/Chrome/NativeMessagingHosts/surf.browser.host.json`.
 - Confirm the manifest `allowed_origins` entry uses the same extension ID shown on `chrome://extensions` for the Surf extension.
-- Reinstall the manifest with `surf install <extension-id>` after copying a fresh extension build or if the extension ID changed.
+- Rerun `surf install` if the extension ID changed, for example after updating from a Surf version without a fixed ID.
 - Fully restart Chrome, then reload the Surf extension on `chrome://extensions`.
 - Open Surf's service worker console from `chrome://extensions`. In Surf's **Details > Extension options**, enable **Debug Mode**, reproduce the failure, then disable **Debug Mode** when finished.
 - If `SURF_SOCKET` is set in your shell, make sure Chrome launches the native host with the same value; otherwise both sides should use `/tmp/surf.sock`.
@@ -1507,7 +1509,7 @@ sudo apt install xvfb tigervnc-standalone-server
 
 # Install Surf and native host
 npm install -g surf-cli
-surf install <extension-id> --browser chromium
+surf install --browser chromium
 ```
 
 **Notes:**

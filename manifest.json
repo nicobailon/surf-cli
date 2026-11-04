@@ -2,6 +2,7 @@
   "manifest_version": 3,
   "name": "Surf",
   "description": "Browser automation CLI for AI agents",
+  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEArgSiUBM7o7ud+U0cLiD4fdGwsLQdPKSkvrqLNEGK/u5X3aCqbmA0z/U/cdnFXn3gNCNd43806fRB+mRDAyOe/JXHYBEUIM8+vmtWmqwVgYzeThFSAsWDN9cUotmReDfAXpUPBJbehDmMohTu13EtXsmqRdPqUs3373OmiCH+aqHpfr7JJpDYaqfQQ+AtoIwpo/6iuYQODeKj21ZQbmqzFSvkzs0JFYRPNqa7p2mY/87DwvBj5gx3Ct8VOLN1MuHrhA6YAi6Pziqh4QnXrBDMzdADVql4BXrMZv+2HA7vXydMawknOgEKgbHUL58RMTqUcmyXoxZPwK2DMynScVk4yQIDAQAB",
   "options_page": "options/options.html",
   "icons": {
     "16": "icons/icon-16.png",
