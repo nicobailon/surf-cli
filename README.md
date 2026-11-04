@@ -87,7 +87,7 @@ To have Surf start the browser when it isn't running, add this to `surf.json` (i
 ```json
 { "browser": { "autostart": true, "app": "chrome" } }
 ```
-A command that finds no running browser then starts it, waits for the Surf extension to connect (up to 30 seconds, or `timeoutMs`), and runs. `surf go <url>` opens the browser on that page. `app` is one of the browsers above (default `chrome`); on Linux Surf runs the browser's usual binary from `PATH`. To start it some other way, give the full command instead, for example `"command": ["/usr/bin/chromium", "--profile-directory=Work"]`; Surf adds the URL at the end. Remote mode never starts a browser.
+Most commands that find no running browser then start it, wait for the Surf extension to connect (up to 30 seconds, or `timeoutMs`), and run; streams, `record` and compound commands such as `extract` don't start it. `surf go <url>` opens the browser on that page. `app` is one of the browsers above (default `chrome`); on Linux Surf runs the browser's usual binary from `PATH`. To start it some other way, give the full command instead, for example `"command": ["/usr/bin/chromium", "--profile-directory=Work"]`; Surf adds the URL at the end. Remote mode never starts a browser.
 
 **WSL2 with Windows Chrome**
 When you run `surf install <extension-id>` inside WSL2, Surf detects WSL2 and installs a Windows-side native messaging manifest for Windows Chrome/Brave/Edge by default. The generated Windows wrapper launches the WSL2 host with `wsl.exe`, so `surf` commands run inside WSL2 still connect to the WSL socket.

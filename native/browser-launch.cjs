@@ -15,7 +15,12 @@ const LAUNCHERS = {
 
 /** The argv that starts the browser from surf.json's `browser` settings, opening `url` if given. */
 function launchArgv({ app = "chrome", command, url }, { platform = process.platform, env = process.env } = {}) {
-  const urlArgs = url ? [url] : [];
+  // Only a parsed URL reaches the command line: it has no raw quote (cmd) and can't pass as a flag.
+  let href;
+  try {
+    href = url ? new URL(url).href : undefined;
+  } catch {}
+  const urlArgs = href ? [href] : [];
   if (command !== undefined) {
     if (!Array.isArray(command) || command.length === 0 || !command.every((part) => typeof part === "string" && part)) {
       throw new Error("surf.json browser.command must be a non-empty array of strings");
@@ -42,7 +47,7 @@ function launchArgv({ app = "chrome", command, url }, { platform = process.platf
   throw new Error(`Surf can't find ${target.join(" or ")} on PATH; set browser.command in surf.json`);
 }
 
-/** Starts the browser detached. `launch.error` is set if the process can't be spawned. */
+/** Starts the browser detached. `launch.error` is set if it can't be spawned or exits with an error. */
 function launchBrowser(argv) {
   const launch = { error: null };
   const child = spawn(argv[0], argv.slice(1), {
@@ -51,6 +56,7 @@ function launchBrowser(argv) {
     windowsVerbatimArguments: argv[0] === "cmd",
   });
   child.on("error", (error) => { launch.error = error; });
+  child.on("exit", (code) => { if (code) launch.error = new Error(`exited with code ${code}`); });
   child.unref();
   return launch;
 }
