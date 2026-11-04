@@ -68,7 +68,8 @@ const { commandMetadata, redactCommandArgs } = require("./workflow-definition.cj
 const { BrowserScheduler } = require("./browser-scheduler.cjs");
 const { BrowserSessionStore, parseDurationMs, validateSessionName } = require("./browser-session-store.cjs");
 const { applySocketPermissions, resolveSocketPermissions } = require("./socket-permissions.cjs");
-const { version: HOST_VERSION } = require("../package.json");
+// SURF_TEST_HOST_VERSION is for tests only: it makes this host report another version.
+const HOST_VERSION = process.env.SURF_TEST_HOST_VERSION || require("../package.json").version;
 const { classifyTool } = require("./tool-scope.cjs");
 const { fromExtensionError, surfError } = require("./surf-error.cjs");
 const {
@@ -1833,7 +1834,12 @@ function sendToolResponse(socket, id, result, error) {
       ? (request.tombstoned ? "cleanup-settled" : "cancelled")
       : finalError ? "error" : "completed";
     await completeOwnedRequest(context, id, outcome);
-    const response = { type: "tool_response", id };
+    // The CLI compares these versions with its own and warns on stderr when they differ.
+    const response = {
+      type: "tool_response",
+      id,
+      versions: { host: HOST_VERSION, extension: browserIdentity?.extensionVersion ?? null },
+    };
     if (request?.target) {
       response.target = {
         source: request.target.source,
