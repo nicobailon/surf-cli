@@ -643,6 +643,28 @@ describe("surf doctor", () => {
     );
   });
 
+  it("says on Android that no local browser can work and points at remote mode", async () => {
+    const report = await runDoctor(
+      { browser: "all", socket: "/tmp/surf.sock" },
+      {
+        platform: "android",
+        homeDir: makeTempDir(),
+        env: {},
+        connectSocket: async () => ({ ok: false, code: "ENOENT", message: "missing" }),
+      },
+    );
+
+    expect(report.ok).toBe(false);
+    expect(report.checks).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ id: "platform-unsupported", status: "fail" }),
+      ]),
+    );
+    const recommendations = report.recommendations.join("\n");
+    expect(recommendations).toContain("surf --remote <host>:<port>");
+    expect(recommendations).not.toContain("Make sure the browser is running");
+  });
+
   it("routes `surf doctor --help` without requiring a socket", () => {
     const result = spawnSync(process.execPath, ["native/cli.cjs", "doctor", "--help"], {
       cwd: process.cwd(),

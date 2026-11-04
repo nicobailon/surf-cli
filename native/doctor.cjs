@@ -4,6 +4,7 @@ const os = require("os");
 const path = require("path");
 const { execFileSync } = require("child_process");
 const { connectEndpoint, selectEndpoint } = require("./endpoint.cjs");
+const { ANDROID_REMOTE_HINT } = require("./socket-path.cjs");
 const {
   convertWindowsPath,
   getWindowsEnv,
@@ -500,6 +501,8 @@ function summarize(checks) {
 function buildRecommendations(report) {
   const recommendations = [];
   const failedIds = new Set(report.checks.filter((check) => check.status === "fail").map((check) => check.id));
+  // No local browser can work on Android, so the desktop install steps below would only mislead.
+  if (failedIds.has("platform-unsupported")) return [ANDROID_REMOTE_HINT];
   const debugRelevantIds = new Set([
     "windows-registry",
     "manifest-file",
@@ -636,6 +639,9 @@ async function runDoctor(rawOptions = {}, deps = {}) {
 
   const checks = [];
   checks.push({ id: "platform", status: "info", message: `Platform: ${platform}${runningInWsl ? " (WSL2 detected)" : ""}` });
+  if (platform === "android") {
+    checks.push({ id: "platform-unsupported", status: "fail", message: "Browsers on Android can't run the Surf extension's native host, so Surf can't drive a browser on this device" });
+  }
   checks.push({ id: "target", status: "info", message: `Install target: ${effectiveTarget === "wsl-windows" ? "Windows browser from WSL2" : effectiveTarget}` });
   checks.push({ id: "socket-path", status: "info", message: `Socket path: ${options.socket}`, path: options.socket });
 
