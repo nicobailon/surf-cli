@@ -350,7 +350,7 @@ describe("Page HTML handler", () => {
       { frameId: 7, url: "https://frame.example.com" },
     ]);
     chrome.scripting.executeScript.mockImplementation(async (injection: any) => [
-      { result: injection.func() },
+      { result: injection.func(...injection.args) },
     ]);
 
     try {
@@ -463,7 +463,7 @@ describe("Page HTML handler", () => {
       value: { doctype: null, documentElement: { outerHTML: "<html></html>" } },
     });
     chrome.scripting.executeScript.mockImplementation(async (injection: any) => [
-      { result: injection.func() },
+      { result: injection.func(...injection.args) },
     ]);
 
     try {

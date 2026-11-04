@@ -1700,7 +1700,7 @@ export async function handleMessage(
           const results = await chrome.scripting.executeScript({
             target: { tabId },
             func: scrollScript,
-            args: [position, selector],
+            args: [position, selector ?? null],
           });
           return results[0]?.result || { error: "Script failed" };
         } catch {
@@ -1744,7 +1744,7 @@ export async function handleMessage(
           const results = await chrome.scripting.executeScript({
             target: { tabId },
             func: scrollInfoScript,
-            args: [selector],
+            args: [selector ?? null],
           });
           return results[0]?.result || { error: "Script failed" };
         } catch {
@@ -1767,21 +1767,22 @@ export async function handleMessage(
       if (!tabId) throw new Error("No tabId provided");
       const results = await chrome.scripting.executeScript({
         target: { tabId, frameIds: [getFrameIdForTab(tabId, message)] },
-        func: (selector?: unknown, stripScripts?: boolean) => {
-          if (selector !== undefined && (typeof selector !== "string" || selector.length === 0)) {
+        // Chrome rejects `undefined` in ScriptInjection.args, so "no selector" travels as null.
+        func: (selector: unknown, stripScripts: boolean) => {
+          if (selector !== null && (typeof selector !== "string" || selector.length === 0)) {
             throw new Error("selector must be a non-empty string");
           }
-          const root = selector === undefined ? document.documentElement : document.querySelector(selector);
+          const root = selector === null ? document.documentElement : document.querySelector(selector);
           if (!root) throw new Error(`No element matches selector "${selector}"`);
           const exportRoot = stripScripts ? root.cloneNode(true) as Element : root;
           if (stripScripts) {
             if (exportRoot.matches("script")) return "";
             exportRoot.querySelectorAll("script").forEach((script) => script.remove());
           }
-          const doctype = selector === undefined && document.doctype ? `<!doctype ${document.doctype.name}>\n` : "";
+          const doctype = selector === null && document.doctype ? `<!doctype ${document.doctype.name}>\n` : "";
           return doctype + exportRoot.outerHTML;
         },
-        args: [message.selector, message.stripScripts],
+        args: [message.selector ?? null, message.stripScripts === true],
       });
       const html = results[0]?.result;
       if (typeof html !== "string") throw new Error("Page HTML extraction returned an invalid result");

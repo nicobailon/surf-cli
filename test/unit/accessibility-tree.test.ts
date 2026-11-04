@@ -192,6 +192,7 @@ describe("accessibility tree", () => {
         visibility: "visible",
         opacity: "1",
         cursor: "default",
+        getPropertyValue: () => "",
       }),
       __piVisualIndicatorMessageHandler: visualIndicatorHandler,
       addEventListener: vi.fn(),
