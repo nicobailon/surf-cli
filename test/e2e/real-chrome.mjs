@@ -644,6 +644,11 @@ try {
     throw new Error(`page.text did not contain fixture text: ${initialText}`);
   }
 
+  const pageHtml = await runSurf("page.html");
+  if (!pageHtml.startsWith("<!doctype html>") || !pageHtml.includes("<h1>Surf real Chrome fixture</h1>")) {
+    throw new Error(`page.html without --selector did not return the document: ${pageHtml.slice(0, 300)}`);
+  }
+
   const playbookRead = JSON.parse(
     await runSurf("use", "page", "read", "--json", "--tab-id", String(fixtureTab.id)),
   );
