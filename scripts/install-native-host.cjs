@@ -295,6 +295,53 @@ function installWindowsRegistry(browser, extensionId, wrapperPath) {
   return manifestPath;
 }
 
+// pi already loads skills/ from the surf-cli package (package.json "pi.skills"),
+// so a second copy under ~/.pi/agent/skills would be a duplicate.
+function piLoadsSurfPackage(home) {
+  try {
+    const settings = JSON.parse(fs.readFileSync(path.join(home, ".pi/agent/settings.json"), "utf8"));
+    const packages = Array.isArray(settings.packages) ? settings.packages : [];
+    return packages.some((entry) => {
+      const source = typeof entry === "string" ? entry : entry?.source;
+      return typeof source === "string" && /(^|[/\\:])surf-cli(@[^/\\]*)?(\.git)?[/\\]?$/.test(source);
+    });
+  } catch {
+    return false;
+  }
+}
+
+function linkAgentSkills(home = os.homedir(), skillDir = path.resolve(__dirname, "../skills/surf")) {
+  const lines = [];
+  const agents = [
+    { parent: path.join(home, ".claude/skills") },
+    { parent: path.join(home, ".pi/agent/skills"), pi: true },
+  ];
+  for (const { parent, pi } of agents) {
+    if (!fs.existsSync(parent)) continue;
+    const linkPath = path.join(parent, "surf");
+    if (pi && piLoadsSurfPackage(home)) {
+      lines.push(`Skipped ${linkPath}: pi already loads surf's skill from the surf-cli package`);
+      continue;
+    }
+    try {
+      let stat = null;
+      try { stat = fs.lstatSync(linkPath); } catch {}
+      if (stat && !stat.isSymbolicLink()) {
+        lines.push(`Kept your own ${linkPath}; to use the skill that ships with surf, remove it and rerun \`surf install\``);
+        continue;
+      }
+      if (!stat || path.resolve(parent, fs.readlinkSync(linkPath)) !== skillDir) {
+        if (stat) fs.unlinkSync(linkPath);
+        fs.symlinkSync(skillDir, linkPath, process.platform === "win32" ? "junction" : "dir");
+      }
+      lines.push(`Linked ${linkPath} -> ${skillDir}`);
+    } catch (error) {
+      lines.push(`Could not link ${linkPath}: ${error.message}`);
+    }
+  }
+  return lines;
+}
+
 function parseArgs() {
   const args = process.argv.slice(2);
   const result = {
@@ -510,6 +557,12 @@ function main() {
 
   if (skipped.length > 0) {
     console.log(`\nSkipped (not supported for ${effectiveTarget}): ${skipped.join(", ")}`);
+  }
+
+  const skillLines = linkAgentSkills();
+  if (skillLines.length > 0) {
+    console.log("\nAgent skill:");
+    for (const line of skillLines) console.log(`  ${line}`);
   }
 
   console.log("\nDone! Restart your browser for changes to take effect.");

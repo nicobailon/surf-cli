@@ -874,4 +874,119 @@ describe("native host installer", () => {
     expect(wrapper).toContain(`"${path.resolve("native/host.cjs")}"`);
     expect(wrapper).not.toContain(otherHost);
   });
+
+  describe("agent skill links", () => {
+    const skillDir = path.resolve("skills/surf");
+
+    function runInstall(home: string) {
+      const result = spawnSync(process.execPath, ["scripts/install-native-host.cjs", extensionA], {
+        encoding: "utf8",
+        env: {
+          ...envWithoutPersistedSettings(),
+          HOME: home,
+          SURF_NODE_PATH: process.execPath,
+          SURF_HOST_PATH: undefined,
+          WSL_DISTRO_NAME: undefined,
+        },
+      });
+      if (result.status !== 0) {
+        throw new Error(`install failed: ${result.stderr}`);
+      }
+      return result.stdout;
+    }
+
+    it("links the Claude and pi skill dirs to the package's skill, repointing an old link", ({
+      skip,
+    }) => {
+      if (process.platform === "win32") {
+        skip();
+      }
+      const home = makeTempDir();
+      fs.mkdirSync(path.join(home, ".claude/skills"), { recursive: true });
+      fs.mkdirSync(path.join(home, ".pi/agent/skills"), { recursive: true });
+      fs.symlinkSync(path.join(home, "old-skill"), path.join(home, ".pi/agent/skills/surf"));
+
+      const stdout = runInstall(home);
+
+      for (const link of [".claude/skills/surf", ".pi/agent/skills/surf"]) {
+        const linkPath = path.join(home, link);
+        expect(fs.readlinkSync(linkPath)).toBe(skillDir);
+        expect(fs.existsSync(path.join(linkPath, "SKILL.md"))).toBe(true);
+        expect(stdout).toContain(`Linked ${linkPath} -> ${skillDir}`);
+      }
+    });
+
+    it("leaves existing links untouched on a second install", ({ skip }) => {
+      if (process.platform === "win32") {
+        skip();
+      }
+      const home = makeTempDir();
+      fs.mkdirSync(path.join(home, ".claude/skills"), { recursive: true });
+      fs.mkdirSync(path.join(home, ".pi/agent/skills"), { recursive: true });
+      runInstall(home);
+      const links = [".claude/skills/surf", ".pi/agent/skills/surf"].map((p) => path.join(home, p));
+      const before = links.map((p) => fs.lstatSync(p).ino);
+
+      runInstall(home);
+
+      expect(links.map((p) => fs.lstatSync(p).ino)).toEqual(before);
+      for (const linkPath of links) {
+        expect(fs.readlinkSync(linkPath)).toBe(skillDir);
+      }
+    });
+
+    it("keeps a skill directory the user made and says how to switch", ({ skip }) => {
+      if (process.platform === "win32") {
+        skip();
+      }
+      const home = makeTempDir();
+      const userSkill = path.join(home, ".claude/skills/surf");
+      fs.mkdirSync(userSkill, { recursive: true });
+      fs.writeFileSync(path.join(userSkill, "SKILL.md"), "my own copy");
+
+      const stdout = runInstall(home);
+
+      expect(fs.lstatSync(userSkill).isSymbolicLink()).toBe(false);
+      expect(fs.readFileSync(path.join(userSkill, "SKILL.md"), "utf8")).toBe("my own copy");
+      expect(stdout).toContain(
+        `Kept your own ${userSkill}; to use the skill that ships with surf, remove it and rerun \`surf install\``,
+      );
+    });
+
+    it("skips the pi link when pi already loads the surf-cli package", ({ skip }) => {
+      if (process.platform === "win32") {
+        skip();
+      }
+      const home = makeTempDir();
+      fs.mkdirSync(path.join(home, ".claude/skills"), { recursive: true });
+      fs.mkdirSync(path.join(home, ".pi/agent/skills"), { recursive: true });
+      fs.writeFileSync(
+        path.join(home, ".pi/agent/settings.json"),
+        JSON.stringify({ packages: ["npm:pi-other", "npm:surf-cli"] }),
+      );
+
+      const stdout = runInstall(home);
+
+      const piLink = path.join(home, ".pi/agent/skills/surf");
+      expect(fs.existsSync(piLink)).toBe(false);
+      expect(stdout).toContain(
+        `Skipped ${piLink}: pi already loads surf's skill from the surf-cli package`,
+      );
+      expect(fs.readlinkSync(path.join(home, ".claude/skills/surf"))).toBe(skillDir);
+    });
+
+    it("creates no link where the agent's skills directory does not exist", ({ skip }) => {
+      if (process.platform === "win32") {
+        skip();
+      }
+      const home = makeTempDir();
+      fs.mkdirSync(path.join(home, ".claude/skills"), { recursive: true });
+
+      const stdout = runInstall(home);
+
+      expect(fs.existsSync(path.join(home, ".pi"))).toBe(false);
+      expect(stdout).not.toContain(".pi/agent/skills");
+      expect(fs.readlinkSync(path.join(home, ".claude/skills/surf"))).toBe(skillDir);
+    });
+  });
 });
