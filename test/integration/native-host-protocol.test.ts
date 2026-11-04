@@ -691,7 +691,7 @@ describe("native host protocol integration", () => {
     expect(result.code).toBe(0);
     expect(result.stdout).toBe("123\tExample\thttps://example.test/\n");
     expect(result.stderr).toBe(
-      `surf: version mismatch (cli ${packageVersion}, host 0.0.1, extension ${packageVersion}). Reinstall Surf with npm and reload the extension in chrome://extensions.\n`,
+      `surf: version mismatch (cli ${packageVersion}, host 0.0.1, extension ${packageVersion}). Run \`surf update\`.\n`,
     );
   });
 

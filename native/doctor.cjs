@@ -457,7 +457,7 @@ async function checkSocket(socketPath, context) {
       checks.push({
         id: "version-skew",
         status: "warn",
-        message: `The native host did not report its version, so it is older than this CLI (${CLI_VERSION}). Reinstall Surf with npm and reload the extension in chrome://extensions.`,
+        message: `The native host did not report its version, so it is older than this CLI (${CLI_VERSION}). Run \`surf update\`, then reload the Surf extension once in chrome://extensions.`,
       });
     } else {
       const match = versions.host === CLI_VERSION && versions.extension === CLI_VERSION;
@@ -466,7 +466,7 @@ async function checkSocket(socketPath, context) {
         status: match ? "pass" : "fail",
         message: match
           ? `CLI, native host and extension are all version ${CLI_VERSION}`
-          : `Versions differ: CLI ${CLI_VERSION}, native host ${versions.host}, extension ${versions.extension ?? "unknown"}. Reinstall Surf with npm and reload the extension in chrome://extensions.`,
+          : `Versions differ: CLI ${CLI_VERSION}, native host ${versions.host}, extension ${versions.extension ?? "unknown"}. Run \`surf update\`.`,
       });
     }
   }
@@ -578,7 +578,7 @@ function buildRecommendations(report) {
     recommendations.push("Make sure the browser is running with the Surf extension enabled, then restart the browser after install changes.");
   }
   if (failedIds.has("version-skew")) {
-    recommendations.push("Reinstall Surf with the npm that owns this install, then reload the Surf extension in chrome://extensions so the CLI, native host and extension match.");
+    recommendations.push("Run `surf update` so the CLI, native host and extension match. If it says the extension could not reload itself, reload the Surf extension once in chrome://extensions.");
   }
   if ([...failedIds].some((id) => debugRelevantIds.has(id))) {
     recommendations.push("Open chrome://extensions and inspect Surf's service worker console. In Surf's Details > Extension options, enable Debug Mode, reproduce the failure, then disable Debug Mode when finished.");

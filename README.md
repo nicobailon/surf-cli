@@ -68,9 +68,14 @@ surf install <extension-id>
 
 # 4. Restart Chrome and test
 surf tab.list
+
+# Later: update the CLI, native host, extension and skill together
+surf update
 ```
 
 `surf install` also links the agent skill (`~/.claude/skills/surf`, `~/.pi/agent/skills/surf`, where those skills folders exist) to the installed package's `skills/surf`, so the skill matches your surf version; it leaves a skill folder you made yourself alone, and skips pi when pi already loads surf-cli as a package.
+
+`surf update` reinstalls surf with the npm that installed it (or runs `npm ci && npm run build` in a linked repo checkout), refreshes the native host manifests and skill links you already have, asks the extension to reload itself, and prints the versions before and after (`--json` for scripts). The first time, the running extension is too old to reload itself: reload Surf once in `chrome://extensions`.
 
 ### Multi-Browser Support
 

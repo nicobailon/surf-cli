@@ -3313,6 +3313,16 @@ const handleClient = (socket) => {
       return;
     }
 
+    // `surf update` asks the extension to reload itself from disk, which also restarts this host.
+    // strictTarget makes an extension too old to know RELOAD_EXTENSION fail at once, without
+    // opening a tab to run it in.
+    if (msg.type === "reload_extension_request") {
+      const reply = await requestCallExtension(null, "reload_extension", { type: "RELOAD_EXTENSION", strictTarget: true }, 5000, true)
+        .catch((error) => ({ error: error.message }));
+      await sendSocket(socket, { type: "reload_extension_response", ok: !reply.error, ...(reply.error ? { error: reply.error } : {}) });
+      return;
+    }
+
     if (msg.type === "tool_request") {
       const tool = msg.params?.tool || "unknown";
       let request;

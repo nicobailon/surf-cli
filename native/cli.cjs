@@ -1703,6 +1703,12 @@ const TOOLS = {
     commands: {
       install: { desc: "Install the native messaging host for a browser extension id", args: ["extension-id"] },
       uninstall: { desc: "Remove the native messaging host configuration", args: [] },
+      update: {
+        desc: "Update surf with the npm that installed it (or rebuild a linked repo checkout), refresh the native host and reload the extension",
+        args: [],
+        opts: { json: "Print {before, after, steps} as JSON" },
+        examples: [{ cmd: "update", desc: "Update and print the versions before and after" }],
+      },
       config: {
         desc: "Print the surf.json config in use",
         args: [],
@@ -2453,6 +2459,12 @@ if ((args[0] === "extension-path" || args[0] === "path") && !helpRequested()) {
 if (args[0] === "doctor") {
   const { runDoctorCli } = require("./doctor.cjs");
   runDoctorCli(args.slice(1), endpoint).then((code) => process.exit(code));
+  return;
+}
+
+if (args[0] === "update" && !helpRequested()) {
+  const { runUpdateCli } = require("./update.cjs");
+  runUpdateCli(args.slice(1)).then((code) => process.exit(code));
   return;
 }
 
@@ -4282,7 +4294,7 @@ function printResponseContext(response) {
   // A host older than this check sends no versions, and an unknown version is not a mismatch.
   const { host = null, extension = null } = response.versions || {};
   if ((host && host !== VERSION) || (extension && extension !== VERSION)) {
-    console.error(`surf: version mismatch (cli ${VERSION}, host ${host ?? "unknown"}, extension ${extension ?? "unknown"}). Reinstall Surf with npm and reload the extension in chrome://extensions.`);
+    console.error(`surf: version mismatch (cli ${VERSION}, host ${host ?? "unknown"}, extension ${extension ?? "unknown"}). Run \`surf update\`.`);
   }
 }
 

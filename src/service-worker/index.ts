@@ -4505,6 +4505,13 @@ export async function handleMessage(
       };
     }
 
+    case "RELOAD_EXTENSION": {
+      // From `surf update`: load the updated dist/ from disk, which also restarts the native
+      // host. The delay lets this reply reach the host first.
+      setTimeout(() => chrome.runtime.reload(), 100);
+      return { success: true };
+    }
+
     default:
       throw new Error(`Unknown message type: ${message.type}`);
   }
@@ -4529,7 +4536,7 @@ const COMMANDS_WITHOUT_TAB = new Set([
   "DOWNLOADS_SEARCH",
   "WINDOW_NEW", "WINDOW_LIST", "WINDOW_FOCUS", "WINDOW_CLOSE", "WINDOW_RESIZE",
   "TARGET_INSPECT", "TARGET_RESOLVE", "SESSION_CREATE_TARGET", "SESSION_CLOSE_TARGET",
-  "EMULATE_DEVICE_LIST"
+  "EMULATE_DEVICE_LIST", "RELOAD_EXTENSION"
 ]);
 
 const PAGE_CHANGES_BEGIN_TIMEOUT_MS = 2000;

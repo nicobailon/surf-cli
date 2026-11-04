@@ -875,6 +875,62 @@ describe("native host installer", () => {
     expect(wrapper).not.toContain(otherHost);
   });
 
+  it("--refresh rewrites only the installs that exist, keeping their ids and wrapper settings", ({
+    skip,
+  }) => {
+    if (process.platform === "win32") {
+      skip();
+    }
+    const home = makeTempDir();
+    fs.mkdirSync(path.join(home, ".claude/skills"), { recursive: true });
+    const env = {
+      ...envWithoutPersistedSettings(),
+      HOME: home,
+      SURF_NODE_PATH: process.execPath,
+      SURF_HOST_PATH: undefined,
+      WSL_DISTRO_NAME: undefined,
+    };
+    const install = (...args: string[]) =>
+      spawnSync(process.execPath, ["scripts/install-native-host.cjs", ...args], {
+        encoding: "utf8",
+        env,
+      });
+    expect(install(extensionA, "--socket-mode", "660", "--socket-group", "surf").status).toBe(0);
+    const manifestDir =
+      process.platform === "darwin"
+        ? "Library/Application Support/Google/Chrome/NativeMessagingHosts"
+        : ".config/google-chrome/NativeMessagingHosts";
+    const manifestPath = path.join(home, manifestDir, "surf.browser.host.json");
+    const manifest = JSON.parse(fs.readFileSync(manifestPath, "utf8"));
+    manifest.allowed_origins.push(`chrome-extension://${extensionB}/`);
+    fs.writeFileSync(manifestPath, JSON.stringify(manifest));
+    fs.writeFileSync(
+      manifest.path,
+      `#!/usr/bin/env bash\n: "\${SURF_SOCKET_MODE:=660}"\n: "\${SURF_SOCKET_GROUP:=surf}"\nexec stale\n`,
+    );
+    fs.rmSync(path.join(home, ".claude/skills/surf"));
+
+    const result = install("--refresh");
+
+    expect(result.status).toBe(0);
+    expect(JSON.parse(fs.readFileSync(manifestPath, "utf8")).allowed_origins).toEqual([
+      `chrome-extension://${extensionA}/`,
+      `chrome-extension://${extensionB}/`,
+    ]);
+    const wrapper = fs.readFileSync(manifest.path, "utf8");
+    expect(wrapper).toContain(`exec "${process.execPath}" "${path.resolve("native/host.cjs")}"`);
+    expect(wrapper).toContain(`: "\${SURF_SOCKET_MODE:=660}"`);
+    expect(wrapper).toContain(`: "\${SURF_SOCKET_GROUP:=surf}"`);
+    const braveDir =
+      process.platform === "darwin"
+        ? "Library/Application Support/BraveSoftware"
+        : ".config/BraveSoftware";
+    expect(fs.existsSync(path.join(home, braveDir))).toBe(false);
+    expect(fs.readlinkSync(path.join(home, ".claude/skills/surf"))).toBe(
+      path.resolve("skills/surf"),
+    );
+  });
+
   describe("agent skill links", () => {
     const skillDir = path.resolve("skills/surf");
 
