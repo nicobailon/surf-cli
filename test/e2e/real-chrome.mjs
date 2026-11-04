@@ -1109,6 +1109,15 @@ setInterval(() => {}, 60_000);
   if (filledFields.includes("masked-434") || !/textbox "SSN" \[e\d+\] type="text" \[value hidden\]/.test(filledFields)) {
     throw new Error(`read showed a field the page masks on screen: ${filledFields}`);
   }
+  // type --escapes turns \n, \t and \\ into a newline, a tab and one backslash; without it the text is typed literally.
+  const notesRef = fieldRef(/textbox "Notes" \[(e\d+)\]/);
+  const notesValue = async () => JSON.parse(await runSurf("js", 'return [document.querySelector("textarea").value]', "--tab-id", valuesTabId))[0];
+  await runSurf("type", "a\\nb\\tc\\\\d", "--escapes", "--ref", notesRef, "--tab-id", valuesTabId, "--no-screenshot", "--json");
+  const escaped = await notesValue();
+  if (escaped !== "a\nb\tc\\d") throw new Error(`type --escapes did not type a newline, a tab and one backslash: ${JSON.stringify(escaped)}`);
+  await runSurf("type", "a\\nb\\tc\\\\d", "--ref", notesRef, "--tab-id", valuesTabId, "--no-screenshot", "--json");
+  const literal = await notesValue();
+  if (literal !== "a\\nb\\tc\\\\d") throw new Error(`type without --escapes did not type the text literally: ${JSON.stringify(literal)}`);
   await runSurf("tab.close", "--id", valuesTabId, "--json");
   // Page text is the rendered text: no CSS rules, script bodies, noscript text or hidden content
   const textTabId = String(tabIdFromOutput(await runSurf("tab.new", `${baseUrl}/page-text`)));
