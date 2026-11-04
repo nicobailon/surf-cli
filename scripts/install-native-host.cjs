@@ -297,6 +297,48 @@ function installWindowsRegistry(browser, extensionId, wrapperPath) {
   return manifestPath;
 }
 
+// Where this browser's manifest is when Surf is installed for it on this target.
+function installedManifestPath(browser, target) {
+  const config = BROWSERS[browser];
+  if (target === "wsl-windows") {
+    const dir = getWslWindowsManifestDir(config);
+    return dir ? path.join(dir, `${HOST_NAME}.json`) : null;
+  }
+  if (!config[process.platform]) return null;
+  if (process.platform === "win32") {
+    // Windows browsers share one manifest; a browser has Surf when its registry key exists.
+    try {
+      runWindowsExecutable("reg.exe", ["query", nativeMessagingRegistryPath(config.win32, HOST_NAME), "/ve"], {
+        execFileSync,
+        execOptions: { stdio: "pipe", encoding: "utf8" },
+      });
+    } catch {
+      return null;
+    }
+    return path.join(getWrapperDir(), `${HOST_NAME}.json`);
+  }
+  return path.join(os.homedir(), config[process.platform], `${HOST_NAME}.json`);
+}
+
+// For `--refresh` (run by `surf update`): the browsers Surf is installed for, each with an
+// extension id from its manifest, and the settings persisted in their wrapper, so none is lost.
+function findInstalled(target) {
+  const ids = {};
+  let wrapper = "";
+  for (const browser of Object.keys(BROWSERS)) {
+    const manifestPath = installedManifestPath(browser, target);
+    if (!manifestPath || !fs.existsSync(manifestPath)) continue;
+    const manifest = readExistingManifest(manifestPath);
+    const origins = Array.isArray(manifest.allowed_origins) ? manifest.allowed_origins : [];
+    const id = origins.map((origin) => /^chrome-extension:\/\/([a-p]{32})\/$/.exec(origin)?.[1]).filter(Boolean).pop();
+    if (!id) continue;
+    ids[browser] = id;
+    try { wrapper ||= fs.readFileSync(manifest.path, "utf8"); } catch {}
+  }
+  const persisted = (name) => new RegExp(`\\$\\{${name}:=([^}]*)\\}`).exec(wrapper)?.[1];
+  return { ids, listen: persisted("SURF_LISTEN"), socketMode: persisted("SURF_SOCKET_MODE"), socketGroup: persisted("SURF_SOCKET_GROUP") };
+}
+
 // pi already loads skills/ from the surf-cli package (package.json "pi.skills"),
 // so a second copy under ~/.pi/agent/skills would be a duplicate.
 function piLoadsSurfPackage(home) {
@@ -353,6 +395,7 @@ function parseArgs() {
     listen: undefined,
     socketMode: undefined,
     socketGroup: undefined,
+    refresh: false,
   };
 
   for (let i = 0; i < args.length; i++) {
@@ -366,6 +409,8 @@ function parseArgs() {
       }
     } else if (arg === "--target") {
       result.target = args[++i];
+    } else if (arg === "--refresh") {
+      result.refresh = true;
     } else if (arg === "--listen") {
       result.listen = args[++i];
       if (!result.listen || result.listen.startsWith("--")) throw new Error("--listen requires a Tailnet IP and port");
@@ -412,6 +457,9 @@ Options:
   --socket-group <group-or-gid>
                   Persist the local Unix socket group for mode 660.
                   Use a dedicated group; this grants full Surf authority.
+  --refresh       Rewrite the wrapper and the manifests that already exist, keeping their
+                  extension ids and settings and adding Surf's own ID, and relink the agent
+                  skill (run by surf update).
 
 Examples:
   node install-native-host.cjs
@@ -427,9 +475,20 @@ Examples:
 function main() {
   let parsed;
   try { parsed = parseArgs(); } catch (error) { console.error(`Error: ${error.message}`); process.exit(1); }
-  const { browsers, target, listen, socketMode, socketGroup } = parsed;
-  const pinnedId = !parsed.extensionId;
-  const extensionId = parsed.extensionId || SURF_EXTENSION_ID;
+  let { browsers, target, listen, socketMode, socketGroup, refresh } = parsed;
+  const pinnedId = !refresh && !parsed.extensionId;
+  // A refresh adds Surf's pinned ID to each install; writeManifest keeps the IDs already there.
+  const extensionId = (!refresh && parsed.extensionId) || SURF_EXTENSION_ID;
+  if (refresh) {
+    let ids;
+    ({ ids, listen, socketMode, socketGroup } = findInstalled(isWsl() && target !== "linux" ? "wsl-windows" : process.platform));
+    browsers = Object.keys(ids);
+    if (browsers.length === 0) {
+      console.log("No browser has the Surf native host installed; run `surf install` to install it.");
+      for (const line of linkAgentSkills()) console.log(`  ${line}`);
+      return;
+    }
+  }
 
   if (!/^[a-p]{32}$/.test(extensionId)) {
     console.error("Error: Invalid extension ID format");
@@ -572,7 +631,7 @@ function main() {
     console.log(`  If Surf is already loaded, reload it there instead. chrome://extensions should then show its ID as ${SURF_EXTENSION_ID}.`);
   }
 
-  console.log("\nDone! Restart your browser for changes to take effect.");
+  if (!refresh) console.log("\nDone! Restart your browser for changes to take effect.");
 }
 
 if (require.main === module) {

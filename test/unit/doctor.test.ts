@@ -273,7 +273,8 @@ describe("surf doctor", () => {
     const skew = report.checks.find((check: any) => check.id === "version-skew");
     expect(skew.status).toBe("fail");
     expect(skew.message).toContain(`CLI ${cliVersion}`);
-    expect(report.recommendations.join("\n")).toContain("reload the Surf extension");
+    expect(skew.message).toContain("Run `surf update`.");
+    expect(report.recommendations.join("\n")).toContain("Run `surf update`");
   });
 
   it("reports all three versions and passes when the host and extension match the CLI", async () => {

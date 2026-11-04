@@ -925,6 +925,102 @@ describe("native host installer", () => {
     expect(wrapper).not.toContain(otherHost);
   });
 
+  it("--refresh rewrites only the installs that exist, keeping their ids and wrapper settings", ({
+    skip,
+  }) => {
+    if (process.platform === "win32") {
+      skip();
+    }
+    const home = makeTempDir();
+    fs.mkdirSync(path.join(home, ".claude/skills"), { recursive: true });
+    const env = {
+      ...envWithoutPersistedSettings(),
+      HOME: home,
+      SURF_NODE_PATH: process.execPath,
+      SURF_HOST_PATH: undefined,
+      WSL_DISTRO_NAME: undefined,
+    };
+    const install = (...args: string[]) =>
+      spawnSync(process.execPath, ["scripts/install-native-host.cjs", ...args], {
+        encoding: "utf8",
+        env,
+      });
+    expect(install(extensionA, "--socket-mode", "660", "--socket-group", "surf").status).toBe(0);
+    const manifestDir =
+      process.platform === "darwin"
+        ? "Library/Application Support/Google/Chrome/NativeMessagingHosts"
+        : ".config/google-chrome/NativeMessagingHosts";
+    const manifestPath = path.join(home, manifestDir, "surf.browser.host.json");
+    const manifest = JSON.parse(fs.readFileSync(manifestPath, "utf8"));
+    manifest.allowed_origins.push(`chrome-extension://${extensionB}/`);
+    fs.writeFileSync(manifestPath, JSON.stringify(manifest));
+    fs.writeFileSync(
+      manifest.path,
+      `#!/usr/bin/env bash\n: "\${SURF_SOCKET_MODE:=660}"\n: "\${SURF_SOCKET_GROUP:=surf}"\nexec stale\n`,
+    );
+    fs.rmSync(path.join(home, ".claude/skills/surf"));
+
+    const result = install("--refresh");
+
+    expect(result.status).toBe(0);
+    expect(JSON.parse(fs.readFileSync(manifestPath, "utf8")).allowed_origins).toEqual([
+      `chrome-extension://${extensionA}/`,
+      `chrome-extension://${extensionB}/`,
+      `chrome-extension://${SURF_EXTENSION_ID}/`,
+    ]);
+    const wrapper = fs.readFileSync(manifest.path, "utf8");
+    expect(wrapper).toContain(`exec "${process.execPath}" "${path.resolve("native/host.cjs")}"`);
+    expect(wrapper).toContain(`: "\${SURF_SOCKET_MODE:=660}"`);
+    expect(wrapper).toContain(`: "\${SURF_SOCKET_GROUP:=surf}"`);
+    const braveDir =
+      process.platform === "darwin"
+        ? "Library/Application Support/BraveSoftware"
+        : ".config/BraveSoftware";
+    expect(fs.existsSync(path.join(home, braveDir))).toBe(false);
+    expect(fs.readlinkSync(path.join(home, ".claude/skills/surf"))).toBe(
+      path.resolve("skills/surf"),
+    );
+  });
+
+  it("--refresh adds Surf's pinned ID to an install that holds only an old ID", ({ skip }) => {
+    if (process.platform !== "darwin" && process.platform !== "linux") {
+      skip();
+    }
+    const home = makeTempDir();
+    const env = {
+      ...envWithoutPersistedSettings(),
+      HOME: home,
+      SURF_NODE_PATH: process.execPath,
+      SURF_HOST_PATH: undefined,
+      WSL_DISTRO_NAME: undefined,
+    };
+    const install = (...args: string[]) =>
+      spawnSync(process.execPath, ["scripts/install-native-host.cjs", ...args], {
+        encoding: "utf8",
+        env,
+      });
+    expect(install(extensionA).status).toBe(0);
+    const manifestPath = path.join(
+      home,
+      process.platform === "darwin"
+        ? "Library/Application Support/Google/Chrome/NativeMessagingHosts/surf.browser.host.json"
+        : ".config/google-chrome/NativeMessagingHosts/surf.browser.host.json",
+    );
+    expect(JSON.parse(fs.readFileSync(manifestPath, "utf8")).allowed_origins).toEqual([
+      `chrome-extension://${extensionA}/`,
+    ]);
+
+    const result = install("--refresh");
+
+    expect(result.stderr).toBe("");
+    expect(result.status).toBe(0);
+    expect(JSON.parse(fs.readFileSync(manifestPath, "utf8")).allowed_origins).toEqual([
+      `chrome-extension://${extensionA}/`,
+      `chrome-extension://${SURF_EXTENSION_ID}/`,
+    ]);
+    expect(result.stdout).not.toContain("Load unpacked");
+  });
+
   describe("agent skill links", () => {
     const skillDir = path.resolve("skills/surf");
 
