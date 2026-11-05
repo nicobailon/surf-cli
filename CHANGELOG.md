@@ -2,6 +2,15 @@
 
 ## [Unreleased]
 
+## [2.26.0] - 2026-11-04
+
+### Highlights
+- When a click, typed text, dropdown choice or `locate` action doesn't work, Surf now fails and says why (`e5 is disabled`, `e2 is covered by dialog "Cookie consent"`) instead of printing `OK`. Clicks also wait for the element to be ready and use a real mouse click.
+- `surf update` updates the CLI, the browser connection and the agent skill, then reloads the extension, all in one command. `surf install` no longer asks for an extension ID.
+- `surf read` sees more of the page: form fields inside custom components, styled checkboxes, what each text field holds (never passwords), and a count of controls further down the page.
+- New `surf check` and `surf uncheck` set a checkbox to the state you want, and `surf page.text --ref` prints a field's whole value.
+- If you already use Surf, its extension ID changes once: rerun `surf install`, then reload Surf in `chrome://extensions`.
+
 ### Added
 - **`surf check` and `surf uncheck` set a checkbox to the state you want** - Clicking a checkbox toggles it, so an agent had to read its state first or risk unticking a box that was already ticked by default. `surf check <ref>` and `surf uncheck <ref>` leave a checkbox, switch or radio alone when it is already in that state (`e6 was already checked; nothing clicked.`), and otherwise click it like a real mouse would, so pages that keep their own state in click handlers (such as React apps) see the change. If the control still isn't in the requested state after the click, the command fails. `uncheck` on a radio button fails and says to pick another option in its group. Thanks to [@morgan55555](https://github.com/morgan55555) for [#436](https://github.com/nicobailon/surf-cli/issues/436).
 - **Surf can start your browser for you** - Set `"browser": { "autostart": true }` in `surf.json` and a command run while the browser (or its Surf host) isn't running starts it, waits up to 30 seconds for Surf to connect, then runs. `surf go <url>` opens the browser on that page instead of a blank new tab. Pick the browser with `"app"` (`chrome`, `chromium`, `brave`, `edge`, `arc` or `helium`) or give the exact command with `"command"`; `"timeoutMs"` changes the wait. Thanks to [@morgan55555](https://github.com/morgan55555) for [#424](https://github.com/nicobailon/surf-cli/issues/424).
