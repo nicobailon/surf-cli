@@ -3319,7 +3319,7 @@ const handleClient = (socket) => {
     if (msg.type === "reload_extension_request") {
       const reply = await requestCallExtension(null, "reload_extension", { type: "RELOAD_EXTENSION", strictTarget: true }, 5000, true)
         .catch((error) => ({ error: error.message }));
-      await sendSocket(socket, { type: "reload_extension_response", ok: !reply.error, ...(reply.error ? { error: reply.error } : {}) });
+      await sendSocket(socket, { type: "reload_extension_response", ok: !reply.error, error: reply.error });
       return;
     }
 

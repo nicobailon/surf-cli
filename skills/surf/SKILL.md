@@ -46,10 +46,10 @@ It is one tab in its own background window, and its commands run in order. Sessi
 ```text commands
 session.ensure <name> <url> [--window|--tab] [--focused]
 navigate <url>                    # alias go
-page.read [--ref e5] [--all] [--no-text] [--depth <n>] [--compact] [--summary]   # alias read; "+N elements off-screen" = rerun with --all
-page.text [--ref e5]              # page text; --ref: one element's text or a field's whole value, newlines kept (never a secret field)
+page.read [--ref e5] [--all] [--no-text] [--depth <n>] [--compact] [--summary]   # alias read
+page.text [--ref e5]              # --ref e5: that element's text or a field's whole value, newlines kept; secret fields refused
 click <ref> | --selector <css> [--index <n>] | --x <n> --y <n>   [--button left|right|double|triple]
-type <text> [--ref e5|--into <css>] [--submit] [--clear] [--escapes] [--method cdp|js]   # need newlines or tabs? write \n \t with --escapes
+type <text> [--ref e5|--into <css>] [--submit] [--clear] [--escapes] [--method cdp|js]   # --escapes turns \n \t into newline, tab
 key <key> [--repeat <n>]          # Enter, Escape, cmd+a
 select <ref|css> <value>… [--by value|label|index]
 check <ref> | uncheck <ref>       # sets the state; already set = nothing clicked

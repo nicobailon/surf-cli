@@ -725,7 +725,7 @@ const TOOLS = {
         args: [],
         opts: {
           ref: "Get specific element",
-          all: "All visible elements, including offscreen (without it, read ends with \"+N elements off-screen: surf read --all\" when it left any out)",
+          all: "All visible elements, including offscreen",
           "include-hidden": "Also include hidden elements (implies --all)",
           "no-text": "Exclude visible text content",
           depth: "Maximum tree depth (default: unlimited)",
@@ -750,7 +750,6 @@ const TOOLS = {
         args: [],
         opts: { ref: "One element's whole text, or a field's whole value (never a secret field's)" },
         examples: [
-          { cmd: "page.text", desc: "Visible text of the page" },
           { cmd: "page.text --ref e5", desc: "Full value of field e5, newlines kept" },
         ],
       },
@@ -856,12 +855,12 @@ const TOOLS = {
       "check": {
         desc: "Check a checkbox, switch or radio; does nothing if it is already checked",
         args: ["ref"],
-        examples: [{ cmd: "check e6", desc: "Check e6 (clicks it only if it is unchecked)" }]
+        examples: [{ cmd: "check e6", desc: "Check e6" }]
       },
       "uncheck": {
         desc: "Uncheck a checkbox or switch; does nothing if it is already unchecked",
         args: ["ref"],
-        examples: [{ cmd: "uncheck e6", desc: "Uncheck e6 (clicks it only if it is checked)" }]
+        examples: [{ cmd: "uncheck e6", desc: "Uncheck e6" }]
       },
     }
   },
@@ -1725,7 +1724,7 @@ const TOOLS = {
       install: { desc: "Install the native messaging host for Surf's extension (or a given extension id)", args: [] },
       uninstall: { desc: "Remove the native messaging host configuration", args: [] },
       update: {
-        desc: "Update surf with the npm that installed it (or rebuild a linked repo checkout), refresh the native host and reload the extension",
+        desc: "Update surf (global npm install or git checkout), refresh the native host and reload the extension",
         args: [],
         opts: { json: "Print {before, after, steps} as JSON" },
         examples: [{ cmd: "update", desc: "Update and print the versions before and after" }],
@@ -2502,9 +2501,8 @@ Install native messaging host for browser communication, link the agent skill,
 and print the extension folder to load with "Load unpacked" in chrome://extensions.
 
 Arguments:
-  extension-id    Optional. Defaults to Surf's own extension ID, which every
-                  Surf build has. Give one only for a fork or a build with a
-                  different ID (32 lowercase letters a-p, see chrome://extensions).
+  extension-id    Optional. Defaults to Surf's own extension ID. Give one only for
+                  a fork with a different ID (32 lowercase letters a-p, see chrome://extensions).
 
 Options:
   -b, --browser   Browser(s) to install for (default: chrome)
@@ -3717,8 +3715,7 @@ if (toolArgs.into && !toolArgs.selector) {
 
 if (tool === "type" && toolArgs.escapes) {
   if (typeof toolArgs.text === "string") {
-    const escapes = { n: "\n", t: "\t", r: "\r", "\\": "\\" };
-    toolArgs.text = toolArgs.text.replace(/\\([ntr\\])/g, (_, c) => escapes[c]);
+    toolArgs.text = toolArgs.text.replace(/\\([ntr\\])/g, (_, c) => ({ n: "\n", t: "\t", r: "\r", "\\": "\\" })[c]);
   }
   delete toolArgs.escapes;
 }
@@ -4337,9 +4334,8 @@ function sendLocalRequest() {
   });
 }
 
-const autostart = config.browser?.autostart === true ? config.browser : null;
-if (autostart) {
-  startBrowserIfNeeded(autostart).then(sendLocalRequest, (error) => {
+if (config.browser?.autostart === true) {
+  startBrowserIfNeeded(config.browser).then(sendLocalRequest, (error) => {
     console.error(`Error: ${error.message}`);
     process.exit(1);
   });
@@ -4364,7 +4360,7 @@ function printResponseContext(response) {
     console.error(`[surf] ${response.notice}`);
   }
   // A host older than this check sends no versions, and an unknown version is not a mismatch.
-  const { host = null, extension = null } = response.versions || {};
+  const { host, extension } = response.versions || {};
   if ((host && host !== VERSION) || (extension && extension !== VERSION)) {
     console.error(`surf: version mismatch (cli ${VERSION}, host ${host ?? "unknown"}, extension ${extension ?? "unknown"}). Run \`surf update\`.`);
   }

@@ -45,8 +45,7 @@ function getFrameIdForTab(_tabId: number, message?: { frameId?: unknown }): numb
   return Number.isInteger(frameId) && frameId > 0 ? frameId : 0;
 }
 
-// "Not loaded" only when the frame also ignores a PING. A closed channel means the document
-// went away mid-command; a PING then would race the next document's content script.
+// A closed channel means the document went away mid-command; a PING then would race the next document's content script.
 async function contentScriptError(tabId: number, frameId: number, err: unknown): Promise<string> {
   const reason = err instanceof Error ? err.message : String(err);
   if (/message (port|channel) (is )?closed|back\/forward cache/i.test(reason)) {
@@ -64,11 +63,6 @@ async function contentScriptError(tabId: number, frameId: number, err: unknown):
 type RefTab = { high: number; pages: Array<{ frameId: number; from: number; url: string }> };
 let refTabsLoad: Promise<Record<number, RefTab>> | undefined;
 
-function loadRefTabs(): Promise<Record<number, RefTab>> {
-  refTabsLoad ??= chrome.storage.session.get("refTabs").then((stored) => (stored.refTabs ?? {}) as Record<number, RefTab>);
-  return refTabsLoad;
-}
-
 const CLICK_WAIT_MS = 5000;
 
 // Waits until a user could click the ref (visible, enabled, not covered), then clicks it with
@@ -80,7 +74,7 @@ async function clickRef(tabId: number, frameId: number, ref: string, button: str
     target = await chrome.tabs.sendMessage(tabId, { type: "CLICK_POINT", ref, expectedIdentity }, { frameId });
     if (target?.error) return { error: target.error, code: target.code };
     if (!target?.reason || Date.now() >= deadline) break;
-    await new Promise((resolve) => setTimeout(resolve, 100));
+    await sleep(100);
   }
   if (target?.reason) return { error: `${ref} ${target.reason}, so it was not clicked (waited ${CLICK_WAIT_MS / 1000}s).` };
   // Attach even after the user cancelled the debugging bar: a dismissed bar is not a refusal.
@@ -939,7 +933,7 @@ export async function handleMessage(
       if (sender.id !== chrome.runtime.id || typeof refTabId !== "number") {
         throw new Error(`${message.type} is only for content scripts`);
       }
-      const tabs = await loadRefTabs();
+      const tabs = await (refTabsLoad ??= chrome.storage.session.get<{ refTabs?: Record<number, RefTab> }>("refTabs").then((stored) => stored.refTabs ?? {}));
       const tab = (tabs[refTabId] ??= { high: 0, pages: [] });
       const frameId = sender.frameId ?? 0;
       let reply: unknown = { success: true };
@@ -1954,10 +1948,10 @@ export async function handleMessage(
       if (!tabId) throw new Error("No tabId provided");
       const frameId = getFrameIdForTab(tabId, message);
       const { ref, checked } = message;
-      const stateOf = (state: any) => state.checked === "mixed" ? "partly checked" : state.checked ? "checked" : "unchecked";
+      const stateOf = (state: { checked: boolean | "mixed" }) => state.checked === "mixed" ? "partly checked" : state.checked ? "checked" : "unchecked";
       try {
         const before = await chrome.tabs.sendMessage(tabId, { type: "CHECKED_STATE", ref, expectedIdentity: message.expectedIdentity }, { frameId });
-        if (before?.error) return { error: before.error, code: before.code };
+        if (before?.error) return before;
         if (before.checked === checked) return { success: true, _hint: `${ref} was already ${stateOf(before)}; nothing clicked.` };
         if (!checked && before.radio) {
           return { error: `${ref} is a radio button, and clicking a checked radio doesn't uncheck it. Check another option in its group instead.` };
@@ -1973,7 +1967,7 @@ export async function handleMessage(
           const until = Date.now() + 1000;
           while (true) {
             state = await chrome.tabs.sendMessage(tabId, { type: "CHECKED_STATE", ref }, { frameId });
-            if (state?.error) return { error: state.error, code: state.code };
+            if (state?.error) return state;
             if (state.checked !== from || Date.now() >= until) break;
             await sleep(50);
           }

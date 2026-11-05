@@ -38,7 +38,6 @@ describe("surf update install detection", () => {
     fs.symlinkSync(root, link);
 
     expect(planUpdate(link)).toEqual({
-      kind: "npm",
       root,
       steps: [
         {
@@ -64,7 +63,6 @@ describe("surf update install detection", () => {
     fs.symlinkSync(repo, linked);
 
     expect(planUpdate(linked)).toEqual({
-      kind: "repo",
       root: repo,
       steps: [
         { command: "npm", args: ["ci"], cwd: repo },
