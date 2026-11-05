@@ -16,13 +16,13 @@ const MANUAL_RELOAD = "Reload Surf once in chrome://extensions; later `surf upda
 function planUpdate(packageRoot = PACKAGE_ROOT, platform = process.platform, nodePath = process.execPath) {
   const root = fs.realpathSync(packageRoot);
   const isWin = platform === "win32";
+  const npmName = isWin ? "npm.cmd" : "npm";
   const modules = path.dirname(root);
   const globalLayout = path.basename(root) === "surf-cli" && path.basename(modules) === "node_modules" &&
     (isWin || path.basename(path.dirname(modules)) === "lib");
   if (globalLayout) {
     const prefix = isWin ? path.dirname(modules) : path.dirname(path.dirname(modules));
     const binDir = isWin ? prefix : path.join(prefix, "bin");
-    const npmName = isWin ? "npm.cmd" : "npm";
     const besideNode = path.join(path.dirname(nodePath), npmName);
     const npm = fs.existsSync(path.join(binDir, npmName))
       ? path.join(binDir, npmName)
@@ -30,20 +30,17 @@ function planUpdate(packageRoot = PACKAGE_ROOT, platform = process.platform, nod
     if (npm) {
       // npm_config_prefix keeps the install in this prefix even if npm's shebang finds another node.
       return {
-        kind: "npm",
         root,
         steps: [{ command: npm, args: ["install", "-g", "surf-cli@latest"], cwd: prefix, env: { npm_config_prefix: prefix } }],
       };
     }
   }
   if (fs.existsSync(path.join(root, ".git"))) {
-    const npm = isWin ? "npm.cmd" : "npm";
     return {
-      kind: "repo",
       root,
       steps: [
-        { command: npm, args: ["ci"], cwd: root },
-        { command: npm, args: ["run", "build"], cwd: root },
+        { command: npmName, args: ["ci"], cwd: root },
+        { command: npmName, args: ["run", "build"], cwd: root },
       ],
     };
   }
@@ -81,7 +78,7 @@ function askHost(message, { socketPath = SOCKET_PATH, timeoutMs = 1000, untilClo
       socket.destroy();
       resolve(reply);
     };
-    let timer = setTimeout(finish, timeoutMs);
+    const timer = setTimeout(finish, timeoutMs);
     socket.on("connect", () => socket.write(`${JSON.stringify(message)}\n`));
     socket.on("data", (chunk) => {
       buffer += chunk.toString("utf8");
@@ -170,7 +167,7 @@ async function runUpdateCli(rawArgs, { socketPath = SOCKET_PATH, packageRoot = P
 
   console.error("surf update: reloading the extension restarts Surf for every session, so commands running in other sessions fail");
   const reload = await reloadExtension({ socketPath });
-  steps.push({ step: "reload extension", ok: reload.ok, ...(reload.message ? { message: reload.message } : {}) });
+  steps.push({ step: "reload extension", ok: reload.ok, message: reload.message });
   if (reload.message) console.error(`surf update: ${reload.message}`);
   const after = reload.versions ? { cli: readCliVersion(), ...reload.versions } : await readVersions(socketPath, readCliVersion());
 

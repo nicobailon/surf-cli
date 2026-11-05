@@ -13,7 +13,6 @@ const LAUNCHERS = {
   helium: { darwin: "Helium" },
 };
 
-/** The argv that starts the browser from surf.json's `browser` settings, opening `url` if given. */
 function launchArgv({ app = "chrome", command, url }, { platform = process.platform, env = process.env } = {}) {
   // Only a parsed URL reaches the command line: it has no raw quote (cmd) and can't pass as a flag.
   let href;
@@ -28,17 +27,13 @@ function launchArgv({ app = "chrome", command, url }, { platform = process.platf
     return [...command, ...urlArgs];
   }
   const launcher = LAUNCHERS[app];
-  if (!launcher) {
-    throw new Error(`surf.json browser.app must be one of ${Object.keys(LAUNCHERS).join(", ")}`);
-  }
+  if (!launcher) throw new Error(`surf.json browser.app must be one of ${Object.keys(LAUNCHERS).join(", ")}`);
   const target = launcher[platform];
   if (!target) throw new Error(`Surf can't start ${app} on ${platform}; set browser.command in surf.json`);
   if (platform === "darwin") return ["open", "-a", target, ...urlArgs];
   // Passed verbatim to cmd: the empty title keeps `start` from taking the quoted URL as one.
   if (platform === "win32") return ["cmd", "/c", "start", '""', target, ...urlArgs.map((u) => `"${u}"`)];
-  if (!env.DISPLAY && !env.WAYLAND_DISPLAY) {
-    throw new Error(`Surf can't start ${app}: no display (DISPLAY and WAYLAND_DISPLAY are unset)`);
-  }
+  if (!env.DISPLAY && !env.WAYLAND_DISPLAY) throw new Error(`Surf can't start ${app}: no display (DISPLAY and WAYLAND_DISPLAY are unset)`);
   const dirs = (env.PATH || "").split(path.delimiter).filter(Boolean);
   for (const binary of target) {
     const found = dirs.map((dir) => path.join(dir, binary)).find((file) => fs.existsSync(file));

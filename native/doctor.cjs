@@ -681,7 +681,7 @@ async function runDoctor(rawOptions = {}, deps = {}) {
   const checks = [];
   checks.push({ id: "platform", status: "info", message: `Platform: ${platform}${runningInWsl ? " (WSL2 detected)" : ""}` });
   if (platform === "android") {
-    checks.push({ id: "platform-unsupported", status: "fail", message: "Browsers on Android can't run the Surf extension's native host, so Surf can't drive a browser on this device" });
+    checks.push({ id: "platform-unsupported", status: "fail", message: "Surf can't drive a browser on this device" });
   }
   checks.push({ id: "target", status: "info", message: `Install target: ${effectiveTarget === "wsl-windows" ? "Windows browser from WSL2" : effectiveTarget}` });
   checks.push({ id: "socket-path", status: "info", message: `Socket path: ${options.socket}`, path: options.socket });

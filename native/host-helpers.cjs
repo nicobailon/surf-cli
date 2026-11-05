@@ -106,13 +106,8 @@ function formatToolContent(result, log = () => {}) {
   
   // Handle select response
   if (result.selected !== undefined) {
-    let output = Array.isArray(result.selected) 
-      ? `Selected: ${result.selected.join(', ')}`
-      : `Selected: ${result.selected}`;
-    if (result.warning) {
-      output += `\n[Warning: ${result.warning}]`;
-    }
-    return text(output);
+    // An extension older than this host reports missing options as a warning instead of an error.
+    return text(`Selected: ${result.selected.join(', ')}${result.warning ? `\n[Warning: ${result.warning}]` : ""}`);
   }
   
       // Handle Kimi validation results (must precede the Grok branch - same field names)
@@ -460,7 +455,7 @@ function formatToolContent(result, log = () => {}) {
   if (result.autoScreenshot) {
     const { path: ssPath, pending } = result.autoScreenshot;
     const hint = result._hint ? `\n[hint] ${result._hint}` : "";
-    return text(pending ? `OK${hint}\nScreenshot (pending): ${ssPath}` : `OK${hint}\nScreenshot saved: ${ssPath}`);
+    return text(`OK${hint}\nScreenshot ${pending ? "(pending)" : "saved"}: ${ssPath}`);
   }
 
   // Bug fix: Handle success with metrics/frames/readyState/hint in one block
@@ -1172,7 +1167,7 @@ function mapToolToMessage(tool, args, tabId) {
     }
     case "check":
     case "uncheck":
-      if (!a.ref) throw new Error("ref argument required (e.g. surf check e5)");
+      if (!a.ref) throw new Error(`ref argument required (e.g. surf ${tool} e5)`);
       return { type: "SET_CHECKED", ref: a.ref, checked: tool === "check", ...baseMsg };
     case "cookie.list":
       return { type: "COOKIE_LIST", ...baseMsg };

@@ -15,6 +15,7 @@ const net = require("node:net");
 const { spawnSync } = require("node:child_process");
 const { parseDoctorArgs, runDoctor } = require("../../native/doctor.cjs");
 const remoteAuth = require("../../native/remote-auth.cjs");
+const { version: cliVersion } = require("../../package.json");
 
 function makeTempDir() {
   return fs.mkdtempSync(path.join(os.tmpdir(), "surf-doctor-test-"));
@@ -219,7 +220,11 @@ describe("surf doctor", () => {
             filePath === socketPath ? { isSocket: () => true } : fs.statSync(filePath),
           readFileSync: fs.readFileSync,
         },
-        connectSocket: async () => ({ ok: true, message: "connected" }),
+        connectSocket: async () => ({
+          ok: true,
+          message: "connected",
+          versions: { host: cliVersion, extension: cliVersion },
+        }),
       },
     );
 
@@ -232,11 +237,11 @@ describe("surf doctor", () => {
         expect.objectContaining({ id: "manifest-origins", status: "pass", browser: "chrome" }),
         expect.objectContaining({ id: "manifest-path", status: "pass", browser: "chrome" }),
         expect.objectContaining({ id: "socket-connect", status: "pass" }),
+        expect.objectContaining({ id: "version-skew", status: "pass" }),
       ]),
     );
   });
   it("fails with a version-skew check and fix when the host reports a different version", async () => {
-    const { version: cliVersion } = require("../../package.json");
     const homeDir = makeTempDir();
     const wrapperPath = path.join(homeDir, "wrapper.sh");
     fs.writeFileSync(wrapperPath, "#!/bin/sh\nexit 0\n");
@@ -275,45 +280,6 @@ describe("surf doctor", () => {
     expect(skew.message).toContain(`CLI ${cliVersion}`);
     expect(skew.message).toContain("Run `surf update`.");
     expect(report.recommendations.join("\n")).toContain("Run `surf update`");
-  });
-
-  it("reports all three versions and passes when the host and extension match the CLI", async () => {
-    const { version: cliVersion } = require("../../package.json");
-    const homeDir = makeTempDir();
-    const wrapperPath = path.join(homeDir, "wrapper.sh");
-    fs.writeFileSync(wrapperPath, "#!/bin/sh\nexit 0\n");
-    fs.chmodSync(wrapperPath, 0o755);
-    writeChromeManifest(homeDir, {
-      name: "surf.browser.host",
-      type: "stdio",
-      path: wrapperPath,
-      allowed_origins: ["chrome-extension://abcdefghijklmnopabcdefghijklmnop/"],
-    });
-    const socketPath = path.join(homeDir, "surf.sock");
-    const report = await runDoctor(
-      { browser: "chrome", socket: socketPath },
-      {
-        platform: "darwin",
-        homeDir,
-        env: {},
-        fs: {
-          existsSync: (filePath: string) => filePath === socketPath || fs.existsSync(filePath),
-          statSync: (filePath: string) =>
-            filePath === socketPath ? { isSocket: () => true } : fs.statSync(filePath),
-          readFileSync: fs.readFileSync,
-        },
-        connectSocket: async () => ({
-          ok: true,
-          message: "connected",
-          versions: { host: cliVersion, extension: cliVersion },
-        }),
-      },
-    );
-
-    expect(report.ok).toBe(true);
-    expect(report.checks).toEqual(
-      expect.arrayContaining([expect.objectContaining({ id: "version-skew", status: "pass" })]),
-    );
   });
 
   it("fails when a POSIX manifest wrapper is not executable", async () => {

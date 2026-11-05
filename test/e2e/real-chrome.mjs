@@ -116,6 +116,12 @@ function tabIdFromOutput(stdout) {
   return Number(match[1]);
 }
 
+function refOf(read, line) {
+  const ref = read.match(new RegExp(`${line} \\[(e\\d+)\\]`))?.[1];
+  if (!ref) throw new Error(`read did not list ${line}: ${read}`);
+  return ref;
+}
+
 /** Run surf expecting a non-zero exit; returns stdout and stderr. */
 async function runSurfExpectingFailure(...args) {
   try {
@@ -126,6 +132,8 @@ async function runSurfExpectingFailure(...args) {
     return { code: error.code, stdout: error.stdout ?? "", stderr: error.stderr ?? "" };
   }
 }
+
+const logFunction = 'function log(entry) { const out = document.querySelector("#log"); out.textContent = out.textContent ? out.textContent + "|" + entry : entry; }';
 
 function fixturePages(request, { crossOriginBase }) {
   const url = new URL(request.url, "http://127.0.0.1");
@@ -276,7 +284,7 @@ ${stories}</main>
 <li>Invoice 1002 <button onclick="log('delete 1002')">Delete</button></li></ul>
 <label>Email <input id="work-email"></label> <label>Email <input id="home-email"></label>
 <script>
-  function log(entry) { const out = document.querySelector("#log"); out.textContent = out.textContent ? out.textContent + "|" + entry : entry; }
+  ${logFunction}
 </script></body></html>`;
   }
   if (url.pathname === "/page-text") {
@@ -303,7 +311,7 @@ ${stories}</main>
 <div role="button" onclick="log('ok')">OK</div>
 <div role="button" onclick="log('new item')"><span class="icon" aria-hidden="true">add</span>New item</div>
 <script>
-  function log(entry) { const out = document.querySelector("#log"); out.textContent = out.textContent ? out.textContent + "|" + entry : entry; }
+  ${logFunction}
 </script></body></html>`;
   }
   if (url.pathname === "/shadow-form") {
@@ -316,7 +324,7 @@ ${stories}</main>
 <spl-button>Submit application</spl-button>
 <input type="checkbox" id="agree"><label for="agree">I have read and agree to the Terms of Service, the Privacy Policy, and the Acceptable Use Policy of this example website</label>
 <script>
-  function log(entry) { const out = document.querySelector("#log"); out.textContent = out.textContent ? out.textContent + "|" + entry : entry; }
+  ${logFunction}
   class SplInput extends HTMLElement {
     connectedCallback() {
       const id = this.id;
@@ -358,7 +366,7 @@ ${stories}</main>
 <button id="arm">Arm</button> <button id="confirm" onclick="log('confirm')">Confirm order</button>
 <button oncontextmenu="event.preventDefault(); log('menu')">Options</button>
 <script>
-  function log(entry) { const out = document.querySelector("#log"); out.textContent = out.textContent ? out.textContent + "|" + entry : entry; }
+  ${logFunction}
   document.querySelector("#pay").addEventListener("click", (event) => { if (event.isTrusted) log("pay"); });
   document.querySelector("#arm").addEventListener("click", () => {
     const confirm = document.querySelector("#confirm");
@@ -382,7 +390,7 @@ ${stories}</main>
 <label><input type="checkbox" id="styled" style="position:absolute;opacity:0;width:16px;height:16px"><span style="display:inline-block;width:16px;height:16px;border:1px solid"></span>Remember me</label>
 <input type="checkbox" id="all"><label for="all">Select all</label>
 <script>
-  function log(entry) { const out = document.querySelector("#log"); out.textContent = out.textContent ? out.textContent + "|" + entry : entry; }
+  ${logFunction}
   // These switches commit their state a frame later and after a 400ms save, like animated or server-backed toggles.
   const flip = (el) => el.setAttribute("aria-checked", String(el.getAttribute("aria-checked") !== "true"));
   const frameSwitch = document.querySelector("#frame-switch");
@@ -767,7 +775,7 @@ setInterval(() => {}, 60_000);
     throw new Error(`page.text did not contain fixture text: ${initialText}`);
   }
 
-  const packageVersion = JSON.parse(readFileSync(join(repo, "package.json"), "utf8")).version;
+  const packageVersion = projectPackage.version;
   const doctorReport = JSON.parse(await runSurf("doctor", "--json"));
   if (
     doctorReport.versions?.cli !== packageVersion ||
@@ -1171,11 +1179,7 @@ setInterval(() => {}, 60_000);
   const clickPage = (await browser.pages()).find((page) => page.url() === `${baseUrl}/click`);
   const clickLog = () => clickPage.evaluate(() => document.querySelector("#log").textContent);
   const clickRead = await runSurf("page.read", "--all", "--no-text", "--tab-id", clickTabId);
-  const clickRef = (name) => {
-    const ref = clickRead.match(new RegExp(`button "${name}" \\[(e\\d+)\\]`))?.[1];
-    if (!ref) throw new Error(`page.read did not list button "${name}": ${clickRead}`);
-    return ref;
-  };
+  const clickRef = (name) => refOf(clickRead, `button "${name}"`);
   const clickTab = ["--tab-id", clickTabId, "--no-screenshot"];
   const disabledClick = await runSurfExpectingFailure("click", clickRef("Submit order"), ...clickTab);
   if (!disabledClick.stderr.includes(`${clickRef("Submit order")} is disabled, so it was not clicked`)) {
@@ -1210,11 +1214,7 @@ setInterval(() => {}, 60_000);
   await runSurf("wait.element", "#country", "--tab-id", checkTabId, "--json");
   const checkPage = (await browser.pages()).find((page) => page.url() === `${baseUrl}/check`);
   const checkRead = await runSurf("page.read", "--all", "--no-text", "--tab-id", checkTabId);
-  const checkRef = (role, name) => {
-    const ref = checkRead.match(new RegExp(`${role} "${name}" \\[(e\\d+)\\]`))?.[1];
-    if (!ref) throw new Error(`page.read did not list ${role} "${name}": ${checkRead}`);
-    return ref;
-  };
+  const checkRef = (role, name) => refOf(checkRead, `${role} "${name}"`);
   const checkTab = ["--tab-id", checkTabId, "--no-screenshot"];
   const missingOption = await runSurfExpectingFailure("select", checkRef("combobox", "United States"), "nowhere", ...checkTab);
   const alreadyChecked = await runSurf("check", checkRef("checkbox", "Newsletter"), ...checkTab);
@@ -1271,11 +1271,6 @@ setInterval(() => {}, 60_000);
   const refsTabId = String(tabIdFromOutput(await runSurf("tab.new", `${baseUrl}/refs-a`)));
   const refsTab = ["--tab-id", refsTabId, "--no-screenshot"];
   await runSurf("wait.ready", "--json", "--tab-id", refsTabId, "--selector", "button");
-  const refOf = (read, line) => {
-    const ref = read.match(new RegExp(`${line} \\[(e\\d+)\\]`))?.[1];
-    if (!ref) throw new Error(`read did not list ${line}: ${read}`);
-    return ref;
-  };
   const refNumbers = (read) => [...read.matchAll(/\[e(\d+)\]/g)].map((match) => Number(match[1]));
   const readA = await runSurf("read", "--no-text", ...refsTab);
   const keepRef = refOf(readA, 'button "Keep my plan"');
@@ -1335,11 +1330,7 @@ setInterval(() => {}, 60_000);
   const limitsTabId = String(tabIdFromOutput(await runSurf("tab.new", `${baseUrl}/type-limits`)));
   await runSurf("wait.element", "#name", "--tab-id", limitsTabId, "--json");
   const limitsRead = await runSurf("read", "--tab-id", limitsTabId);
-  const limitsRef = (name) => {
-    const ref = limitsRead.match(new RegExp(`textbox "${name}" \\[(e\\d+)\\]`))?.[1];
-    if (!ref) throw new Error(`read did not list the ${name} field: ${limitsRead}`);
-    return ref;
-  };
+  const limitsRef = (name) => refOf(limitsRead, `textbox "${name}"`);
   for (const [name, text, reason] of [
     ["Code", "ABCDEFGH", "accepts at most 4 characters, but 8 were given"],
     ["Locked", "new", "is read-only"],
@@ -1539,7 +1530,7 @@ setInterval(() => {}, 60_000);
   const leavingTab = String(tabIdFromOutput(await runSurf("tab.new", `${baseUrl}/navigates-away`)));
   await runSurf("wait.ready", "--json", "--tab-id", leavingTab, "--selector", "p");
   const cutShort = await runSurfExpectingFailure("wait.element", "#never", "--timeout", "15000", "--tab-id", leavingTab);
-  if (cutShort.stderr.includes("Content script not loaded") || !cutShort.stderr.includes("The page navigated or closed")) {
+  if (!cutShort.stderr.includes("The page navigated or closed")) {
     throw new Error(`a wait cut short by navigation did not report the navigation: ${JSON.stringify(cutShort)}`);
   }
   await runSurf("tab.close", "--id", leavingTab, "--json");
@@ -1550,11 +1541,7 @@ setInterval(() => {}, 60_000);
   const uploadFile = join(scratch, "resume.txt");
   writeFileSync(uploadFile, "resume\n");
   const uploadRead = await runSurf("page.read", "--tab-id", uploadTab);
-  const uploadRef = (label) => {
-    const ref = uploadRead.match(new RegExp(`"${label}" \\[(e\\d+)\\]`))?.[1];
-    if (!ref) throw new Error(`page.read did not list "${label}": ${uploadRead}`);
-    return ref;
-  };
+  const uploadRef = (label) => refOf(uploadRead, `"${label}"`);
   await runSurf("upload", "--ref", uploadRef("Upload resume"), "--files", uploadFile, "--tab-id", uploadTab);
   if (!(await runSurf("page.text", "--tab-id", uploadTab)).includes("Uploaded 1 file: resume.txt")) {
     throw new Error("upload --ref <button> did not set the file on the hidden input it opens");

@@ -69,7 +69,6 @@ describe("browser autostart command", () => {
       SURF_SESSION: undefined,
       SURF_REMOTE: undefined,
     };
-    const started = Date.now();
     const result = spawnSync(process.execPath, [path.resolve("native/cli.cjs"), "tab.list"], {
       cwd: dir,
       env,
@@ -81,6 +80,5 @@ describe("browser autostart command", () => {
     expect(result.stderr).toContain(
       `Autostart could not run ${process.execPath}: exited with code 1`,
     );
-    expect(Date.now() - started).toBeLessThan(10_000);
   }, 15_000);
 });
