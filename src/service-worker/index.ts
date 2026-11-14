@@ -3238,10 +3238,9 @@ export async function handleMessage(
 
       let requests = cdp.getNetworkRequests(tabId, {
         urlPattern: message.urlPattern,
-        limit: message.limit || 100,
       });
 
-      // Apply filters
+      // Apply filters, then keep the newest `limit` matches
       if (message.method) {
         requests = requests.filter(r => r.method === message.method);
       }
@@ -3251,6 +3250,7 @@ export async function handleMessage(
       if (message.contentType) {
         requests = requests.filter(r => matchesNetworkType(r, message.contentType));
       }
+      requests = requests.slice(-(message.limit || 100));
 
       if (message.clear) {
         cdp.clearNetworkRequests(tabId);

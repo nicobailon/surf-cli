@@ -9,7 +9,9 @@ const cdpState = vi.hoisted(() => ({
   getNetworkEntries: vi.fn(() => cdpState.entries),
   getNetworkEntry: vi.fn(() => null),
   getResponseBody: vi.fn(),
-  getNetworkRequests: vi.fn(() => [] as Array<Record<string, unknown>>),
+  getNetworkRequests: vi.fn(
+    (_tab?: number, _options?: { limit?: number }) => [] as Array<Record<string, unknown>>,
+  ),
   getNetworkCaptureStatus: vi.fn(),
 }));
 
@@ -116,6 +118,31 @@ describe("network export handlers", () => {
     expect(await ids("xhr")).toEqual(["r_2"]);
     expect(await ids("application/json")).toEqual(["r_2"]);
     expect(await ids("javascript")).toEqual(["r_4"]);
+  });
+
+  it("filters requests before cutting the list to its limit", async () => {
+    const handleMessage = await loadHandleMessage();
+    const requests = Array.from({ length: 150 }, (_, index) => ({
+      id: `r_${index}`,
+      url: `https://example.test/${index}`,
+      method: index === 0 ? "POST" : "GET",
+      type: index === 0 ? "XHR" : "Document",
+      mimeType: index === 0 ? "application/json" : "text/html",
+    }));
+    // Like the controller, keep the newest `limit` requests.
+    cdpState.getNetworkRequests.mockImplementation((_tab, options = {}) =>
+      options.limit ? requests.slice(-options.limit) : requests,
+    );
+    const ids = async (filters: Record<string, unknown>) => {
+      const result = await handleMessage(
+        { type: "READ_NETWORK_REQUESTS", tabId: 42, ...filters },
+        {},
+      );
+      return result.requests.map((item: { id: string }) => item.id);
+    };
+    expect(await ids({ contentType: "json" })).toEqual(["r_0"]);
+    expect(await ids({ method: "POST" })).toEqual(["r_0"]);
+    expect(await ids({ contentType: "html", limit: 2 })).toEqual(["r_148", "r_149"]);
   });
 
   it("stops explicit network capture", async () => {
