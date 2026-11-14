@@ -257,9 +257,13 @@ describe("draft effect", () => {
     expect(op.effect).toBe("read");
     expect(op.safety).toBeUndefined();
     expect(op.args.review_key).toBeUndefined();
+  });
+
+  it("picks the draft's network request as before, leaving telemetry to the effect", () => {
+    const op = draft({ commands: ["click"], trace: [search, ...telemetry] });
     expect(op.run[0]).toMatchObject({
       using: "network",
-      request: { method: "GET", url: "https://example.test/search" },
+      request: { method: "POST", url: "https://o1.ingest.sentry.io/api/1/envelope/" },
     });
   });
 

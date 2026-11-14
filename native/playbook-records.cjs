@@ -262,7 +262,7 @@ function draftFromRecord(recordId, root = getPrivateStateRoot()) {
   const trace = readPrivateJson(tracePath, null, { root });
   const effect = draftEffect({ record, steps, trace });
   const strategies = [];
-  const observed = trace?.entries?.findLast((entry) => ["GET", "HEAD", "OPTIONS", "POST"].includes(entry.method) && entry.status >= 200 && entry.status < 400 && !isTelemetryRequest(entry));
+  const observed = trace?.entries?.findLast((entry) => ["GET", "HEAD", "OPTIONS", "POST"].includes(entry.method) && entry.status >= 200 && entry.status < 400);
   if (observed) {
     const url = new URL(observed.url);
     const query = Object.fromEntries(url.searchParams.entries());
