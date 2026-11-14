@@ -241,19 +241,25 @@ function requestEffect(entry) {
 }
 
 // A recorded flow is a write when its trace holds a request with a method other than
-// GET/HEAD/OPTIONS that isn't telemetry. UI steps that sent no such request are reads, but only when
-// the record captured the network without a gap and the page opened no WebSocket (whose messages the
-// trace can't show): otherwise any page write still makes the op a write. Steps that act beyond the
-// page (tabs, cookies, emulation, AI providers) are always writes.
+// GET/HEAD/OPTIONS that isn't telemetry. UI steps that sent no such request are reads only when the
+// trace is evidence they sent none: the record captured the network without a gap, the page opened
+// no WebSocket (whose messages the trace can't show), and the main frame loaded a page after the
+// record started (so any socket the page holds was opened, and seen, during the record). Otherwise
+// page writes stay writes. Steps that act beyond the page (tabs, cookies, emulation, AI providers)
+// are always writes.
 function draftEffect({ record, steps, trace }) {
   const entries = trace?.entries || [];
-  if (entries.some((entry) => requestEffect(entry) === "write" && !isTelemetryRequest(entry, record.origin))) return "write";
-  const networkEvidence = record.capture?.network === true && trace?.complete === true && !entries.some((entry) => entry.type === "WebSocket");
+  if (entries.some((entry) => requestEffect(entry) === "write" && !isTelemetryRequest(entry, record.origin))) return { effect: "write" };
   const writes = steps.filter((step) => ["page-write", "unknown"].includes(commandMetadata(step.tool).effect));
-  return writes.some((step) => !networkEvidence || !UI_STEPS.has(step.tool)) ? "write" : "read";
+  if (writes.length === 0) return { effect: "read" };
+  if (writes.some((step) => !UI_STEPS.has(step.tool))) return { effect: "write" };
+  if (record.capture?.network !== true || trace?.complete !== true || entries.some((entry) => entry.type === "WebSocket")) return { effect: "write" };
+  if (!entries.some((entry) => entry.type === "Document" && entry.mainFrame === true)) {
+    return { effect: "write", warning: "the draft is a write: the record saw no page load after it started, so a WebSocket the page already had open could have carried writes" };
+  }
+  return { effect: "read" };
 }
 
-// `warnings` collects why the draft left something out.
 function draftFromRecord(recordId, root = getPrivateStateRoot(), { warnings = [] } = {}) {
   const record = readRecord(recordId, root);
   if (!record) throw new Error(`record not found: ${recordId}`);
@@ -265,7 +271,8 @@ function draftFromRecord(recordId, root = getPrivateStateRoot(), { warnings = []
   }
   const tracePath = path.join(recordDirectory(recordId, root), "network", "trace.json");
   const trace = readPrivateJson(tracePath, null, { root });
-  const effect = draftEffect({ record, steps, trace });
+  const { effect, warning } = draftEffect({ record, steps, trace });
+  if (warning) warnings.push(warning);
   const strategies = [];
   const observed = trace?.entries?.findLast((entry) => ["GET", "HEAD", "OPTIONS", "POST"].includes(entry.method) && entry.status >= 200 && entry.status < 400);
   // Replaying telemetry would send it again, and a read op must never replay a write method, so

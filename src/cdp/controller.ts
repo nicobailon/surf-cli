@@ -105,6 +105,7 @@ export interface NetworkEntry {
   tabId: number;
   tabUrl?: string;               // Page URL that initiated request
   type?: string;                 // "xhr", "fetch", "document", etc.
+  mainFrame?: boolean;           // A document the tab's main frame committed (Page.frameNavigated)
   
   // Flags
   flags: string[];               // ["binary", "truncated", "protobuf", "failed"]
@@ -453,6 +454,9 @@ export class CDPController {
       case "Network.responseReceived":
         this.handleNetworkResponse(tabId, params);
         break;
+      case "Page.frameNavigated":
+        this.handleFrameNavigated(tabId, params);
+        break;
       case "Network.webSocketCreated":
         this.handleWebSocketCreated(tabId, params);
         break;
@@ -637,6 +641,13 @@ export class CDPController {
     };
 
     this.addNetworkEntry(tabId, params.requestId, entry);
+  }
+
+  /** Marks the document request a main-frame navigation committed (its request id is the loader id). */
+  private handleFrameNavigated(tabId: number, params: any): void {
+    if (params.frame?.parentId || !params.frame?.loaderId) return;
+    const entry = this.networkEntries.get(tabId)?.get(params.frame.loaderId);
+    if (entry) entry.mainFrame = true;
   }
 
   /**

@@ -1248,6 +1248,42 @@ describe("CDPController", () => {
       expect(controller.getNetworkCaptureStatus(tabId).interruptions).toEqual([]);
     });
 
+    it("marks a document request as a main-frame load when the main frame commits it", async () => {
+      const controller = new CDPController();
+      mockChrome.debugger.attach.mockResolvedValue(undefined);
+      mockChrome.debugger.sendCommand.mockResolvedValue({});
+      await controller.enableNetworkTracking(tabId + 3, { bodyMode: "none" });
+      const dispatch = (
+        controller as unknown as {
+          handleCDPEvent: (tab: number, event: string, value: unknown) => Promise<void> | void;
+        }
+      ).handleCDPEvent.bind(controller);
+      for (const requestId of ["nav-main", "nav-frame"]) {
+        await dispatch(tabId + 3, "Network.requestWillBeSent", {
+          requestId,
+          loaderId: requestId,
+          type: "Document",
+          timestamp: 1,
+          wallTime: 1_794_000_000,
+          request: { url: `https://example.test/${requestId}`, method: "GET", headers: {} },
+        });
+      }
+      await dispatch(tabId + 3, "Page.frameNavigated", {
+        frame: { id: "main", loaderId: "nav-main", url: "https://example.test/nav-main" },
+      });
+      await dispatch(tabId + 3, "Page.frameNavigated", {
+        frame: {
+          id: "child",
+          parentId: "main",
+          loaderId: "nav-frame",
+          url: "https://example.test/nav-frame",
+        },
+      });
+      const entries = controller.getNetworkEntries(tabId + 3, { includeStatic: true });
+      expect(entries.find((entry) => entry._requestId === "nav-main")?.mainFrame).toBe(true);
+      expect(entries.find((entry) => entry._requestId === "nav-frame")?.mainFrame).toBeUndefined();
+    });
+
     it("records a WebSocket the page opens", async () => {
       const controller = new CDPController();
       mockChrome.debugger.attach.mockResolvedValue(undefined);

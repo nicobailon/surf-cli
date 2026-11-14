@@ -195,7 +195,7 @@ describe("record ownership", () => {
 });
 
 describe("draft effect", () => {
-  const draft = ({
+  const stopDraft = ({
     commands,
     trace,
     origin = "https://example.test",
@@ -225,13 +225,16 @@ describe("draft effect", () => {
     if (trace) {
       records.attachNetworkTrace(record.id, trace, root, { capture });
     }
-    return records.stopRecord({ target: { tabId: 1 }, draft: true, root }).draft;
+    return records.stopRecord({ target: { tabId: 1 }, draft: true, root });
   };
+  const draft = (options: Parameters<typeof stopDraft>[0]) => stopDraft(options).draft;
+  // A main-frame page load captured after the record started.
   const search = {
     id: "r_1",
     method: "GET",
     status: 200,
     type: "Document",
+    mainFrame: true,
     url: "https://example.test/search?q=x",
   };
   const telemetry = [
@@ -331,7 +334,7 @@ describe("draft effect", () => {
     expect(
       draft({ commands: ["click"], trace: [dashboard], origin: "https://app.posthog.com" }).effect,
     ).toBe("write");
-    expect(draft({ commands: ["click"], trace: [dashboard] }).effect).toBe("read");
+    expect(draft({ commands: ["click"], trace: [search, dashboard] }).effect).toBe("read");
   });
 
   it("treats an analytics vendor's site reached by navigating, or with no known site, as the site", () => {
@@ -346,6 +349,23 @@ describe("draft effect", () => {
     expect(draft({ commands: ["click"], trace: [createProject] }).effect).toBe("write");
     const { tabUrl: _tabUrl, ...withoutPage } = createProject;
     expect(draft({ commands: ["click"], trace: [withoutPage], origin: "" }).effect).toBe("write");
+  });
+
+  it("keeps page writes as writes when the record saw no page load, and says why", () => {
+    const xhrSearch = {
+      id: "r_9",
+      method: "GET",
+      status: 200,
+      type: "XHR",
+      url: "https://example.test/api/search?q=x",
+    };
+    const frameLoad = { ...search, id: "r_10", mainFrame: false };
+    const stopped = stopDraft({ commands: ["type", "click"], trace: [xhrSearch, frameLoad] });
+    expect(stopped.draft.effect).toBe("write");
+    expect(stopped.warnings).toContain(
+      "the draft is a write: the record saw no page load after it started, so a WebSocket the page already had open could have carried writes",
+    );
+    expect(draft({ commands: ["type", "click"], trace: [search, xhrSearch] }).effect).toBe("read");
   });
 
   it("keeps page writes as writes when the trace dropped requests or hit the read limit", () => {
