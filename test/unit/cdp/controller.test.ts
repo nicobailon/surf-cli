@@ -1248,6 +1248,29 @@ describe("CDPController", () => {
       expect(controller.getNetworkCaptureStatus(tabId).interruptions).toEqual([]);
     });
 
+    it("records a WebSocket the page opens", async () => {
+      const controller = new CDPController();
+      mockChrome.debugger.attach.mockResolvedValue(undefined);
+      mockChrome.debugger.sendCommand.mockResolvedValue({});
+      await controller.enableNetworkTracking(tabId + 2, { bodyMode: "none" });
+      await (
+        controller as unknown as {
+          handleCDPEvent: (tab: number, event: string, value: unknown) => Promise<void> | void;
+        }
+      ).handleCDPEvent(tabId + 2, "Network.webSocketCreated", {
+        requestId: "ws-1",
+        url: "wss://example.test/socket",
+      });
+      expect(controller.getNetworkEntries(tabId + 2, { includeStatic: true })).toEqual([
+        expect.objectContaining({
+          method: "GET",
+          url: "wss://example.test/socket",
+          origin: "wss://example.test",
+          type: "WebSocket",
+        }),
+      ]);
+    });
+
     it("counts the requests it drops to stay within its per-tab limit", async () => {
       const controller = new CDPController();
       mockChrome.debugger.attach.mockResolvedValue(undefined);

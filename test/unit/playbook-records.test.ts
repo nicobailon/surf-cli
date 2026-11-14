@@ -330,6 +330,17 @@ describe("draft effect", () => {
     expect(stopped.draft.effect).toBe("write");
   });
 
+  it("keeps page writes as writes when the page opened a WebSocket, which can carry writes", () => {
+    const socket = {
+      id: "r_7",
+      method: "GET",
+      type: "WebSocket",
+      url: "wss://example.test/socket",
+    };
+    expect(draft({ commands: ["click"], trace: [search, socket] }).effect).toBe("write");
+    expect(draft({ commands: ["navigate"], trace: [search, socket] }).effect).toBe("read");
+  });
+
   it("keeps page writes as writes without network evidence or when they act beyond the page", () => {
     expect(draft({ commands: ["click"] }).effect).toBe("write");
     expect(draft({ commands: ["click", "cookie.set"], trace: [search] }).effect).toBe("write");

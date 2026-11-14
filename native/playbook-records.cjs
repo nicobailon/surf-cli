@@ -238,12 +238,13 @@ function requestEffect(entry) {
 
 // A recorded flow is a write when its trace holds a request with a method other than
 // GET/HEAD/OPTIONS that isn't telemetry. UI steps that sent no such request are reads, but only when
-// the record captured the network without a gap: otherwise any page write still makes the op a write.
-// Steps that act beyond the page (tabs, cookies, emulation, AI providers) are always writes.
+// the record captured the network without a gap and the page opened no WebSocket (whose messages the
+// trace can't show): otherwise any page write still makes the op a write. Steps that act beyond the
+// page (tabs, cookies, emulation, AI providers) are always writes.
 function draftEffect({ record, steps, trace }) {
   const entries = trace?.entries || [];
   if (entries.some((entry) => requestEffect(entry) === "write" && !isTelemetryRequest(entry, record.origin))) return "write";
-  const networkEvidence = record.capture?.network === true && trace?.complete === true;
+  const networkEvidence = record.capture?.network === true && trace?.complete === true && !entries.some((entry) => entry.type === "WebSocket");
   const writes = steps.filter((step) => ["page-write", "unknown"].includes(commandMetadata(step.tool).effect));
   return writes.some((step) => !networkEvidence || !UI_STEPS.has(step.tool)) ? "write" : "read";
 }
