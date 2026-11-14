@@ -55,6 +55,7 @@ interface ConsoleMessage {
 }
 
 interface NetworkRequest {
+  id: string;                    // the NetworkEntry id, for network.get/body/replay
   requestId: string;
   url: string;
   method: string;
@@ -579,7 +580,12 @@ export class CDPController {
       }
     }
 
+    // Generate unique ID
+    const seq = ++this.networkEntrySeq;
+    const entryId = `r_${timestamp}_${seq}`;
+
     requests.push({
+      id: entryId,
       requestId: params.requestId,
       url: req.url,
       method: req.method,
@@ -597,10 +603,6 @@ export class CDPController {
       this.networkEntries.set(tabId, new Map());
     }
     const entriesMap = this.networkEntries.get(tabId)!;
-    
-    // Generate unique ID
-    const seq = ++this.networkEntrySeq;
-    const entryId = `r_${timestamp}_${seq}`;
 
     // Extract headers as Record
     const requestHeaders: Record<string, string> = {};
@@ -1318,7 +1320,7 @@ export class CDPController {
       // Fallback to basic networkRequests and convert to NetworkEntry format
       const requests = this.networkRequests.get(tabId) || [];
       entries = requests.map((req, idx) => ({
-        id: `r_${req.timestamp}_${idx}`,
+        id: req.id || `r_${req.timestamp}_${idx}`,
         ts: req.timestamp,
         method: req.method,
         url: req.url,

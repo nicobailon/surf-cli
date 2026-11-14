@@ -1176,7 +1176,10 @@ describe("CDPController", () => {
       const [entry] = controller.getNetworkEntries(tabId, { includeStatic: true });
       expect(entry.ts).toBe(1_794_000_000_250);
       expect(entry.duration).toBe(250);
-      expect(controller.getNetworkRequests(tabId)[0].timestamp).toBe(1_794_000_000_250);
+      expect(controller.getNetworkRequests(tabId)[0]).toMatchObject({
+        id: entry.id,
+        timestamp: 1_794_000_000_250,
+      });
     });
   });
 

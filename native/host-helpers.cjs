@@ -185,7 +185,12 @@ function formatToolContent(result, log = () => {}) {
   // Handle both requests (basic) and entries (full) formats
   const items = result.requests || result.entries;
   if (items && Array.isArray(items)) {
-    const gaps = networkFormatters.describeCaptureGaps(result.capture).map((line) => `\nWarning: ${line}`).join("");
+    const warnings = networkFormatters.describeCaptureGaps(result.capture);
+    if (result.format === 'json') {
+      const requests = items.map(({ id, method, status, type, mimeType, url }) => ({ id, method, status, type, mimeType, url }));
+      return text(JSON.stringify({ requests, ...(warnings.length > 0 ? { warnings } : {}) }, null, 2));
+    }
+    const gaps = warnings.map((line) => `\nWarning: ${line}`).join("");
     if (items.length === 0) {
       return text(`No network requests captured${gaps}`);
     }
@@ -202,11 +207,13 @@ function formatToolContent(result, log = () => {}) {
       // entries format means full data was requested - use verbose level 1
       formatted = networkFormatters.formatVerbose(items, 1);
     } else {
+      const idWidth = Math.max(...items.map(r => (r.id || '-').length));
       formatted = items.map(r => {
+        const id = (r.id || '-').padEnd(idWidth);
         const status = String(r.status || '-').padStart(3);
         const method = (r.method || 'GET').padEnd(7);
         const type = (r.type || '').padEnd(10);
-        return `${status} ${method} ${type} ${r.url}`;
+        return `${id}  ${status} ${method} ${type} ${r.url}`;
       }).join("\n");
     }
     return text(result.format === 'raw' ? formatted : `${formatted}${gaps}`);

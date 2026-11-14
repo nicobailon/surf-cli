@@ -1,5 +1,6 @@
 import { CDPController, type PendingDialog } from "../cdp/controller";
 import { debugLog } from "../utils/debug";
+import { matchesNetworkType } from "../utils/network-type";
 import type { PageChanges } from "../utils/page-changes";
 import {
   type CdpFrameEntry,
@@ -3218,7 +3219,7 @@ export async function handleMessage(
           entries = entries.filter(e => e.status === message.status);
         }
         if (message.contentType) {
-          entries = entries.filter(e => e.type === message.contentType);
+          entries = entries.filter(e => matchesNetworkType(e, message.contentType));
         }
 
         if (message.clear) {
@@ -3248,7 +3249,7 @@ export async function handleMessage(
         requests = requests.filter(r => r.status === message.status);
       }
       if (message.contentType) {
-        requests = requests.filter(r => r.type === message.contentType);
+        requests = requests.filter(r => matchesNetworkType(r, message.contentType));
       }
 
       if (message.clear) {
@@ -3310,7 +3311,7 @@ export async function handleMessage(
         entries = entries.filter(e => e.status === message.status);
       }
       if (message.type) {
-        entries = entries.filter(e => e.type === message.type);
+        entries = entries.filter(e => matchesNetworkType(e, message.type));
       }
       if (message.since) {
         entries = entries.filter(e => e.ts >= message.since);

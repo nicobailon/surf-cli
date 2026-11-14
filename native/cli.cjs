@@ -1076,10 +1076,10 @@ const TOOLS = {
           origin: "Filter by origin (domain)",
           method: "Filter by method (GET,POST,...)",
           status: "Filter by exact status code (e.g. 404)",
-          type: "Filter by content type (json, html, proto)",
+          type: "Filter by response type: json, html, proto, a MIME type (image/png, image/) or subtype (css), or a resource type (document, xhr, fetch)",
           last: "Show N requests (default: 100)",
           filter: "With --stream: URL pattern filter",
-          format: "compact|urls|curl|raw (default: compact)",
+          format: "compact|urls|curl|raw|json (default: compact, which starts each line with the request id; --json gives json)",
           v: "Verbose output",
           vv: "Very verbose output",
           "body-mode": "Response bodies: none, text, or all (default: text)",
@@ -3753,6 +3753,8 @@ if (toolArgs["network-path"] !== undefined && typeof toolArgs["network-path"] !=
 }
 const wantJson = toolArgs.json === true;
 delete toolArgs.json;
+// The network listing is a text table; --json lists the requests as JSON instead, ids included.
+if (wantJson && tool === "network" && toolArgs.format === undefined && toolArgs.stream !== true) toolArgs.format = "json";
 
 const autoCapture = toolArgs["auto-capture"] === true;
 delete toolArgs["auto-capture"];

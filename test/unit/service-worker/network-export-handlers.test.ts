@@ -80,6 +80,44 @@ describe("network export handlers", () => {
     expect(result).toMatchObject({ entries: [], capture });
   });
 
+  it("filters --type by response MIME type, keeping resource types working", async () => {
+    const handleMessage = await loadHandleMessage();
+    const requests = [
+      { id: "r_1", url: "https://example.test/", type: "Document", mimeType: "text/html" },
+      { id: "r_2", url: "https://example.test/api", type: "XHR", mimeType: "application/json" },
+      { id: "r_3", url: "https://example.test/ld", type: "Fetch", mimeType: "application/ld+json" },
+      {
+        id: "r_4",
+        url: "https://example.test/app.js",
+        type: "Script",
+        mimeType: "text/javascript",
+      },
+      {
+        id: "r_5",
+        url: "https://example.test/rpc",
+        type: "Fetch",
+        mimeType: "application/x-protobuf",
+      },
+    ];
+    cdpState.getNetworkRequests.mockReturnValue(requests);
+    cdpState.entries = requests;
+    const ids = async (contentType: string, full = false) => {
+      const result = await handleMessage(
+        { type: "READ_NETWORK_REQUESTS", tabId: 42, contentType, full },
+        {},
+      );
+      return (result.requests || result.entries).map((item: { id: string }) => item.id);
+    };
+    expect(await ids("json")).toEqual(["r_2", "r_3"]);
+    expect(await ids("json", true)).toEqual(["r_2", "r_3"]);
+    expect(await ids("html")).toEqual(["r_1"]);
+    expect(await ids("proto")).toEqual(["r_5"]);
+    expect(await ids("Document")).toEqual(["r_1"]);
+    expect(await ids("xhr")).toEqual(["r_2"]);
+    expect(await ids("application/json")).toEqual(["r_2"]);
+    expect(await ids("javascript")).toEqual(["r_4"]);
+  });
+
   it("stops explicit network capture", async () => {
     const handleMessage = await loadHandleMessage();
     await expect(handleMessage({ type: "STOP_NETWORK_CAPTURE", tabId: 42 }, {})).resolves.toEqual({

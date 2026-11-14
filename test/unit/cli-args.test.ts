@@ -697,6 +697,14 @@ describe("CLI argument parsing", () => {
     fs.rmSync(directory, { recursive: true, force: true });
   });
 
+  it("asks the host for the JSON request listing with --json, keeping an explicit format", async () => {
+    expect((await runCli(["network", "--json"])).request.params.args.format).toBe("json");
+    expect(
+      (await runCli(["network", "--json", "--format", "curl"])).request.params.args.format,
+    ).toBe("curl");
+    expect((await runCli(["network", "--last", "5"])).request.params.args.format).toBeUndefined();
+  });
+
   it("writes local-prefixed screenshot output to the normalized path", async () => {
     const output = path.join(os.tmpdir(), `surf-local-screenshot-${process.pid}-${Date.now()}.png`);
     try {

@@ -1009,3 +1009,58 @@ describe("formatToolContent network capture", () => {
     );
   });
 });
+
+describe("formatToolContent network listing", () => {
+  const requests = [
+    {
+      id: "r_1160000.5_7",
+      status: 200,
+      method: "GET",
+      type: "Document",
+      mimeType: "text/html",
+      url: "https://example.test/",
+    },
+    {
+      id: "r_1160001.5_8",
+      status: 201,
+      method: "POST",
+      type: "XHR",
+      mimeType: "application/json",
+      url: "https://example.test/api",
+    },
+  ];
+
+  it("shows each request's id in the default listing", () => {
+    const [content] = helpers.formatToolContent({ requests });
+    expect(content.text.split("\n")).toEqual([
+      "r_1160000.5_7  200 GET     Document   https://example.test/",
+      "r_1160001.5_8  201 POST    XHR        https://example.test/api",
+    ]);
+  });
+
+  it("lists requests as JSON with their ids for --json", () => {
+    const [content] = helpers.formatToolContent({ requests, format: "json" });
+    expect(JSON.parse(content.text)).toEqual({
+      requests: requests.map(({ id, method, status, type, mimeType, url }) => ({
+        id,
+        method,
+        status,
+        type,
+        mimeType,
+        url,
+      })),
+    });
+    const at = Date.parse("2026-11-14T10:00:00Z");
+    const [empty] = helpers.formatToolContent({
+      requests: [],
+      format: "json",
+      capture: { active: true, interruptions: [{ reason: "target_closed", at }] },
+    });
+    expect(JSON.parse(empty.text)).toEqual({
+      requests: [],
+      warnings: [
+        "network capture was interrupted at 2026-11-14T10:00:00.000Z (debugger detached: target_closed) and had not resumed when read; later requests were not captured",
+      ],
+    });
+  });
+});
