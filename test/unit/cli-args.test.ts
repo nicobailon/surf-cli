@@ -713,6 +713,12 @@ describe("CLI argument parsing", () => {
     expect(request).not.toHaveProperty("session");
   });
 
+  it("sends an explicit --session with tab and window commands for the record, not as a target", async () => {
+    const { request } = await runCli(["--session", "alpha", "tab.new", "https://example.test/"]);
+    expect(request).toMatchObject({ recordSession: "alpha" });
+    expect(request).not.toHaveProperty("session");
+  });
+
   it("writes local-prefixed screenshot output to the normalized path", async () => {
     const output = path.join(os.tmpdir(), `surf-local-screenshot-${process.pid}-${Date.now()}.png`);
     try {

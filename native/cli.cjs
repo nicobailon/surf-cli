@@ -12,6 +12,7 @@ const networkFormatters = require("./formatters/network.cjs");
 const { formatPageChanges } = require("./formatters/page-changes.cjs");
 const {
   applyArgDefaults,
+  commandMetadata,
   formatStep,
   getWorkflowDirs,
   getWorkflowInfo,
@@ -3889,12 +3890,15 @@ if (!noDiff && PAGE_CHANGES_TOOLS.includes(finalTool)) {
 }
 
 const finalClassification = classifyTool(finalTool, toolArgs);
+// Tab and window commands don't target a session's tab, but a session's playbook record holds
+// them: the host uses `recordSession` only to file the command there.
+const recordsBrowserCommand = finalClassification.targetUse === "browser" && commandMetadata(finalTool).recordable;
 if (explicitSession !== undefined) {
   if (typeof explicitSession !== "string" || !explicitSession) {
     console.error("Error: --session requires a session name");
     process.exit(1);
   }
-  if (finalClassification.targetUse !== "default-tab" || finalTool.startsWith("session.")) {
+  if ((finalClassification.targetUse !== "default-tab" && !recordsBrowserCommand) || finalTool.startsWith("session.")) {
     console.error(`Error: --session does not apply to ${finalTool}`);
     process.exit(1);
   }
@@ -3902,8 +3906,11 @@ if (explicitSession !== undefined) {
     console.error("Error: use either --session or --tab-id/--window-id, not both");
     process.exit(1);
   }
-  globalOpts.session = explicitSession;
-  globalOpts.sessionSource = "explicit";
+  if (recordsBrowserCommand) globalOpts.recordSession = explicitSession;
+  else {
+    globalOpts.session = explicitSession;
+    globalOpts.sessionSource = "explicit";
+  }
 } else if (
   environmentSession &&
   finalClassification.targetUse === "default-tab" &&
@@ -3913,9 +3920,7 @@ if (explicitSession !== undefined) {
 ) {
   globalOpts.session = environmentSession;
   globalOpts.sessionSource = "environment";
-} else if (environmentSession && finalClassification.targetUse === "browser") {
-  // Tab and window commands don't target the session's tab; the host uses this only to file the
-  // command in that session's playbook record.
+} else if (environmentSession && recordsBrowserCommand) {
   globalOpts.recordSession = environmentSession;
 }
 if (noWait) globalOpts.admission = { wait: false };
