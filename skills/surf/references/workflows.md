@@ -52,6 +52,8 @@ surf playbook export example --out ./example-playbook
 surf playbook import ./example-playbook
 ```
 
+A draft is a write when the recorded requests include one other than GET, HEAD or OPTIONS (beacons and analytics aside). Clicks and typing that sent no such request draft as a read, but only with `--network`; without it, any click or typing drafts as a write.
+
 A record belongs to the session that started it (or its tab, without a session): only that session's commands go into it, only that session can mark, stop or discard it, and other sessions can record at the same time.
 
 Records, traces and the activity journal are private. Auth headers are always dropped. Typed inputs and request bodies are redacted unless you pass `--include-input-values`.

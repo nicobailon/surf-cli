@@ -115,6 +115,90 @@ describe("record ownership", () => {
   });
 });
 
+describe("draft effect", () => {
+  const draft = ({
+    commands,
+    trace,
+  }: {
+    commands: string[];
+    trace?: Array<Record<string, unknown>>;
+  }) => {
+    const root = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "surf-records-")), "state");
+    roots.push(path.dirname(root));
+    const record = records.startRecord({
+      site: "fixture",
+      op: "search",
+      tabId: 1,
+      network: trace !== undefined,
+      root,
+    });
+    for (const command of commands) {
+      records.appendRecordEvent(
+        { type: "tool.completed", command, argsRedacted: {}, startedAt: new Date().toISOString() },
+        { target: { tabId: 1 }, root },
+      );
+    }
+    if (trace) records.attachNetworkTrace(record.id, trace, root);
+    return records.stopRecord({ target: { tabId: 1 }, draft: true, root }).draft;
+  };
+  const search = {
+    id: "r_1",
+    method: "GET",
+    status: 200,
+    type: "Document",
+    url: "https://example.test/search?q=x",
+  };
+  const telemetry = [
+    { id: "r_2", method: "POST", status: 204, type: "Ping", url: "https://example.test/beacon" },
+    {
+      id: "r_3",
+      method: "POST",
+      status: 200,
+      type: "XHR",
+      url: "https://www.google-analytics.com/g/collect?v=2",
+    },
+    {
+      id: "r_4",
+      method: "POST",
+      status: 202,
+      type: "Fetch",
+      url: "https://o1.ingest.sentry.io/api/1/envelope/",
+    },
+  ];
+
+  it("drafts a search done by typing and clicking as a read when it sent only reads and telemetry", () => {
+    const op = draft({ commands: ["type", "click", "key"], trace: [search, ...telemetry] });
+    expect(op.effect).toBe("read");
+    expect(op.safety).toBeUndefined();
+    expect(op.args.review_key).toBeUndefined();
+    expect(op.run[0]).toMatchObject({
+      using: "network",
+      request: { method: "GET", url: "https://example.test/search" },
+    });
+  });
+
+  it("drafts a write when the flow sent a request that can change data", () => {
+    const create = {
+      id: "r_5",
+      method: "POST",
+      status: 201,
+      type: "XHR",
+      url: "https://example.test/api/employees",
+    };
+    const op = draft({ commands: ["type", "click"], trace: [search, create, ...telemetry] });
+    expect(op).toMatchObject({ effect: "write", safety: { authorization: "explicit" } });
+    expect(op.run[0]).toMatchObject({ using: "network", request: { method: "POST" } });
+    expect(
+      draft({ commands: ["click"], trace: [{ ...create, method: "DELETE", status: 0 }] }).effect,
+    ).toBe("write");
+  });
+
+  it("keeps page writes as writes without network evidence or when they act beyond the page", () => {
+    expect(draft({ commands: ["click"] }).effect).toBe("write");
+    expect(draft({ commands: ["click", "cookie.set"], trace: [search] }).effect).toBe("write");
+  });
+});
+
 describe("activity and explicit record evidence", () => {
   it("redacts normal input and keeps append-only events separate from record summary", () => {
     const root = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "surf-records-")), "state");

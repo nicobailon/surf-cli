@@ -18,7 +18,7 @@ function saveFromRecent({ site, op: opId, since = "1h", scope = "user", cwd, hom
   const events = readRecent({ since, root }).filter((event) => event.type === "tool.issued");
   if (events.length === 0) throw new Error("no recent Surf activity to save");
   if (events.some((event) => ["page-write", "unknown"].includes(commandMetadata(event.command).effect))) {
-    throw new Error("recent activity includes write-capable commands; use an explicit record and review its draft before saving");
+    throw new Error("recent activity includes write-capable commands; use an explicit record (with --network, so its requests show whether the flow writes) and review its draft before saving");
   }
   const promoted = promoteRedactedStepArgs(events.map((event) => ({ tool: event.command, args: event.argsRedacted || {} })));
   const op = { id: opId, description: "Drafted from recent Surf activity", effect: "read", args: promoted.args, run: [{ using: "workflow", steps: promoted.steps }], provenance: { recentSince: since } };

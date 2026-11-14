@@ -192,22 +192,59 @@ function attachNetworkTrace(recordId, entries, root = getPrivateStateRoot()) {
   return { path: tracePath, count: sanitized.length };
 }
 
+const READ_METHODS = new Set(["GET", "HEAD", "OPTIONS"]);
+// Beacons, CSP reports and requests to analytics and error-reporting services don't change the
+// site's data, so they don't make a recorded flow a write.
+const TELEMETRY_TYPES = new Set(["Ping", "CSPViolationReport"]);
+const TELEMETRY_HOSTS = [
+  "google-analytics.com", "analytics.google.com", "googletagmanager.com", "doubleclick.net",
+  "segment.io", "mixpanel.com", "amplitude.com", "heapanalytics.com", "posthog.com",
+  "sentry.io", "bugsnag.com", "browser-intake-datadoghq.com", "browser-intake-datadoghq.eu", "nr-data.net",
+  "hotjar.com", "clarity.ms", "fullstory.com", "cloudflareinsights.com", "plausible.io",
+];
+// UI steps that only act on the page: whether they changed data shows in the requests they sent.
+const UI_STEPS = new Set([
+  "click", "check", "uncheck", "key", "submit", "type", "smart_type", "find_and_type", "form_input", "form.fill", "select",
+  "scroll", "scroll.top", "scroll.bottom", "scroll_to_position", "dialog.accept", "dialog.dismiss",
+]);
+
+function isTelemetryRequest(entry) {
+  if (TELEMETRY_TYPES.has(entry.type)) return true;
+  let host;
+  try { host = new URL(entry.url).hostname; } catch { return false; }
+  return TELEMETRY_HOSTS.some((suffix) => host === suffix || host.endsWith(`.${suffix}`));
+}
+
+function requestEffect(entry) {
+  return READ_METHODS.has(String(entry.method).toUpperCase()) ? "read" : "write";
+}
+
+// A recorded flow is a write when its trace holds a request with a method other than
+// GET/HEAD/OPTIONS that isn't telemetry. UI steps that sent no such request are reads, but only when
+// the record captured the network: without a trace, any page write still makes the op a write.
+// Steps that act beyond the page (tabs, cookies, emulation, AI providers) are always writes.
+function draftEffect({ record, steps, trace }) {
+  const entries = trace?.entries || [];
+  if (entries.some((entry) => requestEffect(entry) === "write" && !isTelemetryRequest(entry))) return "write";
+  const networkEvidence = record.capture?.network === true && Boolean(trace);
+  const writes = steps.filter((step) => ["page-write", "unknown"].includes(commandMetadata(step.tool).effect));
+  return writes.some((step) => !networkEvidence || !UI_STEPS.has(step.tool)) ? "write" : "read";
+}
+
 function draftFromRecord(recordId, root = getPrivateStateRoot()) {
   const record = readRecord(recordId, root);
   if (!record) throw new Error(`record not found: ${recordId}`);
   const events = readEvents(recordId, root).filter((event) => event.type === "tool.completed");
-  let effect = "read";
   const steps = [];
   for (const event of events) {
-    const metadata = commandMetadata(event.command);
-    if (!metadata.recordable) continue;
-    if (["page-write", "unknown"].includes(metadata.effect)) effect = "write";
+    if (!commandMetadata(event.command).recordable) continue;
     steps.push({ tool: event.command, args: event.argsRedacted || {} });
   }
   const tracePath = path.join(recordDirectory(recordId, root), "network", "trace.json");
   const trace = readPrivateJson(tracePath, null, { root });
+  const effect = draftEffect({ record, steps, trace });
   const strategies = [];
-  const observed = trace?.entries?.findLast((entry) => ["GET", "HEAD", "OPTIONS", "POST"].includes(entry.method) && entry.status >= 200 && entry.status < 400);
+  const observed = trace?.entries?.findLast((entry) => ["GET", "HEAD", "OPTIONS", "POST"].includes(entry.method) && entry.status >= 200 && entry.status < 400 && !isTelemetryRequest(entry));
   if (observed) {
     const url = new URL(observed.url);
     const query = Object.fromEntries(url.searchParams.entries());
@@ -261,6 +298,7 @@ module.exports = {
   readEvents,
   readRecord,
   recordStatus,
+  requestEffect,
   recordsRoot,
   requireRecordFor,
   resumeRecord: (options) => updateStatus("recording", options),

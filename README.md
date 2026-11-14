@@ -1033,6 +1033,8 @@ surf pb export example --out ./example-playbook
 surf pb import ./example-playbook
 ```
 
+A draft is a write when the recorded requests include one other than GET, HEAD, or OPTIONS (beacons and analytics aside). Clicks and typing that sent no such request draft as a read, but only with `--network`; without it, any click or typing drafts as a write.
+
 A record belongs to the session that started it (or its tab, without a session): only that session's commands go into it, only that session can mark, stop, or discard it, and other sessions can record at the same time.
 
 Records, traces, receipts, and recent-use journals live under private Surf state. Input values and authentication headers are redacted by default; `--include-input-values` is an explicit recording choice.
