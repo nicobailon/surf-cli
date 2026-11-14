@@ -48,12 +48,13 @@ const { redactUrlSecrets } = require("./redaction.cjs");
 const { appendActivity, journalCommand } = require("./activity-journal.cjs");
 const { reserveReceipt, updateReceipt } = require("./playbook-receipts.cjs");
 const {
-  activeRecord,
   appendRecordEvent,
   attachNetworkTrace,
   discardRecord,
   markRecord,
   pauseRecord,
+  recordStatus,
+  requireRecordFor,
   resumeRecord,
   startRecord,
   stopRecord,
@@ -1570,7 +1571,7 @@ async function runHostPlaybook(msg, request) {
   });
   const report = (event) => {
     appendActivity(event);
-    appendRecordEvent(event);
+    appendRecordEvent(event, { target: request.target });
   };
   const result = await runPlaybookOp({
     playbook,
@@ -1609,47 +1610,49 @@ async function runHarvestTool(tool, args, msg, request) {
   return formatRecords(records, args.format ?? "json");
 }
 
+// Each record belongs to the session (or, without one, the tab) that started it.
 async function handleRecordRequest(tool, args, msg, request) {
+  const target = { session: request.target?.session, tabId: request.target?.tabId ?? msg.tabId };
+  const stopCapture = (record) => Promise.all([
+    record.capture.network && requestCallExtension(request, tool, { type: "STOP_NETWORK_CAPTURE", tabId: record.tabId }, 30000, true).catch(() => {}),
+    record.capture.watch && requestCallExtension(request, tool, { type: "STOP_PLAYBOOK_WATCH", tabId: record.tabId }, 30000, true).catch(() => {}),
+  ]);
   if (tool === "playbook.record.start") {
-    let record = startRecord({ ...args, tabId: msg.tabId });
+    let record = startRecord({ ...args, tabId: target.tabId, session: target.session });
     try {
       const context = await requestCallExtension(request, tool, {
         type: "GET_PLAYBOOK_RECORD_CONTEXT",
-        tabId: msg.tabId,
+        tabId: record.tabId,
       });
-      record = updateRecordContext({
-        tabId: context._resolvedTabId || msg.tabId,
+      record = updateRecordContext(record.id, {
+        tabId: context._resolvedTabId || record.tabId,
         origin: context.origin,
       });
       if (record.capture.network) {
         const result = await requestCallExtension(request, tool, { type: "START_NETWORK_CAPTURE", tabId: record.tabId, bodyMode: "text" });
-        record = updateRecordContext({ tabId: result._resolvedTabId || record.tabId });
+        record = updateRecordContext(record.id, { tabId: result._resolvedTabId || record.tabId });
       }
       if (record.capture.watch) {
-        const result = await requestCallExtension(request, tool, { type: "START_PLAYBOOK_WATCH", tabId: record.tabId || msg.tabId, includeInputValues: record.redaction.includeInputValues });
-        record = updateRecordContext({ tabId: result._resolvedTabId || record.tabId || msg.tabId });
+        const result = await requestCallExtension(request, tool, { type: "START_PLAYBOOK_WATCH", tabId: record.tabId, includeInputValues: record.redaction.includeInputValues });
+        record = updateRecordContext(record.id, { tabId: result._resolvedTabId || record.tabId });
       }
       return record;
     } catch (error) {
-      if (record?.capture.network) await requestCallExtension(request, tool, { type: "STOP_NETWORK_CAPTURE", tabId: record.tabId }, 30000, true).catch(() => {});
-      if (record?.capture.watch) await requestCallExtension(request, tool, { type: "STOP_PLAYBOOK_WATCH", tabId: record.tabId }, 30000, true).catch(() => {});
-      discardRecord();
+      await stopCapture(record);
+      discardRecord({ target: { session: record.session, tabId: record.tabId } });
       throw error;
     }
   }
-  if (tool === "playbook.record.status") return activeRecord() || { status: "idle" };
-  if (tool === "playbook.record.mark") return markRecord(args.label);
-  if (tool === "playbook.record.pause") return pauseRecord();
-  if (tool === "playbook.record.resume") return resumeRecord();
+  if (tool === "playbook.record.status") return recordStatus({ target });
+  if (tool === "playbook.record.mark") return markRecord(args.label, { target });
+  if (tool === "playbook.record.pause") return pauseRecord({ target });
+  if (tool === "playbook.record.resume") return resumeRecord({ target });
   if (tool === "playbook.record.discard") {
-    const record = activeRecord();
-    if (record?.capture.network) await requestCallExtension(request, tool, { type: "STOP_NETWORK_CAPTURE", tabId: record.tabId }, 30000, true).catch(() => {});
-    if (record?.capture.watch) await requestCallExtension(request, tool, { type: "STOP_PLAYBOOK_WATCH", tabId: record.tabId }, 30000, true).catch(() => {});
-    return discardRecord();
+    await stopCapture(requireRecordFor(target));
+    return discardRecord({ target });
   }
   if (tool === "playbook.record.stop") {
-    const record = activeRecord();
-    if (!record) throw new Error("no active playbook record");
+    const record = requireRecordFor(target);
     if (record.capture.network) {
       try {
         const result = await requestCallExtension(request, tool, { type: "READ_NETWORK_REQUESTS", tabId: record.tabId, full: true, limit: 500 });
@@ -1659,7 +1662,7 @@ async function handleRecordRequest(tool, args, msg, request) {
       }
     }
     if (record.capture.watch) await requestCallExtension(request, tool, { type: "STOP_PLAYBOOK_WATCH", tabId: record.tabId }, 30000, true).catch(() => {});
-    return stopRecord({ draft: args.draft === true });
+    return stopRecord({ target, draft: args.draft === true });
   }
   throw new Error(`Unknown record command: ${tool}`);
 }
@@ -1825,7 +1828,7 @@ function sendToolResponse(socket, id, result, error) {
           resultSummary: finalError ? "failed" : "success",
         };
         appendActivity(event);
-        appendRecordEvent(event);
+        appendRecordEvent(event, { target: request.target });
       }
     }
     await cleanupRequestTransfers(request);
@@ -2965,7 +2968,7 @@ function processInput() {
           url: redactUrlSecrets(msg.url),
           tabId: msg.tabId,
           timestamp: msg.timestamp || new Date().toISOString(),
-        });
+        }, { target: { tabId: msg.tabId, page: true } });
         continue;
       }
 

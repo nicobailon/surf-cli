@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+- **`pb record stop` saves the requests it captured** - Every record's network trace came out empty, so drafts never got a network strategy and `pb client derive` had nothing to use. Captured requests were dated by Chrome's own clock while the record's start was a normal date, and none compared as newer. Requests are now dated with the wall clock (`ts` in epoch milliseconds), which also fixes the request times in `network.export --har`.
+- **A record only holds the commands of the session that started it** - One record took in every agent's commands and marks, from any session, and any session could mark or stop it. A record now belongs to the session that started it (or its tab, when started without a session). Commands from other sessions stay out of it; `mark`, `stop`, `pause`, `resume` and `discard` from another session fail and name the session that owns it; and each session can run its own record at the same time.
+
 ## [2.26.0] - 2026-11-04
 
 ### Highlights

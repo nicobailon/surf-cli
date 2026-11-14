@@ -29,6 +29,92 @@ describe("record network trace", () => {
   });
 });
 
+describe("record ownership", () => {
+  const tempRoot = () => {
+    const root = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "surf-records-")), "state");
+    roots.push(path.dirname(root));
+    return root;
+  };
+  const completed = (command: string) => ({
+    type: "tool.completed",
+    command,
+    argsRedacted: {},
+    startedAt: new Date().toISOString(),
+    endedAt: new Date().toISOString(),
+  });
+  const commands = (recordId: string, root: string) =>
+    records
+      .readEvents(recordId, root)
+      .map(
+        (event: { command?: string; label?: string; event?: string }) =>
+          event.command || event.label || event.event,
+      );
+
+  it("records only the starting session's tool events, alongside other sessions' records", () => {
+    const root = tempRoot();
+    const alpha = records.startRecord({ site: "a", op: "read", tabId: 11, session: "alpha", root });
+    const beta = records.startRecord({ site: "b", op: "read", tabId: 22, session: "beta", root });
+    records.appendRecordEvent(completed("navigate"), {
+      target: { session: "alpha", tabId: 11 },
+      root,
+    });
+    records.appendRecordEvent(completed("click"), { target: { session: "beta", tabId: 22 }, root });
+    expect(
+      records.appendRecordEvent(completed("type"), {
+        target: { session: "gamma", tabId: 33 },
+        root,
+      }),
+    ).toBe(false);
+    // An unnamed caller on alpha's tab is not alpha.
+    expect(records.appendRecordEvent(completed("key"), { target: { tabId: 11 }, root })).toBe(
+      false,
+    );
+    // Page events from the watcher carry only the tab.
+    records.appendRecordEvent(
+      { type: "browser.event", event: "input" },
+      { target: { tabId: 11, page: true }, root },
+    );
+    records.markRecord("alpha step", { target: { session: "alpha", tabId: 11 }, root });
+    expect(commands(alpha.id, root)).toEqual(["navigate", "input", "alpha step"]);
+    expect(commands(beta.id, root)).toEqual(["click"]);
+  });
+
+  it("refuses mark, stop and discard from a session that does not own the record", () => {
+    const root = tempRoot();
+    const alpha = records.startRecord({ site: "a", op: "read", tabId: 11, session: "alpha", root });
+    const other = { target: { session: "beta", tabId: 22 }, root };
+    expect(() => records.markRecord("x", other)).toThrow(/session alpha/);
+    expect(() => records.stopRecord(other)).toThrow(/session alpha/);
+    expect(() => records.discardRecord(other)).toThrow(/session alpha/);
+    expect(() => records.pauseRecord(other)).toThrow(/session alpha/);
+    expect(() => records.stopRecord({ target: { tabId: 11 }, root })).toThrow(
+      /record on tab 11 belongs to session alpha/,
+    );
+    expect(() =>
+      records.startRecord({ site: "a", op: "again", tabId: 44, session: "alpha", root }),
+    ).toThrow(/already active for session alpha/);
+    expect(() => records.startRecord({ site: "c", op: "read", tabId: 11, root })).toThrow(
+      /already active for session alpha/,
+    );
+    expect(records.recordStatus({ target: { session: "beta", tabId: 22 }, root })).toMatchObject({
+      status: "idle",
+      otherRecords: [{ id: alpha.id, session: "alpha", tabId: 11 }],
+    });
+    expect(
+      records.stopRecord({ target: { session: "alpha", tabId: 11 }, root }).record.status,
+    ).toBe("stopped");
+    expect(records.activeRecords(root)).toEqual([]);
+  });
+
+  it("still finds a record started before records had owners", () => {
+    const root = tempRoot();
+    const record = records.startRecord({ site: "a", op: "read", tabId: 5, root });
+    const activePath = path.join(records.recordsRoot(root), "active.json");
+    fs.writeFileSync(activePath, JSON.stringify({ recordId: record.id }));
+    expect(records.recordStatus({ target: { tabId: 5 }, root })).toMatchObject({ id: record.id });
+  });
+});
+
 describe("activity and explicit record evidence", () => {
   it("redacts normal input and keeps append-only events separate from record summary", () => {
     const root = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "surf-records-")), "state");
@@ -36,7 +122,7 @@ describe("activity and explicit record evidence", () => {
     journal.journalCommand("type", { text: "top secret", selector: "#q" }, { root });
     expect(fs.readFileSync(journal.journalPath(root), "utf8")).not.toContain("top secret");
 
-    const record = records.startRecord({ site: "fixture", op: "read", root });
+    const record = records.startRecord({ site: "fixture", op: "read", tabId: 1, root });
     records.appendRecordEvent(
       {
         type: "tool.completed",
@@ -46,10 +132,10 @@ describe("activity and explicit record evidence", () => {
         endedAt: new Date().toISOString(),
         resultSummary: "success",
       },
-      { root },
+      { target: { tabId: 1 }, root },
     );
-    records.markRecord("opened page", root);
-    const stopped = records.stopRecord({ draft: true, root });
+    records.markRecord("opened page", { target: { tabId: 1 }, root });
+    const stopped = records.stopRecord({ target: { tabId: 1 }, draft: true, root });
     const summary = fs.readFileSync(
       path.join(records.recordsRoot(root), record.id, "record.json"),
       "utf8",
@@ -72,26 +158,26 @@ describe("activity and explicit record evidence", () => {
     journal.journalCommand(
       "form.fill",
       { data: [{ selector: "#email", value: "top secret" }] },
-      { root },
+      { target: { tabId: 1 }, root },
     );
     journal.journalCommand(
       "navigate",
       { url: "https://example.test/?access_token=captured-secret&q=ok" },
-      { root },
+      { target: { tabId: 1 }, root },
     );
     journal.journalCommand("unknown.tool", { text: "do not record" }, { root });
     const recent = fs.readFileSync(journal.journalPath(root), "utf8");
     expect(recent).not.toContain("top secret");
     expect(recent).not.toContain("do not record");
 
-    const record = records.startRecord({ site: "fixture", op: "read", root });
+    const record = records.startRecord({ site: "fixture", op: "read", tabId: 1, root });
     records.appendRecordEvent(
       { type: "tool.issued", command: "click", argsRedacted: { selector: "#go" } },
-      { root },
+      { target: { tabId: 1 }, root },
     );
     records.appendRecordEvent(
       { type: "tool.completed", command: "click", argsRedacted: { selector: "#go" } },
-      { root },
+      { target: { tabId: 1 }, root },
     );
     records.attachNetworkTrace(
       record.id,
@@ -109,7 +195,7 @@ describe("activity and explicit record evidence", () => {
       ],
       root,
     );
-    const stopped = records.stopRecord({ draft: true, root });
+    const stopped = records.stopRecord({ target: { tabId: 1 }, draft: true, root });
     const trace = fs.readFileSync(
       path.join(records.recordsRoot(root), record.id, "network", "trace.json"),
       "utf8",
@@ -133,7 +219,7 @@ describe("activity and explicit record evidence", () => {
       }),
     ).toThrow(/write-capable/);
 
-    records.startRecord({ site: "fixture", op: "submit", root });
+    records.startRecord({ site: "fixture", op: "submit", tabId: 1, root });
     records.appendRecordEvent(
       {
         type: "tool.completed",
@@ -142,9 +228,9 @@ describe("activity and explicit record evidence", () => {
         startedAt: new Date().toISOString(),
         endedAt: new Date().toISOString(),
       },
-      { root },
+      { target: { tabId: 1 }, root },
     );
-    const stopped = records.stopRecord({ draft: true, root });
+    const stopped = records.stopRecord({ target: { tabId: 1 }, draft: true, root });
     expect(stopped.draft).toMatchObject({
       effect: "write",
       safety: { authorization: "explicit", duplicate: "transactional", key: ["review_key"] },
