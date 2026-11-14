@@ -705,6 +705,14 @@ describe("CLI argument parsing", () => {
     expect((await runCli(["network", "--last", "5"])).request.params.args.format).toBeUndefined();
   });
 
+  it("sends SURF_SESSION with tab and window commands so a session's record can hold them", async () => {
+    const { request } = await runCli(["tab.new", "https://example.test/"], {
+      SURF_SESSION: "alpha",
+    });
+    expect(request).toMatchObject({ recordSession: "alpha" });
+    expect(request).not.toHaveProperty("session");
+  });
+
   it("writes local-prefixed screenshot output to the normalized path", async () => {
     const output = path.join(os.tmpdir(), `surf-local-screenshot-${process.pid}-${Date.now()}.png`);
     try {

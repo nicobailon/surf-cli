@@ -3913,6 +3913,10 @@ if (explicitSession !== undefined) {
 ) {
   globalOpts.session = environmentSession;
   globalOpts.sessionSource = "environment";
+} else if (environmentSession && finalClassification.targetUse === "browser") {
+  // Tab and window commands don't target the session's tab; the host uses this only to file the
+  // command in that session's playbook record.
+  globalOpts.recordSession = environmentSession;
 }
 if (noWait) globalOpts.admission = { wait: false };
 

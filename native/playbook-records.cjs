@@ -58,16 +58,20 @@ function ownerLabel(record) {
 
 // A record belongs to the session that started it, or to its tab when started without a session.
 // `target` is the caller's resolved { session, tabId }; page events from the record's watcher
-// carry only the tab and set `page`.
+// carry only the tab and set `page`. Tab and window commands have no tab target and set `browser`:
+// they match by the caller's session, or without one the only record started without a session.
 function ownsTarget(record, target) {
   if (!target) return false;
   if (target.page) return target.tabId === record.tabId;
   if (record.session) return target.session === record.session;
+  if (target.browser) return !target.session;
   return !target.session && target.tabId === record.tabId;
 }
 
 function recordFor(target, root = getPrivateStateRoot()) {
-  return activeRecords(root).find((record) => ownsTarget(record, target)) || null;
+  const owners = activeRecords(root).filter((record) => ownsTarget(record, target));
+  if (target?.browser && !target.session && owners.length > 1) return null;
+  return owners[0] || null;
 }
 
 function requireRecordFor(target, root = getPrivateStateRoot()) {

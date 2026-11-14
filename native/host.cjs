@@ -1102,6 +1102,7 @@ async function prepareToolRequest(msg, request) {
   const { identity, target } = await resolveRequestTarget(msg, request, classification);
   request.browserIdentity = identity;
   request.target = target;
+  request.callerSession = msg.target?.session || msg.session || msg.recordSession;
   request.laneKey = target?.tabId ? targetLaneKey(identity, target.tabId) : undefined;
   if (classification.scope === "provider") {
     request.notice = `${request.tool} uses exclusive browser access; other Surf sessions will queue until it finishes.`;
@@ -1571,7 +1572,7 @@ async function runHostPlaybook(msg, request) {
   });
   const report = (event) => {
     appendActivity(event);
-    appendRecordEvent(event, { target: request.target });
+    appendRecordEvent(event, { target: recordEventTarget(request) });
   };
   const result = await runPlaybookOp({
     playbook,
@@ -1611,6 +1612,13 @@ async function runHarvestTool(tool, args, msg, request) {
 }
 
 const RECORD_TRACE_LIMIT = 500;
+
+// Who a command's events belong to. Tab and window commands resolve no tab target, so they go by
+// the caller's session.
+function recordEventTarget(request) {
+  if (request.target) return { session: request.target.session, tabId: request.target.tabId };
+  return { browser: true, session: request.callerSession };
+}
 
 // Each record belongs to the session (or, without one, the tab) that started it.
 async function handleRecordRequest(tool, args, msg, request) {
@@ -1834,7 +1842,7 @@ function sendToolResponse(socket, id, result, error) {
           resultSummary: finalError ? "failed" : "success",
         };
         appendActivity(event);
-        appendRecordEvent(event, { target: request.target });
+        appendRecordEvent(event, { target: recordEventTarget(request) });
       }
     }
     await cleanupRequestTransfers(request);

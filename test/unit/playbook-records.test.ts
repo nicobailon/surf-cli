@@ -133,6 +133,31 @@ describe("record ownership", () => {
     expect(commands(beta.id, root)).toEqual(["click"]);
   });
 
+  it("records tab and window commands, which have no tab target, by the caller's session", () => {
+    const root = tempRoot();
+    const alpha = records.startRecord({ site: "a", op: "read", tabId: 11, session: "alpha", root });
+    const loose = records.startRecord({ site: "b", op: "read", tabId: 22, root });
+    records.appendRecordEvent(completed("tab.new"), {
+      target: { browser: true, session: "alpha" },
+      root,
+    });
+    records.appendRecordEvent(completed("window.new"), { target: { browser: true }, root });
+    expect(
+      records.appendRecordEvent(completed("tab.close"), {
+        target: { browser: true, session: "beta" },
+        root,
+      }),
+    ).toBe(false);
+    expect(commands(alpha.id, root)).toEqual(["tab.new"]);
+    expect(commands(loose.id, root)).toEqual(["window.new"]);
+
+    // Without a session, the record must be the only one started without a session.
+    records.startRecord({ site: "c", op: "read", tabId: 33, root });
+    expect(
+      records.appendRecordEvent(completed("tab.switch"), { target: { browser: true }, root }),
+    ).toBe(false);
+  });
+
   it("refuses mark, stop and discard from a session that does not own the record", () => {
     const root = tempRoot();
     const alpha = records.startRecord({ site: "a", op: "read", tabId: 11, session: "alpha", root });
