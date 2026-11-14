@@ -249,7 +249,8 @@ function draftEffect({ record, steps, trace }) {
   return writes.some((step) => !networkEvidence || !UI_STEPS.has(step.tool)) ? "write" : "read";
 }
 
-function draftFromRecord(recordId, root = getPrivateStateRoot()) {
+// `warnings` collects why the draft left something out.
+function draftFromRecord(recordId, root = getPrivateStateRoot(), { warnings = [] } = {}) {
   const record = readRecord(recordId, root);
   if (!record) throw new Error(`record not found: ${recordId}`);
   const events = readEvents(recordId, root).filter((event) => event.type === "tool.completed");
@@ -263,7 +264,14 @@ function draftFromRecord(recordId, root = getPrivateStateRoot()) {
   const effect = draftEffect({ record, steps, trace });
   const strategies = [];
   const observed = trace?.entries?.findLast((entry) => ["GET", "HEAD", "OPTIONS", "POST"].includes(entry.method) && entry.status >= 200 && entry.status < 400);
-  if (observed) {
+  // Replaying telemetry would send it again, and a read op must never replay a write method, so
+  // such a request gives the draft no network strategy (a different request isn't picked instead).
+  const skipped = observed && (isTelemetryRequest(observed, record.origin) ? "is telemetry" : effect === "read" && requestEffect(observed) === "write" ? "can write, but the draft is a read" : null);
+  if (skipped) {
+    const shown = new URL(observed.url);
+    shown.search = "";
+    warnings.push(`the draft has no network strategy: the request it would replay, ${observed.method} ${shown}, ${skipped}`);
+  } else if (observed) {
     const url = new URL(observed.url);
     const query = Object.fromEntries(url.searchParams.entries());
     url.search = "";
@@ -288,13 +296,15 @@ function draftFromRecord(recordId, root = getPrivateStateRoot()) {
 function stopRecord({ target, draft = false, root = getPrivateStateRoot() } = {}) {
   let record = updateStatus("stopping", { target, root });
   let op;
-  if (draft) op = draftFromRecord(record.id, root);
+  const draftWarnings = [];
+  if (draft) op = draftFromRecord(record.id, root, { warnings: draftWarnings });
   record = readRecord(record.id, root);
   record.status = draft ? "draft_created" : "stopped";
   record.stoppedAt = new Date().toISOString();
   writeRecord(record, root);
   writeActiveIds(activeIds(root).filter((id) => id !== record.id), root);
-  return { record, ...(op ? { draft: op } : {}), ...(record.trace?.warnings ? { warnings: record.trace.warnings } : {}) };
+  const warnings = [...(record.trace?.warnings || []), ...draftWarnings];
+  return { record, ...(op ? { draft: op } : {}), ...(warnings.length > 0 ? { warnings } : {}) };
 }
 
 function discardRecord({ target, root = getPrivateStateRoot() } = {}) {

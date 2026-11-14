@@ -259,11 +259,42 @@ describe("draft effect", () => {
     expect(op.args.review_key).toBeUndefined();
   });
 
-  it("picks the draft's network request as before, leaving telemetry to the effect", () => {
-    const op = draft({ commands: ["click"], trace: [search, ...telemetry] });
-    expect(op.run[0]).toMatchObject({
+  it("adds no network strategy when the request it picks is telemetry, and never a write strategy to a read", () => {
+    const root = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "surf-records-")), "state");
+    roots.push(path.dirname(root));
+    const record = records.startRecord({
+      site: "fixture",
+      op: "search",
+      tabId: 1,
+      origin: "https://example.test",
+      network: true,
+      root,
+    });
+    records.appendRecordEvent(
+      { type: "tool.completed", command: "click", argsRedacted: {} },
+      { target: { tabId: 1 }, root },
+    );
+    // The last 2xx/3xx request is the error-reporting POST, as on main.
+    records.attachNetworkTrace(record.id, [search, ...telemetry], root, {
+      capture: { active: true, interruptions: [] },
+    });
+    const stopped = records.stopRecord({ target: { tabId: 1 }, draft: true, root });
+    expect(stopped.draft.effect).toBe("read");
+    expect(stopped.draft.run.map((strategy: { using: string }) => strategy.using)).toEqual([
+      "workflow",
+    ]);
+    for (const strategy of stopped.draft.run.filter(
+      (item: { using: string }) => item.using === "network",
+    )) {
+      expect(["GET", "HEAD", "OPTIONS"]).toContain(strategy.request.method);
+    }
+    expect(stopped.warnings).toEqual([
+      "the draft has no network strategy: the request it would replay, POST https://o1.ingest.sentry.io/api/1/envelope/, is telemetry",
+    ]);
+    // Picking stays the same rule: when the last request is the search, the search is replayed.
+    expect(draft({ commands: ["click"], trace: [...telemetry, search] }).run[0]).toMatchObject({
       using: "network",
-      request: { method: "POST", url: "https://o1.ingest.sentry.io/api/1/envelope/" },
+      request: { method: "GET", url: "https://example.test/search" },
     });
   });
 
@@ -275,9 +306,12 @@ describe("draft effect", () => {
       type: "XHR",
       url: "https://example.test/api/employees",
     };
-    const op = draft({ commands: ["type", "click"], trace: [search, create, ...telemetry] });
+    const op = draft({ commands: ["type", "click"], trace: [search, ...telemetry, create] });
     expect(op).toMatchObject({ effect: "write", safety: { authorization: "explicit" } });
-    expect(op.run[0]).toMatchObject({ using: "network", request: { method: "POST" } });
+    expect(op.run[0]).toMatchObject({
+      using: "network",
+      request: { method: "POST", url: "https://example.test/api/employees" },
+    });
     expect(
       draft({ commands: ["click"], trace: [{ ...create, method: "DELETE", status: 0 }] }).effect,
     ).toBe("write");
