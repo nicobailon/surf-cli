@@ -205,7 +205,7 @@ function attachNetworkTrace(recordId, entries, root = getPrivateStateRoot(), { c
 
 const READ_METHODS = new Set(["GET", "HEAD", "OPTIONS"]);
 // Beacons, CSP reports and requests to analytics and error-reporting services don't change the
-// site's data, so they don't make a recorded flow a write, unless the record is on that service's
+// site's data, so they don't make a recorded flow a write, unless they are made on that service's
 // own site (posthog.com's dashboards, say).
 const TELEMETRY_TYPES = new Set(["Ping", "CSPViolationReport"]);
 const TELEMETRY_HOSTS = [
@@ -224,12 +224,16 @@ function hostname(url) {
   try { return new URL(url).hostname; } catch { return ""; }
 }
 
+// A request to a telemetry host is first-party, not telemetry, when the record started on that
+// service's site or the page that sent it (`tabUrl`) is on it. With neither known, it isn't
+// treated as telemetry.
 function isTelemetryRequest(entry, recordOrigin) {
   if (TELEMETRY_TYPES.has(entry.type)) return true;
+  const sites = [hostname(recordOrigin), hostname(entry.tabUrl)].filter(Boolean);
+  if (sites.length === 0) return false;
   const within = (host, suffix) => host === suffix || host.endsWith(`.${suffix}`);
   const host = hostname(entry.url);
-  const siteHost = hostname(recordOrigin);
-  return TELEMETRY_HOSTS.some((suffix) => within(host, suffix) && !within(siteHost, suffix));
+  return TELEMETRY_HOSTS.some((suffix) => within(host, suffix) && !sites.some((site) => within(site, suffix)));
 }
 
 function requestEffect(entry) {

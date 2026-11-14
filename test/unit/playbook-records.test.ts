@@ -334,6 +334,20 @@ describe("draft effect", () => {
     expect(draft({ commands: ["click"], trace: [dashboard] }).effect).toBe("read");
   });
 
+  it("treats an analytics vendor's site reached by navigating, or with no known site, as the site", () => {
+    const createProject = {
+      id: "r_8",
+      method: "POST",
+      status: 201,
+      type: "XHR",
+      url: "https://sentry.io/api/0/teams/acme/core/projects/",
+      tabUrl: "https://sentry.io/organizations/acme/projects/new/",
+    };
+    expect(draft({ commands: ["click"], trace: [createProject] }).effect).toBe("write");
+    const { tabUrl: _tabUrl, ...withoutPage } = createProject;
+    expect(draft({ commands: ["click"], trace: [withoutPage], origin: "" }).effect).toBe("write");
+  });
+
   it("keeps page writes as writes when the trace dropped requests or hit the read limit", () => {
     expect(
       draft({
