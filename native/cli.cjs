@@ -527,7 +527,7 @@ const TOOLS = {
       "tab.new": {
         desc: "Open new tab",
         args: ["url"],
-        opts: { urls: "Open multiple URLs" },
+        opts: { urls: "Open multiple URLs", session: "Only picks the playbook record that holds this command, not the tab or window it acts on" },
         examples: [
           { cmd: 'tab.new "https://google.com"', desc: "Open single tab" },
           { cmd: 'tab.new --urls "https://a.com" "https://b.com"', desc: "Open multiple" },
@@ -536,6 +536,7 @@ const TOOLS = {
       "tab.switch": {
         desc: "Switch to tab by ID or name",
         args: ["id"],
+        opts: { session: "Only picks the playbook record that holds this command, not the tab or window it acts on" },
         examples: [
           { cmd: "tab.switch 123", desc: "Switch by ID" },
           { cmd: 'tab.switch "myTab"', desc: "Switch by name" },
@@ -544,7 +545,7 @@ const TOOLS = {
       "tab.close": {
         desc: "Close tab by ID or name",
         args: ["id"],
-        opts: { ids: "Close multiple tabs" },
+        opts: { ids: "Close multiple tabs", session: "With an id, only picks the playbook record that holds this command, not the tab it closes; without one, closes the session's tab" },
         examples: [{ cmd: "tab.close 123", desc: "Close tab" }]
       },
       "tab.move": {
@@ -558,7 +559,7 @@ const TOOLS = {
         args: ["name"],
         examples: [{ cmd: 'tab.name "dashboard"', desc: "Name current tab" }]
       },
-      "tab.unname": { desc: "Unregister a named tab", args: ["name"] },
+      "tab.unname": { desc: "Unregister a named tab", args: ["name"], opts: { session: "Only picks the playbook record that holds this command, not the tab or window it acts on" } },
       "tab.named": { desc: "List all named tabs", args: [] },
       "tab.group": {
         desc: "Create/add to tab group",
@@ -1574,7 +1575,8 @@ const TOOLS = {
           width: "Window width",
           height: "Window height",
           incognito: "Open incognito window",
-          unfocused: "Don't focus the new window"
+          unfocused: "Don't focus the new window",
+          session: "Only picks the playbook record that holds this command, not the tab or window it acts on",
         },
         examples: [
           { cmd: 'window.new "https://example.com"', desc: "New window with URL" },
@@ -1596,6 +1598,7 @@ const TOOLS = {
       "window.close": {
         desc: "Close a window by ID",
         args: ["id"],
+        opts: { session: "Only picks the playbook record that holds this command, not the tab or window it acts on" },
         examples: [{ cmd: "window.close 123", desc: "Close window" }]
       },
       "window.resize": {
