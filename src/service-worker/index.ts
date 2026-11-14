@@ -4696,6 +4696,8 @@ initNativeMessaging(async (msg) => {
   }
 
   if (tabId && msg.frameId !== undefined) await validateRequestedFrame(tabId, msg.frameId);
+  // A dialog blocks attaching, so dialog commands skip this.
+  if (tabId && !isDialogCommand) await cdp.resumeNetworkCapture(tabId);
   const handle = () => handleMessage({ ...msg, tabId }, {} as chrome.runtime.MessageSender);
   const runAction = tabId && !isDialogCommand
     ? () => returnOnNativeDialog(tabId, msg.watchDialogs === true, handle)

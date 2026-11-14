@@ -312,6 +312,20 @@ export class CDPController {
     await this.resumeInterruptedCapture(tabId);
   }
 
+  /**
+   * Re-attaches a tab whose network capture a debugger detach cut off, which turns capture back on.
+   * Commands that never use the debugger (navigation, for one) would otherwise leave it off. A tab
+   * whose user cancelled debugging is left alone. Best effort: if attaching fails, the next command
+   * that needs the debugger reports the detach.
+   */
+  async resumeNetworkCapture(tabId: number): Promise<void> {
+    if (!this.interruptedCapture.has(tabId) || this.targets.has(tabId)) return;
+    if (this.networkInterruptions.get(tabId)?.at(-1)?.reason === "canceled_by_user") return;
+    try {
+      await this.attach(tabId);
+    } catch {}
+  }
+
   private async resumeInterruptedCapture(tabId: number): Promise<void> {
     const capture = this.interruptedCapture.get(tabId);
     if (!capture) return;
