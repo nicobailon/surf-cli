@@ -3194,6 +3194,8 @@ export async function handleMessage(
 
     case "READ_NETWORK_REQUESTS": {
       if (!tabId) throw new Error("No tabId provided");
+      // Taken before reading turns capture on, so a stopped capture shows as stopped.
+      const capture = cdp.getNetworkCaptureStatus(tabId);
 
       try {
         if (message.bodyMode !== undefined || message.perBodyBytes !== undefined || message.totalBodyBytes !== undefined) {
@@ -3227,6 +3229,7 @@ export async function handleMessage(
         const limit = message.limit || 100;
         return {
           entries: entries.slice(0, limit),
+          capture,
           format: message.format,
           verbose: message.verbose
         };
@@ -3254,6 +3257,7 @@ export async function handleMessage(
 
       return {
         requests,
+        capture,
         format: message.format,
         verbose: message.verbose
       };

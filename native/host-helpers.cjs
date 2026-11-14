@@ -185,8 +185,9 @@ function formatToolContent(result, log = () => {}) {
   // Handle both requests (basic) and entries (full) formats
   const items = result.requests || result.entries;
   if (items && Array.isArray(items)) {
+    const gaps = networkFormatters.describeCaptureGaps(result.capture).map((line) => `\nWarning: ${line}`).join("");
     if (items.length === 0) {
-      return text("No network requests captured");
+      return text(`No network requests captured${gaps}`);
     }
     let formatted;
     if (result.format === 'curl') {
@@ -194,7 +195,7 @@ function formatToolContent(result, log = () => {}) {
     } else if (result.format === 'urls') {
       formatted = networkFormatters.formatUrls(items);
     } else if (result.format === 'raw') {
-      formatted = networkFormatters.formatRaw(items);
+      formatted = networkFormatters.formatRaw(items, result.capture);
     } else if (result.verbose > 0) {
       formatted = networkFormatters.formatVerbose(items, result.verbose);
     } else if (result.entries) {
@@ -208,7 +209,7 @@ function formatToolContent(result, log = () => {}) {
         return `${status} ${method} ${type} ${r.url}`;
       }).join("\n");
     }
-    return text(formatted);
+    return text(result.format === 'raw' ? formatted : `${formatted}${gaps}`);
   }
 
   if (result.output !== undefined) {

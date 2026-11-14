@@ -12,6 +12,7 @@ const {
 } = require("./private-state.cjs");
 const { redactSensitiveFields, redactUrlSecrets, safeHeaders } = require("./redaction.cjs");
 const { commandMetadata, promoteRedactedStepArgs } = require("./workflow-definition.cjs");
+const { describeCaptureGaps } = require("./formatters/network.cjs");
 const { version: PACKAGE_VERSION } = require("../package.json");
 
 function recordsRoot(root = getPrivateStateRoot()) {
@@ -179,15 +180,19 @@ function traceEntriesForRecord(record, entries) {
   return entries.filter((entry) => !(entry.ts >= EPOCH_MS_FLOOR) || entry.ts >= cutoff);
 }
 
-function attachNetworkTrace(recordId, entries, root = getPrivateStateRoot()) {
+// `capture` is the extension's capture status when the trace was read. Without one, or with a gap,
+// the trace is incomplete and can't show that a flow sent no writes.
+function attachNetworkTrace(recordId, entries, root = getPrivateStateRoot(), { capture } = {}) {
   const record = readRecord(recordId, root);
   if (!record) throw new Error(`record not found: ${recordId}`);
   const sanitized = entries.map((entry) => sanitizeTraceEntry(entry, record.redaction.includeInputValues));
+  const warnings = describeCaptureGaps(capture, { atStop: true });
+  const complete = Boolean(capture) && warnings.length === 0;
   const directory = path.join(recordDirectory(recordId, root), "network");
   ensurePrivateDir(directory, root);
   const tracePath = path.join(directory, "trace.json");
-  atomicWriteJson(tracePath, { version: 1, recordId, capturedAt: new Date().toISOString(), entries: sanitized }, { root });
-  record.trace = { path: "network/trace.json", count: sanitized.length };
+  atomicWriteJson(tracePath, { version: 1, recordId, capturedAt: new Date().toISOString(), complete, ...(capture ? { capture } : {}), entries: sanitized }, { root });
+  record.trace = { path: "network/trace.json", count: sanitized.length, complete, ...(warnings.length > 0 ? { warnings } : {}) };
   writeRecord(record, root);
   return { path: tracePath, count: sanitized.length };
 }
@@ -221,12 +226,12 @@ function requestEffect(entry) {
 
 // A recorded flow is a write when its trace holds a request with a method other than
 // GET/HEAD/OPTIONS that isn't telemetry. UI steps that sent no such request are reads, but only when
-// the record captured the network: without a trace, any page write still makes the op a write.
+// the record captured the network without a gap: otherwise any page write still makes the op a write.
 // Steps that act beyond the page (tabs, cookies, emulation, AI providers) are always writes.
 function draftEffect({ record, steps, trace }) {
   const entries = trace?.entries || [];
   if (entries.some((entry) => requestEffect(entry) === "write" && !isTelemetryRequest(entry))) return "write";
-  const networkEvidence = record.capture?.network === true && Boolean(trace);
+  const networkEvidence = record.capture?.network === true && trace?.complete === true;
   const writes = steps.filter((step) => ["page-write", "unknown"].includes(commandMetadata(step.tool).effect));
   return writes.some((step) => !networkEvidence || !UI_STEPS.has(step.tool)) ? "write" : "read";
 }
@@ -276,7 +281,7 @@ function stopRecord({ target, draft = false, root = getPrivateStateRoot() } = {}
   record.stoppedAt = new Date().toISOString();
   writeRecord(record, root);
   writeActiveIds(activeIds(root).filter((id) => id !== record.id), root);
-  return { record, ...(op ? { draft: op } : {}) };
+  return { record, ...(op ? { draft: op } : {}), ...(record.trace?.warnings ? { warnings: record.trace.warnings } : {}) };
 }
 
 function discardRecord({ target, root = getPrivateStateRoot() } = {}) {

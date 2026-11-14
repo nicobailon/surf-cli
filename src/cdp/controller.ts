@@ -121,6 +121,15 @@ export interface PendingDialog {
   timestamp: number;
 }
 
+/** A time network capture stopped because the debugger detached, and when it came back. */
+export interface NetworkCaptureInterruption {
+  reason: string;
+  at: number;                    // epoch ms
+  resumedAt?: number;            // epoch ms
+}
+
+type NetworkCaptureSettings = { mode: "none" | "text" | "all"; perBodyBytes: number; totalBytes: number };
+
 type ConsoleEventCallback = (event: ConsoleMessage) => void;
 type NetworkEventCallback = (event: {
   method: string;
@@ -239,7 +248,10 @@ export class CDPController {
   private detachReasons: Map<number, string> = new Map();
   private networkEntrySeq = 0; // Sequence counter for unique IDs
   private networkBodyBytes: Map<number, number> = new Map();
-  private networkCapture: Map<number, { mode: "none" | "text" | "all"; perBodyBytes: number; totalBytes: number }> = new Map();
+  private networkCapture: Map<number, NetworkCaptureSettings> = new Map();
+  // Capture a detach cut off: resumed with the same settings on the next attach.
+  private interruptedCapture: Map<number, NetworkCaptureSettings> = new Map();
+  private networkInterruptions: Map<number, NetworkCaptureInterruption[]> = new Map();
   private networkEventQueue: Map<number, Promise<void>> = new Map();
   private static debuggerListenerRegistered = false;
 
@@ -288,11 +300,24 @@ export class CDPController {
 
     this.setupEventListener();
     this.consoleMessages.set(tabId, []);
-    this.networkRequests.set(tabId, []);
+    if (!this.networkRequests.has(tabId)) this.networkRequests.set(tabId, []);
 
     try {
       await this.send(tabId, "Page.enable");
     } catch (e) {}
+    await this.resumeInterruptedCapture(tabId);
+  }
+
+  private async resumeInterruptedCapture(tabId: number): Promise<void> {
+    const capture = this.interruptedCapture.get(tabId);
+    if (!capture) return;
+    this.interruptedCapture.delete(tabId);
+    this.networkCapture.set(tabId, capture);
+    try {
+      await this.send(tabId, "Network.enable", { maxPostDataSize: 65536 });
+    } catch (e) {}
+    const interruption = this.networkInterruptions.get(tabId)?.at(-1);
+    if (interruption && interruption.resumedAt === undefined) interruption.resumedAt = Date.now();
   }
 
   isAttached(tabId: number): boolean {
@@ -315,6 +340,8 @@ export class CDPController {
       this.networkEntries.delete(tabId);
       this.networkBodyBytes.delete(tabId);
       this.networkCapture.delete(tabId);
+      this.interruptedCapture.delete(tabId);
+      this.networkInterruptions.delete(tabId);
       this.consoleCallbacks.delete(tabId);
       this.networkCallbacks.delete(tabId);
       this.notifyScreencastError(tabId, new CDPControllerError(
@@ -353,9 +380,19 @@ export class CDPController {
         this.detachReasons.set(tabId, reason || "unknown");
         this.targets.delete(tabId);
         this.consoleMessages.delete(tabId);
-        this.networkRequests.delete(tabId);
-        this.networkEntries.delete(tabId);
-        this.networkBodyBytes.delete(tabId);
+        // Chrome stops sending network events once the debugger detaches. Note when, keep what was
+        // captured, and turn capture back on at the next attach.
+        const capture = this.networkCapture.get(tabId);
+        if (capture) {
+          this.interruptedCapture.set(tabId, capture);
+          const interruptions = this.networkInterruptions.get(tabId) || [];
+          interruptions.push({ reason: reason || "unknown", at: Date.now() });
+          this.networkInterruptions.set(tabId, interruptions);
+        } else if (!this.interruptedCapture.has(tabId)) {
+          this.networkRequests.delete(tabId);
+          this.networkEntries.delete(tabId);
+          this.networkBodyBytes.delete(tabId);
+        }
         this.networkCapture.delete(tabId);
         this.consoleCallbacks.delete(tabId);
         this.networkCallbacks.delete(tabId);
@@ -862,6 +899,7 @@ export class CDPController {
   async disableNetworkTracking(tabId: number): Promise<void> {
     await this.drainNetworkEvents(tabId);
     this.networkCapture.delete(tabId);
+    this.interruptedCapture.delete(tabId);
     this.networkBodyBytes.delete(tabId);
     if (this.networkCallbacks.get(tabId)?.size) return;
     try {
@@ -1248,6 +1286,15 @@ export class CDPController {
     this.networkRequests.set(tabId, []);
     this.networkEntries.set(tabId, new Map());
     this.networkBodyBytes.set(tabId, 0);
+    this.networkInterruptions.delete(tabId);
+  }
+
+  /** Whether network capture is on for the tab, and each time a detach stopped it since the last clear. */
+  getNetworkCaptureStatus(tabId: number): { active: boolean; interruptions: NetworkCaptureInterruption[] } {
+    return {
+      active: this.networkCapture.has(tabId),
+      interruptions: (this.networkInterruptions.get(tabId) || []).map((interruption) => ({ ...interruption })),
+    };
   }
 
   /**

@@ -9,6 +9,8 @@ const cdpState = vi.hoisted(() => ({
   getNetworkEntries: vi.fn(() => cdpState.entries),
   getNetworkEntry: vi.fn(() => null),
   getResponseBody: vi.fn(),
+  getNetworkRequests: vi.fn(() => [] as Array<Record<string, unknown>>),
+  getNetworkCaptureStatus: vi.fn(),
 }));
 
 vi.mock("../../../src/cdp/controller", () => ({
@@ -19,6 +21,8 @@ vi.mock("../../../src/cdp/controller", () => ({
     getNetworkEntries = cdpState.getNetworkEntries;
     getNetworkEntry = cdpState.getNetworkEntry;
     getResponseBody = cdpState.getResponseBody;
+    getNetworkRequests = cdpState.getNetworkRequests;
+    getNetworkCaptureStatus = cdpState.getNetworkCaptureStatus;
   },
 }));
 
@@ -60,6 +64,20 @@ describe("network export handlers", () => {
     expect(cdpState.enableNetworkTracking).toHaveBeenCalledWith(42);
     expect(cdpState.drainNetworkEvents).toHaveBeenCalledWith(42);
     expect(cdpState.getNetworkEntries).toHaveBeenCalledWith(42, {});
+  });
+
+  it("reports capture interruptions as they stood before reading re-enables capture", async () => {
+    const handleMessage = await loadHandleMessage();
+    const capture = { active: false, interruptions: [{ reason: "target_closed", at: 1 }] };
+    cdpState.getNetworkCaptureStatus.mockReturnValue(capture);
+    cdpState.enableNetworkTracking.mockImplementation(() => {
+      cdpState.getNetworkCaptureStatus.mockReturnValue({ ...capture, active: true });
+    });
+    const result = await handleMessage(
+      { type: "READ_NETWORK_REQUESTS", tabId: 42, full: true },
+      {},
+    );
+    expect(result).toMatchObject({ entries: [], capture });
   });
 
   it("stops explicit network capture", async () => {

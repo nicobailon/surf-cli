@@ -29,6 +29,60 @@ describe("record network trace", () => {
   });
 });
 
+describe("record network capture gaps", () => {
+  it("says when capture was interrupted and stops trusting the trace to clear page writes", () => {
+    const root = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "surf-records-")), "state");
+    roots.push(path.dirname(root));
+    const record = records.startRecord({
+      site: "fixture",
+      op: "search",
+      tabId: 1,
+      network: true,
+      root,
+    });
+    records.appendRecordEvent(
+      { type: "tool.completed", command: "click", argsRedacted: {} },
+      { target: { tabId: 1 }, root },
+    );
+    const at = Date.parse("2026-11-14T10:00:00Z");
+    records.attachNetworkTrace(
+      record.id,
+      [{ id: "r_1", method: "GET", status: 200, url: "https://example.test/search" }],
+      root,
+      {
+        capture: {
+          active: true,
+          interruptions: [{ reason: "target_closed", at, resumedAt: at + 5000 }],
+        },
+      },
+    );
+    const stopped = records.stopRecord({ target: { tabId: 1 }, draft: true, root });
+    expect(stopped.warnings).toEqual([
+      "network capture was interrupted at 2026-11-14T10:00:00.000Z (debugger detached: target_closed) until 2026-11-14T10:00:05.000Z; requests in between were not captured",
+    ]);
+    expect(stopped.record.trace).toMatchObject({ count: 1, complete: false });
+    expect(stopped.draft.effect).toBe("write");
+  });
+
+  it("says when capture was not running at stop and was never seen to stop", () => {
+    const root = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "surf-records-")), "state");
+    roots.push(path.dirname(root));
+    const record = records.startRecord({
+      site: "fixture",
+      op: "search",
+      tabId: 1,
+      network: true,
+      root,
+    });
+    records.attachNetworkTrace(record.id, [], root, {
+      capture: { active: false, interruptions: [] },
+    });
+    expect(records.stopRecord({ target: { tabId: 1 }, root }).warnings).toEqual([
+      "network capture was not running when the record stopped (the extension may have restarted); requests may be missing",
+    ]);
+  });
+});
+
 describe("record ownership", () => {
   const tempRoot = () => {
     const root = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "surf-records-")), "state");
@@ -138,7 +192,11 @@ describe("draft effect", () => {
         { target: { tabId: 1 }, root },
       );
     }
-    if (trace) records.attachNetworkTrace(record.id, trace, root);
+    if (trace) {
+      records.attachNetworkTrace(record.id, trace, root, {
+        capture: { active: true, interruptions: [] },
+      });
+    }
     return records.stopRecord({ target: { tabId: 1 }, draft: true, root }).draft;
   };
   const search = {

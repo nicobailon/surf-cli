@@ -1180,6 +1180,69 @@ describe("CDPController", () => {
     });
   });
 
+  describe("network capture interruptions", () => {
+    const tabId = 2650;
+
+    it("notes when a detach stops capture, keeps what it captured, and resumes on the next attach", async () => {
+      (
+        CDPController as unknown as { debuggerListenerRegistered: boolean }
+      ).debuggerListenerRegistered = false;
+      const controller = new CDPController();
+      mockChrome.debugger.attach.mockResolvedValue(undefined);
+      mockChrome.debugger.sendCommand.mockResolvedValue({});
+      await controller.enableNetworkTracking(tabId, { bodyMode: "none" });
+      await (
+        controller as unknown as {
+          handleCDPEvent: (tab: number, event: string, value: unknown) => Promise<void> | void;
+        }
+      ).handleCDPEvent(tabId, "Network.requestWillBeSent", {
+        requestId: "before-detach",
+        timestamp: 1,
+        wallTime: 1_794_000_000,
+        request: { url: "https://example.test/api/create", method: "POST", headers: {} },
+      });
+      expect(controller.getNetworkCaptureStatus(tabId)).toEqual({
+        active: true,
+        interruptions: [],
+      });
+
+      vi.useFakeTimers();
+      vi.setSystemTime(new Date("2026-11-14T10:00:00Z"));
+      const onDetach = mockChrome.debugger.onDetach.addListener.mock.calls.at(-1)?.[0];
+      onDetach({ tabId }, "target_closed");
+      expect(controller.getNetworkCaptureStatus(tabId)).toEqual({
+        active: false,
+        interruptions: [{ reason: "target_closed", at: Date.parse("2026-11-14T10:00:00Z") }],
+      });
+      expect(controller.getNetworkEntries(tabId, { includeStatic: true })).toHaveLength(1);
+
+      // The next command reports the detach once, then attaches again.
+      await expect(controller.sendCommand(tabId, "Runtime.evaluate")).rejects.toMatchObject({
+        code: "debugger_detached",
+      });
+      mockChrome.debugger.sendCommand.mockClear();
+      vi.setSystemTime(new Date("2026-11-14T10:00:05Z"));
+      await controller.sendCommand(tabId, "Runtime.evaluate");
+      expect(mockChrome.debugger.sendCommand).toHaveBeenCalledWith({ tabId }, "Network.enable", {
+        maxPostDataSize: 65536,
+      });
+      expect(controller.getNetworkCaptureStatus(tabId)).toEqual({
+        active: true,
+        interruptions: [
+          {
+            reason: "target_closed",
+            at: Date.parse("2026-11-14T10:00:00Z"),
+            resumedAt: Date.parse("2026-11-14T10:00:05Z"),
+          },
+        ],
+      });
+      expect(controller.getNetworkEntries(tabId, { includeStatic: true })).toHaveLength(1);
+
+      controller.clearNetworkRequests(tabId);
+      expect(controller.getNetworkCaptureStatus(tabId).interruptions).toEqual([]);
+    });
+  });
+
   describe("handleDialog", () => {
     let controller: CDPController;
     const tabId = 2700;

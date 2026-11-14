@@ -996,3 +996,16 @@ describe("readiness tools", () => {
     });
   });
 });
+
+describe("formatToolContent network capture", () => {
+  it("warns when network capture was interrupted", () => {
+    const at = Date.parse("2026-11-14T10:00:00Z");
+    const [content] = helpers.formatToolContent({
+      requests: [],
+      capture: { active: true, interruptions: [{ reason: "target_closed", at }] },
+    });
+    expect(content.text).toBe(
+      "No network requests captured\nWarning: network capture was interrupted at 2026-11-14T10:00:00.000Z (debugger detached: target_closed) and had not resumed when read; later requests were not captured",
+    );
+  });
+});

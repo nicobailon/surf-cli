@@ -1656,7 +1656,7 @@ async function handleRecordRequest(tool, args, msg, request) {
     if (record.capture.network) {
       try {
         const result = await requestCallExtension(request, tool, { type: "READ_NETWORK_REQUESTS", tabId: record.tabId, full: true, limit: 500 });
-        attachNetworkTrace(record.id, traceEntriesForRecord(record, result.entries || []));
+        attachNetworkTrace(record.id, traceEntriesForRecord(record, result.entries || []), undefined, { capture: result.capture });
       } finally {
         await requestCallExtension(request, tool, { type: "STOP_NETWORK_CAPTURE", tabId: record.tabId }, 30000, true).catch(() => {});
       }

@@ -171,9 +171,9 @@ function formatCurlBatch(entries) {
 /**
  * Full JSON output
  */
-function formatRaw(entries) {
+function formatRaw(entries, capture) {
   // Return as object with entries key so CLI can detect it
-  return JSON.stringify({ entries, _format: 'raw' }, null, 2);
+  return JSON.stringify({ entries, ...(capture ? { capture } : {}), _format: 'raw' }, null, 2);
 }
 
 /**
@@ -385,7 +385,25 @@ function formatBody(body, maxLen = 2048) {
   return truncated.join('\n');
 }
 
+/**
+ * Explain each time network capture stopped. `atStop` also flags capture that was off when a
+ * record stopped without a seen interruption (the extension restarted, for example).
+ */
+function describeCaptureGaps(capture, { atStop = false } = {}) {
+  const lines = (capture?.interruptions || []).map(({ reason, at, resumedAt }) => {
+    const from = `network capture was interrupted at ${new Date(at).toISOString()} (debugger detached: ${reason})`;
+    return resumedAt
+      ? `${from} until ${new Date(resumedAt).toISOString()}; requests in between were not captured`
+      : `${from} and had not resumed when read; later requests were not captured`;
+  });
+  if (atStop && capture && !capture.active && lines.length === 0) {
+    lines.push("network capture was not running when the record stopped (the extension may have restarted); requests may be missing");
+  }
+  return lines;
+}
+
 module.exports = { 
+  describeCaptureGaps,
   formatCompact, 
   formatUrls, 
   formatCurl, 

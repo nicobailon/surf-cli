@@ -4746,6 +4746,7 @@ async function handleResponse(response) {
       console.log("No network requests captured");
     } else if (data._format === 'raw') {
       // Raw JSON output - print entries array directly
+      for (const line of networkFormatters.describeCaptureGaps(data.capture)) console.error(`Warning: ${line}`);
       console.log(JSON.stringify(items, null, 2));
     } else {
       // Simple compact format for now
