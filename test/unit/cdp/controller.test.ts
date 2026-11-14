@@ -1207,6 +1207,7 @@ describe("CDPController", () => {
       expect(controller.getNetworkCaptureStatus(tabId)).toEqual({
         active: true,
         interruptions: [],
+        dropped: 0,
       });
 
       vi.useFakeTimers();
@@ -1216,6 +1217,7 @@ describe("CDPController", () => {
       expect(controller.getNetworkCaptureStatus(tabId)).toEqual({
         active: false,
         interruptions: [{ reason: "target_closed", at: Date.parse("2026-11-14T10:00:00Z") }],
+        dropped: 0,
       });
       expect(controller.getNetworkEntries(tabId, { includeStatic: true })).toHaveLength(1);
 
@@ -1238,11 +1240,37 @@ describe("CDPController", () => {
             resumedAt: Date.parse("2026-11-14T10:00:05Z"),
           },
         ],
+        dropped: 0,
       });
       expect(controller.getNetworkEntries(tabId, { includeStatic: true })).toHaveLength(1);
 
       controller.clearNetworkRequests(tabId);
       expect(controller.getNetworkCaptureStatus(tabId).interruptions).toEqual([]);
+    });
+
+    it("counts the requests it drops to stay within its per-tab limit", async () => {
+      const controller = new CDPController();
+      mockChrome.debugger.attach.mockResolvedValue(undefined);
+      mockChrome.debugger.sendCommand.mockResolvedValue({});
+      await controller.enableNetworkTracking(tabId + 1, { bodyMode: "none" });
+      const dispatch = (
+        controller as unknown as {
+          handleCDPEvent: (tab: number, event: string, value: unknown) => Promise<void> | void;
+        }
+      ).handleCDPEvent.bind(controller);
+      for (let index = 0; index < 510; index++) {
+        await dispatch(tabId + 1, "Network.requestWillBeSent", {
+          requestId: `req-${index}`,
+          timestamp: index,
+          wallTime: 1_794_000_000 + index,
+          request: { url: `https://example.test/${index}`, method: "GET", headers: {} },
+        });
+      }
+      const kept = controller.getNetworkEntries(tabId + 1, { includeStatic: true }).length;
+      expect(kept + controller.getNetworkCaptureStatus(tabId + 1).dropped).toBe(510);
+      expect(controller.getNetworkCaptureStatus(tabId + 1).dropped).toBeGreaterThan(0);
+      controller.clearNetworkRequests(tabId + 1);
+      expect(controller.getNetworkCaptureStatus(tabId + 1).dropped).toBe(0);
     });
   });
 

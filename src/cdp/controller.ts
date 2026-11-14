@@ -253,6 +253,8 @@ export class CDPController {
   // Capture a detach cut off: resumed with the same settings on the next attach.
   private interruptedCapture: Map<number, NetworkCaptureSettings> = new Map();
   private networkInterruptions: Map<number, NetworkCaptureInterruption[]> = new Map();
+  // Entries dropped to keep the per-tab limit, since the last clear.
+  private networkDropped: Map<number, number> = new Map();
   private networkEventQueue: Map<number, Promise<void>> = new Map();
   private static debuggerListenerRegistered = false;
 
@@ -343,6 +345,7 @@ export class CDPController {
       this.networkCapture.delete(tabId);
       this.interruptedCapture.delete(tabId);
       this.networkInterruptions.delete(tabId);
+      this.networkDropped.delete(tabId);
       this.consoleCallbacks.delete(tabId);
       this.networkCallbacks.delete(tabId);
       this.notifyScreencastError(tabId, new CDPControllerError(
@@ -638,7 +641,10 @@ export class CDPController {
     // Limit entries per tab
     if (entriesMap.size > 500) {
       const oldestKey = entriesMap.keys().next().value;
-      if (oldestKey) entriesMap.delete(oldestKey);
+      if (oldestKey) {
+        entriesMap.delete(oldestKey);
+        this.networkDropped.set(tabId, (this.networkDropped.get(tabId) || 0) + 1);
+      }
     }
     
     entriesMap.set(params.requestId, entry);
@@ -1289,13 +1295,18 @@ export class CDPController {
     this.networkEntries.set(tabId, new Map());
     this.networkBodyBytes.set(tabId, 0);
     this.networkInterruptions.delete(tabId);
+    this.networkDropped.delete(tabId);
   }
 
-  /** Whether network capture is on for the tab, and each time a detach stopped it since the last clear. */
-  getNetworkCaptureStatus(tabId: number): { active: boolean; interruptions: NetworkCaptureInterruption[] } {
+  /**
+   * Whether network capture is on for the tab, each time a detach stopped it, and how many entries
+   * were dropped to keep the per-tab limit, since the last clear.
+   */
+  getNetworkCaptureStatus(tabId: number): { active: boolean; interruptions: NetworkCaptureInterruption[]; dropped: number } {
     return {
       active: this.networkCapture.has(tabId),
       interruptions: (this.networkInterruptions.get(tabId) || []).map((interruption) => ({ ...interruption })),
+      dropped: this.networkDropped.get(tabId) || 0,
     };
   }
 

@@ -271,6 +271,40 @@ describe("draft effect", () => {
     expect(draft({ commands: ["click"], trace: [dashboard] }).effect).toBe("read");
   });
 
+  it("keeps page writes as writes when the trace dropped requests or hit the read limit", () => {
+    expect(
+      draft({
+        commands: ["click"],
+        trace: [search],
+        capture: { active: true, interruptions: [], dropped: 4 },
+      }).effect,
+    ).toBe("write");
+    const root = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "surf-records-")), "state");
+    roots.push(path.dirname(root));
+    const record = records.startRecord({
+      site: "fixture",
+      op: "search",
+      tabId: 1,
+      network: true,
+      root,
+    });
+    records.appendRecordEvent(
+      { type: "tool.completed", command: "click", argsRedacted: {} },
+      { target: { tabId: 1 }, root },
+    );
+    records.attachNetworkTrace(record.id, [search], root, {
+      capture: { active: true, interruptions: [], dropped: 4 },
+      truncatedAt: 500,
+    });
+    const stopped = records.stopRecord({ target: { tabId: 1 }, draft: true, root });
+    expect(stopped.record.trace.complete).toBe(false);
+    expect(stopped.warnings).toEqual([
+      "network capture dropped the 4 oldest requests (it keeps about 500 per tab), so the trace is missing them",
+      "the trace holds only the first 500 requests read from the tab; later ones are missing",
+    ]);
+    expect(stopped.draft.effect).toBe("write");
+  });
+
   it("keeps page writes as writes without network evidence or when they act beyond the page", () => {
     expect(draft({ commands: ["click"] }).effect).toBe("write");
     expect(draft({ commands: ["click", "cookie.set"], trace: [search] }).effect).toBe("write");

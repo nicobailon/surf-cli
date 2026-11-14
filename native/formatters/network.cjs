@@ -387,7 +387,8 @@ function formatBody(body, maxLen = 2048) {
 
 /**
  * Explain each time network capture stopped. `atStop` also flags capture that was off when a
- * record stopped without a seen interruption (the extension restarted, for example).
+ * record stopped without a seen interruption (the extension restarted, for example), and requests
+ * dropped to keep the per-tab limit.
  */
 function describeCaptureGaps(capture, { atStop = false } = {}) {
   const lines = (capture?.interruptions || []).map(({ reason, at, resumedAt }) => {
@@ -398,6 +399,9 @@ function describeCaptureGaps(capture, { atStop = false } = {}) {
   });
   if (atStop && capture && !capture.active && lines.length === 0) {
     lines.push("network capture was not running when the record stopped (the extension may have restarted); requests may be missing");
+  }
+  if (atStop && capture?.dropped > 0) {
+    lines.push(`network capture dropped the ${capture.dropped} oldest requests (it keeps about 500 per tab), so the trace is missing them`);
   }
   return lines;
 }

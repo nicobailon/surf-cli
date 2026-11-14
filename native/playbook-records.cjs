@@ -180,13 +180,15 @@ function traceEntriesForRecord(record, entries) {
   return entries.filter((entry) => !(entry.ts >= EPOCH_MS_FLOOR) || entry.ts >= cutoff);
 }
 
-// `capture` is the extension's capture status when the trace was read. Without one, or with a gap,
-// the trace is incomplete and can't show that a flow sent no writes.
-function attachNetworkTrace(recordId, entries, root = getPrivateStateRoot(), { capture } = {}) {
+// `capture` is the extension's capture status when the trace was read, and `truncatedAt` the read
+// limit when the read returned that many entries. Without a status, or with a gap, dropped entries
+// or a truncated read, the trace is incomplete and can't show that a flow sent no writes.
+function attachNetworkTrace(recordId, entries, root = getPrivateStateRoot(), { capture, truncatedAt } = {}) {
   const record = readRecord(recordId, root);
   if (!record) throw new Error(`record not found: ${recordId}`);
   const sanitized = entries.map((entry) => sanitizeTraceEntry(entry, record.redaction.includeInputValues));
   const warnings = describeCaptureGaps(capture, { atStop: true });
+  if (truncatedAt) warnings.push(`the trace holds only the first ${truncatedAt} requests read from the tab; later ones are missing`);
   const complete = Boolean(capture) && warnings.length === 0;
   const directory = path.join(recordDirectory(recordId, root), "network");
   ensurePrivateDir(directory, root);

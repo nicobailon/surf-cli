@@ -1610,6 +1610,8 @@ async function runHarvestTool(tool, args, msg, request) {
   return formatRecords(records, args.format ?? "json");
 }
 
+const RECORD_TRACE_LIMIT = 500;
+
 // Each record belongs to the session (or, without one, the tab) that started it.
 async function handleRecordRequest(tool, args, msg, request) {
   const target = { session: request.target?.session, tabId: request.target?.tabId ?? msg.tabId };
@@ -1655,8 +1657,12 @@ async function handleRecordRequest(tool, args, msg, request) {
     const record = requireRecordFor(target);
     if (record.capture.network) {
       try {
-        const result = await requestCallExtension(request, tool, { type: "READ_NETWORK_REQUESTS", tabId: record.tabId, full: true, limit: 500 });
-        attachNetworkTrace(record.id, traceEntriesForRecord(record, result.entries || []), undefined, { capture: result.capture });
+        const result = await requestCallExtension(request, tool, { type: "READ_NETWORK_REQUESTS", tabId: record.tabId, full: true, limit: RECORD_TRACE_LIMIT });
+        const read = result.entries || [];
+        attachNetworkTrace(record.id, traceEntriesForRecord(record, read), undefined, {
+          capture: result.capture,
+          ...(read.length >= RECORD_TRACE_LIMIT ? { truncatedAt: RECORD_TRACE_LIMIT } : {}),
+        });
       } finally {
         await requestCallExtension(request, tool, { type: "STOP_NETWORK_CAPTURE", tabId: record.tabId }, 30000, true).catch(() => {});
       }
