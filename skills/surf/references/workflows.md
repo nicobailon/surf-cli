@@ -58,7 +58,7 @@ A record belongs to the session that started it (or its tab, without a session):
 
 Records, traces and the activity journal are private. Auth headers are always dropped. Typed inputs and request bodies are redacted unless you pass `--include-input-values`.
 
-A generated client replays a read endpoint without the browser and never contains browser credentials:
+A generated client replays a read endpoint without the browser and never contains browser credentials. `client derive` refuses a request other than GET, HEAD or OPTIONS, because that client could write:
 
 ```bash
 surf playbook client derive example --op read --from-record <record-id> --request-id <request-id> --out ./client

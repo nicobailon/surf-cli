@@ -4,7 +4,7 @@ const path = require("path");
 const { execFile } = require("child_process");
 const { atomicWriteFile, atomicWriteJson, ensurePrivateDir, getPrivateStateRoot, readPrivateJson } = require("./private-state.cjs");
 const { resolveOp } = require("./playbooks.cjs");
-const { readRecord, recordsRoot } = require("./playbook-records.cjs");
+const { readRecord, recordsRoot, requestEffect } = require("./playbook-records.cjs");
 const { assertNoEmbeddedSecrets, assertUrlHasNoEmbeddedSecrets, safeHeaders } = require("./redaction.cjs");
 const { version: PACKAGE_VERSION } = require("../package.json");
 
@@ -147,12 +147,12 @@ function deriveClient(site, opId, out, options = {}) {
     : candidates.length === 1 ? candidates[0] : null;
   if (!options.requestId && candidates.length > 1) throw new Error(`record ${record.id} has multiple read endpoints; pass --request-id`);
   if (!entry) throw new Error(`record ${record.id} has no validated read endpoint`);
-  const op = { id: opId, effect: "read", run: [] };
+  const op = { id: opId, effect: requestEffect(entry), run: [] };
   const url = new URL(entry.url);
   const query = Object.fromEntries(url.searchParams.entries());
   url.search = "";
   const strategy = { using: "network", request: { method: entry.method, url: url.toString(), query, headers: safeHeaders(entry.requestHeaders), ...(entry.requestBody !== undefined ? { body: entry.requestBody } : {}) } };
-  return generateClient({ playbookId: site, op, strategy, provenance: { type: "record", recordId: record.id }, out });
+  return generateClient({ playbookId: site, op, strategy, provenance: { type: "record", recordId: record.id }, out, allowWrite: options.allowWrite });
 }
 
 function collectTemplateArgs(value, names = new Set()) {
