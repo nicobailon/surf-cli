@@ -244,18 +244,18 @@ function requestEffect(entry) {
 // GET/HEAD/OPTIONS that isn't telemetry. UI steps that sent no such request are reads only when the
 // trace is evidence they sent none: the record captured the network without a gap, the page opened
 // no WebSocket (whose messages the trace can't show), and the main frame loaded a page after the
-// record started (so any socket the page holds was opened, and seen, during the record). Otherwise
-// page writes stay writes. Steps that act beyond the page (tabs, cookies, emulation, AI providers)
-// are always writes.
-function draftEffect({ record, steps, trace }) {
+// record started and before the first page write at `firstPageWriteAt` (so any socket the page held
+// for those writes was opened, and seen, during the record). Otherwise page writes stay writes.
+// Steps that act beyond the page (tabs, cookies, emulation, AI providers) are always writes.
+function draftEffect({ record, steps, trace, firstPageWriteAt }) {
   const entries = trace?.entries || [];
   if (entries.some((entry) => requestEffect(entry) === "write" && !isTelemetryRequest(entry, record.origin))) return { effect: "write" };
   const writes = steps.filter((step) => ["page-write", "unknown"].includes(commandMetadata(step.tool).effect));
   if (writes.length === 0) return { effect: "read" };
   if (writes.some((step) => !UI_STEPS.has(step.tool))) return { effect: "write" };
   if (record.capture?.network !== true || trace?.complete !== true || entries.some((entry) => entry.type === "WebSocket")) return { effect: "write" };
-  if (!entries.some((entry) => entry.type === "Document" && entry.mainFrame === true)) {
-    return { effect: "write", warning: "the draft is a write: the record saw no page load after it started, so a WebSocket the page already had open could have carried writes" };
+  if (!entries.some((entry) => entry.type === "Document" && entry.mainFrame === true && entry.ts < firstPageWriteAt)) {
+    return { effect: "write", warning: "the draft is a write: the record saw no page load before its first click or typing, so a WebSocket the page already had open could have carried writes" };
   }
   return { effect: "read" };
 }
@@ -265,13 +265,17 @@ function draftFromRecord(recordId, root = getPrivateStateRoot(), { warnings = []
   if (!record) throw new Error(`record not found: ${recordId}`);
   const events = readEvents(recordId, root).filter((event) => event.type === "tool.completed");
   const steps = [];
+  // When the first page write started; without a time, no page load can be shown to precede it.
+  let firstPageWriteAt;
   for (const event of events) {
-    if (!commandMetadata(event.command).recordable) continue;
+    const metadata = commandMetadata(event.command);
+    if (!metadata.recordable) continue;
+    if (firstPageWriteAt === undefined && metadata.effect === "page-write") firstPageWriteAt = Date.parse(event.startedAt) || Number.NEGATIVE_INFINITY;
     steps.push({ tool: event.command, args: event.argsRedacted || {} });
   }
   const tracePath = path.join(recordDirectory(recordId, root), "network", "trace.json");
   const trace = readPrivateJson(tracePath, null, { root });
-  const { effect, warning } = draftEffect({ record, steps, trace });
+  const { effect, warning } = draftEffect({ record, steps, trace, firstPageWriteAt });
   if (warning) warnings.push(warning);
   const strategies = [];
   const observed = trace?.entries?.findLast((entry) => ["GET", "HEAD", "OPTIONS", "POST"].includes(entry.method) && entry.status >= 200 && entry.status < 400);

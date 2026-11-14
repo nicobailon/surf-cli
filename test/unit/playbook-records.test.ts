@@ -228,9 +228,10 @@ describe("draft effect", () => {
     return records.stopRecord({ target: { tabId: 1 }, draft: true, root });
   };
   const draft = (options: Parameters<typeof stopDraft>[0]) => stopDraft(options).draft;
-  // A main-frame page load captured after the record started.
+  // A main-frame page load captured after the record started, before its steps ran.
   const search = {
     id: "r_1",
+    ts: Date.parse("2026-01-01T00:00:00Z"),
     method: "GET",
     status: 200,
     type: "Document",
@@ -274,7 +275,12 @@ describe("draft effect", () => {
       root,
     });
     records.appendRecordEvent(
-      { type: "tool.completed", command: "click", argsRedacted: {} },
+      {
+        type: "tool.completed",
+        command: "click",
+        argsRedacted: {},
+        startedAt: new Date().toISOString(),
+      },
       { target: { tabId: 1 }, root },
     );
     // The last 2xx/3xx request is the error-reporting POST, as on main.
@@ -363,9 +369,19 @@ describe("draft effect", () => {
     const stopped = stopDraft({ commands: ["type", "click"], trace: [xhrSearch, frameLoad] });
     expect(stopped.draft.effect).toBe("write");
     expect(stopped.warnings).toContain(
-      "the draft is a write: the record saw no page load after it started, so a WebSocket the page already had open could have carried writes",
+      "the draft is a write: the record saw no page load before its first click or typing, so a WebSocket the page already had open could have carried writes",
     );
     expect(draft({ commands: ["type", "click"], trace: [search, xhrSearch] }).effect).toBe("read");
+  });
+
+  it("keeps page writes as writes when the only page load came after them", () => {
+    // type and click write over a socket the page already had, then a navigate loads a page.
+    const laterLoad = { ...search, ts: Date.now() + 60_000 };
+    const stopped = stopDraft({ commands: ["type", "click", "navigate"], trace: [laterLoad] });
+    expect(stopped.draft.effect).toBe("write");
+    expect(stopped.warnings).toContain(
+      "the draft is a write: the record saw no page load before its first click or typing, so a WebSocket the page already had open could have carried writes",
+    );
   });
 
   it("keeps page writes as writes when the trace dropped requests or hit the read limit", () => {
