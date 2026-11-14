@@ -173,9 +173,13 @@ describe("draft effect", () => {
   const draft = ({
     commands,
     trace,
+    origin = "https://example.test",
+    capture = { active: true, interruptions: [] },
   }: {
     commands: string[];
     trace?: Array<Record<string, unknown>>;
+    origin?: string;
+    capture?: Record<string, unknown>;
   }) => {
     const root = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "surf-records-")), "state");
     roots.push(path.dirname(root));
@@ -183,6 +187,7 @@ describe("draft effect", () => {
       site: "fixture",
       op: "search",
       tabId: 1,
+      origin,
       network: trace !== undefined,
       root,
     });
@@ -193,9 +198,7 @@ describe("draft effect", () => {
       );
     }
     if (trace) {
-      records.attachNetworkTrace(record.id, trace, root, {
-        capture: { active: true, interruptions: [] },
-      });
+      records.attachNetworkTrace(record.id, trace, root, { capture });
     }
     return records.stopRecord({ target: { tabId: 1 }, draft: true, root }).draft;
   };
@@ -249,6 +252,23 @@ describe("draft effect", () => {
     expect(
       draft({ commands: ["click"], trace: [{ ...create, method: "DELETE", status: 0 }] }).effect,
     ).toBe("write");
+  });
+
+  it("treats an analytics vendor's own site as the site, not as telemetry", () => {
+    const dashboard = {
+      id: "r_6",
+      method: "POST",
+      status: 201,
+      type: "XHR",
+      url: "https://us.posthog.com/api/projects/1/dashboards/",
+    };
+    expect(
+      draft({ commands: ["click"], trace: [dashboard], origin: "https://us.posthog.com" }).effect,
+    ).toBe("write");
+    expect(
+      draft({ commands: ["click"], trace: [dashboard], origin: "https://app.posthog.com" }).effect,
+    ).toBe("write");
+    expect(draft({ commands: ["click"], trace: [dashboard] }).effect).toBe("read");
   });
 
   it("keeps page writes as writes without network evidence or when they act beyond the page", () => {

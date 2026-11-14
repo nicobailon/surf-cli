@@ -199,7 +199,8 @@ function attachNetworkTrace(recordId, entries, root = getPrivateStateRoot(), { c
 
 const READ_METHODS = new Set(["GET", "HEAD", "OPTIONS"]);
 // Beacons, CSP reports and requests to analytics and error-reporting services don't change the
-// site's data, so they don't make a recorded flow a write.
+// site's data, so they don't make a recorded flow a write, unless the record is on that service's
+// own site (posthog.com's dashboards, say).
 const TELEMETRY_TYPES = new Set(["Ping", "CSPViolationReport"]);
 const TELEMETRY_HOSTS = [
   "google-analytics.com", "analytics.google.com", "googletagmanager.com", "doubleclick.net",
@@ -213,11 +214,16 @@ const UI_STEPS = new Set([
   "scroll", "scroll.top", "scroll.bottom", "scroll_to_position", "dialog.accept", "dialog.dismiss",
 ]);
 
-function isTelemetryRequest(entry) {
+function hostname(url) {
+  try { return new URL(url).hostname; } catch { return ""; }
+}
+
+function isTelemetryRequest(entry, recordOrigin) {
   if (TELEMETRY_TYPES.has(entry.type)) return true;
-  let host;
-  try { host = new URL(entry.url).hostname; } catch { return false; }
-  return TELEMETRY_HOSTS.some((suffix) => host === suffix || host.endsWith(`.${suffix}`));
+  const within = (host, suffix) => host === suffix || host.endsWith(`.${suffix}`);
+  const host = hostname(entry.url);
+  const siteHost = hostname(recordOrigin);
+  return TELEMETRY_HOSTS.some((suffix) => within(host, suffix) && !within(siteHost, suffix));
 }
 
 function requestEffect(entry) {
@@ -230,7 +236,7 @@ function requestEffect(entry) {
 // Steps that act beyond the page (tabs, cookies, emulation, AI providers) are always writes.
 function draftEffect({ record, steps, trace }) {
   const entries = trace?.entries || [];
-  if (entries.some((entry) => requestEffect(entry) === "write" && !isTelemetryRequest(entry))) return "write";
+  if (entries.some((entry) => requestEffect(entry) === "write" && !isTelemetryRequest(entry, record.origin))) return "write";
   const networkEvidence = record.capture?.network === true && trace?.complete === true;
   const writes = steps.filter((step) => ["page-write", "unknown"].includes(commandMetadata(step.tool).effect));
   return writes.some((step) => !networkEvidence || !UI_STEPS.has(step.tool)) ? "write" : "read";
