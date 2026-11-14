@@ -352,9 +352,20 @@ describe("draft effect", () => {
       url: "https://sentry.io/api/0/teams/acme/core/projects/",
       tabUrl: "https://sentry.io/organizations/acme/projects/new/",
     };
-    expect(draft({ commands: ["click"], trace: [createProject] }).effect).toBe("write");
+    // A page load before the click, so only the telemetry check can make these writes.
+    const sentryLoad = { ...search, url: "https://sentry.io/organizations/acme/projects/new/" };
+    expect(draft({ commands: ["click"], trace: [sentryLoad, createProject] }).effect).toBe("write");
     const { tabUrl: _tabUrl, ...withoutPage } = createProject;
-    expect(draft({ commands: ["click"], trace: [withoutPage], origin: "" }).effect).toBe("write");
+    expect(draft({ commands: ["click"], trace: [search, withoutPage], origin: "" }).effect).toBe(
+      "write",
+    );
+    // The same request from another site's page is telemetry.
+    expect(
+      draft({
+        commands: ["click"],
+        trace: [search, { ...createProject, tabUrl: "https://example.test/" }],
+      }).effect,
+    ).toBe("read");
   });
 
   it("keeps page writes as writes when the record saw no page load, and says why", () => {
