@@ -1048,7 +1048,7 @@ surf pb client export example --op read --out ./client
 surf pb client verify ./client
 ```
 
-Generated manifests declare provenance and authentication environment inputs. Surf excludes cookies, bearer tokens, and captured credentials and does not export write-capable clients without explicit review; `client derive` treats any request other than GET, HEAD, or OPTIONS as write-capable.
+Generated manifests declare provenance and authentication environment inputs. Surf excludes cookies, bearer tokens, and captured credentials and does not export write-capable clients. For now `client derive` refuses any request other than GET, HEAD, or OPTIONS, POST reads included.
 
 ### Threads and Feeds
 
