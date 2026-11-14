@@ -60,7 +60,7 @@ interface NetworkRequest {
   method: string;
   status?: number;
   type?: string;
-  timestamp: number;
+  timestamp: number;             // epoch ms
   requestHeaders?: Record<string, string>;
   requestBody?: string;
   responseHeaders?: Record<string, string>;
@@ -70,8 +70,8 @@ interface NetworkRequest {
 }
 
 export interface NetworkEntry {
-  id: string;                    // "r_<timestamp>_<seq>"
-  ts: number;                    // Request start timestamp (ms)
+  id: string;                    // "r_<monotonic ms>_<seq>"
+  ts: number;                    // Request start, epoch ms (CDP wallTime)
   duration?: number;             // Total time (ms)
   ttfb?: number;                 // Time to first byte (ms)
   
@@ -528,7 +528,10 @@ export class CDPController {
     const req = params.request;
     if (!req) return;
 
+    // CDP `timestamp` is Chrome's monotonic clock in seconds: durations use it, while `wallTime`
+    // (epoch seconds) dates the request so it compares with wall-clock times.
     const timestamp = params.timestamp ? params.timestamp * 1000 : Date.now();
+    const wallTime = params.wallTime ? params.wallTime * 1000 : Date.now();
     this.networkRequestStartTimes.set(this.requestStartKey(tabId, params.requestId), timestamp);
 
     // Legacy format for backward compatibility
@@ -544,7 +547,7 @@ export class CDPController {
       url: req.url,
       method: req.method,
       type: params.type,
-      timestamp,
+      timestamp: wallTime,
       requestHeaders: reqHeaders,
       requestBody: req.postData,
     });
@@ -576,7 +579,7 @@ export class CDPController {
 
     const entry: NetworkEntry = {
       id: entryId,
-      ts: timestamp,
+      ts: wallTime,
       method: req.method,
       url: req.url,
       origin: this.extractOrigin(req.url),

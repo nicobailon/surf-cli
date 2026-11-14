@@ -1152,6 +1152,32 @@ describe("CDPController", () => {
         reason: "disabled",
       });
     });
+
+    it("stamps entries with wall-clock epoch ms, not Chrome's monotonic clock", async () => {
+      await controller.enableNetworkTracking(tabId);
+      const dispatch = (method: string, params: Record<string, unknown>) =>
+        (
+          controller as unknown as {
+            handleCDPEvent: (tab: number, event: string, value: unknown) => Promise<void> | void;
+          }
+        ).handleCDPEvent(tabId, method, params);
+      // CDP `timestamp` is monotonic seconds since boot; `wallTime` is epoch seconds.
+      await dispatch("Network.requestWillBeSent", {
+        requestId: "req-wall",
+        timestamp: 1_160_000.5,
+        wallTime: 1_794_000_000.25,
+        request: { url: "https://example.test/wall", method: "GET", headers: {} },
+      });
+      await dispatch("Network.loadingFinished", {
+        requestId: "req-wall",
+        timestamp: 1_160_000.75,
+        encodedDataLength: 0,
+      });
+      const [entry] = controller.getNetworkEntries(tabId, { includeStatic: true });
+      expect(entry.ts).toBe(1_794_000_000_250);
+      expect(entry.duration).toBe(250);
+      expect(controller.getNetworkRequests(tabId)[0].timestamp).toBe(1_794_000_000_250);
+    });
   });
 
   describe("handleDialog", () => {

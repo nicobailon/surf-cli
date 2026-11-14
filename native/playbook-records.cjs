@@ -118,6 +118,15 @@ function sanitizeTraceEntry(entry, includeInputValues = false) {
   };
 }
 
+// Capture starts with an empty buffer, so every entry belongs to the record; entries stamped in
+// epoch ms are also checked against the start. Older extensions stamped `ts` with Chrome's monotonic
+// clock (ms since boot), which can't be compared with wall-clock time, so those are kept as-is.
+const EPOCH_MS_FLOOR = 1e12;
+function traceEntriesForRecord(record, entries) {
+  const cutoff = Date.parse(record.startedAt);
+  return entries.filter((entry) => !(entry.ts >= EPOCH_MS_FLOOR) || entry.ts >= cutoff);
+}
+
 function attachNetworkTrace(recordId, entries, root = getPrivateStateRoot()) {
   const record = readRecord(recordId, root);
   if (!record) throw new Error(`record not found: ${recordId}`);
@@ -204,5 +213,6 @@ module.exports = {
   resumeRecord: (root) => updateActiveStatus("recording", root),
   startRecord,
   stopRecord,
+  traceEntriesForRecord,
   updateRecordContext,
 };

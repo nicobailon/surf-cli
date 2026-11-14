@@ -57,6 +57,7 @@ const {
   resumeRecord,
   startRecord,
   stopRecord,
+  traceEntriesForRecord,
   updateRecordContext,
 } = require("./playbook-records.cjs");
 const { resolveArgs, runPlaybookOp } = require("./playbook-runtime.cjs");
@@ -1652,8 +1653,7 @@ async function handleRecordRequest(tool, args, msg, request) {
     if (record.capture.network) {
       try {
         const result = await requestCallExtension(request, tool, { type: "READ_NETWORK_REQUESTS", tabId: record.tabId, full: true, limit: 500 });
-        const cutoff = Date.parse(record.startedAt);
-        attachNetworkTrace(record.id, (result.entries || []).filter((entry) => entry.ts >= cutoff));
+        attachNetworkTrace(record.id, traceEntriesForRecord(record, result.entries || []));
       } finally {
         await requestCallExtension(request, tool, { type: "STOP_NETWORK_CAPTURE", tabId: record.tabId }, 30000, true).catch(() => {});
       }

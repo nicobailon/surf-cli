@@ -15,6 +15,20 @@ afterEach(() => {
   }
 });
 
+describe("record network trace", () => {
+  it("keeps requests captured after the record started whatever clock stamped them", () => {
+    const startedAt = "2026-11-14T10:00:00.000Z";
+    const start = Date.parse(startedAt);
+    const kept = records.traceEntriesForRecord({ startedAt }, [
+      { id: "r_before", ts: start - 5000 },
+      { id: "r_after", ts: start + 1500 },
+      // Extensions before the fix stamped `ts` with Chrome's monotonic clock (ms since boot).
+      { id: "r_monotonic", ts: 1_160_000_500 },
+    ]);
+    expect(kept.map((entry: { id: string }) => entry.id)).toEqual(["r_after", "r_monotonic"]);
+  });
+});
+
 describe("activity and explicit record evidence", () => {
   it("redacts normal input and keeps append-only events separate from record summary", () => {
     const root = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "surf-records-")), "state");
