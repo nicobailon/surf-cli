@@ -1,6 +1,7 @@
 // surf pb test: run an op the way `surf use` does and check assertions on its result.
 
 const { describeAssertion, validateAssertions } = require("./playbook-assertions.cjs");
+const { resolveArgs } = require("./playbook-runtime.cjs");
 const { editSavedOp, resolveEditablePlaybook, resolveOp } = require("./playbooks.cjs");
 
 const USAGE =
@@ -94,6 +95,11 @@ async function runPlaybookTest({ argv, cwd = process.cwd(), home, runOp, now = D
   const { options } = spec;
   const op = localOp(spec.playbook, spec.op, { cwd, home });
   if (op?.effect === "write" && options.write !== true) throw new Error(`${spec.playbook} ${spec.op} is a write op; pb test runs it only with --write`);
+  // The same input check as surf use, here so a typo is a usage error rather than a failed test.
+  // The host checks again (and alone, when the op lives only on a remote browser host).
+  if (op) resolveArgs(op, spec.args, { playbookId: spec.playbook });
+  // As with surf use, --timeout (seconds) is the run's deadline, else the op's timeout default.
+  const timeout = [Number(spec.args.timeout), Number(op?.args?.timeout?.default)].find((value) => Number.isFinite(value) && value > 0);
   if (options.save) {
     if (!spec.assertions) throw new Error("--save needs at least one --assert");
     // Fail before running: a built-in op can't take saved assertions.
@@ -107,6 +113,7 @@ async function runPlaybookTest({ argv, cwd = process.cwd(), home, runOp, now = D
       playbook: spec.playbook,
       op: spec.op,
       args: spec.args,
+      ...(timeout ? { timeout } : {}),
       ...(spec.assertions ? { assert: spec.assertions } : {}),
       ...(options.strategy ? { strategy: options.strategy } : {}),
       write: options.write === true,

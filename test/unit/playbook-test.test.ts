@@ -390,6 +390,43 @@ describe("surf pb test", () => {
     expect(later.assertionSource).toBe("saved");
   });
 
+  it("rejects an input the op doesn't define, as surf use does, before running anything", async () => {
+    const { cwd, home } = setup({ args: { page: { default: "1" } } });
+    const runOp = vi.fn();
+    await expect(
+      pbTest.runPlaybookTest({ argv: ["books", "get_books", "--pag", "2"], cwd, home, runOp }),
+    ).rejects.toThrow(
+      /Unknown input --pag for books get_books\. Did you mean --page\? Its inputs: --page/,
+    );
+    await expect(
+      pbTest.runPlaybookTest({
+        argv: ["books", "get_books", "--args", '{"sort":"asc"}'],
+        cwd,
+        home,
+        runOp,
+      }),
+    ).rejects.toThrow(/Unknown input --sort for books get_books/);
+    expect(runOp).not.toHaveBeenCalled();
+  });
+
+  it("takes --timeout as the run's deadline, as surf use does", async () => {
+    const { cwd, home } = setup({ args: { page: { default: "1" } } });
+    const runOp = vi.fn(async (_params: Record<string, unknown>) => ({
+      ...passed,
+      assertions: [],
+    }));
+    await pbTest.runPlaybookTest({
+      argv: ["books", "get_books", "--page", "2", "--timeout", "30"],
+      cwd,
+      home,
+      runOp,
+    });
+    expect(runOp.mock.calls[0][0]).toMatchObject({
+      args: { page: "2", timeout: "30" },
+      timeout: 30,
+    });
+  });
+
   it("refuses a write op without --write, before running anything", async () => {
     const { cwd, home } = setup({
       effect: "write",

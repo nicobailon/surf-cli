@@ -1687,7 +1687,8 @@ const TOOLS = {
         desc: "Run an op as surf use does and check assertions on its result; exits 1 when one fails or no strategy answers",
         args: ["playbook", "op"],
         opts: {
-          "<arg>": "Operation input, as with surf use (or all at once with --args '<json>')",
+          "<arg>": "Operation input, as with surf use (or all at once with --args '<json>'); an input the op doesn't define fails",
+          timeout: "Seconds before the run gives up (default: the op's --timeout, else 600)",
           assert: "<path> <op> [value] (repeatable): ops equals, array_min_len, not_null, exists, matches; paths like $, $[0].title, $.status. Default: the op's saved assertions",
           strategy: "Run only this strategy (network, workflow, ...), to tell the network path from a fallback",
           save: "Save the --assert list in the op when the test passes; surf use then checks it too",
