@@ -9,10 +9,13 @@ export type CapturedEntry = {
   method: string;
   url: string;
   status: number;
+  requestHeaders?: Record<string, string>;
   responseHeaders: Record<string, string>;
   flags: string[];
   bodyCapture: Record<string, unknown>;
   _loadingFinished: boolean;
+  // Chrome's request id: every hop of a redirect shares it.
+  _requestId: string;
 };
 
 export type Reply = {
@@ -25,7 +28,20 @@ export type Reply = {
   bodyGone?: boolean;
   // The status capture shows, when it differs from what fetch sees (304 for a revalidated response).
   capturedStatus?: number;
+  // Request headers capture shows (the browser's If-None-Match on a revalidation).
+  capturedRequestHeaders?: Record<string, string>;
+  // The server redirects to `to`. Capture keeps the redirect under its own id, sharing the final
+  // request's Chrome request id, unless `chain` is "missing".
+  redirect?: { status: number; to: string; chain?: "kept" | "missing" };
 };
+
+// The method a redirect gives the next request, as the browser does it.
+function redirectedMethod(method: string, status: number) {
+  if (status === 303 && method !== "HEAD") {
+    return "GET";
+  }
+  return (status === 301 || status === 302) && method === "POST" ? "GET" : method;
+}
 
 /**
  * A tab whose page-context scripts run against a fake fetch, with network capture like the
@@ -58,6 +74,7 @@ export function captureTab({
       flags: [],
       bodyCapture: { mode: "text", complete: true },
       _loadingFinished: true,
+      _requestId: `cdp-${seq}`,
       ...rest,
     });
     if (body !== undefined && !bodyGone) {
@@ -71,20 +88,34 @@ export function captureTab({
     for (const sent of pageSends(url, method)) {
       add({ url, method, ...sent });
     }
+    const { redirect } = answer;
+    const chainId = `cdp-chain-${seq}`;
+    if (redirect && redirect.chain !== "missing") {
+      add({
+        url,
+        method,
+        status: redirect.status,
+        flags: ["redirect"],
+        bodyCapture: { mode: "text", complete: false, reason: "redirect" },
+        _requestId: chainId,
+      });
+    }
     add({
-      url,
-      method,
+      url: redirect?.to ?? url,
+      method: redirect ? redirectedMethod(method, redirect.status) : method,
       status: answer.capturedStatus ?? answer.status,
+      requestHeaders: answer.capturedRequestHeaders ?? {},
       responseHeaders: answer.headers,
       body: answer.body,
       bodyGone: answer.bodyGone,
       ...(answer.bodyCapture ? { bodyCapture: answer.bodyCapture } : {}),
+      ...(redirect && redirect.chain !== "missing" ? { _requestId: chainId } : {}),
     });
     return {
       status: answer.status,
       ok: answer.status >= 200 && answer.status < 300,
-      url,
-      redirected: false,
+      url: redirect?.to ?? url,
+      redirected: redirect !== undefined,
       headers: new Map(Object.entries(answer.headers)),
       text: async () => answer.body,
       arrayBuffer: async () => new ArrayBuffer(answer.body.length),

@@ -1,9 +1,21 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { captureTab } from "../fixtures/capture-tab";
 
 const runtime = require("../../native/playbook-runtime.cjs");
 
 const playbook = { id: "books", provenance: { scope: "test" } };
+
+afterEach(() => {
+  vi.useRealTimers();
+});
+
+// Polling sleeps move a fake clock, so waiting out the capture deadline takes no real time.
+function fakeClock() {
+  vi.useFakeTimers({ toFake: ["Date"] });
+  return async (ms: number) => {
+    vi.setSystemTime(Date.now() + ms);
+  };
+}
 const html = (bytes: number) => `<html>${"<li>a book</li>".repeat(Math.ceil(bytes / 15))}</html>`;
 
 function readOp(request: Record<string, unknown> = {}, strategy: Record<string, unknown> = {}) {
@@ -142,6 +154,65 @@ describe("network strategy response bodies", () => {
       executeTool: tab.executeTool,
     });
     expect(result.value).toMatchObject({ status: 200, body });
+  });
+
+  const postOp = readOp({ method: "POST", url: "https://api.test/start", body: { q: 1 } });
+
+  it("follows a POST answered with 303 to the GET it became, not the page's DELETE of the same URL", async () => {
+    const tab = captureTab({
+      reply: () => ({
+        body: "the search results",
+        redirect: { status: 303, to: "https://api.test/final" },
+      }),
+      pageSends: () => [{ url: "https://api.test/final", method: "DELETE", body: "deleted" }],
+    });
+    const result = await runtime.runPlaybookOp({
+      playbook,
+      op: postOp,
+      executeTool: tab.executeTool,
+    });
+    expect(result.value).toMatchObject({
+      url: "https://api.test/final",
+      body: "the search results",
+    });
+  });
+
+  it("keeps the method through a 307, so the page's GET of the same URL doesn't match", async () => {
+    const tab = captureTab({
+      reply: () => ({
+        body: "posted again",
+        redirect: { status: 307, to: "https://api.test/final" },
+      }),
+      pageSends: () => [{ url: "https://api.test/final", method: "GET", body: "the page's copy" }],
+    });
+    const result = await runtime.runPlaybookOp({
+      playbook,
+      op: postOp,
+      executeTool: tab.executeTool,
+    });
+    expect(result.value.body).toBe("posted again");
+  });
+
+  it("fails closed when capture can't tie a redirected response to the request it sent", async () => {
+    const tab = captureTab({
+      reply: () => ({
+        body: "ours",
+        redirect: { status: 303, to: "https://api.test/final", chain: "missing" },
+      }),
+      pageSends: () => [{ url: "https://api.test/final", method: "DELETE", body: "deleted" }],
+    });
+    const error = await runtime
+      .runPlaybookOp({
+        playbook,
+        op: postOp,
+        executeTool: tab.executeTool,
+        sleep: fakeClock(),
+      })
+      .catch((caught: Error) => caught);
+    expect(error.message).toMatch(
+      /POST \/start was redirected to \/final, and capture can't show which captured request it ended in/,
+    );
+    expect(error.message).not.toContain("deleted");
   });
 
   const writeOp = (strategies: Array<Record<string, unknown>> = []) => ({

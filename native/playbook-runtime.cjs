@@ -222,7 +222,7 @@ return finish(head, () => {
   // was sent, and the body is read from network capture.
   const read = tail === undefined
     ? `await response.arrayBuffer();
-return { status: response.status, ok: response.ok, url: response.url, redirected: response.redirected, headers: Object.fromEntries(response.headers.entries()), sentAt, doneAt: Date.now() };`
+return { status: response.status, ok: response.ok, requestUrl: url.toString(), url: response.url, redirected: response.redirected, headers: Object.fromEntries(response.headers.entries()), sentAt, doneAt: Date.now() };`
     : `const text = await response.text();
 const head = { status: response.status, ok: response.ok, url: response.url, headers: Object.fromEntries(response.headers.entries()) };
 ${tail}`;
@@ -317,11 +317,11 @@ async function runStrategy(strategy, context) {
     await context.markDispatched?.();
     const response = await context.executeTool("javascript_tool", { code: networkScript(request, context.allowedOrigins, strategy.extract) }, { signal: context.signal });
     if (response?.error) throw new Error(typeof response.error === "string" ? response.error : JSON.stringify(response.error));
-    const { sentAt, doneAt, redirected, ...result } = response?.output !== undefined ? JSON.parse(response.output) : response?.value ?? response;
+    const { requestUrl, sentAt, doneAt, redirected, ...result } = response?.output !== undefined ? JSON.parse(response.output) : response?.value ?? response;
     if (!result?.ok && (strategy.acceptStatus || []).includes(result?.status) === false) throw new Error(`network strategy returned ${result?.status || "an unknown status"}`);
     if (result.extractError) throw new Error(result.extractError);
     if (inTab) return result;
-    const body = await capture.read({ ...result, method: String(request.method || "GET").toUpperCase(), redirected, sentAt, doneAt });
+    const body = await capture.read({ ...result, method: String(request.method || "GET").toUpperCase(), requestUrl, redirected, sentAt, doneAt });
     let bodyJson;
     try {
       bodyJson = JSON.parse(body);
