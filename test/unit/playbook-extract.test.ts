@@ -781,6 +781,31 @@ describe("generated clients and extract", () => {
       "extract.html runs only through surf use (Node has no DOM); this client prints the raw HTML body",
     ]);
   });
+
+  it("verifies that an HTML client prints the raw body", async () => {
+    const parent = tempDir("surf-client-");
+    const out = path.join(parent, "client");
+    clients.generateClient({
+      playbookId: "books",
+      op: { id: "get_books", effect: "read" },
+      strategy: {
+        using: "network",
+        request: { method: "GET", url: "https://books.test/" },
+        extract: htmlExtract,
+      },
+      provenance: { type: "playbook", id: "books" },
+      out,
+    });
+    const verified = await clients.verifyClient(out, { live: false });
+    expect(verified.execution.stdout).toBe("<html><body><p>verified</p></body></html>");
+    fs.writeFileSync(
+      path.join(out, "client.mjs"),
+      'await fetch(process.env.SURF_CLIENT_ENDPOINT_URL);\nconsole.log("[]");\n',
+    );
+    await expect(clients.verifyClient(out, { live: false })).rejects.toThrow(
+      /generated client did not print the raw HTML body/,
+    );
+  });
 });
 
 describe("reserved field names", () => {

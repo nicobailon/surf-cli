@@ -136,7 +136,8 @@ function generateClient({ playbookId, op, strategy, provenance, out, allowWrite 
   if (fs.existsSync(directory) && fs.lstatSync(directory).isSymbolicLink()) throw new Error(`refusing symbolic link: ${directory}`);
   const warnings = [];
   let extract = strategy.extract || null;
-  if (extract?.html) {
+  const extractHtml = extract?.html;
+  if (extractHtml) {
     warnings.push("extract.html runs only through surf use (Node has no DOM); this client prints the raw HTML body");
     extract = null;
   }
@@ -151,6 +152,8 @@ function generateClient({ playbookId, op, strategy, provenance, out, allowWrite 
     endpoint,
     args: endpointArgs(op, endpoint),
     extract,
+    // surf use returns these records; this client prints the raw HTML body instead.
+    ...(extractHtml ? { extractHtml } : {}),
     authInputs: Array.isArray(request.authInputs) ? request.authInputs.map((input) => ({ env: input.env, header: input.header, required: input.required !== false })) : [],
     verification: strategy.verify || null,
     verificationCommand: "surf pb client verify .",
@@ -256,8 +259,11 @@ function bodyAt(jsonPath, leaf) {
   }, leaf);
 }
 
+const VERIFY_HTML = "<html><body><p>verified</p></body></html>";
+
 function verificationBody(manifest) {
   if (manifest.extract?.field === "body") return "verified";
+  if (manifest.extractHtml) return VERIFY_HTML;
   if (manifest.extract?.records !== undefined) return JSON.stringify(bodyAt(manifest.extract.records, [{}]));
   return JSON.stringify({ ok: true, body: "verified", data: "verified", items: ["verified"] });
 }
@@ -309,7 +315,8 @@ async function verifyWithLocalServer(resolved, manifest, source) {
     request.on("end", () => {
       requests.push({ method: request.method, url: request.url, body: requestBody });
       const body = verificationBody(manifest);
-      response.writeHead(manifest.verification?.status || 200, { "content-type": body.startsWith("{") ? "application/json" : "text/plain" });
+      const type = manifest.extractHtml ? "text/html" : body.startsWith("{") ? "application/json" : "text/plain";
+      response.writeHead(manifest.verification?.status || 200, { "content-type": type });
       response.end(body);
     });
   });
@@ -325,6 +332,7 @@ async function verifyWithLocalServer(resolved, manifest, source) {
     if (request.method !== endpoint.method) throw new Error(`generated client used ${request.method} instead of ${endpoint.method}`);
     if (request.url !== expectedPath) throw new Error(`generated client requested ${request.url} instead of ${expectedPath}`);
     if (expectedBody !== undefined && request.body !== expectedBody) throw new Error("generated client request body did not match the projected endpoint");
+    if (manifest.extractHtml && stdout.trim() !== VERIFY_HTML) throw new Error("generated client did not print the raw HTML body (extract.html runs only through surf use)");
     return { requests: requests.length, stdout: stdout.trim() };
   } finally {
     await new Promise((resolve) => server.close(resolve));
