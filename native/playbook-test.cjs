@@ -1,6 +1,6 @@
 // surf pb test: run an op the way `surf use` does and check assertions on its result.
 
-const { MATCH_TIMED_OUT, boundedMatch, describeAssertion, validateAssertions, valueTexts } = require("./playbook-assertions.cjs");
+const { MATCH_SKIPPED, MATCH_TIMED_OUT, boundedMatch, createRegexBudget, describeAssertion, validateAssertions, valueTexts } = require("./playbook-assertions.cjs");
 const { authInputs, resolveArgs } = require("./playbook-runtime.cjs");
 const { editSavedOp, resolveEditablePlaybook, resolveOp } = require("./playbooks.cjs");
 
@@ -91,6 +91,7 @@ function localOp(playbook, op, { cwd, home }) {
 // contains one, or when the pattern matches one (which also refuses broad patterns such as .*).
 // Errors name the assertion's position and the variable, never the value.
 function refuseSecretAssertions(assertions, secret) {
+  const budget = createRegexBudget();
   assertions.forEach((assertion, index) => {
     const position = `assertion ${index + 1}`;
     const texts = [assertion.path, ...valueTexts(assertion.value)];
@@ -101,9 +102,10 @@ function refuseSecretAssertions(assertions, secret) {
       if (assertion.op !== "matches") continue;
       let matched;
       try {
-        matched = boundedMatch(assertion.value, value);
+        matched = boundedMatch(assertion.value, value, budget);
       } catch (error) {
-        if (error.code !== MATCH_TIMED_OUT) throw error;
+        if (error.code !== MATCH_TIMED_OUT && error.code !== MATCH_SKIPPED) throw error;
+        if (error.code === MATCH_SKIPPED) throw new Error(`--save refused: the 1 s regex budget was spent before assertion ${index + 1}'s pattern was checked against ${name}; use fewer or simpler patterns`);
         throw new Error(`--save refused: ${position}'s pattern took too long (over 100 ms) on the value of ${name}; simplify it`);
       }
       if (matched) {

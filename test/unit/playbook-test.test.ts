@@ -94,6 +94,47 @@ describe("assertions", () => {
     ).toBe(false);
   });
 
+  it("shares a 1 s regex budget across a run's assertions and skips the rest once it is spent", () => {
+    const slow = Array.from({ length: 20 }, () => ({ path: "$", op: "matches", value: "(a+)+b" }));
+    let started = Date.now();
+    const results = assertions.checkAssertions("a".repeat(60), slow);
+    expect(Date.now() - started).toBeLessThan(1200);
+    expect(results[0]).toMatchObject({
+      pass: false,
+      error: "matches pattern took too long (over 100 ms); simplify it",
+    });
+    expect(results.at(-1)).toMatchObject({
+      pass: false,
+      error: "skipped: the run's 1 s regex budget is spent",
+    });
+    expect(
+      results.filter((result: { error?: string }) => result.error?.startsWith("skipped")).length,
+    ).toBeGreaterThan(5);
+    // The host's secret checks spend the same budget; a skipped one counts as touching the secret.
+    started = Date.now();
+    const checked = assertions.checkAssertions("x", slow, ["a".repeat(60)]);
+    expect(Date.now() - started).toBeLessThan(1200);
+    expect(
+      checked.every((result: { secretSensitive?: boolean }) => result.secretSensitive === true),
+    ).toBe(true);
+  });
+
+  it("refuses more than 50 assertions on the CLI, on save and when an op loads", () => {
+    const many = Array.from({ length: 51 }, () => ({ path: "$", op: "not_null" }));
+    expect(() => assertions.validateAssertions(many.slice(0, 50))).not.toThrow();
+    expect(() => assertions.validateAssertions(many)).toThrow(
+      /at most 50 assertions per op \(got 51\)/,
+    );
+    expect(() =>
+      pbTest.parseTestArgs(["a", "b", ...many.flatMap(() => ["--assert", "$", "not_null"])]),
+    ).toThrow(/--assert: at most 50 assertions per op \(got 51\)/);
+    expect(() =>
+      playbooks.validateOp(op([network], { on: { success: { expect: { assert: many } } } }), {
+        origins: [],
+      }),
+    ).toThrow(/op get_books on\.success\.expect\.assert: at most 50 assertions per op \(got 51\)/);
+  });
+
   it("still refuses invalid and overlong patterns, and counts a slow one as secret-sensitive", () => {
     const check = (pattern: string) => () =>
       assertions.validateAssertions([{ path: "$", op: "matches", value: pattern }]);

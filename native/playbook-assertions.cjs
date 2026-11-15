@@ -2,6 +2,7 @@
 // a $-path into the result. Saved in an op's on.success.expect.assert, they run on every strategy's
 // result, like the rest of verifyResult.
 
+const { performance } = require("node:perf_hooks");
 const { isDeepStrictEqual } = require("node:util");
 const vm = require("node:vm");
 const { compileJsonPath } = require("./records.cjs");
@@ -15,6 +16,16 @@ const PATTERN_LIMIT = 500;
 const MATCH_TIMEOUT_MS = 100;
 const MATCH_INPUT_LIMIT = 64 * 1024;
 const MATCH_TIMED_OUT = "pattern_timeout";
+// Each run is bounded, and so is a run's total: one budget is shared by an op run's matches checks
+// and its secret checks. Once it is spent, the rest don't run. Ops hold at most ASSERTION_LIMIT.
+const REGEX_BUDGET_MS = 1000;
+const MATCH_SKIPPED = "pattern_skipped";
+const ASSERTION_LIMIT = 50;
+
+/** A regex time budget for one op run: pass it to every boundedMatch of the run. */
+function createRegexBudget(ms = REGEX_BUDGET_MS) {
+  return { remainingMs: ms };
+}
 const matchContext = vm.createContext({ cache: undefined, p: undefined, t: undefined });
 vm.runInContext("cache = new Map();", matchContext);
 const matchScript = new vm.Script(`(() => {
@@ -38,25 +49,42 @@ function checkPattern(pattern) {
   }
 }
 
+function skippedError() {
+  const error = new Error(`skipped: the run's ${REGEX_BUDGET_MS / 1000} s regex budget is spent`);
+  error.code = MATCH_SKIPPED;
+  return error;
+}
+
 /**
- * Whether `pattern` matches the first MATCH_INPUT_LIMIT characters of `text`. A run past
- * MATCH_TIMEOUT_MS is stopped and throws an error whose code is "pattern_timeout".
+ * Whether `pattern` matches the first MATCH_INPUT_LIMIT characters of `text`, spending from
+ * `budget`. A run past MATCH_TIMEOUT_MS is stopped and throws code "pattern_timeout"; a run the
+ * budget can't cover throws code "pattern_skipped" (at once when nothing is left, or when it is
+ * stopped at the budget's end).
  */
-function boundedMatch(pattern, text) {
+function boundedMatch(pattern, text, budget = createRegexBudget()) {
   checkPattern(pattern);
+  if (budget.remainingMs <= 0) throw skippedError();
+  const limit = Math.max(1, Math.min(MATCH_TIMEOUT_MS, Math.floor(budget.remainingMs)));
   matchContext.p = pattern;
   matchContext.t = String(text).slice(0, MATCH_INPUT_LIMIT);
+  const started = performance.now();
   try {
-    return matchScript.runInContext(matchContext, { timeout: MATCH_TIMEOUT_MS });
+    return matchScript.runInContext(matchContext, { timeout: limit });
   } catch (error) {
     if (error?.code !== "ERR_SCRIPT_EXECUTION_TIMEOUT") throw error;
+    if (limit < MATCH_TIMEOUT_MS) throw skippedError();
     const timeout = new Error(`matches pattern took too long (over ${MATCH_TIMEOUT_MS} ms); simplify it`);
     timeout.code = MATCH_TIMED_OUT;
     throw timeout;
   } finally {
+    budget.remainingMs -= performance.now() - started;
     matchContext.p = undefined;
     matchContext.t = undefined;
   }
+}
+
+function isBoundedOut(error) {
+  return error?.code === MATCH_TIMED_OUT || error?.code === MATCH_SKIPPED;
 }
 
 const OPS = {
@@ -67,9 +95,9 @@ const OPS = {
   // The pattern is checked first, whatever the value, so a run refuses an invalid one too.
   matches: {
     value: true,
-    test: (found, value) => {
+    test: (found, value, budget) => {
       checkPattern(value);
-      return typeof found === "string" && boundedMatch(value, found);
+      return typeof found === "string" && boundedMatch(value, found, budget);
     },
   },
 };
@@ -105,6 +133,7 @@ function validateAssertion(assertion, where) {
 
 function validateAssertions(list) {
   if (!Array.isArray(list)) throw new Error("must be an array of assertions");
+  if (list.length > ASSERTION_LIMIT) throw new Error(`at most ${ASSERTION_LIMIT} assertions per op (got ${list.length})`);
   return list.map((assertion, index) => validateAssertion(assertion, `assertion ${index + 1}`));
 }
 
@@ -136,35 +165,38 @@ function valueTexts(value, out = []) {
 // stored value is compared with the content), the full, untruncated actual value contains one.
 // Only the run knows every value, the browser host's own included; callers get the boolean alone.
 // A pattern that runs too long against a value counts as matching it.
-function touchesSecret(assertion, found, secrets) {
+function touchesSecret(assertion, found, secrets, budget) {
   const texts = [assertion.path, ...valueTexts(assertion.value)];
   if (assertion.op === "equals" || assertion.op === "matches") texts.push(...valueTexts(found));
   const patternMatches = (secret) => {
     try {
-      return boundedMatch(assertion.value, secret);
+      return boundedMatch(assertion.value, secret, budget);
     } catch (error) {
-      if (error.code === MATCH_TIMED_OUT) return true;
+      if (isBoundedOut(error)) return true;
       throw error;
     }
   };
   return secrets.some((secret) => texts.some((text) => text.includes(secret)) || (assertion.op === "matches" && patternMatches(secret)));
 }
 
-/** `secrets`: the run's env values; an assertion that touches one gets `secretSensitive: true`. */
-function checkAssertions(value, list, secrets = []) {
+/**
+ * `secrets`: the run's env values; an assertion that touches one gets `secretSensitive: true`.
+ * `budget`: the op run's regex budget (a fresh one when not given).
+ */
+function checkAssertions(value, list, secrets = [], budget = createRegexBudget()) {
   return list.map((assertion) => {
     const found = compileJsonPath(assertion.path, "path")(value);
     let pass;
     let error;
     try {
-      pass = OPS[assertion.op].test(found, assertion.value);
+      pass = OPS[assertion.op].test(found, assertion.value, budget);
     } catch (caught) {
-      if (caught.code !== MATCH_TIMED_OUT) throw caught;
+      if (!isBoundedOut(caught)) throw caught;
       pass = false;
       error = caught.message;
     }
     const result = { ...assertion, pass, actual: describeActual(found), ...(error ? { error } : {}) };
-    return touchesSecret(assertion, found, secrets) ? { ...result, secretSensitive: true } : result;
+    return touchesSecret(assertion, found, secrets, budget) ? { ...result, secretSensitive: true } : result;
   });
 }
 
@@ -172,4 +204,4 @@ function describeAssertion({ path, op, value }) {
   return [path, op, ...(value === undefined ? [] : [JSON.stringify(value)])].join(" ");
 }
 
-module.exports = { MATCH_TIMED_OUT, boundedMatch, checkAssertions, describeAssertion, validateAssertions, valueTexts };
+module.exports = { MATCH_SKIPPED, MATCH_TIMED_OUT, boundedMatch, checkAssertions, createRegexBudget, describeAssertion, validateAssertions, valueTexts };
