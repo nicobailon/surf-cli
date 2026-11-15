@@ -224,4 +224,5 @@ module.exports = {
   rankCandidates,
   scoreEntries,
   summarizeResponse,
+  visibleText,
 };

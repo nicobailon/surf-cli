@@ -744,7 +744,7 @@ describe("native host protocol integration", () => {
     });
     const host = await startHostHarness({ SURF_STATE_DIR: stateDir });
     const listing =
-      "<html><body><h1>All products</h1><p>Sharp Objects Tipping Velvet Soumission Starving Hearts</p></body></html>";
+      "<html><body><h1>All products</h1><p>Sharp Objects Tipping Velvet Soumission Starving Hearts Shakespeare Sonnets Olio Mesaerion</p></body></html>";
     const entries = [
       {
         id: "r_page",
@@ -772,13 +772,15 @@ describe("native host protocol integration", () => {
       );
       expect(read).toMatchObject({ tabId: 1, full: true, includeStatic: true });
       host.send({ id: read.id, entries, capture: { active: true, interruptions: [], dropped: 0 } });
-      const text = await host.waitForMessage(
-        (message) => message.type === "GET_PAGE_TEXT",
-        "GET_PAGE_TEXT",
+      // The whole body's text: page.text would read only a listing's first <article>.
+      const page = await host.waitForMessage(
+        (message) => message.type === "GET_PAGE_HTML",
+        "GET_PAGE_HTML",
       );
+      expect(page).toMatchObject({ selector: "body", stripScripts: true });
       host.send({
-        id: text.id,
-        text: "All products Sharp Objects Tipping Velvet Soumission Starving Hearts",
+        id: page.id,
+        html: "<body><article><h3>Sharp Objects</h3></article><article><h3>Tipping Velvet Soumission Starving Hearts</h3></article><article><h3>Shakespeare Sonnets Olio Mesaerion</h3></article><p>All products</p></body>",
       });
     };
 
@@ -794,6 +796,7 @@ describe("native host protocol integration", () => {
     expect(lines[1]).toMatch(
       /^1\. r_page {2}GET 200 Document text\/html {2}https:\/\/books\.example\/catalogue\/page-2\.html {2}\d+ B {2}score \d+$/,
     );
+    expect(lines[2]).toBe("   HTML document, first-party, overlaps 100% of the page text");
     expect(ranked.stdout).toMatch(/2\. r_font .*\(never picked\)/);
 
     const stop = runCli(

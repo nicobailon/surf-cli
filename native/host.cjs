@@ -64,6 +64,7 @@ const {
   traceEntriesForRecord,
   updateRecordContext,
 } = require("./playbook-records.cjs");
+const { visibleText } = require("./record-candidates.cjs");
 const { resolveArgs, runPlaybookOp } = require("./playbook-runtime.cjs");
 const { resolveOp } = require("./playbooks.cjs");
 const { replay, waitForResponse } = require("./api-harvest.cjs");
@@ -1664,16 +1665,17 @@ async function handleRecordRequest(tool, args, msg, request) {
     await stopCapture(requireRecordFor(target));
     return discardRecord({ target });
   }
-  // The record's requests as captured so far, with the page's text for the overlap score. The page
-  // is read only when a request kept a body to compare it with.
+  // The record's requests as captured so far, with the page's visible text for the overlap score.
+  // The page is read only when a request kept a body to compare it with. page.text reads only the
+  // first <article> or <main>, which on a listing is one item, so this takes the body's HTML.
   const readTrace = async (record) => {
     const result = await requestCallExtension(request, tool, { type: "READ_NETWORK_REQUESTS", tabId: record.tabId, full: true, includeStatic: true, limit: RECORD_TRACE_LIMIT });
     const read = result.entries || [];
     const entries = traceEntriesForRecord(record, read);
     let pageText = "";
     if (entries.some((entry) => typeof entry.responseBody === "string")) {
-      pageText = await requestCallExtension(request, tool, { type: "GET_PAGE_TEXT", tabId: record.tabId }, 10000)
-        .then((page) => (typeof page?.text === "string" ? page.text : ""), () => "");
+      pageText = await requestCallExtension(request, tool, { type: "GET_PAGE_HTML", tabId: record.tabId, selector: "body", stripScripts: true }, 10000)
+        .then((page) => (typeof page?.html === "string" ? visibleText(page.html) : ""), () => "");
     }
     return { entries, pageText, capture: result.capture, truncated: read.length >= RECORD_TRACE_LIMIT };
   };
