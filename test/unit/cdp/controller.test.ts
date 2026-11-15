@@ -1269,6 +1269,22 @@ describe("CDPController", () => {
       expect(new Set(entries.map((entry) => entry.id)).size).toBe(2);
     });
 
+    it("frees what a detach kept once the tab itself is detached (closed)", async () => {
+      await request(0);
+      mockChrome.debugger.onDetach.addListener.mock.calls.at(-1)?.[0]({ tabId }, "target_closed");
+      expect(controller.getNetworkEntries(tabId, { includeStatic: true })).toHaveLength(1);
+      await controller.detach(tabId);
+      expect(controller.getNetworkEntries(tabId, { includeStatic: true })).toEqual([]);
+      expect(controller.getNetworkCaptureStatus(tabId)).toEqual({
+        active: false,
+        interruptions: [],
+        dropped: 0,
+      });
+      mockChrome.debugger.attach.mockClear();
+      await controller.resumeNetworkCapture(tabId);
+      expect(mockChrome.debugger.attach).not.toHaveBeenCalled();
+    });
+
     it("remembers a clear until capture starts again", () => {
       vi.useFakeTimers();
       vi.setSystemTime(new Date("2026-11-14T10:00:00Z"));

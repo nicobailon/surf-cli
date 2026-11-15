@@ -354,26 +354,29 @@ export class CDPController {
         console.warn("[CDPController] Error detaching:", e);
       }
       this.targets.delete(tabId);
-      this.consoleMessages.delete(tabId);
-      this.networkRequests.delete(tabId);
-      this.networkEntries.delete(tabId);
-      this.networkBodyBytes.delete(tabId);
-      this.networkCapture.delete(tabId);
-      this.interruptedCapture.delete(tabId);
-      this.networkInterruptions.delete(tabId);
-      this.networkDropped.delete(tabId);
-      this.consoleCallbacks.delete(tabId);
-      this.networkCallbacks.delete(tabId);
-      this.notifyScreencastError(tabId, new CDPControllerError(
-        "debugger_detached",
-        `Debugger detached from tab ${tabId}`,
-        { tabId },
-      ));
-      this.screencastCallbacks.delete(tabId);
-      this.pendingDialogs.delete(tabId);
-      this.clearRequestStartTimes(tabId);
-      this.detachReasons.delete(tabId);
     }
+    // A Chrome-side detach keeps the tab's captured requests, so free them here too (a closed tab
+    // detaches through this) even when the debugger was no longer attached.
+    this.consoleMessages.delete(tabId);
+    this.networkRequests.delete(tabId);
+    this.networkEntries.delete(tabId);
+    this.networkBodyBytes.delete(tabId);
+    this.networkCapture.delete(tabId);
+    this.interruptedCapture.delete(tabId);
+    this.networkInterruptions.delete(tabId);
+    this.networkDropped.delete(tabId);
+    this.networkClearedAt.delete(tabId);
+    this.consoleCallbacks.delete(tabId);
+    this.networkCallbacks.delete(tabId);
+    this.notifyScreencastError(tabId, new CDPControllerError(
+      "debugger_detached",
+      `Debugger detached from tab ${tabId}`,
+      { tabId },
+    ));
+    this.screencastCallbacks.delete(tabId);
+    this.pendingDialogs.delete(tabId);
+    this.clearRequestStartTimes(tabId);
+    this.detachReasons.delete(tabId);
     return error ? { success: false, error } : { success: true };
   }
 
