@@ -262,8 +262,17 @@ function readCursor(doc, cursor) {
 
 /** "$", "$.data.items" or "$[0].title" as a path for compilePath; "" is the document itself. */
 function fromJsonPath(source, where) {
-  if (typeof source !== "string" || !source.startsWith("$")) throw new Error(`${where} must be a path starting with $, such as $.data.items`);
-  return source.slice(1).replace(/^\./, "");
+  const usage = `${where} must be $, $.path or $[n]..., such as $.data.items (got ${JSON.stringify(source)})`;
+  if (typeof source !== "string" || !/^\$(?:$|\.[^.]|\[)/.test(source)) throw new Error(usage);
+  const path = source.slice(1).replace(/^\./, "");
+  if (path) {
+    try {
+      compilePath(path);
+    } catch {
+      throw new Error(usage);
+    }
+  }
+  return path;
 }
 
 function compileJsonPath(source, where) {

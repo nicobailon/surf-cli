@@ -9,6 +9,7 @@ const runtime = require("../../native/playbook-runtime.cjs");
 const records = require("../../native/records.cjs");
 const extract = require("../../native/playbook-extract.cjs");
 const clients = require("../../native/playbook-client.cjs");
+const assertions = require("../../native/playbook-assertions.cjs");
 const tempDirs: string[] = [];
 
 afterEach(() => {
@@ -455,9 +456,11 @@ describe("validating an op's extract", () => {
       validate({ extract: { html: { item: "article", value: "h1", fields: { t: "h1" } } } }),
     ).toThrow(/html takes item and fields, or value/);
     expect(() => validate({ extract: { records: "data.items" } })).toThrow(
-      /records must be a path starting with \$/,
+      /records must be \$, \$\.path or \$\[n\]/,
     );
-    expect(() => validate({ extract: { records: "$.data..items" } })).toThrow(/bad segment/);
+    expect(() => validate({ extract: { records: "$.data..items" } })).toThrow(
+      /records must be \$, \$\.path/,
+    );
     expect(() => validate({ extract: { fields: { id: "a..b" } } })).toThrow(/bad segment/);
     expect(() => validate({ extract: { html: htmlExtract.html, records: "$" } })).toThrow(
       /extract cannot combine html with records, fields or filter/,
@@ -490,6 +493,35 @@ function writeOp(base: string, run: unknown[]) {
   fs.writeFileSync(file, `${JSON.stringify({ id: "get_books", effect: "read", run }, null, 2)}\n`);
   return file;
 }
+
+describe("JSON path syntax", () => {
+  const validate = (spec: Record<string, unknown>) =>
+    playbooks.validateOp(
+      op([{ using: "network", request: { url: "https://x.test/" }, extract: spec }]),
+      {
+        origins: [],
+      },
+    );
+
+  it("is checked before an op is saved", () => {
+    for (const bad of ["$foo", "$.", "$..a", "$.a."]) {
+      expect(() => validate({ records: bad }), bad).toThrow(
+        /records must be \$, \$\.path or \$\[n\]/,
+      );
+      expect(() => validate({ jsonPath: bad }), bad).toThrow(/jsonPath must be \$ or \$\.key\.key/);
+    }
+    for (const good of ["$", "$.data.items", "$[0].hits", "$.a[2]"]) {
+      expect(() => validate({ records: good }), good).not.toThrow();
+    }
+    expect(() => validate({ jsonPath: "$.meta.total" })).not.toThrow();
+  });
+
+  it("is checked in assertions", () => {
+    expect(() => assertions.validateAssertions([{ path: "$foo", op: "not_null" }])).toThrow(
+      /assertion 1: path must be \$, \$\.path or \$\[n\]/,
+    );
+  });
+});
 
 describe("surf pb extract", () => {
   const network = {

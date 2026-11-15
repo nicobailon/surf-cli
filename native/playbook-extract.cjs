@@ -24,6 +24,9 @@ function validateExtract(extract, using) {
   for (const key of Object.keys(extract)) {
     if (!EXTRACT_KEYS.includes(key)) throw new Error(`extract has unknown key "${key}" (allowed: ${EXTRACT_KEYS.join(", ")})`);
   }
+  if (extract.jsonPath !== undefined && (typeof extract.jsonPath !== "string" || !/^\$(?:\.[^.]+)*$/.test(extract.jsonPath))) {
+    throw new Error(`jsonPath must be $ or $.key.key (got ${JSON.stringify(extract.jsonPath)})`);
+  }
   if (extract.html !== undefined) {
     if (Object.keys(extract).length > 1) throw new Error("extract cannot combine html with records, fields or filter (or jsonPath, field)");
     if (!HTML_STRATEGIES.includes(using)) throw new Error("extract.html works only on network and workflow strategies");

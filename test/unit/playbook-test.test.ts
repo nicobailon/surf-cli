@@ -60,7 +60,7 @@ describe("assertions", () => {
       assertions.validateAssertions([{ path: "$", op: "longer_than", value: 1 }]),
     ).toThrow(/assertion 1: op must be one of equals, array_min_len, not_null, exists, matches/);
     expect(() => assertions.validateAssertions([{ path: "records", op: "not_null" }])).toThrow(
-      /assertion 1: path must be a path starting with \$/,
+      /assertion 1: path must be \$, \$\.path or \$\[n\]/,
     );
     expect(() => assertions.validateAssertions([{ path: "$", op: "array_min_len" }])).toThrow(
       /assertion 1: array_min_len needs a value/,
