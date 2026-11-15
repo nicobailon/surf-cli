@@ -145,9 +145,12 @@ function withServerIdempotency(request, idempotency, attemptId) {
   return next;
 }
 
-// With extract.html the body is parsed in the tab and only the extracted records come back: no
-// DOM in Node, and a whole page would overrun the tab script's output limit.
-function networkScript(request, allowedOrigins = [], html) {
+// The tab's script output stops at 50,000 characters, so only what the extract needs comes back:
+// with extract.html the body is parsed in the tab (Node has no DOM) and only the extracted value
+// returns; with a JSON extract the parsed body returns without its text.
+function networkScript(request, allowedOrigins = [], extract) {
+  const html = extract?.html;
+  const jsonOnly = Boolean(extract && (extract.jsonPath || extract.records !== undefined || extract.fields || extract.filter));
   const headers = request.headers || {};
   const query = request.query || {};
   const body = request.body;
@@ -181,7 +184,7 @@ else {
 return { status: response.status, ok: response.ok, url: response.url, headers: Object.fromEntries(response.headers.entries()), extracted: ${htmlExtractFunction(html)}(doc) };
 ` : ""}let json;
 try { json = JSON.parse(text); } catch {}
-return { status: response.status, ok: response.ok, url: response.url, headers: Object.fromEntries(response.headers.entries()), body: text, bodyJson: json };
+return { status: response.status, ok: response.ok, url: response.url, headers: Object.fromEntries(response.headers.entries()), ${jsonOnly ? "...(json === undefined ? { body: text } : {})" : "body: text"}, bodyJson: json };
 })()`;
 }
 
@@ -247,7 +250,7 @@ async function runStrategy(strategy, context) {
       context.attemptId,
     );
     await context.markDispatched?.();
-    const response = await context.executeTool("javascript_tool", { code: networkScript(request, context.allowedOrigins, strategy.extract?.html) }, { signal: context.signal });
+    const response = await context.executeTool("javascript_tool", { code: networkScript(request, context.allowedOrigins, strategy.extract) }, { signal: context.signal });
     if (response?.error) throw new Error(typeof response.error === "string" ? response.error : JSON.stringify(response.error));
     const result = response?.output !== undefined ? JSON.parse(response.output) : response?.value ?? response;
     if (!result?.ok && (strategy.acceptStatus || []).includes(result?.status) === false) throw new Error(`network strategy returned ${result?.status || "an unknown status"}`);

@@ -212,6 +212,41 @@ describe("extracting records from JSON", () => {
   });
 });
 
+describe("the tab's output for a JSON extract", () => {
+  it("leaves out the response text, which the tab's 50,000-character output limit would cut", async () => {
+    const outputs: Record<string, unknown>[] = [];
+    const body = JSON.stringify({ hits: [{ name: "A" }] });
+    const executeTool = async (_tool: string, args: { code: string }) => {
+      const fetchImpl = async (url: string) => ({
+        status: 200,
+        ok: true,
+        url,
+        headers: new Headers({ "content-type": "application/json" }),
+        text: async () => body,
+      });
+      const value = await new Function("fetch", "location", `return ${args.code}`)(fetchImpl, {
+        href: "https://api.test/",
+      });
+      outputs.push(value);
+      return { output: JSON.stringify(value) };
+    };
+    const result = await runtime.runPlaybookOp({
+      playbook: { id: "fixture", provenance: { scope: "test" } },
+      op: op([
+        {
+          using: "network",
+          request: { method: "GET", url: "https://api.test/search" },
+          extract: { records: "$.hits", fields: { title: "name" } },
+        },
+      ]),
+      executeTool,
+    });
+    expect(result.value).toEqual([{ title: "A" }]);
+    expect(outputs[0]).toMatchObject({ status: 200, bodyJson: { hits: [{ name: "A" }] } });
+    expect(outputs[0]).not.toHaveProperty("body");
+  });
+});
+
 describe("extracting records from HTML", () => {
   it("parses a network strategy's HTML body in the tab and returns records, not the body", async () => {
     const html = "<html><body>books</body></html>";
