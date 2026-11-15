@@ -297,4 +297,4 @@ function extractRecords(doc, spec) {
   return compileJsonExtract(spec)(doc);
 }
 
-module.exports = { compileJsonExtract, createRecordSet, extractRecords, filterRecords, findObjects, getPath, readCursor };
+module.exports = { compileJsonExtract, compileJsonPath, createRecordSet, extractRecords, filterRecords, findObjects, getPath, readCursor };

@@ -5,8 +5,6 @@
 //   { records?, fields?, filter? }       records from JSON (paths as in records.cjs)
 // `surf pb extract` sets it on an op and saves the op.
 
-const fs = require("fs");
-const path = require("path");
 const { parseHtmlExtract } = require("./dom-collect.cjs");
 const { compileJsonExtract } = require("./records.cjs");
 const { lineDiff } = require("./text-diff.cjs");
@@ -103,46 +101,26 @@ function parseExtractArgs(argv) {
   return { playbook, op, extract, options };
 }
 
-/** The op's file on disk, as written (not the validated, normalized op). */
-function readOpFile(directory, opId) {
-  const opsDir = path.join(directory, "ops");
-  for (const name of fs.readdirSync(opsDir).filter((file) => file.endsWith(".json"))) {
-    const file = path.join(opsDir, name);
-    const text = fs.readFileSync(file, "utf8");
-    const op = JSON.parse(text);
-    if (op?.id !== opId) continue;
-    if (name !== `${opId}.json`) throw new Error(`op ${opId} is saved as ${name}; rename it to ${opId}.json before editing it`);
-    return { file, text, op };
-  }
-  throw new Error(`Op not found: ${path.basename(directory)} ${opId}`);
-}
-
 /** Sets `extract` on the op's matching strategies, validates and saves the op, and returns a diff. */
-function saveExtract({ playbook: playbookId, op: opId, extract, strategy, cwd = process.cwd(), home }) {
+function saveExtract({ playbook, op: opId, extract, strategy, cwd, home }) {
   // Required here: playbooks.cjs requires this module to validate extracts.
-  const { resolvePlaybook, savePlaybook } = require("./playbooks.cjs");
-  const playbook = resolvePlaybook(playbookId, { cwd, home });
-  const { scope } = playbook.provenance;
-  if (scope !== "user" && scope !== "project") {
-    throw new Error(`${scope} playbook ${playbook.id} can't be edited; copy it first: surf pb export ${playbook.id} --out <dir>, then surf pb import <dir>`);
-  }
-  const { file, text, op } = readOpFile(playbook.directory, opId);
-  const usings = (op.run || []).map((entry) => entry.using);
-  const wanted = strategy ? [strategy] : extract.html !== undefined ? HTML_STRATEGIES : ["network"];
-  const targets = usings.flatMap((using, index) => (wanted.includes(using) ? [index] : []));
-  if (targets.length === 0) throw new Error(`op ${opId} has no ${wanted.join(" or ")} strategy (it has ${usings.join(", ") || "none"})`);
-  const next = { ...op, run: op.run.map((entry, index) => (targets.includes(index) ? { ...entry, extract } : entry)) };
-  const { directory: _directory, provenance: _provenance, ops: _ops, ...manifest } = playbook;
-  savePlaybook({ manifest, op: next, scope, cwd, home });
-  return {
-    playbook: playbook.id,
+  const { editSavedOp } = require("./playbooks.cjs");
+  let strategies;
+  const edited = editSavedOp({
+    playbook,
     op: opId,
-    scope,
-    path: file,
-    strategies: targets.map((index) => usings[index]),
-    extract,
-    diff: lineDiff(text, fs.readFileSync(file, "utf8")),
-  };
+    cwd,
+    home,
+    edit: (op) => {
+      const usings = (op.run || []).map((entry) => entry.using);
+      const wanted = strategy ? [strategy] : extract.html !== undefined ? HTML_STRATEGIES : ["network"];
+      const targets = usings.flatMap((using, index) => (wanted.includes(using) ? [index] : []));
+      if (targets.length === 0) throw new Error(`op ${opId} has no ${wanted.join(" or ")} strategy (it has ${usings.join(", ") || "none"})`);
+      strategies = targets.map((index) => usings[index]);
+      return { ...op, run: op.run.map((entry, index) => (targets.includes(index) ? { ...entry, extract } : entry)) };
+    },
+  });
+  return { playbook: edited.playbook, op: opId, scope: edited.scope, path: edited.path, strategies, extract, diff: lineDiff(edited.before, edited.after) };
 }
 
 function formatExtractResult(result) {

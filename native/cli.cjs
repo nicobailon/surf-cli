@@ -269,7 +269,7 @@ if (["playbook", "pb", "use"].includes(args[0]) && !helpRequested()) {
     .then((result) => {
       if (!result.handled) throw new Error("Playbook command was not handled");
       if (result.value !== undefined) console.log(formatPlaybookOutput(result.value, result.json));
-      process.exit(0);
+      process.exit(result.exitCode ?? 0);
     })
     .catch((error) => {
       console.error(`Error: ${error.message}`);
@@ -1683,6 +1683,22 @@ const TOOLS = {
       "playbook show": { desc: "Show a playbook's source and ops", args: ["playbook"], opts: { json: "Output raw JSON" } },
       "playbook ops": { desc: "List a playbook's operations", args: ["playbook"], opts: { json: "Output raw JSON" } },
       "playbook run": { desc: "Same as surf use <playbook> <op>", args: ["playbook", "op"] },
+      "playbook test": {
+        desc: "Run an op as surf use does and check assertions on its result; exits 1 when one fails or no strategy answers",
+        args: ["playbook", "op"],
+        opts: {
+          "<arg>": "Operation input, as with surf use (or all at once with --args '<json>')",
+          assert: "<path> <op> [value] (repeatable): ops equals, array_min_len, not_null, exists, matches; paths like $, $[0].title, $.status. Default: the op's saved assertions",
+          strategy: "Run only this strategy (network, workflow, ...), to tell the network path from a fallback",
+          save: "Save the --assert list in the op when the test passes; surf use then checks it too",
+          write: "Allow testing a write op (it really writes)",
+          json: "Output JSON: ok, strategy, records, durationMs, assertions, attempts",
+        },
+        examples: [
+          { cmd: "pb test books get_books --page 2 --assert '$' array_min_len 1 --assert '$[0].title' not_null --strategy network --save", desc: "Check the network path and save the checks" },
+          { cmd: "pb test resy search --args '{\"query\":\"pizza\"}' --json", desc: "Rerun the saved checks" },
+        ],
+      },
       "playbook extract": {
         desc: "Make an op return records: from HTML (collect's --item/--field) or JSON (--records, --field paths), saved in the op",
         args: ["playbook", "op"],

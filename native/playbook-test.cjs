@@ -1,0 +1,169 @@
+// surf pb test: run an op the way `surf use` does and check assertions on its result.
+
+const { describeAssertion, validateAssertions } = require("./playbook-assertions.cjs");
+const { editSavedOp, resolveEditablePlaybook, resolveOp } = require("./playbooks.cjs");
+
+const USAGE =
+  "Usage: surf pb test <playbook> <op> [--args <json> | --<input> <value>...] [--assert <path> <op> [value]]... [--strategy <using>] [--save] [--write] [--json]";
+const VALUE_OPS = new Set(["equals", "array_min_len", "matches"]);
+// Options of pb test itself; any other --name is an op input, as with surf use.
+const FLAGS = new Set(["json", "save", "write", "allow-script", "no-wait", "pin-built-in"]);
+const OPTIONS = new Set(["strategy", "args", "session", "tab-id"]);
+
+function assertValue(op, text) {
+  if (op === "array_min_len") return /^\d+$/.test(text) ? Number(text) : text;
+  if (op !== "equals") return text;
+  try {
+    return JSON.parse(text);
+  } catch {
+    return text;
+  }
+}
+
+/** `pb test` arguments (after `test`). `assertions` is undefined when none were given. */
+function parseTestArgs(argv) {
+  const positional = [];
+  const inputs = {};
+  const options = {};
+  let assertions;
+  let json;
+  for (let index = 0; index < argv.length; index++) {
+    const arg = argv[index];
+    if (!arg.startsWith("--")) {
+      positional.push(arg);
+      continue;
+    }
+    const name = arg.slice(2);
+    if (name === "assert") {
+      const [path, op] = [argv[index + 1], argv[index + 2]];
+      if (path === undefined || op === undefined) throw new Error(`--assert needs <path> <op> [value]. ${USAGE}`);
+      const assertion = { path, op };
+      index += 2;
+      if (VALUE_OPS.has(op)) {
+        if (argv[index + 1] === undefined) throw new Error(`--assert ${path} ${op} needs a value`);
+        assertion.value = assertValue(op, argv[++index]);
+      }
+      assertions = [...(assertions || []), assertion];
+    } else if (FLAGS.has(name)) options[name === "allow-script" ? "allowScript" : name] = true;
+    else {
+      const value = argv[index + 1];
+      if (value === undefined || value.startsWith("--")) throw new Error(`${arg} needs a value`);
+      index++;
+      if (name === "args") json = value;
+      else if (OPTIONS.has(name)) options[name] = value;
+      else inputs[name] = value;
+    }
+  }
+  const [playbook, op] = positional;
+  if (!playbook || !op || positional.length > 2) throw new Error(USAGE);
+  let args = {};
+  if (json !== undefined) {
+    try {
+      args = JSON.parse(json);
+    } catch (error) {
+      throw new Error(`--args must be a JSON object: ${error.message}`);
+    }
+    if (!args || typeof args !== "object" || Array.isArray(args)) throw new Error("--args must be a JSON object");
+  }
+  if (assertions) {
+    try {
+      validateAssertions(assertions);
+    } catch (error) {
+      throw new Error(`--assert: ${error.message}`);
+    }
+  }
+  return { playbook, op, args: { ...args, ...inputs }, ...(assertions ? { assertions } : {}), options };
+}
+
+/** The op as this machine sees it; undefined when it lives only on a remote browser host. */
+function localOp(playbook, op, { cwd, home }) {
+  try {
+    return resolveOp(playbook, op, { cwd, home }).op;
+  } catch (error) {
+    if (/^(Playbook|Op) not found/.test(error.message)) return undefined;
+    throw error;
+  }
+}
+
+/**
+ * Runs the test. `runOp(params)` runs the op on the browser host (playbook.run with test: true)
+ * and resolves to its result, a failed run included.
+ */
+async function runPlaybookTest({ argv, cwd = process.cwd(), home, runOp, now = Date.now }) {
+  const spec = parseTestArgs(argv);
+  const { options } = spec;
+  const op = localOp(spec.playbook, spec.op, { cwd, home });
+  if (op?.effect === "write" && options.write !== true) throw new Error(`${spec.playbook} ${spec.op} is a write op; pb test runs it only with --write`);
+  if (options.save) {
+    if (!spec.assertions) throw new Error("--save needs at least one --assert");
+    // Fail before running: a built-in op can't take saved assertions.
+    if (op) resolveEditablePlaybook(spec.playbook, { cwd, home });
+  }
+  const saved = op?.on?.success?.expect?.assert;
+  const started = now();
+  let result;
+  try {
+    result = await runOp({
+      playbook: spec.playbook,
+      op: spec.op,
+      args: spec.args,
+      ...(spec.assertions ? { assert: spec.assertions } : {}),
+      ...(options.strategy ? { strategy: options.strategy } : {}),
+      write: options.write === true,
+      allowScript: options.allowScript === true,
+    });
+  } catch (error) {
+    result = { status: "failed", error: error.message, attempts: [] };
+  }
+  const durationMs = now() - started;
+  const ok = result.status === "completed";
+  const attempts = result.attempts || [];
+  const lastChecked = [...attempts].reverse().find((attempt) => attempt.assertions);
+  const report = {
+    ok,
+    playbook: spec.playbook,
+    op: spec.op,
+    strategy: ok ? result.strategy : null,
+    forced: options.strategy ?? null,
+    records: ok && Array.isArray(result.value) ? result.value.length : null,
+    durationMs,
+    assertionSource: spec.assertions ? "cli" : saved ? "saved" : "none",
+    assertions: (ok ? result.assertions : lastChecked?.assertions) || [],
+    attempts,
+    ...(ok ? {} : { error: result.error }),
+    saved: null,
+  };
+  if (options.save && ok) {
+    const edited = editSavedOp({
+      playbook: spec.playbook,
+      op: spec.op,
+      cwd,
+      home,
+      edit: (raw) => ({
+        ...raw,
+        on: { ...raw.on, success: { ...raw.on?.success, expect: { ...raw.on?.success?.expect, assert: spec.assertions } } },
+      }),
+    });
+    report.saved = edited.path;
+  } else if (options.save) report.notSaved = "the test failed, so the assertions were not saved";
+  return report;
+}
+
+function formatTestReport(report) {
+  const answered = report.strategy ? `${report.strategy} answered` : "no strategy answered";
+  const records = report.records === null ? "" : `, ${report.records} record${report.records === 1 ? "" : "s"}`;
+  const lines = [`${report.ok ? "PASS" : "FAIL"} ${report.playbook} ${report.op}: ${answered}${records}, ${report.durationMs} ms`];
+  for (const assertion of report.assertions) {
+    const actual = typeof assertion.actual === "string" ? assertion.actual : JSON.stringify(assertion.actual);
+    lines.push(`  ${assertion.pass ? "pass" : "FAIL"}  ${describeAssertion(assertion)} (${actual})`);
+  }
+  if (!report.ok) {
+    for (const attempt of report.attempts) lines.push(`  ${attempt.using}: ${attempt.error}`);
+    if (report.attempts.length === 0 && report.error) lines.push(`  ${report.error}`);
+  }
+  if (report.saved) lines.push(`Saved ${report.assertions.length} assertions in ${report.saved}`);
+  if (report.notSaved) lines.push(`Not saved: ${report.notSaved}`);
+  return lines.join("\n");
+}
+
+module.exports = { formatTestReport, parseTestArgs, runPlaybookTest };

@@ -65,7 +65,8 @@ const {
   updateRecordContext,
 } = require("./playbook-records.cjs");
 const { visibleText } = require("./record-candidates.cjs");
-const { resolveArgs, runPlaybookOp } = require("./playbook-runtime.cjs");
+const { validateAssertions } = require("./playbook-assertions.cjs");
+const { resolveArgs, runPlaybookOp, testPlaybookOp } = require("./playbook-runtime.cjs");
 const { resolveOp } = require("./playbooks.cjs");
 const { replay, waitForResponse } = require("./api-harvest.cjs");
 const { runCollect } = require("./dom-collect.cjs");
@@ -1563,6 +1564,9 @@ async function runHostPlaybook(msg, request) {
     pinBuiltIn: params.pinBuiltIn === true,
   });
   const runArgs = resolveArgs(op, params.args || {}, { playbookId: playbook.id });
+  if (params.test === true && op.effect === "write" && params.write !== true) {
+    throw new Error(`${playbook.id} ${op.id} is a write op; pb test runs it only with --write`);
+  }
   if (op.effect === "write" && op.safety.authorization === "explicit" && params.write !== true) {
     throw new Error(`write op ${playbook.id} ${op.id} requires --write`);
   }
@@ -1578,12 +1582,16 @@ async function runHostPlaybook(msg, request) {
     appendActivity(event);
     appendRecordEvent(event, { target: recordEventTarget(request) });
   };
-  const result = await runPlaybookOp({
+  // pb test: the same run, but a failed one comes back as a result with each attempt's assertions.
+  const run = params.test === true ? testPlaybookOp : runPlaybookOp;
+  const result = await run({
     playbook,
     op,
     args: runArgs,
     // Values of env-supplied headers, read from the caller's shell by surf use; never stored.
     secrets: params.secret || {},
+    ...(params.assert !== undefined ? { assertions: validateAssertions(params.assert) } : {}),
+    ...(params.strategy !== undefined ? { strategy: params.strategy } : {}),
     attemptId: receipt?.attemptId,
     signal: request.signal,
     executeTool: (tool, args) => executeMappedHostTool(request, tool, args, msg.tabId),

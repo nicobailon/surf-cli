@@ -4,6 +4,7 @@ const path = require("path");
 const { atomicWriteJson } = require("./private-state.cjs");
 const { validateApiSpec } = require("./api-harvest.cjs");
 const { validateCollectSpec } = require("./dom-collect.cjs");
+const { validateAssertions } = require("./playbook-assertions.cjs");
 const { validateExtract } = require("./playbook-extract.cjs");
 const { validateMarkdownSpec } = require("./record-format.cjs");
 const { assertNoEmbeddedSecrets, assertUrlHasNoEmbeddedSecrets } = require("./redaction.cjs");
@@ -186,6 +187,13 @@ function validateOp(value, manifest) {
       throw new Error(`op ${id} ${error.message}`);
     }
   }
+  if (value.on?.success?.expect?.assert !== undefined) {
+    try {
+      validateAssertions(value.on.success.expect.assert);
+    } catch (error) {
+      throw new Error(`op ${id} on.success.expect.assert: ${error.message}`);
+    }
+  }
   const origins = validateOrigins(auth.origins || value.origins || manifest.origins);
   return {
     ...value,
@@ -262,6 +270,34 @@ function savePlaybook({ manifest, op, scope = "user", cwd = process.cwd(), home 
   return { directory, playbook: validatedManifest.id, op: validatedOp.id, scope };
 }
 
+/** The playbook, if it is a user or project one that edits can be saved to. */
+function resolveEditablePlaybook(playbookId, options) {
+  const playbook = resolvePlaybook(playbookId, options);
+  const { scope } = playbook.provenance;
+  if (scope !== "user" && scope !== "project") {
+    throw new Error(`${scope} playbook ${playbook.id} can't be edited; copy it first: surf pb export ${playbook.id} --out <dir>, then surf pb import <dir>`);
+  }
+  return playbook;
+}
+
+/**
+ * Rewrites a user or project op through savePlaybook: `edit` gets the op as written on disk (not
+ * normalized) and returns the new one. Returns the file and its text before and after.
+ */
+function editSavedOp({ playbook: playbookId, op: opId, edit, cwd = process.cwd(), home = os.homedir() }) {
+  const playbook = resolveEditablePlaybook(playbookId, { cwd, home });
+  const { scope } = playbook.provenance;
+  const opsDir = path.join(playbook.directory, "ops");
+  const name = fs.readdirSync(opsDir).find((file) => file.endsWith(".json") && JSON.parse(fs.readFileSync(path.join(opsDir, file), "utf8"))?.id === opId);
+  if (!name) throw new Error(`Op not found: ${playbook.id} ${opId}`);
+  if (name !== `${opId}.json`) throw new Error(`op ${opId} is saved as ${name}; rename it to ${opId}.json before editing it`);
+  const file = path.join(opsDir, name);
+  const before = fs.readFileSync(file, "utf8");
+  const { directory: _directory, provenance: _provenance, ops: _ops, ...manifest } = playbook;
+  savePlaybook({ manifest, op: edit(JSON.parse(before)), scope, cwd, home });
+  return { playbook: playbook.id, op: opId, scope, path: file, before, after: fs.readFileSync(file, "utf8") };
+}
+
 function writePlaybookDirectory(directory, playbook) {
   if (fs.existsSync(directory)) throw new Error(`playbook output already exists: ${directory}`);
   fs.mkdirSync(path.join(directory, "ops"), { recursive: true });
@@ -289,9 +325,11 @@ function importPlaybookDirectory(source, { scope = "user", cwd = process.cwd(), 
 }
 
 module.exports = {
+  editSavedOp,
   exportPlaybookDirectory,
   importPlaybookDirectory,
   listPlaybooks,
+  resolveEditablePlaybook,
   resolveOp,
   resolvePlaybook,
   savePlaybook,

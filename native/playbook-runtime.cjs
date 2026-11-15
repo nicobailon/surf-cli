@@ -5,6 +5,7 @@ const { htmlExtractFunction, runCollect } = require("./dom-collect.cjs");
 const { editDistance } = require("./edit-distance.cjs");
 const { GLOBAL_OPTIONS } = require("./global-options.cjs");
 const { renderRequest, resolveArgValues } = require("./playbook-template.cjs");
+const { checkAssertions, describeAssertion } = require("./playbook-assertions.cjs");
 const { redactValues } = require("./redaction.cjs");
 const { extractRecords } = require("./records.cjs");
 
@@ -105,11 +106,28 @@ function extractResult(result, extract) {
   return result;
 }
 
+/** Throws on the first failed check; returns the assertion results (expect.assert), if any. */
 function verifyResult(value, expect = {}, raw = value) {
   if (expect.status !== undefined && raw?.status !== expect.status) throw new Error(`expected status ${expect.status}`);
   if (expect.minItems !== undefined && (!Array.isArray(value) || value.length < expect.minItems)) throw new Error(`expected at least ${expect.minItems} items`);
   if (expect.truthy && !value) throw new Error("expected a truthy result");
-  return true;
+  if (!expect.assert) return undefined;
+  const results = checkAssertions(value, expect.assert);
+  const failed = results.find((result) => !result.pass);
+  if (failed) {
+    const error = new Error(`assertion failed: ${describeAssertion(failed)} (got ${typeof failed.actual === "string" ? failed.actual : JSON.stringify(failed.actual)})`);
+    error.assertions = results;
+    throw error;
+  }
+  return results;
+}
+
+/** The op's strategies, or only those using `forced` (pb test --strategy). */
+function strategiesToRun(op, forced) {
+  if (forced === undefined) return op.run;
+  const run = op.run.filter((strategy) => strategy.using === forced);
+  if (run.length === 0) throw new Error(`op ${op.id} has no ${forced} strategy (it has ${op.run.map((strategy) => strategy.using).join(", ")})`);
+  return run;
 }
 
 function withServerIdempotency(request, idempotency, attemptId) {
@@ -259,12 +277,16 @@ async function runStrategy(strategy, context) {
   throw new Error(`unsupported strategy: ${strategy.using}`);
 }
 
-async function runPlaybookOp({ playbook, op, args: providedArgs = {}, secrets = {}, env = process.env, attemptId, executeTool, executeNative, signal, sleep, onEvent = () => {}, beforeDispatch = async () => {}, afterDispatch = async () => {}, allowScript = false }) {
+// `assertions` replaces the op's saved on.success.expect.assert for this run (pb test --assert).
+// `strategy` runs only the strategies of that kind (pb test --strategy).
+async function runPlaybookOp({ playbook, op, args: providedArgs = {}, secrets = {}, env = process.env, attemptId, executeTool, executeNative, signal, sleep, onEvent = () => {}, beforeDispatch = async () => {}, afterDispatch = async () => {}, allowScript = false, assertions, strategy: forced }) {
   const args = resolveArgs(op, providedArgs, { playbookId: playbook.id });
   const authValues = resolveAuthValues(op, secrets, env);
+  const run = strategiesToRun(op, forced);
+  const assert = assertions ?? op.on?.success?.expect?.assert;
   const attempts = [];
-  for (let index = 0; index < op.run.length; index++) {
-    const strategy = op.run[index];
+  for (let index = 0; index < run.length; index++) {
+    const strategy = run[index];
     let dispatched = false;
     const markDispatched = async () => {
       if (dispatched) return;
@@ -288,14 +310,18 @@ async function runPlaybookOp({ playbook, op, args: providedArgs = {}, secrets = 
         allowScript,
       });
       const value = extractResult(raw, strategy.extract);
-      verifyResult(value, strategy.verify || strategy.expect || op.on?.success?.expect, raw);
+      const expect = strategy.verify || strategy.expect || op.on?.success?.expect;
+      // Saved assertions hold for every strategy, even one with its own verify.
+      const checked = verifyResult(value, assert ? { ...expect, assert } : expect, raw);
       if (op.effect === "write") await afterDispatch({ status: "verified", strategy, index });
       onEvent({ type: "strategy.completed", playbook: playbook.id, op: op.id, using: strategy.using, index, endedAt: new Date().toISOString() });
-      return { status: "completed", playbook: playbook.id, op: op.id, strategy: strategy.using, value: redactSecrets(value, authValues), provenance: playbook.provenance, attempts };
+      return { status: "completed", playbook: playbook.id, op: op.id, strategy: strategy.using, value: redactSecrets(value, authValues), provenance: playbook.provenance, attempts, ...(checked ? { assertions: redactSecrets(checked, authValues) } : {}) };
     } catch (caught) {
       const message = redactSecrets(caught?.message || String(caught), authValues);
       const error = message === caught?.message ? caught : new Error(message);
-      attempts.push({ using: strategy.using, error: message });
+      // An assertion's `actual` is a value from the response, so it is redacted like the result.
+      const checks = caught?.assertions ? redactSecrets(caught.assertions, authValues) : undefined;
+      attempts.push({ using: strategy.using, error: message, ...(checks ? { assertions: checks } : {}) });
       onEvent({ type: "strategy.failed", playbook: playbook.id, op: op.id, using: strategy.using, index, error: message, endedAt: new Date().toISOString() });
       if (op.effect === "write") {
         await afterDispatch({ status: dispatched ? "indeterminate" : "not_dispatched", strategy, index, error: message });
@@ -304,7 +330,19 @@ async function runPlaybookOp({ playbook, op, args: providedArgs = {}, secrets = 
     }
   }
   const detail = attempts.map((attempt) => `${attempt.using}: ${attempt.error}`).join("; ");
-  throw new Error(`All strategies failed${detail ? ` (${detail})` : ""}`);
+  const error = new Error(`All strategies failed${detail ? ` (${detail})` : ""}`);
+  error.attempts = attempts;
+  throw error;
 }
 
-module.exports = { authInputs, resolveArgs, runPlaybookOp };
+/** pb test: a failed run comes back as a result, with each attempt's error and assertions. */
+async function testPlaybookOp(options) {
+  const { playbook, op } = options;
+  try {
+    return await runPlaybookOp(options);
+  } catch (error) {
+    return { status: "failed", playbook: playbook.id, op: op.id, error: error.message, attempts: error.attempts || [] };
+  }
+}
+
+module.exports = { authInputs, resolveArgs, runPlaybookOp, testPlaybookOp };
