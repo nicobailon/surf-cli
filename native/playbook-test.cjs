@@ -1,6 +1,6 @@
 // surf pb test: run an op the way `surf use` does and check assertions on its result.
 
-const { describeAssertion, validateAssertions, valueTexts } = require("./playbook-assertions.cjs");
+const { describeAssertion, safeRegExp, validateAssertions, valueTexts } = require("./playbook-assertions.cjs");
 const { authInputs, resolveArgs } = require("./playbook-runtime.cjs");
 const { editSavedOp, resolveEditablePlaybook, resolveOp } = require("./playbooks.cjs");
 
@@ -98,7 +98,7 @@ function refuseSecretAssertions(assertions, secret) {
       if (texts.some((text) => text.includes(value))) {
         throw new Error(`--save refused: ${position} contains the value of ${name}, which is never stored; assert on something else`);
       }
-      if (assertion.op === "matches" && new RegExp(assertion.value).test(value)) {
+      if (assertion.op === "matches" && safeRegExp(assertion.value).test(value)) {
         throw new Error(`--save refused: ${position}'s pattern matches the value of ${name}, which is never stored; use a narrower pattern`);
       }
     }

@@ -55,6 +55,64 @@ describe("assertions", () => {
     ]);
   });
 
+  it("refuses matches patterns that could backtrack without end, and overlong ones", () => {
+    const check = (pattern: string) => () =>
+      assertions.validateAssertions([{ path: "$", op: "matches", value: pattern }]);
+    for (const pattern of [
+      "(a+)+",
+      "(.*)*",
+      "(\\w+\\s?)+",
+      "^(?:x*y)*$",
+      "(a+){2,}",
+      "((ab)*c)+",
+      "(a|aa)+",
+      "(?<n>\\d+)*",
+    ]) {
+      expect(check(pattern), pattern).toThrow(/assertion 1: matches pattern repeats a group that/);
+    }
+    expect(check("a".repeat(501))).toThrow(
+      /assertion 1: matches pattern is 501 characters; the limit is 500/,
+    );
+    for (const pattern of [
+      "^key ",
+      "^\\d+(\\.\\d{2})?$",
+      "^(ab)+$",
+      "(a+)?",
+      "(a+){1}",
+      "[(a+)+]",
+      "\\(a+\\)+",
+      "^https://jobs\\.lever\\.co/",
+      "a".repeat(500),
+    ]) {
+      expect(check(pattern), pattern).not.toThrow();
+    }
+  });
+
+  it("checks matches patterns from the CLI, on save and when an op loads", () => {
+    expect(() => pbTest.parseTestArgs(["a", "b", "--assert", "$", "matches", "(a+)+"])).toThrow(
+      /--assert: assertion 1: matches pattern repeats a group/,
+    );
+    expect(() =>
+      playbooks.validateOp(
+        op([network], {
+          on: { success: { expect: { assert: [{ path: "$", op: "matches", value: "(.*)*" }] } } },
+        }),
+        { origins: [] },
+      ),
+    ).toThrow(
+      /op get_books on\.success\.expect\.assert: assertion 1: matches pattern repeats a group/,
+    );
+    // A run refuses one too, even when the op skipped validation (a hand-made or imported op).
+    return expect(
+      runtime.runPlaybookOp({
+        playbook: { id: "books", provenance: { scope: "test" } },
+        op: op([network]),
+        assertions: [{ path: "$", op: "matches", value: "(\\w+\\s?)+$" }],
+        executeTool: tab({ items: [] }),
+      }),
+    ).rejects.toThrow(/matches pattern repeats a group/);
+  });
+
   it("rejects malformed assertions", () => {
     expect(() =>
       assertions.validateAssertions([{ path: "$", op: "longer_than", value: 1 }]),

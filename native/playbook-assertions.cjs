@@ -5,12 +5,109 @@
 const { isDeepStrictEqual } = require("node:util");
 const { compileJsonPath } = require("./records.cjs");
 
+// matches patterns come from the CLI and from op files, which pb export and pb import share, so a
+// hostile one must not hang the host. A pattern is refused when it is over PATTERN_LIMIT characters
+// or repeats a group (*, +, {n,}, or a fixed count over 1) whose body itself repeats something or
+// has alternatives: the nested and overlapping repeats behind exponential backtracking, as in
+// (a+)+, (.*)*, (\w+\s?)+ or (a|aa)*. Escapes and character classes count as one atom.
+const PATTERN_LIMIT = 500;
+const UNSAFE_PATTERN = "repeats a group that itself repeats or has alternatives (as in (a+)+ or (a|aa)*), which can backtrack without end";
+
+// The quantifier at `index`: its length, and whether it allows more than one repetition.
+function quantifierAt(pattern, index) {
+  const char = pattern[index];
+  const lazy = (length) => (pattern[index + length] === "?" ? length + 1 : length);
+  if (char === "*" || char === "+") return { many: true, length: lazy(1) };
+  if (char === "?") return { many: false, length: lazy(1) };
+  const braces = pattern.slice(index).match(/^\{(\d+)(,(\d*))?\}/);
+  if (!braces) return { many: false, length: 0 };
+  const max = braces[2] === undefined ? Number(braces[1]) : braces[3] === "" ? Infinity : Number(braces[3]);
+  return { many: max > 1, length: lazy(braces[0].length) };
+}
+
+// Where an atom that starts at `index` ends: an escape, a character class or one character.
+function atomEnd(pattern, index) {
+  if (pattern[index] === "\\") return index + 2;
+  if (pattern[index] !== "[") return index + 1;
+  let end = index + 1;
+  if (pattern[end] === "^") end++;
+  if (pattern[end] === "]") end++;
+  while (end < pattern.length && pattern[end] !== "]") end += pattern[end] === "\\" ? 2 : 1;
+  return end + 1;
+}
+
+// Where a group's body starts, past (?: (?= (?! (?<= (?<! or (?<name>.
+function groupBodyStart(pattern, index) {
+  if (pattern[index] !== "?") return index;
+  if (pattern[index + 1] === "<" && pattern[index + 2] !== "=" && pattern[index + 2] !== "!") {
+    const close = pattern.indexOf(">", index);
+    return close < 0 ? pattern.length : close + 1;
+  }
+  return index + (pattern[index + 1] === "<" ? 3 : 2);
+}
+
+function unsafePatternReason(pattern) {
+  if (pattern.length > PATTERN_LIMIT) return `is ${pattern.length} characters; the limit is ${PATTERN_LIMIT}`;
+  const groups = [{ repeats: false, alternatives: false }];
+  let index = 0;
+  while (index < pattern.length) {
+    const char = pattern[index];
+    if (char === "(") {
+      groups.push({ repeats: false, alternatives: false });
+      index = groupBodyStart(pattern, index + 1);
+      continue;
+    }
+    if (char === "|") {
+      groups[groups.length - 1].alternatives = true;
+      index++;
+      continue;
+    }
+    let inner = false;
+    let alternatives = false;
+    if (char === ")" && groups.length > 1) {
+      ({ repeats: inner, alternatives } = groups.pop());
+      index++;
+    } else index = atomEnd(pattern, index);
+    const quantifier = quantifierAt(pattern, index);
+    if (quantifier.many && (inner || alternatives)) return UNSAFE_PATTERN;
+    if (quantifier.many || inner) groups[groups.length - 1].repeats = true;
+    index += quantifier.length;
+  }
+  return null;
+}
+
+const compiledPatterns = new Map();
+
+/** The RegExp for a matches pattern, refused (with the reason) when it is unsafe or invalid. */
+function safeRegExp(pattern) {
+  if (typeof pattern !== "string") throw new Error("matches needs a regex string");
+  const reason = unsafePatternReason(pattern);
+  if (reason) throw new Error(`matches pattern ${reason}`);
+  let regex = compiledPatterns.get(pattern);
+  if (!regex) {
+    try {
+      regex = new RegExp(pattern);
+    } catch (error) {
+      throw new Error(`matches needs a valid regex (${error.message})`);
+    }
+    compiledPatterns.set(pattern, regex);
+  }
+  return regex;
+}
+
 const OPS = {
   equals: { value: true, test: (found, value) => isDeepStrictEqual(found, value) },
   array_min_len: { value: true, test: (found, value) => Array.isArray(found) && found.length >= value },
   not_null: { value: false, test: (found) => found !== undefined && found !== null },
   exists: { value: false, test: (found) => found !== undefined },
-  matches: { value: true, test: (found, value) => typeof found === "string" && new RegExp(value).test(found) },
+  // The pattern is checked first, whatever the value, so a run refuses an unsafe one too.
+  matches: {
+    value: true,
+    test: (found, value) => {
+      const regex = safeRegExp(value);
+      return typeof found === "string" && regex.test(found);
+    },
+  },
 };
 const ACTUAL_TEXT_LIMIT = 200;
 
@@ -34,10 +131,9 @@ function validateAssertion(assertion, where) {
   }
   if (assertion.op === "matches") {
     try {
-      if (typeof assertion.value !== "string") throw new Error("not a string");
-      new RegExp(assertion.value);
+      safeRegExp(assertion.value);
     } catch (error) {
-      throw new Error(`${where}: matches needs a valid regex (${error.message})`);
+      throw new Error(`${where}: ${error.message}`);
     }
   }
   return assertion;
@@ -79,7 +175,7 @@ function touchesSecret(assertion, found, secrets) {
   const texts = [assertion.path, ...valueTexts(assertion.value)];
   if (assertion.op === "equals" || assertion.op === "matches") texts.push(...valueTexts(found));
   return secrets.some((secret) =>
-    texts.some((text) => text.includes(secret)) || (assertion.op === "matches" && new RegExp(assertion.value).test(secret)));
+    texts.some((text) => text.includes(secret)) || (assertion.op === "matches" && safeRegExp(assertion.value).test(secret)));
 }
 
 /** `secrets`: the run's env values; an assertion that touches one gets `secretSensitive: true`. */
@@ -95,4 +191,4 @@ function describeAssertion({ path, op, value }) {
   return [path, op, ...(value === undefined ? [] : [JSON.stringify(value)])].join(" ");
 }
 
-module.exports = { checkAssertions, describeAssertion, validateAssertions, valueTexts };
+module.exports = { checkAssertions, describeAssertion, safeRegExp, validateAssertions, valueTexts };
