@@ -60,7 +60,7 @@ The draft replays the top-ranked request (never telemetry, page assets or prefli
 
 A record belongs to the session that started it (or its tab, without a session): only that session's commands go into it, only that session can mark, stop or discard it, and other sessions can record at the same time.
 
-Records, traces and the activity journal are private. Auth headers are always dropped. Typed inputs and request bodies are redacted unless you pass `--include-input-values`. Traces keep no response bodies, only a 200-character sample of JSON (secret-named fields redacted) and HTML text.
+Records, traces and the activity journal are private. Auth headers are always dropped. Typed inputs and request bodies are redacted unless you pass `--include-input-values`. Traces keep no response bodies or values, only each response's kind, size, record count, field names and types, and page-text overlap; `record candidates` prints a short sample only for an active record, from memory.
 
 A generated client replays a read endpoint without the browser and never contains browser credentials. Without `--request-id`, `client derive` takes the top-ranked request only when it clearly leads. For now it refuses any request other than GET, HEAD or OPTIONS, POST reads included:
 

@@ -189,13 +189,14 @@ function traceEntriesForRecord(record, entries) {
   return entries.filter((entry) => !(entry.ts >= EPOCH_MS_FLOOR) || entry.ts >= cutoff);
 }
 
-// The trace keeps no response bodies; each entry keeps a small summary instead (see
-// summarizeResponse), so pb record candidates can rank it. `pageText` is the page's visible text,
-// used for the overlap score and never stored.
-function sanitizeTraceEntries(record, entries, pageText) {
+// The trace keeps no response bodies; each entry keeps a summary of the response's structure
+// instead (see summarizeResponse), so pb record candidates can rank it. `pageText` is the page's
+// visible text, used for the overlap score and never stored. `sample` adds a short sample, for
+// live ranking only: entries with samples are never written.
+function sanitizeTraceEntries(record, entries, pageText, { sample = false } = {}) {
   const page = pageWords(pageText);
   return entries.map((entry) => {
-    const responseSummary = summarizeResponse(entry, page);
+    const responseSummary = summarizeResponse(entry, page, { sample });
     return sanitizeTraceEntry(responseSummary ? { ...entry, responseSummary } : entry, record.redaction?.includeInputValues);
   });
 }
@@ -362,12 +363,13 @@ function findCandidatesRecord({ recordId, target, root = getPrivateStateRoot() }
 const isActive = (record) => ["recording", "paused"].includes(record.status);
 
 // Ranks a record's requests, best first. An active record has no trace yet, so the host reads its
-// requests from the tab and passes them as `live` ({ entries, pageText }).
+// requests from the tab and passes them as `live` ({ entries, pageText }); only then does the
+// result carry response samples, held in memory and printed, never saved.
 function recordCandidates(record, { root = getPrivateStateRoot(), limit = 10, live } = {}) {
   if (!Number.isInteger(limit) || limit < 1) throw new Error("--limit must be a positive integer");
   let entries;
   let warnings = [];
-  if (live) entries = sanitizeTraceEntries(record, live.entries, live.pageText);
+  if (live) entries = sanitizeTraceEntries(record, live.entries, live.pageText, { sample: true });
   else {
     const trace = readPrivateJson(path.join(recordDirectory(record.id, root), "network", "trace.json"), null, { root });
     if (!trace) throw new Error(`record ${record.id} has no network trace; start a record with --network to rank its requests`);

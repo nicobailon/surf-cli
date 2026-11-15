@@ -397,7 +397,7 @@ describe("choosing the draft's request", () => {
   const networkRequest = (draft: { run: { using: string; request?: Entry }[] }) =>
     draft.run.find((strategy) => strategy.using === "network")?.request;
 
-  it("keeps a bounded, redacted response summary per request in the trace, never the body", () => {
+  it("keeps only the structure of each response in the trace: no values, no text", () => {
     const { root, record } = recordFlow({ trace: [products, font], pageText: PAGE_TEXT });
     const trace = JSON.parse(
       fs.readFileSync(
@@ -406,12 +406,57 @@ describe("choosing the draft's request", () => {
       ),
     );
     expect(trace.entries[0].responseBody).toBe("<response-body>");
-    expect(trace.entries[0].responseSummary).toMatchObject({ kind: "json", records: 3 });
+    expect(trace.entries[0].responseSummary).toEqual({
+      kind: "json",
+      bytes: expect.any(Number),
+      records: 3,
+      fields: { items: "array" },
+      overlap: expect.any(Number),
+    });
     expect(trace.entries[0].responseSummary.overlap).toBeGreaterThan(0);
-    expect(trace.entries[0].responseSummary.sample).toContain("Runner Pro");
-    expect(JSON.stringify(trace)).not.toContain("s3cr3t-value");
+    expect(JSON.stringify(trace)).not.toContain("Runner Pro");
     expect(JSON.stringify(trace)).not.toContain(PAGE_TEXT);
     expect(trace.entries[1]).not.toHaveProperty("responseSummary");
+  });
+
+  it("writes no response values to any file a record, its draft or a saved playbook makes", () => {
+    const NAME = "Jane Placeholder";
+    const EMAIL = "jane.placeholder@example.test";
+    const ACCOUNT = "GB29NWBK60161331926819";
+    const people = json("r_people", "https://example.test/api/people", {
+      people: [
+        { name: NAME, email: EMAIL, account: ACCOUNT },
+        { name: "Runner Pro", email: "x", account: "y" },
+      ],
+    });
+    const profile = {
+      id: "r_profile",
+      method: "GET",
+      status: 200,
+      type: "Document",
+      mimeType: "text/html",
+      url: "https://example.test/profile",
+      responseBody: `<html><body><h1>${NAME}</h1><p>${EMAIL}</p><p>Account ${ACCOUNT}</p></body></html>`,
+    };
+    const { root, record } = recordFlow({
+      commands: ["click"],
+      trace: [profile, people],
+      pageText: `${NAME} ${EMAIL} ${ACCOUNT} ${PAGE_TEXT}`,
+    });
+    records.stopRecord({ target: TAB, draft: true, read: true, root });
+    const home = path.dirname(root);
+    authoring.saveFromRecord({ recordId: record.id, requestId: "r_profile", root, home });
+    const written = fs
+      .readdirSync(home, { recursive: true, withFileTypes: true })
+      .filter((entry: { isFile: () => boolean }) => entry.isFile())
+      .map((entry: { parentPath: string; name: string }) =>
+        fs.readFileSync(path.join(entry.parentPath, entry.name), "utf8"),
+      )
+      .join("\n");
+    expect(written).toContain(record.id);
+    for (const value of [NAME, EMAIL, ACCOUNT]) {
+      expect(written).not.toContain(value);
+    }
   });
 
   it("drafts the top-ranked read: the JSON results, not the later banner, font or preflight", () => {
@@ -634,6 +679,40 @@ describe("pb record candidates", () => {
     });
     expect(result).toMatchObject({ live: true, total: 2 });
     expect(result.candidates[0].id).toBe("r_1");
+  });
+
+  it("shows a live sample without writing it anywhere", () => {
+    const root = tempRoot();
+    const record = records.startRecord({ site: "a", op: "one", tabId: 11, network: true, root });
+    const body = JSON.stringify({
+      people: [{ name: "Jane Placeholder" }, { name: "Max Example" }],
+    });
+    const result = records.recordCandidates(record, {
+      root,
+      live: {
+        entries: [
+          {
+            id: "r_p",
+            method: "GET",
+            status: 200,
+            type: "XHR",
+            mimeType: "application/json",
+            url: "https://a.test/p",
+            responseBody: body,
+          },
+        ],
+        pageText: "",
+      },
+    });
+    expect(result.candidates[0].sample).toContain("Jane Placeholder");
+    const written = fs
+      .readdirSync(root, { recursive: true, withFileTypes: true })
+      .filter((entry: { isFile: () => boolean }) => entry.isFile())
+      .map((entry: { parentPath: string; name: string }) =>
+        fs.readFileSync(path.join(entry.parentPath, entry.name), "utf8"),
+      )
+      .join("\n");
+    expect(written).not.toContain("Jane Placeholder");
   });
 
   it("explains a record without a network trace", () => {

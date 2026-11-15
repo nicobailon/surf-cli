@@ -17,7 +17,7 @@ const get = (id: string, type: string, url: string, extra: Entry = {}): Entry =>
 });
 
 describe("summarizeResponse", () => {
-  it("keeps a short redacted sample, the record count and the page overlap, never the body", () => {
+  it("keeps a short redacted sample in memory when asked (live ranking), never the body", () => {
     const body = JSON.stringify({
       token: "abc.def.ghi",
       results: [
@@ -34,6 +34,7 @@ describe("summarizeResponse", () => {
         bodyCapture: { mode: "text", complete: true, capturedBytes: body.length },
       }),
       candidates.pageWords(PAGE_TEXT),
+      { sample: true },
     );
     expect(summary).toMatchObject({ kind: "json", bytes: body.length, records: 3 });
     expect(summary.sample.length).toBeLessThanOrEqual(candidates.SAMPLE_CHARS);
@@ -53,6 +54,7 @@ describe("summarizeResponse", () => {
         responseBody: body,
       }),
       candidates.pageWords(""),
+      { sample: true },
     );
     expect(summary.kind).toBe("html");
     expect(summary.sample).toBe("All products | Books All products Sharp & Objects");
@@ -64,11 +66,55 @@ describe("summarizeResponse", () => {
       candidates.summarizeResponse(
         get("r_1", "XHR", `${ORIGIN}/t`, { mimeType, responseBody }),
         candidates.pageWords(""),
+        { sample: true },
       );
     expect(summary("text/plain", "captured-secret")).toEqual({ kind: "text", bytes: 15 });
     expect(summary("application/json", '{"note":"Bearer abcdef123456"}').sample).toBe(
       '{"note":"<redacted>"}',
     );
+  });
+
+  it("keeps only structure by default: kind, size, records, field names and types, overlap", () => {
+    const body = JSON.stringify({
+      results: [
+        { name: "Jane Placeholder", email: "jane.placeholder@example.test", active: true },
+        { name: "Sharp Objects", email: null, active: false },
+      ],
+      total: 2,
+      "jane.placeholder@example.test": "a key that is data",
+      next: null,
+    });
+    const html =
+      "<html><body><h1>All products</h1><p>Jane Placeholder GB29NWBK60161331926819</p></body></html>";
+    const json = candidates.summarizeResponse(
+      get("r_1", "XHR", `${ORIGIN}/api`, { mimeType: "application/json", responseBody: body }),
+      candidates.pageWords(PAGE_TEXT),
+    );
+    expect(json).toEqual({
+      kind: "json",
+      bytes: body.length,
+      records: 2,
+      fields: { results: "array", total: "number", next: "null" },
+      overlap: expect.any(Number),
+    });
+    const page = candidates.summarizeResponse(
+      get("r_2", "Document", `${ORIGIN}/`, { mimeType: "text/html", responseBody: html }),
+      candidates.pageWords(PAGE_TEXT),
+    );
+    expect(page).toEqual({ kind: "html", bytes: html.length, overlap: expect.any(Number) });
+    // A list at the top level gives its records' field names.
+    const list = candidates.summarizeResponse(
+      get("r_3", "XHR", `${ORIGIN}/api`, {
+        mimeType: "application/json",
+        responseBody: JSON.stringify([
+          { id: 1, name: "Jane Placeholder" },
+          { id: 2, name: "x" },
+        ]),
+      }),
+      candidates.pageWords(""),
+    );
+    expect(list.fields).toEqual({ id: "number", name: "string" });
+    expect(JSON.stringify([json, page, list])).not.toMatch(/Jane|jane|GB29NWBK/);
   });
 
   it("says why there is no sample when the body was over the capture cap", () => {
@@ -93,7 +139,7 @@ describe("rankCandidates", () => {
   const pageWords = candidates.pageWords(PAGE_TEXT);
   const summarized = (entry: Entry) => ({
     ...entry,
-    responseSummary: candidates.summarizeResponse(entry, pageWords),
+    responseSummary: candidates.summarizeResponse(entry, pageWords, { sample: true }),
   });
   const listing = `<html><body><h1>All products</h1>${PAGE_TEXT}</body></html>`;
 
@@ -278,6 +324,36 @@ describe("formatCandidates", () => {
         "Choose one: surf pb save --from-record rec-1 --request-id <id>",
       ].join("\n"),
     );
+  });
+});
+
+describe("formatCandidates for a stopped record", () => {
+  it("shows a saved response's field names and types, since the trace keeps no sample", () => {
+    const text = candidates.formatCandidates({
+      recordId: "rec-3",
+      site: "s",
+      op: "o",
+      live: false,
+      total: 1,
+      candidates: [
+        {
+          rank: 1,
+          id: "r_1",
+          method: "GET",
+          status: 200,
+          type: "XHR",
+          mimeType: "application/json",
+          url: "https://books.example/api",
+          bytes: 900,
+          score: 9,
+          reasons: ["JSON", "2 records"],
+          effect: "read",
+          eligible: true,
+          fields: { results: "array", total: "number" },
+        },
+      ],
+    });
+    expect(text.split("\n")[3]).toBe("   fields: results (array), total (number)");
   });
 });
 

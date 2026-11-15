@@ -72,10 +72,26 @@ function parseJson(body) {
   try { return { value: JSON.parse(body) }; } catch { return null; }
 }
 
-// A small, redacted view of a response, kept in place of its body: its kind, size, how many
-// records a JSON body holds, a short sample, and what share of the page's words it contains.
+const typeOf = (value) => (value === null ? "null" : Array.isArray(value) ? "array" : typeof value);
+// Keys that read as field names; a key such as an email or an id number is data and is left out.
+const FIELD_NAME = /^[A-Za-z_$][A-Za-z0-9_$-]{0,63}$/;
+const MAX_FIELDS = 20;
+
+// A JSON body's top-level field names with their types, or for a top-level list, its first
+// record's. Names only: never a value.
+function fieldsOf(value) {
+  const shape = Array.isArray(value) ? value.find((item) => item && typeof item === "object" && !Array.isArray(item)) : value;
+  if (!shape || typeof shape !== "object" || Array.isArray(shape)) return undefined;
+  const fields = Object.entries(shape).filter(([name]) => FIELD_NAME.test(name)).slice(0, MAX_FIELDS);
+  return fields.length > 0 ? Object.fromEntries(fields.map(([name, item]) => [name, typeOf(item)])) : undefined;
+}
+
+// A view of a response kept in place of its body: its kind, size, how many records a JSON body
+// holds, its field names and types, and what share of the page's words it contains. No values
+// and no text, so a trace on disk holds nothing the response said. `sample` (live ranking only,
+// never saved) adds a short redacted sample of JSON or of an HTML page's visible text.
 // `page` is pageWords() of the page's visible text. Page assets get none.
-function summarizeResponse(entry, page) {
+function summarizeResponse(entry, page, { sample: withSample = false } = {}) {
   if (ASSET_TYPES.has(entry.type)) return undefined;
   const body = typeof entry.responseBody === "string" && entry.responseBodyEncoding !== "base64" ? entry.responseBody : undefined;
   const capture = entry.bodyCapture || {};
@@ -83,27 +99,27 @@ function summarizeResponse(entry, page) {
   const kind = kindOf(entry, body);
   const summary = { kind, ...(bytes !== undefined ? { bytes } : {}) };
   if (body === undefined) return capture.reason ? { ...summary, unsampled: capture.reason } : summary;
-  // Only JSON (with secret-named fields redacted) and HTML (its visible text) keep a sample; other
-  // text, which has no structure to redact by, keeps none.
   let text = body;
   let sample = "";
   const parsed = kind === "json" ? parseJson(body) : null;
   if (parsed) {
     const records = recordCount(parsed.value);
     if (records > 0) summary.records = records;
+    const fields = fieldsOf(parsed.value);
+    if (fields) summary.fields = fields;
     sample = JSON.stringify(redactSensitiveFields(parsed.value));
   } else if (kind === "html") {
     text = visibleText(body);
     sample = text;
   }
-  sample = redactCredentialLiterals(sample).slice(0, SAMPLE_CHARS);
-  if (sample) summary.sample = sample;
   if (page.size >= MIN_PAGE_WORDS) {
     const found = words(text);
     let shared = 0;
     for (const word of page) if (found.has(word)) shared++;
     summary.overlap = Math.round((shared / page.size) * 100) / 100;
   }
+  sample = redactCredentialLiterals(sample).slice(0, SAMPLE_CHARS);
+  if (withSample && sample) summary.sample = sample;
   return summary;
 }
 
@@ -175,6 +191,7 @@ function rankCandidates(entries, options) {
       reasons,
       effect,
       eligible,
+      ...(summary.fields ? { fields: summary.fields } : {}),
       ...(summary.sample ? { sample: summary.sample } : {}),
       ...(summary.unsampled ? { unsampled: summary.unsampled } : {}),
     };
@@ -207,6 +224,7 @@ function formatCandidates({ recordId, site, op, live, total, candidates, warning
     lines.push(`${item.rank}. ${item.id}  ${item.method} ${item.status ?? "-"} ${item.type ?? "-"} ${item.mimeType || "-"}  ${trimQuery(item.url)}${size}  score ${item.score}${item.eligible ? "" : "  (never picked)"}`);
     if (item.reasons.length > 0) lines.push(`   ${item.reasons.join(", ")}`);
     if (item.sample) lines.push(`   ${JSON.stringify(item.sample.length > TEXT_SAMPLE_CHARS ? `${item.sample.slice(0, TEXT_SAMPLE_CHARS)}…` : item.sample)}`);
+    else if (item.fields) lines.push(`   fields: ${Object.entries(item.fields).map(([name, type]) => `${name} (${type})`).join(", ")}`);
     else if (item.unsampled) lines.push(`   (no sample: ${item.unsampled})`);
   }
   for (const warning of warnings) lines.push(`Warning: ${warning}`);
