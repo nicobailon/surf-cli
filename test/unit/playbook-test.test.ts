@@ -67,8 +67,17 @@ describe("assertions", () => {
       "((ab)*c)+",
       "(a|aa)+",
       "(?<n>\\d+)*",
+      // Nesting can't hide a repeat or an alternative from an outer repeat.
+      "^((a|aa))+$",
+      "(((a+)))+",
+      "((?:a|b)c)+",
+      "(?:(?:a)|(?:aa))+",
+      // Blunt on purpose: safe patterns like this one are refused too.
+      "(a|b)+",
     ]) {
-      expect(check(pattern), pattern).toThrow(/assertion 1: matches pattern repeats a group that/);
+      expect(check(pattern), pattern).toThrow(
+        /assertion 1: matches pattern repeats a group that contains a repeat or \|.*such as \(a\|b\)\+.*use a character class such as \[ab\]\+/,
+      );
     }
     expect(check("a".repeat(501))).toThrow(
       /assertion 1: matches pattern is 501 characters; the limit is 500/,
@@ -82,6 +91,9 @@ describe("assertions", () => {
       "[(a+)+]",
       "\\(a+\\)+",
       "^https://jobs\\.lever\\.co/",
+      "^https://x\\.com/\\d+$",
+      "^(ab)?c$",
+      "[ab]+",
       "a".repeat(500),
     ]) {
       expect(check(pattern), pattern).not.toThrow();

@@ -6,12 +6,14 @@ const { isDeepStrictEqual } = require("node:util");
 const { compileJsonPath } = require("./records.cjs");
 
 // matches patterns come from the CLI and from op files, which pb export and pb import share, so a
-// hostile one must not hang the host. A pattern is refused when it is over PATTERN_LIMIT characters
-// or repeats a group (*, +, {n,}, or a fixed count over 1) whose body itself repeats something or
-// has alternatives: the nested and overlapping repeats behind exponential backtracking, as in
-// (a+)+, (.*)*, (\w+\s?)+ or (a|aa)*. Escapes and character classes count as one atom.
+// hostile one must not hang the host. The rule is blunt so nesting can't hide anything: a pattern
+// is refused when it is over PATTERN_LIMIT characters, or when a group followed by a repeat (*, +,
+// {n,}, or {n,m} with m > 1) has a quantifier (any, ? included) or a | anywhere inside it, at any
+// depth. Escapes and character classes are single atoms. Safe patterns such as (a|b)+ are refused
+// too; a character class ([ab]+) says the same thing.
 const PATTERN_LIMIT = 500;
-const UNSAFE_PATTERN = "repeats a group that itself repeats or has alternatives (as in (a+)+ or (a|aa)*), which can backtrack without end";
+const UNSAFE_PATTERN =
+  "repeats a group that contains a repeat or | (at any depth), which can backtrack without end. This also refuses safe patterns such as (a|b)+; use a character class such as [ab]+, or drop the group's repeat";
 
 // The quantifier at `index`: its length, and whether it allows more than one repetition.
 function quantifierAt(pattern, index) {
@@ -48,29 +50,32 @@ function groupBodyStart(pattern, index) {
 
 function unsafePatternReason(pattern) {
   if (pattern.length > PATTERN_LIMIT) return `is ${pattern.length} characters; the limit is ${PATTERN_LIMIT}`;
-  const groups = [{ repeats: false, alternatives: false }];
+  // One entry per open group: whether its text so far holds a quantifier or a |.
+  const open = [];
+  const markOpen = () => {
+    for (const group of open) group.risky = true;
+  };
   let index = 0;
   while (index < pattern.length) {
     const char = pattern[index];
     if (char === "(") {
-      groups.push({ repeats: false, alternatives: false });
+      open.push({ risky: false });
       index = groupBodyStart(pattern, index + 1);
       continue;
     }
     if (char === "|") {
-      groups[groups.length - 1].alternatives = true;
+      markOpen();
       index++;
       continue;
     }
-    let inner = false;
-    let alternatives = false;
-    if (char === ")" && groups.length > 1) {
-      ({ repeats: inner, alternatives } = groups.pop());
+    let risky = false;
+    if (char === ")" && open.length > 0) {
+      risky = open.pop().risky;
       index++;
     } else index = atomEnd(pattern, index);
     const quantifier = quantifierAt(pattern, index);
-    if (quantifier.many && (inner || alternatives)) return UNSAFE_PATTERN;
-    if (quantifier.many || inner) groups[groups.length - 1].repeats = true;
+    if (quantifier.many && risky) return UNSAFE_PATTERN;
+    if (quantifier.length > 0) markOpen();
     index += quantifier.length;
   }
   return null;
