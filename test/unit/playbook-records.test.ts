@@ -49,7 +49,7 @@ function recordFlow({
 }: {
   commands?: Step[];
   trace?: Entry[];
-  capture?: Entry;
+  capture?: Entry | null;
   truncatedAt?: number;
   origin?: string;
   stop?: { draft?: boolean; read?: boolean };
@@ -143,6 +143,13 @@ describe("record network trace", () => {
       { capture: { active: false, interruptions: [] } },
       [
         "network capture was not running when the record stopped (the extension may have restarted); requests may be missing",
+      ],
+    ],
+    [
+      "an extension too old to report capture status",
+      { capture: null },
+      [
+        "the extension did not report whether network capture ran (it may be older than this Surf); requests may be missing",
       ],
     ],
     [
@@ -281,7 +288,7 @@ describe("draft effect and pb record stop --read", () => {
     );
   });
 
-  it("gives a draft no network strategy when the request it picks is telemetry, and a read no write strategy", () => {
+  it("gives a draft no network strategy when the request it picks is telemetry, and otherwise replays the last request", () => {
     // The last 2xx/3xx request (the rule main uses) is the error-reporting POST.
     const stopped = stopFlow({
       commands: ["click"],
@@ -384,6 +391,14 @@ describe("record ownership", () => {
       records.stopRecord({ target: { session: "alpha", tabId: 11 }, root }).record.status,
     ).toBe("stopped");
     expect(records.activeRecords(root)).toEqual([]);
+  });
+
+  it("tells a session caller to stop a record started without a session without --session", () => {
+    const root = tempRoot();
+    records.startRecord({ site: "a", op: "read", tabId: 5, root });
+    expect(() => records.stopRecord({ target: { session: "alpha", tabId: 5 }, root })).toThrow(
+      "the playbook record on tab 5 belongs to tab 5; it was started without a session, so stop it without --session or SURF_SESSION",
+    );
   });
 
   it("still finds a record started before records had owners", () => {

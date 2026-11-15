@@ -79,7 +79,10 @@ function requireRecordFor(target, root = getPrivateStateRoot()) {
   if (record) return record;
   const others = activeRecords(root);
   const onTab = others.find((other) => other.tabId === target?.tabId);
-  if (onTab) throw new Error(`the playbook record on tab ${onTab.tabId} belongs to ${ownerLabel(onTab)}${onTab.session ? `; run it with --session ${onTab.session}` : ""}`);
+  if (onTab) {
+    const hint = onTab.session ? `run it with --session ${onTab.session}` : "it was started without a session, so stop it without --session or SURF_SESSION";
+    throw new Error(`the playbook record on tab ${onTab.tabId} belongs to ${ownerLabel(onTab)}; ${hint}`);
+  }
   const caller = target?.session ? `session ${target.session}` : `tab ${target?.tabId}`;
   if (others.length > 0) throw new Error(`no active playbook record for ${caller}; active: ${others.map((other) => `${other.id} (${ownerLabel(other)})`).join(", ")}`);
   throw new Error("no active playbook record");
@@ -191,7 +194,9 @@ function attachNetworkTrace(recordId, entries, root = getPrivateStateRoot(), { c
   const record = readRecord(recordId, root);
   if (!record) throw new Error(`record not found: ${recordId}`);
   const sanitized = entries.map((entry) => sanitizeTraceEntry(entry, record.redaction.includeInputValues));
-  const warnings = describeCaptureGaps(capture, { atStop: true });
+  const warnings = capture
+    ? describeCaptureGaps(capture, { atStop: true })
+    : ["the extension did not report whether network capture ran (it may be older than this Surf); requests may be missing"];
   if (truncatedAt) warnings.push(`the trace holds only the first ${truncatedAt} requests read from the tab; later ones are missing`);
   const complete = Boolean(capture) && warnings.length === 0;
   const directory = path.join(recordDirectory(recordId, root), "network");
@@ -282,11 +287,11 @@ function draftFromRecord(recordId, root = getPrivateStateRoot(), { read = false,
   if (warning) warnings.push(warning);
   const strategies = [];
   const observed = trace?.entries?.findLast((entry) => ["GET", "HEAD", "OPTIONS", "POST"].includes(entry.method) && entry.status >= 200 && entry.status < 400);
-  // Replaying telemetry would send it again, and a read op must never replay a write method, so
-  // such a request gives the draft no network strategy (a different request isn't picked instead).
-  const skipped = observed && (isTelemetryRequest(observed, record.origin) ? "is telemetry" : effect === "read" && requestEffect(observed) === "write" ? "can write, but the draft is a read" : null);
-  if (skipped) {
-    warnings.push(`the draft has no network strategy: the request it would replay, ${shownUrl(observed)}, ${skipped}`);
+  // Replaying telemetry would send it again, so such a request gives the draft no network strategy
+  // (a different request isn't picked instead). A read draft can't pick any other write: --read is
+  // refused when the trace holds one.
+  if (observed && isTelemetryRequest(observed, record.origin)) {
+    warnings.push(`the draft has no network strategy: the request it would replay, ${shownUrl(observed)}, is telemetry`);
   } else if (observed) {
     const url = new URL(observed.url);
     const query = Object.fromEntries(url.searchParams.entries());
