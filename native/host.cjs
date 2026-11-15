@@ -51,8 +51,11 @@ const {
   appendRecordEvent,
   attachNetworkTrace,
   discardRecord,
+  findCandidatesRecord,
+  isActive,
   markRecord,
   pauseRecord,
+  recordCandidates,
   recordStatus,
   requireRecordFor,
   resumeRecord,
@@ -1661,15 +1664,35 @@ async function handleRecordRequest(tool, args, msg, request) {
     await stopCapture(requireRecordFor(target));
     return discardRecord({ target });
   }
+  // The record's requests as captured so far, with the page's text for the overlap score. The page
+  // is read only when a request kept a body to compare it with.
+  const readTrace = async (record) => {
+    const result = await requestCallExtension(request, tool, { type: "READ_NETWORK_REQUESTS", tabId: record.tabId, full: true, includeStatic: true, limit: RECORD_TRACE_LIMIT });
+    const read = result.entries || [];
+    const entries = traceEntriesForRecord(record, read);
+    let pageText = "";
+    if (entries.some((entry) => typeof entry.responseBody === "string")) {
+      pageText = await requestCallExtension(request, tool, { type: "GET_PAGE_TEXT", tabId: record.tabId }, 10000)
+        .then((page) => (typeof page?.text === "string" ? page.text : ""), () => "");
+    }
+    return { entries, pageText, capture: result.capture, truncated: read.length >= RECORD_TRACE_LIMIT };
+  };
+  if (tool === "playbook.record.candidates") {
+    const record = findCandidatesRecord({ recordId: args.recordId, target });
+    const limit = args.limit ?? 10;
+    if (!isActive(record) || !record.capture.network) return recordCandidates(record, { limit });
+    const { entries, pageText } = await readTrace(record);
+    return recordCandidates(record, { limit, live: { entries, pageText } });
+  }
   if (tool === "playbook.record.stop") {
     const record = requireRecordFor(target);
     if (record.capture.network) {
       try {
-        const result = await requestCallExtension(request, tool, { type: "READ_NETWORK_REQUESTS", tabId: record.tabId, full: true, includeStatic: true, limit: RECORD_TRACE_LIMIT });
-        const read = result.entries || [];
-        attachNetworkTrace(record.id, traceEntriesForRecord(record, read), undefined, {
-          capture: result.capture,
-          ...(read.length >= RECORD_TRACE_LIMIT ? { truncatedAt: RECORD_TRACE_LIMIT } : {}),
+        const { entries, pageText, capture, truncated } = await readTrace(record);
+        attachNetworkTrace(record.id, entries, undefined, {
+          capture,
+          pageText,
+          ...(truncated ? { truncatedAt: RECORD_TRACE_LIMIT } : {}),
         });
       } catch (error) {
         await stopCapture(record);
@@ -1677,7 +1700,7 @@ async function handleRecordRequest(tool, args, msg, request) {
       }
     }
     // Capture stops only once the record has: a refused --read leaves both running, to stop again.
-    const stopped = stopRecord({ target, draft: args.draft === true, read: args.read === true });
+    const stopped = stopRecord({ target, draft: args.draft === true, read: args.read === true, requestId: args.requestId });
     await stopCapture(record);
     return stopped;
   }

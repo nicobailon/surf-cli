@@ -45,6 +45,7 @@ function recordFlow({
   capture = COMPLETE,
   truncatedAt,
   origin = "https://example.test",
+  pageText,
   stop = { draft: true },
 }: {
   commands?: Step[];
@@ -52,7 +53,8 @@ function recordFlow({
   capture?: Entry | null;
   truncatedAt?: number;
   origin?: string;
-  stop?: { draft?: boolean; read?: boolean };
+  pageText?: string;
+  stop?: { draft?: boolean; read?: boolean; requestId?: string };
 }) {
   const root = tempRoot();
   const record = records.startRecord({
@@ -67,7 +69,7 @@ function recordFlow({
     records.appendRecordEvent(completed(command), { target: TAB, root });
   }
   if (trace) {
-    records.attachNetworkTrace(record.id, trace, root, { capture, truncatedAt });
+    records.attachNetworkTrace(record.id, trace, root, { capture, truncatedAt, pageText });
   }
   return { root, record, stopped: () => records.stopRecord({ target: TAB, ...stop, root }) };
 }
@@ -329,31 +331,318 @@ describe("draft effect and pb record stop --read", () => {
     });
   });
 
-  it("gives a draft no network strategy when the request it picks is telemetry, and otherwise replays the last request", () => {
-    // The last 2xx/3xx request (the rule main uses) is the error-reporting POST.
+  it("replays the top-ranked request, not the last, and never telemetry", () => {
+    // The last 2xx/3xx request (the rule before ranking) is the error-reporting POST.
     const stopped = stopFlow({
       commands: ["click"],
       trace: [page, ...telemetry],
       stop: { draft: true, read: true },
     });
-    expect(stopped.draft.run.map((strategy: { using: string }) => strategy.using)).toEqual([
-      "workflow",
+    expect(stopped.draft.run[0]).toMatchObject({
+      using: "network",
+      request: { method: "GET", url: "https://example.test/search" },
+    });
+    expect(stopped.warnings).toBeUndefined();
+    // A write draft replays the write it captured, the request that holds its effect.
+    const { draft } = stopFlow({ commands: ["click"], trace: [create, page] });
+    expect(draft.effect).toBe("write");
+    expect(draft.run[0].request).toMatchObject({
+      method: "POST",
+      url: "https://example.test/api/employees",
+    });
+  });
+});
+
+describe("choosing the draft's request", () => {
+  const PAGE_TEXT =
+    "Results for shoes: Runner Pro trainers, Trail Blazer boots, City Walker sneakers, Summit hiking shoes";
+  const json = (id: string, url: string, value: unknown, extra: Entry = {}) => {
+    const body = JSON.stringify(value);
+    return {
+      id,
+      method: "GET",
+      status: 200,
+      type: "XHR",
+      mimeType: "application/json",
+      url,
+      responseBody: body,
+      bodyCapture: { mode: "text", complete: true, capturedBytes: body.length },
+      ...extra,
+    };
+  };
+  const products = json("r_products", "https://example.test/api/search?q=shoes", {
+    items: [
+      { name: "Runner Pro trainers", session_token: "s3cr3t-value" },
+      { name: "Trail Blazer boots" },
+      { name: "City Walker sneakers" },
+    ],
+  });
+  const banner = json("r_banner", "https://example.test/static/announcements.json", {
+    banner: { text: "Free shipping this week on everything in the store".repeat(3) },
+  });
+  const font = {
+    id: "r_font",
+    method: "GET",
+    status: 200,
+    type: "Font",
+    url: "https://example.test/f.woff2",
+  };
+  const preflight = {
+    id: "r_preflight",
+    method: "OPTIONS",
+    status: 204,
+    type: "Preflight",
+    url: "https://example.test/api/search",
+  };
+  const networkRequest = (draft: { run: { using: string; request?: Entry }[] }) =>
+    draft.run.find((strategy) => strategy.using === "network")?.request;
+
+  it("keeps a bounded, redacted response summary per request in the trace, never the body", () => {
+    const { root, record } = recordFlow({ trace: [products, font], pageText: PAGE_TEXT });
+    const trace = JSON.parse(
+      fs.readFileSync(
+        path.join(records.recordsRoot(root), record.id, "network", "trace.json"),
+        "utf8",
+      ),
+    );
+    expect(trace.entries[0].responseBody).toBe("<response-body>");
+    expect(trace.entries[0].responseSummary).toMatchObject({ kind: "json", records: 3 });
+    expect(trace.entries[0].responseSummary.overlap).toBeGreaterThan(0);
+    expect(trace.entries[0].responseSummary.sample).toContain("Runner Pro");
+    expect(JSON.stringify(trace)).not.toContain("s3cr3t-value");
+    expect(JSON.stringify(trace)).not.toContain(PAGE_TEXT);
+    expect(trace.entries[1]).not.toHaveProperty("responseSummary");
+  });
+
+  it("drafts the top-ranked read: the JSON results, not the later banner, font or preflight", () => {
+    const { draft, warnings } = stopFlow({
+      commands: ["click"],
+      trace: [page, products, banner, font, preflight],
+      pageText: PAGE_TEXT,
+      stop: { draft: true, read: true },
+    });
+    expect(networkRequest(draft)).toMatchObject({
+      url: "https://example.test/api/search",
+      query: { q: "shoes" },
+    });
+    expect(warnings).toBeUndefined();
+  });
+
+  it("warns when the best request scores low, pointing at pb record candidates", () => {
+    const thirdParty = {
+      id: "r_x",
+      method: "GET",
+      status: 200,
+      type: "XHR",
+      url: "https://cdn.other.test/x",
+    };
+    const { draft, warnings, record } = stopFlow({
+      commands: ["click"],
+      trace: [thirdParty],
+      stop: { draft: true, read: true },
+    });
+    expect(networkRequest(draft)).toMatchObject({ url: "https://cdn.other.test/x" });
+    expect(warnings).toEqual([
+      `the draft's network strategy, GET https://cdn.other.test/x, is a weak match (score -2); run surf pb record candidates ${record.id} and choose with --request-id`,
     ]);
-    expect(stopped.warnings).toEqual([
-      "the draft has no network strategy: the request it would replay, POST https://o1.ingest.sentry.io/api/1/envelope/, is telemetry",
+  });
+
+  it("gives a draft no network strategy when only telemetry, assets and preflights were captured", () => {
+    const { draft, warnings } = stopFlow({
+      commands: ["click"],
+      trace: [font, preflight, ...telemetry],
+      stop: { draft: true, read: true },
+    });
+    expect(draft.run.map((strategy: { using: string }) => strategy.using)).toEqual(["workflow"]);
+    expect(warnings).toEqual([
+      "the draft has no network strategy: the trace holds no request it can replay (telemetry, page assets and preflights are never replayed)",
     ]);
-    for (const trace of [
-      [...telemetry, page],
-      [page, create],
-    ]) {
-      const read = trace.includes(create) ? undefined : true;
-      const { draft } = stopFlow({ commands: ["click"], trace, stop: { draft: true, read } });
-      const network = draft.run.find((strategy: { using: string }) => strategy.using === "network");
-      if (draft.effect === "read") {
-        expect(["GET", "HEAD", "OPTIONS"]).toContain(network.request.method);
-      }
-      expect(network.request.url).toBe(trace.at(-1)?.url.split("?")[0]);
-    }
+  });
+
+  it("replays the request chosen with --request-id", () => {
+    const { draft } = stopFlow({
+      commands: ["click"],
+      trace: [page, products, banner],
+      pageText: PAGE_TEXT,
+      stop: { draft: true, read: true, requestId: "r_1" },
+    });
+    // Neither the last request (the banner) nor the top-ranked one (the products).
+    expect(networkRequest(draft)).toMatchObject({ url: "https://example.test/search" });
+    expect(draft.effect).toBe("read");
+  });
+
+  it("drafts a chosen write as a write, and --read still refuses it", () => {
+    const { draft } = stopFlow({
+      commands: ["click"],
+      trace: [create, page],
+      stop: { draft: true, requestId: "r_2" },
+    });
+    expect(draft).toMatchObject({ effect: "write", safety: { authorization: "explicit" } });
+    expect(networkRequest(draft)).toMatchObject({ method: "POST" });
+    const flow = recordFlow({
+      commands: ["click"],
+      trace: [page, create],
+      stop: { draft: true, read: true, requestId: "r_2" },
+    });
+    expect(flow.stopped).toThrow(/--read refused: the record captured POST/);
+  });
+
+  it.each([
+    [
+      "an id not in the trace",
+      "r_missing",
+      /request r_missing is not in the trace of rec-[^;]+; run surf pb record candidates/,
+    ],
+    [
+      "telemetry",
+      "r_4",
+      /request r_4 \(POST https:\/\/www\.google-analytics\.com\/g\/collect\) is telemetry; a draft never replays it/,
+    ],
+    [
+      "a page asset",
+      "r_font",
+      /request r_font \(GET https:\/\/example\.test\/f\.woff2\) is a page asset \(Font\); a draft never replays it/,
+    ],
+    [
+      "a preflight",
+      "r_preflight",
+      /request r_preflight .* is a CORS preflight; a draft never replays it/,
+    ],
+  ])("refuses --request-id for %s, leaving the record recording", (_case, requestId, error) => {
+    const flow = recordFlow({
+      commands: ["click"],
+      trace: [page, font, preflight, ...telemetry],
+      stop: { draft: true, requestId },
+    });
+    expect(flow.stopped).toThrow(error);
+    expect(records.recordStatus({ target: TAB, root: flow.root }).status).toBe("recording");
+  });
+
+  it("refuses --request-id without --draft", () => {
+    expect(() => stopFlow({ trace: [page], stop: { requestId: "r_1" } })).toThrow(
+      /--request-id applies only with --draft/,
+    );
+  });
+
+  it("pb save --from-record --request-id redrafts with that request and keeps the draft's read", () => {
+    const { root, record } = recordFlow({
+      commands: ["click"],
+      trace: [page, products, banner],
+      pageText: PAGE_TEXT,
+    });
+    records.stopRecord({ target: TAB, draft: true, read: true, root });
+    const home = path.dirname(root);
+    const saved = authoring.saveFromRecord({
+      recordId: record.id,
+      requestId: "r_banner",
+      root,
+      home,
+    });
+    const op = JSON.parse(
+      fs.readFileSync(path.join(saved.directory, "ops", "search.json"), "utf8"),
+    );
+    expect(op.effect).toBe("read");
+    expect(op.run[0]).toMatchObject({
+      using: "network",
+      request: { url: "https://example.test/static/announcements.json" },
+    });
+    expect(() =>
+      authoring.saveFromRecord({ recordId: record.id, requestId: "r_nope", root, home }),
+    ).toThrow(/request r_nope is not in the trace/);
+  });
+});
+
+describe("pb record candidates", () => {
+  const trace = [
+    page,
+    { id: "r_font", method: "GET", status: 200, type: "Font", url: "https://example.test/f.woff2" },
+  ];
+
+  it("ranks an explicit record's trace, cut to --limit", () => {
+    const { root, record } = recordFlow({ trace });
+    records.stopRecord({ target: TAB, root });
+    const result = records.recordCandidates(
+      records.findCandidatesRecord({ recordId: record.id, root }),
+      { root, limit: 1 },
+    );
+    expect(result).toMatchObject({
+      recordId: record.id,
+      site: "fixture",
+      op: "search",
+      live: false,
+      total: 2,
+    });
+    expect(result.candidates.map((item: { id: string }) => item.id)).toEqual(["r_1"]);
+  });
+
+  it("defaults to the caller's active record, then its latest one, never another session's", async () => {
+    const root = tempRoot();
+    const older = records.startRecord({
+      site: "a",
+      op: "one",
+      tabId: 11,
+      session: "alpha",
+      network: true,
+      root,
+    });
+    records.stopRecord({ target: { session: "alpha", tabId: 11 }, root });
+    // Records sort by start time, to the millisecond.
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    const newer = records.startRecord({
+      site: "a",
+      op: "two",
+      tabId: 11,
+      session: "alpha",
+      network: true,
+      root,
+    });
+    records.stopRecord({ target: { session: "alpha", tabId: 11 }, root });
+    records.startRecord({
+      site: "b",
+      op: "other",
+      tabId: 22,
+      session: "beta",
+      network: true,
+      root,
+    });
+    expect(records.findCandidatesRecord({ target: { session: "alpha", tabId: 11 }, root }).id).toBe(
+      newer.id,
+    );
+    expect(newer.id).not.toBe(older.id);
+    const active = records.startRecord({
+      site: "a",
+      op: "three",
+      tabId: 11,
+      session: "alpha",
+      network: true,
+      root,
+    });
+    expect(records.findCandidatesRecord({ target: { session: "alpha", tabId: 11 }, root }).id).toBe(
+      active.id,
+    );
+    expect(() =>
+      records.findCandidatesRecord({ target: { session: "gamma", tabId: 33 }, root }),
+    ).toThrow("no playbook record for session gamma; pass a record id");
+  });
+
+  it("ranks an active record from the entries read live, and says so", () => {
+    const root = tempRoot();
+    const record = records.startRecord({ site: "a", op: "one", tabId: 11, network: true, root });
+    const result = records.recordCandidates(record, {
+      root,
+      live: { entries: trace, pageText: "" },
+    });
+    expect(result).toMatchObject({ live: true, total: 2 });
+    expect(result.candidates[0].id).toBe("r_1");
+  });
+
+  it("explains a record without a network trace", () => {
+    const root = tempRoot();
+    const record = records.startRecord({ site: "a", op: "one", tabId: 11, root });
+    records.stopRecord({ target: { tabId: 11 }, root });
+    expect(() => records.recordCandidates(records.readRecord(record.id, root), { root })).toThrow(
+      `record ${record.id} has no network trace; start a record with --network to rank its requests`,
+    );
   });
 });
 

@@ -36,6 +36,11 @@ function redactSensitiveFields(value) {
   );
 }
 
+// Masks bearer tokens, API keys and JWTs in free text, such as a response sample.
+function redactCredentialLiterals(text) {
+  return String(text).replace(new RegExp(CREDENTIAL_LITERAL_PATTERN.source, "gi"), "<redacted>");
+}
+
 function safeHeaders(headers = {}) {
   if (!headers || typeof headers !== "object") return {};
   return Object.fromEntries(Object.entries(headers).filter(([name]) => !isSecretHeader(name)));
@@ -98,6 +103,7 @@ module.exports = {
   isSecretHeader,
   isSensitiveName,
   isTemplate,
+  redactCredentialLiterals,
   redactSensitiveFields,
   redactUrlSecrets,
   safeHeaders,

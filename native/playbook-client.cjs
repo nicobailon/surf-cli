@@ -5,6 +5,7 @@ const { execFile } = require("child_process");
 const { atomicWriteFile, atomicWriteJson, ensurePrivateDir, getPrivateStateRoot, readPrivateJson } = require("./private-state.cjs");
 const { resolveOp } = require("./playbooks.cjs");
 const { isReplayCandidate, readRecord, recordsRoot, requestEffect } = require("./playbook-records.cjs");
+const { WINNER_MARGIN, isWeak, scoreEntries } = require("./record-candidates.cjs");
 const { assertNoEmbeddedSecrets, assertUrlHasNoEmbeddedSecrets, safeHeaders } = require("./redaction.cjs");
 const { version: PACKAGE_VERSION } = require("../package.json");
 
@@ -136,6 +137,14 @@ function findRecord(site, op, root = getPrivateStateRoot()) {
   return fs.readdirSync(base).filter((name) => name.startsWith("rec-")).map((name) => readRecord(name, root)).filter((record) => record?.site === site && record?.op === op).sort((a, b) => String(b.startedAt).localeCompare(String(a.startedAt)))[0] || null;
 }
 
+// Without --request-id, derive takes the top-ranked request when it is a strong match and leads the
+// next by WINNER_MARGIN points.
+function clearWinner(candidates, record) {
+  const [top, next] = scoreEntries(candidates, { origin: record.origin }).filter((candidate) => candidate.eligible);
+  if (!top || isWeak(top) || (next && top.score - next.score < WINNER_MARGIN)) return null;
+  return top.entry;
+}
+
 function deriveClient(site, opId, out, options = {}) {
   const root = options.root || getPrivateStateRoot();
   const record = options.recordId ? readRecord(options.recordId, root) : findRecord(site, opId, root);
@@ -144,8 +153,8 @@ function deriveClient(site, opId, out, options = {}) {
   const candidates = (trace?.entries || []).filter(isReplayCandidate);
   const entry = options.requestId
     ? candidates.find((candidate) => candidate.id === options.requestId || candidate._requestId === options.requestId)
-    : candidates.length === 1 ? candidates[0] : null;
-  if (!options.requestId && candidates.length > 1) throw new Error(`record ${record.id} has multiple read endpoints; pass --request-id`);
+    : candidates.length === 1 ? candidates[0] : clearWinner(candidates, record);
+  if (!options.requestId && candidates.length > 1 && !entry) throw new Error(`record ${record.id} has several read endpoints and no clear winner; run surf pb record candidates ${record.id} and pass --request-id`);
   if (!entry) throw new Error(`record ${record.id} has no validated read endpoint`);
   const op = { id: opId, effect: requestEffect(entry), run: [] };
   const url = new URL(entry.url);

@@ -1685,11 +1685,13 @@ const TOOLS = {
           op: "Operation name",
           "from-recent": "Use activity from this window (default: 1h)",
           "from-record": "Use this record id",
+          "request-id": "With --from-record: replay this request (from pb record candidates) instead of the draft's",
           project: "Save in ./.surf/playbooks instead of ~/.surf/playbooks",
         },
         examples: [
           { cmd: "pb save example --op read --from-recent 1h", desc: "From recent activity" },
           { cmd: "pb save --from-record <record-id>", desc: "From a record" },
+          { cmd: "pb save --from-record <record-id> --request-id r_1794_12", desc: "From a record, replaying the request you chose" },
         ],
       },
       "playbook record start": {
@@ -1705,8 +1707,21 @@ const TOOLS = {
         opts: {
           draft: "Save a draft playbook from the record (a write if it clicked or typed)",
           read: "With --draft: mark the draft a read. Needs --network; refused if a captured request can change data or a step acts beyond the page",
+          "request-id": "With --draft: replay this request (see pb record candidates) instead of the top-ranked one",
         },
-        examples: [{ cmd: "pb record stop --draft --read", desc: "Draft a search done by clicking as a read" }],
+        examples: [
+          { cmd: "pb record stop --draft --read", desc: "Draft a search done by clicking as a read" },
+          { cmd: "pb record stop --draft --read --request-id r_1794_12", desc: "Draft it replaying the request you chose" },
+        ],
+      },
+      "playbook record candidates": {
+        desc: "Rank a record's requests by how likely each carries the page's data (JSON or HTML document, records, page text overlap, first-party; telemetry, assets, redirects, preflights low)",
+        args: ["record-id"],
+        opts: { limit: "How many to show (default: 10)", json: "Output raw JSON" },
+        examples: [
+          { cmd: "pb record candidates", desc: "Your active record (read live), else your latest one" },
+          { cmd: "pb record candidates rec-1794-ab12 --limit 3 --json", desc: "A stopped record, top 3 as JSON" },
+        ],
       },
       "playbook record status": { desc: "Show the recording state (also: pause, resume, discard)", args: [] },
       "playbook trace export": { desc: "Export a record as HAR", args: [], opts: { "from-record": "Record id", har: "Output .har path" } },

@@ -123,6 +123,55 @@ describe("playbook client projection", () => {
     expect(result.manifest.endpoint.url).toBe("https://example.test/api/search");
   });
 
+  it("derives from the one clear winner of the ranking, and asks for --request-id when there is none", () => {
+    const parent = fs.mkdtempSync(path.join(os.tmpdir(), "surf-client-"));
+    directories.push(parent);
+    const root = path.join(parent, "state");
+    let tabId = 0;
+    const derive = (trace: Record<string, unknown>[]) => {
+      tabId++;
+      const record = records.startRecord({
+        site: "fixture",
+        op: "search",
+        tabId,
+        origin: "https://example.test",
+        root,
+      });
+      records.attachNetworkTrace(record.id, trace, root);
+      return () =>
+        clients.deriveClient("fixture", "search", path.join(parent, record.id), {
+          root,
+          recordId: record.id,
+        });
+    };
+    const body = JSON.stringify({
+      items: [{ name: "a" }, { name: "b" }, { name: "c" }],
+      total: 3,
+      note: "x".repeat(200),
+    });
+    const api = {
+      id: "r-api",
+      method: "GET",
+      status: 200,
+      type: "XHR",
+      mimeType: "application/json",
+      url: "https://example.test/api/search?q=shoes",
+      responseBody: body,
+      bodyCapture: { complete: true, capturedBytes: body.length },
+    };
+    const beacon = {
+      id: "r-ping",
+      method: "GET",
+      status: 200,
+      type: "XHR",
+      url: "https://cdn.other.test/ping",
+    };
+    expect(derive([api, beacon])().manifest.endpoint.url).toBe("https://example.test/api/search");
+    expect(derive([api, { ...api, id: "r-api-2", url: "https://example.test/api/other" }])).toThrow(
+      /has several read endpoints and no clear winner; run surf pb record candidates rec-[^ ]+ and pass --request-id/,
+    );
+  });
+
   it("refuses to derive a client from a POST, keeping its query and body shape when allowed", () => {
     const parent = fs.mkdtempSync(path.join(os.tmpdir(), "surf-client-"));
     directories.push(parent);

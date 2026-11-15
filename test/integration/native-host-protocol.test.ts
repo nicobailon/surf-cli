@@ -730,6 +730,94 @@ describe("native host protocol integration", () => {
     expect((await stop).code).toBe(0);
   });
 
+  it("ranks an active record's requests live, then drafts the one chosen with --request-id", async () => {
+    const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), "surf-host-candidates-"));
+    tempDirs.push(stateDir);
+    const records = require("../../native/playbook-records.cjs") as any;
+    const record = records.startRecord({
+      site: "books",
+      op: "list",
+      tabId: 1,
+      network: true,
+      origin: "https://books.example",
+      root: stateDir,
+    });
+    const host = await startHostHarness({ SURF_STATE_DIR: stateDir });
+    const listing =
+      "<html><body><h1>All products</h1><p>Sharp Objects Tipping Velvet Soumission Starving Hearts</p></body></html>";
+    const entries = [
+      {
+        id: "r_page",
+        method: "GET",
+        status: 200,
+        type: "Document",
+        mimeType: "text/html",
+        url: "https://books.example/catalogue/page-2.html?ref=nav",
+        responseBody: listing,
+        bodyCapture: { mode: "text", complete: true, capturedBytes: listing.length },
+      },
+      {
+        id: "r_font",
+        method: "GET",
+        status: 200,
+        type: "Font",
+        mimeType: "font/woff2",
+        url: "https://books.example/f.woff2",
+      },
+    ];
+    const answerReads = async () => {
+      const read = await host.waitForMessage(
+        (message) => message.type === "READ_NETWORK_REQUESTS",
+        "READ_NETWORK_REQUESTS",
+      );
+      expect(read).toMatchObject({ tabId: 1, full: true, includeStatic: true });
+      host.send({ id: read.id, entries, capture: { active: true, interruptions: [], dropped: 0 } });
+      const text = await host.waitForMessage(
+        (message) => message.type === "GET_PAGE_TEXT",
+        "GET_PAGE_TEXT",
+      );
+      host.send({
+        id: text.id,
+        text: "All products Sharp Objects Tipping Velvet Soumission Starving Hearts",
+      });
+    };
+
+    const ranking = runCli(["pb", "record", "candidates", "--limit", "5"], host.socketPath);
+    await answerReads();
+    const ranked = await ranking;
+    expect(ranked.stderr).toBe("");
+    expect(ranked.code).toBe(0);
+    const lines = ranked.stdout.split("\n");
+    expect(lines[0]).toBe(
+      `${record.id} (books list): 2 requests, best first, read live (still recording)`,
+    );
+    expect(lines[1]).toMatch(
+      /^1\. r_page {2}GET 200 Document text\/html {2}https:\/\/books\.example\/catalogue\/page-2\.html {2}\d+ B {2}score \d+$/,
+    );
+    expect(ranked.stdout).toMatch(/2\. r_font .*\(never picked\)/);
+
+    const stop = runCli(
+      ["pb", "record", "stop", "--draft", "--read", "--request-id", "r_page", "--json"],
+      host.socketPath,
+    );
+    await answerReads();
+    const stopCapture = await host.waitForMessage(
+      (message) => message.type === "STOP_NETWORK_CAPTURE",
+      "STOP_NETWORK_CAPTURE",
+    );
+    host.send({ id: stopCapture.id, success: true });
+    const stopped = await stop;
+    expect(stopped.stderr).toBe("");
+    expect(JSON.parse(stopped.stdout).draft.run[0]).toMatchObject({
+      using: "network",
+      request: {
+        method: "GET",
+        url: "https://books.example/catalogue/page-2.html",
+        query: { ref: "nav" },
+      },
+    });
+  });
+
   it("prints one stderr line, and leaves stdout alone, when the host version differs from the CLI", async () => {
     const host = await startHostHarness({ SURF_TEST_HOST_VERSION: "0.0.1" });
     const cliPromise = runCli(["tab.list"], host.socketPath);
