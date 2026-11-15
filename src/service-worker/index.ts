@@ -3209,6 +3209,7 @@ export async function handleMessage(
       if (message.full) {
         let entries = cdp.getNetworkEntries(tabId, {
           urlPattern: message.urlPattern,
+          includeStatic: message.includeStatic === true,
         });
 
         // Apply filters

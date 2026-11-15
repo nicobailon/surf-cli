@@ -126,6 +126,14 @@ describe("network export handlers", () => {
     }
   });
 
+  it("reads static responses too when asked, so a POST answered with JavaScript isn't dropped", async () => {
+    await readIds({ full: true, includeStatic: true });
+    expect(cdpState.getNetworkEntries).toHaveBeenLastCalledWith(
+      42,
+      expect.objectContaining({ includeStatic: true }),
+    );
+  });
+
   it("filters requests before cutting the list to its limit", async () => {
     const requests = Array.from({ length: 150 }, (_, index) => ({
       id: `r_${index}`,
