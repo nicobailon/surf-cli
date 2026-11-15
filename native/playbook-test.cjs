@@ -86,6 +86,21 @@ function localOp(playbook, op, { cwd, home }) {
   }
 }
 
+// pb test --save writes assertions to the op file, which must never hold an env header's value:
+// refuse when a path, a value or a matches pattern (escapes removed) contains one. The error names
+// the assertion's position and the variable, never the value.
+function refuseSecretAssertions(assertions, secret) {
+  assertions.forEach((assertion, index) => {
+    const texts = [assertion.path, typeof assertion.value === "string" ? assertion.value : JSON.stringify(assertion.value ?? null)];
+    if (assertion.op === "matches") texts.push(String(assertion.value).replace(/\\(.)/g, "$1"));
+    for (const [name, value] of Object.entries(secret)) {
+      if (texts.some((text) => text.includes(value))) {
+        throw new Error(`--save refused: assertion ${index + 1} contains the value of ${name}, which is never stored; assert on something else`);
+      }
+    }
+  });
+}
+
 /**
  * Runs the test. `runOp(params)` runs the op on the browser host (playbook.run with test: true)
  * and resolves to its result, a failed run included.
@@ -109,6 +124,7 @@ async function runPlaybookTest({ argv, cwd = process.cwd(), home, env = process.
   // variable it doesn't set is left to the browser host's environment.
   const secret = {};
   for (const input of op ? authInputs(op) : []) if (env[input.env]) secret[input.env] = env[input.env];
+  if (options.save) refuseSecretAssertions(spec.assertions, secret);
   const saved = op?.on?.success?.expect?.assert;
   const started = now();
   let result;

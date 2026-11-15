@@ -354,3 +354,35 @@ describe("redacting object keys", () => {
     }
   });
 });
+
+describe("pb test --save and env values", () => {
+  it("refuses to save an assertion whose value, path or pattern holds the env value, naming its position", async () => {
+    const cwd = tempDir();
+    const file = writeShop(cwd, op);
+    const before = fs.readFileSync(file, "utf8");
+    const runOp = vi.fn();
+    const cases: Array<[string[], number]> = [
+      [["--assert", "$", "array_min_len", "1", "--assert", "$[0].echo", "equals", `key ${KEY}`], 2],
+      [["--assert", `$.${KEY}`, "not_null"], 1],
+      [["--assert", "$[0].echo", "matches", `^key ${KEY}$`], 1],
+      [["--assert", "$[0].echo", "matches", `^key ${KEY.replace(/-/g, "\\-")}$`], 1],
+    ];
+    for (const [asserts, position] of cases) {
+      const run = pbTest.runPlaybookTest({
+        argv: ["shop", "items", ...asserts, "--save"],
+        cwd,
+        home: cwd,
+        env: { SURF_TEST_ITEMS_KEY: KEY },
+        runOp,
+      });
+      await expect(run).rejects.toThrow(
+        new RegExp(
+          `--save refused: assertion ${position} contains the value of SURF_TEST_ITEMS_KEY`,
+        ),
+      );
+      await run.catch((error: Error) => expect(error.message).not.toContain(KEY));
+    }
+    expect(runOp).not.toHaveBeenCalled();
+    expect(fs.readFileSync(file, "utf8")).toBe(before);
+  });
+});
