@@ -72,7 +72,7 @@ function validateWriteWorkflowSteps(steps, opId) {
   if (steps.length !== 1 || steps[0].repeat !== undefined || steps[0].each !== undefined) {
     throw new Error(`write op ${opId} workflow strategy must contain exactly one commit step`);
   }
-  const metadata = commandMetadata(steps[0].cmd);
+  const metadata = commandMetadata(steps[0].cmd, steps[0].args);
   if (metadata.effect !== "page-write") {
     throw new Error(`write op ${opId} workflow commit step must be page-write`);
   }

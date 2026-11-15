@@ -542,6 +542,18 @@ describe("activity and explicit record evidence", () => {
     ).toHaveLength(1);
   });
 
+  it.each([
+    ["locate.role", { role: "button", name: "Save", action: "click" }],
+    ["network.replay", { id: "r_1", "allow-post": true }],
+  ])("saves a write draft whose one step is a %s that writes", (command, args) => {
+    const { root, stopped } = recordFlow({ commands: [step(command, args)] });
+    const { draft, record } = stopped();
+    expect(draft.effect).toBe("write");
+    expect(() =>
+      authoring.saveFromRecord({ recordId: record.id, root, home: path.dirname(root) }),
+    ).not.toThrow();
+  });
+
   it("does not save recent activity with a locate click as a read op", () => {
     const root = tempRoot();
     journal.journalCommand(
