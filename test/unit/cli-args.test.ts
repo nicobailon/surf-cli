@@ -139,6 +139,12 @@ function createCliFixtureResult(request: any) {
     fs.writeFileSync(request.params.args.output, "[]");
     return { path: request.params.args.output, format: "json", count: 0 };
   }
+  if (request.params.tool === "network" && request.params.args.format === "json") {
+    return {
+      requests: [{ id: "r_1_1", method: "GET", status: 200, url: "https://example.test/" }],
+      warnings: ["gap"],
+    };
+  }
   if (request.params.tool === "screenshot") {
     return {
       base64: require("node:buffer").Buffer.from("local-screenshot").toString("base64"),
@@ -717,6 +723,14 @@ describe("CLI argument parsing", () => {
     const { request } = await runCli(["--session", "alpha", "tab.new", "https://example.test/"]);
     expect(request).toMatchObject({ recordSession: "alpha" });
     expect(request).not.toHaveProperty("session");
+  });
+
+  it("prints --format json network listings as JSON, ids and warnings included", async () => {
+    const { stdout } = await runCli(["network", "--format", "json"]);
+    expect(JSON.parse(stdout)).toEqual({
+      requests: [{ id: "r_1_1", method: "GET", status: 200, url: "https://example.test/" }],
+      warnings: ["gap"],
+    });
   });
 
   it("writes local-prefixed screenshot output to the normalized path", async () => {

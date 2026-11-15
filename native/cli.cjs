@@ -4764,7 +4764,10 @@ async function handleResponse(response) {
     // Network list - handle both new (entries) and old (requests) formats
     const items = data.entries || data.requests || [];
 
-    if (items.length === 0) {
+    if (toolArgs.format === "json") {
+      // The host's JSON listing: ids and capture warnings included.
+      console.log(JSON.stringify(data, null, 2));
+    } else if (items.length === 0) {
       console.log("No network requests captured");
     } else if (data._format === 'raw') {
       // Raw JSON output - print entries array directly
