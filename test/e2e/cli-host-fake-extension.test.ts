@@ -630,6 +630,56 @@ describe("CLI/native-host/fake-extension E2E contract", () => {
     }
   });
 
+  it("falls back to the host's environment for an env-supplied header the shell doesn't set", async () => {
+    const socketPath = createSocketPath();
+    const project = fs.mkdtempSync(path.join(os.tmpdir(), "surf-host-env-header-"));
+    tempDirs.push(project);
+    const opsDir = path.join(project, ".surf", "playbooks", "api", "ops");
+    fs.mkdirSync(opsDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(project, ".surf", "playbooks", "api", "playbook.json"),
+      JSON.stringify({ id: "api", version: "1.0.0", origins: ["https://fixture.test"] }),
+    );
+    const authOp = (env: string) => ({
+      id: env === "SURF_E2E_HOST_ONLY_KEY" ? "host" : "nowhere",
+      effect: "read",
+      run: [
+        {
+          using: "network",
+          request: {
+            method: "GET",
+            url: "https://fixture.test/api",
+            authInputs: [{ env, header: "X-Site-Key", required: true }],
+          },
+        },
+      ],
+    });
+    fs.writeFileSync(
+      path.join(opsDir, "host.json"),
+      JSON.stringify(authOp("SURF_E2E_HOST_ONLY_KEY")),
+    );
+    fs.writeFileSync(
+      path.join(opsDir, "nowhere.json"),
+      JSON.stringify(authOp("SURF_E2E_UNSET_KEY")),
+    );
+    const host = startHost(socketPath, { env: { SURF_E2E_HOST_ONLY_KEY: "host-side-value-31" } });
+    const executions = () =>
+      host.messages.filter((message) => message.type === "EXECUTE_JAVASCRIPT");
+    try {
+      await host.waitForMessage((message) => message.type === "HOST_READY");
+      const run = await runCli(socketPath, ["use", "api", "host", "--json"], project);
+      expect(run).toMatchObject({ code: 0 });
+      expect(JSON.stringify(executions()[0])).toContain("host-side-value-31");
+
+      const missing = await runCli(socketPath, ["use", "api", "nowhere", "--json"], project);
+      expect(missing.code).toBe(1);
+      expect(missing.stderr).toMatch(/environment variable SURF_E2E_UNSET_KEY is not set/);
+      expect(executions()).toHaveLength(1);
+    } finally {
+      await host.dispose();
+    }
+  });
+
   it("removes an old live Surf-created session and its target", async () => {
     const socketPath = createSocketPath();
     const host = startHost(socketPath, { targetActive: false });

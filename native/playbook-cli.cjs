@@ -5,7 +5,7 @@ const { exportRecordHar, saveFromRecent, saveFromRecord, suggestions } = require
 const { deriveClient, exportClient, verifyClient } = require("./playbook-client.cjs");
 const { formatCandidates } = require("./record-candidates.cjs");
 const { RESERVED_RUN_OPTIONS, applyParam, formatParamResult } = require("./playbook-param.cjs");
-const { resolveAuthValues } = require("./playbook-runtime.cjs");
+const { authInputs } = require("./playbook-runtime.cjs");
 const { exportPlaybookDirectory, importPlaybookDirectory, listPlaybooks, resolvePlaybook } = require("./playbooks.cjs");
 
 // `raw` keeps each option's text: `--id 2101.10010` is a number in `options`, a string in `raw`.
@@ -97,7 +97,7 @@ function resolveLocalOp(spec, cwd) {
 }
 
 // String inputs keep the text as typed. Env-supplied headers are read here, from the caller's
-// shell, and go to the host with this one request (in \`secret\`, a name redaction hides).
+// shell, and go to the host with this one request (in `secret`, a name redaction hides).
 function prepareRun(spec, cwd) {
   const op = resolveLocalOp(spec, cwd);
   if (!op) return { args: spec.args, secret: {} };
@@ -105,7 +105,11 @@ function prepareRun(spec, cwd) {
   for (const [name, input] of Object.entries(op.args || {})) {
     if (input.type === "string" && typeof spec.raw[name] === "string") args[name] = spec.raw[name];
   }
-  return { args, secret: resolveAuthValues(op, {}, process.env) };
+  // A variable the shell doesn't set is left to the host's environment; the host fails, naming it,
+  // when neither has it.
+  const secret = {};
+  for (const { env } of authInputs(op)) if (process.env[env]) secret[env] = process.env[env];
+  return { args, secret };
 }
 
 function resolveRunTimeout(spec, cwd) {

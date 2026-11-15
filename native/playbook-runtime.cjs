@@ -284,4 +284,4 @@ async function runPlaybookOp({ playbook, op, args: providedArgs = {}, secrets = 
   throw new Error(`All strategies failed${detail ? ` (${detail})` : ""}`);
 }
 
-module.exports = { resolveArgs, resolveAuthValues, runPlaybookOp };
+module.exports = { authInputs, resolveArgs, runPlaybookOp };
