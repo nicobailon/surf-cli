@@ -113,7 +113,8 @@ function verifyResult(value, expect = {}, raw = value, secrets = []) {
   const results = checkAssertions(value, expect.assert, secrets);
   const failed = results.find((result) => !result.pass);
   if (failed) {
-    const error = new Error(`assertion failed: ${describeAssertion(failed)} (got ${typeof failed.actual === "string" ? failed.actual : JSON.stringify(failed.actual)})`);
+    const got = failed.error ?? `got ${typeof failed.actual === "string" ? failed.actual : JSON.stringify(failed.actual)}`;
+    const error = new Error(`assertion failed: ${describeAssertion(failed)} (${got})`);
     error.assertions = results;
     throw error;
   }

@@ -410,6 +410,28 @@ describe("pb test --save and env values", () => {
     expect(fs.readFileSync(file, "utf8")).toBe(before);
   });
 
+  it("refuses --save when a pattern runs too long against an env value, before running", async () => {
+    const cwd = tempDir();
+    const file = writeShop(cwd, op);
+    const before = fs.readFileSync(file, "utf8");
+    const runOp = vi.fn();
+    const started = Date.now();
+    await expect(
+      pbTest.runPlaybookTest({
+        argv: ["shop", "items", "--assert", "$[0].echo", "matches", "(a+)+b", "--save"],
+        cwd,
+        home: cwd,
+        env: { SURF_TEST_ITEMS_KEY: "a".repeat(60) },
+        runOp,
+      }),
+    ).rejects.toThrow(
+      /--save refused: assertion 1's pattern took too long \(over 100 ms\) on the value of SURF_TEST_ITEMS_KEY; simplify it/,
+    );
+    expect(Date.now() - started).toBeLessThan(1000);
+    expect(runOp).not.toHaveBeenCalled();
+    expect(fs.readFileSync(file, "utf8")).toBe(before);
+  });
+
   it("refuses an assertion the host marks secret-sensitive, even past the 200-character preview", async () => {
     const cwd = tempDir();
     const file = writeShop(cwd, op);

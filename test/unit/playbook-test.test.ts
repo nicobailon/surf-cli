@@ -55,74 +55,88 @@ describe("assertions", () => {
     ]);
   });
 
-  it("refuses matches patterns that could backtrack without end, and overlong ones", () => {
+  it("stops a matches pattern that backtracks too long and fails it with a clear error", () => {
+    const timedOut = "matches pattern took too long (over 100 ms); simplify it";
+    // ^((a|aa))+$ first: the old structural check refused it, so without bounded runs this fails
+    // at once instead of hanging on the patterns that check let through.
+    const slow: Array<[string, string]> = [
+      ["^((a|aa))+$", `${"a".repeat(60)}!`],
+      ["(a+)+b", "a".repeat(60)],
+      ["^(a)+(a)+(a)+(a)+(a)+b$", "a".repeat(200)],
+      ["^.*.*.*.*b$", "a".repeat(5000)],
+    ];
+    for (const [pattern, text] of slow) {
+      const assertion = { path: "$", op: "matches", value: pattern };
+      expect(() => assertions.validateAssertions([assertion]), pattern).not.toThrow();
+      const started = Date.now();
+      const [result] = assertions.checkAssertions(text, [assertion]);
+      expect(Date.now() - started, pattern).toBeLessThan(500);
+      expect(result, pattern).toMatchObject({ pass: false, error: timedOut });
+    }
+    // Patterns the old check refused, and ordinary ones, run and pass.
+    for (const [pattern, text] of [
+      ["(a|b)+", "abba"],
+      ["^https://x\\.com/\\d+$", "https://x.com/42"],
+      ["^(ab)?c$", "abc"],
+    ]) {
+      const assertion = { path: "$", op: "matches", value: pattern };
+      expect(() => assertions.validateAssertions([assertion]), pattern).not.toThrow();
+      expect(assertions.checkAssertions(text, [assertion])[0], pattern).toMatchObject({
+        pass: true,
+      });
+      expect(assertions.checkAssertions(text, [assertion])[0], pattern).not.toHaveProperty("error");
+    }
+    // Only the first 64 KB of the text is tested.
+    expect(
+      assertions.checkAssertions(`${"a".repeat(70000)}x`, [
+        { path: "$", op: "matches", value: "x$" },
+      ])[0].pass,
+    ).toBe(false);
+  });
+
+  it("still refuses invalid and overlong patterns, and counts a slow one as secret-sensitive", () => {
     const check = (pattern: string) => () =>
       assertions.validateAssertions([{ path: "$", op: "matches", value: pattern }]);
-    for (const pattern of [
-      "(a+)+",
-      "(.*)*",
-      "(\\w+\\s?)+",
-      "^(?:x*y)*$",
-      "(a+){2,}",
-      "((ab)*c)+",
-      "(a|aa)+",
-      "(?<n>\\d+)*",
-      // Nesting can't hide a repeat or an alternative from an outer repeat.
-      "^((a|aa))+$",
-      "(((a+)))+",
-      "((?:a|b)c)+",
-      "(?:(?:a)|(?:aa))+",
-      // Blunt on purpose: safe patterns like this one are refused too.
-      "(a|b)+",
-    ]) {
-      expect(check(pattern), pattern).toThrow(
-        /assertion 1: matches pattern repeats a group that contains a repeat or \|.*such as \(a\|b\)\+.*use a character class such as \[ab\]\+/,
-      );
-    }
     expect(check("a".repeat(501))).toThrow(
       /assertion 1: matches pattern is 501 characters; the limit is 500/,
     );
-    for (const pattern of [
-      "^key ",
-      "^\\d+(\\.\\d{2})?$",
-      "^(ab)+$",
-      "(a+)?",
-      "(a+){1}",
-      "[(a+)+]",
-      "\\(a+\\)+",
-      "^https://jobs\\.lever\\.co/",
-      "^https://x\\.com/\\d+$",
-      "^(ab)?c$",
-      "[ab]+",
-      "a".repeat(500),
-    ]) {
-      expect(check(pattern), pattern).not.toThrow();
-    }
+    expect(check("(")).toThrow(/assertion 1: matches needs a valid regex/);
+    expect(check("a".repeat(500))).not.toThrow();
+    // A pattern that runs too long against an env value counts as touching it.
+    const started = Date.now();
+    const [result] = assertions.checkAssertions(
+      "x",
+      [{ path: "$", op: "matches", value: "(a+)+b" }],
+      ["a".repeat(60)],
+    );
+    expect(Date.now() - started).toBeLessThan(500);
+    expect(result).toMatchObject({ pass: false, secretSensitive: true });
   });
 
-  it("checks matches patterns from the CLI, on save and when an op loads", () => {
-    expect(() => pbTest.parseTestArgs(["a", "b", "--assert", "$", "matches", "(a+)+"])).toThrow(
-      /--assert: assertion 1: matches pattern repeats a group/,
+  it("checks patterns from the CLI, on save and when an op loads, and bounds them in a run", () => {
+    expect(() => pbTest.parseTestArgs(["a", "b", "--assert", "$", "matches", "("])).toThrow(
+      /--assert: assertion 1: matches needs a valid regex/,
     );
     expect(() =>
       playbooks.validateOp(
         op([network], {
-          on: { success: { expect: { assert: [{ path: "$", op: "matches", value: "(.*)*" }] } } },
+          on: {
+            success: { expect: { assert: [{ path: "$", op: "matches", value: "a".repeat(501) }] } },
+          },
         }),
         { origins: [] },
       ),
     ).toThrow(
-      /op get_books on\.success\.expect\.assert: assertion 1: matches pattern repeats a group/,
+      /op get_books on\.success\.expect\.assert: assertion 1: matches pattern is 501 characters/,
     );
-    // A run refuses one too, even when the op skipped validation (a hand-made or imported op).
     return expect(
       runtime.runPlaybookOp({
         playbook: { id: "books", provenance: { scope: "test" } },
         op: op([network]),
-        assertions: [{ path: "$", op: "matches", value: "(\\w+\\s?)+$" }],
-        executeTool: tab({ items: [] }),
+        assertions: [{ path: "$.bodyJson.text", op: "matches", value: "(a+)+b" }],
+        executeTool: tab({ text: "a".repeat(60) }),
       }),
-    ).rejects.toThrow(/matches pattern repeats a group/);
+    ).rejects.toThrow(/matches pattern took too long \(over 100 ms\); simplify it/);
   });
 
   it("rejects malformed assertions", () => {

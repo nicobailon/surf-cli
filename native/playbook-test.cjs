@@ -1,6 +1,6 @@
 // surf pb test: run an op the way `surf use` does and check assertions on its result.
 
-const { describeAssertion, safeRegExp, validateAssertions, valueTexts } = require("./playbook-assertions.cjs");
+const { MATCH_TIMED_OUT, boundedMatch, describeAssertion, validateAssertions, valueTexts } = require("./playbook-assertions.cjs");
 const { authInputs, resolveArgs } = require("./playbook-runtime.cjs");
 const { editSavedOp, resolveEditablePlaybook, resolveOp } = require("./playbooks.cjs");
 
@@ -98,7 +98,15 @@ function refuseSecretAssertions(assertions, secret) {
       if (texts.some((text) => text.includes(value))) {
         throw new Error(`--save refused: ${position} contains the value of ${name}, which is never stored; assert on something else`);
       }
-      if (assertion.op === "matches" && safeRegExp(assertion.value).test(value)) {
+      if (assertion.op !== "matches") continue;
+      let matched;
+      try {
+        matched = boundedMatch(assertion.value, value);
+      } catch (error) {
+        if (error.code !== MATCH_TIMED_OUT) throw error;
+        throw new Error(`--save refused: ${position}'s pattern took too long (over 100 ms) on the value of ${name}; simplify it`);
+      }
+      if (matched) {
         throw new Error(`--save refused: ${position}'s pattern matches the value of ${name}, which is never stored; use a narrower pattern`);
       }
     }
@@ -197,7 +205,7 @@ function formatTestReport(report) {
   const records = report.records === null ? "" : `, ${report.records} record${report.records === 1 ? "" : "s"}`;
   const lines = [`${report.ok ? "PASS" : "FAIL"} ${report.playbook} ${report.op}: ${answered}${records}, ${report.durationMs} ms`];
   for (const assertion of report.assertions) {
-    const actual = typeof assertion.actual === "string" ? assertion.actual : JSON.stringify(assertion.actual);
+    const actual = assertion.error ?? (typeof assertion.actual === "string" ? assertion.actual : JSON.stringify(assertion.actual));
     lines.push(`  ${assertion.pass ? "pass" : "FAIL"}  ${describeAssertion(assertion)} (${actual})`);
   }
   if (!report.ok) {
