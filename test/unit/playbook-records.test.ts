@@ -25,10 +25,13 @@ function tempRoot() {
   return root;
 }
 
-const completed = (command: string) => ({
+// A step is a command name, or [name, args] for a command whose effect depends on its arguments.
+type Step = string | [string, Entry];
+const step = (command: string, args: Entry): Step => [command, args];
+const completed = (item: Step) => ({
   type: "tool.completed",
-  command,
-  argsRedacted: {},
+  command: typeof item === "string" ? item : item[0],
+  argsRedacted: typeof item === "string" ? {} : item[1],
   startedAt: new Date().toISOString(),
 });
 
@@ -44,7 +47,7 @@ function recordFlow({
   origin = "https://example.test",
   stop = { draft: true },
 }: {
-  commands?: string[];
+  commands?: Step[];
   trace?: Entry[];
   capture?: Entry;
   truncatedAt?: number;
@@ -168,6 +171,25 @@ describe("draft effect and pb record stop --read", () => {
   it.each([
     ["a click draft defaults to a write", { commands: ["type", "click"], trace: [page] }, "write"],
     [
+      "a locate click is a write",
+      { commands: [step("locate.role", { role: "button", action: "click" })], trace: [page] },
+      "write",
+    ],
+    [
+      "a locate read stays a read",
+      { commands: [step("locate.text", { action: "text" })], trace: [page] },
+      "read",
+    ],
+    [
+      "--read accepts a locate fill as a page step",
+      {
+        commands: [step("locate.label", { action: "fill" })],
+        trace: [page],
+        stop: { draft: true, read: true },
+      },
+      "read",
+    ],
+    [
       "a captured write makes a draft without clicks a write",
       { commands: ["navigate"], trace: [page, create] },
       "write",
@@ -219,6 +241,11 @@ describe("draft effect and pb record stop --read", () => {
       /captured POST https:\/\/sentry\.io/,
     ],
     ["a record without --network", {}, /--read needs a record started with --network/],
+    [
+      "a POST replay, which acts beyond the page",
+      { trace: [page], commands: [step("network.replay", { id: "r_1", "allow-post": true })] },
+      /--read refused: the record ran network\.replay, which acts beyond the page/,
+    ],
     [
       "a cookie step, which acts beyond the page",
       { trace: [page], commands: ["click", "cookie.set"] },
@@ -457,6 +484,18 @@ describe("activity and explicit record evidence", () => {
     expect(
       stopped.draft.run.find((strategy: { using: string }) => strategy.using === "workflow").steps,
     ).toHaveLength(1);
+  });
+
+  it("does not save recent activity with a locate click as a read op", () => {
+    const root = tempRoot();
+    journal.journalCommand(
+      "locate.role",
+      { role: "button", name: "Save", action: "click" },
+      { root },
+    );
+    expect(() =>
+      authoring.saveFromRecent({ site: "fixture", op: "save", root, home: path.dirname(root) }),
+    ).toThrow(/write-capable/);
   });
 
   it("does not turn recent or recorded page writes into an unreviewed read op", () => {

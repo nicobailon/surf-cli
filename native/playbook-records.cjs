@@ -219,6 +219,7 @@ const TELEMETRY_HOSTS = [
 const PAGE_STEPS = new Set([
   "click", "check", "uncheck", "key", "submit", "type", "smart_type", "find_and_type", "form_input", "form.fill", "select",
   "scroll", "scroll.top", "scroll.bottom", "scroll_to_position", "dialog.accept", "dialog.dismiss",
+  "locate.role", "locate.text", "locate.label",
 ]);
 
 function hostname(url) {
@@ -252,7 +253,7 @@ function shownUrl(entry) {
 // it a read, refused when a captured request can write, a step acts beyond the page, or the record
 // didn't capture the network.
 function draftEffect({ record, steps, trace, read }) {
-  const pageWrite = (step) => ["page-write", "unknown"].includes(commandMetadata(step.tool).effect);
+  const pageWrite = (step) => ["page-write", "unknown"].includes(commandMetadata(step.tool, step.args).effect);
   const write = trace?.entries?.find((entry) => requestEffect(entry) === "write" && !isTelemetryRequest(entry, record.origin));
   if (read) {
     if (record.capture?.network !== true) throw new Error("--read needs a record started with --network, so its requests can be checked for writes");
