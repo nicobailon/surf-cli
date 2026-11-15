@@ -2,17 +2,47 @@ const fs = require("fs");
 const path = require("path");
 const { version: PACKAGE_VERSION } = require("../package.json");
 const { atomicWriteFile } = require("./private-state.cjs");
+const { isSecretHeader, isSensitiveName, redactUrlSecrets } = require("./redaction.cjs");
 
 const MAX_NETWORK_EXPORT_FILE_BYTES = 256 * 1024 * 1024;
 const INTERNAL_FIELDS = new Set(["_requestId", "_responseReceived", "_loadingFinished"]);
 
+const HEADER_FIELDS = new Set(["requestHeaders", "responseHeaders"]);
+const URL_FIELDS = new Set(["url", "tabUrl"]);
+
+// Secret headers (auth, cookies, API keys) keep their name with a <redacted> value.
+function redactHeaders(headers) {
+  if (!headers || typeof headers !== "object" || Array.isArray(headers)) return headers;
+  return Object.fromEntries(Object.entries(headers).map(([name, value]) => [name, isSecretHeader(name) ? "<redacted>" : value]));
+}
+
+// Drops user:password and redacts secret-named query params; any other URL is kept as captured.
+function redactUrl(url) {
+  if (typeof url !== "string") return url;
+  let parsed;
+  try {
+    parsed = new URL(url);
+  } catch {
+    return url;
+  }
+  const secretParam = [...parsed.searchParams.keys()].some(isSensitiveName);
+  if (!parsed.username && !parsed.password && !secretParam) return url;
+  parsed.username = "";
+  parsed.password = "";
+  return redactUrlSecrets(parsed.toString());
+}
+
+// What an export may contain: no internal fields, secret headers or URL credentials.
 function publicEntry(entry) {
   if (!entry || typeof entry !== "object" || Array.isArray(entry)) {
     throw new Error("network export entries must be objects");
   }
   const result = Object.create(null);
   for (const [key, value] of Object.entries(entry)) {
-    if (!INTERNAL_FIELDS.has(key)) result[key] = value;
+    if (INTERNAL_FIELDS.has(key)) continue;
+    if (HEADER_FIELDS.has(key)) result[key] = redactHeaders(value);
+    else if (URL_FIELDS.has(key)) result[key] = redactUrl(value);
+    else result[key] = value;
   }
   return result;
 }

@@ -55,6 +55,57 @@ describe("network export serialization", () => {
     expect(JSON.parse(jsonl.trim()).url).toBe(entries[0].url);
   });
 
+  it("redacts secret headers and URL credentials in every format", () => {
+    const secretEntry = {
+      id: "r-2",
+      ts: 1700000000000,
+      method: "GET",
+      url: "https://user:hunter2pw@example.test/api?access_token=tok123secret&q=1",
+      tabUrl: "https://example.test/page?session=sess456secret",
+      requestHeaders: {
+        Authorization: "ResyAPI api_key=abc999secret",
+        Cookie: "sid=cookie777secret",
+        "X-Api-Key": "key888secret",
+        accept: "*/*",
+      },
+      responseHeaders: {
+        "Set-Cookie": "sid=setcookie555secret",
+        "content-type": "application/json",
+      },
+      status: 200,
+    };
+    const secrets = [
+      "hunter2pw",
+      "tok123secret",
+      "sess456secret",
+      "abc999secret",
+      "cookie777secret",
+      "key888secret",
+      "setcookie555secret",
+    ];
+    for (const format of ["json", "jsonl", "har"]) {
+      const text = exporter.serializeNetworkExport([secretEntry], format);
+      for (const secret of secrets) {
+        expect(text, `${format} kept ${secret}`).not.toContain(secret);
+      }
+      expect(text).toContain("q=1");
+      expect(text).toContain("*/*");
+    }
+    const har = JSON.parse(exporter.serializeNetworkExport([secretEntry], "har"));
+    expect(har.log.entries[0].request.headers).toContainEqual({
+      name: "Authorization",
+      value: "<redacted>",
+    });
+    expect(har.log.entries[0].request.queryString).toContainEqual({
+      name: "access_token",
+      value: "<redacted>",
+    });
+    const plain = JSON.parse(
+      exporter.serializeNetworkExport([{ id: "r-3", url: "https://example.test" }], "json"),
+    );
+    expect(plain[0].url).toBe("https://example.test");
+  });
+
   it("writes a valid compact HAR projection atomically with private permissions", async () => {
     const directory = await tempDir();
     const output = path.join(directory, "capture.har");
