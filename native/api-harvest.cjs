@@ -191,11 +191,23 @@ function normalHeaders(headers = {}) {
   return Object.fromEntries(Object.entries(headers).map(([name, value]) => [name.toLowerCase(), String(value).split("\n").join(", ")]));
 }
 
-// A captured response agrees with what the tab's script saw: the same status (a cached response
-// the browser revalidated is a 304 in capture and a 200 to fetch), and the same value for each
-// header both have (fetch hides some, such as set-cookie).
+// A cached response the browser revalidated is a 304 in capture and a 200 to fetch. It is the
+// script's only when the validator fetch saw, the ETag (else Last-Modified), is the one the 304
+// confirmed: in its response, or in the browser's If-None-Match (If-Modified-Since).
+function revalidatedFor(entry, seen) {
+  const script = normalHeaders(seen.headers);
+  const response = normalHeaders(entry.responseHeaders);
+  const request = normalHeaders(entry.requestHeaders);
+  if (script.etag !== undefined) return response.etag === script.etag || (request["if-none-match"] ?? "").split(/,\s*/).includes(script.etag);
+  if (script["last-modified"] !== undefined) return [response["last-modified"], request["if-modified-since"]].includes(script["last-modified"]);
+  return false;
+}
+
+// A captured response agrees with what the tab's script saw: the same status (or a 304 that
+// revalidated it), and the same value for each header both have (fetch hides some, such as
+// set-cookie).
 function agreesWith(entry, seen) {
-  if (entry.status !== seen.status && !(entry.status === 304 && seen.status === 200)) return false;
+  if (entry.status !== seen.status && !(entry.status === 304 && seen.status === 200 && revalidatedFor(entry, seen))) return false;
   const captured = normalHeaders(entry.responseHeaders);
   return Object.entries(normalHeaders(seen.headers)).every(([name, value]) => captured[name] === undefined || captured[name] === value);
 }

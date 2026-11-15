@@ -145,15 +145,58 @@ describe("network strategy response bodies", () => {
     expect(result.value.body).toBe(body);
   });
 
-  it("reads a response the browser revalidated, which capture shows as a 304", async () => {
-    const body = html(60 * 1024);
-    const tab = captureTab({ reply: () => ({ body, capturedStatus: 304 }) });
-    const result = await runtime.runPlaybookOp({
+  // A response the browser revalidated is a 304 in capture and a 200 to fetch.
+  const revalidated = (fields: Record<string, unknown>) =>
+    captureTab({ reply: () => ({ body: html(60 * 1024), capturedStatus: 304, ...fields }) });
+
+  it("reads a revalidated response when its ETag or Last-Modified matches what the script saw", async () => {
+    const byEtag = revalidated({
+      headers: { etag: '"v7"' },
+      capturedResponseHeaders: {},
+      capturedRequestHeaders: { "If-None-Match": '"v7"' },
+    });
+    const etag = await runtime.runPlaybookOp({
       playbook,
       op: readOp(),
-      executeTool: tab.executeTool,
+      executeTool: byEtag.executeTool,
     });
-    expect(result.value).toMatchObject({ status: 200, body });
+    expect(etag.value).toMatchObject({ status: 200, body: html(60 * 1024) });
+
+    const date = "Wed, 11 Nov 2026 10:00:00 GMT";
+    const byDate = revalidated({
+      headers: { "last-modified": date },
+      capturedResponseHeaders: { "Last-Modified": date },
+    });
+    const modified = await runtime.runPlaybookOp({
+      playbook,
+      op: readOp(),
+      executeTool: byDate.executeTool,
+    });
+    expect(modified.value.body).toBe(html(60 * 1024));
+  });
+
+  it("doesn't take a 304 whose validators don't match, or that has none, for the script's 200", async () => {
+    const cases = [
+      {
+        headers: { etag: '"v2"' },
+        capturedResponseHeaders: {},
+        capturedRequestHeaders: { "If-None-Match": '"v1"' },
+      },
+      { headers: {}, capturedResponseHeaders: {} },
+    ];
+    for (const fields of cases) {
+      const error = await runtime
+        .runPlaybookOp({
+          playbook,
+          op: readOp(),
+          executeTool: revalidated(fields).executeTool,
+          sleep: fakeClock(),
+        })
+        .catch((caught: Error) => caught);
+      expect(error.message).toMatch(
+        /disagrees with what the tab saw \(HTTP 200\): capture has HTTP 304/,
+      );
+    }
   });
 
   const postOp = readOp({ method: "POST", url: "https://api.test/start", body: { q: 1 } });

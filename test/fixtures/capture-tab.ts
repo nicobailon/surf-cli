@@ -30,6 +30,8 @@ export type Reply = {
   capturedStatus?: number;
   // Request headers capture shows (the browser's If-None-Match on a revalidation).
   capturedRequestHeaders?: Record<string, string>;
+  // Response headers capture shows, when they differ from what fetch sees (a 304's few headers).
+  capturedResponseHeaders?: Record<string, string>;
   // The server redirects to `to`. Capture keeps the redirect under its own id, sharing the final
   // request's Chrome request id, unless `chain` is "missing".
   redirect?: { status: number; to: string; chain?: "kept" | "missing" };
@@ -41,6 +43,38 @@ function redirectedMethod(method: string, status: number) {
     return "GET";
   }
   return (status === 301 || status === 302) && method === "POST" ? "GET" : method;
+}
+
+type Answer = Reply & { status: number; headers: Record<string, string>; body: string };
+
+// What capture records for the script's request: a redirect's hop, kept under its own id with the
+// request id it shares with the final request, then the final request.
+function capturedHops(url: string, method: string, answer: Answer, chainId: string) {
+  const { redirect } = answer;
+  const chained = redirect !== undefined && redirect.chain !== "missing";
+  const hops: Array<Partial<CapturedEntry> & { body?: string; bodyGone?: boolean }> = [];
+  if (chained) {
+    hops.push({
+      url,
+      method,
+      status: redirect.status,
+      flags: ["redirect"],
+      bodyCapture: { mode: "text", complete: false, reason: "redirect" },
+      _requestId: chainId,
+    });
+  }
+  hops.push({
+    url: redirect?.to ?? url,
+    method: redirect ? redirectedMethod(method, redirect.status) : method,
+    status: answer.capturedStatus ?? answer.status,
+    requestHeaders: answer.capturedRequestHeaders ?? {},
+    responseHeaders: answer.capturedResponseHeaders ?? answer.headers,
+    body: answer.body,
+    bodyGone: answer.bodyGone,
+    ...(answer.bodyCapture ? { bodyCapture: answer.bodyCapture } : {}),
+    ...(chained ? { _requestId: chainId } : {}),
+  });
+  return hops;
 }
 
 /**
@@ -84,38 +118,18 @@ export function captureTab({
   };
   const fetchImpl = vi.fn(async (url: string, init: { method?: string } = {}) => {
     const method = String(init.method || "GET").toUpperCase();
-    const answer = { status: 200, headers: {}, body: "{}", ...reply(url, init) };
+    const answer: Answer = { status: 200, headers: {}, body: "{}", ...reply(url, init) };
     for (const sent of pageSends(url, method)) {
       add({ url, method, ...sent });
     }
-    const { redirect } = answer;
-    const chainId = `cdp-chain-${seq}`;
-    if (redirect && redirect.chain !== "missing") {
-      add({
-        url,
-        method,
-        status: redirect.status,
-        flags: ["redirect"],
-        bodyCapture: { mode: "text", complete: false, reason: "redirect" },
-        _requestId: chainId,
-      });
+    for (const hop of capturedHops(url, method, answer, `cdp-chain-${seq}`)) {
+      add(hop);
     }
-    add({
-      url: redirect?.to ?? url,
-      method: redirect ? redirectedMethod(method, redirect.status) : method,
-      status: answer.capturedStatus ?? answer.status,
-      requestHeaders: answer.capturedRequestHeaders ?? {},
-      responseHeaders: answer.headers,
-      body: answer.body,
-      bodyGone: answer.bodyGone,
-      ...(answer.bodyCapture ? { bodyCapture: answer.bodyCapture } : {}),
-      ...(redirect && redirect.chain !== "missing" ? { _requestId: chainId } : {}),
-    });
     return {
       status: answer.status,
       ok: answer.status >= 200 && answer.status < 300,
-      url: redirect?.to ?? url,
-      redirected: redirect !== undefined,
+      url: answer.redirect?.to ?? url,
+      redirected: answer.redirect !== undefined,
       headers: new Map(Object.entries(answer.headers)),
       text: async () => answer.body,
       arrayBuffer: async () => new ArrayBuffer(answer.body.length),
