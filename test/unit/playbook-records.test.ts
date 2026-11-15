@@ -563,6 +563,39 @@ describe("choosing the draft's request", () => {
     expect(records.recordStatus({ target: TAB, root: flow.root }).status).toBe("recording");
   });
 
+  it("never gives a write draft a read to replay in place of a write it can't replay", () => {
+    const update = {
+      id: "r_put",
+      method: "PUT",
+      status: 200,
+      type: "XHR",
+      url: "https://example.test/api/employees/7",
+    };
+    const reload = { ...page, id: "r_get", url: "https://example.test/api/employees/7" };
+    const { draft, warnings } = stopFlow({ commands: ["click"], trace: [update, reload] });
+    expect(draft.effect).toBe("write");
+    expect(draft.run.map((strategy: { using: string }) => strategy.using)).toEqual(["workflow"]);
+    expect(warnings).toEqual([
+      "the draft has no network strategy: it is a write because of PUT https://example.test/api/employees/7, which is a PUT (a draft replays only GET, HEAD and POST), and a write draft never replays a read in its place",
+    ]);
+    const chooseRead = recordFlow({
+      commands: ["click"],
+      trace: [update, reload],
+      stop: { draft: true, requestId: "r_get" },
+    });
+    expect(chooseRead.stopped).toThrow(
+      "request r_get (GET https://example.test/api/employees/7) is a read, but the record captured PUT https://example.test/api/employees/7, which makes the draft a write; a write draft replays its write, never a read",
+    );
+    const choosePut = recordFlow({
+      commands: ["click"],
+      trace: [update, reload],
+      stop: { draft: true, requestId: "r_put" },
+    });
+    expect(choosePut.stopped).toThrow(
+      "request r_put (PUT https://example.test/api/employees/7) is a PUT (a draft replays only GET, HEAD and POST); a draft never replays it",
+    );
+  });
+
   it("refuses --request-id without --draft", () => {
     expect(() => stopFlow({ trace: [page], stop: { requestId: "r_1" } })).toThrow(
       /--request-id applies only with --draft/,

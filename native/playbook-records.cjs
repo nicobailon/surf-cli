@@ -255,28 +255,36 @@ function neverReplayed(entry, origin) {
   if (isTelemetryRequest(entry, origin)) return "telemetry";
   if (ASSET_TYPES.has(entry.type)) return `a page asset (${entry.type})`;
   if (entry.method === "OPTIONS" || entry.type === "Preflight") return "a CORS preflight";
+  if (!REPLAYED_METHODS.has(entry.method)) return `a ${entry.method} (a draft replays only GET, HEAD and POST)`;
   if (!isReplayCandidate(entry)) return `a ${entry.method} answered with status ${entry.status ?? "none"}`;
   return "";
 }
+const REPLAYED_METHODS = new Set(["GET", "HEAD", "POST"]);
 
 // The request a draft replays: the one chosen with --request-id, else the top-ranked read. A write
-// draft whose trace holds a write replays its top-ranked write, the request its effect comes from;
-// a read draft never replays a write. Telemetry, page assets and preflights are never replayed.
+// draft whose trace holds a write replays its top-ranked write, the request its effect comes from,
+// and never a read: when it can't replay that write it gets no network strategy. A read draft never
+// replays a write. Telemetry, page assets and preflights are never replayed.
 function pickRequest({ record, trace, effect, requestId, warnings }) {
   const entries = trace?.entries || [];
+  const capturedWrite = effect === "write" && entries.find((entry) => requestEffect(entry) === "write" && !isTelemetryRequest(entry, record.origin));
   if (requestId) {
     const entry = entries.find((candidate) => candidate.id === requestId);
     if (!entry) throw new Error(`request ${requestId} is not in the trace of ${record.id}; run surf pb record candidates ${record.id} to list its requests`);
     const why = neverReplayed(entry, record.origin);
     if (why) throw new Error(`request ${requestId} (${shownUrl(entry)}) is ${why}; a draft never replays it`);
+    if (capturedWrite && requestEffect(entry) === "read") {
+      throw new Error(`request ${requestId} (${shownUrl(entry)}) is a read, but the record captured ${shownUrl(capturedWrite)}, which makes the draft a write; a write draft replays its write, never a read`);
+    }
     return entry;
   }
   if (!trace) return undefined;
   const eligible = scoreEntries(entries, { origin: record.origin }).filter((candidate) => candidate.eligible);
-  const writes = eligible.filter((candidate) => candidate.effect === "write");
-  const top = (effect === "write" && writes.length > 0 ? writes : eligible.filter((candidate) => candidate.effect === "read"))[0];
+  const top = eligible.filter((candidate) => candidate.effect === (capturedWrite ? "write" : "read"))[0];
   if (!top) {
-    warnings.push(NO_REPLAY);
+    warnings.push(capturedWrite
+      ? `the draft has no network strategy: it is a write because of ${shownUrl(capturedWrite)}, which is ${neverReplayed(capturedWrite, record.origin)}, and a write draft never replays a read in its place`
+      : NO_REPLAY);
     return undefined;
   }
   if (isWeak(top)) warnings.push(`the draft's network strategy, ${shownUrl(top.entry)}, is a weak match (score ${top.score}); run surf pb record candidates ${record.id} and choose with --request-id`);
