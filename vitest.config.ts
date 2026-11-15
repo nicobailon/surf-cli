@@ -48,7 +48,7 @@ export default defineConfig({
     // Global test utilities
     globals: true,
 
-    // Fails the run if a test writes to the real Surf state dir.
+    // Warns (fails in CI or with SURF_TEST_STATE_GUARD=strict) if the real Surf state dir changes.
     globalSetup: ["test/setup/state-guard.ts"],
 
     // pi-subagents publishes TypeScript sources; inline it so vitest transforms them.
