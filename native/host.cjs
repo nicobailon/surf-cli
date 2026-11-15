@@ -1558,7 +1558,7 @@ async function runHostPlaybook(msg, request) {
     cwd: request.context?.isRemote ? process.cwd() : params.projectDir || process.cwd(),
     pinBuiltIn: params.pinBuiltIn === true,
   });
-  const runArgs = resolveArgs(op, params.args || {});
+  const runArgs = resolveArgs(op, params.args || {}, { playbookId: playbook.id });
   if (op.effect === "write" && op.safety.authorization === "explicit" && params.write !== true) {
     throw new Error(`write op ${playbook.id} ${op.id} requires --write`);
   }

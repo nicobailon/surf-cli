@@ -35,6 +35,7 @@ const {
   handleOracleCli,
 } = require("./oracle-cli.cjs");
 const { formatPlaybookOutput, handlePlaybookCli } = require("./playbook-cli.cjs");
+const { editDistance } = require("./edit-distance.cjs");
 
 const IS_WIN = process.platform === "win32";
 const { SURF_TMP, formatSocketError } = require("./socket-path.cjs");
@@ -1654,7 +1655,7 @@ const TOOLS = {
         desc: "Run a playbook operation, such as reading a whole X thread",
         args: ["playbook", "op"],
         opts: {
-          "<arg>": "Operation input, e.g. --url <post-url> (see: surf pb ops <playbook>)",
+          "<arg>": "Operation input, e.g. --url <post-url>; an input the op doesn't define fails and lists its inputs",
           format: "md or jsonl instead of JSON",
           write: "Authorize a write operation",
           "allow-script": "Allow the playbook's trusted script strategy",
@@ -2325,18 +2326,6 @@ const showToolHelp = (toolName) => {
     return;
   }
   reportUnknownCommand(toolName);
-};
-
-const editDistance = (a, b) => {
-  let previous = Array.from({ length: b.length + 1 }, (_, index) => index);
-  for (let i = 1; i <= a.length; i++) {
-    const current = [i];
-    for (let j = 1; j <= b.length; j++) {
-      current[j] = Math.min(previous[j] + 1, current[j - 1] + 1, previous[j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1));
-    }
-    previous = current;
-  }
-  return previous[b.length];
 };
 
 // Closest public names, comparing the whole name and its group part (`bookmarks` -> bookmark.*, `key.repeat` -> key).
