@@ -135,6 +135,12 @@ function installBrowserLock({ noLock, timeoutMs }, endpoint) {
 }
 
 // Cross-platform image resize (macOS: sips, Linux: ImageMagick)
+
+// Help shows a positional argument as <name>, or as [name] when its name ends with "?" (optional).
+function formatArgs(args = []) {
+  return args.map((arg) => (arg.endsWith("?") ? `[${arg.slice(0, -1)}]` : `<${arg}>`)).join(" ");
+}
+
 function resizeImage(filePath, maxSize) {
   const platform = process.platform;
 
@@ -1716,7 +1722,7 @@ const TOOLS = {
       },
       "playbook record candidates": {
         desc: "Rank a record's requests by how likely each carries the page's data (JSON or HTML document, records, page text overlap, first-party; telemetry, assets, redirects, preflights low)",
-        args: ["record-id"],
+        args: ["record-id?"],
         opts: { limit: "How many to show (default: 10)", json: "Output raw JSON" },
         examples: [
           { cmd: "pb record candidates", desc: "Your active record (read live), else your latest one" },
@@ -2210,7 +2216,7 @@ Usage: surf <command> [args] [options]
     console.log(`${groupName.toUpperCase()} - ${group.desc}`);
     for (const [cmd, info] of Object.entries(group.commands)) {
       if (info.alias) continue;
-      const argStr = info.args?.length ? `<${info.args.join("> <")}>` : "";
+      const argStr = formatArgs(info.args);
       const line = `${`  ${cmd} ${argStr}`.padEnd(31)} `;
       console.log(`${line}${info.desc}`);
     }
@@ -2257,7 +2263,7 @@ const showGroupHelp = (groupName) => {
       console.log(`  ${cmd} -> ${info.alias}\n`);
       continue;
     }
-    const argStr = info.args?.length ? `<${info.args.join("> <")}>` : "";
+    const argStr = formatArgs(info.args);
     console.log(`  ${cmd} ${argStr}`);
     console.log(`      ${info.desc}`);
     if (info.opts) {
@@ -2284,13 +2290,13 @@ const showToolHelp = (toolName) => {
         showToolHelp(info.alias);
         return;
       }
-      const argStr = info.args?.length ? `<${info.args.join("> <")}>` : "";
+      const argStr = formatArgs(info.args);
       console.log(`\n${toolName} - ${info.desc}\n`);
       console.log(`Usage: surf ${toolName} ${argStr}\n`);
       if (info.args?.length) {
         console.log("Arguments:");
         for (const arg of info.args) {
-          console.log(`  <${arg}>`);
+          console.log(`  ${formatArgs([arg])}`);
         }
         console.log();
       }
