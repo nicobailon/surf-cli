@@ -76,7 +76,7 @@ describe("network strategy response bodies", () => {
   });
 
   it("redacts an env value that a captured body echoes", async () => {
-    const secret = "rk-tanbe-oswif-81";
+    const secret = "dummy-env-value-for-tests";
     const tab = captureTab({ reply: () => ({ body: `${html(60 * 1024)}<p>key ${secret}</p>` }) });
     const result = await runtime.runPlaybookOp({
       playbook,

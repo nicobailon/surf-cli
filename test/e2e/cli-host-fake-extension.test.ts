@@ -719,7 +719,7 @@ describe("CLI/native-host/fake-extension E2E contract", () => {
         run: [{ using: "network", request: { method: "GET", url: "https://fixture.test/api" } }],
       }),
     );
-    const marker = "page-only-ywqmz-41";
+    const marker = "dummy-page-marker-for-tests";
     const host = startHost(socketPath, {
       env,
       pageTraffic: [
