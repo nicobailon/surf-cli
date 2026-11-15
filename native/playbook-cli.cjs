@@ -129,7 +129,7 @@ async function handlePlaybookCli(argv, { endpoint, cwd = process.cwd(), session,
     let args = {};
     if (action === "start") args = { site: parsed.positional[1], op: parsed.options.op, watch: parsed.options.watch === true, network: parsed.options.network === true, includeInputValues: parsed.options["include-input-values"] === true };
     else if (action === "mark") args = { label: parsed.positional.slice(1).join(" ") };
-    else if (action === "stop") args = { draft: parsed.options.draft === true };
+    else if (action === "stop") args = { draft: parsed.options.draft === true, read: parsed.options.read === true };
     else if (!["status", "pause", "resume", "discard"].includes(action)) throw new Error("Unknown record command");
     const value = await requestHost(endpoint, tool, args, {
       tabId: parsed.options["tab-id"],

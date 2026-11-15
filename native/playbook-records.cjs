@@ -214,12 +214,6 @@ const TELEMETRY_HOSTS = [
   "sentry.io", "bugsnag.com", "browser-intake-datadoghq.com", "browser-intake-datadoghq.eu", "nr-data.net",
   "hotjar.com", "clarity.ms", "fullstory.com", "cloudflareinsights.com", "plausible.io",
 ];
-// UI steps that only act on the page: whether they changed data shows in the requests they sent.
-const UI_STEPS = new Set([
-  "click", "check", "uncheck", "key", "submit", "type", "smart_type", "find_and_type", "form_input", "form.fill", "select",
-  "scroll", "scroll.top", "scroll.bottom", "scroll_to_position", "dialog.accept", "dialog.dismiss",
-]);
-
 function hostname(url) {
   try { return new URL(url).hostname; } catch { return ""; }
 }
@@ -240,42 +234,39 @@ function requestEffect(entry) {
   return READ_METHODS.has(String(entry.method).toUpperCase()) ? "read" : "write";
 }
 
-// A recorded flow is a write when its trace holds a request with a method other than
-// GET/HEAD/OPTIONS that isn't telemetry. UI steps that sent no such request are reads only when the
-// trace is evidence they sent none: the record captured the network without a gap, the page opened
-// no WebSocket (whose messages the trace can't show), and the main frame loaded a page after the
-// record started and before the first page write at `firstPageWriteAt` (so any socket the page held
-// for those writes was opened, and seen, during the record). Otherwise page writes stay writes.
-// Steps that act beyond the page (tabs, cookies, emulation, AI providers) are always writes.
-function draftEffect({ record, steps, trace, firstPageWriteAt }) {
-  const entries = trace?.entries || [];
-  if (entries.some((entry) => requestEffect(entry) === "write" && !isTelemetryRequest(entry, record.origin))) return { effect: "write" };
-  const writes = steps.filter((step) => ["page-write", "unknown"].includes(commandMetadata(step.tool).effect));
-  if (writes.length === 0) return { effect: "read" };
-  if (writes.some((step) => !UI_STEPS.has(step.tool))) return { effect: "write" };
-  if (record.capture?.network !== true || trace?.complete !== true || entries.some((entry) => entry.type === "WebSocket")) return { effect: "write" };
-  if (!entries.some((entry) => entry.type === "Document" && entry.mainFrame === true && entry.ts < firstPageWriteAt)) {
-    return { effect: "write", warning: "the draft is a write: the record saw no page load before its first click or typing, so a WebSocket the page already had open could have carried writes" };
+function shownUrl(entry) {
+  const url = new URL(entry.url);
+  url.search = "";
+  return `${entry.method} ${url}`;
+}
+
+// A draft with page-write steps is a write, as is one whose trace holds a request that can write
+// (a method other than GET/HEAD/OPTIONS that isn't telemetry). `read` (pb record stop --read) makes
+// it a read, refused when a captured request can write or the record didn't capture the network.
+function draftEffect({ record, steps, trace, read }) {
+  const write = trace?.entries?.find((entry) => requestEffect(entry) === "write" && !isTelemetryRequest(entry, record.origin));
+  if (read) {
+    if (record.capture?.network !== true) throw new Error("--read needs a record started with --network, so its requests can be checked for writes");
+    if (write) throw new Error(`--read refused: the record captured ${shownUrl(write)}, which can change data; stop with --draft alone to draft a write`);
+    return trace?.complete === true ? { effect: "read" } : { effect: "read", warning: "--read could not check every request: the trace is incomplete (see the warnings above)" };
   }
+  if (write || steps.some((step) => ["page-write", "unknown"].includes(commandMetadata(step.tool).effect))) return { effect: "write" };
   return { effect: "read" };
 }
 
-function draftFromRecord(recordId, root = getPrivateStateRoot(), { warnings = [] } = {}) {
+// `warnings` collects why the draft left something out.
+function draftFromRecord(recordId, root = getPrivateStateRoot(), { read = false, warnings = [] } = {}) {
   const record = readRecord(recordId, root);
   if (!record) throw new Error(`record not found: ${recordId}`);
   const events = readEvents(recordId, root).filter((event) => event.type === "tool.completed");
   const steps = [];
-  // When the first page write started; without a time, no page load can be shown to precede it.
-  let firstPageWriteAt;
   for (const event of events) {
-    const metadata = commandMetadata(event.command);
-    if (!metadata.recordable) continue;
-    if (firstPageWriteAt === undefined && metadata.effect === "page-write") firstPageWriteAt = Date.parse(event.startedAt) || Number.NEGATIVE_INFINITY;
+    if (!commandMetadata(event.command).recordable) continue;
     steps.push({ tool: event.command, args: event.argsRedacted || {} });
   }
   const tracePath = path.join(recordDirectory(recordId, root), "network", "trace.json");
   const trace = readPrivateJson(tracePath, null, { root });
-  const { effect, warning } = draftEffect({ record, steps, trace, firstPageWriteAt });
+  const { effect, warning } = draftEffect({ record, steps, trace, read });
   if (warning) warnings.push(warning);
   const strategies = [];
   const observed = trace?.entries?.findLast((entry) => ["GET", "HEAD", "OPTIONS", "POST"].includes(entry.method) && entry.status >= 200 && entry.status < 400);
@@ -283,9 +274,7 @@ function draftFromRecord(recordId, root = getPrivateStateRoot(), { warnings = []
   // such a request gives the draft no network strategy (a different request isn't picked instead).
   const skipped = observed && (isTelemetryRequest(observed, record.origin) ? "is telemetry" : effect === "read" && requestEffect(observed) === "write" ? "can write, but the draft is a read" : null);
   if (skipped) {
-    const shown = new URL(observed.url);
-    shown.search = "";
-    warnings.push(`the draft has no network strategy: the request it would replay, ${observed.method} ${shown}, ${skipped}`);
+    warnings.push(`the draft has no network strategy: the request it would replay, ${shownUrl(observed)}, ${skipped}`);
   } else if (observed) {
     const url = new URL(observed.url);
     const query = Object.fromEntries(url.searchParams.entries());
@@ -308,11 +297,13 @@ function draftFromRecord(recordId, root = getPrivateStateRoot(), { warnings = []
   return op;
 }
 
-function stopRecord({ target, draft = false, root = getPrivateStateRoot() } = {}) {
-  let record = updateStatus("stopping", { target, root });
-  let op;
+// The draft is made before the record stops, so a refused draft (--read) leaves it recording.
+function stopRecord({ target, draft = false, read = false, root = getPrivateStateRoot() } = {}) {
+  if (read && !draft) throw new Error("--read applies only with --draft");
+  let record = requireRecordFor(target, root);
   const draftWarnings = [];
-  if (draft) op = draftFromRecord(record.id, root, { warnings: draftWarnings });
+  const op = draft ? draftFromRecord(record.id, root, { read, warnings: draftWarnings }) : undefined;
+  record = updateStatus("stopping", { target, root });
   record = readRecord(record.id, root);
   record.status = draft ? "draft_created" : "stopped";
   record.stoppedAt = new Date().toISOString();

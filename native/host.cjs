@@ -1671,12 +1671,15 @@ async function handleRecordRequest(tool, args, msg, request) {
           capture: result.capture,
           ...(read.length >= RECORD_TRACE_LIMIT ? { truncatedAt: RECORD_TRACE_LIMIT } : {}),
         });
-      } finally {
-        await requestCallExtension(request, tool, { type: "STOP_NETWORK_CAPTURE", tabId: record.tabId }, 30000, true).catch(() => {});
+      } catch (error) {
+        await stopCapture(record);
+        throw error;
       }
     }
-    if (record.capture.watch) await requestCallExtension(request, tool, { type: "STOP_PLAYBOOK_WATCH", tabId: record.tabId }, 30000, true).catch(() => {});
-    return stopRecord({ target, draft: args.draft === true });
+    // Capture stops only once the record has: a refused --read leaves both running, to stop again.
+    const stopped = stopRecord({ target, draft: args.draft === true, read: args.read === true });
+    await stopCapture(record);
+    return stopped;
   }
   throw new Error(`Unknown record command: ${tool}`);
 }

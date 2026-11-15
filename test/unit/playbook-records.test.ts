@@ -15,87 +15,257 @@ afterEach(() => {
   }
 });
 
+type Entry = Record<string, unknown>;
+const TAB = { tabId: 1 };
+const COMPLETE = { active: true, interruptions: [] };
+
+function tempRoot() {
+  const root = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "surf-records-")), "state");
+  roots.push(path.dirname(root));
+  return root;
+}
+
+const completed = (command: string) => ({
+  type: "tool.completed",
+  command,
+  argsRedacted: {},
+  startedAt: new Date().toISOString(),
+});
+
+/**
+ * Records `commands` on tab 1, attaches `trace` when given (the record then captured the network),
+ * and stops the record with `stop`'s options.
+ */
+function recordFlow({
+  commands = [],
+  trace,
+  capture = COMPLETE,
+  truncatedAt,
+  origin = "https://example.test",
+  stop = { draft: true },
+}: {
+  commands?: string[];
+  trace?: Entry[];
+  capture?: Entry;
+  truncatedAt?: number;
+  origin?: string;
+  stop?: { draft?: boolean; read?: boolean };
+}) {
+  const root = tempRoot();
+  const record = records.startRecord({
+    site: "fixture",
+    op: "search",
+    tabId: 1,
+    origin,
+    network: trace !== undefined,
+    root,
+  });
+  for (const command of commands) {
+    records.appendRecordEvent(completed(command), { target: TAB, root });
+  }
+  if (trace) {
+    records.attachNetworkTrace(record.id, trace, root, { capture, truncatedAt });
+  }
+  return { root, record, stopped: () => records.stopRecord({ target: TAB, ...stop, root }) };
+}
+const stopFlow = (options: Parameters<typeof recordFlow>[0]) => recordFlow(options).stopped();
+
+const page = {
+  id: "r_1",
+  method: "GET",
+  status: 200,
+  type: "Document",
+  url: "https://example.test/search?q=x",
+};
+const create = {
+  id: "r_2",
+  method: "POST",
+  status: 201,
+  type: "XHR",
+  url: "https://example.test/api/employees?x=1",
+};
+const telemetry = [
+  { id: "r_3", method: "POST", status: 204, type: "Ping", url: "https://example.test/beacon" },
+  {
+    id: "r_4",
+    method: "POST",
+    status: 200,
+    type: "XHR",
+    url: "https://www.google-analytics.com/g/collect?v=2",
+  },
+  {
+    id: "r_5",
+    method: "POST",
+    status: 202,
+    type: "Fetch",
+    url: "https://o1.ingest.sentry.io/api/1/envelope/",
+  },
+];
+const sentryCreate = {
+  id: "r_6",
+  method: "POST",
+  status: 201,
+  type: "XHR",
+  url: "https://sentry.io/api/0/teams/acme/core/projects/",
+};
+const at = Date.parse("2026-11-14T10:00:00Z");
+
 describe("record network trace", () => {
   it("keeps requests captured after the record started whatever clock stamped them", () => {
     const startedAt = "2026-11-14T10:00:00.000Z";
-    const start = Date.parse(startedAt);
     const kept = records.traceEntriesForRecord({ startedAt }, [
-      { id: "r_before", ts: start - 5000 },
-      { id: "r_after", ts: start + 1500 },
+      { id: "r_before", ts: at - 5000 },
+      { id: "r_after", ts: at + 1500 },
       // Extensions before the fix stamped `ts` with Chrome's monotonic clock (ms since boot).
       { id: "r_monotonic", ts: 1_160_000_500 },
     ]);
     expect(kept.map((entry: { id: string }) => entry.id)).toEqual(["r_after", "r_monotonic"]);
   });
-});
 
-describe("record network capture gaps", () => {
-  it("says when capture was interrupted and stops trusting the trace to clear page writes", () => {
-    const root = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "surf-records-")), "state");
-    roots.push(path.dirname(root));
-    const record = records.startRecord({
-      site: "fixture",
-      op: "search",
-      tabId: 1,
-      network: true,
-      root,
-    });
-    records.appendRecordEvent(
-      { type: "tool.completed", command: "click", argsRedacted: {} },
-      { target: { tabId: 1 }, root },
-    );
-    const at = Date.parse("2026-11-14T10:00:00Z");
-    records.attachNetworkTrace(
-      record.id,
-      [{ id: "r_1", method: "GET", status: 200, url: "https://example.test/search" }],
-      root,
+  it.each([
+    [
+      "an interruption",
       {
         capture: {
           active: true,
           interruptions: [{ reason: "target_closed", at, resumedAt: at + 5000 }],
         },
       },
-    );
-    const stopped = records.stopRecord({ target: { tabId: 1 }, draft: true, root });
-    expect(stopped.warnings).toEqual([
-      "network capture was interrupted at 2026-11-14T10:00:00.000Z (debugger detached: target_closed) until 2026-11-14T10:00:05.000Z; requests in between were not captured",
-    ]);
+      [
+        "network capture was interrupted at 2026-11-14T10:00:00.000Z (debugger detached: target_closed) until 2026-11-14T10:00:05.000Z; requests in between were not captured",
+      ],
+    ],
+    [
+      "capture that was off at stop",
+      { capture: { active: false, interruptions: [] } },
+      [
+        "network capture was not running when the record stopped (the extension may have restarted); requests may be missing",
+      ],
+    ],
+    [
+      "dropped requests and a read cut at its limit",
+      { capture: { ...COMPLETE, dropped: 4 }, truncatedAt: 500 },
+      [
+        "network capture dropped the 4 oldest requests (it keeps about 500 per tab), so the trace is missing them",
+        "the trace holds only the first 500 requests read from the tab; later ones are missing",
+      ],
+    ],
+  ])("marks the trace incomplete and warns about %s", (_case, options, warnings) => {
+    const stopped = stopFlow({ trace: [page], stop: {}, ...options });
+    expect(stopped.warnings).toEqual(warnings);
     expect(stopped.record.trace).toMatchObject({ count: 1, complete: false });
-    expect(stopped.draft.effect).toBe("write");
+  });
+});
+
+describe("draft effect and pb record stop --read", () => {
+  it.each([
+    ["a click draft defaults to a write", { commands: ["type", "click"], trace: [page] }, "write"],
+    [
+      "a captured write makes a draft without clicks a write",
+      { commands: ["navigate"], trace: [page, create] },
+      "write",
+    ],
+    [
+      "--read gives a read",
+      { commands: ["type", "click"], trace: [page], stop: { draft: true, read: true } },
+      "read",
+    ],
+    [
+      "an analytics POST doesn't block --read",
+      { commands: ["click"], trace: [page, ...telemetry], stop: { draft: true, read: true } },
+      "read",
+    ],
+    [
+      "a vendor's request from another site's page is telemetry",
+      {
+        commands: ["click"],
+        trace: [page, { ...sentryCreate, tabUrl: "https://example.test/" }],
+        stop: { draft: true, read: true },
+      },
+      "read",
+    ],
+  ])("%s", (_case, options, effect) => {
+    const { draft } = stopFlow(options);
+    expect(draft.effect).toBe(effect);
+    expect(draft.safety === undefined).toBe(effect === "read");
   });
 
-  it("says when capture was not running at stop and was never seen to stop", () => {
-    const root = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "surf-records-")), "state");
-    roots.push(path.dirname(root));
-    const record = records.startRecord({
-      site: "fixture",
-      op: "search",
-      tabId: 1,
-      network: true,
-      root,
+  it.each([
+    [
+      "a captured write",
+      { trace: [page, create] },
+      /--read refused: the record captured POST https:\/\/example\.test\/api\/employees, which can change data/,
+    ],
+    [
+      "the vendor's own site (record origin)",
+      { trace: [sentryCreate], origin: "https://sentry.io" },
+      /captured POST https:\/\/sentry\.io/,
+    ],
+    [
+      "the vendor's own site (sending page)",
+      { trace: [{ ...sentryCreate, tabUrl: "https://sentry.io/organizations/acme/" }] },
+      /captured POST https:\/\/sentry\.io/,
+    ],
+    [
+      "a vendor host with no known site",
+      { trace: [sentryCreate], origin: "" },
+      /captured POST https:\/\/sentry\.io/,
+    ],
+    ["a record without --network", {}, /--read needs a record started with --network/],
+  ])("refuses --read because of %s, leaving the record recording", (_case, options, error) => {
+    const flow = recordFlow({ commands: ["click"], stop: { draft: true, read: true }, ...options });
+    expect(flow.stopped).toThrow(error);
+    expect(records.recordStatus({ target: TAB, root: flow.root }).status).toBe("recording");
+  });
+
+  it("refuses --read without --draft", () => {
+    expect(() => stopFlow({ trace: [page], stop: { read: true } })).toThrow(
+      /--read applies only with --draft/,
+    );
+  });
+
+  it("accepts --read on an incomplete trace with a warning", () => {
+    const stopped = stopFlow({
+      commands: ["click"],
+      trace: [page],
+      capture: { ...COMPLETE, dropped: 4 },
+      stop: { draft: true, read: true },
     });
-    records.attachNetworkTrace(record.id, [], root, {
-      capture: { active: false, interruptions: [] },
+    expect(stopped.draft.effect).toBe("read");
+    expect(stopped.warnings).toContain(
+      "--read could not check every request: the trace is incomplete (see the warnings above)",
+    );
+  });
+
+  it("gives a draft no network strategy when the request it picks is telemetry, and a read no write strategy", () => {
+    // The last 2xx/3xx request (the rule main uses) is the error-reporting POST.
+    const stopped = stopFlow({
+      commands: ["click"],
+      trace: [page, ...telemetry],
+      stop: { draft: true, read: true },
     });
-    expect(records.stopRecord({ target: { tabId: 1 }, root }).warnings).toEqual([
-      "network capture was not running when the record stopped (the extension may have restarted); requests may be missing",
+    expect(stopped.draft.run.map((strategy: { using: string }) => strategy.using)).toEqual([
+      "workflow",
     ]);
+    expect(stopped.warnings).toEqual([
+      "the draft has no network strategy: the request it would replay, POST https://o1.ingest.sentry.io/api/1/envelope/, is telemetry",
+    ]);
+    for (const trace of [
+      [...telemetry, page],
+      [page, create],
+    ]) {
+      const read = trace.includes(create) ? undefined : true;
+      const { draft } = stopFlow({ commands: ["click"], trace, stop: { draft: true, read } });
+      const network = draft.run.find((strategy: { using: string }) => strategy.using === "network");
+      if (draft.effect === "read") {
+        expect(["GET", "HEAD", "OPTIONS"]).toContain(network.request.method);
+      }
+      expect(network.request.url).toBe(trace.at(-1)?.url.split("?")[0]);
+    }
   });
 });
 
 describe("record ownership", () => {
-  const tempRoot = () => {
-    const root = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "surf-records-")), "state");
-    roots.push(path.dirname(root));
-    return root;
-  };
-  const completed = (command: string) => ({
-    type: "tool.completed",
-    command,
-    argsRedacted: {},
-    startedAt: new Date().toISOString(),
-    endedAt: new Date().toISOString(),
-  });
   const commands = (recordId: string, root: string) =>
     records
       .readEvents(recordId, root)
@@ -108,21 +278,13 @@ describe("record ownership", () => {
     const root = tempRoot();
     const alpha = records.startRecord({ site: "a", op: "read", tabId: 11, session: "alpha", root });
     const beta = records.startRecord({ site: "b", op: "read", tabId: 22, session: "beta", root });
-    records.appendRecordEvent(completed("navigate"), {
-      target: { session: "alpha", tabId: 11 },
-      root,
-    });
-    records.appendRecordEvent(completed("click"), { target: { session: "beta", tabId: 22 }, root });
-    expect(
-      records.appendRecordEvent(completed("type"), {
-        target: { session: "gamma", tabId: 33 },
-        root,
-      }),
-    ).toBe(false);
+    const append = (command: string, target: Entry) =>
+      records.appendRecordEvent(completed(command), { target, root });
+    append("navigate", { session: "alpha", tabId: 11 });
+    append("click", { session: "beta", tabId: 22 });
+    expect(append("type", { session: "gamma", tabId: 33 })).toBe(false);
     // An unnamed caller on alpha's tab is not alpha.
-    expect(records.appendRecordEvent(completed("key"), { target: { tabId: 11 }, root })).toBe(
-      false,
-    );
+    expect(append("key", { tabId: 11 })).toBe(false);
     // Page events from the watcher carry only the tab.
     records.appendRecordEvent(
       { type: "browser.event", event: "input" },
@@ -137,35 +299,30 @@ describe("record ownership", () => {
     const root = tempRoot();
     const alpha = records.startRecord({ site: "a", op: "read", tabId: 11, session: "alpha", root });
     const loose = records.startRecord({ site: "b", op: "read", tabId: 22, root });
-    records.appendRecordEvent(completed("tab.new"), {
-      target: { browser: true, session: "alpha" },
-      root,
-    });
-    records.appendRecordEvent(completed("window.new"), { target: { browser: true }, root });
-    expect(
-      records.appendRecordEvent(completed("tab.close"), {
-        target: { browser: true, session: "beta" },
-        root,
-      }),
-    ).toBe(false);
+    const append = (command: string, session?: string) =>
+      records.appendRecordEvent(completed(command), { target: { browser: true, session }, root });
+    append("tab.new", "alpha");
+    append("window.new");
+    expect(append("tab.close", "beta")).toBe(false);
     expect(commands(alpha.id, root)).toEqual(["tab.new"]);
     expect(commands(loose.id, root)).toEqual(["window.new"]);
-
     // Without a session, the record must be the only one started without a session.
     records.startRecord({ site: "c", op: "read", tabId: 33, root });
-    expect(
-      records.appendRecordEvent(completed("tab.switch"), { target: { browser: true }, root }),
-    ).toBe(false);
+    expect(append("tab.switch")).toBe(false);
   });
 
   it("refuses mark, stop and discard from a session that does not own the record", () => {
     const root = tempRoot();
     const alpha = records.startRecord({ site: "a", op: "read", tabId: 11, session: "alpha", root });
     const other = { target: { session: "beta", tabId: 22 }, root };
-    expect(() => records.markRecord("x", other)).toThrow(/session alpha/);
-    expect(() => records.stopRecord(other)).toThrow(/session alpha/);
-    expect(() => records.discardRecord(other)).toThrow(/session alpha/);
-    expect(() => records.pauseRecord(other)).toThrow(/session alpha/);
+    for (const act of [
+      records.stopRecord,
+      records.discardRecord,
+      records.pauseRecord,
+      (o: Entry) => records.markRecord("x", o),
+    ]) {
+      expect(() => act(other)).toThrow(/session alpha/);
+    }
     expect(() => records.stopRecord({ target: { tabId: 11 }, root })).toThrow(
       /record on tab 11 belongs to session alpha/,
     );
@@ -175,7 +332,7 @@ describe("record ownership", () => {
     expect(() => records.startRecord({ site: "c", op: "read", tabId: 11, root })).toThrow(
       /already active for session alpha/,
     );
-    expect(records.recordStatus({ target: { session: "beta", tabId: 22 }, root })).toMatchObject({
+    expect(records.recordStatus(other)).toMatchObject({
       status: "idle",
       otherRecords: [{ id: alpha.id, session: "alpha", tabId: 11 }],
     });
@@ -188,268 +345,17 @@ describe("record ownership", () => {
   it("still finds a record started before records had owners", () => {
     const root = tempRoot();
     const record = records.startRecord({ site: "a", op: "read", tabId: 5, root });
-    const activePath = path.join(records.recordsRoot(root), "active.json");
-    fs.writeFileSync(activePath, JSON.stringify({ recordId: record.id }));
+    fs.writeFileSync(
+      path.join(records.recordsRoot(root), "active.json"),
+      JSON.stringify({ recordId: record.id }),
+    );
     expect(records.recordStatus({ target: { tabId: 5 }, root })).toMatchObject({ id: record.id });
-  });
-});
-
-describe("draft effect", () => {
-  const stopDraft = ({
-    commands,
-    trace,
-    origin = "https://example.test",
-    capture = { active: true, interruptions: [] },
-  }: {
-    commands: string[];
-    trace?: Array<Record<string, unknown>>;
-    origin?: string;
-    capture?: Record<string, unknown>;
-  }) => {
-    const root = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "surf-records-")), "state");
-    roots.push(path.dirname(root));
-    const record = records.startRecord({
-      site: "fixture",
-      op: "search",
-      tabId: 1,
-      origin,
-      network: trace !== undefined,
-      root,
-    });
-    for (const command of commands) {
-      records.appendRecordEvent(
-        { type: "tool.completed", command, argsRedacted: {}, startedAt: new Date().toISOString() },
-        { target: { tabId: 1 }, root },
-      );
-    }
-    if (trace) {
-      records.attachNetworkTrace(record.id, trace, root, { capture });
-    }
-    return records.stopRecord({ target: { tabId: 1 }, draft: true, root });
-  };
-  const draft = (options: Parameters<typeof stopDraft>[0]) => stopDraft(options).draft;
-  // A main-frame page load captured after the record started, before its steps ran.
-  const search = {
-    id: "r_1",
-    ts: Date.parse("2026-01-01T00:00:00Z"),
-    method: "GET",
-    status: 200,
-    type: "Document",
-    mainFrame: true,
-    url: "https://example.test/search?q=x",
-  };
-  const telemetry = [
-    { id: "r_2", method: "POST", status: 204, type: "Ping", url: "https://example.test/beacon" },
-    {
-      id: "r_3",
-      method: "POST",
-      status: 200,
-      type: "XHR",
-      url: "https://www.google-analytics.com/g/collect?v=2",
-    },
-    {
-      id: "r_4",
-      method: "POST",
-      status: 202,
-      type: "Fetch",
-      url: "https://o1.ingest.sentry.io/api/1/envelope/",
-    },
-  ];
-
-  it("drafts a search done by typing and clicking as a read when it sent only reads and telemetry", () => {
-    const op = draft({ commands: ["type", "click", "key"], trace: [search, ...telemetry] });
-    expect(op.effect).toBe("read");
-    expect(op.safety).toBeUndefined();
-    expect(op.args.review_key).toBeUndefined();
-  });
-
-  it("adds no network strategy when the request it picks is telemetry, and never a write strategy to a read", () => {
-    const root = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "surf-records-")), "state");
-    roots.push(path.dirname(root));
-    const record = records.startRecord({
-      site: "fixture",
-      op: "search",
-      tabId: 1,
-      origin: "https://example.test",
-      network: true,
-      root,
-    });
-    records.appendRecordEvent(
-      {
-        type: "tool.completed",
-        command: "click",
-        argsRedacted: {},
-        startedAt: new Date().toISOString(),
-      },
-      { target: { tabId: 1 }, root },
-    );
-    // The last 2xx/3xx request is the error-reporting POST, as on main.
-    records.attachNetworkTrace(record.id, [search, ...telemetry], root, {
-      capture: { active: true, interruptions: [] },
-    });
-    const stopped = records.stopRecord({ target: { tabId: 1 }, draft: true, root });
-    expect(stopped.draft.effect).toBe("read");
-    expect(stopped.draft.run.map((strategy: { using: string }) => strategy.using)).toEqual([
-      "workflow",
-    ]);
-    for (const strategy of stopped.draft.run.filter(
-      (item: { using: string }) => item.using === "network",
-    )) {
-      expect(["GET", "HEAD", "OPTIONS"]).toContain(strategy.request.method);
-    }
-    expect(stopped.warnings).toEqual([
-      "the draft has no network strategy: the request it would replay, POST https://o1.ingest.sentry.io/api/1/envelope/, is telemetry",
-    ]);
-    // Picking stays the same rule: when the last request is the search, the search is replayed.
-    expect(draft({ commands: ["click"], trace: [...telemetry, search] }).run[0]).toMatchObject({
-      using: "network",
-      request: { method: "GET", url: "https://example.test/search" },
-    });
-  });
-
-  it("drafts a write when the flow sent a request that can change data", () => {
-    const create = {
-      id: "r_5",
-      method: "POST",
-      status: 201,
-      type: "XHR",
-      url: "https://example.test/api/employees",
-    };
-    const op = draft({ commands: ["type", "click"], trace: [search, ...telemetry, create] });
-    expect(op).toMatchObject({ effect: "write", safety: { authorization: "explicit" } });
-    expect(op.run[0]).toMatchObject({
-      using: "network",
-      request: { method: "POST", url: "https://example.test/api/employees" },
-    });
-    expect(
-      draft({ commands: ["click"], trace: [{ ...create, method: "DELETE", status: 0 }] }).effect,
-    ).toBe("write");
-  });
-
-  it("treats an analytics vendor's own site as the site, not as telemetry", () => {
-    const dashboard = {
-      id: "r_6",
-      method: "POST",
-      status: 201,
-      type: "XHR",
-      url: "https://us.posthog.com/api/projects/1/dashboards/",
-    };
-    expect(
-      draft({ commands: ["click"], trace: [dashboard], origin: "https://us.posthog.com" }).effect,
-    ).toBe("write");
-    expect(
-      draft({ commands: ["click"], trace: [dashboard], origin: "https://app.posthog.com" }).effect,
-    ).toBe("write");
-    expect(draft({ commands: ["click"], trace: [search, dashboard] }).effect).toBe("read");
-  });
-
-  it("treats an analytics vendor's site reached by navigating, or with no known site, as the site", () => {
-    const createProject = {
-      id: "r_8",
-      method: "POST",
-      status: 201,
-      type: "XHR",
-      url: "https://sentry.io/api/0/teams/acme/core/projects/",
-      tabUrl: "https://sentry.io/organizations/acme/projects/new/",
-    };
-    // A page load before the click, so only the telemetry check can make these writes.
-    const sentryLoad = { ...search, url: "https://sentry.io/organizations/acme/projects/new/" };
-    expect(draft({ commands: ["click"], trace: [sentryLoad, createProject] }).effect).toBe("write");
-    const { tabUrl: _tabUrl, ...withoutPage } = createProject;
-    expect(draft({ commands: ["click"], trace: [search, withoutPage], origin: "" }).effect).toBe(
-      "write",
-    );
-    // The same request from another site's page is telemetry.
-    expect(
-      draft({
-        commands: ["click"],
-        trace: [search, { ...createProject, tabUrl: "https://example.test/" }],
-      }).effect,
-    ).toBe("read");
-  });
-
-  it("keeps page writes as writes when the record saw no page load, and says why", () => {
-    const xhrSearch = {
-      id: "r_9",
-      method: "GET",
-      status: 200,
-      type: "XHR",
-      url: "https://example.test/api/search?q=x",
-    };
-    const frameLoad = { ...search, id: "r_10", mainFrame: false };
-    const stopped = stopDraft({ commands: ["type", "click"], trace: [xhrSearch, frameLoad] });
-    expect(stopped.draft.effect).toBe("write");
-    expect(stopped.warnings).toContain(
-      "the draft is a write: the record saw no page load before its first click or typing, so a WebSocket the page already had open could have carried writes",
-    );
-    expect(draft({ commands: ["type", "click"], trace: [search, xhrSearch] }).effect).toBe("read");
-  });
-
-  it("keeps page writes as writes when the only page load came after them", () => {
-    // type and click write over a socket the page already had, then a navigate loads a page.
-    const laterLoad = { ...search, ts: Date.now() + 60_000 };
-    const stopped = stopDraft({ commands: ["type", "click", "navigate"], trace: [laterLoad] });
-    expect(stopped.draft.effect).toBe("write");
-    expect(stopped.warnings).toContain(
-      "the draft is a write: the record saw no page load before its first click or typing, so a WebSocket the page already had open could have carried writes",
-    );
-  });
-
-  it("keeps page writes as writes when the trace dropped requests or hit the read limit", () => {
-    expect(
-      draft({
-        commands: ["click"],
-        trace: [search],
-        capture: { active: true, interruptions: [], dropped: 4 },
-      }).effect,
-    ).toBe("write");
-    const root = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "surf-records-")), "state");
-    roots.push(path.dirname(root));
-    const record = records.startRecord({
-      site: "fixture",
-      op: "search",
-      tabId: 1,
-      network: true,
-      root,
-    });
-    records.appendRecordEvent(
-      { type: "tool.completed", command: "click", argsRedacted: {} },
-      { target: { tabId: 1 }, root },
-    );
-    records.attachNetworkTrace(record.id, [search], root, {
-      capture: { active: true, interruptions: [], dropped: 4 },
-      truncatedAt: 500,
-    });
-    const stopped = records.stopRecord({ target: { tabId: 1 }, draft: true, root });
-    expect(stopped.record.trace.complete).toBe(false);
-    expect(stopped.warnings).toEqual([
-      "network capture dropped the 4 oldest requests (it keeps about 500 per tab), so the trace is missing them",
-      "the trace holds only the first 500 requests read from the tab; later ones are missing",
-    ]);
-    expect(stopped.draft.effect).toBe("write");
-  });
-
-  it("keeps page writes as writes when the page opened a WebSocket, which can carry writes", () => {
-    const socket = {
-      id: "r_7",
-      method: "GET",
-      type: "WebSocket",
-      url: "wss://example.test/socket",
-    };
-    expect(draft({ commands: ["click"], trace: [search, socket] }).effect).toBe("write");
-    expect(draft({ commands: ["navigate"], trace: [search, socket] }).effect).toBe("read");
-  });
-
-  it("keeps page writes as writes without network evidence or when they act beyond the page", () => {
-    expect(draft({ commands: ["click"] }).effect).toBe("write");
-    expect(draft({ commands: ["click", "cookie.set"], trace: [search] }).effect).toBe("write");
   });
 });
 
 describe("activity and explicit record evidence", () => {
   it("redacts normal input and keeps append-only events separate from record summary", () => {
-    const root = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "surf-records-")), "state");
-    roots.push(path.dirname(root));
+    const root = tempRoot();
     journal.journalCommand("type", { text: "top secret", selector: "#q" }, { root });
     expect(fs.readFileSync(journal.journalPath(root), "utf8")).not.toContain("top secret");
 
@@ -463,10 +369,10 @@ describe("activity and explicit record evidence", () => {
         endedAt: new Date().toISOString(),
         resultSummary: "success",
       },
-      { target: { tabId: 1 }, root },
+      { target: TAB, root },
     );
-    records.markRecord("opened page", { target: { tabId: 1 }, root });
-    const stopped = records.stopRecord({ target: { tabId: 1 }, draft: true, root });
+    records.markRecord("opened page", { target: TAB, root });
+    const stopped = records.stopRecord({ target: TAB, draft: true, root });
     const summary = fs.readFileSync(
       path.join(records.recordsRoot(root), record.id, "record.json"),
       "utf8",
@@ -484,17 +390,16 @@ describe("activity and explicit record evidence", () => {
   });
 
   it("redacts nested activity and trace credentials before drafting", () => {
-    const root = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "surf-records-")), "state");
-    roots.push(path.dirname(root));
+    const root = tempRoot();
     journal.journalCommand(
       "form.fill",
       { data: [{ selector: "#email", value: "top secret" }] },
-      { target: { tabId: 1 }, root },
+      { root },
     );
     journal.journalCommand(
       "navigate",
       { url: "https://example.test/?access_token=captured-secret&q=ok" },
-      { target: { tabId: 1 }, root },
+      { root },
     );
     journal.journalCommand("unknown.tool", { text: "do not record" }, { root });
     const recent = fs.readFileSync(journal.journalPath(root), "utf8");
@@ -504,11 +409,11 @@ describe("activity and explicit record evidence", () => {
     const record = records.startRecord({ site: "fixture", op: "read", tabId: 1, root });
     records.appendRecordEvent(
       { type: "tool.issued", command: "click", argsRedacted: { selector: "#go" } },
-      { target: { tabId: 1 }, root },
+      { target: TAB, root },
     );
     records.appendRecordEvent(
       { type: "tool.completed", command: "click", argsRedacted: { selector: "#go" } },
-      { target: { tabId: 1 }, root },
+      { target: TAB, root },
     );
     records.attachNetworkTrace(
       record.id,
@@ -526,7 +431,7 @@ describe("activity and explicit record evidence", () => {
       ],
       root,
     );
-    const stopped = records.stopRecord({ target: { tabId: 1 }, draft: true, root });
+    const stopped = records.stopRecord({ target: TAB, draft: true, root });
     const trace = fs.readFileSync(
       path.join(records.recordsRoot(root), record.id, "network", "trace.json"),
       "utf8",
@@ -538,8 +443,7 @@ describe("activity and explicit record evidence", () => {
   });
 
   it("does not turn recent or recorded page writes into an unreviewed read op", () => {
-    const root = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "surf-records-")), "state");
-    roots.push(path.dirname(root));
+    const root = tempRoot();
     journal.journalCommand("click", { selector: "#submit" }, { root });
     expect(() =>
       authoring.saveFromRecent({
@@ -559,9 +463,9 @@ describe("activity and explicit record evidence", () => {
         startedAt: new Date().toISOString(),
         endedAt: new Date().toISOString(),
       },
-      { target: { tabId: 1 }, root },
+      { target: TAB, root },
     );
-    const stopped = records.stopRecord({ target: { tabId: 1 }, draft: true, root });
+    const stopped = records.stopRecord({ target: TAB, draft: true, root });
     expect(stopped.draft).toMatchObject({
       effect: "write",
       safety: { authorization: "explicit", duplicate: "transactional", key: ["review_key"] },
