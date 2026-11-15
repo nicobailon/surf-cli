@@ -332,7 +332,12 @@ function paramOp(op, { fields, as: name, env, required = false, default: default
   const originalUrl = splitUrl(request.url);
   const results = fields.map((field) => {
     const slot = resolveSlot(request, field);
-    return { ...slot, ...templateSlot(slot, name, literal) };
+    // A secret-looking field, or one inside a secret-looking param or key, is templated whole:
+    // a partial template would leave the rest of the credential in the op.
+    const sensitive = slot.sensitive || field.split(".").slice(1).some(isSensitiveName);
+    const partial = literal !== undefined && String(slot.value) !== literal && !String(slot.value).includes(`{{${name}}}`);
+    if (sensitive && partial) throw new Error(`${field} looks secret: template it whole (leave out --value), so no part of it is stored`);
+    return { ...slot, sensitive, ...templateSlot(slot, name, literal) };
   });
   const templated = results.filter((result) => result.status === "templated");
   const literals = [...new Set(templated.map((result) => String(result.literal)))];

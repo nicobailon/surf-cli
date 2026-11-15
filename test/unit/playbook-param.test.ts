@@ -239,6 +239,28 @@ describe("pb param: env headers and secrets", () => {
   });
 });
 
+describe("pb param: partial templates of secret fields", () => {
+  it("requires a secret-looking field to be templated whole, so no fragment of it is stored", () => {
+    const op = networkOp({
+      url: "https://api.test/x",
+      query: { access_token: "prefix-tok-suffix", session_data: JSON.stringify({ id: "s-42-x" }) },
+    });
+    expect(() =>
+      paramOp(op, { fields: ["query.access_token"], as: "token", required: true, value: "tok" }),
+    ).toThrow(/query.access_token looks secret: template it whole/);
+    expect(() =>
+      paramOp(op, { fields: ["query.session_data.id"], as: "sid", required: true, value: "42" }),
+    ).toThrow(/template it whole/);
+    expect(() => paramOp(op, { fields: ["query.session_data.id"], as: "sid" })).toThrow(
+      /--required/,
+    );
+    expect(
+      requestOf(paramOp(op, { fields: ["query.access_token"], as: "token", required: true }).op)
+        .query.access_token,
+    ).toBe("{{token}}");
+  });
+});
+
 describe("pb param: validation", () => {
   const op = networkOp({ url: "https://shop.test/search", query: { q: "laptop", alt: "laptops" } });
 
