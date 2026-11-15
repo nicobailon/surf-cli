@@ -1,3 +1,5 @@
+const fs = require("fs");
+const path = require("path");
 const { executeSingleStep, executeWorkflow } = require("./workflow-runtime.cjs");
 const { runWorkflowScript } = require("./workflow-script-runtime.cjs");
 const { runApiHarvest } = require("./api-harvest.cjs");
@@ -93,8 +95,8 @@ function getJsonPath(value, jsonPath) {
 
 function extractResult(result, extract) {
   if (!extract) return result;
-  // The page ran extract.html and sent back only what it found.
-  if (extract.html) return result.extracted;
+  // The tab ran the extract and sent back only what it found.
+  if (result && typeof result === "object" && Object.hasOwn(result, "extracted")) return result.extracted;
   if (extract.records !== undefined || extract.fields || extract.filter) {
     return extractRecords(result.bodyJson !== undefined ? result.bodyJson : result, extract);
   }
@@ -145,15 +147,76 @@ function withServerIdempotency(request, idempotency, attemptId) {
   return next;
 }
 
-// The tab's script output stops at 50,000 characters, so only what the extract needs comes back:
-// with extract.html the body is parsed in the tab (Node has no DOM) and only the extracted value
-// returns; with a JSON extract the parsed body returns without its text.
+// The tab's script output is pretty-printed JSON cut at 50,000 characters
+// (src/service-worker/index.ts), so an extract runs in the tab and only its result comes back.
+const TAB_OUTPUT_LIMIT = 50000;
+// records.cjs runs in the tab as a module; its node:util import serves only api record sets.
+const RECORDS_SOURCE = fs.readFileSync(path.join(__dirname, "records.cjs"), "utf8");
+
+function isJsonExtract(extract) {
+  return Boolean(extract && (extract.jsonPath || extract.records !== undefined || extract.fields || extract.filter));
+}
+
+// Page-side finish(head, run, narrow): the extract's result, or an extractError when it fails or
+// would not fit in the tab's output.
+const FINISH_SOURCE = `const finish = (head, run, narrow) => {
+  let extracted;
+  try {
+    extracted = run();
+  } catch (error) {
+    return { ...head, extractError: error.message };
+  }
+  const out = { ...head, extracted: extracted === undefined ? null : extracted };
+  if (JSON.stringify(out, null, 2).length <= ${TAB_OUTPUT_LIMIT}) return out;
+  return { ...head, extractError: \`extracted result is \${JSON.stringify(extracted, null, 2).length} characters; narrow \${narrow}\` };
+};`;
+
+function jsonExtractSource(extract) {
+  if (extract.jsonPath) return `${getJsonPath.toString()}\nreturn getJsonPath(json, ${JSON.stringify(extract.jsonPath)});`;
+  const { records, fields, filter } = extract;
+  return `const module = { exports: {} };
+const require = () => ({ isDeepStrictEqual: () => { throw new Error("isDeepStrictEqual is not available in the tab"); } });
+(function (module, exports, require) {
+${RECORDS_SOURCE}
+})(module, module.exports, require);
+return module.exports.extractRecords(json, ${JSON.stringify({ records, fields, filter })});`;
+}
+
 function networkScript(request, allowedOrigins = [], extract) {
   const html = extract?.html;
-  const jsonOnly = Boolean(extract && (extract.jsonPath || extract.records !== undefined || extract.fields || extract.filter));
   const headers = request.headers || {};
   const query = request.query || {};
   const body = request.body;
+  let tail = `let json;
+try { json = JSON.parse(text); } catch {}
+return { ...head, body: text, bodyJson: json };`;
+  if (html) {
+    tail = `${FINISH_SOURCE}
+return finish(head, () => {
+  const doc = new DOMParser().parseFromString(text, "text/html");
+  // Relative links resolve against the response URL, not the tab's page.
+  const responseUrl = response.url || url.toString();
+  const base = doc.querySelector("base[href]");
+  if (base) base.setAttribute("href", new URL(base.getAttribute("href"), responseUrl).href);
+  else {
+    const element = doc.createElement("base");
+    element.setAttribute("href", responseUrl);
+    doc.head.prepend(element);
+  }
+  return ${htmlExtractFunction(html)}(doc);
+}, "--item/--field");`;
+  } else if (isJsonExtract(extract)) {
+    tail = `${FINISH_SOURCE}
+return finish(head, () => {
+  let json;
+  try {
+    json = JSON.parse(text);
+  } catch {
+    throw new Error(\`the response is not JSON (\${response.headers.get("content-type") || "no content type"})\`);
+  }
+  ${jsonExtractSource(extract)}
+}, "--records/--field");`;
+  }
   return `(async () => {
 const url = new URL(${JSON.stringify(request.url)}, location.href);
 const allowedOrigins = ${JSON.stringify(allowedOrigins)};
@@ -171,20 +234,8 @@ const response = await fetch(url.toString(), {
   ${body === undefined ? "" : `body: ${JSON.stringify(typeof body === "string" ? body : JSON.stringify(body))},`}
 });
 const text = await response.text();
-${html ? `const doc = new DOMParser().parseFromString(text, "text/html");
-// Relative links resolve against the response URL, not the tab's page.
-const responseUrl = response.url || url.toString();
-const base = doc.querySelector("base[href]");
-if (base) base.setAttribute("href", new URL(base.getAttribute("href"), responseUrl).href);
-else {
-  const element = doc.createElement("base");
-  element.setAttribute("href", responseUrl);
-  doc.head.prepend(element);
-}
-return { status: response.status, ok: response.ok, url: response.url, headers: Object.fromEntries(response.headers.entries()), extracted: ${htmlExtractFunction(html)}(doc) };
-` : ""}let json;
-try { json = JSON.parse(text); } catch {}
-return { status: response.status, ok: response.ok, url: response.url, headers: Object.fromEntries(response.headers.entries()), ${jsonOnly ? "...(json === undefined ? { body: text } : {})" : "body: text"}, bodyJson: json };
+const head = { status: response.status, ok: response.ok, url: response.url, headers: Object.fromEntries(response.headers.entries()) };
+${tail}
 })()`;
 }
 
@@ -231,9 +282,12 @@ async function runStrategy(strategy, context) {
     if (result.status !== "completed") throw new Error(result.error || "workflow strategy failed");
     if (!strategy.extract?.html) return result;
     // The same extraction as the network strategy, on the page the workflow ended on.
-    const page = await context.executeTool("javascript_tool", { code: `${htmlExtractFunction(strategy.extract.html)}(document)` }, { signal: context.signal });
+    const code = `(() => {\n${FINISH_SOURCE}\nreturn finish({}, () => ${htmlExtractFunction(strategy.extract.html)}(document), "--item/--field");\n})()`;
+    const page = await context.executeTool("javascript_tool", { code }, { signal: context.signal });
     if (page?.error) throw new Error(typeof page.error === "string" ? page.error : JSON.stringify(page.error));
-    return { ...result, extracted: page?.output !== undefined ? JSON.parse(page.output) : page?.value };
+    const found = page?.output !== undefined ? JSON.parse(page.output) : page?.value;
+    if (found?.extractError) throw new Error(found.extractError);
+    return { ...result, extracted: found?.extracted };
   }
   if (strategy.using === "network") {
     const { authInputs: inputs = [], ...template } = strategy.request;
@@ -254,6 +308,7 @@ async function runStrategy(strategy, context) {
     if (response?.error) throw new Error(typeof response.error === "string" ? response.error : JSON.stringify(response.error));
     const result = response?.output !== undefined ? JSON.parse(response.output) : response?.value ?? response;
     if (!result?.ok && (strategy.acceptStatus || []).includes(result?.status) === false) throw new Error(`network strategy returned ${result?.status || "an unknown status"}`);
+    if (result.extractError) throw new Error(result.extractError);
     return result;
   }
   if (strategy.using === "native") {

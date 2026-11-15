@@ -212,38 +212,84 @@ describe("extracting records from JSON", () => {
   });
 });
 
-describe("the tab's output for a JSON extract", () => {
-  it("leaves out the response text, which the tab's 50,000-character output limit would cut", async () => {
-    const outputs: Record<string, unknown>[] = [];
-    const body = JSON.stringify({ hits: [{ name: "A" }] });
-    const executeTool = async (_tool: string, args: { code: string }) => {
-      const fetchImpl = async (url: string) => ({
-        status: 200,
-        ok: true,
-        url,
-        headers: new Headers({ "content-type": "application/json" }),
-        text: async () => body,
-      });
-      const value = await new Function("fetch", "location", `return ${args.code}`)(fetchImpl, {
-        href: "https://api.test/",
-      });
-      outputs.push(value);
-      return { output: JSON.stringify(value) };
-    };
-    const result = await runtime.runPlaybookOp({
-      playbook: { id: "fixture", provenance: { scope: "test" } },
-      op: op([
-        {
-          using: "network",
-          request: { method: "GET", url: "https://api.test/search" },
-          extract: { records: "$.hits", fields: { title: "name" } },
-        },
-      ]),
-      executeTool,
+/**
+ * A tab whose network strategy answers `body`, with the service worker's output handling: the
+ * script's value pretty-printed and cut at 50,000 characters.
+ */
+function jsonTab(body: string, contentType = "application/json") {
+  const outputs: Record<string, unknown>[] = [];
+  const executeTool = async (_tool: string, args: { code: string }) => {
+    const fetchImpl = async (url: string) => ({
+      status: 200,
+      ok: true,
+      url,
+      headers: new Headers({ "content-type": contentType }),
+      text: async () => body,
     });
-    expect(result.value).toEqual([{ title: "A" }]);
-    expect(outputs[0]).toMatchObject({ status: 200, bodyJson: { hits: [{ name: "A" }] } });
+    const value = await new Function("fetch", "location", `return ${args.code}`)(fetchImpl, {
+      href: "https://api.test/",
+    });
+    outputs.push(value);
+    return { output: JSON.stringify(value, null, 2).substring(0, 50000) };
+  };
+  return { executeTool, outputs };
+}
+
+const hits = Array.from({ length: 400 }, (_, index) => ({
+  name: `n${index}`,
+  description: "x".repeat(200),
+}));
+const largeBody = JSON.stringify({ hits, meta: { total: 400 } });
+
+function runJson(body: string, spec: Record<string, unknown>, contentType?: string) {
+  const tab = jsonTab(body, contentType);
+  const run = runtime.runPlaybookOp({
+    playbook: { id: "fixture", provenance: { scope: "test" } },
+    op: op([
+      {
+        using: "network",
+        request: { method: "GET", url: "https://api.test/search" },
+        extract: spec,
+      },
+    ]),
+    executeTool: tab.executeTool,
+  });
+  return { run, outputs: tab.outputs };
+}
+
+describe("a JSON extract runs in the tab", () => {
+  it("returns a small result from a response over 60,000 characters", async () => {
+    expect(largeBody.length).toBeGreaterThan(60000);
+    const { run, outputs } = runJson(largeBody, { records: "$.hits", fields: { title: "name" } });
+    const result = await run;
+    expect(result.value).toHaveLength(400);
+    expect(result.value[399]).toEqual({ title: "n399" });
     expect(outputs[0]).not.toHaveProperty("body");
+    expect(outputs[0]).not.toHaveProperty("bodyJson");
+  });
+
+  it("reads a jsonPath in the tab too", async () => {
+    const { run } = runJson(largeBody, { jsonPath: "$.meta.total" });
+    expect((await run).value).toBe(400);
+  });
+
+  it("fails clearly when the extracted result is over the tab's output limit", async () => {
+    const { run } = runJson(largeBody, { records: "$.hits", fields: { text: "description" } });
+    await expect(run).rejects.toThrow(
+      /extracted result is \d+ characters; narrow --records\/--field/,
+    );
+  });
+
+  it("says when the response is not JSON", async () => {
+    const { run } = runJson("<html></html>", { records: "$.hits" }, "text/html");
+    await expect(run).rejects.toThrow(/the response is not JSON \(text\/html\)/);
+  });
+
+  it("reports a path error from the tab without a stack trace", async () => {
+    const { run } = runJson(JSON.stringify({ hits: 3 }), { records: "$.hits" });
+    await expect(run).rejects.toThrow(
+      /^All strategies failed \(network: extract records \$\.hits is not an array \(found number\)\)$/,
+    );
   });
 });
 
@@ -293,6 +339,37 @@ describe("extracting records from HTML", () => {
       executeTool: tab.executeTool,
     });
     expect(result.value).toBe("RID-123");
+  });
+
+  it("fails clearly when the extracted HTML records are over the tab's output limit", async () => {
+    const many: FakeNode = {
+      children: {
+        article: Array.from({ length: 600 }, (_, index) => ({
+          children: { h3: [{ text: `${index} ${"y".repeat(100)}` }] },
+        })),
+      },
+    };
+    const doc = fakeDocument(many);
+    const tab = fakeTab("<p></p>", doc);
+    const truncating = async (tool: string, args: { code: string }) => {
+      const result = await tab.executeTool(tool, args);
+      return {
+        output: JSON.stringify(JSON.parse(result.output ?? "null"), null, 2).substring(0, 50000),
+      };
+    };
+    await expect(
+      runtime.runPlaybookOp({
+        playbook: { id: "books", provenance: { scope: "test" } },
+        op: op([
+          {
+            using: "network",
+            request: { method: "GET", url: "https://books.test/" },
+            extract: { html: { item: "article", fields: { title: "h3" } } },
+          },
+        ]),
+        executeTool: truncating,
+      }),
+    ).rejects.toThrow(/extracted result is \d+ characters; narrow --item\/--field/);
   });
 
   it("names the field whose selector the page rejects", async () => {
