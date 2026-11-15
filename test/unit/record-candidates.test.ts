@@ -74,7 +74,7 @@ describe("summarizeResponse", () => {
     );
   });
 
-  it("keeps only structure by default: kind, size, records, field names and types, overlap", () => {
+  it("keeps only structure by default: kind, size, records, field and type counts, overlap", () => {
     const body = JSON.stringify({
       results: [
         { name: "Jane Placeholder", email: "jane.placeholder@example.test", active: true },
@@ -82,6 +82,9 @@ describe("summarizeResponse", () => {
       ],
       total: 2,
       "jane.placeholder@example.test": "a key that is data",
+      // Keys can be data too: a map keyed by account number or username.
+      GB29NWBK60161331926819: { balance: 1 },
+      jane_placeholder: { active: true },
       next: null,
     });
     const html =
@@ -94,7 +97,8 @@ describe("summarizeResponse", () => {
       kind: "json",
       bytes: body.length,
       records: 2,
-      fields: { results: "array", total: "number", next: "null" },
+      fields: 6,
+      types: { array: 1, null: 1, number: 1, object: 2, string: 1 },
       overlap: expect.any(Number),
     });
     const page = candidates.summarizeResponse(
@@ -102,19 +106,22 @@ describe("summarizeResponse", () => {
       candidates.pageWords(PAGE_TEXT),
     );
     expect(page).toEqual({ kind: "html", bytes: html.length, overlap: expect.any(Number) });
-    // A list at the top level gives its records' field names.
-    const list = candidates.summarizeResponse(
-      get("r_3", "XHR", `${ORIGIN}/api`, {
-        mimeType: "application/json",
-        responseBody: JSON.stringify([
-          { id: 1, name: "Jane Placeholder" },
-          { id: 2, name: "x" },
-        ]),
-      }),
-      candidates.pageWords(""),
-    );
-    expect(list.fields).toEqual({ id: "number", name: "string" });
-    expect(JSON.stringify([json, page, list])).not.toMatch(/Jane|jane|GB29NWBK/);
+    // A list at the top level counts its first record's fields.
+    const listEntry = get("r_3", "XHR", `${ORIGIN}/api`, {
+      mimeType: "application/json",
+      responseBody: JSON.stringify([
+        { id: 1, name: "Jane Placeholder" },
+        { id: 2, name: "x" },
+      ]),
+    });
+    const list = candidates.summarizeResponse(listEntry, candidates.pageWords(""));
+    expect(list).toMatchObject({ fields: 2, types: { number: 1, string: 1 } });
+    expect(JSON.stringify([json, page, list])).not.toMatch(/Jane|jane|GB29NWBK|results|total/);
+    // Names appear only in the live, in-memory summary.
+    const live = candidates.summarizeResponse(listEntry, candidates.pageWords(""), {
+      sample: true,
+    });
+    expect(live.fieldNames).toEqual({ id: "number", name: "string" });
   });
 
   it("says why there is no sample when the body was over the capture cap", () => {
@@ -328,7 +335,7 @@ describe("formatCandidates", () => {
 });
 
 describe("formatCandidates for a stopped record", () => {
-  it("shows a saved response's field names and types, since the trace keeps no sample", () => {
+  it("shows a saved response's field and type counts, since the trace keeps no names or sample", () => {
     const text = candidates.formatCandidates({
       recordId: "rec-3",
       site: "s",
@@ -349,11 +356,12 @@ describe("formatCandidates for a stopped record", () => {
           reasons: ["JSON", "2 records"],
           effect: "read",
           eligible: true,
-          fields: { results: "array", total: "number" },
+          fields: 3,
+          types: { number: 1, array: 2 },
         },
       ],
     });
-    expect(text.split("\n")[3]).toBe("   fields: results (array), total (number)");
+    expect(text.split("\n")[3]).toBe("   fields: 3 (array 2, number 1)");
   });
 });
 

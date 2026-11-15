@@ -410,7 +410,8 @@ describe("choosing the draft's request", () => {
       kind: "json",
       bytes: expect.any(Number),
       records: 3,
-      fields: { items: "array" },
+      fields: 1,
+      types: { array: 1 },
       overlap: expect.any(Number),
     });
     expect(trace.entries[0].responseSummary.overlap).toBeGreaterThan(0);
@@ -423,11 +424,17 @@ describe("choosing the draft's request", () => {
     const NAME = "Jane Placeholder";
     const EMAIL = "jane.placeholder@example.test";
     const ACCOUNT = "GB29NWBK60161331926819";
+    const USERNAME = "jane_placeholder";
     const people = json("r_people", "https://example.test/api/people", {
       people: [
         { name: NAME, email: EMAIL, account: ACCOUNT },
         { name: "Runner Pro", email: "x", account: "y" },
       ],
+    });
+    // Keys can be data: a map keyed by account number, and one keyed by username.
+    const accounts = json("r_accounts", "https://example.test/api/accounts", {
+      [ACCOUNT]: { balance: 10 },
+      [USERNAME]: { followers: 3 },
     });
     const profile = {
       id: "r_profile",
@@ -440,7 +447,7 @@ describe("choosing the draft's request", () => {
     };
     const { root, record } = recordFlow({
       commands: ["click"],
-      trace: [profile, people],
+      trace: [profile, people, accounts],
       pageText: `${NAME} ${EMAIL} ${ACCOUNT} ${PAGE_TEXT}`,
     });
     records.stopRecord({ target: TAB, draft: true, read: true, root });
@@ -454,7 +461,7 @@ describe("choosing the draft's request", () => {
       )
       .join("\n");
     expect(written).toContain(record.id);
-    for (const value of [NAME, EMAIL, ACCOUNT]) {
+    for (const value of [NAME, EMAIL, ACCOUNT, USERNAME]) {
       expect(written).not.toContain(value);
     }
   });

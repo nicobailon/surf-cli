@@ -73,23 +73,33 @@ function parseJson(body) {
 }
 
 const typeOf = (value) => (value === null ? "null" : Array.isArray(value) ? "array" : typeof value);
-// Keys that read as field names; a key such as an email or an id number is data and is left out.
+// Keys that read as field names, for the live listing; a key such as an email is left out there.
 const FIELD_NAME = /^[A-Za-z_$][A-Za-z0-9_$-]{0,63}$/;
 const MAX_FIELDS = 20;
 
-// A JSON body's top-level field names with their types, or for a top-level list, its first
-// record's. Names only: never a value.
-function fieldsOf(value) {
+// The fields of a JSON body's top level, or for a top-level list, of its first record. Keys can be
+// data (a map keyed by username or account), so what is saved is only how many fields there are
+// and how many of each type; `names` adds the names with their types, for live ranking only.
+function fieldsOf(value, { names = false } = {}) {
   const shape = Array.isArray(value) ? value.find((item) => item && typeof item === "object" && !Array.isArray(item)) : value;
-  if (!shape || typeof shape !== "object" || Array.isArray(shape)) return undefined;
-  const fields = Object.entries(shape).filter(([name]) => FIELD_NAME.test(name)).slice(0, MAX_FIELDS);
-  return fields.length > 0 ? Object.fromEntries(fields.map(([name, item]) => [name, typeOf(item)])) : undefined;
+  if (!shape || typeof shape !== "object" || Array.isArray(shape)) return {};
+  const entries = Object.entries(shape);
+  if (entries.length === 0) return {};
+  const types = {};
+  for (const type of entries.map(([, item]) => typeOf(item)).sort()) types[type] = (types[type] || 0) + 1;
+  const named = entries.filter(([name]) => FIELD_NAME.test(name)).slice(0, MAX_FIELDS);
+  return {
+    fields: entries.length,
+    types,
+    ...(names && named.length > 0 ? { fieldNames: Object.fromEntries(named.map(([name, item]) => [name, typeOf(item)])) } : {}),
+  };
 }
 
 // A view of a response kept in place of its body: its kind, size, how many records a JSON body
-// holds, its field names and types, and what share of the page's words it contains. No values
-// and no text, so a trace on disk holds nothing the response said. `sample` (live ranking only,
-// never saved) adds a short redacted sample of JSON or of an HTML page's visible text.
+// holds, how many fields it has of each type, and what share of the page's words it contains. No
+// values, text or field names, so a trace on disk holds nothing the response said. `sample` (live
+// ranking only, never saved) adds the field names and a short redacted sample of JSON or of an
+// HTML page's visible text.
 // `page` is pageWords() of the page's visible text. Page assets get none.
 function summarizeResponse(entry, page, { sample: withSample = false } = {}) {
   if (ASSET_TYPES.has(entry.type)) return undefined;
@@ -105,8 +115,7 @@ function summarizeResponse(entry, page, { sample: withSample = false } = {}) {
   if (parsed) {
     const records = recordCount(parsed.value);
     if (records > 0) summary.records = records;
-    const fields = fieldsOf(parsed.value);
-    if (fields) summary.fields = fields;
+    Object.assign(summary, fieldsOf(parsed.value, { names: withSample }));
     sample = JSON.stringify(redactSensitiveFields(parsed.value));
   } else if (kind === "html") {
     text = visibleText(body);
@@ -191,7 +200,8 @@ function rankCandidates(entries, options) {
       reasons,
       effect,
       eligible,
-      ...(summary.fields ? { fields: summary.fields } : {}),
+      ...(summary.fields ? { fields: summary.fields, types: summary.types } : {}),
+      ...(summary.fieldNames ? { fieldNames: summary.fieldNames } : {}),
       ...(summary.sample ? { sample: summary.sample } : {}),
       ...(summary.unsampled ? { unsampled: summary.unsampled } : {}),
     };
@@ -224,7 +234,8 @@ function formatCandidates({ recordId, site, op, live, total, candidates, warning
     lines.push(`${item.rank}. ${item.id}  ${item.method} ${item.status ?? "-"} ${item.type ?? "-"} ${item.mimeType || "-"}  ${trimQuery(item.url)}${size}  score ${item.score}${item.eligible ? "" : "  (never picked)"}`);
     if (item.reasons.length > 0) lines.push(`   ${item.reasons.join(", ")}`);
     if (item.sample) lines.push(`   ${JSON.stringify(item.sample.length > TEXT_SAMPLE_CHARS ? `${item.sample.slice(0, TEXT_SAMPLE_CHARS)}…` : item.sample)}`);
-    else if (item.fields) lines.push(`   fields: ${Object.entries(item.fields).map(([name, type]) => `${name} (${type})`).join(", ")}`);
+    else if (item.fieldNames) lines.push(`   fields: ${Object.entries(item.fieldNames).map(([name, type]) => `${name} (${type})`).join(", ")}`);
+    else if (item.fields) lines.push(`   fields: ${item.fields} (${Object.entries(item.types).sort(([a], [b]) => a.localeCompare(b)).map(([type, count]) => `${type} ${count}`).join(", ")})`);
     else if (item.unsampled) lines.push(`   (no sample: ${item.unsampled})`);
   }
   for (const warning of warnings) lines.push(`Warning: ${warning}`);
