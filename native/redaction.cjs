@@ -12,6 +12,19 @@ const SECRET_NAME_PATTERN = /(?:^|[-_.])(authorization|cookie|password|passwd|se
 const TEMPLATE_PATTERN = /\{\{[a-zA-Z0-9._-]+\}\}/;
 const CREDENTIAL_LITERAL_PATTERN = /\bbearer\s+[a-z0-9._~-]+|\bsk-[a-z0-9_-]{12,}|\bgh[pousr]_[a-z0-9_]{12,}|\beyj[a-z0-9_-]+\.[a-z0-9_-]+\.[a-z0-9_-]+/i;
 
+// Replaces each of `values` in `text` with <redacted>, longest first. A value under 8 characters is
+// replaced only where it stands alone, so a short value can't break up the words around it.
+// Self-contained: generated clients embed its source.
+function redactValues(text, values) {
+  let result = String(text);
+  const sorted = [...values].map(String).filter(Boolean).sort((a, b) => b.length - a.length);
+  for (const value of sorted) {
+    if (value.length >= 8) result = result.split(value).join("<redacted>");
+    else result = result.replace(new RegExp(`(?<![A-Za-z0-9])${value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(?![A-Za-z0-9])`, "g"), "<redacted>");
+  }
+  return result;
+}
+
 function isTemplate(value) {
   return typeof value === "string" && TEMPLATE_PATTERN.test(value);
 }
@@ -106,5 +119,6 @@ module.exports = {
   redactCredentialLiterals,
   redactSensitiveFields,
   redactUrlSecrets,
+  redactValues,
   safeHeaders,
 };

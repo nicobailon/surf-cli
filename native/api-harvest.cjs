@@ -3,6 +3,7 @@
 
 const { createRecordSet, readCursor } = require("./records.cjs");
 const { hiddenTabError } = require("./dom-collect.cjs");
+const { redactValues } = require("./redaction.cjs");
 
 const POLL_MS = 500;
 const DEFAULT_TIMEOUT_MS = 30000;
@@ -248,21 +249,10 @@ function replayRefusal(entry, url, sentFrom, tabOrigin) {
   );
 }
 
-/**
- * Replaces every header value in a message with <redacted>, longest first. A value under 8
- * characters is only replaced where it stands alone, so a short value such as `e` can't break up
- * the words around it.
- */
+// Replaces every header value in a message with <redacted> (see redactValues).
 function headerRedactor(headers) {
-  const values = [...new Set(Object.values(headers).map(String).filter(Boolean))].sort((a, b) => b.length - a.length);
-  return (message) => {
-    let text = message;
-    for (const value of values) {
-      if (value.length >= 8) text = text.split(value).join("<redacted>");
-      else text = text.replace(new RegExp(`(?<![A-Za-z0-9])${value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(?![A-Za-z0-9])`, "g"), "<redacted>");
-    }
-    return text;
-  };
+  const values = Object.values(headers).map(String);
+  return (message) => redactValues(message, values);
 }
 
 function replayHeaders(headers = {}) {

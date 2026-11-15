@@ -3,27 +3,32 @@ const http = require("http");
 const path = require("path");
 const { execFile } = require("child_process");
 const { atomicWriteFile, atomicWriteJson, ensurePrivateDir, getPrivateStateRoot, readPrivateJson } = require("./private-state.cjs");
+const { renderRequest, resolveArgValues } = require("./playbook-template.cjs");
 const { resolveOp } = require("./playbooks.cjs");
 const { isReplayCandidate, readRecord, recordsRoot, requestEffect } = require("./playbook-records.cjs");
 const { WINNER_MARGIN, isWeak, scoreEntries } = require("./record-candidates.cjs");
-const { assertNoEmbeddedSecrets, assertUrlHasNoEmbeddedSecrets, safeHeaders } = require("./redaction.cjs");
+const { assertNoEmbeddedSecrets, assertUrlHasNoEmbeddedSecrets, redactValues, safeHeaders } = require("./redaction.cjs");
 const { version: PACKAGE_VERSION } = require("../package.json");
 
+// URL parsing would percent-encode `{{name}}` in a path, so placeholders sit out the parse.
 function absoluteEndpointUrl(url, origins = []) {
   if (typeof url !== "string" || !url) throw new Error("client projection requires an endpoint URL");
+  const placeholders = [];
+  const masked = url.replace(/\{\{[a-zA-Z0-9._-]+\}\}/g, (match) => `__surf_template_${placeholders.push(match) - 1}__`);
+  const unmask = (text) => text.replace(/__surf_template_(\d+)__/g, (_, index) => placeholders[Number(index)]);
   try {
-    const parsed = new URL(url);
+    const parsed = new URL(masked);
     if (parsed.protocol !== "http:" && parsed.protocol !== "https:") throw new Error("client projection endpoint must use HTTP(S)");
-    return parsed.toString();
+    return unmask(parsed.toString());
   } catch (error) {
     if (/^[a-zA-Z][a-zA-Z0-9+.-]*:/.test(url)) throw error;
   }
   if (!Array.isArray(origins) || origins.length !== 1) {
     throw new Error("client projection requires an absolute endpoint URL or exactly one declared origin");
   }
-  const resolved = new URL(url, origins[0]);
+  const resolved = new URL(masked, origins[0]);
   if (resolved.protocol !== "http:" && resolved.protocol !== "https:") throw new Error("client projection endpoint must use HTTP(S)");
-  return resolved.toString();
+  return unmask(resolved.toString());
 }
 
 function networkStrategy(op) {
@@ -46,22 +51,30 @@ for (let i = 2; i < process.argv.length; i++) {
   const next = process.argv[i + 1];
   args[name] = next && !next.startsWith("--") ? (i++, next) : true;
 }
-const template = (value) => typeof value === "string"
-  ? value.replace(/\\{\\{([a-zA-Z0-9._-]+)\\}\\}/g, (_, name) => {
-      if (args[name] === undefined) throw new Error(\`missing argument --\${name}\`);
-      return String(args[name]);
-    })
-  : Array.isArray(value) ? value.map(template)
-  : value && typeof value === "object" ? Object.fromEntries(Object.entries(value).map(([key, item]) => [key, template(item)]))
-  : value;
-const endpoint = template(manifest.endpoint);
-const url = new URL(process.env.SURF_CLIENT_ENDPOINT_URL || endpoint.url);
-for (const [name, value] of Object.entries(endpoint.query || {})) url.searchParams.set(name, String(value));
-const headers = { ...(endpoint.headers || {}) };
+${resolveArgValues.toString()}
+${renderRequest.toString()}
+const endpoint = renderRequest(manifest.endpoint, resolveArgValues(manifest.args || {}, args));
+// SURF_CLIENT_ORIGIN sends the request to another origin (pb client verify's local server).
+let url = new URL(endpoint.url);
+if (process.env.SURF_CLIENT_ORIGIN) url = new URL(\`\${url.pathname}\${url.search}\`, process.env.SURF_CLIENT_ORIGIN);
+else if (process.env.SURF_CLIENT_ENDPOINT_URL) url = new URL(process.env.SURF_CLIENT_ENDPOINT_URL);
+for (const [name, value] of Object.entries(endpoint.query)) url.searchParams.set(name, value);
+const headers = { ...endpoint.headers };
+// Env-supplied values are redacted from what the client prints, output and errors alike.
+const secretValues = [];
+${redactValues.toString()}
+const redact = (text) => redactValues(text, secretValues);
+process.on("uncaughtException", (error) => {
+  process.stderr.write(\`\${redact(error?.stack || error)}\\n\`);
+  process.exit(1);
+});
 for (const input of manifest.authInputs || []) {
   const value = process.env[input.env];
   if (input.required && !value) throw new Error(\`missing auth environment variable \${input.env}\`);
-  if (value && input.header) headers[input.header] = value;
+  if (value && input.header) {
+    headers[input.header] = value;
+    secretValues.push(value);
+  }
 }
 const response = await fetch(url, {
   method: endpoint.method,
@@ -85,9 +98,15 @@ if (manifest.extract?.jsonPath) {
   for (const part of manifest.extract.jsonPath.replace(/^\\$\\.?/, "").split(".").filter(Boolean)) output = output?.[part];
 }
 if (manifest.extract?.field) output = output?.[manifest.extract.field];
-process.stdout.write(output === undefined ? "" : typeof output === "string" ? output : JSON.stringify(output, null, 2));
+process.stdout.write(redact(output === undefined ? "" : typeof output === "string" ? output : JSON.stringify(output, null, 2)));
 process.stdout.write("\\n");
 `;
+}
+
+// The op's inputs the request uses; inputs only its browser steps take aren't asked for.
+function endpointArgs(op, endpoint) {
+  const used = collectTemplateArgs(endpoint);
+  return Object.fromEntries(Object.entries(op.args || {}).filter(([name]) => used.has(name)));
 }
 
 function generateClient({ playbookId, op, strategy, provenance, out, allowWrite = false, origins = [] }) {
@@ -114,6 +133,7 @@ function generateClient({ playbookId, op, strategy, provenance, out, allowWrite 
     op: op.id,
     effect: op.effect,
     endpoint,
+    args: endpointArgs(op, endpoint),
     extract: strategy.extract || null,
     authInputs: Array.isArray(request.authInputs) ? request.authInputs.map((input) => ({ env: input.env, header: input.header, required: input.required !== false })) : [],
     verification: strategy.verify || null,
@@ -175,8 +195,15 @@ function collectTemplateArgs(value, names = new Set()) {
   return names;
 }
 
+// Sample inputs for verification: each input's default, else a value of its type.
+function sampleArgs(manifest) {
+  const specs = manifest.args || {};
+  const samples = { string: "verify", number: 1, boolean: true };
+  return Object.fromEntries([...collectTemplateArgs(manifest.endpoint)].map((name) => [name, specs[name]?.default ?? samples[specs[name]?.type] ?? "verify"]));
+}
+
 function clientArgs(manifest) {
-  return [...collectTemplateArgs(manifest.endpoint)].flatMap((name) => [`--${name}`, "verify"]);
+  return Object.entries(sampleArgs(manifest)).flatMap(([name, value]) => [`--${name}`, String(value)]);
 }
 
 function authEnv(manifest, live) {
@@ -195,13 +222,6 @@ function verificationBody(manifest) {
   return JSON.stringify({ ok: true, body: "verified", data: "verified", items: ["verified"] });
 }
 
-function templateForVerify(value) {
-  if (typeof value === "string") return value.replace(/\{\{[a-zA-Z0-9._-]+\}\}/g, "verify");
-  if (Array.isArray(value)) return value.map(templateForVerify);
-  if (value && typeof value === "object") return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, templateForVerify(item)]));
-  return value;
-}
-
 function runClient(resolved, manifest, { env = {}, live = false } = {}) {
   return new Promise((resolve, reject) => {
     execFile(process.execPath, [path.join(resolved, "client.mjs"), ...clientArgs(manifest)], {
@@ -218,9 +238,26 @@ function runClient(resolved, manifest, { env = {}, live = false } = {}) {
   });
 }
 
-async function verifyWithLocalServer(resolved, manifest) {
+// Clients made before the shared renderer (they don't embed renderRequest) put "verify" for every
+// placeholder and send each query value with String(), objects as "[object Object]".
+function legacyEndpoint(value) {
+  if (typeof value === "string") return value.replace(/\{\{[a-zA-Z0-9._-]+\}\}/g, "verify");
+  if (Array.isArray(value)) return value.map(legacyEndpoint);
+  if (value && typeof value === "object") return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, legacyEndpoint(item)]));
+  return value;
+}
+
+function expectedEndpoint(manifest, source) {
+  if (!source.includes("function renderRequest(")) {
+    const endpoint = legacyEndpoint(manifest.endpoint);
+    return { ...endpoint, query: Object.fromEntries(Object.entries(endpoint.query || {}).map(([name, value]) => [name, String(value)])) };
+  }
+  return renderRequest(manifest.endpoint, resolveArgValues(manifest.args || {}, sampleArgs(manifest)));
+}
+
+async function verifyWithLocalServer(resolved, manifest, source) {
   const requests = [];
-  const endpoint = templateForVerify(manifest.endpoint);
+  const endpoint = expectedEndpoint(manifest, source);
   const expectedUrl = new URL(endpoint.url);
   for (const [name, value] of Object.entries(endpoint.query || {})) expectedUrl.searchParams.set(name, String(value));
   const expectedPath = `${expectedUrl.pathname}${expectedUrl.search}`;
@@ -240,7 +277,8 @@ async function verifyWithLocalServer(resolved, manifest) {
   try {
     const address = server.address();
     const stdout = await runClient(resolved, manifest, {
-      env: { SURF_CLIENT_ENDPOINT_URL: `http://127.0.0.1:${address.port}${expectedPath}` },
+      // Clients made before SURF_CLIENT_ORIGIN read the whole URL.
+      env: { SURF_CLIENT_ORIGIN: `http://127.0.0.1:${address.port}`, SURF_CLIENT_ENDPOINT_URL: `http://127.0.0.1:${address.port}${expectedPath}` },
     });
     if (requests.length === 0) throw new Error("generated client did not call its verification endpoint");
     const request = requests[0];
@@ -261,7 +299,7 @@ async function verifyClient(directory, { live } = {}) {
   if (!manifest.noEmbeddedSecrets || /bearer [a-z0-9._-]+|cookie:\s*[^<]|authorization\s*[:=]\s*["'][^<]/i.test(serialized)) throw new Error("generated client contains embedded credentials");
   if (!manifest.endpoint?.method || !manifest.endpoint?.url) throw new Error("generated client endpoint is incomplete");
   absoluteEndpointUrl(manifest.endpoint.url);
-  const execution = live ? { stdout: (await runClient(resolved, manifest, { live: true })).trim() } : await verifyWithLocalServer(resolved, manifest);
+  const execution = live ? { stdout: (await runClient(resolved, manifest, { live: true })).trim() } : await verifyWithLocalServer(resolved, manifest, source);
   return { valid: true, playbook: manifest.playbook, op: manifest.op, endpoint: manifest.endpoint, execution };
 }
 

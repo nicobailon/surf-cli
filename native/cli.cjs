@@ -1700,6 +1700,26 @@ const TOOLS = {
           { cmd: "pb save --from-record <record-id> --request-id r_1794_12", desc: "From a record, replaying the request you chose" },
         ],
       },
+      "playbook param": {
+        desc: "Turn a recorded value in an op's network request into a named input (--as), or read a header from an environment variable (--env)",
+        args: ["playbook", "op", "field..."],
+        opts: {
+          as: "Input name; the same name in several fields fills them all",
+          required: "No default: surf use must pass --<name>",
+          default: "Default value (default: the recorded value)",
+          desc: "Input description",
+          value: "Template only this text inside the field, as 2 in page-2.html",
+          env: "With one headers.<name> field: send the header from this variable, read from the caller's shell at run time and never stored",
+          json: "Output raw JSON",
+        },
+        examples: [
+          { cmd: "pb param books get_books path.2 --value 2 --as page", desc: "/catalogue/page-2.html → page-{{page}}.html" },
+          { cmd: "pb param arxiv get_paper path.2 --as arxiv_id --required", desc: "/abs/<id> → /abs/{{arxiv_id}}" },
+          { cmd: "pb param walmart search query.variables.query query.variables.searchArgs.query --as query", desc: "One input in two places in a JSON query param" },
+          { cmd: "pb param resy search body.slot_filter.party_size --as party_size", desc: "A JSON body field (form and multipart fields work the same way)" },
+          { cmd: "pb param resy search headers.authorization --env RESY_API_KEY", desc: "A site's public key from the environment" },
+        ],
+      },
       "playbook record start": {
         desc: "Start recording a playbook op",
         args: ["playbook"],

@@ -4,6 +4,8 @@ const { runApiHarvest } = require("./api-harvest.cjs");
 const { runCollect } = require("./dom-collect.cjs");
 const { editDistance } = require("./edit-distance.cjs");
 const { GLOBAL_OPTIONS } = require("./global-options.cjs");
+const { renderRequest, resolveArgValues } = require("./playbook-template.cjs");
+const { redactValues } = require("./redaction.cjs");
 
 function applyTemplate(value, args) {
   if (typeof value === "string") {
@@ -43,11 +45,37 @@ function resolveArgs(op, provided, { playbookId } = {}) {
     if (!SURF_FLAGS.has(name)) throw unknownInputError(op, name, playbookId);
     delete args[name];
   }
-  for (const [name, spec] of Object.entries(op.args || {})) {
-    if (args[name] === undefined && spec.default !== undefined) args[name] = spec.default;
-    if (spec.required && args[name] === undefined) throw new Error(`Missing required argument: --${name}`);
+  return resolveArgValues(op.args, args);
+}
+
+// Env-supplied headers (`request.authInputs`) of an op's network strategies.
+function authInputs(op) {
+  return op.run.filter((strategy) => strategy.using === "network").flatMap((strategy) => strategy.request?.authInputs || []);
+}
+
+// Values for env-supplied headers: the caller's (`surf use` reads its own shell), else the host's
+// environment. A missing required one stops the run before any strategy starts.
+function resolveAuthValues(op, secrets = {}, env = process.env) {
+  const values = {};
+  for (const input of authInputs(op)) {
+    const value = secrets[input.env] ?? env[input.env];
+    if (value) values[input.env] = String(value);
+    else if (input.required !== false) {
+      throw new Error(`environment variable ${input.env} is not set; the ${input.header} header of ${op.id} reads it`);
+    }
   }
-  return args;
+  return values;
+}
+
+// Env-supplied values never leave a run: a response that echoes one (or an error that quotes it)
+// comes back with <redacted> in its place.
+function redactSecrets(value, secrets) {
+  const values = Object.values(secrets);
+  if (values.length === 0) return value;
+  if (typeof value === "string") return redactValues(value, values);
+  if (Array.isArray(value)) return value.map((item) => redactSecrets(item, secrets));
+  if (value && typeof value === "object") return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, redactSecrets(item, secrets)]));
+  return value;
 }
 
 function getJsonPath(value, jsonPath) {
@@ -109,6 +137,7 @@ for (const [key, value] of Object.entries(${JSON.stringify(query)})) {
 const response = await fetch(url.toString(), {
   method: ${JSON.stringify(request.method || "GET")},
   credentials: "include",
+  ${request.cache ? `cache: ${JSON.stringify(request.cache)},` : ""}
   headers: ${JSON.stringify(headers)},
   ${body === undefined ? "" : `body: ${JSON.stringify(typeof body === "string" ? body : JSON.stringify(body))},`}
 });
@@ -163,8 +192,16 @@ async function runStrategy(strategy, context) {
     return result;
   }
   if (strategy.using === "network") {
+    const { authInputs: inputs = [], ...template } = strategy.request;
+    const rendered = renderRequest(template, context.args);
+    for (const input of inputs) {
+      const value = context.authValues?.[input.env];
+      if (value) rendered.headers[input.header] = value;
+    }
+    // Keep a response to a request carrying an env value out of the browser's disk cache.
+    if (inputs.length > 0) rendered.cache = "no-store";
     const request = withServerIdempotency(
-      applyTemplate(strategy.request, context.args),
+      rendered,
       context.serverIdempotency,
       context.attemptId,
     );
@@ -199,8 +236,9 @@ async function runStrategy(strategy, context) {
   throw new Error(`unsupported strategy: ${strategy.using}`);
 }
 
-async function runPlaybookOp({ playbook, op, args: providedArgs = {}, attemptId, executeTool, executeNative, signal, sleep, onEvent = () => {}, beforeDispatch = async () => {}, afterDispatch = async () => {}, allowScript = false }) {
+async function runPlaybookOp({ playbook, op, args: providedArgs = {}, secrets = {}, env = process.env, attemptId, executeTool, executeNative, signal, sleep, onEvent = () => {}, beforeDispatch = async () => {}, afterDispatch = async () => {}, allowScript = false }) {
   const args = resolveArgs(op, providedArgs, { playbookId: playbook.id });
+  const authValues = resolveAuthValues(op, secrets, env);
   const attempts = [];
   for (let index = 0; index < op.run.length; index++) {
     const strategy = op.run[index];
@@ -221,6 +259,7 @@ async function runPlaybookOp({ playbook, op, args: providedArgs = {}, attemptId,
         sleep,
         onEvent,
         allowedOrigins: op.origins || playbook.origins || [],
+        authValues,
         markDispatched: op.effect === "write" ? markDispatched : undefined,
         serverIdempotency: op.effect === "write" ? op.safety?.serverIdempotency : undefined,
         allowScript,
@@ -229,9 +268,10 @@ async function runPlaybookOp({ playbook, op, args: providedArgs = {}, attemptId,
       verifyResult(value, strategy.verify || strategy.expect || op.on?.success?.expect, raw);
       if (op.effect === "write") await afterDispatch({ status: "verified", strategy, index });
       onEvent({ type: "strategy.completed", playbook: playbook.id, op: op.id, using: strategy.using, index, endedAt: new Date().toISOString() });
-      return { status: "completed", playbook: playbook.id, op: op.id, strategy: strategy.using, value, provenance: playbook.provenance, attempts };
-    } catch (error) {
-      const message = error?.message || String(error);
+      return { status: "completed", playbook: playbook.id, op: op.id, strategy: strategy.using, value: redactSecrets(value, authValues), provenance: playbook.provenance, attempts };
+    } catch (caught) {
+      const message = redactSecrets(caught?.message || String(caught), authValues);
+      const error = message === caught?.message ? caught : new Error(message);
       attempts.push({ using: strategy.using, error: message });
       onEvent({ type: "strategy.failed", playbook: playbook.id, op: op.id, using: strategy.using, index, error: message, endedAt: new Date().toISOString() });
       if (op.effect === "write") {
@@ -244,4 +284,4 @@ async function runPlaybookOp({ playbook, op, args: providedArgs = {}, attemptId,
   throw new Error(`All strategies failed${detail ? ` (${detail})` : ""}`);
 }
 
-module.exports = { resolveArgs, runPlaybookOp };
+module.exports = { authInputs, resolveArgs, runPlaybookOp };
