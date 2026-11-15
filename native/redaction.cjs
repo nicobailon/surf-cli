@@ -25,6 +25,25 @@ function redactValues(text, values) {
   return result;
 }
 
+// redactValues over a JSON value: strings, and object keys too, at any depth. A key that redacts to
+// one already present (another redacted key, or a key that reads <redacted>) takes <redacted-2>,
+// <redacted-3>... so no entry is lost. Keys left unchanged keep their names. Self-contained but for
+// redactValues: generated clients embed both.
+function redactObject(value, values) {
+  if (typeof value === "string") return redactValues(value, values);
+  if (Array.isArray(value)) return value.map((item) => redactObject(item, values));
+  if (!value || typeof value !== "object") return value;
+  const entries = Object.entries(value).map(([key, item]) => [key, redactValues(key, values), redactObject(item, values)]);
+  const taken = new Set(entries.filter(([key, redacted]) => key === redacted).map(([key]) => key));
+  return Object.fromEntries(entries.map(([key, redacted, item]) => {
+    if (key === redacted) return [key, item];
+    let name = redacted;
+    for (let index = 2; taken.has(name); index++) name = redacted.replace(/<redacted>/, `<redacted-${index}>`);
+    taken.add(name);
+    return [name, item];
+  }));
+}
+
 function isTemplate(value) {
   return typeof value === "string" && TEMPLATE_PATTERN.test(value);
 }
@@ -117,6 +136,7 @@ module.exports = {
   isSensitiveName,
   isTemplate,
   redactCredentialLiterals,
+  redactObject,
   redactSensitiveFields,
   redactUrlSecrets,
   redactValues,

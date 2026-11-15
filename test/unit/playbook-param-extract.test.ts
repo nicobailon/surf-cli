@@ -256,3 +256,101 @@ describe("pb param and pb extract on one op", () => {
     );
   });
 });
+
+// A response that uses the env value as an object key, beside a key that already reads <redacted>.
+function keyedBody(key: string) {
+  return {
+    result: { [key]: "first", other: 1, "<redacted>": "literal", list: [{ [key]: "nested" }] },
+  };
+}
+const keyedOp = {
+  id: "keyed",
+  effect: "read",
+  args: {},
+  run: [
+    {
+      using: "network",
+      request: { ...request, url: "https://api.test/v1/keyed", query: {} },
+      extract: { jsonPath: "$.result" },
+    },
+  ],
+};
+const keyedResult = {
+  "<redacted-2>": "first",
+  other: 1,
+  "<redacted>": "literal",
+  list: [{ "<redacted>": "nested" }],
+};
+
+describe("redacting object keys", () => {
+  it("redacts keys as well as values, keeping colliding keys under distinct placeholders", () => {
+    const { redactObject } = require("../../native/redaction.cjs");
+    expect(redactObject(keyedBody(KEY).result, [KEY])).toEqual(keyedResult);
+    expect(redactObject({ a: { [`x-${KEY}`]: KEY } }, [KEY])).toEqual({
+      a: { "x-<redacted>": "<redacted>" },
+    });
+  });
+
+  it("in a run's result and in pb test's assertions", async () => {
+    const executeTool = async (_tool: string, args: { code: string }) => {
+      const fetchImpl = async (url: string, init: { headers: Record<string, string> }) => ({
+        status: 200,
+        ok: true,
+        url,
+        headers: new Headers({ "content-type": "application/json" }),
+        text: async () => JSON.stringify(keyedBody(init.headers["X-Api-Key"])),
+      });
+      const value = await new Function("fetch", "location", `return ${args.code}`)(fetchImpl, {
+        href: "https://api.test/",
+      });
+      return { output: JSON.stringify(value) };
+    };
+    const result = await runtime.testPlaybookOp({
+      playbook: { id: "shop", provenance: { scope: "test" } },
+      op: keyedOp,
+      secrets: { SURF_TEST_ITEMS_KEY: KEY },
+      env: {},
+      assertions: [{ path: "$.list", op: "equals", value: [{ [KEY]: "nested" }] }],
+      executeTool,
+    });
+    expect(result.status).toBe("completed");
+    expect(result.value).toEqual(keyedResult);
+    expect(JSON.stringify(result)).not.toContain(KEY);
+  });
+
+  it("in a generated client's output", async () => {
+    const out = path.join(tempDir(), "client");
+    clients.generateClient({
+      playbookId: "shop",
+      op: keyedOp,
+      strategy: keyedOp.run[0],
+      provenance: { type: "playbook", id: "shop" },
+      out,
+    });
+    const server = http.createServer((req: any, res: any) => {
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(JSON.stringify(keyedBody(req.headers["x-api-key"])));
+    });
+    await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+    try {
+      const stdout = await new Promise<string>((resolve, reject) =>
+        execFile(
+          process.execPath,
+          [path.join(out, "client.mjs")],
+          {
+            env: {
+              ...process.env,
+              SURF_TEST_ITEMS_KEY: KEY,
+              SURF_CLIENT_ORIGIN: `http://127.0.0.1:${server.address().port}`,
+            },
+          },
+          (error: Error | null, output: string) => (error ? reject(error) : resolve(output)),
+        ),
+      );
+      expect(stdout).not.toContain(KEY);
+      expect(JSON.parse(stdout)).toEqual(keyedResult);
+    } finally {
+      await new Promise((resolve) => server.close(resolve));
+    }
+  });
+});

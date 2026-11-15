@@ -8,7 +8,7 @@ const { editDistance } = require("./edit-distance.cjs");
 const { GLOBAL_OPTIONS } = require("./global-options.cjs");
 const { renderRequest, resolveArgValues } = require("./playbook-template.cjs");
 const { checkAssertions, describeAssertion } = require("./playbook-assertions.cjs");
-const { redactValues } = require("./redaction.cjs");
+const { redactObject } = require("./redaction.cjs");
 const { extractRecords } = require("./records.cjs");
 
 function applyTemplate(value, args) {
@@ -71,15 +71,11 @@ function resolveAuthValues(op, secrets = {}, env = process.env) {
   return values;
 }
 
-// Env-supplied values never leave a run: a response that echoes one (or an error that quotes it)
-// comes back with <redacted> in its place.
+// Env-supplied values never leave a run: a response that echoes one, in a value or an object key
+// (or an error that quotes it), comes back with <redacted> in its place.
 function redactSecrets(value, secrets) {
   const values = Object.values(secrets);
-  if (values.length === 0) return value;
-  if (typeof value === "string") return redactValues(value, values);
-  if (Array.isArray(value)) return value.map((item) => redactSecrets(item, secrets));
-  if (value && typeof value === "object") return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, redactSecrets(item, secrets)]));
-  return value;
+  return values.length === 0 ? value : redactObject(value, values);
 }
 
 function getJsonPath(value, jsonPath) {

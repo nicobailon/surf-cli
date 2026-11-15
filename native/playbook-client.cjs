@@ -7,7 +7,7 @@ const { renderRequest, resolveArgValues } = require("./playbook-template.cjs");
 const { resolveOp } = require("./playbooks.cjs");
 const { isReplayCandidate, readRecord, recordsRoot, requestEffect } = require("./playbook-records.cjs");
 const { WINNER_MARGIN, isWeak, scoreEntries } = require("./record-candidates.cjs");
-const { assertNoEmbeddedSecrets, assertUrlHasNoEmbeddedSecrets, redactValues, safeHeaders } = require("./redaction.cjs");
+const { assertNoEmbeddedSecrets, assertUrlHasNoEmbeddedSecrets, redactObject, redactValues, safeHeaders } = require("./redaction.cjs");
 const { version: PACKAGE_VERSION } = require("../package.json");
 
 // URL parsing would percent-encode `{{name}}` in a path, so placeholders sit out the parse.
@@ -68,6 +68,7 @@ const headers = { ...endpoint.headers };
 // Env-supplied values are redacted from what the client prints, output and errors alike.
 const secretValues = [];
 ${redactValues.toString()}
+${redactObject.toString()}
 const redact = (text) => redactValues(text, secretValues);
 process.on("uncaughtException", (error) => {
   process.stderr.write(\`\${redact(error?.stack || error)}\\n\`);
@@ -108,7 +109,8 @@ if (manifest.extract && (manifest.extract.records !== undefined || manifest.extr
   const { extractRecords } = createRequire(import.meta.url)("./records.cjs");
   output = extractRecords(bodyJson ?? output, manifest.extract);
 }
-process.stdout.write(redact(output === undefined ? "" : typeof output === "string" ? output : JSON.stringify(output, null, 2)));
+// Objects are redacted before they become text, so a secret used as a key can't merge two keys.
+process.stdout.write(output === undefined ? "" : typeof output === "string" ? redact(output) : JSON.stringify(redactObject(output, secretValues), null, 2));
 process.stdout.write("\\n");
 `;
 }
