@@ -82,8 +82,16 @@ describe("network export handlers", () => {
     expect(result).toMatchObject({ entries: [], capture });
   });
 
-  it("filters --type by response MIME type, keeping resource types working", async () => {
+  const readIds = async (message: Record<string, unknown>) => {
     const handleMessage = await loadHandleMessage();
+    const result = await handleMessage(
+      { type: "READ_NETWORK_REQUESTS", tabId: 42, ...message },
+      {},
+    );
+    return (result.requests || result.entries).map((item: { id: string }) => item.id);
+  };
+
+  it("filters --type by response MIME type, keeping resource types working", async () => {
     const requests = [
       { id: "r_1", url: "https://example.test/", type: "Document", mimeType: "text/html" },
       { id: "r_2", url: "https://example.test/api", type: "XHR", mimeType: "application/json" },
@@ -103,25 +111,22 @@ describe("network export handlers", () => {
     ];
     cdpState.getNetworkRequests.mockReturnValue(requests);
     cdpState.entries = requests;
-    const ids = async (contentType: string, full = false) => {
-      const result = await handleMessage(
-        { type: "READ_NETWORK_REQUESTS", tabId: 42, contentType, full },
-        {},
-      );
-      return (result.requests || result.entries).map((item: { id: string }) => item.id);
-    };
-    expect(await ids("json")).toEqual(["r_2", "r_3"]);
-    expect(await ids("json", true)).toEqual(["r_2", "r_3"]);
-    expect(await ids("html")).toEqual(["r_1"]);
-    expect(await ids("proto")).toEqual(["r_5"]);
-    expect(await ids("Document")).toEqual(["r_1"]);
-    expect(await ids("xhr")).toEqual(["r_2"]);
-    expect(await ids("application/json")).toEqual(["r_2"]);
-    expect(await ids("javascript")).toEqual(["r_4"]);
+    const cases: Array<[Record<string, unknown>, string[]]> = [
+      [{ contentType: "json" }, ["r_2", "r_3"]],
+      [{ contentType: "json", full: true }, ["r_2", "r_3"]],
+      [{ contentType: "html" }, ["r_1"]],
+      [{ contentType: "proto" }, ["r_5"]],
+      [{ contentType: "Document" }, ["r_1"]],
+      [{ contentType: "xhr" }, ["r_2"]],
+      [{ contentType: "application/json" }, ["r_2"]],
+      [{ contentType: "javascript" }, ["r_4"]],
+    ];
+    for (const [message, ids] of cases) {
+      expect(await readIds(message)).toEqual(ids);
+    }
   });
 
   it("filters requests before cutting the list to its limit", async () => {
-    const handleMessage = await loadHandleMessage();
     const requests = Array.from({ length: 150 }, (_, index) => ({
       id: `r_${index}`,
       url: `https://example.test/${index}`,
@@ -133,16 +138,9 @@ describe("network export handlers", () => {
     cdpState.getNetworkRequests.mockImplementation((_tab, options = {}) =>
       options.limit ? requests.slice(-options.limit) : requests,
     );
-    const ids = async (filters: Record<string, unknown>) => {
-      const result = await handleMessage(
-        { type: "READ_NETWORK_REQUESTS", tabId: 42, ...filters },
-        {},
-      );
-      return result.requests.map((item: { id: string }) => item.id);
-    };
-    expect(await ids({ contentType: "json" })).toEqual(["r_0"]);
-    expect(await ids({ method: "POST" })).toEqual(["r_0"]);
-    expect(await ids({ contentType: "html", limit: 2 })).toEqual(["r_148", "r_149"]);
+    expect(await readIds({ contentType: "json" })).toEqual(["r_0"]);
+    expect(await readIds({ method: "POST" })).toEqual(["r_0"]);
+    expect(await readIds({ contentType: "html", limit: 2 })).toEqual(["r_148", "r_149"]);
   });
 
   it("stops explicit network capture", async () => {

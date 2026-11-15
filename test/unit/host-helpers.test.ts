@@ -997,19 +997,6 @@ describe("readiness tools", () => {
   });
 });
 
-describe("formatToolContent network capture", () => {
-  it("warns when network capture was interrupted", () => {
-    const at = Date.parse("2026-11-14T10:00:00Z");
-    const [content] = helpers.formatToolContent({
-      requests: [],
-      capture: { active: true, interruptions: [{ reason: "target_closed", at }] },
-    });
-    expect(content.text).toBe(
-      "No network requests captured\nWarning: network capture was interrupted at 2026-11-14T10:00:00.000Z (debugger detached: target_closed) and had not resumed when read; later requests were not captured",
-    );
-  });
-});
-
 describe("formatToolContent network listing", () => {
   const requests = [
     {
@@ -1029,38 +1016,46 @@ describe("formatToolContent network listing", () => {
       url: "https://example.test/api",
     },
   ];
+  const at = Date.parse("2026-11-14T10:00:00Z");
+  const gap = { active: true, interruptions: [{ reason: "target_closed", at }] };
+  const gapWarning =
+    "network capture was interrupted at 2026-11-14T10:00:00.000Z (debugger detached: target_closed) and had not resumed when read; later requests were not captured";
+  const text = (result: object) => helpers.formatToolContent(result)[0].text;
 
-  it("shows each request's id in the default listing", () => {
-    const [content] = helpers.formatToolContent({ requests });
-    expect(content.text.split("\n")).toEqual([
+  it("starts each line with the request id", () => {
+    expect(text({ requests }).split("\n")).toEqual([
       "r_1160000.5_7  200 GET     Document   https://example.test/",
       "r_1160001.5_8  201 POST    XHR        https://example.test/api",
     ]);
   });
 
-  it("lists requests as JSON with their ids for --json", () => {
-    const [content] = helpers.formatToolContent({ requests, format: "json" });
-    expect(JSON.parse(content.text)).toEqual({
-      requests: requests.map(({ id, method, status, type, mimeType, url }) => ({
-        id,
-        method,
-        status,
-        type,
-        mimeType,
-        url,
-      })),
-    });
-    const at = Date.parse("2026-11-14T10:00:00Z");
-    const [empty] = helpers.formatToolContent({
-      requests: [],
-      format: "json",
-      capture: { active: true, interruptions: [{ reason: "target_closed", at }] },
-    });
-    expect(JSON.parse(empty.text)).toEqual({
-      requests: [],
-      warnings: [
-        "network capture was interrupted at 2026-11-14T10:00:00.000Z (debugger detached: target_closed) and had not resumed when read; later requests were not captured",
-      ],
-    });
+  it("ends with a warning when capture was interrupted", () => {
+    expect(text({ requests: [], capture: gap })).toBe(
+      `No network requests captured\nWarning: ${gapWarning}`,
+    );
+  });
+
+  it.each([
+    [
+      "with ids",
+      { requests },
+      {
+        requests: requests.map(({ id, method, status, type, mimeType, url }) => ({
+          id,
+          method,
+          status,
+          type,
+          mimeType,
+          url,
+        })),
+      },
+    ],
+    [
+      "with capture warnings",
+      { requests: [], capture: gap },
+      { requests: [], warnings: [gapWarning] },
+    ],
+  ])("lists requests as JSON %s for --json", (_case, result, expected) => {
+    expect(JSON.parse(text({ ...result, format: "json" }))).toEqual(expected);
   });
 });
