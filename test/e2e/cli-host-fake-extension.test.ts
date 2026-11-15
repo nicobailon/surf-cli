@@ -124,7 +124,28 @@ function writeNativeMessage(stdin: WritableLike, message: NativeMessage) {
   stdin.write(BufferCtor.concat([header, BufferCtor.from(json, "utf8")]));
 }
 
-function buildExtensionResponse(message: NativeMessage, currentUrl: string, targetActive: boolean) {
+type CapturedRequest = Record<string, unknown> & { id: string };
+
+// What network capture holds for a script's request to the fixture API.
+function capturedRequest(message: NativeMessage, seq: number): CapturedRequest {
+  return {
+    id: `r_${seq}`,
+    ts: Date.now(),
+    method: /method: "([A-Z]+)"/.exec(String(message.code))?.[1] || "GET",
+    url: "https://fixture.test/api",
+    status: 200,
+    responseHeaders: {},
+    flags: [],
+    _loadingFinished: true,
+  };
+}
+
+function buildExtensionResponse(
+  message: NativeMessage,
+  currentUrl: string,
+  targetActive: boolean,
+  captured: CapturedRequest[],
+) {
   switch (message.type) {
     case "TARGET_RESOLVE":
     case "TARGET_INSPECT":
@@ -179,10 +200,16 @@ function buildExtensionResponse(message: NativeMessage, currentUrl: string, targ
           status: 200,
           ok: true,
           url: "https://fixture.test/api",
-          body: '{"ok":true}',
-          bodyJson: { ok: true },
+          headers: {},
+          sentAt: Date.now(),
+          doneAt: Date.now(),
         }),
       };
+    // Network capture holds what each script sent; its body is the fixture API's.
+    case "READ_NETWORK_REQUESTS":
+      return { id: message.id, entries: captured };
+    case "GET_RESPONSE_BODY":
+      return { id: message.id, success: true, body: '{"ok":true}' };
     default:
       return { id: message.id, error: `Unhandled fake extension message: ${message.type}` };
   }
@@ -201,6 +228,7 @@ function startHost(socketPath: string, options: FakeHostOptions = {}) {
   const waiters: MessageWaiter[] = [];
   let stdoutBuffer = BufferCtor.alloc(0);
   let currentUrl = "about:blank";
+  const captured: CapturedRequest[] = [];
   const targetActive = options.targetActive !== false;
   let stderr = "";
   let closed = false;
@@ -257,7 +285,13 @@ function startHost(socketPath: string, options: FakeHostOptions = {}) {
       if (message.type === "EXECUTE_NAVIGATE" && message.url) {
         currentUrl = message.url;
       }
-      writeNativeMessage(child.stdin, buildExtensionResponse(message, currentUrl, targetActive));
+      if (message.type === "EXECUTE_JAVASCRIPT") {
+        captured.push(capturedRequest(message, captured.length + 1));
+      }
+      writeNativeMessage(
+        child.stdin,
+        buildExtensionResponse(message, currentUrl, targetActive, captured),
+      );
     }
   });
 

@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { captureTab } from "../fixtures/capture-tab";
 
 const fs = require("node:fs");
 const os = require("node:os");
@@ -175,7 +176,9 @@ describe("assertions", () => {
         playbook: { id: "books", provenance: { scope: "test" } },
         op: op([network]),
         assertions: [{ path: "$.bodyJson.text", op: "matches", value: "(a+)+b" }],
-        executeTool: tab({ text: "a".repeat(60) }),
+        executeTool: captureTab({
+          reply: () => ({ body: JSON.stringify({ text: "a".repeat(60) }) }),
+        }).executeTool,
       }),
     ).rejects.toThrow(/matches pattern took too long \(over 100 ms\); simplify it/);
   });
@@ -274,7 +277,10 @@ describe("running an op with assertions", () => {
 
   it("never retries a write on the next strategy after a failed assertion, and leaves it in doubt", async () => {
     const statuses: string[] = [];
-    const executeTool = tab({ created: false });
+    // A raw-body op: the body is read from network capture.
+    const { executeTool } = captureTab({
+      reply: () => ({ body: JSON.stringify({ created: false }) }),
+    });
     await expect(
       runtime.runPlaybookOp({
         playbook: { id: "hr", provenance: { scope: "test" } },
@@ -298,7 +304,7 @@ describe("running an op with assertions", () => {
         afterDispatch: async ({ status }: { status: string }) => statuses.push(status),
       }),
     ).rejects.toThrow(/assertion failed: \$\.bodyJson\.created equals true/);
-    expect(executeTool).toHaveBeenCalledOnce();
+    expect(executeTool.mock.calls.filter(([tool]) => tool === "javascript_tool")).toHaveLength(1);
     expect(statuses).toEqual(["dispatched", "indeterminate"]);
   });
 
