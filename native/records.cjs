@@ -12,6 +12,15 @@ const X_DATETIME = new RegExp(
   `^(?:Sun|Mon|Tue|Wed|Thu|Fri|Sat) (${MONTHS.join("|")}) (\\d{2}) (\\d{2}):(\\d{2}):(\\d{2}) ([+-]\\d{4}) (\\d{4})$`,
 );
 
+// Output field names build objects, so these segments could reach Object.prototype.
+const RESERVED_SEGMENTS = ["__proto__", "constructor", "prototype"];
+
+function assertFieldName(name, where) {
+  if (name.split(".").some((part) => RESERVED_SEGMENTS.includes(part))) {
+    throw new Error(`${where} name "${name}" uses a reserved segment (${RESERVED_SEGMENTS.join(", ")})`);
+  }
+}
+
 function isPlainObject(value) {
   return value !== null && typeof value === "object" && !Array.isArray(value);
 }
@@ -180,6 +189,7 @@ function compileFields(fields, where) {
   const paths = [];
   const templates = [];
   for (const [name, spec] of Object.entries(fields)) {
+    assertFieldName(name, "field");
     if (isPlainObject(spec) && spec.template !== undefined) {
       checkKeys(spec, ["template"], `${where}.${name}`);
       templates.push([name, compileTemplate(spec.template, `${where}.${name}`)]);
@@ -297,4 +307,4 @@ function extractRecords(doc, spec) {
   return compileJsonExtract(spec)(doc);
 }
 
-module.exports = { compileJsonExtract, compileJsonPath, createRecordSet, extractRecords, filterRecords, findObjects, getPath, readCursor };
+module.exports = { assertFieldName, compileJsonExtract, compileJsonPath, createRecordSet, extractRecords, filterRecords, findObjects, getPath, readCursor };

@@ -1,7 +1,7 @@
 // Scroll-and-harvest for virtualized lists: read the visible items each round, merge by key on
 // the host (so a page reload does not lose records), stop when scrolling stops adding items.
 
-const { filterRecords } = require("./records.cjs");
+const { assertFieldName, filterRecords } = require("./records.cjs");
 
 const COLLECT_KEYS = ["open", "item", "key", "fields", "maxItems", "idleRounds", "scrollDelayMs", "expand", "keep"];
 const FIELD_KEYS = ["selector", "attr", "all", "match", "template"];
@@ -65,7 +65,10 @@ function validateCollectSpec(spec) {
     open: spec.open,
     item: spec.item,
     key: parseDomField(spec.key, "collect key"),
-    fields: Object.fromEntries(Object.entries(spec.fields).map(([name, field]) => [name, parseDomField(field, `collect field ${name}`)])),
+    fields: Object.fromEntries(Object.entries(spec.fields).map(([name, field]) => {
+      assertFieldName(name, "collect field");
+      return [name, parseDomField(field, `collect field ${name}`)];
+    })),
     maxItems: optionalInteger(spec.maxItems, "collect maxItems", 1) ?? 500,
     idleRounds: optionalInteger(spec.idleRounds, "collect idleRounds", 1) ?? 3,
     scrollDelayMs: optionalInteger(spec.scrollDelayMs, "collect scrollDelayMs", 0) ?? 800,
@@ -201,7 +204,11 @@ function parseHtmlExtract(spec) {
   if (typeof spec.item !== "string" || !spec.item.trim()) throw new Error("html needs an item selector, or a value");
   assertSelector(spec.item, "html item");
   if (!isPlainObject(spec.fields) || Object.keys(spec.fields).length === 0) throw new Error("html fields must map at least one field");
-  return { item: spec.item, fields: Object.fromEntries(Object.entries(spec.fields).map(([name, field]) => [name, htmlField(field, `html field ${name}`)])) };
+  const fields = Object.entries(spec.fields).map(([name, field]) => {
+    assertFieldName(name, "html field");
+    return [name, htmlField(field, `html field ${name}`)];
+  });
+  return { item: spec.item, fields: Object.fromEntries(fields) };
 }
 
 /**

@@ -750,3 +750,61 @@ describe("generated clients and extract", () => {
     ]);
   });
 });
+
+describe("reserved field names", () => {
+  afterEach(() => {
+    Reflect.deleteProperty(Object.prototype, "polluted");
+  });
+
+  it("are refused when an op is saved, for HTML, JSON and collect fields", () => {
+    const validate = (strategy: Record<string, unknown>) =>
+      playbooks.validateOp(op([strategy]), { origins: [] });
+    const network = { using: "network", request: { url: "https://x.test/" } };
+    expect(() =>
+      validate({
+        ...network,
+        extract: { html: { item: "article", fields: { "__proto__.polluted": "h3" } } },
+      }),
+    ).toThrow(
+      /html field name "__proto__.polluted" uses a reserved segment \(__proto__, constructor, prototype\)/,
+    );
+    expect(() =>
+      validate({ ...network, extract: { records: "$", fields: { constructor: "name" } } }),
+    ).toThrow(/field name "constructor" uses a reserved segment/);
+    expect(() =>
+      validate({
+        using: "collect",
+        item: "li",
+        key: ":scope",
+        fields: { "a.prototype.b": "span" },
+      }),
+    ).toThrow(/collect field name "a.prototype.b" uses a reserved segment/);
+  });
+
+  it("are refused when a run builds its extract, and Object.prototype stays unchanged", async () => {
+    const tab = fakeTab("<p></p>", fakeDocument(books));
+    await expect(
+      runtime.runPlaybookOp({
+        playbook: { id: "books", provenance: { scope: "test" } },
+        op: op([
+          {
+            using: "network",
+            request: { method: "GET", url: "https://books.test/" },
+            extract: {
+              html: { item: "article.product_pod", fields: { "__proto__.polluted": "h3 a@title" } },
+            },
+          },
+        ]),
+        executeTool: tab.executeTool,
+      }),
+    ).rejects.toThrow(/reserved segment/);
+    expect(({} as Record<string, unknown>).polluted).toBeUndefined();
+    expect(() =>
+      records.extractRecords([{ a: 1 }], {
+        records: "$",
+        fields: JSON.parse('{"__proto__": "a"}'),
+      }),
+    ).toThrow(/field name "__proto__" uses a reserved segment/);
+    expect(Object.getOwnPropertyNames(Object.prototype)).not.toContain("polluted");
+  });
+});
