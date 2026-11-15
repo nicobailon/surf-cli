@@ -719,7 +719,7 @@ Surf automatically captures all network requests while active. No explicit start
 
 ```bash
 # Overview (token-efficient for LLMs)
-surf network                          # Recent requests, compact table with request ids
+surf network --last 20                # Recent requests, compact table with request ids (bare `surf network` prints help)
 surf network --json                   # Requests as JSON: id, method, status, type, MIME type, URL
 surf network --urls                   # Just URLs (minimal output)
 surf network --format curl            # As curl commands
