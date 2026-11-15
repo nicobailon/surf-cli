@@ -249,6 +249,21 @@ describe("draft effect and pb record stop --read", () => {
     ],
     ["a record without --network", {}, /--read needs a record started with --network/],
     [
+      "a POST answered with JavaScript",
+      {
+        trace: [
+          page,
+          {
+            ...create,
+            type: "XHR",
+            mimeType: "text/javascript",
+            url: "https://example.test/cart/add",
+          },
+        ],
+      },
+      /--read refused: the record captured POST https:\/\/example\.test\/cart\/add/,
+    ],
+    [
       "a POST replay, which acts beyond the page",
       { trace: [page], commands: [step("network.replay", { id: "r_1", "allow-post": true })] },
       /--read refused: the record ran network\.replay, which acts beyond the page/,
@@ -286,6 +301,32 @@ describe("draft effect and pb record stop --read", () => {
     expect(stopped.warnings).toContain(
       "--read could not check every request: the trace is incomplete (see the warnings above)",
     );
+  });
+
+  it("never replays a page asset (image, script, stylesheet, font, media)", () => {
+    const search = {
+      id: "r_7",
+      method: "GET",
+      status: 200,
+      type: "XHR",
+      url: "https://example.test/api/search?q=x",
+    };
+    const assets = ["Image", "Stylesheet", "Script", "Font", "Media"].map((type, index) => ({
+      id: `r_a${index}`,
+      method: "GET",
+      status: 200,
+      type,
+      url: `https://example.test/asset-${index}`,
+    }));
+    const { draft } = stopFlow({
+      commands: ["click"],
+      trace: [search, ...assets],
+      stop: { draft: true, read: true },
+    });
+    expect(draft.run[0]).toMatchObject({
+      using: "network",
+      request: { url: "https://example.test/api/search" },
+    });
   });
 
   it("gives a draft no network strategy when the request it picks is telemetry, and otherwise replays the last request", () => {

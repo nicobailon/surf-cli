@@ -95,6 +95,34 @@ describe("playbook client projection", () => {
     expect(result.manifest.endpoint.url).toBe("https://example.test/api");
   });
 
+  it("derives a client from the one API request, not the page's images or scripts", () => {
+    const parent = fs.mkdtempSync(path.join(os.tmpdir(), "surf-client-"));
+    directories.push(parent);
+    const root = path.join(parent, "state");
+    const record = records.startRecord({ site: "fixture", op: "search", tabId: 1, root });
+    const get = (id: string, type: string, url: string) => ({
+      id,
+      method: "GET",
+      status: 200,
+      type,
+      url,
+    });
+    records.attachNetworkTrace(
+      record.id,
+      [
+        get("r-1", "XHR", "https://example.test/api/search?q=shoes"),
+        get("r-2", "Image", "https://example.test/shoe-1.png"),
+        get("r-3", "Script", "https://example.test/app.js"),
+      ],
+      root,
+    );
+    const result = clients.deriveClient("fixture", "search", path.join(parent, "client"), {
+      root,
+      recordId: record.id,
+    });
+    expect(result.manifest.endpoint.url).toBe("https://example.test/api/search");
+  });
+
   it("refuses to derive a client from a POST, keeping its query and body shape when allowed", () => {
     const parent = fs.mkdtempSync(path.join(os.tmpdir(), "surf-client-"));
     directories.push(parent);

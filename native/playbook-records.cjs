@@ -243,6 +243,15 @@ function isTelemetryRequest(entry, recordOrigin) {
   return TELEMETRY_HOSTS.some((suffix) => within(host, suffix) && !sites.some((site) => within(site, suffix)));
 }
 
+// Page assets are captured so the write check sees every request (a POST answered with JavaScript
+// is an XHR, not a Script), but a draft or client never replays one.
+const ASSET_TYPES = new Set(["Image", "Stylesheet", "Script", "Font", "Media"]);
+
+// A captured request a draft or derived client may replay.
+function isReplayCandidate(entry) {
+  return ["GET", "HEAD", "OPTIONS", "POST"].includes(entry.method) && entry.status >= 200 && entry.status < 400 && !ASSET_TYPES.has(entry.type);
+}
+
 function requestEffect(entry) {
   return READ_METHODS.has(String(entry.method).toUpperCase()) ? "read" : "write";
 }
@@ -286,7 +295,7 @@ function draftFromRecord(recordId, root = getPrivateStateRoot(), { read = false,
   const { effect, warning } = draftEffect({ record, steps, trace, read });
   if (warning) warnings.push(warning);
   const strategies = [];
-  const observed = trace?.entries?.findLast((entry) => ["GET", "HEAD", "OPTIONS", "POST"].includes(entry.method) && entry.status >= 200 && entry.status < 400);
+  const observed = trace?.entries?.findLast(isReplayCandidate);
   // Replaying telemetry would send it again, so such a request gives the draft no network strategy
   // (a different request isn't picked instead). A read draft can't pick any other write: --read is
   // refused when the trace holds one.
@@ -347,6 +356,7 @@ module.exports = {
   markRecord,
   pauseRecord: (options) => updateStatus("paused", options),
   readEvents,
+  isReplayCandidate,
   readRecord,
   recordStatus,
   requestEffect,
