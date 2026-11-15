@@ -139,6 +139,12 @@ function createCliFixtureResult(request: any) {
     fs.writeFileSync(request.params.args.output, "[]");
     return { path: request.params.args.output, format: "json", count: 0 };
   }
+  if (request.params.tool === "network" && request.params.args.format === "json") {
+    return {
+      requests: [{ id: "r_1_1", method: "GET", status: 200, url: "https://example.test/" }],
+      warnings: ["gap"],
+    };
+  }
   if (request.params.tool === "screenshot") {
     return {
       base64: require("node:buffer").Buffer.from("local-screenshot").toString("base64"),
@@ -695,6 +701,39 @@ describe("CLI argument parsing", () => {
     expect(request.params.tool).toBe("network");
     expect(request.params.args["network-path"]).toBe(directory);
     fs.rmSync(directory, { recursive: true, force: true });
+  });
+
+  it("asks the host for the JSON request listing with --json, keeping an explicit format", async () => {
+    expect((await runCli(["network", "--json"])).request.params.args.format).toBe("json");
+    expect(
+      (await runCli(["network", "--json", "--format", "curl"])).request.params.args.format,
+    ).toBe("curl");
+    expect((await runCli(["network", "--last", "5"])).request.params.args.format).toBeUndefined();
+  });
+
+  it("sends SURF_SESSION with tab and window commands so a session's record can hold them", async () => {
+    const { request } = await runCli(["tab.new", "https://example.test/"], {
+      SURF_SESSION: "alpha",
+    });
+    expect(request).toMatchObject({ recordSession: "alpha" });
+    expect(request).not.toHaveProperty("session");
+  });
+
+  it.each([
+    ["tab.new", "https://example.test/"],
+    ["tab.unname", "docs"],
+  ])("sends an explicit --session with %s for the record, not as a target", async (...command) => {
+    const { request } = await runCli(["--session", "alpha", ...command]);
+    expect(request).toMatchObject({ recordSession: "alpha" });
+    expect(request).not.toHaveProperty("session");
+  });
+
+  it("prints --format json network listings as JSON, ids and warnings included", async () => {
+    const { stdout } = await runCli(["network", "--format", "json"]);
+    expect(JSON.parse(stdout)).toEqual({
+      requests: [{ id: "r_1_1", method: "GET", status: 200, url: "https://example.test/" }],
+      warnings: ["gap"],
+    });
   });
 
   it("writes local-prefixed screenshot output to the normalized path", async () => {

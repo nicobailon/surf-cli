@@ -4,7 +4,7 @@ const path = require("path");
 const { execFile } = require("child_process");
 const { atomicWriteFile, atomicWriteJson, ensurePrivateDir, getPrivateStateRoot, readPrivateJson } = require("./private-state.cjs");
 const { resolveOp } = require("./playbooks.cjs");
-const { readRecord, recordsRoot } = require("./playbook-records.cjs");
+const { isReplayCandidate, readRecord, recordsRoot, requestEffect } = require("./playbook-records.cjs");
 const { assertNoEmbeddedSecrets, assertUrlHasNoEmbeddedSecrets, safeHeaders } = require("./redaction.cjs");
 const { version: PACKAGE_VERSION } = require("../package.json");
 
@@ -90,7 +90,7 @@ process.stdout.write("\\n");
 }
 
 function generateClient({ playbookId, op, strategy, provenance, out, allowWrite = false, origins = [] }) {
-  if (op.effect === "write" && !allowWrite) throw new Error("write-capable client projection requires explicit review");
+  if (op.effect === "write" && !allowWrite) throw new Error(`op ${op.id} can write, and pb client derive and export refuse write requests for now (only GET, HEAD or OPTIONS)`);
   if (typeof out !== "string" || !out) throw new Error("client projection requires --out <directory>");
   const directory = path.resolve(out);
   const request = strategy.request;
@@ -141,18 +141,18 @@ function deriveClient(site, opId, out, options = {}) {
   const record = options.recordId ? readRecord(options.recordId, root) : findRecord(site, opId, root);
   if (!record) throw new Error(`no record found for ${site} ${opId}`);
   const trace = readPrivateJson(path.join(recordsRoot(root), record.id, "network", "trace.json"), null, { root });
-  const candidates = (trace?.entries || []).filter((candidate) => ["GET", "HEAD", "OPTIONS", "POST"].includes(candidate.method) && candidate.status >= 200 && candidate.status < 400);
+  const candidates = (trace?.entries || []).filter(isReplayCandidate);
   const entry = options.requestId
     ? candidates.find((candidate) => candidate.id === options.requestId || candidate._requestId === options.requestId)
     : candidates.length === 1 ? candidates[0] : null;
   if (!options.requestId && candidates.length > 1) throw new Error(`record ${record.id} has multiple read endpoints; pass --request-id`);
   if (!entry) throw new Error(`record ${record.id} has no validated read endpoint`);
-  const op = { id: opId, effect: "read", run: [] };
+  const op = { id: opId, effect: requestEffect(entry), run: [] };
   const url = new URL(entry.url);
   const query = Object.fromEntries(url.searchParams.entries());
   url.search = "";
   const strategy = { using: "network", request: { method: entry.method, url: url.toString(), query, headers: safeHeaders(entry.requestHeaders), ...(entry.requestBody !== undefined ? { body: entry.requestBody } : {}) } };
-  return generateClient({ playbookId: site, op, strategy, provenance: { type: "record", recordId: record.id }, out });
+  return generateClient({ playbookId: site, op, strategy, provenance: { type: "record", recordId: record.id }, out, allowWrite: options.allowWrite });
 }
 
 function collectTemplateArgs(value, names = new Set()) {

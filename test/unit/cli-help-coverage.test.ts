@@ -43,6 +43,21 @@ describe("CLI help for commands outside the main tool list", () => {
   });
 
   it.each([
+    "tab.new",
+    "tab.switch",
+    "tab.close",
+    "tab.unname",
+    "window.new",
+    "window.focus",
+    "window.close",
+    "history.search",
+  ])("surf %s --help says --session only picks the playbook record", (command) => {
+    const { code, stdout } = surf(command, "--help");
+    expect(code).toBe(0);
+    expect(stdout).toMatch(/--session\s+.*picks the playbook record/);
+  });
+
+  it.each([
     ["oracle", "oracle ask"],
     ["semantic", "semantic.extract"],
     ["thread", "use"],

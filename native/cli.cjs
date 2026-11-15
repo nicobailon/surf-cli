@@ -12,6 +12,7 @@ const networkFormatters = require("./formatters/network.cjs");
 const { formatPageChanges } = require("./formatters/page-changes.cjs");
 const {
   applyArgDefaults,
+  commandMetadata,
   formatStep,
   getWorkflowDirs,
   getWorkflowInfo,
@@ -526,7 +527,7 @@ const TOOLS = {
       "tab.new": {
         desc: "Open new tab",
         args: ["url"],
-        opts: { urls: "Open multiple URLs" },
+        opts: { urls: "Open multiple URLs", session: "Only picks the playbook record that holds this command, not the tab or window it acts on" },
         examples: [
           { cmd: 'tab.new "https://google.com"', desc: "Open single tab" },
           { cmd: 'tab.new --urls "https://a.com" "https://b.com"', desc: "Open multiple" },
@@ -535,6 +536,7 @@ const TOOLS = {
       "tab.switch": {
         desc: "Switch to tab by ID or name",
         args: ["id"],
+        opts: { session: "Only picks the playbook record that holds this command, not the tab or window it acts on" },
         examples: [
           { cmd: "tab.switch 123", desc: "Switch by ID" },
           { cmd: 'tab.switch "myTab"', desc: "Switch by name" },
@@ -543,7 +545,7 @@ const TOOLS = {
       "tab.close": {
         desc: "Close tab by ID or name",
         args: ["id"],
-        opts: { ids: "Close multiple tabs" },
+        opts: { ids: "Close multiple tabs", session: "With an id, only picks the playbook record that holds this command, not the tab it closes; without one, closes the session's tab" },
         examples: [{ cmd: "tab.close 123", desc: "Close tab" }]
       },
       "tab.move": {
@@ -557,7 +559,7 @@ const TOOLS = {
         args: ["name"],
         examples: [{ cmd: 'tab.name "dashboard"', desc: "Name current tab" }]
       },
-      "tab.unname": { desc: "Unregister a named tab", args: ["name"] },
+      "tab.unname": { desc: "Unregister a named tab", args: ["name"], opts: { session: "Only picks the playbook record that holds this command, not the tab or window it acts on" } },
       "tab.named": { desc: "List all named tabs", args: [] },
       "tab.group": {
         desc: "Create/add to tab group",
@@ -1076,10 +1078,10 @@ const TOOLS = {
           origin: "Filter by origin (domain)",
           method: "Filter by method (GET,POST,...)",
           status: "Filter by exact status code (e.g. 404)",
-          type: "Filter by content type (json, html, proto)",
+          type: "Filter by response type: json, html, proto, a MIME type (image/png, image/) or subtype (css), or a resource type (document, xhr, fetch)",
           last: "Show N requests (default: 100)",
           filter: "With --stream: URL pattern filter",
-          format: "compact|urls|curl|raw (default: compact)",
+          format: "compact|urls|curl|raw|json (default: compact, which starts each line with the request id; --json gives json)",
           v: "Verbose output",
           vv: "Very verbose output",
           "body-mode": "Response bodies: none, text, or all (default: text)",
@@ -1558,7 +1560,7 @@ const TOOLS = {
       "history.search": {
         desc: "Search history",
         args: ["query"],
-        opts: { limit: "Max results (default: 20)" },
+        opts: { limit: "Max results (default: 20)", session: "Only picks the playbook record that holds this command" },
         examples: [{ cmd: 'history.search "github"', desc: "Search history" }]
       },
     }
@@ -1573,7 +1575,8 @@ const TOOLS = {
           width: "Window width",
           height: "Window height",
           incognito: "Open incognito window",
-          unfocused: "Don't focus the new window"
+          unfocused: "Don't focus the new window",
+          session: "Only picks the playbook record that holds this command, not the tab or window it acts on",
         },
         examples: [
           { cmd: 'window.new "https://example.com"', desc: "New window with URL" },
@@ -1590,11 +1593,13 @@ const TOOLS = {
       "window.focus": {
         desc: "Focus a window by ID",
         args: ["id"],
+        opts: { session: "Only picks the playbook record that holds this command, not the tab or window it acts on" },
         examples: [{ cmd: "window.focus 123", desc: "Focus window" }]
       },
       "window.close": {
         desc: "Close a window by ID",
         args: ["id"],
+        opts: { session: "Only picks the playbook record that holds this command, not the tab or window it acts on" },
         examples: [{ cmd: "window.close 123", desc: "Close window" }]
       },
       "window.resize": {
@@ -1691,7 +1696,15 @@ const TOOLS = {
         examples: [{ cmd: "pb record start example --op read --network --watch", desc: "Record with network" }],
       },
       "playbook record mark": { desc: "Add a note to the recording", args: ["note"] },
-      "playbook record stop": { desc: "Stop recording", args: [], opts: { draft: "Save a draft playbook from the record" } },
+      "playbook record stop": {
+        desc: "Stop recording",
+        args: [],
+        opts: {
+          draft: "Save a draft playbook from the record (a write if it clicked or typed)",
+          read: "With --draft: mark the draft a read. Needs --network; refused if a captured request can change data or a step acts beyond the page",
+        },
+        examples: [{ cmd: "pb record stop --draft --read", desc: "Draft a search done by clicking as a read" }],
+      },
       "playbook record status": { desc: "Show the recording state (also: pause, resume, discard)", args: [] },
       "playbook trace export": { desc: "Export a record as HAR", args: [], opts: { "from-record": "Record id", har: "Output .har path" } },
       "playbook export": { desc: "Export a playbook directory", args: ["playbook"], opts: { out: "Output directory" } },
@@ -3753,6 +3766,8 @@ if (toolArgs["network-path"] !== undefined && typeof toolArgs["network-path"] !=
 }
 const wantJson = toolArgs.json === true;
 delete toolArgs.json;
+// The network listing is a text table; --json lists the requests as JSON instead, ids included.
+if (wantJson && tool === "network" && toolArgs.format === undefined && toolArgs.stream !== true) toolArgs.format = "json";
 
 const autoCapture = toolArgs["auto-capture"] === true;
 delete toolArgs["auto-capture"];
@@ -3887,12 +3902,15 @@ if (!noDiff && PAGE_CHANGES_TOOLS.includes(finalTool)) {
 }
 
 const finalClassification = classifyTool(finalTool, toolArgs);
+// Tab and window commands (and tab.unname, a host command) don't target a session's tab, but a
+// session's playbook record holds them: the host uses `recordSession` only to file the command there.
+const recordsBrowserCommand = ["browser", "host"].includes(finalClassification.targetUse) && commandMetadata(finalTool).recordable;
 if (explicitSession !== undefined) {
   if (typeof explicitSession !== "string" || !explicitSession) {
     console.error("Error: --session requires a session name");
     process.exit(1);
   }
-  if (finalClassification.targetUse !== "default-tab" || finalTool.startsWith("session.")) {
+  if ((finalClassification.targetUse !== "default-tab" && !recordsBrowserCommand) || finalTool.startsWith("session.")) {
     console.error(`Error: --session does not apply to ${finalTool}`);
     process.exit(1);
   }
@@ -3900,8 +3918,11 @@ if (explicitSession !== undefined) {
     console.error("Error: use either --session or --tab-id/--window-id, not both");
     process.exit(1);
   }
-  globalOpts.session = explicitSession;
-  globalOpts.sessionSource = "explicit";
+  if (recordsBrowserCommand) globalOpts.recordSession = explicitSession;
+  else {
+    globalOpts.session = explicitSession;
+    globalOpts.sessionSource = "explicit";
+  }
 } else if (
   environmentSession &&
   finalClassification.targetUse === "default-tab" &&
@@ -3911,6 +3932,8 @@ if (explicitSession !== undefined) {
 ) {
   globalOpts.session = environmentSession;
   globalOpts.sessionSource = "environment";
+} else if (environmentSession && recordsBrowserCommand) {
+  globalOpts.recordSession = environmentSession;
 }
 if (noWait) globalOpts.admission = { wait: false };
 
@@ -4742,10 +4765,14 @@ async function handleResponse(response) {
     // Network list - handle both new (entries) and old (requests) formats
     const items = data.entries || data.requests || [];
 
-    if (items.length === 0) {
+    if (toolArgs.format === "json") {
+      // The host's JSON listing: ids and capture warnings included.
+      console.log(JSON.stringify(data, null, 2));
+    } else if (items.length === 0) {
       console.log("No network requests captured");
     } else if (data._format === 'raw') {
       // Raw JSON output - print entries array directly
+      for (const line of networkFormatters.describeCaptureGaps(data.capture)) console.error(`Warning: ${line}`);
       console.log(JSON.stringify(items, null, 2));
     } else {
       // Simple compact format for now

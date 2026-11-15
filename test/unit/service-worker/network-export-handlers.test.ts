@@ -9,6 +9,11 @@ const cdpState = vi.hoisted(() => ({
   getNetworkEntries: vi.fn(() => cdpState.entries),
   getNetworkEntry: vi.fn(() => null),
   getResponseBody: vi.fn(),
+  getNetworkRequests: vi.fn(
+    (_tab?: number, _options?: { limit?: number }) => [] as Array<Record<string, unknown>>,
+  ),
+  getNetworkCaptureStatus: vi.fn(),
+  clearNetworkRequests: vi.fn(),
 }));
 
 vi.mock("../../../src/cdp/controller", () => ({
@@ -19,6 +24,9 @@ vi.mock("../../../src/cdp/controller", () => ({
     getNetworkEntries = cdpState.getNetworkEntries;
     getNetworkEntry = cdpState.getNetworkEntry;
     getResponseBody = cdpState.getResponseBody;
+    getNetworkRequests = cdpState.getNetworkRequests;
+    getNetworkCaptureStatus = cdpState.getNetworkCaptureStatus;
+    clearNetworkRequests = cdpState.clearNetworkRequests;
   },
 }));
 
@@ -42,6 +50,7 @@ describe("network export handlers", () => {
     cdpState.disableNetworkTracking.mockReset();
     cdpState.drainNetworkEvents.mockReset();
     cdpState.getNetworkEntries.mockClear();
+    cdpState.clearNetworkRequests.mockClear();
     cdpState.getResponseBody.mockReset();
     cdpState.getResponseBody.mockResolvedValue({
       success: false,
@@ -60,6 +69,96 @@ describe("network export handlers", () => {
     expect(cdpState.enableNetworkTracking).toHaveBeenCalledWith(42);
     expect(cdpState.drainNetworkEvents).toHaveBeenCalledWith(42);
     expect(cdpState.getNetworkEntries).toHaveBeenCalledWith(42, {});
+  });
+
+  it("reports capture interruptions as they stood before reading re-enables capture", async () => {
+    const handleMessage = await loadHandleMessage();
+    const capture = { active: false, interruptions: [{ reason: "target_closed", at: 1 }] };
+    cdpState.getNetworkCaptureStatus.mockReturnValue(capture);
+    cdpState.enableNetworkTracking.mockImplementation(() => {
+      cdpState.getNetworkCaptureStatus.mockReturnValue({ ...capture, active: true });
+    });
+    const result = await handleMessage(
+      { type: "READ_NETWORK_REQUESTS", tabId: 42, full: true },
+      {},
+    );
+    expect(result).toMatchObject({ entries: [], capture });
+  });
+
+  const readIds = async (message: Record<string, unknown>) => {
+    const handleMessage = await loadHandleMessage();
+    const result = await handleMessage(
+      { type: "READ_NETWORK_REQUESTS", tabId: 42, ...message },
+      {},
+    );
+    return (result.requests || result.entries).map((item: { id: string }) => item.id);
+  };
+
+  it("filters --type by response MIME type, keeping resource types working", async () => {
+    const requests = [
+      { id: "r_1", url: "https://example.test/", type: "Document", mimeType: "text/html" },
+      { id: "r_2", url: "https://example.test/api", type: "XHR", mimeType: "application/json" },
+      { id: "r_3", url: "https://example.test/ld", type: "Fetch", mimeType: "application/ld+json" },
+      {
+        id: "r_4",
+        url: "https://example.test/app.js",
+        type: "Script",
+        mimeType: "text/javascript",
+      },
+      {
+        id: "r_5",
+        url: "https://example.test/rpc",
+        type: "Fetch",
+        mimeType: "application/x-protobuf",
+      },
+    ];
+    cdpState.getNetworkRequests.mockReturnValue(requests);
+    cdpState.entries = requests;
+    const cases: Array<[Record<string, unknown>, string[]]> = [
+      [{ contentType: "json" }, ["r_2", "r_3"]],
+      [{ contentType: "json", full: true }, ["r_2", "r_3"]],
+      [{ contentType: "html" }, ["r_1"]],
+      [{ contentType: "proto" }, ["r_5"]],
+      [{ contentType: "Document" }, ["r_1"]],
+      [{ contentType: "xhr" }, ["r_2"]],
+      [{ contentType: "application/json" }, ["r_2"]],
+      [{ contentType: "javascript" }, ["r_4"]],
+    ];
+    for (const [message, ids] of cases) {
+      expect(await readIds(message)).toEqual(ids);
+    }
+  });
+
+  it("reads static responses too when asked, so a POST answered with JavaScript isn't dropped", async () => {
+    await readIds({ full: true, includeStatic: true });
+    expect(cdpState.getNetworkEntries).toHaveBeenLastCalledWith(
+      42,
+      expect.objectContaining({ includeStatic: true }),
+    );
+  });
+
+  it("filters requests before cutting the list to its limit", async () => {
+    const requests = Array.from({ length: 150 }, (_, index) => ({
+      id: `r_${index}`,
+      url: `https://example.test/${index}`,
+      method: index === 0 ? "POST" : "GET",
+      type: index === 0 ? "XHR" : "Document",
+      mimeType: index === 0 ? "application/json" : "text/html",
+    }));
+    // Like the controller, keep the newest `limit` requests.
+    cdpState.getNetworkRequests.mockImplementation((_tab, options = {}) =>
+      options.limit ? requests.slice(-options.limit) : requests,
+    );
+    expect(await readIds({ contentType: "json" })).toEqual(["r_0"]);
+    expect(await readIds({ method: "POST" })).toEqual(["r_0"]);
+    expect(await readIds({ contentType: "html", limit: 2 })).toEqual(["r_148", "r_149"]);
+  });
+
+  it("starts capture with a clean slate, so only later clears count as gaps", async () => {
+    const handleMessage = await loadHandleMessage();
+    await handleMessage({ type: "START_NETWORK_CAPTURE", tabId: 42 }, {});
+    await handleMessage({ type: "CLEAR_NETWORK_REQUESTS", tabId: 42 }, {});
+    expect(cdpState.clearNetworkRequests.mock.calls).toEqual([[42, { restart: true }], [42]]);
   });
 
   it("stops explicit network capture", async () => {

@@ -106,13 +106,21 @@ const PRIMARY_ARG_MAP = Object.fromEntries(
 PRIMARY_ARG_MAP.go = "url";
 PRIMARY_ARG_MAP.find = "term";
 
-function commandMetadata(command) {
+// Effects that depend on a command's arguments: a locate.* with --action click or fill acts on the
+// page, and network.replay --allow-post re-sends a request that can write.
+function argumentEffect(name, args = {}) {
+  if (name.startsWith("locate.") && ["click", "fill"].includes(args.action)) return "page-write";
+  if (name === "network.replay" && (args["allow-post"] === true || args.allowPost === true)) return "page-write";
+  return undefined;
+}
+
+function commandMetadata(command, args) {
   const name = ALIASES[command] || command;
   const metadata = COMMANDS[name];
   return {
     name,
     primaryArg: metadata?.primaryArg,
-    effect: metadata?.effect || "unknown",
+    effect: argumentEffect(name, args) || metadata?.effect || "unknown",
     recordable: Boolean(metadata) && metadata.recordable !== false,
     argKinds: metadata?.argKinds || {},
     sensitiveArgs: metadata?.sensitiveArgs || [],

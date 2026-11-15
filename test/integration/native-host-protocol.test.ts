@@ -152,13 +152,17 @@ async function cleanupChild(child: ChildProcessLike) {
   }
 }
 
-async function runCli(args: string[], socketPath: string): Promise<CliResult> {
+async function runCli(
+  args: string[],
+  socketPath: string,
+  env: Record<string, string> = {},
+): Promise<CliResult> {
   const cliPath = path.join(process.cwd(), "native", "cli.cjs");
 
   return await new Promise<CliResult>((resolve, reject) => {
     const child = spawn(process.execPath, [cliPath, ...args], {
       cwd: process.cwd(),
-      env: { ...process.env, SURF_SOCKET: socketPath },
+      env: { ...process.env, SURF_SOCKET: socketPath, ...env },
       stdio: ["ignore", "pipe", "pipe"],
     });
     children.push(child);
@@ -673,6 +677,57 @@ describe("native host protocol integration", () => {
     expect(result.stderr).toBe("");
     expect(result.stdout).toBe("123\tExample\thttps://example.test/\n");
     expect(host.stderr()).toBe("");
+  });
+
+  it("files a tab command in its session's record and reads static responses when a record stops", async () => {
+    const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), "surf-host-records-"));
+    tempDirs.push(stateDir);
+    const records = require("../../native/playbook-records.cjs") as any;
+    const alpha = records.startRecord({
+      site: "a",
+      op: "read",
+      tabId: 5,
+      session: "alpha",
+      root: stateDir,
+    });
+    const loose = records.startRecord({
+      site: "b",
+      op: "read",
+      tabId: 1,
+      network: true,
+      root: stateDir,
+    });
+    const host = await startHostHarness({ SURF_STATE_DIR: stateDir });
+
+    // tab.new has no tab target; SURF_SESSION reaches the host as recordSession.
+    const tabNew = runCli(["tab.new", "https://example.test/next"], host.socketPath, {
+      SURF_SESSION: "alpha",
+    });
+    const newTab = await host.waitForMessage((message) => message.type === "NEW_TAB", "NEW_TAB");
+    host.send({ id: newTab.id, tabId: 7, url: "https://example.test/next" });
+    expect((await tabNew).code).toBe(0);
+    const filed = (recordId: string) =>
+      records.readEvents(recordId, stateDir).map((event: { command: string }) => event.command);
+    expect(filed(alpha.id)).toEqual(["tab.new"]);
+    expect(filed(loose.id)).toEqual([]);
+
+    const stop = runCli(["pb", "record", "stop"], host.socketPath);
+    const read = await host.waitForMessage(
+      (message) => message.type === "READ_NETWORK_REQUESTS",
+      "READ_NETWORK_REQUESTS",
+    );
+    expect(read).toMatchObject({ tabId: 1, full: true, includeStatic: true });
+    host.send({
+      id: read.id,
+      entries: [],
+      capture: { active: true, interruptions: [], dropped: 0 },
+    });
+    const stopCapture = await host.waitForMessage(
+      (message) => message.type === "STOP_NETWORK_CAPTURE",
+      "STOP_NETWORK_CAPTURE",
+    );
+    host.send({ id: stopCapture.id, success: true });
+    expect((await stop).code).toBe(0);
   });
 
   it("prints one stderr line, and leaves stdout alone, when the host version differs from the CLI", async () => {
