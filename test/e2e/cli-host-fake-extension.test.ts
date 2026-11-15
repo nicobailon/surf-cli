@@ -60,6 +60,8 @@ type NativeMessage = Record<string, unknown> & {
 type FakeHostOptions = {
   targetActive?: boolean;
   env?: Record<string, string>;
+  // Requests the page made before the test, already in network capture.
+  pageTraffic?: CapturedRequest[];
 };
 
 type CliResult = {
@@ -79,6 +81,7 @@ const { spawn } = require("node:child_process") as {
   spawn: (command: string, args: string[], options: Record<string, unknown>) => ChildProcessLike;
 };
 const fs = require("node:fs") as {
+  existsSync(targetPath: string): boolean;
   mkdirSync(targetPath: string, options: { recursive: boolean }): void;
   mkdtempSync(prefix: string): string;
   readdirSync(
@@ -208,8 +211,15 @@ function buildExtensionResponse(
     // Network capture holds what each script sent; its body is the fixture API's.
     case "READ_NETWORK_REQUESTS":
       return { id: message.id, entries: captured };
+    case "GET_NETWORK_ENTRY":
+      return { id: message.id, entry: captured.find((entry) => entry.id === message.requestId) };
     case "GET_RESPONSE_BODY":
-      return { id: message.id, success: true, body: '{"ok":true}' };
+      return {
+        id: message.id,
+        success: true,
+        body:
+          captured.find((entry) => entry.id === message.requestId)?.responseBody ?? '{"ok":true}',
+      };
     default:
       return { id: message.id, error: `Unhandled fake extension message: ${message.type}` };
   }
@@ -228,7 +238,7 @@ function startHost(socketPath: string, options: FakeHostOptions = {}) {
   const waiters: MessageWaiter[] = [];
   let stdoutBuffer = BufferCtor.alloc(0);
   let currentUrl = "about:blank";
-  const captured: CapturedRequest[] = [];
+  const captured: CapturedRequest[] = [...(options.pageTraffic ?? [])];
   const targetActive = options.targetActive !== false;
   let stderr = "";
   let closed = false;
@@ -682,6 +692,77 @@ describe("CLI/native-host/fake-extension E2E contract", () => {
       expect(files.length).toBeGreaterThan(2);
       expect(files.filter((file) => fs.readFileSync(file, "utf8").includes(secret))).toEqual([]);
       expect(`${run.stdout}${run.stderr}${missing.stderr}`).not.toContain(secret);
+    } finally {
+      await host.dispose();
+    }
+  });
+
+  it("keeps the page's other captured requests off disk when surf use and network.replay read capture", async () => {
+    const socketPath = createSocketPath();
+    const scratch = fs.mkdtempSync(path.join(os.tmpdir(), "surf-capture-disk-"));
+    tempDirs.push(scratch);
+    const env = { HOME: path.join(scratch, "home"), SURF_TMP: path.join(scratch, "tmp") };
+    const project = path.join(scratch, "project");
+    const opsDir = path.join(project, ".surf", "playbooks", "api", "ops");
+    for (const directory of [env.HOME, env.SURF_TMP, opsDir]) {
+      fs.mkdirSync(directory, { recursive: true });
+    }
+    fs.writeFileSync(
+      path.join(project, ".surf", "playbooks", "api", "playbook.json"),
+      JSON.stringify({ id: "api", version: "1.0.0", origins: ["https://fixture.test"] }),
+    );
+    fs.writeFileSync(
+      path.join(opsDir, "read.json"),
+      JSON.stringify({
+        id: "read",
+        effect: "read",
+        run: [{ using: "network", request: { method: "GET", url: "https://fixture.test/api" } }],
+      }),
+    );
+    const marker = "page-only-ywqmz-41";
+    const host = startHost(socketPath, {
+      env,
+      pageTraffic: [
+        {
+          id: "r_page",
+          ts: Date.now() - 60_000,
+          method: "GET",
+          url: "https://fixture.test/api",
+          requestHeaders: { "x-page-token": marker },
+          status: 200,
+          responseHeaders: {},
+          responseBody: `{"note":"${marker}"}`,
+          flags: [],
+          _loadingFinished: true,
+        },
+      ],
+    });
+    try {
+      await host.waitForMessage((message) => message.type === "HOST_READY");
+      const run = await runCli(socketPath, ["use", "api", "read", "--json"], project, env);
+      expect(run).toMatchObject({ code: 0, stderr: "" });
+      expect(JSON.parse(run.stdout)).toMatchObject({ strategy: "network" });
+      const replay = await runCli(socketPath, ["network.replay", "r_page", "--json"], project, env);
+      expect(replay.code).toBe(0);
+      expect(
+        host.messages.filter((message) => message.type === "READ_NETWORK_REQUESTS").length,
+      ).toBeGreaterThan(1);
+
+      const files: string[] = [];
+      const walk = (directory: string) => {
+        for (const entry of fs.readdirSync(directory, { withFileTypes: true })) {
+          const target = path.join(directory, entry.name);
+          if (entry.isDirectory()) {
+            walk(target);
+          } else {
+            files.push(target);
+          }
+        }
+      };
+      walk(scratch);
+      walk(host.stateDir);
+      expect(files.filter((file) => fs.readFileSync(file, "utf8").includes(marker))).toEqual([]);
+      expect(fs.existsSync(path.join(host.stateDir, "network"))).toBe(false);
     } finally {
       await host.dispose();
     }
