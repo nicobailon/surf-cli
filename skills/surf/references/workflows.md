@@ -69,6 +69,21 @@ surf use books get_books --page 3
 
 `--env` headers are read from the shell that runs `surf use` (or a generated client) and are never stored; secret headers take only `--env`.
 
+Make an op return records instead of the raw page or JSON (saved in the op, with a diff):
+
+```bash
+surf playbook extract books get_books --item article.product_pod --field 'title=h3 a@title' --field 'url=h3 a@href'   # HTML, collect's field specs
+surf playbook extract blast submit --value 'input[name=RID]@value'                                                     # one HTML value
+surf playbook extract resy search --records '$.search.hits' --field name=name --field id=id.resy --filter type=venue    # JSON records, renamed
+```
+
+Check an op (exit 1 on failure); `--save` keeps the assertions in the op, and `surf use` then checks them too:
+
+```bash
+surf playbook test books get_books --page 2 --assert '$' array_min_len 1 --assert '$[0].title' not_null --strategy network --save
+surf playbook test books get_books --json   # rerun the saved assertions
+```
+
 A record belongs to the session that started it (or its tab, without a session): only that session's commands go into it, only that session can mark, stop or discard it, and other sessions can record at the same time.
 
 Records, traces and the activity journal are private. Auth headers are always dropped. Typed inputs and request bodies are redacted unless you pass `--include-input-values`. Traces keep no response bodies or values, only each response's kind, size, record count, field count per type, and page-text overlap (no field names); `record candidates` prints a short sample only for an active record, from memory.

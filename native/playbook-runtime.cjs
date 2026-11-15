@@ -1,11 +1,15 @@
+const fs = require("fs");
+const path = require("path");
 const { executeSingleStep, executeWorkflow } = require("./workflow-runtime.cjs");
 const { runWorkflowScript } = require("./workflow-script-runtime.cjs");
 const { runApiHarvest } = require("./api-harvest.cjs");
-const { runCollect } = require("./dom-collect.cjs");
+const { htmlExtractFunction, runCollect } = require("./dom-collect.cjs");
 const { editDistance } = require("./edit-distance.cjs");
 const { GLOBAL_OPTIONS } = require("./global-options.cjs");
 const { renderRequest, resolveArgValues } = require("./playbook-template.cjs");
-const { redactValues } = require("./redaction.cjs");
+const { checkAssertions, createRegexBudget, describeAssertion } = require("./playbook-assertions.cjs");
+const { redactObject } = require("./redaction.cjs");
+const { extractRecords } = require("./records.cjs");
 
 function applyTemplate(value, args) {
   if (typeof value === "string") {
@@ -67,15 +71,11 @@ function resolveAuthValues(op, secrets = {}, env = process.env) {
   return values;
 }
 
-// Env-supplied values never leave a run: a response that echoes one (or an error that quotes it)
-// comes back with <redacted> in its place.
+// Env-supplied values never leave a run: a response that echoes one, in a value or an object key
+// (or an error that quotes it), comes back with <redacted> in its place.
 function redactSecrets(value, secrets) {
   const values = Object.values(secrets);
-  if (values.length === 0) return value;
-  if (typeof value === "string") return redactValues(value, values);
-  if (Array.isArray(value)) return value.map((item) => redactSecrets(item, secrets));
-  if (value && typeof value === "object") return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, redactSecrets(item, secrets)]));
-  return value;
+  return values.length === 0 ? value : redactObject(value, values);
 }
 
 function getJsonPath(value, jsonPath) {
@@ -91,6 +91,11 @@ function getJsonPath(value, jsonPath) {
 
 function extractResult(result, extract) {
   if (!extract) return result;
+  // The tab ran the extract and sent back only what it found.
+  if (result && typeof result === "object" && Object.hasOwn(result, "extracted")) return result.extracted;
+  if (extract.records !== undefined || extract.fields || extract.filter) {
+    return extractRecords(result.bodyJson !== undefined ? result.bodyJson : result, extract);
+  }
   if (extract.jsonPath) {
     const source = result.bodyJson !== undefined ? result.bodyJson : result;
     return getJsonPath(source, extract.jsonPath);
@@ -99,11 +104,29 @@ function extractResult(result, extract) {
   return result;
 }
 
-function verifyResult(value, expect = {}, raw = value) {
+/** Throws on the first failed check; returns the assertion results (expect.assert), if any. */
+function verifyResult(value, expect = {}, raw = value, secrets = [], budget = undefined) {
   if (expect.status !== undefined && raw?.status !== expect.status) throw new Error(`expected status ${expect.status}`);
   if (expect.minItems !== undefined && (!Array.isArray(value) || value.length < expect.minItems)) throw new Error(`expected at least ${expect.minItems} items`);
   if (expect.truthy && !value) throw new Error("expected a truthy result");
-  return true;
+  if (!expect.assert) return undefined;
+  const results = checkAssertions(value, expect.assert, secrets, budget);
+  const failed = results.find((result) => !result.pass);
+  if (failed) {
+    const got = failed.error ?? `got ${typeof failed.actual === "string" ? failed.actual : JSON.stringify(failed.actual)}`;
+    const error = new Error(`assertion failed: ${describeAssertion(failed)} (${got})`);
+    error.assertions = results;
+    throw error;
+  }
+  return results;
+}
+
+/** The op's strategies, or only those using `forced` (pb test --strategy). */
+function strategiesToRun(op, forced) {
+  if (forced === undefined) return op.run;
+  const run = op.run.filter((strategy) => strategy.using === forced);
+  if (run.length === 0) throw new Error(`op ${op.id} has no ${forced} strategy (it has ${op.run.map((strategy) => strategy.using).join(", ")})`);
+  return run;
 }
 
 function withServerIdempotency(request, idempotency, attemptId) {
@@ -121,10 +144,76 @@ function withServerIdempotency(request, idempotency, attemptId) {
   return next;
 }
 
-function networkScript(request, allowedOrigins = []) {
+// The tab's script output is pretty-printed JSON cut at 50,000 characters
+// (src/service-worker/index.ts), so an extract runs in the tab and only its result comes back.
+const TAB_OUTPUT_LIMIT = 50000;
+// records.cjs runs in the tab as a module; its node:util import serves only api record sets.
+const RECORDS_SOURCE = fs.readFileSync(path.join(__dirname, "records.cjs"), "utf8");
+
+function isJsonExtract(extract) {
+  return Boolean(extract && (extract.jsonPath || extract.records !== undefined || extract.fields || extract.filter));
+}
+
+// Page-side finish(head, run, narrow): the extract's result, or an extractError when it fails or
+// would not fit in the tab's output.
+const FINISH_SOURCE = `const finish = (head, run, narrow) => {
+  let extracted;
+  try {
+    extracted = run();
+  } catch (error) {
+    return { ...head, extractError: error.message };
+  }
+  const out = { ...head, extracted: extracted === undefined ? null : extracted };
+  if (JSON.stringify(out, null, 2).length <= ${TAB_OUTPUT_LIMIT}) return out;
+  return { ...head, extractError: \`extracted result is \${JSON.stringify(extracted, null, 2).length} characters; narrow \${narrow}\` };
+};`;
+
+function jsonExtractSource(extract) {
+  if (extract.jsonPath) return `${getJsonPath.toString()}\nreturn getJsonPath(json, ${JSON.stringify(extract.jsonPath)});`;
+  const { records, fields, filter } = extract;
+  return `const module = { exports: {} };
+const require = () => ({ isDeepStrictEqual: () => { throw new Error("isDeepStrictEqual is not available in the tab"); } });
+(function (module, exports, require) {
+${RECORDS_SOURCE}
+})(module, module.exports, require);
+return module.exports.extractRecords(json, ${JSON.stringify({ records, fields, filter })});`;
+}
+
+function networkScript(request, allowedOrigins = [], extract) {
+  const html = extract?.html;
   const headers = request.headers || {};
   const query = request.query || {};
   const body = request.body;
+  let tail = `let json;
+try { json = JSON.parse(text); } catch {}
+return { ...head, body: text, bodyJson: json };`;
+  if (html) {
+    tail = `${FINISH_SOURCE}
+return finish(head, () => {
+  const doc = new DOMParser().parseFromString(text, "text/html");
+  // Relative links resolve against the response URL, not the tab's page.
+  const responseUrl = response.url || url.toString();
+  const base = doc.querySelector("base[href]");
+  if (base) base.setAttribute("href", new URL(base.getAttribute("href"), responseUrl).href);
+  else {
+    const element = doc.createElement("base");
+    element.setAttribute("href", responseUrl);
+    doc.head.prepend(element);
+  }
+  return ${htmlExtractFunction(html)}(doc);
+}, "--item/--field");`;
+  } else if (isJsonExtract(extract)) {
+    tail = `${FINISH_SOURCE}
+return finish(head, () => {
+  let json;
+  try {
+    json = JSON.parse(text);
+  } catch {
+    throw new Error(\`the response is not JSON (\${response.headers.get("content-type") || "no content type"})\`);
+  }
+  ${jsonExtractSource(extract)}
+}, "--records/--field");`;
+  }
   return `(async () => {
 const url = new URL(${JSON.stringify(request.url)}, location.href);
 const allowedOrigins = ${JSON.stringify(allowedOrigins)};
@@ -142,9 +231,8 @@ const response = await fetch(url.toString(), {
   ${body === undefined ? "" : `body: ${JSON.stringify(typeof body === "string" ? body : JSON.stringify(body))},`}
 });
 const text = await response.text();
-let json;
-try { json = JSON.parse(text); } catch {}
-return { status: response.status, ok: response.ok, url: response.url, headers: Object.fromEntries(response.headers.entries()), body: text, bodyJson: json };
+const head = { status: response.status, ok: response.ok, url: response.url, headers: Object.fromEntries(response.headers.entries()) };
+${tail}
 })()`;
 }
 
@@ -189,7 +277,14 @@ async function runStrategy(strategy, context) {
       vars: context.args,
     });
     if (result.status !== "completed") throw new Error(result.error || "workflow strategy failed");
-    return result;
+    if (!strategy.extract?.html) return result;
+    // The same extraction as the network strategy, on the page the workflow ended on.
+    const code = `(() => {\n${FINISH_SOURCE}\nreturn finish({}, () => ${htmlExtractFunction(strategy.extract.html)}(document), "--item/--field");\n})()`;
+    const page = await context.executeTool("javascript_tool", { code }, { signal: context.signal });
+    if (page?.error) throw new Error(typeof page.error === "string" ? page.error : JSON.stringify(page.error));
+    const found = page?.output !== undefined ? JSON.parse(page.output) : page?.value;
+    if (found?.extractError) throw new Error(found.extractError);
+    return { ...result, extracted: found?.extracted };
   }
   if (strategy.using === "network") {
     const { authInputs: inputs = [], ...template } = strategy.request;
@@ -206,10 +301,11 @@ async function runStrategy(strategy, context) {
       context.attemptId,
     );
     await context.markDispatched?.();
-    const response = await context.executeTool("javascript_tool", { code: networkScript(request, context.allowedOrigins) }, { signal: context.signal });
+    const response = await context.executeTool("javascript_tool", { code: networkScript(request, context.allowedOrigins, strategy.extract) }, { signal: context.signal });
     if (response?.error) throw new Error(typeof response.error === "string" ? response.error : JSON.stringify(response.error));
     const result = response?.output !== undefined ? JSON.parse(response.output) : response?.value ?? response;
     if (!result?.ok && (strategy.acceptStatus || []).includes(result?.status) === false) throw new Error(`network strategy returned ${result?.status || "an unknown status"}`);
+    if (result.extractError) throw new Error(result.extractError);
     return result;
   }
   if (strategy.using === "native") {
@@ -236,12 +332,18 @@ async function runStrategy(strategy, context) {
   throw new Error(`unsupported strategy: ${strategy.using}`);
 }
 
-async function runPlaybookOp({ playbook, op, args: providedArgs = {}, secrets = {}, env = process.env, attemptId, executeTool, executeNative, signal, sleep, onEvent = () => {}, beforeDispatch = async () => {}, afterDispatch = async () => {}, allowScript = false }) {
+// `assertions` replaces the op's saved on.success.expect.assert for this run (pb test --assert).
+// `strategy` runs only the strategies of that kind (pb test --strategy).
+async function runPlaybookOp({ playbook, op, args: providedArgs = {}, secrets = {}, env = process.env, attemptId, executeTool, executeNative, signal, sleep, onEvent = () => {}, beforeDispatch = async () => {}, afterDispatch = async () => {}, allowScript = false, assertions, strategy: forced }) {
   const args = resolveArgs(op, providedArgs, { playbookId: playbook.id });
   const authValues = resolveAuthValues(op, secrets, env);
+  const run = strategiesToRun(op, forced);
+  const assert = assertions ?? op.on?.success?.expect?.assert;
+  // One regex budget for the whole run, shared by every strategy's assertion checks.
+  const regexBudget = createRegexBudget();
   const attempts = [];
-  for (let index = 0; index < op.run.length; index++) {
-    const strategy = op.run[index];
+  for (let index = 0; index < run.length; index++) {
+    const strategy = run[index];
     let dispatched = false;
     const markDispatched = async () => {
       if (dispatched) return;
@@ -265,14 +367,18 @@ async function runPlaybookOp({ playbook, op, args: providedArgs = {}, secrets = 
         allowScript,
       });
       const value = extractResult(raw, strategy.extract);
-      verifyResult(value, strategy.verify || strategy.expect || op.on?.success?.expect, raw);
+      const expect = strategy.verify || strategy.expect || op.on?.success?.expect;
+      // Saved assertions hold for every strategy, even one with its own verify.
+      const checked = verifyResult(value, assert ? { ...expect, assert } : expect, raw, Object.values(authValues), regexBudget);
       if (op.effect === "write") await afterDispatch({ status: "verified", strategy, index });
       onEvent({ type: "strategy.completed", playbook: playbook.id, op: op.id, using: strategy.using, index, endedAt: new Date().toISOString() });
-      return { status: "completed", playbook: playbook.id, op: op.id, strategy: strategy.using, value: redactSecrets(value, authValues), provenance: playbook.provenance, attempts };
+      return { status: "completed", playbook: playbook.id, op: op.id, strategy: strategy.using, value: redactSecrets(value, authValues), provenance: playbook.provenance, attempts, ...(checked ? { assertions: redactSecrets(checked, authValues) } : {}) };
     } catch (caught) {
       const message = redactSecrets(caught?.message || String(caught), authValues);
       const error = message === caught?.message ? caught : new Error(message);
-      attempts.push({ using: strategy.using, error: message });
+      // An assertion's `actual` is a value from the response, so it is redacted like the result.
+      const checks = caught?.assertions ? redactSecrets(caught.assertions, authValues) : undefined;
+      attempts.push({ using: strategy.using, error: message, ...(checks ? { assertions: checks } : {}) });
       onEvent({ type: "strategy.failed", playbook: playbook.id, op: op.id, using: strategy.using, index, error: message, endedAt: new Date().toISOString() });
       if (op.effect === "write") {
         await afterDispatch({ status: dispatched ? "indeterminate" : "not_dispatched", strategy, index, error: message });
@@ -281,7 +387,19 @@ async function runPlaybookOp({ playbook, op, args: providedArgs = {}, secrets = 
     }
   }
   const detail = attempts.map((attempt) => `${attempt.using}: ${attempt.error}`).join("; ");
-  throw new Error(`All strategies failed${detail ? ` (${detail})` : ""}`);
+  const error = new Error(`All strategies failed${detail ? ` (${detail})` : ""}`);
+  error.attempts = attempts;
+  throw error;
 }
 
-module.exports = { authInputs, resolveArgs, runPlaybookOp };
+/** pb test: a failed run comes back as a result, with each attempt's error and assertions. */
+async function testPlaybookOp(options) {
+  const { playbook, op } = options;
+  try {
+    return await runPlaybookOp(options);
+  } catch (error) {
+    return { status: "failed", playbook: playbook.id, op: op.id, error: error.message, attempts: error.attempts || [] };
+  }
+}
+
+module.exports = { authInputs, resolveArgs, runPlaybookOp, testPlaybookOp };

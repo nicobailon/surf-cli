@@ -4,6 +4,8 @@ const path = require("path");
 const { atomicWriteJson } = require("./private-state.cjs");
 const { validateApiSpec } = require("./api-harvest.cjs");
 const { validateCollectSpec } = require("./dom-collect.cjs");
+const { validateAssertions } = require("./playbook-assertions.cjs");
+const { validateExtract } = require("./playbook-extract.cjs");
 const { validateMarkdownSpec } = require("./record-format.cjs");
 const { assertNoEmbeddedSecrets, assertUrlHasNoEmbeddedSecrets } = require("./redaction.cjs");
 const { commandMetadata, normalizeStep } = require("./workflow-definition.cjs");
@@ -107,6 +109,13 @@ function normalizeScript(value) {
 
 function validateStrategy(strategy, effect, opId) {
   if (!strategy || typeof strategy !== "object" || Array.isArray(strategy)) throw new Error("playbook strategy must be an object");
+  if (strategy.extract !== undefined) {
+    try {
+      validateExtract(strategy.extract, strategy.using);
+    } catch (error) {
+      throw new Error(`op ${opId} extract: ${error.message}`);
+    }
+  }
   if (strategy.using === "script") {
     if (effect === "write") throw new Error(`write op ${opId} script strategy is not supported`);
     const script = normalizeScript(strategy.script);
@@ -176,6 +185,13 @@ function validateOp(value, manifest) {
       validateMarkdownSpec(value.markdown);
     } catch (error) {
       throw new Error(`op ${id} ${error.message}`);
+    }
+  }
+  if (value.on?.success?.expect?.assert !== undefined) {
+    try {
+      validateAssertions(value.on.success.expect.assert);
+    } catch (error) {
+      throw new Error(`op ${id} on.success.expect.assert: ${error.message}`);
     }
   }
   const origins = validateOrigins(auth.origins || value.origins || manifest.origins);
@@ -254,6 +270,37 @@ function savePlaybook({ manifest, op, scope = "user", cwd = process.cwd(), home 
   return { directory, playbook: validatedManifest.id, op: validatedOp.id, scope };
 }
 
+/** The playbook, if it is a user or project one that edits can be saved to. */
+function resolveEditablePlaybook(playbookId, options) {
+  const playbook = resolvePlaybook(playbookId, options);
+  const { scope } = playbook.provenance;
+  if (scope !== "user" && scope !== "project") {
+    throw new Error(`${scope} playbook ${playbook.id} can't be edited; copy it first: surf pb export ${playbook.id} --out <dir>, then surf pb import <dir>`);
+  }
+  return playbook;
+}
+
+/**
+ * The one way an op file is edited (pb param, pb extract, pb test --save): `edit(raw, playbook)` gets
+ * the op as written on disk (not normalized) and returns the new op, which is saved through
+ * savePlaybook, or null to leave the file alone. Returns the file and its text before and after.
+ */
+function editSavedOp({ playbook: playbookId, op: opId, edit, cwd = process.cwd(), home = os.homedir() }) {
+  const playbook = resolveEditablePlaybook(playbookId, { cwd, home });
+  const { scope } = playbook.provenance;
+  const opsDir = path.join(playbook.directory, "ops");
+  const name = fs.readdirSync(opsDir).find((file) => file.endsWith(".json") && JSON.parse(fs.readFileSync(path.join(opsDir, file), "utf8"))?.id === opId);
+  if (!name) throw new Error(`Op not found: ${playbook.id} ${opId}`);
+  if (name !== `${opId}.json`) throw new Error(`op ${opId} is saved as ${name}; rename it to ${opId}.json before editing it`);
+  const file = path.join(opsDir, name);
+  const before = fs.readFileSync(file, "utf8");
+  const { directory: _directory, provenance: _provenance, ops: _ops, ...manifest } = playbook;
+  const next = edit(JSON.parse(before), playbook);
+  if (next === null) return { playbook: playbook.id, op: opId, scope, path: file, changed: false, before, after: before };
+  savePlaybook({ manifest, op: next, scope, cwd, home });
+  return { playbook: playbook.id, op: opId, scope, path: file, changed: true, before, after: fs.readFileSync(file, "utf8") };
+}
+
 function writePlaybookDirectory(directory, playbook) {
   if (fs.existsSync(directory)) throw new Error(`playbook output already exists: ${directory}`);
   fs.mkdirSync(path.join(directory, "ops"), { recursive: true });
@@ -281,9 +328,11 @@ function importPlaybookDirectory(source, { scope = "user", cwd = process.cwd(), 
 }
 
 module.exports = {
+  editSavedOp,
   exportPlaybookDirectory,
   importPlaybookDirectory,
   listPlaybooks,
+  resolveEditablePlaybook,
   resolveOp,
   resolvePlaybook,
   savePlaybook,

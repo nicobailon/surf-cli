@@ -1,11 +1,10 @@
 // `surf pb param`: turns a recorded literal in an op's network request into a named input
 // (`{{name}}` plus an `args` entry), or makes a header come from an environment variable.
 
-const fs = require("fs");
 const os = require("os");
-const path = require("path");
-const { resolvePlaybook, savePlaybook, validateOp } = require("./playbooks.cjs");
+const { editSavedOp, validateOp } = require("./playbooks.cjs");
 const { isSecretHeader, isSensitiveName } = require("./redaction.cjs");
+const { lineDiff } = require("./text-diff.cjs");
 const { commandMetadata } = require("./workflow-definition.cjs");
 
 // `surf use` options that never reach an op, so no input can take these names.
@@ -379,59 +378,23 @@ function paramOp(op, { fields, as: name, env, required = false, default: default
   return { op: next, changed: JSON.stringify(next) !== JSON.stringify(op), notes };
 }
 
-// Line diff of two texts, changed lines with two lines of context.
-function lineDiff(before, after) {
-  const a = before.split("\n");
-  const b = after.split("\n");
-  const lcs = Array.from({ length: a.length + 1 }, () => new Array(b.length + 1).fill(0));
-  for (let i = a.length - 1; i >= 0; i--) {
-    for (let j = b.length - 1; j >= 0; j--) lcs[i][j] = a[i] === b[j] ? lcs[i + 1][j + 1] + 1 : Math.max(lcs[i + 1][j], lcs[i][j + 1]);
-  }
-  const lines = [];
-  let i = 0;
-  let j = 0;
-  while (i < a.length || j < b.length) {
-    if (i < a.length && j < b.length && a[i] === b[j]) {
-      lines.push({ mark: " ", text: a[i++] });
-      j++;
-    }
-    else if (i < a.length && (j >= b.length || lcs[i + 1][j] >= lcs[i][j + 1])) lines.push({ mark: "-", text: a[i++] });
-    else lines.push({ mark: "+", text: b[j++] });
-  }
-  const changed = lines.map((line, index) => (line.mark === " " ? -1 : index)).filter((index) => index >= 0);
-  const shown = new Set(changed.flatMap((index) => [index - 2, index - 1, index, index + 1, index + 2]));
-  const out = [];
-  let last = -1;
-  for (const [index, line] of lines.entries()) {
-    if (!shown.has(index)) continue;
-    if (last >= 0 && index > last + 1) out.push("...");
-    out.push(`${line.mark}${line.text}`);
-    last = index;
-  }
-  return out.join("\n");
-}
-
-function readJson(file) {
-  return JSON.parse(fs.readFileSync(file, "utf8"));
-}
-
 /** Applies `paramOp` to a saved op and saves it in the scope it came from. */
 function applyParam({ playbook: playbookId, op: opId, cwd = process.cwd(), home = os.homedir(), ...spec }) {
-  const playbook = resolvePlaybook(playbookId, { cwd, home });
-  const scope = playbook.provenance.scope;
-  if (scope !== "user" && scope !== "project") throw new Error(`${playbookId} is a built-in playbook; copy it with pb export and pb import before changing it`);
-  const opsDir = path.join(playbook.directory, "ops");
-  const file = fs.readdirSync(opsDir).filter((name) => name.endsWith(".json")).map((name) => path.join(opsDir, name)).find((candidate) => readJson(candidate).id === opId);
-  if (!file) throw new Error(`Op not found: ${playbookId} ${opId}`);
-  if (path.basename(file) !== `${opId}.json`) throw new Error(`op ${opId} is saved as ${path.basename(file)}; rename it to ${opId}.json first`);
-  const manifest = readJson(path.join(playbook.directory, "playbook.json"));
-  const before = validateOp(readJson(file), { ...manifest, origins: playbook.origins });
-  const result = paramOp(before, spec);
-  const summary = { playbook: playbook.id, op: opId, scope, file, changed: result.changed, notes: result.notes };
+  let result;
+  const edited = editSavedOp({
+    playbook: playbookId,
+    op: opId,
+    cwd,
+    home,
+    edit: (raw, playbook) => {
+      result = paramOp(validateOp(raw, playbook), spec);
+      return result.changed ? result.op : null;
+    },
+  });
+  const summary = { playbook: edited.playbook, op: opId, scope: edited.scope, file: edited.path, changed: result.changed, notes: result.notes };
   if (!result.changed) return { ...summary, diff: "" };
-  savePlaybook({ manifest, op: result.op, scope, cwd, home });
-  const after = readJson(file);
-  return { ...summary, ...(spec.as ? { input: { [spec.as]: after.args[spec.as] } } : {}), diff: lineDiff(JSON.stringify(before, null, 2), JSON.stringify(after, null, 2)) };
+  const after = JSON.parse(edited.after);
+  return { ...summary, ...(spec.as ? { input: { [spec.as]: after.args[spec.as] } } : {}), diff: lineDiff(edited.before, edited.after) };
 }
 
 function formatParamResult(result) {
