@@ -119,15 +119,15 @@ function refuseSecretAssertions(assertions, secret) {
   });
 }
 
-// After the run: the host redacts env values from each assertion's `actual` (its own environment's
-// too). A matches assertion that passed but no longer matches its redacted actual matched only
-// through such a value, which its pattern encodes in some form.
-function refuseRedactedMatches(checked) {
+// After the run: the host redacts env values (its own environment's too) from each assertion it
+// sends back. Any placeholder in what came back (actual, value or path) means the assertion touched
+// such a value, so it is not saved. This refuses some safe assertions on ops with env headers.
+const REDACTION_PLACEHOLDER = /<redacted(?:-\d+)?>/;
+
+function refuseRedactedAssertions(checked) {
   checked.forEach((assertion, index) => {
-    const { op, pass, actual, value } = assertion;
-    if (op !== "matches" || !pass || typeof actual !== "string" || !actual.includes("<redacted>")) return;
-    if (!new RegExp(value).test(actual)) {
-      throw new Error(`--save refused: assertion ${index + 1}'s pattern matched the response only through an env header's value, which is never stored; use a narrower pattern`);
+    if (REDACTION_PLACEHOLDER.test(JSON.stringify(assertion))) {
+      throw new Error(`--save refused: assertion ${index + 1}'s value passed through env-header redaction, so it can't be saved`);
     }
   });
 }
@@ -193,7 +193,7 @@ async function runPlaybookTest({ argv, cwd = process.cwd(), home, env = process.
     saved: null,
   };
   if (options.save && ok) {
-    refuseRedactedMatches(report.assertions);
+    refuseRedactedAssertions(report.assertions);
     const edited = editSavedOp({
       playbook: spec.playbook,
       op: spec.op,

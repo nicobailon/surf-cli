@@ -409,35 +409,67 @@ describe("pb test --save and env values", () => {
     expect(fs.readFileSync(file, "utf8")).toBe(before);
   });
 
-  it("refuses, after running, a pattern that matched only through the redacted env value", async () => {
+  it("refuses, after running, an assertion the host redacted, for a variable only the host has", async () => {
     const cwd = tempDir();
     const file = writeShop(cwd, op);
     const before = fs.readFileSync(file, "utf8");
-    const pattern = `^key ${hexEscaped(KEY)}$`;
-    const run = saveRun(cwd, ["--assert", "$[0].echo", "matches", pattern], async () => ({
-      status: "completed",
-      strategy: "network",
-      value: [],
-      attempts: [],
-      // The host redacts env values from what it sends back, so `actual` reads <redacted>.
-      assertions: [
-        { path: "$[0].echo", op: "matches", value: pattern, pass: true, actual: "key <redacted>" },
-      ],
-    }));
-    await expect(run).rejects.toThrow(
-      /--save refused: assertion 1's pattern matched the response only through an env header's value/,
-    );
+    // The variable is set only in the browser host's environment: this shell (env) doesn't have it,
+    // so the checks before the run can't see it. The host redacts it from what it sends back.
+    const hostOnly = (asserts: string[], returned: Array<Record<string, unknown>>) =>
+      pbTest.runPlaybookTest({
+        argv: ["shop", "items", "--assert", "$", "array_min_len", "1", ...asserts, "--save"],
+        cwd,
+        home: cwd,
+        env: {},
+        runOp: async () => ({
+          status: "completed",
+          strategy: "network",
+          value: [],
+          attempts: [],
+          assertions: [
+            { path: "$", op: "array_min_len", value: 1, pass: true, actual: "array(2)" },
+            ...returned,
+          ],
+        }),
+      });
+    const refused =
+      /--save refused: assertion 2's value passed through env-header redaction, so it can't be saved/;
+    // The reviewer's case: hex escapes for the secret, with an alternative that matches <redacted>.
+    const pattern = `^key (?:${hexEscaped(KEY)}|<redacted>)$`;
+    await expect(
+      hostOnly(
+        ["--assert", "$[0].echo", "matches", pattern],
+        [
+          {
+            path: "$[0].echo",
+            op: "matches",
+            value: pattern,
+            pass: true,
+            actual: "key <redacted>",
+          },
+        ],
+      ),
+    ).rejects.toThrow(refused);
+    // A colliding key's placeholder counts too.
+    await expect(
+      hostOnly(
+        ["--assert", "$[0]", "not_null"],
+        [{ path: "$[0]", op: "not_null", pass: true, actual: "<redacted-2>" }],
+      ),
+    ).rejects.toThrow(refused);
+    // An equals value holding the secret comes back redacted, while its actual reads "object".
+    await expect(
+      hostOnly(
+        ["--assert", "$[0]", "equals", JSON.stringify({ a: KEY })],
+        [{ path: "$[0]", op: "equals", value: { a: "<redacted>" }, pass: true, actual: "object" }],
+      ),
+    ).rejects.toThrow(refused);
     expect(fs.readFileSync(file, "utf8")).toBe(before);
-    // A pattern that still matches the redacted value is saved.
-    const saved = await saveRun(cwd, ["--assert", "$[0].echo", "matches", "^key "], async () => ({
-      status: "completed",
-      strategy: "network",
-      value: [],
-      attempts: [],
-      assertions: [
-        { path: "$[0].echo", op: "matches", value: "^key ", pass: true, actual: "key <redacted>" },
-      ],
-    }));
+    // Nothing redacted: saved.
+    const saved = await hostOnly(
+      ["--assert", "$[0].echo", "matches", "^key "],
+      [{ path: "$[0].echo", op: "matches", value: "^key ", pass: true, actual: "key plain" }],
+    );
     expect(saved.saved).toBe(file);
   });
 });
