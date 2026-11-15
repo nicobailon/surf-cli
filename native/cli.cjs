@@ -1560,7 +1560,7 @@ const TOOLS = {
       "history.search": {
         desc: "Search history",
         args: ["query"],
-        opts: { limit: "Max results (default: 20)" },
+        opts: { limit: "Max results (default: 20)", session: "Only picks the playbook record that holds this command" },
         examples: [{ cmd: 'history.search "github"', desc: "Search history" }]
       },
     }
@@ -1593,6 +1593,7 @@ const TOOLS = {
       "window.focus": {
         desc: "Focus a window by ID",
         args: ["id"],
+        opts: { session: "Only picks the playbook record that holds this command, not the tab or window it acts on" },
         examples: [{ cmd: "window.focus 123", desc: "Focus window" }]
       },
       "window.close": {
@@ -3901,9 +3902,9 @@ if (!noDiff && PAGE_CHANGES_TOOLS.includes(finalTool)) {
 }
 
 const finalClassification = classifyTool(finalTool, toolArgs);
-// Tab and window commands don't target a session's tab, but a session's playbook record holds
-// them: the host uses `recordSession` only to file the command there.
-const recordsBrowserCommand = finalClassification.targetUse === "browser" && commandMetadata(finalTool).recordable;
+// Tab and window commands (and tab.unname, a host command) don't target a session's tab, but a
+// session's playbook record holds them: the host uses `recordSession` only to file the command there.
+const recordsBrowserCommand = ["browser", "host"].includes(finalClassification.targetUse) && commandMetadata(finalTool).recordable;
 if (explicitSession !== undefined) {
   if (typeof explicitSession !== "string" || !explicitSession) {
     console.error("Error: --session requires a session name");

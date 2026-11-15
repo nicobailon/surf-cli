@@ -719,8 +719,11 @@ describe("CLI argument parsing", () => {
     expect(request).not.toHaveProperty("session");
   });
 
-  it("sends an explicit --session with tab and window commands for the record, not as a target", async () => {
-    const { request } = await runCli(["--session", "alpha", "tab.new", "https://example.test/"]);
+  it.each([
+    ["tab.new", "https://example.test/"],
+    ["tab.unname", "docs"],
+  ])("sends an explicit --session with %s for the record, not as a target", async (...command) => {
+    const { request } = await runCli(["--session", "alpha", ...command]);
     expect(request).toMatchObject({ recordSession: "alpha" });
     expect(request).not.toHaveProperty("session");
   });
