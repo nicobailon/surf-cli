@@ -95,7 +95,7 @@ describe("playbook client projection", () => {
     expect(result.manifest.endpoint.url).toBe("https://example.test/api");
   });
 
-  it("derives a POST as a write client that needs review, keeping query and body shape", () => {
+  it("refuses to derive a client from a POST, keeping its query and body shape when allowed", () => {
     const parent = fs.mkdtempSync(path.join(os.tmpdir(), "surf-client-"));
     directories.push(parent);
     const root = path.join(parent, "state");
@@ -125,7 +125,7 @@ describe("playbook client projection", () => {
         root,
         recordId: record.id,
       }),
-    ).toThrow(/write-capable/);
+    ).toThrow(/pb client derive and export refuse write requests for now/);
     expect(fs.existsSync(path.join(parent, "refused"))).toBe(false);
     const result = clients.deriveClient("fixture", "search", path.join(parent, "client"), {
       root,

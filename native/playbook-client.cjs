@@ -90,7 +90,7 @@ process.stdout.write("\\n");
 }
 
 function generateClient({ playbookId, op, strategy, provenance, out, allowWrite = false, origins = [] }) {
-  if (op.effect === "write" && !allowWrite) throw new Error("write-capable client projection requires explicit review");
+  if (op.effect === "write" && !allowWrite) throw new Error(`op ${op.id} can write, and pb client derive and export refuse write requests for now (only GET, HEAD or OPTIONS)`);
   if (typeof out !== "string" || !out) throw new Error("client projection requires --out <directory>");
   const directory = path.resolve(out);
   const request = strategy.request;
