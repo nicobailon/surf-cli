@@ -1239,6 +1239,36 @@ describe("CDPController", () => {
       expect(controller.getNetworkCaptureStatus(tabId).interruptions).toEqual([]);
     });
 
+    it("keeps a request that redirected as its own entry, with the redirect status", async () => {
+      // Chrome sends the redirected request under the same requestId, with the redirect response.
+      const onEvent = mockChrome.debugger.onEvent.addListener.mock.calls.at(-1)?.[0];
+      onEvent({ tabId }, "Network.requestWillBeSent", {
+        requestId: "cart",
+        timestamp: 1,
+        wallTime: 1_794_000_000,
+        request: {
+          url: "https://example.test/cart/add",
+          method: "POST",
+          headers: {},
+          postData: "id=1",
+        },
+      });
+      onEvent({ tabId }, "Network.requestWillBeSent", {
+        requestId: "cart",
+        timestamp: 2,
+        wallTime: 1_794_000_001,
+        redirectResponse: { status: 303, statusText: "See Other", headers: { location: "/cart" } },
+        request: { url: "https://example.test/cart", method: "GET", headers: {} },
+      });
+      await controller.drainNetworkEvents(tabId);
+      const entries = controller.getNetworkEntries(tabId, { includeStatic: true });
+      expect(entries.map(({ method, url, status }) => ({ method, url, status }))).toEqual([
+        { method: "POST", url: "https://example.test/cart/add", status: 303 },
+        { method: "GET", url: "https://example.test/cart", status: undefined },
+      ]);
+      expect(new Set(entries.map((entry) => entry.id)).size).toBe(2);
+    });
+
     it("counts the requests it drops to stay within its per-tab limit", async () => {
       for (let index = 0; index < 510; index++) {
         await request(index);

@@ -583,6 +583,8 @@ export class CDPController {
     const req = params.request;
     if (!req) return;
 
+    if (params.redirectResponse) this.keepRedirectedRequest(tabId, params);
+
     // CDP `timestamp` is Chrome's monotonic clock in seconds: durations use it, while `wallTime`
     // (epoch seconds) dates the request so it compares with wall-clock times.
     const timestamp = params.timestamp ? params.timestamp * 1000 : Date.now();
@@ -648,6 +650,35 @@ export class CDPController {
     };
 
     this.addNetworkEntry(tabId, params.requestId, entry);
+  }
+
+  /**
+   * Chrome sends a redirect's next request under the same requestId, which would overwrite the
+   * request that redirected (a POST answered with 303, say). Keep that one under its own id, with
+   * the redirect response, so later events for the requestId go to the new request.
+   */
+  private keepRedirectedRequest(tabId: number, params: any): void {
+    const { status, statusText, headers = {} } = params.redirectResponse;
+    const entriesMap = this.networkEntries.get(tabId);
+    const entry = entriesMap?.get(params.requestId);
+    if (entriesMap && entry) {
+      entriesMap.delete(params.requestId);
+      Object.assign(entry, {
+        status,
+        statusText,
+        responseHeaders: Object.fromEntries(Object.entries(headers).map(([key, value]) => [key, String(value)])),
+        _responseReceived: true,
+        _loadingFinished: true,
+      });
+      entry.bodyCapture = { mode: entry.bodyCapture.mode, complete: false, reason: "redirect" };
+      entry.flags.push("redirect");
+      entriesMap.set(entry.id, entry);
+    }
+    const request = [...(this.networkRequests.get(tabId) || [])].reverse().find((item) => item.requestId === params.requestId);
+    if (request) {
+      request.status = status;
+      request.requestId = request.id;
+    }
   }
 
   /** Stores an entry, dropping (and counting) the oldest beyond the per-tab limit. */
