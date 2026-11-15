@@ -105,12 +105,12 @@ function extractResult(result, extract) {
 }
 
 /** Throws on the first failed check; returns the assertion results (expect.assert), if any. */
-function verifyResult(value, expect = {}, raw = value) {
+function verifyResult(value, expect = {}, raw = value, secrets = []) {
   if (expect.status !== undefined && raw?.status !== expect.status) throw new Error(`expected status ${expect.status}`);
   if (expect.minItems !== undefined && (!Array.isArray(value) || value.length < expect.minItems)) throw new Error(`expected at least ${expect.minItems} items`);
   if (expect.truthy && !value) throw new Error("expected a truthy result");
   if (!expect.assert) return undefined;
-  const results = checkAssertions(value, expect.assert);
+  const results = checkAssertions(value, expect.assert, secrets);
   const failed = results.find((result) => !result.pass);
   if (failed) {
     const error = new Error(`assertion failed: ${describeAssertion(failed)} (got ${typeof failed.actual === "string" ? failed.actual : JSON.stringify(failed.actual)})`);
@@ -366,7 +366,7 @@ async function runPlaybookOp({ playbook, op, args: providedArgs = {}, secrets = 
       const value = extractResult(raw, strategy.extract);
       const expect = strategy.verify || strategy.expect || op.on?.success?.expect;
       // Saved assertions hold for every strategy, even one with its own verify.
-      const checked = verifyResult(value, assert ? { ...expect, assert } : expect, raw);
+      const checked = verifyResult(value, assert ? { ...expect, assert } : expect, raw, Object.values(authValues));
       if (op.effect === "write") await afterDispatch({ status: "verified", strategy, index });
       onEvent({ type: "strategy.completed", playbook: playbook.id, op: op.id, using: strategy.using, index, endedAt: new Date().toISOString() });
       return { status: "completed", playbook: playbook.id, op: op.id, strategy: strategy.using, value: redactSecrets(value, authValues), provenance: playbook.provenance, attempts, ...(checked ? { assertions: redactSecrets(checked, authValues) } : {}) };

@@ -57,10 +57,37 @@ function describeActual(found) {
   return found;
 }
 
-function checkAssertions(value, list) {
+/** Every key and string or number leaf of a value, numbers as text. */
+function valueTexts(value, out = []) {
+  if (typeof value === "string") out.push(value);
+  else if (typeof value === "number") out.push(String(value));
+  else if (Array.isArray(value)) for (const item of value) valueTexts(item, out);
+  else if (value && typeof value === "object") {
+    for (const [key, item] of Object.entries(value)) {
+      out.push(key);
+      valueTexts(item, out);
+    }
+  }
+  return out;
+}
+
+// Whether saving an assertion could store one of the run's env values: its path or expected value
+// (keys and leaves) contains one, its matches pattern matches one, or, for equals and matches (whose
+// stored value is compared with the content), the full, untruncated actual value contains one.
+// Only the run knows every value, the browser host's own included; callers get the boolean alone.
+function touchesSecret(assertion, found, secrets) {
+  const texts = [assertion.path, ...valueTexts(assertion.value)];
+  if (assertion.op === "equals" || assertion.op === "matches") texts.push(...valueTexts(found));
+  return secrets.some((secret) =>
+    texts.some((text) => text.includes(secret)) || (assertion.op === "matches" && new RegExp(assertion.value).test(secret)));
+}
+
+/** `secrets`: the run's env values; an assertion that touches one gets `secretSensitive: true`. */
+function checkAssertions(value, list, secrets = []) {
   return list.map((assertion) => {
     const found = compileJsonPath(assertion.path, "path")(value);
-    return { ...assertion, pass: OPS[assertion.op].test(found, assertion.value), actual: describeActual(found) };
+    const result = { ...assertion, pass: OPS[assertion.op].test(found, assertion.value), actual: describeActual(found) };
+    return touchesSecret(assertion, found, secrets) ? { ...result, secretSensitive: true } : result;
   });
 }
 
@@ -68,4 +95,4 @@ function describeAssertion({ path, op, value }) {
   return [path, op, ...(value === undefined ? [] : [JSON.stringify(value)])].join(" ");
 }
 
-module.exports = { checkAssertions, describeAssertion, validateAssertions };
+module.exports = { checkAssertions, describeAssertion, validateAssertions, valueTexts };

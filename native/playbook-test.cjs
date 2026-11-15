@@ -1,6 +1,6 @@
 // surf pb test: run an op the way `surf use` does and check assertions on its result.
 
-const { describeAssertion, validateAssertions } = require("./playbook-assertions.cjs");
+const { describeAssertion, validateAssertions, valueTexts } = require("./playbook-assertions.cjs");
 const { authInputs, resolveArgs } = require("./playbook-runtime.cjs");
 const { editSavedOp, resolveEditablePlaybook, resolveOp } = require("./playbooks.cjs");
 
@@ -86,20 +86,6 @@ function localOp(playbook, op, { cwd, home }) {
   }
 }
 
-// Every key and string or number leaf of an assertion value, numbers as text.
-function valueTexts(value, out = []) {
-  if (typeof value === "string") out.push(value);
-  else if (typeof value === "number") out.push(String(value));
-  else if (Array.isArray(value)) for (const item of value) valueTexts(item, out);
-  else if (value && typeof value === "object") {
-    for (const [key, item] of Object.entries(value)) {
-      out.push(key);
-      valueTexts(item, out);
-    }
-  }
-  return out;
-}
-
 // pb test --save writes assertions to the op file, which must never hold an env header's value.
 // Before the run: refuse when the path, any key or leaf of the value, or a matches pattern's source
 // contains one, or when the pattern matches one (which also refuses broad patterns such as .*).
@@ -119,14 +105,11 @@ function refuseSecretAssertions(assertions, secret) {
   });
 }
 
-// After the run: the host redacts env values (its own environment's too) from each assertion it
-// sends back. Any placeholder in what came back (actual, value or path) means the assertion touched
-// such a value, so it is not saved. This refuses some safe assertions on ops with env headers.
-const REDACTION_PLACEHOLDER = /<redacted(?:-\d+)?>/;
-
-function refuseRedactedAssertions(checked) {
+// After the run: the host marks an assertion secretSensitive when it touched one of the run's env
+// values (its own environment's included), judged on the full value before the preview is cut.
+function refuseSecretSensitive(checked) {
   checked.forEach((assertion, index) => {
-    if (REDACTION_PLACEHOLDER.test(JSON.stringify(assertion))) {
+    if (assertion.secretSensitive === true) {
       throw new Error(`--save refused: assertion ${index + 1}'s value passed through env-header redaction, so it can't be saved`);
     }
   });
@@ -193,7 +176,7 @@ async function runPlaybookTest({ argv, cwd = process.cwd(), home, env = process.
     saved: null,
   };
   if (options.save && ok) {
-    refuseRedactedAssertions(report.assertions);
+    refuseSecretSensitive(report.assertions);
     const edited = editSavedOp({
       playbook: spec.playbook,
       op: spec.op,
