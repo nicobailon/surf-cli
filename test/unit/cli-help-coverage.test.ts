@@ -29,6 +29,13 @@ describe("CLI help for commands outside the main tool list", () => {
     [["pb", "--help"], "playbook - Reusable site operations"],
     [["playbook", "--help"], "playbook record start <playbook>"],
     [["pb", "record", "start", "--help"], "Usage: surf playbook record start <playbook>"],
+    // An optional argument shows in brackets, in usage, the argument list and the group listing.
+    [
+      ["pb", "record", "candidates", "--help"],
+      "Usage: surf playbook record candidates [record-id]\n",
+    ],
+    [["pb", "record", "candidates", "--help"], "Arguments:\n  [record-id]\n"],
+    [["pb", "--help"], "playbook record candidates [record-id]"],
     [["semantic", "auth", "--help"], "surf semantic auth set"],
     [["remote", "--help"], "remote authorize <label>"],
     [["remote", "authorize", "--help"], "--output"],

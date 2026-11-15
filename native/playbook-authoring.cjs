@@ -26,13 +26,17 @@ function saveFromRecent({ site, op: opId, since = "1h", scope = "user", cwd, hom
   return savePlaybook({ manifest: { id: site, name: site, version: "1.0.0", origins: [] }, op, scope, cwd, home });
 }
 
-function saveFromRecord({ recordId, scope = "user", cwd, home, root = getPrivateStateRoot() }) {
+// `requestId` redrafts the op to replay that request, keeping a read draft a read (its checks rerun).
+function saveFromRecord({ recordId, requestId, scope = "user", cwd, home, root = getPrivateStateRoot() }) {
   const record = readRecord(recordId, root);
   if (!record) throw new Error(`record not found: ${recordId}`);
   const draftPath = path.join(recordsRoot(root), recordId, "draft", "op.json");
-  const op = fs.existsSync(draftPath) ? readPrivateJson(draftPath, null, { root }) : draftFromRecord(recordId, root);
+  const draft = fs.existsSync(draftPath) ? readPrivateJson(draftPath, null, { root }) : null;
+  const warnings = [];
+  const op = draft && !requestId ? draft : draftFromRecord(recordId, root, { read: draft?.effect === "read", requestId, warnings });
   validateOp(op, { origins: record.origin ? [record.origin] : [] });
-  return savePlaybook({ manifest: { id: record.site, name: record.site, version: "1.0.0", origins: record.origin ? [record.origin] : [] }, op, scope, cwd, home });
+  const saved = savePlaybook({ manifest: { id: record.site, name: record.site, version: "1.0.0", origins: record.origin ? [record.origin] : [] }, op, scope, cwd, home });
+  return warnings.length > 0 ? { ...saved, warnings } : saved;
 }
 
 function exportRecordHar(recordId, output, root = getPrivateStateRoot()) {

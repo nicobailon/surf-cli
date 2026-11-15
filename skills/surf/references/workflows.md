@@ -47,7 +47,8 @@ surf playbook suggest --since 1h
 surf playbook save example --op read --from-recent 1h
 surf playbook record start example --op read --network --watch
 surf playbook record mark "loaded results"
-surf playbook record stop --draft
+surf playbook record candidates               # rank the requests: r_… id, score, reasons, sample
+surf playbook record stop --draft --request-id <r_…>
 surf playbook trace export --from-record <record-id> --har ./trace.har
 surf playbook export example --out ./example-playbook
 surf playbook import ./example-playbook
@@ -55,11 +56,13 @@ surf playbook import ./example-playbook
 
 A draft that clicked or typed is a write, as is one whose recorded requests include one other than GET, HEAD or OPTIONS (beacons and analytics aside). When the flow only read data, stop with `--draft --read`; it needs `--network`, and Surf refuses it if a captured request can change data or a step acts beyond the page (cookies, tabs, windows, emulation, AI providers).
 
+The draft replays the top-ranked request (never telemetry, page assets or preflights; never a write on a read draft, nor a read on a draft made a write by a captured request); a weak top score adds a warning. `record candidates` ranks your active record live, else your latest one, or a record id you pass; choose with `--request-id` on `record stop --draft` or `save --from-record`.
+
 A record belongs to the session that started it (or its tab, without a session): only that session's commands go into it, only that session can mark, stop or discard it, and other sessions can record at the same time.
 
-Records, traces and the activity journal are private. Auth headers are always dropped. Typed inputs and request bodies are redacted unless you pass `--include-input-values`.
+Records, traces and the activity journal are private. Auth headers are always dropped. Typed inputs and request bodies are redacted unless you pass `--include-input-values`. Traces keep no response bodies or values, only each response's kind, size, record count, field count per type, and page-text overlap (no field names); `record candidates` prints a short sample only for an active record, from memory.
 
-A generated client replays a read endpoint without the browser and never contains browser credentials. For now `client derive` refuses any request other than GET, HEAD or OPTIONS, POST reads included:
+A generated client replays a read endpoint without the browser and never contains browser credentials. Without `--request-id`, `client derive` takes the top-ranked request only when it clearly leads. For now it refuses any request other than GET, HEAD or OPTIONS, POST reads included:
 
 ```bash
 surf playbook client derive example --op read --from-record <record-id> --request-id <request-id> --out ./client

@@ -101,7 +101,7 @@ emulate: emulate.network emulate.cpu emulate.geo emulate.device emulate.touch
 ai: kimi aistudio aistudio.build ai
 semantic: semantic.find semantic.filter semantic.verify | semantic auth set | semantic auth status | semantic auth clear
 oracle: oracle follow | oracle status | oracle list
-playbook: playbook list | playbook show | playbook ops | playbook run | playbook suggest | playbook save | playbook record start | playbook record mark | playbook record stop | playbook record status | playbook trace export | playbook export | playbook import | playbook client derive | playbook client export | playbook client verify
+playbook: playbook list | playbook show | playbook ops | playbook run | playbook suggest | playbook save | playbook record start | playbook record mark | playbook record stop | playbook record status | playbook record candidates | playbook trace export | playbook export | playbook import | playbook client derive | playbook client export | playbook client verify
 workflow: batch workflow.list workflow.info workflow.validate
 setup: install uninstall update config server extension-path health smoke remote authorize | remote list | remote revoke
 ```

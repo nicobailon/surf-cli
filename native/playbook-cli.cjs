@@ -3,6 +3,7 @@ const { openClientTransport } = require("./client-transport.cjs");
 const { resolveRequestDeadlineMs } = require("./host-sessions.cjs");
 const { exportRecordHar, saveFromRecent, saveFromRecord, suggestions } = require("./playbook-authoring.cjs");
 const { deriveClient, exportClient, verifyClient } = require("./playbook-client.cjs");
+const { formatCandidates } = require("./record-candidates.cjs");
 const { exportPlaybookDirectory, importPlaybookDirectory, listPlaybooks, resolvePlaybook } = require("./playbooks.cjs");
 
 function parseCommandArgs(argv) {
@@ -129,7 +130,8 @@ async function handlePlaybookCli(argv, { endpoint, cwd = process.cwd(), session,
     let args = {};
     if (action === "start") args = { site: parsed.positional[1], op: parsed.options.op, watch: parsed.options.watch === true, network: parsed.options.network === true, includeInputValues: parsed.options["include-input-values"] === true };
     else if (action === "mark") args = { label: parsed.positional.slice(1).join(" ") };
-    else if (action === "stop") args = { draft: parsed.options.draft === true, read: parsed.options.read === true };
+    else if (action === "stop") args = { draft: parsed.options.draft === true, read: parsed.options.read === true, ...(parsed.options["request-id"] ? { requestId: String(parsed.options["request-id"]) } : {}) };
+    else if (action === "candidates") args = { ...(parsed.positional[1] ? { recordId: parsed.positional[1] } : {}), ...(parsed.options.limit !== undefined ? { limit: parsed.options.limit } : {}) };
     else if (!["status", "pause", "resume", "discard"].includes(action)) throw new Error("Unknown record command");
     const value = await requestHost(endpoint, tool, args, {
       tabId: parsed.options["tab-id"],
@@ -137,12 +139,13 @@ async function handlePlaybookCli(argv, { endpoint, cwd = process.cwd(), session,
       sessionSource: parsed.options.session ? "explicit" : sessionSource,
       admission: parsed.options["no-wait"] === true ? { wait: false } : admission,
     });
+    if (action === "candidates" && parsed.options.json !== true) return { handled: true, value: formatCandidates(value), json: false };
     return { handled: true, value, json: parsed.options.json === true };
   }
   if (command === "suggest") return { handled: true, value: suggestions({ since: parsed.options.since || "1h" }), json: parsed.options.json === true };
   if (command === "save") {
     let value;
-    if (parsed.options["from-record"]) value = saveFromRecord({ recordId: parsed.options["from-record"], scope: parsed.options.project ? "project" : "user", cwd });
+    if (parsed.options["from-record"]) value = saveFromRecord({ recordId: parsed.options["from-record"], ...(parsed.options["request-id"] ? { requestId: String(parsed.options["request-id"]) } : {}), scope: parsed.options.project ? "project" : "user", cwd });
     else if (parsed.options["from-recent"] || parsed.positional[0]) value = saveFromRecent({ site: parsed.positional[0], op: parsed.options.op, since: parsed.options["from-recent"] === true ? "1h" : parsed.options["from-recent"] || "1h", scope: parsed.options.project ? "project" : "user", cwd });
     else throw new Error("save requires --from-record <id> or <site> --op <name> --from-recent");
     return { handled: true, value, json: parsed.options.json === true };
