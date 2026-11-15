@@ -1,0 +1,35 @@
+{
+  "version": 1,
+  "generator": {
+    "name": "surf-cli",
+    "version": "2.26.0"
+  },
+  "source": {
+    "type": "playbook",
+    "id": "shop",
+    "op": "search",
+    "scope": "user"
+  },
+  "playbook": "shop",
+  "op": "search",
+  "effect": "read",
+  "endpoint": {
+    "method": "GET",
+    "url": "https://shop.test/graphql/search",
+    "query": {
+      "q": "{{q}}",
+      "variables": {
+        "query": "{{q}}",
+        "page": 2
+      }
+    },
+    "headers": {
+      "accept": "application/json"
+    }
+  },
+  "extract": null,
+  "authInputs": [],
+  "verification": null,
+  "verificationCommand": "surf pb client verify .",
+  "noEmbeddedSecrets": true
+}

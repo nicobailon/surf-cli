@@ -238,9 +238,26 @@ function runClient(resolved, manifest, { env = {}, live = false } = {}) {
   });
 }
 
-async function verifyWithLocalServer(resolved, manifest) {
+// Clients made before the shared renderer (they don't embed renderRequest) put "verify" for every
+// placeholder and send each query value with String(), objects as "[object Object]".
+function legacyEndpoint(value) {
+  if (typeof value === "string") return value.replace(/\{\{[a-zA-Z0-9._-]+\}\}/g, "verify");
+  if (Array.isArray(value)) return value.map(legacyEndpoint);
+  if (value && typeof value === "object") return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, legacyEndpoint(item)]));
+  return value;
+}
+
+function expectedEndpoint(manifest, source) {
+  if (!source.includes("function renderRequest(")) {
+    const endpoint = legacyEndpoint(manifest.endpoint);
+    return { ...endpoint, query: Object.fromEntries(Object.entries(endpoint.query || {}).map(([name, value]) => [name, String(value)])) };
+  }
+  return renderRequest(manifest.endpoint, resolveArgValues(manifest.args || {}, sampleArgs(manifest)));
+}
+
+async function verifyWithLocalServer(resolved, manifest, source) {
   const requests = [];
-  const endpoint = renderRequest(manifest.endpoint, resolveArgValues(manifest.args || {}, sampleArgs(manifest)));
+  const endpoint = expectedEndpoint(manifest, source);
   const expectedUrl = new URL(endpoint.url);
   for (const [name, value] of Object.entries(endpoint.query || {})) expectedUrl.searchParams.set(name, String(value));
   const expectedPath = `${expectedUrl.pathname}${expectedUrl.search}`;
@@ -282,7 +299,7 @@ async function verifyClient(directory, { live } = {}) {
   if (!manifest.noEmbeddedSecrets || /bearer [a-z0-9._-]+|cookie:\s*[^<]|authorization\s*[:=]\s*["'][^<]/i.test(serialized)) throw new Error("generated client contains embedded credentials");
   if (!manifest.endpoint?.method || !manifest.endpoint?.url) throw new Error("generated client endpoint is incomplete");
   absoluteEndpointUrl(manifest.endpoint.url);
-  const execution = live ? { stdout: (await runClient(resolved, manifest, { live: true })).trim() } : await verifyWithLocalServer(resolved, manifest);
+  const execution = live ? { stdout: (await runClient(resolved, manifest, { live: true })).trim() } : await verifyWithLocalServer(resolved, manifest, source);
   return { valid: true, playbook: manifest.playbook, op: manifest.op, endpoint: manifest.endpoint, execution };
 }
 
