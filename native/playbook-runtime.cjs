@@ -1,11 +1,12 @@
 const { executeSingleStep, executeWorkflow } = require("./workflow-runtime.cjs");
 const { runWorkflowScript } = require("./workflow-script-runtime.cjs");
 const { runApiHarvest } = require("./api-harvest.cjs");
-const { runCollect } = require("./dom-collect.cjs");
+const { htmlExtractFunction, runCollect } = require("./dom-collect.cjs");
 const { editDistance } = require("./edit-distance.cjs");
 const { GLOBAL_OPTIONS } = require("./global-options.cjs");
 const { renderRequest, resolveArgValues } = require("./playbook-template.cjs");
 const { redactValues } = require("./redaction.cjs");
+const { extractRecords } = require("./records.cjs");
 
 function applyTemplate(value, args) {
   if (typeof value === "string") {
@@ -91,6 +92,11 @@ function getJsonPath(value, jsonPath) {
 
 function extractResult(result, extract) {
   if (!extract) return result;
+  // The page ran extract.html and sent back only what it found.
+  if (extract.html) return result.extracted;
+  if (extract.records !== undefined || extract.fields || extract.filter) {
+    return extractRecords(result.bodyJson !== undefined ? result.bodyJson : result, extract);
+  }
   if (extract.jsonPath) {
     const source = result.bodyJson !== undefined ? result.bodyJson : result;
     return getJsonPath(source, extract.jsonPath);
@@ -121,7 +127,9 @@ function withServerIdempotency(request, idempotency, attemptId) {
   return next;
 }
 
-function networkScript(request, allowedOrigins = []) {
+// With extract.html the body is parsed in the tab and only the extracted records come back: no
+// DOM in Node, and a whole page would overrun the tab script's output limit.
+function networkScript(request, allowedOrigins = [], html) {
   const headers = request.headers || {};
   const query = request.query || {};
   const body = request.body;
@@ -142,7 +150,18 @@ const response = await fetch(url.toString(), {
   ${body === undefined ? "" : `body: ${JSON.stringify(typeof body === "string" ? body : JSON.stringify(body))},`}
 });
 const text = await response.text();
-let json;
+${html ? `const doc = new DOMParser().parseFromString(text, "text/html");
+// Relative links resolve against the response URL, not the tab's page.
+const responseUrl = response.url || url.toString();
+const base = doc.querySelector("base[href]");
+if (base) base.setAttribute("href", new URL(base.getAttribute("href"), responseUrl).href);
+else {
+  const element = doc.createElement("base");
+  element.setAttribute("href", responseUrl);
+  doc.head.prepend(element);
+}
+return { status: response.status, ok: response.ok, url: response.url, headers: Object.fromEntries(response.headers.entries()), extracted: ${htmlExtractFunction(html)}(doc) };
+` : ""}let json;
 try { json = JSON.parse(text); } catch {}
 return { status: response.status, ok: response.ok, url: response.url, headers: Object.fromEntries(response.headers.entries()), body: text, bodyJson: json };
 })()`;
@@ -189,7 +208,11 @@ async function runStrategy(strategy, context) {
       vars: context.args,
     });
     if (result.status !== "completed") throw new Error(result.error || "workflow strategy failed");
-    return result;
+    if (!strategy.extract?.html) return result;
+    // The same extraction as the network strategy, on the page the workflow ended on.
+    const page = await context.executeTool("javascript_tool", { code: `${htmlExtractFunction(strategy.extract.html)}(document)` }, { signal: context.signal });
+    if (page?.error) throw new Error(typeof page.error === "string" ? page.error : JSON.stringify(page.error));
+    return { ...result, extracted: page?.output !== undefined ? JSON.parse(page.output) : page?.value };
   }
   if (strategy.using === "network") {
     const { authInputs: inputs = [], ...template } = strategy.request;
@@ -206,7 +229,7 @@ async function runStrategy(strategy, context) {
       context.attemptId,
     );
     await context.markDispatched?.();
-    const response = await context.executeTool("javascript_tool", { code: networkScript(request, context.allowedOrigins) }, { signal: context.signal });
+    const response = await context.executeTool("javascript_tool", { code: networkScript(request, context.allowedOrigins, strategy.extract?.html) }, { signal: context.signal });
     if (response?.error) throw new Error(typeof response.error === "string" ? response.error : JSON.stringify(response.error));
     const result = response?.output !== undefined ? JSON.parse(response.output) : response?.value ?? response;
     if (!result?.ok && (strategy.acceptStatus || []).includes(result?.status) === false) throw new Error(`network strategy returned ${result?.status || "an unknown status"}`);

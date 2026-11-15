@@ -1683,6 +1683,24 @@ const TOOLS = {
       "playbook show": { desc: "Show a playbook's source and ops", args: ["playbook"], opts: { json: "Output raw JSON" } },
       "playbook ops": { desc: "List a playbook's operations", args: ["playbook"], opts: { json: "Output raw JSON" } },
       "playbook run": { desc: "Same as surf use <playbook> <op>", args: ["playbook", "op"] },
+      "playbook extract": {
+        desc: "Make an op return records: from HTML (collect's --item/--field) or JSON (--records, --field paths), saved in the op",
+        args: ["playbook", "op"],
+        opts: {
+          item: "HTML: selector for one record",
+          field: "name=source (repeatable). HTML: 'sel', 'sel@attr', 'sel[]' as in collect. JSON: a path in each record, e.g. venue.name",
+          value: "HTML: one value instead of records, 'sel@attr' (a $.path reads one JSON value)",
+          records: "JSON: path of the records array, e.g. $.search.hits ($ for the whole body)",
+          filter: "JSON: path=value; keep records whose value matches (as text)",
+          strategy: "Set it on this strategy only (default: network and workflow for HTML, network for JSON)",
+          json: "Output raw JSON",
+        },
+        examples: [
+          { cmd: "pb extract books get_books --item article.product_pod --field 'title=h3 a@title' --field price=.price_color --field 'url=h3 a@href'", desc: "Book records from a catalogue page" },
+          { cmd: "pb extract blast submit --value 'input[name=RID]@value'", desc: "One value from an HTML form" },
+          { cmd: "pb extract walmart search --records '$.data.items' --field id=usItemId --field price=price.current --filter __typename=Product", desc: "JSON records, renamed and filtered" },
+        ],
+      },
       "playbook suggest": { desc: "Suggest playbooks from recent activity", args: [], opts: { since: "Look-back window (default: 1h)" } },
       "playbook save": {
         desc: "Save a playbook op from recent activity or a record",

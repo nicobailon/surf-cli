@@ -4,6 +4,7 @@ const path = require("path");
 const { atomicWriteJson } = require("./private-state.cjs");
 const { validateApiSpec } = require("./api-harvest.cjs");
 const { validateCollectSpec } = require("./dom-collect.cjs");
+const { validateExtract } = require("./playbook-extract.cjs");
 const { validateMarkdownSpec } = require("./record-format.cjs");
 const { assertNoEmbeddedSecrets, assertUrlHasNoEmbeddedSecrets } = require("./redaction.cjs");
 const { commandMetadata, normalizeStep } = require("./workflow-definition.cjs");
@@ -107,6 +108,13 @@ function normalizeScript(value) {
 
 function validateStrategy(strategy, effect, opId) {
   if (!strategy || typeof strategy !== "object" || Array.isArray(strategy)) throw new Error("playbook strategy must be an object");
+  if (strategy.extract !== undefined) {
+    try {
+      validateExtract(strategy.extract, strategy.using);
+    } catch (error) {
+      throw new Error(`op ${opId} extract: ${error.message}`);
+    }
+  }
   if (strategy.using === "script") {
     if (effect === "write") throw new Error(`write op ${opId} script strategy is not supported`);
     const script = normalizeScript(strategy.script);

@@ -250,4 +250,51 @@ function readCursor(doc, cursor) {
   return first === undefined ? undefined : get(first);
 }
 
-module.exports = { createRecordSet, filterRecords, findObjects, getPath, readCursor };
+/** "$", "$.data.items" or "$[0].title" as a path for compilePath; "" is the document itself. */
+function fromJsonPath(source, where) {
+  if (typeof source !== "string" || !source.startsWith("$")) throw new Error(`${where} must be a path starting with $, such as $.data.items`);
+  return source.slice(1).replace(/^\./, "");
+}
+
+function compileJsonPath(source, where) {
+  const path = fromJsonPath(source, where);
+  return path ? compilePath(path) : (value) => value;
+}
+
+/**
+ * A playbook extract over JSON: `records` picks the array, `filter` keeps records whose path equals
+ * a value (compared as text), `fields` maps output names to paths. Without `records`, `fields` maps
+ * the whole document. Malformed specs throw when compiled.
+ */
+function compileJsonExtract({ records, fields, filter }) {
+  const getRecords = records === undefined ? undefined : compileJsonPath(records, "records");
+  const map = fields === undefined ? undefined : compileFields(fields, "fields");
+  let rules;
+  if (filter !== undefined) {
+    if (!isPlainObject(filter) || Object.keys(filter).length === 0) throw new Error("filter must map a path to a value");
+    rules = Object.entries(filter).map(([path, value]) => [compilePath(path), String(value)]);
+  }
+  return (doc) => {
+    let value = doc;
+    if (getRecords) {
+      value = getRecords(doc);
+      if (!Array.isArray(value)) throw new Error(`extract records ${records} is not an array (found ${value === null ? "null" : typeof value})`);
+    }
+    if (rules) {
+      if (!Array.isArray(value)) throw new Error("extract filter needs an array of records");
+      value = value.filter((record) => rules.every(([get, expected]) => {
+        const found = get(record);
+        return found !== undefined && found !== null && String(found) === expected;
+      }));
+    }
+    if (!map) return value;
+    if (Array.isArray(value)) return value.map((record) => (isPlainObject(record) ? map(record) : record));
+    return isPlainObject(value) ? map(value) : value;
+  };
+}
+
+function extractRecords(doc, spec) {
+  return compileJsonExtract(spec)(doc);
+}
+
+module.exports = { compileJsonExtract, createRecordSet, extractRecords, filterRecords, findObjects, getPath, readCursor };

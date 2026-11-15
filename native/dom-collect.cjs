@@ -74,15 +74,8 @@ function validateCollectSpec(spec) {
   };
 }
 
-// Runs in the page. Reads unseen items, then scrolls the last item to the top for the next round.
-function roundScript(spec, seenKeys) {
-  const input = JSON.stringify({ item: spec.item, key: spec.key, fields: spec.fields, expand: spec.expand, seen: seenKeys });
-  return `(async () => {
-const spec = ${input};
-// Background tabs and minimized windows do not render virtualized lists.
-if (document.visibilityState === "hidden") return { hidden: true };
-const seen = new Set(spec.seen);
-// Dotted field names ("quoted.text") build nested objects.
+// Page-side helpers shared by collect and playbook HTML extraction. The script defines `textOf`.
+const PICK_SOURCE = `// Dotted field names ("quoted.text") build nested objects.
 const assign = (record, name, value) => {
   if (value === undefined) return;
   const parts = name.split(".");
@@ -102,7 +95,7 @@ const pick = (item, field, record) => {
   }
   const elements = field.selector === ":scope" ? [item] : field.all ? [...item.querySelectorAll(field.selector)] : [item.querySelector(field.selector)].filter(Boolean);
   const read = (element) => {
-    if (!field.attr) return element.innerText.trim();
+    if (!field.attr) return textOf(element);
     const property = element[field.attr];
     return typeof property === "string" ? property : element.getAttribute(field.attr) ?? undefined;
   };
@@ -117,7 +110,29 @@ const pick = (item, field, record) => {
   }
   return elements.length ? apply(read(elements[0])) : undefined;
 };
-if (spec.expand) {
+// Templates run last, so they can use the item's other fields.
+const readItem = (item, fields) => {
+  const record = {};
+  const templates = [];
+  for (const [name, field] of Object.entries(fields)) {
+    if (field.template !== undefined) templates.push([name, field]);
+    else assign(record, name, pick(item, field, record));
+  }
+  for (const [name, field] of templates) assign(record, name, pick(item, field, record));
+  return record;
+};
+`;
+
+// Runs in the page. Reads unseen items, then scrolls the last item to the top for the next round.
+function roundScript(spec, seenKeys) {
+  const input = JSON.stringify({ item: spec.item, key: spec.key, fields: spec.fields, expand: spec.expand, seen: seenKeys });
+  return `(async () => {
+const spec = ${input};
+// Background tabs and minimized windows do not render virtualized lists.
+if (document.visibilityState === "hidden") return { hidden: true };
+const seen = new Set(spec.seen);
+const textOf = (element) => element.innerText.trim();
+${PICK_SOURCE}if (spec.expand) {
   const clicked = [];
   for (const item of document.querySelectorAll(spec.item)) {
     for (const element of item.querySelectorAll(spec.expand)) {
@@ -137,13 +152,7 @@ if (spec.expand) {
 const items = [...document.querySelectorAll(spec.item)];
 const records = [];
 for (const item of items) {
-  const record = {};
-  const templates = [];
-  for (const [name, field] of Object.entries(spec.fields)) {
-    if (field.template !== undefined) templates.push([name, field]);
-    else assign(record, name, pick(item, field, record));
-  }
-  for (const [name, field] of templates) assign(record, name, pick(item, field, record));
+  const record = readItem(item, spec.fields);
   const key = pick(item, spec.key, record);
   if (key === undefined || key === null || key === "") continue;
   const id = JSON.stringify(key);
@@ -155,6 +164,70 @@ if (items.length) items[items.length - 1].scrollIntoView({ block: "start" });
 else window.scrollBy(0, window.innerHeight);
 return { records };
 })()`;
+}
+
+// Node has no CSS parser, so this only catches what it can: unbalanced brackets, parentheses and
+// quotes, and an @ outside them (sel@attr with no attribute). The page reports any other bad selector.
+function assertSelector(selector, where) {
+  const closers = [];
+  let quote = null;
+  for (const char of selector) {
+    if (quote) {
+      if (char === quote) quote = null;
+    } else if (char === '"' || char === "'") quote = char;
+    else if (char === "[" || char === "(") closers.push(char === "[" ? "]" : ")");
+    else if ((char === "]" || char === ")") && closers.pop() !== char) throw new Error(`${where} has an unbalanced selector: ${selector}`);
+    else if (char === "@" && closers.length === 0) throw new Error(`${where} has a stray @ (write selector@attribute): ${selector}`);
+  }
+  if (quote || closers.length) throw new Error(`${where} has an unbalanced selector: ${selector}`);
+}
+
+function htmlField(spec, where) {
+  const field = parseDomField(spec, where);
+  if (field.selector !== undefined && field.selector !== ":scope") assertSelector(field.selector, where);
+  return field;
+}
+
+/** A playbook extract.html spec: { item, fields } for records, or { value } for one value. */
+function parseHtmlExtract(spec) {
+  if (!isPlainObject(spec)) throw new Error("html must be an object");
+  for (const key of Object.keys(spec)) {
+    if (!["item", "fields", "value"].includes(key)) throw new Error(`html has unknown key "${key}" (allowed: item, fields, value)`);
+  }
+  if (spec.value !== undefined) {
+    if (spec.item !== undefined || spec.fields !== undefined) throw new Error("html takes item and fields, or value");
+    return { value: htmlField(spec.value, "html value") };
+  }
+  if (typeof spec.item !== "string" || !spec.item.trim()) throw new Error("html needs an item selector, or a value");
+  assertSelector(spec.item, "html item");
+  if (!isPlainObject(spec.fields) || Object.keys(spec.fields).length === 0) throw new Error("html fields must map at least one field");
+  return { item: spec.item, fields: Object.fromEntries(Object.entries(spec.fields).map(([name, field]) => [name, htmlField(field, `html field ${name}`)])) };
+}
+
+/**
+ * Page-side function `(doc) => records | value` for an extract.html spec. Text is the element's text
+ * with whitespace collapsed, the same in a parsed response body (which has no layout) and a live page.
+ */
+function htmlExtractFunction(spec) {
+  return `((doc) => {
+const spec = ${JSON.stringify(parseHtmlExtract(spec))};
+const textOf = (element) => (element.textContent || "").replace(/\\s+/g, " ").trim();
+${PICK_SOURCE}const check = (where, field) => {
+  if (field.selector === undefined || field.selector === ":scope") return;
+  try {
+    doc.querySelector(field.selector);
+  } catch {
+    throw new Error(\`extract \${where} has an invalid selector: \${field.selector}\`);
+  }
+};
+if (spec.value) {
+  check("value", spec.value);
+  return pick(doc, spec.value, {}) ?? null;
+}
+check("item", { selector: spec.item });
+for (const [name, field] of Object.entries(spec.fields)) check(\`field \${name}\`, field);
+return [...doc.querySelectorAll(spec.item)].map((item) => readItem(item, spec.fields));
+})`;
 }
 
 /** Background tabs and minimized windows neither render virtualized lists nor load more on scroll. */
@@ -201,4 +274,4 @@ async function runCollect({ spec, executeTool, sleep = (ms) => new Promise((reso
   return filterRecords([...byKey.values()], options.keep);
 }
 
-module.exports = { hiddenTabError, runCollect, validateCollectSpec };
+module.exports = { hiddenTabError, htmlExtractFunction, parseHtmlExtract, runCollect, validateCollectSpec };

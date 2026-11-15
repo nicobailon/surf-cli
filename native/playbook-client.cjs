@@ -31,6 +31,10 @@ function absoluteEndpointUrl(url, origins = []) {
   return unmask(resolved.toString());
 }
 
+function usesJsonExtract(extract) {
+  return Boolean(extract && (extract.records !== undefined || extract.fields || extract.filter));
+}
+
 function networkStrategy(op) {
   const strategy = op.run.find((candidate) => candidate.using === "network");
   if (!strategy) throw new Error(`op ${op.id} has no validated network strategy`);
@@ -40,6 +44,7 @@ function networkStrategy(op) {
 function clientSource() {
   return `#!/usr/bin/env node
 import fs from "node:fs";
+import { createRequire } from "node:module";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 const directory = path.dirname(fileURLToPath(import.meta.url));
@@ -98,6 +103,11 @@ if (manifest.extract?.jsonPath) {
   for (const part of manifest.extract.jsonPath.replace(/^\\$\\.?/, "").split(".").filter(Boolean)) output = output?.[part];
 }
 if (manifest.extract?.field) output = output?.[manifest.extract.field];
+if (manifest.extract && (manifest.extract.records !== undefined || manifest.extract.fields || manifest.extract.filter)) {
+  // records.cjs is Surf's own JSON extraction, copied next to this client.
+  const { extractRecords } = createRequire(import.meta.url)("./records.cjs");
+  output = extractRecords(bodyJson ?? output, manifest.extract);
+}
 process.stdout.write(redact(output === undefined ? "" : typeof output === "string" ? output : JSON.stringify(output, null, 2)));
 process.stdout.write("\\n");
 `;
@@ -124,6 +134,12 @@ function generateClient({ playbookId, op, strategy, provenance, out, allowWrite 
   assertNoEmbeddedSecrets(endpoint);
   assertUrlHasNoEmbeddedSecrets(endpoint.url);
   if (fs.existsSync(directory) && fs.lstatSync(directory).isSymbolicLink()) throw new Error(`refusing symbolic link: ${directory}`);
+  const warnings = [];
+  let extract = strategy.extract || null;
+  if (extract?.html) {
+    warnings.push("extract.html runs only through surf use (Node has no DOM); this client prints the raw HTML body");
+    extract = null;
+  }
   ensurePrivateDir(directory, directory);
   const manifest = {
     version: 1,
@@ -134,7 +150,7 @@ function generateClient({ playbookId, op, strategy, provenance, out, allowWrite 
     effect: op.effect,
     endpoint,
     args: endpointArgs(op, endpoint),
-    extract: strategy.extract || null,
+    extract,
     authInputs: Array.isArray(request.authInputs) ? request.authInputs.map((input) => ({ env: input.env, header: input.header, required: input.required !== false })) : [],
     verification: strategy.verify || null,
     verificationCommand: "surf pb client verify .",
@@ -143,7 +159,10 @@ function generateClient({ playbookId, op, strategy, provenance, out, allowWrite 
   atomicWriteJson(path.join(directory, "surf-client.json"), manifest, { root: directory });
   atomicWriteFile(path.join(directory, "client.mjs"), clientSource(), { root: directory, encoding: "utf8" });
   atomicWriteJson(path.join(directory, "package.json"), { private: true, type: "module", scripts: { start: "node client.mjs" } }, { root: directory });
-  return { directory, manifest };
+  if (usesJsonExtract(extract)) {
+    atomicWriteFile(path.join(directory, "records.cjs"), fs.readFileSync(path.join(__dirname, "records.cjs"), "utf8"), { root: directory, encoding: "utf8" });
+  }
+  return { directory, manifest, warnings };
 }
 
 function exportClient(playbookId, opId, out, options = {}) {
@@ -165,6 +184,16 @@ function clearWinner(candidates, record) {
   return top.entry;
 }
 
+/** The extract of a saved op's network strategy, so a derived client returns the same records. */
+function savedExtract(site, opId, { cwd, home } = {}) {
+  try {
+    return resolveOp(site, opId, { cwd, home }).op.run.find((strategy) => strategy.using === "network")?.extract;
+  } catch (error) {
+    if (/^(Playbook|Op) not found/.test(error.message)) return undefined;
+    throw error;
+  }
+}
+
 function deriveClient(site, opId, out, options = {}) {
   const root = options.root || getPrivateStateRoot();
   const record = options.recordId ? readRecord(options.recordId, root) : findRecord(site, opId, root);
@@ -180,7 +209,8 @@ function deriveClient(site, opId, out, options = {}) {
   const url = new URL(entry.url);
   const query = Object.fromEntries(url.searchParams.entries());
   url.search = "";
-  const strategy = { using: "network", request: { method: entry.method, url: url.toString(), query, headers: safeHeaders(entry.requestHeaders), ...(entry.requestBody !== undefined ? { body: entry.requestBody } : {}) } };
+  const extract = savedExtract(site, opId, options);
+  const strategy = { using: "network", request: { method: entry.method, url: url.toString(), query, headers: safeHeaders(entry.requestHeaders), ...(entry.requestBody !== undefined ? { body: entry.requestBody } : {}) }, ...(extract ? { extract } : {}) };
   return generateClient({ playbookId: site, op, strategy, provenance: { type: "record", recordId: record.id }, out, allowWrite: options.allowWrite });
 }
 
@@ -217,8 +247,18 @@ function authEnv(manifest, live) {
   return env;
 }
 
+// Nests `leaf` at a $.a.b[0] path, so a records extract finds its array.
+function bodyAt(jsonPath, leaf) {
+  const parts = jsonPath.slice(1).match(/\[(?:\d+|\*)\]|[^.[\]]+/g) || [];
+  return parts.reduceRight((value, part) => {
+    if (!part.startsWith("[")) return { [part]: value };
+    return new Array(part === "[*]" ? 1 : Number(part.slice(1, -1)) + 1).fill(value);
+  }, leaf);
+}
+
 function verificationBody(manifest) {
   if (manifest.extract?.field === "body") return "verified";
+  if (manifest.extract?.records !== undefined) return JSON.stringify(bodyAt(manifest.extract.records, [{}]));
   return JSON.stringify({ ok: true, body: "verified", data: "verified", items: ["verified"] });
 }
 
