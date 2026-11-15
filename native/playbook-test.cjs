@@ -86,17 +86,48 @@ function localOp(playbook, op, { cwd, home }) {
   }
 }
 
-// pb test --save writes assertions to the op file, which must never hold an env header's value:
-// refuse when a path, a value or a matches pattern (escapes removed) contains one. The error names
-// the assertion's position and the variable, never the value.
+// Every key and string or number leaf of an assertion value, numbers as text.
+function valueTexts(value, out = []) {
+  if (typeof value === "string") out.push(value);
+  else if (typeof value === "number") out.push(String(value));
+  else if (Array.isArray(value)) for (const item of value) valueTexts(item, out);
+  else if (value && typeof value === "object") {
+    for (const [key, item] of Object.entries(value)) {
+      out.push(key);
+      valueTexts(item, out);
+    }
+  }
+  return out;
+}
+
+// pb test --save writes assertions to the op file, which must never hold an env header's value.
+// Before the run: refuse when the path, any key or leaf of the value, or a matches pattern's source
+// contains one, or when the pattern matches one (which also refuses broad patterns such as .*).
+// Errors name the assertion's position and the variable, never the value.
 function refuseSecretAssertions(assertions, secret) {
   assertions.forEach((assertion, index) => {
-    const texts = [assertion.path, typeof assertion.value === "string" ? assertion.value : JSON.stringify(assertion.value ?? null)];
-    if (assertion.op === "matches") texts.push(String(assertion.value).replace(/\\(.)/g, "$1"));
+    const position = `assertion ${index + 1}`;
+    const texts = [assertion.path, ...valueTexts(assertion.value)];
     for (const [name, value] of Object.entries(secret)) {
       if (texts.some((text) => text.includes(value))) {
-        throw new Error(`--save refused: assertion ${index + 1} contains the value of ${name}, which is never stored; assert on something else`);
+        throw new Error(`--save refused: ${position} contains the value of ${name}, which is never stored; assert on something else`);
       }
+      if (assertion.op === "matches" && new RegExp(assertion.value).test(value)) {
+        throw new Error(`--save refused: ${position}'s pattern matches the value of ${name}, which is never stored; use a narrower pattern`);
+      }
+    }
+  });
+}
+
+// After the run: the host redacts env values from each assertion's `actual` (its own environment's
+// too). A matches assertion that passed but no longer matches its redacted actual matched only
+// through such a value, which its pattern encodes in some form.
+function refuseRedactedMatches(checked) {
+  checked.forEach((assertion, index) => {
+    const { op, pass, actual, value } = assertion;
+    if (op !== "matches" || !pass || typeof actual !== "string" || !actual.includes("<redacted>")) return;
+    if (!new RegExp(value).test(actual)) {
+      throw new Error(`--save refused: assertion ${index + 1}'s pattern matched the response only through an env header's value, which is never stored; use a narrower pattern`);
     }
   });
 }
@@ -162,6 +193,7 @@ async function runPlaybookTest({ argv, cwd = process.cwd(), home, env = process.
     saved: null,
   };
   if (options.save && ok) {
+    refuseRedactedMatches(report.assertions);
     const edited = editSavedOp({
       playbook: spec.playbook,
       op: spec.op,

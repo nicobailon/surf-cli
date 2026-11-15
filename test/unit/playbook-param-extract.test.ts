@@ -355,34 +355,89 @@ describe("redacting object keys", () => {
   });
 });
 
+/** Every character as a \xNN escape, so the pattern's source never contains the text. */
+const hexEscaped = (text: string) =>
+  [...text].map((char) => `\\x${char.charCodeAt(0).toString(16).padStart(2, "0")}`).join("");
+
 describe("pb test --save and env values", () => {
-  it("refuses to save an assertion whose value, path or pattern holds the env value, naming its position", async () => {
+  function saveRun(cwd: string, asserts: string[], runOp: (...args: any[]) => unknown, key = KEY) {
+    return pbTest.runPlaybookTest({
+      argv: ["shop", "items", ...asserts, "--save"],
+      cwd,
+      home: cwd,
+      env: { SURF_TEST_ITEMS_KEY: key },
+      runOp,
+    });
+  }
+
+  it("refuses, before running, an assertion whose path, value or pattern holds the env value", async () => {
     const cwd = tempDir();
     const file = writeShop(cwd, op);
     const before = fs.readFileSync(file, "utf8");
     const runOp = vi.fn();
-    const cases: Array<[string[], number]> = [
-      [["--assert", "$", "array_min_len", "1", "--assert", "$[0].echo", "equals", `key ${KEY}`], 2],
-      [["--assert", `$.${KEY}`, "not_null"], 1],
-      [["--assert", "$[0].echo", "matches", `^key ${KEY}$`], 1],
-      [["--assert", "$[0].echo", "matches", `^key ${KEY.replace(/-/g, "\\-")}$`], 1],
-    ];
-    for (const [asserts, position] of cases) {
-      const run = pbTest.runPlaybookTest({
-        argv: ["shop", "items", ...asserts, "--save"],
-        cwd,
-        home: cwd,
-        env: { SURF_TEST_ITEMS_KEY: KEY },
-        runOp,
-      });
-      await expect(run).rejects.toThrow(
-        new RegExp(
-          `--save refused: assertion ${position} contains the value of SURF_TEST_ITEMS_KEY`,
-        ),
+    const contains = (n: number) =>
+      new RegExp(`--save refused: assertion ${n} contains the value of SURF_TEST_ITEMS_KEY`);
+    const matches = (n: number) =>
+      new RegExp(
+        `--save refused: assertion ${n}'s pattern matches the value of SURF_TEST_ITEMS_KEY`,
       );
-      await run.catch((error: Error) => expect(error.message).not.toContain(KEY));
+    const cases: Array<[string[], RegExp, string?]> = [
+      [
+        ["--assert", "$", "array_min_len", "1", "--assert", "$[0].echo", "equals", `key ${KEY}`],
+        contains(2),
+      ],
+      [["--assert", `$.${KEY}`, "not_null"], contains(1)],
+      [["--assert", "$[0].echo", "matches", `^key ${KEY}$`], contains(1)],
+      [["--assert", "$.a", "equals", JSON.stringify({ a: { [KEY]: 1 } })], contains(1)],
+      [["--assert", "$.a", "equals", JSON.stringify({ a: [{ b: `prefix ${KEY}` }] })], contains(1)],
+      [["--assert", "$.n", "equals", "98765432"], contains(1), "98765432"],
+      // JSON escapes the quote and backslash, so the value's JSON text doesn't contain the key as is.
+      [
+        ["--assert", "$.a", "equals", JSON.stringify({ a: { b: 'x"q\\uote-key-1' } })],
+        contains(1),
+        'x"q\\uote-key-1',
+      ],
+      [["--assert", "$[0].echo", "matches", hexEscaped(KEY)], matches(1)],
+      [["--assert", "$[0].echo", "matches", ".*"], matches(1)],
+    ];
+    for (const [asserts, expected, key] of cases) {
+      const run = saveRun(cwd, asserts, runOp, key);
+      await expect(run, asserts.join(" ")).rejects.toThrow(expected);
+      await run.catch((error: Error) => expect(error.message).not.toContain(key ?? KEY));
     }
     expect(runOp).not.toHaveBeenCalled();
     expect(fs.readFileSync(file, "utf8")).toBe(before);
+  });
+
+  it("refuses, after running, a pattern that matched only through the redacted env value", async () => {
+    const cwd = tempDir();
+    const file = writeShop(cwd, op);
+    const before = fs.readFileSync(file, "utf8");
+    const pattern = `^key ${hexEscaped(KEY)}$`;
+    const run = saveRun(cwd, ["--assert", "$[0].echo", "matches", pattern], async () => ({
+      status: "completed",
+      strategy: "network",
+      value: [],
+      attempts: [],
+      // The host redacts env values from what it sends back, so `actual` reads <redacted>.
+      assertions: [
+        { path: "$[0].echo", op: "matches", value: pattern, pass: true, actual: "key <redacted>" },
+      ],
+    }));
+    await expect(run).rejects.toThrow(
+      /--save refused: assertion 1's pattern matched the response only through an env header's value/,
+    );
+    expect(fs.readFileSync(file, "utf8")).toBe(before);
+    // A pattern that still matches the redacted value is saved.
+    const saved = await saveRun(cwd, ["--assert", "$[0].echo", "matches", "^key "], async () => ({
+      status: "completed",
+      strategy: "network",
+      value: [],
+      attempts: [],
+      assertions: [
+        { path: "$[0].echo", op: "matches", value: "^key ", pass: true, actual: "key <redacted>" },
+      ],
+    }));
+    expect(saved.saved).toBe(file);
   });
 });
