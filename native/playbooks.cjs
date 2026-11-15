@@ -281,8 +281,9 @@ function resolveEditablePlaybook(playbookId, options) {
 }
 
 /**
- * Rewrites a user or project op through savePlaybook: `edit` gets the op as written on disk (not
- * normalized) and returns the new one. Returns the file and its text before and after.
+ * The one way an op file is edited (pb param, pb extract, pb test --save): `edit(raw, playbook)` gets
+ * the op as written on disk (not normalized) and returns the new op, which is saved through
+ * savePlaybook, or null to leave the file alone. Returns the file and its text before and after.
  */
 function editSavedOp({ playbook: playbookId, op: opId, edit, cwd = process.cwd(), home = os.homedir() }) {
   const playbook = resolveEditablePlaybook(playbookId, { cwd, home });
@@ -294,8 +295,10 @@ function editSavedOp({ playbook: playbookId, op: opId, edit, cwd = process.cwd()
   const file = path.join(opsDir, name);
   const before = fs.readFileSync(file, "utf8");
   const { directory: _directory, provenance: _provenance, ops: _ops, ...manifest } = playbook;
-  savePlaybook({ manifest, op: edit(JSON.parse(before)), scope, cwd, home });
-  return { playbook: playbook.id, op: opId, scope, path: file, before, after: fs.readFileSync(file, "utf8") };
+  const next = edit(JSON.parse(before), playbook);
+  if (next === null) return { playbook: playbook.id, op: opId, scope, path: file, changed: false, before, after: before };
+  savePlaybook({ manifest, op: next, scope, cwd, home });
+  return { playbook: playbook.id, op: opId, scope, path: file, changed: true, before, after: fs.readFileSync(file, "utf8") };
 }
 
 function writePlaybookDirectory(directory, playbook) {

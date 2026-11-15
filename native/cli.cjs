@@ -1683,41 +1683,6 @@ const TOOLS = {
       "playbook show": { desc: "Show a playbook's source and ops", args: ["playbook"], opts: { json: "Output raw JSON" } },
       "playbook ops": { desc: "List a playbook's operations", args: ["playbook"], opts: { json: "Output raw JSON" } },
       "playbook run": { desc: "Same as surf use <playbook> <op>", args: ["playbook", "op"] },
-      "playbook test": {
-        desc: "Run an op as surf use does and check assertions on its result; exits 1 when one fails or no strategy answers",
-        args: ["playbook", "op"],
-        opts: {
-          "<arg>": "Operation input, as with surf use (or all at once with --args '<json>'); an input the op doesn't define fails",
-          timeout: "Seconds before the run gives up (default: the op's --timeout, else 600)",
-          assert: "<path> <op> [value] (repeatable): ops equals, array_min_len, not_null, exists, matches; paths like $, $[0].title, $.status. Default: the op's saved assertions",
-          strategy: "Run only this strategy (network, workflow, ...), to tell the network path from a fallback",
-          save: "Save the --assert list in the op when the test passes; surf use then checks it too",
-          write: "Allow testing a write op (it really writes)",
-          json: "Output JSON: ok, strategy, records, durationMs, assertions, attempts",
-        },
-        examples: [
-          { cmd: "pb test books get_books --page 2 --assert '$' array_min_len 1 --assert '$[0].title' not_null --strategy network --save", desc: "Check the network path and save the checks" },
-          { cmd: "pb test resy search --args '{\"query\":\"pizza\"}' --json", desc: "Rerun the saved checks" },
-        ],
-      },
-      "playbook extract": {
-        desc: "Make an op return records: from HTML (collect's --item/--field) or JSON (--records, --field paths), saved in the op",
-        args: ["playbook", "op"],
-        opts: {
-          item: "HTML: selector for one record",
-          field: "name=source (repeatable). HTML: 'sel', 'sel@attr', 'sel[]' as in collect. JSON: a path in each record, e.g. venue.name",
-          value: "HTML: one value instead of records, 'sel@attr' (a $.path reads one JSON value)",
-          records: "JSON: path of the records array, e.g. $.search.hits ($ for the whole body)",
-          filter: "JSON: path=value; keep records whose value matches (as text)",
-          strategy: "Set it on this strategy only (default: network and workflow for HTML, network for JSON)",
-          json: "Output raw JSON",
-        },
-        examples: [
-          { cmd: "pb extract books get_books --item article.product_pod --field 'title=h3 a@title' --field price=.price_color --field 'url=h3 a@href'", desc: "Book records from a catalogue page" },
-          { cmd: "pb extract blast submit --value 'input[name=RID]@value'", desc: "One value from an HTML form" },
-          { cmd: "pb extract walmart search --records '$.data.items' --field id=usItemId --field price=price.current --filter __typename=Product", desc: "JSON records, renamed and filtered" },
-        ],
-      },
       "playbook suggest": { desc: "Suggest playbooks from recent activity", args: [], opts: { since: "Look-back window (default: 1h)" } },
       "playbook save": {
         desc: "Save a playbook op from recent activity or a record",
@@ -1795,6 +1760,41 @@ const TOOLS = {
       },
       "playbook client export": { desc: "Export a client for a playbook op", args: ["playbook"], opts: { op: "Operation name", out: "Output directory" } },
       "playbook client verify": { desc: "Verify a generated client", args: ["dir"], opts: { live: "Also call the live endpoint" } },
+      "playbook test": {
+        desc: "Run an op as surf use does and check assertions on its result; exits 1 when one fails or no strategy answers",
+        args: ["playbook", "op"],
+        opts: {
+          "<arg>": "Operation input, as with surf use (or all at once with --args '<json>'); an input the op doesn't define fails",
+          timeout: "Seconds before the run gives up (default: the op's --timeout, else 600)",
+          assert: "<path> <op> [value] (repeatable): ops equals, array_min_len, not_null, exists, matches; paths like $, $[0].title, $.status. Default: the op's saved assertions",
+          strategy: "Run only this strategy (network, workflow, ...), to tell the network path from a fallback",
+          save: "Save the --assert list in the op when the test passes; surf use then checks it too",
+          write: "Allow testing a write op (it really writes)",
+          json: "Output JSON: ok, strategy, records, durationMs, assertions, attempts",
+        },
+        examples: [
+          { cmd: "pb test books get_books --page 2 --assert '$' array_min_len 1 --assert '$[0].title' not_null --strategy network --save", desc: "Check the network path and save the checks" },
+          { cmd: "pb test resy search --args '{\"query\":\"pizza\"}' --json", desc: "Rerun the saved checks" },
+        ],
+      },
+      "playbook extract": {
+        desc: "Make an op return records: from HTML (collect's --item/--field) or JSON (--records, --field paths), saved in the op",
+        args: ["playbook", "op"],
+        opts: {
+          item: "HTML: selector for one record",
+          field: "name=source (repeatable). HTML: 'sel', 'sel@attr', 'sel[]' as in collect. JSON: a path in each record, e.g. venue.name",
+          value: "HTML: one value instead of records, 'sel@attr' (a $.path reads one JSON value)",
+          records: "JSON: path of the records array, e.g. $.search.hits ($ for the whole body)",
+          filter: "JSON: path=value; keep records whose value matches (as text)",
+          strategy: "Set it on this strategy only (default: network and workflow for HTML, network for JSON)",
+          json: "Output raw JSON",
+        },
+        examples: [
+          { cmd: "pb extract books get_books --item article.product_pod --field 'title=h3 a@title' --field price=.price_color --field 'url=h3 a@href'", desc: "Book records from a catalogue page" },
+          { cmd: "pb extract blast submit --value 'input[name=RID]@value'", desc: "One value from an HTML form" },
+          { cmd: "pb extract walmart search --records '$.data.items' --field id=usItemId --field price=price.current --filter __typename=Product", desc: "JSON records, renamed and filtered" },
+        ],
+      },
     },
   },
   remote: {

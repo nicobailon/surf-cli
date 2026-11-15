@@ -1,7 +1,7 @@
 // surf pb test: run an op the way `surf use` does and check assertions on its result.
 
 const { describeAssertion, validateAssertions } = require("./playbook-assertions.cjs");
-const { resolveArgs } = require("./playbook-runtime.cjs");
+const { authInputs, resolveArgs } = require("./playbook-runtime.cjs");
 const { editSavedOp, resolveEditablePlaybook, resolveOp } = require("./playbooks.cjs");
 
 const USAGE =
@@ -90,7 +90,7 @@ function localOp(playbook, op, { cwd, home }) {
  * Runs the test. `runOp(params)` runs the op on the browser host (playbook.run with test: true)
  * and resolves to its result, a failed run included.
  */
-async function runPlaybookTest({ argv, cwd = process.cwd(), home, runOp, now = Date.now }) {
+async function runPlaybookTest({ argv, cwd = process.cwd(), home, env = process.env, runOp, now = Date.now }) {
   const spec = parseTestArgs(argv);
   const { options } = spec;
   const op = localOp(spec.playbook, spec.op, { cwd, home });
@@ -105,6 +105,10 @@ async function runPlaybookTest({ argv, cwd = process.cwd(), home, runOp, now = D
     // Fail before running: a built-in op can't take saved assertions.
     if (op) resolveEditablePlaybook(spec.playbook, { cwd, home });
   }
+  // As with surf use, env-supplied headers are read from this shell and go with this one request; a
+  // variable it doesn't set is left to the browser host's environment.
+  const secret = {};
+  for (const input of op ? authInputs(op) : []) if (env[input.env]) secret[input.env] = env[input.env];
   const saved = op?.on?.success?.expect?.assert;
   const started = now();
   let result;
@@ -113,6 +117,7 @@ async function runPlaybookTest({ argv, cwd = process.cwd(), home, runOp, now = D
       playbook: spec.playbook,
       op: spec.op,
       args: spec.args,
+      ...(Object.keys(secret).length > 0 ? { secret } : {}),
       ...(timeout ? { timeout } : {}),
       ...(spec.assertions ? { assert: spec.assertions } : {}),
       ...(options.strategy ? { strategy: options.strategy } : {}),

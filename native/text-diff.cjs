@@ -1,5 +1,6 @@
-// Line diff for showing an edited file: changed lines with up to `context` unchanged lines around
-// them, and `@@` between hunks. Files here are small JSON ops, so a plain LCS table is fine.
+// Line diff for showing an edited op file (pb param, pb extract): changed lines, removed before
+// added, with up to `context` unchanged lines around them, and `@@` between hunks. Op files are
+// small, so a plain LCS table is fine.
 
 function lineDiff(before, after, context = 3) {
   const a = before.split("\n");
@@ -17,8 +18,8 @@ function lineDiff(before, after, context = 3) {
     if (i < a.length && j < b.length && a[i] === b[j]) {
       lines.push({ mark: " ", text: a[i++] });
       j++;
-    } else if (j < b.length && (i === a.length || lcs[i][j + 1] >= lcs[i + 1][j])) lines.push({ mark: "+", text: b[j++] });
-    else lines.push({ mark: "-", text: a[i++] });
+    } else if (i < a.length && (j === b.length || lcs[i + 1][j] >= lcs[i][j + 1])) lines.push({ mark: "-", text: a[i++] });
+    else lines.push({ mark: "+", text: b[j++] });
   }
   const changed = lines.map((line, index) => (line.mark === " " ? -1 : index)).filter((index) => index >= 0);
   if (changed.length === 0) return "";
