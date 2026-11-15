@@ -2,7 +2,7 @@ const fs = require("fs");
 const path = require("path");
 const { executeSingleStep, executeWorkflow } = require("./workflow-runtime.cjs");
 const { runWorkflowScript } = require("./workflow-script-runtime.cjs");
-const { runApiHarvest } = require("./api-harvest.cjs");
+const { runApiHarvest, watchCapture } = require("./api-harvest.cjs");
 const { htmlExtractFunction, runCollect } = require("./dom-collect.cjs");
 const { editDistance } = require("./edit-distance.cjs");
 const { GLOBAL_OPTIONS } = require("./global-options.cjs");
@@ -154,6 +154,12 @@ function isJsonExtract(extract) {
   return Boolean(extract && (extract.jsonPath || extract.records !== undefined || extract.fields || extract.filter));
 }
 
+// An HTML or JSON extract runs in the tab and returns only its result; any other op takes the
+// whole body, which comes from network capture.
+function extractsInTab(extract) {
+  return Boolean(extract?.html) || isJsonExtract(extract);
+}
+
 // Page-side finish(head, run, narrow): the extract's result, or an extractError when it fails or
 // would not fit in the tab's output.
 const FINISH_SOURCE = `const finish = (head, run, narrow) => {
@@ -184,9 +190,7 @@ function networkScript(request, allowedOrigins = [], extract) {
   const headers = request.headers || {};
   const query = request.query || {};
   const body = request.body;
-  let tail = `let json;
-try { json = JSON.parse(text); } catch {}
-return { ...head, body: text, bodyJson: json };`;
+  let tail;
   if (html) {
     tail = `${FINISH_SOURCE}
 return finish(head, () => {
@@ -214,6 +218,14 @@ return finish(head, () => {
   ${jsonExtractSource(extract)}
 }, "--records/--field");`;
   }
+  // The script's output is capped, so without an in-tab extract it reports the response and when it
+  // was sent, and the body is read from network capture.
+  const read = tail === undefined
+    ? `await response.arrayBuffer();
+return { status: response.status, ok: response.ok, requestUrl: url.toString(), url: response.url, redirected: response.redirected, headers: Object.fromEntries(response.headers.entries()), sentAt, doneAt: Date.now() };`
+    : `const text = await response.text();
+const head = { status: response.status, ok: response.ok, url: response.url, headers: Object.fromEntries(response.headers.entries()) };
+${tail}`;
   return `(async () => {
 const url = new URL(${JSON.stringify(request.url)}, location.href);
 const allowedOrigins = ${JSON.stringify(allowedOrigins)};
@@ -223,6 +235,7 @@ if (allowedOrigins.length > 0 && !allowedOrigins.includes(url.origin)) {
 for (const [key, value] of Object.entries(${JSON.stringify(query)})) {
   if (value !== undefined && value !== null) url.searchParams.set(key, String(value));
 }
+const sentAt = Date.now();
 const response = await fetch(url.toString(), {
   method: ${JSON.stringify(request.method || "GET")},
   credentials: "include",
@@ -230,9 +243,7 @@ const response = await fetch(url.toString(), {
   headers: ${JSON.stringify(headers)},
   ${body === undefined ? "" : `body: ${JSON.stringify(typeof body === "string" ? body : JSON.stringify(body))},`}
 });
-const text = await response.text();
-const head = { status: response.status, ok: response.ok, url: response.url, headers: Object.fromEntries(response.headers.entries()) };
-${tail}
+${read}
 })()`;
 }
 
@@ -300,13 +311,22 @@ async function runStrategy(strategy, context) {
       context.serverIdempotency,
       context.attemptId,
     );
+    // Without an in-tab extract the body comes from network capture: turn it on before sending.
+    const inTab = extractsInTab(strategy.extract);
+    const capture = inTab ? undefined : await watchCapture({ executeTool: context.executeTool, sleep: context.sleep });
     await context.markDispatched?.();
     const response = await context.executeTool("javascript_tool", { code: networkScript(request, context.allowedOrigins, strategy.extract) }, { signal: context.signal });
     if (response?.error) throw new Error(typeof response.error === "string" ? response.error : JSON.stringify(response.error));
-    const result = response?.output !== undefined ? JSON.parse(response.output) : response?.value ?? response;
+    const { requestUrl, sentAt, doneAt, redirected, ...result } = response?.output !== undefined ? JSON.parse(response.output) : response?.value ?? response;
     if (!result?.ok && (strategy.acceptStatus || []).includes(result?.status) === false) throw new Error(`network strategy returned ${result?.status || "an unknown status"}`);
     if (result.extractError) throw new Error(result.extractError);
-    return result;
+    if (inTab) return result;
+    const body = await capture.read({ ...result, method: String(request.method || "GET").toUpperCase(), requestUrl, redirected, sentAt, doneAt });
+    let bodyJson;
+    try {
+      bodyJson = JSON.parse(body);
+    } catch {}
+    return { ...result, body, bodyJson };
   }
   if (strategy.using === "native") {
     if (typeof context.executeNative !== "function") throw new Error("native strategy is not available");

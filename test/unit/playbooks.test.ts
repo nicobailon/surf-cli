@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { captureTab } from "../fixtures/capture-tab";
 
 const fs = require("node:fs");
 const os = require("node:os");
@@ -42,9 +43,12 @@ describe("playbook resolution and strategies", () => {
     expect(resolved.provenance.scope).toBe("project");
     expect(resolved.description).toBe("project");
 
-    const executeTool = vi.fn(async (tool: string) =>
-      tool === "javascript_tool" ? { error: "CORS drift" } : { value: "fallback content" },
-    );
+    const executeTool = vi.fn(async (tool: string) => {
+      if (tool === "network") {
+        return { entries: [] };
+      }
+      return tool === "javascript_tool" ? { error: "CORS drift" } : { value: "fallback content" };
+    });
     const result = await runtime.runPlaybookOp({
       playbook: { id: "fixture", provenance: { scope: "test" } },
       op: {
@@ -330,11 +334,7 @@ describe("playbook resolution and strategies", () => {
   });
 
   it("rejects a page-context network request outside the declared origins", async () => {
-    const fetchImpl = vi.fn();
-    const executeTool = vi.fn(async (_tool: string, args: { code: string }) => {
-      const execute = new Function("location", "fetch", `return ${args.code}`);
-      return { value: await execute({ href: "https://current.test/page" }, fetchImpl) };
-    });
+    const { fetchImpl, executeTool } = captureTab({ href: "https://current.test/page" });
     await expect(
       runtime.runPlaybookOp({
         playbook: { id: "fixture", provenance: { scope: "test" } },
@@ -372,17 +372,19 @@ describe("playbook resolution and strategies", () => {
           },
         ],
       },
-      executeTool: async () => ({
-        output: JSON.stringify({ ok: true, status: 200, bodyJson: { data: "value" } }),
-      }),
+      executeTool: captureTab({ reply: () => ({ body: JSON.stringify({ data: "value" }) }) })
+        .executeTool,
     });
     expect(result.value).toBe("value");
   });
 
   it("injects server idempotency into write network requests", async () => {
-    const executeTool = vi.fn(async (_tool: string, args: { code: string }) => {
-      expect(args.code).toContain('"Idempotency-Key":"attempt-one"');
-      return { output: JSON.stringify({ ok: true, status: 200, bodyJson: { ok: true } }) };
+    const tab = captureTab({ reply: () => ({ body: JSON.stringify({ ok: true }) }) });
+    const executeTool = vi.fn(async (tool: string, args: { code: string }) => {
+      if (tool === "javascript_tool") {
+        expect(args.code).toContain('"Idempotency-Key":"attempt-one"');
+      }
+      return tab.executeTool(tool, args);
     });
     await runtime.runPlaybookOp({
       playbook: { id: "fixture", provenance: { scope: "test" } },
@@ -407,7 +409,7 @@ describe("playbook resolution and strategies", () => {
       attemptId: "attempt-one",
       executeTool,
     });
-    expect(executeTool).toHaveBeenCalledOnce();
+    expect(executeTool.mock.calls.filter(([tool]) => tool === "javascript_tool")).toHaveLength(1);
   });
 
   it("distinguishes pre-dispatch write failures from ambiguous dispatched failures", async () => {
@@ -438,7 +440,10 @@ describe("playbook resolution and strategies", () => {
           args: {},
           run: [{ using: "network", request: { method: "POST", url: "https://example.test/api" } }],
         },
-        executeTool: async () => {
+        executeTool: async (tool: string) => {
+          if (tool === "network") {
+            return { entries: [] };
+          }
           throw new Error("timeout");
         },
         beforeDispatch: async () => statuses.push("dispatched"),

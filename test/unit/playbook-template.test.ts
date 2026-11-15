@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import { captureTab } from "../fixtures/capture-tab";
 
 const runtime = require("../../native/playbook-runtime.cjs");
 const { renderRequest, resolveArgValues } = require("../../native/playbook-template.cjs");
@@ -10,20 +11,7 @@ type FetchCall = [
 ];
 
 // Runs the page-context network script with a fake fetch, as the tab would.
-function fakeTab(response: Record<string, unknown> = { status: 200, ok: true }) {
-  const fetchImpl = vi.fn(async (_url: string, _init: unknown) => ({
-    status: response.status,
-    ok: response.ok,
-    url: "https://api.test/",
-    headers: new Map(),
-    text: async () => "{}",
-  }));
-  const executeTool = vi.fn(async (_tool: string, args: { code: string }) => {
-    const execute = new Function("location", "fetch", `return ${args.code}`);
-    return { value: await execute({ href: "https://api.test/page" }, fetchImpl) };
-  });
-  return { fetchImpl, executeTool };
-}
+const fakeTab = () => captureTab();
 
 function op(request: Record<string, unknown>, args: Record<string, unknown> = {}) {
   return {
@@ -154,9 +142,11 @@ describe("env-supplied headers", () => {
 
   it("keeps the value out of errors and events", async () => {
     const events: unknown[] = [];
-    const executeTool = vi.fn(async () => ({
-      error: "fetch failed for header shell-secret-value",
-    }));
+    const executeTool = vi.fn(async (tool: string) =>
+      tool === "network"
+        ? { entries: [] }
+        : { error: "fetch failed for header shell-secret-value" },
+    );
     const error = await runtime
       .runPlaybookOp({
         playbook: { id: "api", provenance: {} },
@@ -172,13 +162,15 @@ describe("env-supplied headers", () => {
   });
 
   it("redacts the value from results and errors, short values where they stand alone", async () => {
-    const echo = vi.fn(async () => ({
-      value: {
-        status: 200,
-        ok: true,
-        bodyJson: { headers: { Authorization: "k9" }, note: "k9x stays", list: ["Bearer k9"] },
-      },
-    }));
+    const echo = captureTab({
+      reply: () => ({
+        body: JSON.stringify({
+          headers: { Authorization: "k9" },
+          note: "k9x stays",
+          list: ["Bearer k9"],
+        }),
+      }),
+    }).executeTool;
     const result = await runtime.runPlaybookOp({
       playbook: { id: "api", provenance: {} },
       op: authOp,
@@ -192,7 +184,9 @@ describe("env-supplied headers", () => {
       list: ["Bearer <redacted>"],
     });
 
-    const fail = vi.fn(async () => ({ error: "rejected k9 (k9x)" }));
+    const fail = vi.fn(async (tool: string) =>
+      tool === "network" ? { entries: [] } : { error: "rejected k9 (k9x)" },
+    );
     const error = await runtime
       .runPlaybookOp({
         playbook: { id: "api", provenance: {} },
