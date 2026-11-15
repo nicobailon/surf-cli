@@ -9,3 +9,7 @@ dist/
 coverage/
 .playwright-mcp/
 FEATURE_COMPARISON.md
+
+# Written by a tool run with HOME unset or pointing into the checkout
+Library/
+/~/
