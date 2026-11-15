@@ -255,6 +255,8 @@ export class CDPController {
   private networkInterruptions: Map<number, NetworkCaptureInterruption[]> = new Map();
   // Entries dropped to keep the per-tab limit, since the last clear.
   private networkDropped: Map<number, number> = new Map();
+  // When the captured requests were last cleared after capture started (epoch ms).
+  private networkClearedAt: Map<number, number> = new Map();
   private networkEventQueue: Map<number, Promise<void>> = new Map();
   private static debuggerListenerRegistered = false;
 
@@ -1335,7 +1337,10 @@ export class CDPController {
     return [...requests];
   }
 
-  clearNetworkRequests(tabId: number): void {
+  /** `restart` marks a clear that starts capture afresh; any other clear is a gap in it. */
+  clearNetworkRequests(tabId: number, { restart = false }: { restart?: boolean } = {}): void {
+    if (restart) this.networkClearedAt.delete(tabId);
+    else this.networkClearedAt.set(tabId, Date.now());
     this.networkRequests.set(tabId, []);
     this.networkEntries.set(tabId, new Map());
     this.networkBodyBytes.set(tabId, 0);
@@ -1344,14 +1349,17 @@ export class CDPController {
   }
 
   /**
-   * Whether network capture is on for the tab, each time a detach stopped it, and how many entries
-   * were dropped to keep the per-tab limit, since the last clear.
+   * Whether network capture is on for the tab, each time a detach stopped it, how many entries
+   * were dropped to keep the per-tab limit since the last clear, and when the requests were cleared
+   * since capture started.
    */
-  getNetworkCaptureStatus(tabId: number): { active: boolean; interruptions: NetworkCaptureInterruption[]; dropped: number } {
+  getNetworkCaptureStatus(tabId: number): { active: boolean; interruptions: NetworkCaptureInterruption[]; dropped: number; clearedAt?: number } {
+    const clearedAt = this.networkClearedAt.get(tabId);
     return {
       active: this.networkCapture.has(tabId),
       interruptions: (this.networkInterruptions.get(tabId) || []).map((interruption) => ({ ...interruption })),
       dropped: this.networkDropped.get(tabId) || 0,
+      ...(clearedAt === undefined ? {} : { clearedAt }),
     };
   }
 

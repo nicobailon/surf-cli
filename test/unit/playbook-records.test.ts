@@ -143,6 +143,13 @@ describe("record network trace", () => {
       ],
     ],
     [
+      "a clear during the record",
+      { capture: { ...COMPLETE, clearedAt: at } },
+      [
+        "the captured requests were cleared at 2026-11-14T10:00:00.000Z (network.clear or --clear), so the trace is missing the ones before",
+      ],
+    ],
+    [
       "dropped requests and a read cut at its limit",
       { capture: { ...COMPLETE, dropped: 4 }, truncatedAt: 500 },
       [

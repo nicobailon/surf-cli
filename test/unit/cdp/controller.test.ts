@@ -1269,6 +1269,17 @@ describe("CDPController", () => {
       expect(new Set(entries.map((entry) => entry.id)).size).toBe(2);
     });
 
+    it("remembers a clear until capture starts again", () => {
+      vi.useFakeTimers();
+      vi.setSystemTime(new Date("2026-11-14T10:00:00Z"));
+      controller.clearNetworkRequests(tabId);
+      expect(controller.getNetworkCaptureStatus(tabId).clearedAt).toBe(
+        Date.parse("2026-11-14T10:00:00Z"),
+      );
+      controller.clearNetworkRequests(tabId, { restart: true });
+      expect(controller.getNetworkCaptureStatus(tabId)).not.toHaveProperty("clearedAt");
+    });
+
     it("counts the requests it drops to stay within its per-tab limit", async () => {
       for (let index = 0; index < 510; index++) {
         await request(index);

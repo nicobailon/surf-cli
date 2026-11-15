@@ -400,6 +400,9 @@ function describeCaptureGaps(capture, { atStop = false } = {}) {
   if (atStop && capture && !capture.active && lines.length === 0) {
     lines.push("network capture was not running when the record stopped (the extension may have restarted); requests may be missing");
   }
+  if (atStop && capture?.clearedAt) {
+    lines.push(`the captured requests were cleared at ${new Date(capture.clearedAt).toISOString()} (network.clear or --clear), so the trace is missing the ones before`);
+  }
   if (atStop && capture?.dropped > 0) {
     lines.push(`network capture dropped the ${capture.dropped} oldest requests (it keeps about 500 per tab), so the trace is missing them`);
   }

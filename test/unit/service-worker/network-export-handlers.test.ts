@@ -13,6 +13,7 @@ const cdpState = vi.hoisted(() => ({
     (_tab?: number, _options?: { limit?: number }) => [] as Array<Record<string, unknown>>,
   ),
   getNetworkCaptureStatus: vi.fn(),
+  clearNetworkRequests: vi.fn(),
 }));
 
 vi.mock("../../../src/cdp/controller", () => ({
@@ -25,6 +26,7 @@ vi.mock("../../../src/cdp/controller", () => ({
     getResponseBody = cdpState.getResponseBody;
     getNetworkRequests = cdpState.getNetworkRequests;
     getNetworkCaptureStatus = cdpState.getNetworkCaptureStatus;
+    clearNetworkRequests = cdpState.clearNetworkRequests;
   },
 }));
 
@@ -48,6 +50,7 @@ describe("network export handlers", () => {
     cdpState.disableNetworkTracking.mockReset();
     cdpState.drainNetworkEvents.mockReset();
     cdpState.getNetworkEntries.mockClear();
+    cdpState.clearNetworkRequests.mockClear();
     cdpState.getResponseBody.mockReset();
     cdpState.getResponseBody.mockResolvedValue({
       success: false,
@@ -149,6 +152,13 @@ describe("network export handlers", () => {
     expect(await readIds({ contentType: "json" })).toEqual(["r_0"]);
     expect(await readIds({ method: "POST" })).toEqual(["r_0"]);
     expect(await readIds({ contentType: "html", limit: 2 })).toEqual(["r_148", "r_149"]);
+  });
+
+  it("starts capture with a clean slate, so only later clears count as gaps", async () => {
+    const handleMessage = await loadHandleMessage();
+    await handleMessage({ type: "START_NETWORK_CAPTURE", tabId: 42 }, {});
+    await handleMessage({ type: "CLEAR_NETWORK_REQUESTS", tabId: 42 }, {});
+    expect(cdpState.clearNetworkRequests.mock.calls).toEqual([[42, { restart: true }], [42]]);
   });
 
   it("stops explicit network capture", async () => {

@@ -3083,7 +3083,7 @@ export async function handleMessage(
 
     case "START_NETWORK_CAPTURE": {
       if (!tabId) throw new Error("No tabId provided");
-      cdp.clearNetworkRequests(tabId);
+      cdp.clearNetworkRequests(tabId, { restart: true });
       await cdp.enableNetworkTracking(tabId, {
         bodyMode: message.bodyMode || "text",
         perBodyBytes: message.perBodyBytes,
