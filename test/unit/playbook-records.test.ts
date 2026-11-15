@@ -607,7 +607,7 @@ describe("pb record candidates", () => {
     const { root, record } = recordFlow({ trace });
     records.stopRecord({ target: TAB, root });
     const result = records.recordCandidates(
-      records.findCandidatesRecord({ recordId: record.id, root }),
+      records.findCandidatesRecord({ recordId: record.id, target: TAB, root }),
       { root, limit: 1 },
     );
     expect(result).toMatchObject({
@@ -668,6 +668,37 @@ describe("pb record candidates", () => {
     expect(() =>
       records.findCandidatesRecord({ target: { session: "gamma", tabId: 33 }, root }),
     ).toThrow("no playbook record for session gamma; pass a record id");
+  });
+
+  it("refuses a record id that belongs to another session or tab, saying whose it is", () => {
+    const root = tempRoot();
+    const alpha = records.startRecord({
+      site: "a",
+      op: "one",
+      tabId: 11,
+      session: "alpha",
+      network: true,
+      root,
+    });
+    records.stopRecord({ target: { session: "alpha", tabId: 11 }, root });
+    const loose = records.startRecord({ site: "b", op: "two", tabId: 5, network: true, root });
+    records.stopRecord({ target: { tabId: 5 }, root });
+    const find = (recordId: string, target: Entry) => () =>
+      records.findCandidatesRecord({ recordId, target, root });
+    expect(find(alpha.id, { session: "beta", tabId: 22 })).toThrow(
+      `record ${alpha.id} belongs to session alpha; run it with --session alpha`,
+    );
+    expect(find(alpha.id, { tabId: 11 })).toThrow(
+      `record ${alpha.id} belongs to session alpha; run it with --session alpha`,
+    );
+    expect(find(loose.id, { session: "alpha", tabId: 5 })).toThrow(
+      `record ${loose.id} belongs to tab 5; it was started without a session, so run it without --session or SURF_SESSION, with --tab-id 5`,
+    );
+    expect(find(loose.id, { tabId: 6 })).toThrow(
+      `record ${loose.id} belongs to tab 5; it was started without a session, so run it without --session or SURF_SESSION, with --tab-id 5`,
+    );
+    expect(find(alpha.id, { session: "alpha", tabId: 99 })().id).toBe(alpha.id);
+    expect(find(loose.id, { tabId: 5 })().id).toBe(loose.id);
   });
 
   it("ranks an active record from the entries read live, and says so", () => {

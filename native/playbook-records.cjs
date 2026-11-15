@@ -344,18 +344,26 @@ function listRecords(root) {
   return fs.readdirSync(base).filter((name) => name.startsWith("rec-")).map((name) => readRecord(name, root)).filter(Boolean);
 }
 
+// Whether the caller started this record: its session, or without one, its tab.
+function startedBy(record, target) {
+  return record.session ? target?.session === record.session : !target?.session && target?.tabId === record.tabId;
+}
+
 // The record pb record candidates ranks: the one named, else the caller's active record, else the
-// latest record the caller started (by session, or by tab without one).
+// latest record the caller started. A named record must be the caller's too.
 function findCandidatesRecord({ recordId, target, root = getPrivateStateRoot() } = {}) {
   if (recordId) {
     const record = readRecord(recordId, root);
     if (!record) throw new Error(`record not found: ${recordId}`);
-    return record;
+    if (startedBy(record, target)) return record;
+    const hint = record.session
+      ? `run it with --session ${record.session}`
+      : `it was started without a session, so run it without --session or SURF_SESSION, with --tab-id ${record.tabId}`;
+    throw new Error(`record ${record.id} belongs to ${ownerLabel(record)}; ${hint}`);
   }
   const active = recordFor(target, root);
   if (active) return active;
-  const mine = (record) => (target?.session ? record.session === target.session : !record.session && record.tabId === target?.tabId);
-  const latest = listRecords(root).filter(mine).sort((a, b) => String(b.startedAt).localeCompare(String(a.startedAt)))[0];
+  const latest = listRecords(root).filter((record) => startedBy(record, target)).sort((a, b) => String(b.startedAt).localeCompare(String(a.startedAt)))[0];
   if (latest) return latest;
   throw new Error(`no playbook record for ${target?.session ? `session ${target.session}` : `tab ${target?.tabId}`}; pass a record id`);
 }
