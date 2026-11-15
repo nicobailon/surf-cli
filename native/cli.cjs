@@ -1700,7 +1700,7 @@ const TOOLS = {
         args: [],
         opts: {
           draft: "Save a draft playbook from the record (a write if it clicked or typed)",
-          read: "With --draft: mark the draft a read. Needs --network; refused if a captured request can change data",
+          read: "With --draft: mark the draft a read. Needs --network; refused if a captured request can change data or a step acts beyond the page",
         },
         examples: [{ cmd: "pb record stop --draft --read", desc: "Draft a search done by clicking as a read" }],
       },

@@ -212,6 +212,16 @@ describe("draft effect and pb record stop --read", () => {
       /captured POST https:\/\/sentry\.io/,
     ],
     ["a record without --network", {}, /--read needs a record started with --network/],
+    [
+      "a cookie step, which acts beyond the page",
+      { trace: [page], commands: ["click", "cookie.set"] },
+      /--read refused: the record ran cookie\.set, which acts beyond the page/,
+    ],
+    [
+      "a tab step, which acts beyond the page",
+      { trace: [page], commands: ["type", "tab.close"] },
+      /--read refused: the record ran tab\.close, which acts beyond the page/,
+    ],
   ])("refuses --read because of %s, leaving the record recording", (_case, options, error) => {
     const flow = recordFlow({ commands: ["click"], stop: { draft: true, read: true }, ...options });
     expect(flow.stopped).toThrow(error);

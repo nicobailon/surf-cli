@@ -214,6 +214,13 @@ const TELEMETRY_HOSTS = [
   "sentry.io", "bugsnag.com", "browser-intake-datadoghq.com", "browser-intake-datadoghq.eu", "nr-data.net",
   "hotjar.com", "clarity.ms", "fullstory.com", "cloudflareinsights.com", "plausible.io",
 ];
+// Page-write steps that only act on the page. Any other page-write step (cookies, closing or naming
+// tabs and windows, emulation, AI providers) acts beyond it, so a read op must not replay it.
+const PAGE_STEPS = new Set([
+  "click", "check", "uncheck", "key", "submit", "type", "smart_type", "find_and_type", "form_input", "form.fill", "select",
+  "scroll", "scroll.top", "scroll.bottom", "scroll_to_position", "dialog.accept", "dialog.dismiss",
+]);
+
 function hostname(url) {
   try { return new URL(url).hostname; } catch { return ""; }
 }
@@ -242,15 +249,19 @@ function shownUrl(entry) {
 
 // A draft with page-write steps is a write, as is one whose trace holds a request that can write
 // (a method other than GET/HEAD/OPTIONS that isn't telemetry). `read` (pb record stop --read) makes
-// it a read, refused when a captured request can write or the record didn't capture the network.
+// it a read, refused when a captured request can write, a step acts beyond the page, or the record
+// didn't capture the network.
 function draftEffect({ record, steps, trace, read }) {
+  const pageWrite = (step) => ["page-write", "unknown"].includes(commandMetadata(step.tool).effect);
   const write = trace?.entries?.find((entry) => requestEffect(entry) === "write" && !isTelemetryRequest(entry, record.origin));
   if (read) {
     if (record.capture?.network !== true) throw new Error("--read needs a record started with --network, so its requests can be checked for writes");
+    const beyond = steps.find((step) => pageWrite(step) && !PAGE_STEPS.has(step.tool));
+    if (beyond) throw new Error(`--read refused: the record ran ${beyond.tool}, which acts beyond the page; stop with --draft alone to draft a write`);
     if (write) throw new Error(`--read refused: the record captured ${shownUrl(write)}, which can change data; stop with --draft alone to draft a write`);
     return trace?.complete === true ? { effect: "read" } : { effect: "read", warning: "--read could not check every request: the trace is incomplete (see the warnings above)" };
   }
-  if (write || steps.some((step) => ["page-write", "unknown"].includes(commandMetadata(step.tool).effect))) return { effect: "write" };
+  if (write || steps.some(pageWrite)) return { effect: "write" };
   return { effect: "read" };
 }
 
