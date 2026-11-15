@@ -222,6 +222,49 @@ async function waitForResponse(options) {
   return (await waitWith(context(options), options)).response;
 }
 
+// The origin of the page that sent a request: undefined when the capture has no tabUrl (older
+// Surf), "null" when that page had an opaque origin (about:blank, data:) or an unreadable URL.
+function senderOrigin(tabUrl) {
+  if (tabUrl === undefined || tabUrl === null || tabUrl === "") return undefined;
+  try {
+    return new URL(tabUrl).origin;
+  } catch {
+    return "null";
+  }
+}
+
+const OPAQUE_ORIGIN = "a page with an opaque origin (such as about:blank)";
+
+function replayRefusal(entry, url, sentFrom, tabOrigin) {
+  const place = (origin) => (origin === "null" ? OPAQUE_ORIGIN : origin);
+  let sent = `sent to ${url.origin}`;
+  if (sentFrom === url.origin) sent = `sent from ${sentFrom}`;
+  else if (sentFrom === "null") sent = `sent from ${OPAQUE_ORIGIN} to ${url.origin}`;
+  else if (sentFrom) sent = `sent from a page on ${sentFrom} to ${url.origin}`;
+  const goTo = sentFrom && sentFrom !== "null" ? sentFrom : url.origin;
+  return new Error(
+    `${entry.id} was ${sent}, but the tab is now on ${place(tabOrigin)}, so the browser would block it (CORS) or send it without its cookies. ` +
+      `Run \`surf go ${goTo}\` first, then replay it.`,
+  );
+}
+
+/**
+ * Replaces every header value in a message with <redacted>, longest first. A value under 8
+ * characters is only replaced where it stands alone, so a short value such as `e` can't break up
+ * the words around it.
+ */
+function headerRedactor(headers) {
+  const values = [...new Set(Object.values(headers).map(String).filter(Boolean))].sort((a, b) => b.length - a.length);
+  return (message) => {
+    let text = message;
+    for (const value of values) {
+      if (value.length >= 8) text = text.split(value).join("<redacted>");
+      else text = text.replace(new RegExp(`(?<![A-Za-z0-9])${value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(?![A-Za-z0-9])`, "g"), "<redacted>");
+    }
+    return text;
+  };
+}
+
 function replayHeaders(headers = {}) {
   return Object.fromEntries(
     Object.entries(headers).filter(([name]) => {
@@ -241,7 +284,7 @@ async function replayEntry(ctx, entry, { set, allowPost = false, origins = [] } 
   if (origins.length > 0 && !origins.includes(url.origin)) throw new Error(`replay origin is not allowed: ${url.origin}`);
   const headers = replayHeaders(entry.requestHeaders);
   // Header values (auth, CSRF) must never reach errors, events, or logs.
-  const secrets = Object.values(headers).filter((value) => String(value).length >= 8);
+  const redact = headerRedactor(headers);
   try {
     await markSeen(ctx, url.pathname);
     const init = { method, headers, ...(request.body !== undefined && !["GET", "HEAD"].includes(method) ? { body: request.body } : {}) };
@@ -250,12 +293,26 @@ async function replayEntry(ctx, entry, { set, allowPost = false, origins = [] } 
     const allowCredentials = Object.entries(entry.responseHeaders || {}).some(
       ([name, value]) => name.toLowerCase() === "access-control-allow-credentials" && String(value).trim().toLowerCase() === "true",
     );
+    // Only the request's own origin or the page that sent it can repeat it with the same cookies and
+    // CORS outcome. From any other page, or any opaque one, the script refuses before sending. A
+    // capture without tabUrl can't say which page sent it, so only an opaque tab is refused.
+    const sentFrom = senderOrigin(entry.tabUrl);
     // The script only reports status: its output is capped, so the body is read from network capture.
     const sent = await ctx.executeTool("javascript_tool", {
       code: `(async () => {
 const url = new URL(${JSON.stringify(request.url)});
+const sentFrom = ${JSON.stringify(sentFrom ?? null)};
+if (location.origin !== url.origin && (location.origin === "null" || (sentFrom && (sentFrom === "null" || location.origin !== sentFrom)))) {
+  return { tabOrigin: location.origin };
+}
 const credentials = url.origin === location.origin || ${allowCredentials} ? "include" : "omit";
-const response = await fetch(url.href, { ...${JSON.stringify(init)}, credentials });
+let response;
+try {
+  response = await fetch(url.href, { ...${JSON.stringify(init)}, credentials });
+} catch (error) {
+  if (url.origin === location.origin) throw error;
+  return { tabOrigin: location.origin, fetchError: String(error?.message || error) };
+}
 await response.arrayBuffer();
 return { status: response.status, url: response.url };
 })()`,
@@ -266,15 +323,17 @@ return { status: response.status, url: response.url };
     } catch {
       result = undefined;
     }
+    if (result?.fetchError !== undefined) {
+      throw new Error(`the browser refused the replay from ${result.tabOrigin} to ${url.origin} (CORS or network): ${result.fetchError}`);
+    }
+    if (typeof result?.tabOrigin === "string") throw replayRefusal(entry, url, sentFrom, result.tabOrigin);
     if (!Number.isInteger(result?.status)) throw new Error("replay script returned no status");
     const finalUrl = result.url || request.url;
     const captured = await findEntry(ctx, url.pathname, (candidate) => candidate.url === finalUrl, REPLAY_CAPTURE_TIMEOUT_MS);
     if (!captured) throw new Error(`the replayed response for ${url.pathname} was not captured`);
     return { status: result.status, url: finalUrl, ...(await readBody(ctx, captured)) };
   } catch (error) {
-    let message = error?.message || String(error);
-    for (const secret of secrets) message = message.split(secret).join("<redacted>");
-    throw new Error(message);
+    throw new Error(redact(error?.message || String(error)));
   }
 }
 

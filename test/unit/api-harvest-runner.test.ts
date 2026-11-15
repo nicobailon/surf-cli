@@ -12,6 +12,7 @@ type Entry = {
   requestHeaders: Record<string, string>;
   responseHeaders?: Record<string, string>;
   requestBody?: string;
+  tabUrl?: string;
   _loadingFinished: boolean;
   flags: string[];
 };
@@ -32,7 +33,13 @@ const feedUrl = (cursor?: string) =>
  * A fake browser tab on a site whose feed API pages with a Bottom cursor (c1, c2, ...).
  * `replay`: "ok", "status" (the server answers 403), or "throw" (the browser error echoes a header).
  */
-function fakeSite({ pages = 3, replay = "ok", repeatCursor = false, visibility = "visible" } = {}) {
+function fakeSite({
+  pages = 3,
+  replay = "ok",
+  repeatCursor = false,
+  visibility = "visible",
+  tabOrigin = "https://site.test",
+} = {}) {
   const log: Entry[] = [];
   const bodies = new Map<string, string>();
   const calls: string[] = [];
@@ -105,6 +112,9 @@ function fakeSite({ pages = 3, replay = "ok", repeatCursor = false, visibility =
     if (replay === "throw") {
       throw new Error(`Failed to execute 'fetch': invalid header ${init.headers.authorization}`);
     }
+    if (replay === "echo") {
+      throw new Error(`synthetic failure echo: ${init.headers["x-csrf-token"]}`);
+    }
     if (replay === "status") {
       respond(url, 403, { errors: ["bad request"] });
     } else {
@@ -147,11 +157,7 @@ function fakeSite({ pages = 3, replay = "ok", repeatCursor = false, visibility =
     }
     if (tool === "javascript_tool") {
       const run = new Function("fetch", "location", "document", `return ${args.code}`);
-      const value = await run(
-        fetch,
-        { origin: "https://site.test" },
-        { visibilityState: visibility },
-      );
+      const value = await run(fetch, { origin: tabOrigin }, { visibilityState: visibility });
       return { output: JSON.stringify(value, null, 2) };
     }
     throw new Error(`unexpected tool ${tool}`);
@@ -287,6 +293,86 @@ describe("api harvest runners", () => {
       "omit",
       "include",
     ]);
+  });
+
+  it("fails fast, naming both origins, when the tab moved off the page that sent the request", async () => {
+    const site = fakeSite({ tabOrigin: "https://books.test" });
+    site.respond(feedUrl(), 200, {});
+    Object.assign(site.log[site.log.length - 1], { tabUrl: "https://site.test/feed" });
+    const id = site.log[site.log.length - 1].id;
+    await expect(harvest.replay({ ...site, id })).rejects.toThrow(
+      `${id} was sent from https://site.test, but the tab is now on https://books.test, so the browser would block it (CORS) or send it without its cookies. Run \`surf go https://site.test\` first, then replay it.`,
+    );
+    expect(site.replays).toHaveLength(0);
+
+    // A cross-origin request replays from the page that sent it, as before.
+    const fromPage = fakeSite({ tabOrigin: "https://app.test" });
+    fromPage.respond(
+      `https://api.other.test/api/v1/feed?variables=${encodeURIComponent("{}")}`,
+      200,
+      {},
+    );
+    Object.assign(fromPage.log[fromPage.log.length - 1], { tabUrl: "https://app.test/home" });
+    await harvest.replay({ ...fromPage, id: fromPage.log[fromPage.log.length - 1].id });
+    expect(fromPage.replays).toHaveLength(1);
+  });
+
+  it("fails closed when the request was sent from an opaque origin or the tab is now on one", async () => {
+    const opaqueSender = fakeSite({ tabOrigin: "https://books.test" });
+    opaqueSender.respond(feedUrl(), 200, {});
+    Object.assign(opaqueSender.log[opaqueSender.log.length - 1], { tabUrl: "about:blank" });
+    await expect(
+      harvest.replay({ ...opaqueSender, id: opaqueSender.log[opaqueSender.log.length - 1].id }),
+    ).rejects.toThrow(
+      "was sent from a page with an opaque origin (such as about:blank) to https://site.test, but the tab is now on https://books.test, so the browser would block it (CORS) or send it without its cookies. Run `surf go https://site.test` first, then replay it.",
+    );
+    expect(opaqueSender.replays).toHaveLength(0);
+
+    // A capture without tabUrl (from an older Surf) still fails closed from an opaque tab.
+    const opaqueTab = fakeSite({ tabOrigin: "null" });
+    opaqueTab.respond(feedUrl(), 200, {});
+    await expect(
+      harvest.replay({ ...opaqueTab, id: opaqueTab.log[opaqueTab.log.length - 1].id }),
+    ).rejects.toThrow(
+      "was sent to https://site.test, but the tab is now on a page with an opaque origin (such as about:blank), so the browser would block it (CORS) or send it without its cookies. Run `surf go https://site.test` first, then replay it.",
+    );
+    expect(opaqueTab.replays).toHaveLength(0);
+  });
+
+  it("names both origins when the browser refuses a cross-origin replay", async () => {
+    const site = fakeSite({ replay: "throw", tabOrigin: "https://app.test" });
+    site.respond(
+      `https://api.other.test/api/v1/feed?variables=${encodeURIComponent("{}")}`,
+      200,
+      {},
+    );
+    Object.assign(site.log[site.log.length - 1], { tabUrl: "https://app.test/home" });
+    const replayed = harvest.replay({ ...site, id: site.log[site.log.length - 1].id });
+    await expect(replayed).rejects.toThrow(
+      /^the browser refused the replay from https:\/\/app\.test to https:\/\/api\.other\.test \(CORS or network\): /,
+    );
+    await expect(replayed).rejects.not.toThrow(SECRET);
+  });
+
+  it("redacts short header values from a failed replay's error", async () => {
+    for (const [tabOrigin, url] of [
+      ["https://site.test", feedUrl()],
+      [
+        "https://app.test",
+        `https://api.other.test/api/v1/feed?variables=${encodeURIComponent("{}")}`,
+      ],
+    ]) {
+      const site = fakeSite({ replay: "echo", tabOrigin });
+      site.respond(url, 200, {});
+      const entry = site.log[site.log.length - 1];
+      Object.assign(entry, { tabUrl: `${tabOrigin}/home` });
+      entry.requestHeaders["x-csrf-token"] = "csrf";
+      const failure = await harvest
+        .replay({ ...site, id: entry.id })
+        .catch((error: Error) => error);
+      expect(failure.message).toContain("synthetic failure echo: <redacted>");
+      expect(failure.message).not.toMatch(/\bcsrf\b/);
+    }
   });
 
   it("fails instead of returning partial pages when it must drive a hidden tab", async () => {
