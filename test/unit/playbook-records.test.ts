@@ -599,3 +599,123 @@ describe("activity and explicit record evidence", () => {
     ).not.toThrow();
   });
 });
+
+describe("values typed with locate.* --action fill", () => {
+  const { redactCommandArgs } = require("../../native/workflow-definition.cjs");
+  const SECRET = "hunter2-S3cret!";
+  const fill = {
+    "locate.role": { role: "textbox", name: "Password", action: "fill", value: SECRET },
+    "locate.text": { text: "Password", action: "fill", value: SECRET },
+    "locate.label": { label: "Password", action: "fill", value: SECRET },
+  };
+  // A completed event the way the host writes it to the activity journal and the record.
+  const hostEvent = (command: string, args: Entry) => ({
+    type: "tool.completed",
+    command,
+    argsRedacted: redactCommandArgs(command, args),
+    startedAt: new Date().toISOString(),
+    endedAt: new Date().toISOString(),
+    resultSummary: "success",
+  });
+  // Every file under `directory`, joined, so a test can search all of it for a value.
+  const everyFile = (directory: string): string =>
+    fs
+      .readdirSync(directory, { recursive: true, withFileTypes: true })
+      .filter((entry: { isFile: () => boolean }) => entry.isFile())
+      .map((entry: { parentPath: string; name: string }) =>
+        fs.readFileSync(path.join(entry.parentPath, entry.name), "utf8"),
+      )
+      .join("\n");
+
+  it.each(Object.entries(fill))("redacts the value %s fills", (command, args) => {
+    const redacted = redactCommandArgs(command, args);
+    expect(JSON.stringify(redacted)).not.toContain("hunter2-S3cret!");
+    expect(redacted.value).toBe("<value>");
+  });
+
+  it("redacts a --value passed with an action other than fill", () => {
+    const redacted = redactCommandArgs("locate.role", {
+      role: "button",
+      name: "Save",
+      action: "click",
+      value: SECRET,
+    });
+    expect(JSON.stringify(redacted)).not.toContain("hunter2-S3cret!");
+  });
+
+  it.each(["click", "hover"])("leaves locate.role --action %s unchanged", (action) => {
+    const args = { role: "button", name: "Save", action };
+    expect(redactCommandArgs("locate.role", args)).toEqual(args);
+  });
+
+  it.each([false, true])(
+    "keeps or redacts the value as type does its text (include input values: %s)",
+    (includeInputValues) => {
+      const typed = redactCommandArgs(
+        "type",
+        { selector: "#pw", text: SECRET },
+        includeInputValues,
+      );
+      const filled = redactCommandArgs("locate.label", fill["locate.label"], includeInputValues);
+      expect(typed.text).toBe(includeInputValues ? SECRET : "<text>");
+      expect(filled.value).toBe(includeInputValues ? SECRET : "<value>");
+    },
+  );
+
+  it("writes the value to no file a record, its draft or a saved playbook makes", () => {
+    const root = tempRoot();
+    const home = path.dirname(root);
+    const args = fill["locate.label"];
+    journal.journalCommand("locate.label", args, { root });
+    const record = records.startRecord({
+      site: "fixture",
+      op: "login",
+      tabId: 1,
+      origin: "https://example.test",
+      network: true,
+      root,
+    });
+    records.appendRecordEvent(hostEvent("locate.label", args), { target: TAB, root });
+    records.attachNetworkTrace(
+      record.id,
+      [{ ...create, requestBody: `password=${encodeURIComponent(SECRET)}` }],
+      root,
+      { capture: COMPLETE },
+    );
+    const { draft } = records.stopRecord({ target: TAB, draft: true, root });
+    authoring.saveFromRecord({ recordId: record.id, root, home });
+    expect(() => authoring.saveFromRecent({ site: "fixture", op: "recent", root, home })).toThrow(
+      /write-capable/,
+    );
+
+    const workflow = draft.run.find((strategy: { using: string }) => strategy.using === "workflow");
+    expect(workflow.steps[0].args.value).toBe("{{value}}");
+    expect(draft.args.value).toMatchObject({ required: true });
+    const written = everyFile(home);
+    expect(written).toContain('"login"');
+    expect(written).not.toContain("hunter2-S3cret!");
+  });
+
+  it.each([
+    ["type", { selector: "#pw", text: SECRET }],
+    ["locate.label", fill["locate.label"]],
+  ])(
+    "treats a %s value the same in a record started with --include-input-values",
+    (command, args) => {
+      const root = tempRoot();
+      const record = records.startRecord({
+        site: "fixture",
+        op: "login",
+        tabId: 1,
+        origin: "https://example.test",
+        includeInputValues: true,
+        root,
+      });
+      records.appendRecordEvent(hostEvent(command, args), { target: TAB, root });
+      records.stopRecord({ target: TAB, draft: true, root });
+      expect(everyFile(path.join(records.recordsRoot(root), record.id))).not.toContain(
+        "hunter2-S3cret!",
+      );
+    },
+  );
+});
