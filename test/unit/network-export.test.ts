@@ -106,6 +106,22 @@ describe("network export serialization", () => {
     expect(plain[0].url).toBe("https://example.test");
   });
 
+  it("redacts a secret header's value where a body echoes it, as httpbin /headers does", () => {
+    const echo = {
+      id: "r-4",
+      method: "GET",
+      url: "https://httpbin.test/headers",
+      requestHeaders: { Authorization: "echoed-key-123", accept: "*/*" },
+      responseBody: JSON.stringify({ headers: { Authorization: "echoed-key-123", Accept: "*/*" } }),
+      status: 200,
+    };
+    for (const format of ["json", "jsonl", "har"]) {
+      const text = exporter.serializeNetworkExport([echo], format);
+      expect(text, format).not.toContain("echoed-key-123");
+      expect(text, format).toContain("Accept");
+    }
+  });
+
   it("writes a valid compact HAR projection atomically with private permissions", async () => {
     const directory = await tempDir();
     const output = path.join(directory, "capture.har");

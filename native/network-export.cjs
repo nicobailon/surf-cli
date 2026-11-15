@@ -2,7 +2,7 @@ const fs = require("fs");
 const path = require("path");
 const { version: PACKAGE_VERSION } = require("../package.json");
 const { atomicWriteFile } = require("./private-state.cjs");
-const { isSecretHeader, isSensitiveName, redactUrlSecrets } = require("./redaction.cjs");
+const { isSecretHeader, isSensitiveName, redactUrlSecrets, redactValues } = require("./redaction.cjs");
 
 const MAX_NETWORK_EXPORT_FILE_BYTES = 256 * 1024 * 1024;
 const INTERNAL_FIELDS = new Set(["_requestId", "_responseReceived", "_loadingFinished"]);
@@ -32,17 +32,29 @@ function redactUrl(url) {
   return redactUrlSecrets(parsed.toString());
 }
 
-// What an export may contain: no internal fields, secret headers or URL credentials.
+const BODY_FIELDS = new Set(["requestBody", "responseBody"]);
+
+function secretHeaderValues(entry) {
+  return [entry.requestHeaders, entry.responseHeaders].flatMap((headers) =>
+    headers && typeof headers === "object" ? Object.entries(headers).filter(([name]) => isSecretHeader(name)).map(([, value]) => String(value)) : [],
+  );
+}
+
+// What an export may contain: no internal fields, secret headers or URL credentials, and no echo
+// of a secret header's value in a text body (a page that reflects its Authorization header).
 function publicEntry(entry) {
   if (!entry || typeof entry !== "object" || Array.isArray(entry)) {
     throw new Error("network export entries must be objects");
   }
+  const secrets = secretHeaderValues(entry);
   const result = Object.create(null);
   for (const [key, value] of Object.entries(entry)) {
     if (INTERNAL_FIELDS.has(key)) continue;
     if (HEADER_FIELDS.has(key)) result[key] = redactHeaders(value);
     else if (URL_FIELDS.has(key)) result[key] = redactUrl(value);
-    else result[key] = value;
+    else if (BODY_FIELDS.has(key) && typeof value === "string" && secrets.length > 0 && !(key === "responseBody" && entry.responseBodyEncoding === "base64")) {
+      result[key] = redactValues(value, secrets);
+    } else result[key] = value;
   }
   return result;
 }
