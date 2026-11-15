@@ -222,13 +222,30 @@ async function waitForResponse(options) {
   return (await waitWith(context(options), options)).response;
 }
 
-function originOf(url) {
+// The origin of the page that sent a request: undefined when the capture has no tabUrl (older
+// Surf), "null" when that page had an opaque origin (about:blank, data:) or an unreadable URL.
+function senderOrigin(tabUrl) {
+  if (tabUrl === undefined || tabUrl === null || tabUrl === "") return undefined;
   try {
-    const { origin } = new URL(url);
-    return origin === "null" ? undefined : origin;
+    return new URL(tabUrl).origin;
   } catch {
-    return undefined;
+    return "null";
   }
+}
+
+const OPAQUE_ORIGIN = "a page with an opaque origin (such as about:blank)";
+
+function replayRefusal(entry, url, sentFrom, tabOrigin) {
+  const place = (origin) => (origin === "null" ? OPAQUE_ORIGIN : origin);
+  let sent = `sent to ${url.origin}`;
+  if (sentFrom === url.origin) sent = `sent from ${sentFrom}`;
+  else if (sentFrom === "null") sent = `sent from ${OPAQUE_ORIGIN} to ${url.origin}`;
+  else if (sentFrom) sent = `sent from a page on ${sentFrom} to ${url.origin}`;
+  const goTo = sentFrom && sentFrom !== "null" ? sentFrom : url.origin;
+  return new Error(
+    `${entry.id} was ${sent}, but the tab is now on ${place(tabOrigin)}, so the browser would block it (CORS) or send it without its cookies. ` +
+      `Run \`surf go ${goTo}\` first, then replay it.`,
+  );
 }
 
 function replayHeaders(headers = {}) {
@@ -260,14 +277,17 @@ async function replayEntry(ctx, entry, { set, allowPost = false, origins = [] } 
       ([name, value]) => name.toLowerCase() === "access-control-allow-credentials" && String(value).trim().toLowerCase() === "true",
     );
     // Only the request's own origin or the page that sent it can repeat it with the same cookies and
-    // CORS outcome. From any other page, the script refuses before sending.
-    const sentFrom = originOf(entry.tabUrl);
+    // CORS outcome. From any other page, or any opaque one, the script refuses before sending. A
+    // capture without tabUrl can't say which page sent it, so only an opaque tab is refused.
+    const sentFrom = senderOrigin(entry.tabUrl);
     // The script only reports status: its output is capped, so the body is read from network capture.
     const sent = await ctx.executeTool("javascript_tool", {
       code: `(async () => {
 const url = new URL(${JSON.stringify(request.url)});
 const sentFrom = ${JSON.stringify(sentFrom ?? null)};
-if (sentFrom && location.origin !== url.origin && location.origin !== sentFrom) return { tabOrigin: location.origin };
+if (location.origin !== url.origin && (location.origin === "null" || (sentFrom && (sentFrom === "null" || location.origin !== sentFrom)))) {
+  return { tabOrigin: location.origin };
+}
 const credentials = url.origin === location.origin || ${allowCredentials} ? "include" : "omit";
 let response;
 try {
@@ -289,13 +309,7 @@ return { status: response.status, url: response.url };
     if (result?.fetchError !== undefined) {
       throw new Error(`the browser refused the replay from ${result.tabOrigin} to ${url.origin} (CORS or network): ${result.fetchError}`);
     }
-    if (typeof result?.tabOrigin === "string") {
-      const sender = sentFrom === url.origin ? sentFrom : `a page on ${sentFrom} to ${url.origin}`;
-      throw new Error(
-        `${entry.id} was sent from ${sender}, but the tab is now on ${result.tabOrigin}, so the browser would block it (CORS) or send it without its cookies. ` +
-          `Run \`surf go ${sentFrom}\` first, then replay it.`,
-      );
-    }
+    if (typeof result?.tabOrigin === "string") throw replayRefusal(entry, url, sentFrom, result.tabOrigin);
     if (!Number.isInteger(result?.status)) throw new Error("replay script returned no status");
     const finalUrl = result.url || request.url;
     const captured = await findEntry(ctx, url.pathname, (candidate) => candidate.url === finalUrl, REPLAY_CAPTURE_TIMEOUT_MS);

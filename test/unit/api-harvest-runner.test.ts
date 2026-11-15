@@ -314,6 +314,28 @@ describe("api harvest runners", () => {
     expect(fromPage.replays).toHaveLength(1);
   });
 
+  it("fails closed when the request was sent from an opaque origin or the tab is now on one", async () => {
+    const opaqueSender = fakeSite({ tabOrigin: "https://books.test" });
+    opaqueSender.respond(feedUrl(), 200, {});
+    Object.assign(opaqueSender.log[opaqueSender.log.length - 1], { tabUrl: "about:blank" });
+    await expect(
+      harvest.replay({ ...opaqueSender, id: opaqueSender.log[opaqueSender.log.length - 1].id }),
+    ).rejects.toThrow(
+      "was sent from a page with an opaque origin (such as about:blank) to https://site.test, but the tab is now on https://books.test, so the browser would block it (CORS) or send it without its cookies. Run `surf go https://site.test` first, then replay it.",
+    );
+    expect(opaqueSender.replays).toHaveLength(0);
+
+    // A capture without tabUrl (from an older Surf) still fails closed from an opaque tab.
+    const opaqueTab = fakeSite({ tabOrigin: "null" });
+    opaqueTab.respond(feedUrl(), 200, {});
+    await expect(
+      harvest.replay({ ...opaqueTab, id: opaqueTab.log[opaqueTab.log.length - 1].id }),
+    ).rejects.toThrow(
+      "was sent to https://site.test, but the tab is now on a page with an opaque origin (such as about:blank), so the browser would block it (CORS) or send it without its cookies. Run `surf go https://site.test` first, then replay it.",
+    );
+    expect(opaqueTab.replays).toHaveLength(0);
+  });
+
   it("names both origins when the browser refuses a cross-origin replay", async () => {
     const site = fakeSite({ replay: "throw", tabOrigin: "https://app.test" });
     site.respond(
