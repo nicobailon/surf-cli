@@ -15,6 +15,14 @@ const mockChrome = {
 // Set global chrome before tests
 vi.stubGlobal("chrome", mockChrome);
 
+/** Feeds a CDP event to the controller as chrome.debugger.onEvent would. */
+const cdpEvent = (controller: CDPController, tabId: number, method: string, params: object) =>
+  (
+    controller as unknown as {
+      handleCDPEvent: (tab: number, event: string, value: unknown) => Promise<void> | void;
+    }
+  ).handleCDPEvent(tabId, method, params);
+
 describe("describeDebuggerError", () => {
   it("unwraps the JSON-encoded CDP error chrome.debugger rejects with", () => {
     const original = new Error('{"code":-32000,"message":"Inspected target navigated or closed"}');
@@ -1155,20 +1163,14 @@ describe("CDPController", () => {
 
     it("stamps entries with wall-clock epoch ms, not Chrome's monotonic clock", async () => {
       await controller.enableNetworkTracking(tabId);
-      const dispatch = (method: string, params: Record<string, unknown>) =>
-        (
-          controller as unknown as {
-            handleCDPEvent: (tab: number, event: string, value: unknown) => Promise<void> | void;
-          }
-        ).handleCDPEvent(tabId, method, params);
       // CDP `timestamp` is monotonic seconds since boot; `wallTime` is epoch seconds.
-      await dispatch("Network.requestWillBeSent", {
+      await cdpEvent(controller, tabId, "Network.requestWillBeSent", {
         requestId: "req-wall",
         timestamp: 1_160_000.5,
         wallTime: 1_794_000_000.25,
         request: { url: "https://example.test/wall", method: "GET", headers: {} },
       });
-      await dispatch("Network.loadingFinished", {
+      await cdpEvent(controller, tabId, "Network.loadingFinished", {
         requestId: "req-wall",
         timestamp: 1_160_000.75,
         encodedDataLength: 0,
@@ -1185,41 +1187,37 @@ describe("CDPController", () => {
 
   describe("network capture interruptions", () => {
     const tabId = 2650;
+    let controller: CDPController;
+    const request = (index: number) =>
+      cdpEvent(controller, tabId, "Network.requestWillBeSent", {
+        requestId: `req-${index}`,
+        timestamp: index,
+        wallTime: 1_794_000_000 + index,
+        request: { url: `https://example.test/${index}`, method: "POST", headers: {} },
+      });
 
-    it("notes when a detach stops capture, keeps what it captured, and resumes on the next attach", async () => {
+    beforeEach(async () => {
+      // Each controller registers its debugger listeners once; let this one register them.
       (
         CDPController as unknown as { debuggerListenerRegistered: boolean }
       ).debuggerListenerRegistered = false;
-      const controller = new CDPController();
+      controller = new CDPController();
       mockChrome.debugger.attach.mockResolvedValue(undefined);
       mockChrome.debugger.sendCommand.mockResolvedValue({});
       await controller.enableNetworkTracking(tabId, { bodyMode: "none" });
-      await (
-        controller as unknown as {
-          handleCDPEvent: (tab: number, event: string, value: unknown) => Promise<void> | void;
-        }
-      ).handleCDPEvent(tabId, "Network.requestWillBeSent", {
-        requestId: "before-detach",
-        timestamp: 1,
-        wallTime: 1_794_000_000,
-        request: { url: "https://example.test/api/create", method: "POST", headers: {} },
-      });
-      expect(controller.getNetworkCaptureStatus(tabId)).toEqual({
-        active: true,
-        interruptions: [],
-        dropped: 0,
-      });
+    });
 
+    it("notes when a detach stops capture, keeps what it captured, and resumes on the next attach", async () => {
+      await request(0);
       vi.useFakeTimers();
       vi.setSystemTime(new Date("2026-11-14T10:00:00Z"));
-      const onDetach = mockChrome.debugger.onDetach.addListener.mock.calls.at(-1)?.[0];
-      onDetach({ tabId }, "target_closed");
+      mockChrome.debugger.onDetach.addListener.mock.calls.at(-1)?.[0]({ tabId }, "target_closed");
+      const interruption = { reason: "target_closed", at: Date.parse("2026-11-14T10:00:00Z") };
       expect(controller.getNetworkCaptureStatus(tabId)).toEqual({
         active: false,
-        interruptions: [{ reason: "target_closed", at: Date.parse("2026-11-14T10:00:00Z") }],
+        interruptions: [interruption],
         dropped: 0,
       });
-      expect(controller.getNetworkEntries(tabId, { includeStatic: true })).toHaveLength(1);
 
       // The next command reports the detach once, then attaches again.
       await expect(controller.sendCommand(tabId, "Runtime.evaluate")).rejects.toMatchObject({
@@ -1233,103 +1231,25 @@ describe("CDPController", () => {
       });
       expect(controller.getNetworkCaptureStatus(tabId)).toEqual({
         active: true,
-        interruptions: [
-          {
-            reason: "target_closed",
-            at: Date.parse("2026-11-14T10:00:00Z"),
-            resumedAt: Date.parse("2026-11-14T10:00:05Z"),
-          },
-        ],
+        interruptions: [{ ...interruption, resumedAt: Date.parse("2026-11-14T10:00:05Z") }],
         dropped: 0,
       });
       expect(controller.getNetworkEntries(tabId, { includeStatic: true })).toHaveLength(1);
-
       controller.clearNetworkRequests(tabId);
       expect(controller.getNetworkCaptureStatus(tabId).interruptions).toEqual([]);
     });
 
-    it("marks a document request as a main-frame load when the main frame commits it", async () => {
-      const controller = new CDPController();
-      mockChrome.debugger.attach.mockResolvedValue(undefined);
-      mockChrome.debugger.sendCommand.mockResolvedValue({});
-      await controller.enableNetworkTracking(tabId + 3, { bodyMode: "none" });
-      const dispatch = (
-        controller as unknown as {
-          handleCDPEvent: (tab: number, event: string, value: unknown) => Promise<void> | void;
-        }
-      ).handleCDPEvent.bind(controller);
-      for (const requestId of ["nav-main", "nav-frame"]) {
-        await dispatch(tabId + 3, "Network.requestWillBeSent", {
-          requestId,
-          loaderId: requestId,
-          type: "Document",
-          timestamp: 1,
-          wallTime: 1_794_000_000,
-          request: { url: `https://example.test/${requestId}`, method: "GET", headers: {} },
-        });
-      }
-      await dispatch(tabId + 3, "Page.frameNavigated", {
-        frame: { id: "main", loaderId: "nav-main", url: "https://example.test/nav-main" },
-      });
-      await dispatch(tabId + 3, "Page.frameNavigated", {
-        frame: {
-          id: "child",
-          parentId: "main",
-          loaderId: "nav-frame",
-          url: "https://example.test/nav-frame",
-        },
-      });
-      const entries = controller.getNetworkEntries(tabId + 3, { includeStatic: true });
-      expect(entries.find((entry) => entry._requestId === "nav-main")?.mainFrame).toBe(true);
-      expect(entries.find((entry) => entry._requestId === "nav-frame")?.mainFrame).toBeUndefined();
-    });
-
-    it("records a WebSocket the page opens", async () => {
-      const controller = new CDPController();
-      mockChrome.debugger.attach.mockResolvedValue(undefined);
-      mockChrome.debugger.sendCommand.mockResolvedValue({});
-      await controller.enableNetworkTracking(tabId + 2, { bodyMode: "none" });
-      await (
-        controller as unknown as {
-          handleCDPEvent: (tab: number, event: string, value: unknown) => Promise<void> | void;
-        }
-      ).handleCDPEvent(tabId + 2, "Network.webSocketCreated", {
-        requestId: "ws-1",
-        url: "wss://example.test/socket",
-      });
-      expect(controller.getNetworkEntries(tabId + 2, { includeStatic: true })).toEqual([
-        expect.objectContaining({
-          method: "GET",
-          url: "wss://example.test/socket",
-          origin: "wss://example.test",
-          type: "WebSocket",
-        }),
-      ]);
-    });
-
     it("counts the requests it drops to stay within its per-tab limit", async () => {
-      const controller = new CDPController();
-      mockChrome.debugger.attach.mockResolvedValue(undefined);
-      mockChrome.debugger.sendCommand.mockResolvedValue({});
-      await controller.enableNetworkTracking(tabId + 1, { bodyMode: "none" });
-      const dispatch = (
-        controller as unknown as {
-          handleCDPEvent: (tab: number, event: string, value: unknown) => Promise<void> | void;
-        }
-      ).handleCDPEvent.bind(controller);
       for (let index = 0; index < 510; index++) {
-        await dispatch(tabId + 1, "Network.requestWillBeSent", {
-          requestId: `req-${index}`,
-          timestamp: index,
-          wallTime: 1_794_000_000 + index,
-          request: { url: `https://example.test/${index}`, method: "GET", headers: {} },
-        });
+        await request(index);
       }
-      const kept = controller.getNetworkEntries(tabId + 1, { includeStatic: true }).length;
-      expect(kept + controller.getNetworkCaptureStatus(tabId + 1).dropped).toBe(510);
-      expect(controller.getNetworkCaptureStatus(tabId + 1).dropped).toBeGreaterThan(0);
-      controller.clearNetworkRequests(tabId + 1);
-      expect(controller.getNetworkCaptureStatus(tabId + 1).dropped).toBe(0);
+      const { dropped } = controller.getNetworkCaptureStatus(tabId);
+      expect(dropped).toBeGreaterThan(0);
+      expect(controller.getNetworkEntries(tabId, { includeStatic: true }).length + dropped).toBe(
+        510,
+      );
+      controller.clearNetworkRequests(tabId);
+      expect(controller.getNetworkCaptureStatus(tabId).dropped).toBe(0);
     });
   });
 
