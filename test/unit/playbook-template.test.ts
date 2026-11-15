@@ -4,7 +4,10 @@ const runtime = require("../../native/playbook-runtime.cjs");
 const { renderRequest, resolveArgValues } = require("../../native/playbook-template.cjs");
 const playbooks = require("../../native/playbooks.cjs");
 
-type FetchCall = [string, { method: string; headers: Record<string, string>; body?: string }];
+type FetchCall = [
+  string,
+  { method: string; headers: Record<string, string>; body?: string; cache?: string },
+];
 
 // Runs the page-context network script with a fake fetch, as the tab would.
 function fakeTab(response: Record<string, unknown> = { status: 200, ok: true }) {
@@ -117,6 +120,8 @@ describe("env-supplied headers", () => {
     expect((fetchImpl.mock.calls[0] as unknown as FetchCall)[1].headers).toEqual({
       Authorization: "shell-value",
     });
+    // The browser must not write a response to a request carrying the value to its disk cache.
+    expect((fetchImpl.mock.calls[0] as unknown as FetchCall)[1].cache).toBe("no-store");
 
     const host = fakeTab();
     await runtime.runPlaybookOp({

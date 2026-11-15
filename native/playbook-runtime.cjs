@@ -131,6 +131,7 @@ for (const [key, value] of Object.entries(${JSON.stringify(query)})) {
 const response = await fetch(url.toString(), {
   method: ${JSON.stringify(request.method || "GET")},
   credentials: "include",
+  ${request.cache ? `cache: ${JSON.stringify(request.cache)},` : ""}
   headers: ${JSON.stringify(headers)},
   ${body === undefined ? "" : `body: ${JSON.stringify(typeof body === "string" ? body : JSON.stringify(body))},`}
 });
@@ -191,6 +192,8 @@ async function runStrategy(strategy, context) {
       const value = context.authValues?.[input.env];
       if (value) rendered.headers[input.header] = value;
     }
+    // Keep a response to a request carrying an env value out of the browser's disk cache.
+    if (inputs.length > 0) rendered.cache = "no-store";
     const request = withServerIdempotency(
       rendered,
       context.serverIdempotency,
