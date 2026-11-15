@@ -1130,7 +1130,7 @@ const TOOLS = {
         ]
       },
       "network.replay": {
-        desc: "Re-send a captured request from inside its tab (same cookies and headers) and print the response",
+        desc: "Re-send a captured request from inside its tab (same cookies and headers) and print the response; the tab must still be on the request's origin or the page that sent it",
         args: ["id"],
         opts: {
           set: "Edit before sending (repeatable): query.<param>=v, query.<param>.<json.path>=v, body=v, body.<json.path>=v; values are parsed as JSON when valid",

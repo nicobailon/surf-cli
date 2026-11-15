@@ -222,6 +222,15 @@ async function waitForResponse(options) {
   return (await waitWith(context(options), options)).response;
 }
 
+function originOf(url) {
+  try {
+    const { origin } = new URL(url);
+    return origin === "null" ? undefined : origin;
+  } catch {
+    return undefined;
+  }
+}
+
 function replayHeaders(headers = {}) {
   return Object.fromEntries(
     Object.entries(headers).filter(([name]) => {
@@ -250,12 +259,23 @@ async function replayEntry(ctx, entry, { set, allowPost = false, origins = [] } 
     const allowCredentials = Object.entries(entry.responseHeaders || {}).some(
       ([name, value]) => name.toLowerCase() === "access-control-allow-credentials" && String(value).trim().toLowerCase() === "true",
     );
+    // Only the request's own origin or the page that sent it can repeat it with the same cookies and
+    // CORS outcome. From any other page, the script refuses before sending.
+    const sentFrom = originOf(entry.tabUrl);
     // The script only reports status: its output is capped, so the body is read from network capture.
     const sent = await ctx.executeTool("javascript_tool", {
       code: `(async () => {
 const url = new URL(${JSON.stringify(request.url)});
+const sentFrom = ${JSON.stringify(sentFrom ?? null)};
+if (sentFrom && location.origin !== url.origin && location.origin !== sentFrom) return { tabOrigin: location.origin };
 const credentials = url.origin === location.origin || ${allowCredentials} ? "include" : "omit";
-const response = await fetch(url.href, { ...${JSON.stringify(init)}, credentials });
+let response;
+try {
+  response = await fetch(url.href, { ...${JSON.stringify(init)}, credentials });
+} catch (error) {
+  if (url.origin === location.origin) throw error;
+  return { tabOrigin: location.origin, fetchError: String(error?.message || error) };
+}
 await response.arrayBuffer();
 return { status: response.status, url: response.url };
 })()`,
@@ -265,6 +285,16 @@ return { status: response.status, url: response.url };
       result = JSON.parse(sent?.output);
     } catch {
       result = undefined;
+    }
+    if (result?.fetchError !== undefined) {
+      throw new Error(`the browser refused the replay from ${result.tabOrigin} to ${url.origin} (CORS or network): ${result.fetchError}`);
+    }
+    if (typeof result?.tabOrigin === "string") {
+      const sender = sentFrom === url.origin ? sentFrom : `a page on ${sentFrom} to ${url.origin}`;
+      throw new Error(
+        `${entry.id} was sent from ${sender}, but the tab is now on ${result.tabOrigin}, so the browser would block it (CORS) or send it without its cookies. ` +
+          `Run \`surf go ${sentFrom}\` first, then replay it.`,
+      );
     }
     if (!Number.isInteger(result?.status)) throw new Error("replay script returned no status");
     const finalUrl = result.url || request.url;

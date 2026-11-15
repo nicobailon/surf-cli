@@ -12,6 +12,7 @@ type Entry = {
   requestHeaders: Record<string, string>;
   responseHeaders?: Record<string, string>;
   requestBody?: string;
+  tabUrl?: string;
   _loadingFinished: boolean;
   flags: string[];
 };
@@ -32,7 +33,13 @@ const feedUrl = (cursor?: string) =>
  * A fake browser tab on a site whose feed API pages with a Bottom cursor (c1, c2, ...).
  * `replay`: "ok", "status" (the server answers 403), or "throw" (the browser error echoes a header).
  */
-function fakeSite({ pages = 3, replay = "ok", repeatCursor = false, visibility = "visible" } = {}) {
+function fakeSite({
+  pages = 3,
+  replay = "ok",
+  repeatCursor = false,
+  visibility = "visible",
+  tabOrigin = "https://site.test",
+} = {}) {
   const log: Entry[] = [];
   const bodies = new Map<string, string>();
   const calls: string[] = [];
@@ -147,11 +154,7 @@ function fakeSite({ pages = 3, replay = "ok", repeatCursor = false, visibility =
     }
     if (tool === "javascript_tool") {
       const run = new Function("fetch", "location", "document", `return ${args.code}`);
-      const value = await run(
-        fetch,
-        { origin: "https://site.test" },
-        { visibilityState: visibility },
-      );
+      const value = await run(fetch, { origin: tabOrigin }, { visibilityState: visibility });
       return { output: JSON.stringify(value, null, 2) };
     }
     throw new Error(`unexpected tool ${tool}`);
@@ -287,6 +290,43 @@ describe("api harvest runners", () => {
       "omit",
       "include",
     ]);
+  });
+
+  it("fails fast, naming both origins, when the tab moved off the page that sent the request", async () => {
+    const site = fakeSite({ tabOrigin: "https://books.test" });
+    site.respond(feedUrl(), 200, {});
+    Object.assign(site.log[site.log.length - 1], { tabUrl: "https://site.test/feed" });
+    const id = site.log[site.log.length - 1].id;
+    await expect(harvest.replay({ ...site, id })).rejects.toThrow(
+      `${id} was sent from https://site.test, but the tab is now on https://books.test, so the browser would block it (CORS) or send it without its cookies. Run \`surf go https://site.test\` first, then replay it.`,
+    );
+    expect(site.replays).toHaveLength(0);
+
+    // A cross-origin request replays from the page that sent it, as before.
+    const fromPage = fakeSite({ tabOrigin: "https://app.test" });
+    fromPage.respond(
+      `https://api.other.test/api/v1/feed?variables=${encodeURIComponent("{}")}`,
+      200,
+      {},
+    );
+    Object.assign(fromPage.log[fromPage.log.length - 1], { tabUrl: "https://app.test/home" });
+    await harvest.replay({ ...fromPage, id: fromPage.log[fromPage.log.length - 1].id });
+    expect(fromPage.replays).toHaveLength(1);
+  });
+
+  it("names both origins when the browser refuses a cross-origin replay", async () => {
+    const site = fakeSite({ replay: "throw", tabOrigin: "https://app.test" });
+    site.respond(
+      `https://api.other.test/api/v1/feed?variables=${encodeURIComponent("{}")}`,
+      200,
+      {},
+    );
+    Object.assign(site.log[site.log.length - 1], { tabUrl: "https://app.test/home" });
+    const replayed = harvest.replay({ ...site, id: site.log[site.log.length - 1].id });
+    await expect(replayed).rejects.toThrow(
+      /^the browser refused the replay from https:\/\/app\.test to https:\/\/api\.other\.test \(CORS or network\): /,
+    );
+    await expect(replayed).rejects.not.toThrow(SECRET);
   });
 
   it("fails instead of returning partial pages when it must drive a hidden tab", async () => {
