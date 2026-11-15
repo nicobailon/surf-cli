@@ -609,6 +609,29 @@ describe("CLI/native-host/fake-extension E2E contract", () => {
       expect(paper.code).toBe(0);
       expect(JSON.stringify(executions()[1])).toContain("https://fixture.test/abs/2101.10010");
 
+      // The env value travels outside the op's inputs, so the undefined-input check (#480) lets it
+      // through, still refuses a real typo, and the refusal doesn't quote the value.
+      const typo = await runCli(socketPath, ["use", "api", "paper", "--idd", "x"], project, {
+        ...env,
+        SURF_E2E_SITE_KEY: secret,
+      });
+      expect(typo.code).toBe(1);
+      expect(typo.stderr).toMatch(/Unknown input --idd for api paper\. Did you mean --id\?/);
+      const typoWithSecret = await runCli(
+        socketPath,
+        ["use", "api", "search", "--q", "x"],
+        project,
+        {
+          ...env,
+          SURF_E2E_SITE_KEY: secret,
+        },
+      );
+      expect(typoWithSecret.stderr).toMatch(
+        /Unknown input --q for api search\. It takes no inputs/,
+      );
+      expect(`${typo.stderr}${typoWithSecret.stderr}`).not.toContain(secret);
+      expect(executions()).toHaveLength(2);
+
       const files: string[] = [];
       const walk = (directory: string) => {
         for (const entry of fs.readdirSync(directory, { withFileTypes: true })) {
