@@ -3,6 +3,7 @@ const { runWorkflowScript } = require("./workflow-script-runtime.cjs");
 const { runApiHarvest } = require("./api-harvest.cjs");
 const { runCollect } = require("./dom-collect.cjs");
 const { editDistance } = require("./edit-distance.cjs");
+const { GLOBAL_OPTIONS } = require("./global-options.cjs");
 
 function applyTemplate(value, args) {
   if (typeof value === "string") {
@@ -31,10 +32,16 @@ function unknownInputError(op, name, playbookId) {
   return new Error(`Unknown input --${name} for ${label}.${hint} Its inputs: ${inputs}`);
 }
 
+// Surf's global flags, and `surf use --timeout` (the run's deadline), aren't op inputs: an op gets
+// one only when it declares that name.
+const SURF_FLAGS = new Set([...GLOBAL_OPTIONS.map((option) => option.name), "timeout"]);
+
 function resolveArgs(op, provided, { playbookId } = {}) {
   const args = { ...provided };
   for (const name of Object.keys(args)) {
-    if (!Object.hasOwn(op.args || {}, name)) throw unknownInputError(op, name, playbookId);
+    if (Object.hasOwn(op.args || {}, name)) continue;
+    if (!SURF_FLAGS.has(name)) throw unknownInputError(op, name, playbookId);
+    delete args[name];
   }
   for (const [name, spec] of Object.entries(op.args || {})) {
     if (args[name] === undefined && spec.default !== undefined) args[name] = spec.default;

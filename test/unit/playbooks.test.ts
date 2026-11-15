@@ -312,6 +312,23 @@ describe("playbook resolution and strategies", () => {
     expect(executeTool).not.toHaveBeenCalled();
   });
 
+  it("leaves surf's global flags out of the input check, and gives them to ops that declare them", () => {
+    const read = { id: "read", effect: "read", run: [] };
+    expect(
+      runtime.resolveArgs(
+        read,
+        { timeout: 30, "no-diff": true, "window-id": 5, settle: 500 },
+        { playbookId: "page" },
+      ),
+    ).toEqual({});
+    const ask = { id: "ask", effect: "read", args: { timeout: { default: 60 } }, run: [] };
+    expect(runtime.resolveArgs(ask, { timeout: 30, "no-diff": true })).toEqual({ timeout: 30 });
+    expect(runtime.resolveArgs(ask, {})).toEqual({ timeout: 60 });
+    expect(() =>
+      runtime.resolveArgs(read, { "no-diff": true, bogus: 1 }, { playbookId: "page" }),
+    ).toThrow("Unknown input --bogus for page read. It takes no inputs");
+  });
+
   it("rejects a page-context network request outside the declared origins", async () => {
     const fetchImpl = vi.fn();
     const executeTool = vi.fn(async (_tool: string, args: { code: string }) => {

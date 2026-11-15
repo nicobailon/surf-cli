@@ -35,7 +35,7 @@ surf use x thread --url https://x.com/<user>/status/<id> --format md
 surf use <playbook> <op> --format jsonl  # one record per line
 ```
 
-- An input the op doesn't define (`--lmit`) fails before anything runs and lists the op's inputs.
+- An input the op doesn't define (`--lmit`) fails before anything runs and lists the op's inputs. Surf's global flags and `--timeout` aren't inputs unless the op declares them.
 - Write ops need `--write`. Surf records the intent before sending, so a retry can't submit twice.
 - Script strategies need `--allow-script`.
 - To write a recipe for a new site's feed API (the `api` and `collect` strategies), follow `docs/threads-and-feeds.md` in the Surf repository.

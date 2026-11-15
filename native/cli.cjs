@@ -36,6 +36,7 @@ const {
 } = require("./oracle-cli.cjs");
 const { formatPlaybookOutput, handlePlaybookCli } = require("./playbook-cli.cjs");
 const { editDistance } = require("./edit-distance.cjs");
+const { formatGlobalOptions } = require("./global-options.cjs");
 
 const IS_WIN = process.platform === "win32";
 const { SURF_TMP, formatSocketError } = require("./socket-path.cjs");
@@ -1656,6 +1657,7 @@ const TOOLS = {
         args: ["playbook", "op"],
         opts: {
           "<arg>": "Operation input, e.g. --url <post-url>; an input the op doesn't define fails and lists its inputs",
+          timeout: "Seconds before the run gives up (default: the op's --timeout, else 600)",
           format: "md or jsonl instead of JSON",
           write: "Authorize a write operation",
           "allow-script": "Allow the playbook's trusted script strategy",
@@ -2202,21 +2204,7 @@ Usage: surf <command> [args] [options]
   console.log(`Aliases: snap -> screenshot, read -> page.read, find -> search, go -> navigate
 
 Options:
-  --remote <host>:<port>       Route requests to a remote native host
-  --remote-credential <path>   Use a mode-0600 Ed25519 remote credential file
-  --remote-tls                 Use TLS through a TLS-terminating reverse proxy
-  --remote-tls-ca <path>       Replace system roots with a custom CA bundle
-  --remote-tls-server-name <name>  Override TLS SNI and certificate identity
-  --session <name>  Target a durable named session (or set SURF_SESSION)
-  --tab-id <id>     Target specific tab
-  --window-id <id>  Target specific window
-  --no-wait         Return immediately when the tab/browser is busy
-  --json            Output raw JSON including target metadata
-  --auto-capture    On error: capture screenshot + console to /tmp
-  --soft-fail       Host tool errors: warn on stderr, exit 0, no JSON error output
-  --no-lock         Bypass the legacy lock for compound client-side commands
-  --settle <ms>     Max wait for the page to settle after actions (default 2000, max 30000, surf.json settleMs)
-  --no-diff         Skip reporting page changes after actions
+${formatGlobalOptions()}
 
 Host tool-response errors: stderr includes [code] on the first line when supplied;
 --json also writes {"error":{"code":"...","message":"..."}} to stdout; exit 1.
