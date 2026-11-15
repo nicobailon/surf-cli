@@ -248,6 +248,23 @@ function replayRefusal(entry, url, sentFrom, tabOrigin) {
   );
 }
 
+/**
+ * Replaces every header value in a message with <redacted>, longest first. A value under 8
+ * characters is only replaced where it stands alone, so a short value such as `e` can't break up
+ * the words around it.
+ */
+function headerRedactor(headers) {
+  const values = [...new Set(Object.values(headers).map(String).filter(Boolean))].sort((a, b) => b.length - a.length);
+  return (message) => {
+    let text = message;
+    for (const value of values) {
+      if (value.length >= 8) text = text.split(value).join("<redacted>");
+      else text = text.replace(new RegExp(`(?<![A-Za-z0-9])${value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(?![A-Za-z0-9])`, "g"), "<redacted>");
+    }
+    return text;
+  };
+}
+
 function replayHeaders(headers = {}) {
   return Object.fromEntries(
     Object.entries(headers).filter(([name]) => {
@@ -267,7 +284,7 @@ async function replayEntry(ctx, entry, { set, allowPost = false, origins = [] } 
   if (origins.length > 0 && !origins.includes(url.origin)) throw new Error(`replay origin is not allowed: ${url.origin}`);
   const headers = replayHeaders(entry.requestHeaders);
   // Header values (auth, CSRF) must never reach errors, events, or logs.
-  const secrets = Object.values(headers).filter((value) => String(value).length >= 8);
+  const redact = headerRedactor(headers);
   try {
     await markSeen(ctx, url.pathname);
     const init = { method, headers, ...(request.body !== undefined && !["GET", "HEAD"].includes(method) ? { body: request.body } : {}) };
@@ -316,9 +333,7 @@ return { status: response.status, url: response.url };
     if (!captured) throw new Error(`the replayed response for ${url.pathname} was not captured`);
     return { status: result.status, url: finalUrl, ...(await readBody(ctx, captured)) };
   } catch (error) {
-    let message = error?.message || String(error);
-    for (const secret of secrets) message = message.split(secret).join("<redacted>");
-    throw new Error(message);
+    throw new Error(redact(error?.message || String(error)));
   }
 }
 

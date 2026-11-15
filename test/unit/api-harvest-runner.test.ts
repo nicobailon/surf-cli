@@ -112,6 +112,9 @@ function fakeSite({
     if (replay === "throw") {
       throw new Error(`Failed to execute 'fetch': invalid header ${init.headers.authorization}`);
     }
+    if (replay === "echo") {
+      throw new Error(`synthetic failure echo: ${init.headers["x-csrf-token"]}`);
+    }
     if (replay === "status") {
       respond(url, 403, { errors: ["bad request"] });
     } else {
@@ -349,6 +352,27 @@ describe("api harvest runners", () => {
       /^the browser refused the replay from https:\/\/app\.test to https:\/\/api\.other\.test \(CORS or network\): /,
     );
     await expect(replayed).rejects.not.toThrow(SECRET);
+  });
+
+  it("redacts short header values from a failed replay's error", async () => {
+    for (const [tabOrigin, url] of [
+      ["https://site.test", feedUrl()],
+      [
+        "https://app.test",
+        `https://api.other.test/api/v1/feed?variables=${encodeURIComponent("{}")}`,
+      ],
+    ]) {
+      const site = fakeSite({ replay: "echo", tabOrigin });
+      site.respond(url, 200, {});
+      const entry = site.log[site.log.length - 1];
+      Object.assign(entry, { tabUrl: `${tabOrigin}/home` });
+      entry.requestHeaders["x-csrf-token"] = "csrf";
+      const failure = await harvest
+        .replay({ ...site, id: entry.id })
+        .catch((error: Error) => error);
+      expect(failure.message).toContain("synthetic failure echo: <redacted>");
+      expect(failure.message).not.toMatch(/\bcsrf\b/);
+    }
   });
 
   it("fails instead of returning partial pages when it must drive a hidden tab", async () => {
