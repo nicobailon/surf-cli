@@ -1248,7 +1248,7 @@ setInterval(() => {}, 60_000);
     termsState: document.querySelector("#terms-state").textContent,
   }));
   if (termsAccepted !== "accepted" || !alreadyChecked.includes("was already checked; nothing clicked") || !alreadyUnchecked.includes("was already unchecked; nothing clicked")
-    || !radioUncheck.stderr.includes("is a radio button") || !missingOption.stderr.includes('no option matching "nowhere"')
+    || !radioUncheck.stderr.includes("is a radio button") || !missingOption.stderr.includes("has no option matching the given value") || missingOption.stderr.includes("nowhere")
     || JSON.stringify(checkState) !== JSON.stringify({ news: true, terms: false, small: true, country: "us", log: "terms:true|terms:true", termsState: "not accepted" })) {
     throw new Error(`check/uncheck/select did not set the requested state: ${JSON.stringify({ termsAccepted, alreadyChecked, alreadyUnchecked, radioUncheck, missingOption, checkState })}`);
   }

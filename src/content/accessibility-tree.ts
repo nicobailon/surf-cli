@@ -1587,6 +1587,11 @@ function writeTextField(field: HTMLInputElement | HTMLTextAreaElement, text: str
   return null;
 }
 
+// Why a select has no option for a value. Never echoes the value: a select may be filled with a secret.
+function noOptionError({ target, select, by, which = "the given value" }: { target: string; select: HTMLSelectElement; by: string; which?: string }): string {
+  return `${target} has no option matching ${which} (by ${by}, ${select.options.length} options), so nothing was selected.`;
+}
+
 function setFormValue(ref: string, value: string | boolean | number): { success: boolean; error?: string } {
   const { element, error } = resolveRef(ref);
   if (!element) {
@@ -1616,7 +1621,7 @@ function setFormValue(ref: string, value: string | boolean | number): { success:
       }
 
       if (!found) {
-        return { success: false, error: `Option "${value}" not found in select element ${ref}` };
+        return { success: false, error: noOptionError({ target: ref, select, by: "value or text" }) };
       }
 
       select.dispatchEvent(new Event("change", { bubbles: true }));
@@ -2599,12 +2604,12 @@ function handleContentMessage(
         }
         
         const matched: HTMLOptionElement[] = [];
-        const notFound: string[] = [];
+        const notFound: number[] = []; // 1-based positions, so the error names no value
         
         // For single-select, only use the first value
         const valuesToSelect = selectEl.multiple ? values : [values[0]];
         
-        for (const val of valuesToSelect) {
+        for (const [position, val] of valuesToSelect.entries()) {
           let found = false;
           
           for (const opt of selectEl.options) {
@@ -2626,12 +2631,13 @@ function handleContentMessage(
             }
           }
           
-          if (!found) notFound.push(val);
+          if (!found) notFound.push(position + 1);
         }
 
         // Select nothing unless every value matched, so a typo can't leave a half-changed dropdown.
         if (notFound.length > 0) {
-          sendResponse({ error: `${selector} has no option matching ${notFound.map((v) => JSON.stringify(v)).join(", ")} (by ${by || "value"}), so nothing was selected.` });
+          const which = valuesToSelect.length === 1 ? "the given value" : `given value ${notFound.join(", ")} of ${valuesToSelect.length}`;
+          sendResponse({ error: noOptionError({ target: selector, select: selectEl, by: by || "value", which }) });
           break;
         }
         if (selectEl.multiple) {
@@ -2927,7 +2933,7 @@ function handleContentMessage(
               el.value = option.value;
               el.dispatchEvent(new Event("change", { bubbles: true }));
             }
-            results.push(option ? { ref, success: true } : { ref, success: false, error: `${ref} has no option with value or text ${JSON.stringify(String(value))}, so nothing was selected.` });
+            results.push(option ? { ref, success: true } : { ref, success: false, error: noOptionError({ target: ref, select: el, by: "value or text" }) });
           } else if (el.isContentEditable) {
             el.focus();
             el.textContent = String(value);
