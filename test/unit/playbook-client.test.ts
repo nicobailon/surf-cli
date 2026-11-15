@@ -238,3 +238,150 @@ describe("playbook client projection", () => {
     ).toThrow(/auth input/);
   });
 });
+
+describe("clients from parameterised ops", () => {
+  const http = require("node:http");
+  const { execFile } = require("node:child_process");
+
+  function writeOp(op: Record<string, unknown>) {
+    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "surf-client-param-"));
+    directories.push(cwd);
+    const directory = path.join(cwd, ".surf", "playbooks", "books");
+    fs.mkdirSync(path.join(directory, "ops"), { recursive: true });
+    fs.writeFileSync(
+      path.join(directory, "playbook.json"),
+      JSON.stringify({ id: "books", version: "1.0.0", origins: ["https://books.test"] }),
+    );
+    fs.writeFileSync(path.join(directory, "ops", `${op.id}.json`), JSON.stringify(op));
+    return cwd;
+  }
+
+  async function serve(run: (origin: string) => Promise<unknown>) {
+    const requests: Array<{
+      method: string;
+      url: string;
+      body: string;
+      headers: Record<string, string>;
+    }> = [];
+    const server = http.createServer((request: any, response: any) => {
+      let body = "";
+      request.on("data", (chunk: string) => {
+        body += chunk;
+      });
+      request.on("end", () => {
+        requests.push({ method: request.method, url: request.url, body, headers: request.headers });
+        response.writeHead(200, { "content-type": "application/json" });
+        response.end('{"ok":true}');
+      });
+    });
+    await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+    try {
+      await run(`http://127.0.0.1:${server.address().port}`);
+    } finally {
+      await new Promise((resolve) => server.close(resolve));
+    }
+    return requests;
+  }
+
+  function runClient(directory: string, args: string[], env: Record<string, string>) {
+    return new Promise((resolve, reject) => {
+      execFile(
+        process.execPath,
+        [path.join(directory, "client.mjs"), ...args],
+        { env: { ...process.env, ...env } },
+        (error: Error | null, stdout: string, stderr: string) =>
+          error ? reject(new Error(stderr || error.message)) : resolve(stdout),
+      );
+    });
+  }
+
+  it("takes the op's inputs, with defaults, types and path, JSON and form templates, and still verifies", async () => {
+    const cwd = writeOp({
+      id: "page",
+      effect: "read",
+      args: {
+        page: { type: "number", default: 2 },
+        q: { type: "string", required: true },
+        unused: { required: true },
+      },
+      run: [
+        {
+          using: "network",
+          request: {
+            method: "POST",
+            url: "https://books.test/catalogue/page-{{page}}.html",
+            query: { v: { page: "{{page}}" } },
+            headers: { "content-type": "application/json" },
+            body: { page: "{{page}}", q: "{{q}}" },
+          },
+        },
+        { using: "workflow", steps: [{ cmd: "type", args: { text: "{{unused}}" } }] },
+      ],
+    });
+    const out = path.join(cwd, "client");
+    const { manifest } = clients.exportClient("books", "page", out, { cwd });
+    expect(manifest.args).toEqual({
+      page: { type: "number", default: 2 },
+      q: { type: "string", required: true },
+    });
+    const requests = await serve(async (origin) => {
+      await runClient(out, ["--page", "3", "--q", "007"], { SURF_CLIENT_ORIGIN: origin });
+      await runClient(out, ["--q", "x y"], { SURF_CLIENT_ORIGIN: origin });
+      await expect(runClient(out, [], { SURF_CLIENT_ORIGIN: origin })).rejects.toThrow(
+        /Missing required argument: --q/,
+      );
+    });
+    expect(requests[0]).toMatchObject({
+      method: "POST",
+      url: "/catalogue/page-3.html?v=%7B%22page%22%3A3%7D",
+      body: '{"page":3,"q":"007"}',
+    });
+    expect(requests[1]).toMatchObject({
+      url: "/catalogue/page-2.html?v=%7B%22page%22%3A2%7D",
+      body: '{"page":2,"q":"x y"}',
+    });
+    await expect(clients.verifyClient(out, { live: false })).resolves.toMatchObject({
+      valid: true,
+      execution: { requests: 1 },
+    });
+  });
+
+  it("encodes form fields and reads env-supplied headers from the client's own environment", async () => {
+    const cwd = writeOp({
+      id: "form",
+      effect: "read",
+      args: { name: { type: "string", default: "Jane" } },
+      run: [
+        {
+          using: "network",
+          request: {
+            method: "POST",
+            url: "https://books.test/search",
+            headers: { "content-type": "application/x-www-form-urlencoded" },
+            body: "name={{name}}&page=1",
+            authInputs: [{ env: "SURF_TEST_CLIENT_KEY", header: "Authorization", required: true }],
+          },
+        },
+      ],
+    });
+    const out = path.join(cwd, "client");
+    const { manifest } = clients.exportClient("books", "form", out, { cwd });
+    expect(manifest.authInputs).toEqual([
+      { env: "SURF_TEST_CLIENT_KEY", header: "Authorization", required: true },
+    ]);
+    const requests = await serve(async (origin) => {
+      await runClient(out, ["--name", "A&B C"], {
+        SURF_CLIENT_ORIGIN: origin,
+        SURF_TEST_CLIENT_KEY: "client-env-value",
+      });
+    });
+    expect(requests[0].body).toBe("name=A%26B%20C&page=1");
+    expect(requests[0].headers.authorization).toBe("client-env-value");
+    expect(fs.readFileSync(path.join(out, "surf-client.json"), "utf8")).not.toContain(
+      "client-env-value",
+    );
+    await expect(clients.verifyClient(out, { live: false })).resolves.toMatchObject({
+      valid: true,
+    });
+  });
+});

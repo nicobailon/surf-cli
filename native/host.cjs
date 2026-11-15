@@ -1582,6 +1582,8 @@ async function runHostPlaybook(msg, request) {
     playbook,
     op,
     args: runArgs,
+    // Values of env-supplied headers, read from the caller's shell by surf use; never stored.
+    secrets: params.secret || {},
     attemptId: receipt?.attemptId,
     signal: request.signal,
     executeTool: (tool, args) => executeMappedHostTool(request, tool, args, msg.tabId),

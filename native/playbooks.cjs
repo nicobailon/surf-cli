@@ -11,6 +11,26 @@ const { commandMetadata, normalizeStep } = require("./workflow-definition.cjs");
 const BUILTIN_DIR = path.join(__dirname, "..", "playbooks");
 const PINNED_BUILTINS = new Set(["chatgpt", "aistudio", "x"]);
 const ID_PATTERN = /^[a-z0-9][a-z0-9._-]{0,63}$/;
+const ARG_TYPES = new Set(["string", "number", "boolean"]);
+const ENV_NAME_PATTERN = /^[A-Za-z_][A-Za-z0-9_]*$/;
+const HEADER_NAME_PATTERN = /^[!#$%&'*+.^_`|~0-9A-Za-z-]+$/;
+
+// `request.authInputs`: headers whose value comes from an environment variable at run time.
+function validateAuthInputs(inputs, headers = {}) {
+  if (inputs === undefined) return;
+  if (!Array.isArray(inputs)) throw new Error("network request authInputs must be an array");
+  const seen = new Set();
+  for (const input of inputs) {
+    if (!input || typeof input !== "object" || Array.isArray(input)) throw new Error("network request authInputs entries must be objects");
+    if (typeof input.env !== "string" || !ENV_NAME_PATTERN.test(input.env)) throw new Error(`auth input env must be an environment variable name: ${input.env}`);
+    if (typeof input.header !== "string" || !HEADER_NAME_PATTERN.test(input.header)) throw new Error(`auth input header must be a header name: ${input.header}`);
+    if (input.required !== undefined && typeof input.required !== "boolean") throw new Error("auth input required must be true or false");
+    const lower = input.header.toLowerCase();
+    if (seen.has(lower)) throw new Error(`network request has two auth inputs for the ${input.header} header`);
+    seen.add(lower);
+    if (Object.keys(headers || {}).some((name) => name.toLowerCase() === lower)) throw new Error(`auth input ${input.env} also has a literal ${input.header} header`);
+  }
+}
 
 function playbookDirs({ cwd = process.cwd(), home = os.homedir() } = {}) {
   return [
@@ -31,6 +51,7 @@ function validateArgSpecs(args) {
   for (const [name, spec] of Object.entries(args)) {
     assertId(name, "argument name");
     if (!spec || typeof spec !== "object" || Array.isArray(spec)) throw new Error(`argument ${name} must be an object`);
+    if (spec.type !== undefined && !ARG_TYPES.has(spec.type)) throw new Error(`argument ${name} type must be string, number or boolean`);
   }
   return args;
 }
@@ -108,6 +129,7 @@ function validateStrategy(strategy, effect, opId) {
     assertNoEmbeddedSecrets(request.headers || {});
     assertNoEmbeddedSecrets(request.query || {});
     assertNoEmbeddedSecrets(request.body);
+    validateAuthInputs(request.authInputs, request.headers);
     return { ...strategy, request: { ...request, method } };
   }
   if (strategy.using === "native") {
