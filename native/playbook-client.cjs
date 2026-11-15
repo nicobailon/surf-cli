@@ -7,7 +7,7 @@ const { renderRequest, resolveArgValues } = require("./playbook-template.cjs");
 const { resolveOp } = require("./playbooks.cjs");
 const { isReplayCandidate, readRecord, recordsRoot, requestEffect } = require("./playbook-records.cjs");
 const { WINNER_MARGIN, isWeak, scoreEntries } = require("./record-candidates.cjs");
-const { assertNoEmbeddedSecrets, assertUrlHasNoEmbeddedSecrets, safeHeaders } = require("./redaction.cjs");
+const { assertNoEmbeddedSecrets, assertUrlHasNoEmbeddedSecrets, redactValues, safeHeaders } = require("./redaction.cjs");
 const { version: PACKAGE_VERSION } = require("../package.json");
 
 // URL parsing would percent-encode `{{name}}` in a path, so placeholders sit out the parse.
@@ -60,10 +60,21 @@ if (process.env.SURF_CLIENT_ORIGIN) url = new URL(\`\${url.pathname}\${url.searc
 else if (process.env.SURF_CLIENT_ENDPOINT_URL) url = new URL(process.env.SURF_CLIENT_ENDPOINT_URL);
 for (const [name, value] of Object.entries(endpoint.query)) url.searchParams.set(name, value);
 const headers = { ...endpoint.headers };
+// Env-supplied values are redacted from what the client prints, output and errors alike.
+const secretValues = [];
+${redactValues.toString()}
+const redact = (text) => redactValues(text, secretValues);
+process.on("uncaughtException", (error) => {
+  process.stderr.write(\`\${redact(error?.stack || error)}\\n\`);
+  process.exit(1);
+});
 for (const input of manifest.authInputs || []) {
   const value = process.env[input.env];
   if (input.required && !value) throw new Error(\`missing auth environment variable \${input.env}\`);
-  if (value && input.header) headers[input.header] = value;
+  if (value && input.header) {
+    headers[input.header] = value;
+    secretValues.push(value);
+  }
 }
 const response = await fetch(url, {
   method: endpoint.method,
@@ -87,7 +98,7 @@ if (manifest.extract?.jsonPath) {
   for (const part of manifest.extract.jsonPath.replace(/^\\$\\.?/, "").split(".").filter(Boolean)) output = output?.[part];
 }
 if (manifest.extract?.field) output = output?.[manifest.extract.field];
-process.stdout.write(output === undefined ? "" : typeof output === "string" ? output : JSON.stringify(output, null, 2));
+process.stdout.write(redact(output === undefined ? "" : typeof output === "string" ? output : JSON.stringify(output, null, 2)));
 process.stdout.write("\\n");
 `;
 }

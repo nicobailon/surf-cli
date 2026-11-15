@@ -346,6 +346,48 @@ describe("clients from parameterised ops", () => {
     });
   });
 
+  it("redacts its env-supplied header values from stdout and errors", async () => {
+    const cwd = writeOp({
+      id: "echo",
+      effect: "read",
+      run: [
+        {
+          using: "network",
+          request: {
+            method: "GET",
+            url: "https://books.test/headers",
+            authInputs: [{ env: "SURF_TEST_ECHO_KEY", header: "Authorization", required: true }],
+          },
+        },
+      ],
+    });
+    const out = path.join(cwd, "client");
+    clients.exportClient("books", "echo", out, { cwd });
+    const echoServer = http.createServer((request: any, response: any) => {
+      response.writeHead(request.url.includes("fail") ? 500 : 200, {
+        "content-type": "application/json",
+      });
+      response.end(JSON.stringify({ Authorization: request.headers.authorization, other: "zz9" }));
+    });
+    await new Promise((resolve) => echoServer.listen(0, "127.0.0.1", resolve));
+    const origin = `http://127.0.0.1:${echoServer.address().port}`;
+    try {
+      const stdout = String(
+        await runClient(out, [], { SURF_CLIENT_ORIGIN: origin, SURF_TEST_ECHO_KEY: "zz" }),
+      );
+      expect(stdout).toContain('"Authorization": "<redacted>"');
+      expect(stdout).toContain('"other": "zz9"');
+      const failure = await runClient(out, [], {
+        SURF_CLIENT_ENDPOINT_URL: `${origin}/headers?fail`,
+        SURF_TEST_ECHO_KEY: "zz",
+      }).catch((caught: Error) => caught);
+      expect(String(failure)).toMatch(/HTTP 500/);
+      expect(String(failure)).not.toMatch(/"zz"/);
+    } finally {
+      await new Promise((resolve) => echoServer.close(resolve));
+    }
+  });
+
   it("encodes form fields and reads env-supplied headers from the client's own environment", async () => {
     const cwd = writeOp({
       id: "form",

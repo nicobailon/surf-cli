@@ -171,6 +171,40 @@ describe("env-supplied headers", () => {
     expect(JSON.stringify(events)).not.toContain("shell-secret-value");
   });
 
+  it("redacts the value from results and errors, short values where they stand alone", async () => {
+    const echo = vi.fn(async () => ({
+      value: {
+        status: 200,
+        ok: true,
+        bodyJson: { headers: { Authorization: "k9" }, note: "k9x stays", list: ["Bearer k9"] },
+      },
+    }));
+    const result = await runtime.runPlaybookOp({
+      playbook: { id: "api", provenance: {} },
+      op: authOp,
+      secrets: { SURF_TEST_KEY: "k9" },
+      env: {},
+      executeTool: echo,
+    });
+    expect(result.value.bodyJson).toEqual({
+      headers: { Authorization: "<redacted>" },
+      note: "k9x stays",
+      list: ["Bearer <redacted>"],
+    });
+
+    const fail = vi.fn(async () => ({ error: "rejected k9 (k9x)" }));
+    const error = await runtime
+      .runPlaybookOp({
+        playbook: { id: "api", provenance: {} },
+        op: authOp,
+        secrets: { SURF_TEST_KEY: "k9" },
+        env: {},
+        executeTool: fail,
+      })
+      .catch((caught: Error) => caught);
+    expect(error.message).toContain("rejected <redacted> (k9x)");
+  });
+
   it("validates auth inputs and refuses one that duplicates a literal header", () => {
     expect(() =>
       playbooks.validateOp(

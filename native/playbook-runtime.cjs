@@ -5,6 +5,7 @@ const { runCollect } = require("./dom-collect.cjs");
 const { editDistance } = require("./edit-distance.cjs");
 const { GLOBAL_OPTIONS } = require("./global-options.cjs");
 const { renderRequest, resolveArgValues } = require("./playbook-template.cjs");
+const { redactValues } = require("./redaction.cjs");
 
 function applyTemplate(value, args) {
   if (typeof value === "string") {
@@ -66,10 +67,15 @@ function resolveAuthValues(op, secrets = {}, env = process.env) {
   return values;
 }
 
-function scrubSecrets(message, secrets) {
-  let text = message;
-  for (const value of Object.values(secrets)) if (value.length >= 4) text = text.split(value).join("<redacted>");
-  return text;
+// Env-supplied values never leave a run: a response that echoes one (or an error that quotes it)
+// comes back with <redacted> in its place.
+function redactSecrets(value, secrets) {
+  const values = Object.values(secrets);
+  if (values.length === 0) return value;
+  if (typeof value === "string") return redactValues(value, values);
+  if (Array.isArray(value)) return value.map((item) => redactSecrets(item, secrets));
+  if (value && typeof value === "object") return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, redactSecrets(item, secrets)]));
+  return value;
 }
 
 function getJsonPath(value, jsonPath) {
@@ -262,9 +268,9 @@ async function runPlaybookOp({ playbook, op, args: providedArgs = {}, secrets = 
       verifyResult(value, strategy.verify || strategy.expect || op.on?.success?.expect, raw);
       if (op.effect === "write") await afterDispatch({ status: "verified", strategy, index });
       onEvent({ type: "strategy.completed", playbook: playbook.id, op: op.id, using: strategy.using, index, endedAt: new Date().toISOString() });
-      return { status: "completed", playbook: playbook.id, op: op.id, strategy: strategy.using, value, provenance: playbook.provenance, attempts };
+      return { status: "completed", playbook: playbook.id, op: op.id, strategy: strategy.using, value: redactSecrets(value, authValues), provenance: playbook.provenance, attempts };
     } catch (caught) {
-      const message = scrubSecrets(caught?.message || String(caught), authValues);
+      const message = redactSecrets(caught?.message || String(caught), authValues);
       const error = message === caught?.message ? caught : new Error(message);
       attempts.push({ using: strategy.using, error: message });
       onEvent({ type: "strategy.failed", playbook: playbook.id, op: op.id, using: strategy.using, index, error: message, endedAt: new Date().toISOString() });
