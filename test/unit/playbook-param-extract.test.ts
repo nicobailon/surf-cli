@@ -462,7 +462,9 @@ describe("pb test --save and env values", () => {
       save(["--assert", "$[0].echo", "matches", `^x{210}(?:${hexEscaped(KEY)}|<redacted>)$`]),
     ).rejects.toThrow(refused);
     // A pattern that matches the secret itself, and a value or path holding it.
-    await expect(save(["--assert", "$[0].title", "matches", "^a$|^dummy-"])).rejects.toThrow(refused);
+    await expect(save(["--assert", "$[0].title", "matches", "^a$|^dummy-"])).rejects.toThrow(
+      refused,
+    );
     await expect(save(["--assert", "$[0].echo", "equals", echo])).rejects.toThrow(refused);
     expect(fs.readFileSync(file, "utf8")).toBe(before);
     const saved = await save(["--assert", "$[0].title", "equals", "a"]);
