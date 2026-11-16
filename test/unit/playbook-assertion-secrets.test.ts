@@ -321,8 +321,15 @@ describe("the JSON-escaped spelling of an env value", () => {
     );
     // A pattern that matches only the escaped spelling.
     await expect(
-      save(cwd, ["--assert", "$.body", "matches", "quoted\\\\\\\\value"], { [ENV]: QUOTED }, hosted),
-    ).rejects.toThrow(/--save refused: assertion 1's pattern matches the value of SURF_TEST_ITEMS_KEY/);
+      save(
+        cwd,
+        ["--assert", "$.body", "matches", "quoted\\\\\\\\value"],
+        { [ENV]: QUOTED },
+        hosted,
+      ),
+    ).rejects.toThrow(
+      /--save refused: assertion 1's pattern matches the value of SURF_TEST_ITEMS_KEY/,
+    );
     expect(hosted).toHaveBeenCalledOnce();
     expect(fs.readFileSync(file, "utf8")).toBe(before);
   });
@@ -339,7 +346,11 @@ describe("the JSON-escaped spelling of an env value", () => {
       });
       expect(failed.status).toBe("failed");
       const failures = events.filter((event) => event.type === "strategy.failed");
-      for (const text of [failed.error, failed.attempts[0].error, ...failures.map((event) => event.error)]) {
+      for (const text of [
+        failed.error,
+        failed.attempts[0].error,
+        ...failures.map((event) => event.error),
+      ]) {
         expect(text).toContain("<redacted>");
         for (const spelling of [QUOTED, escaped, twiceEscaped]) {
           expect(text).not.toContain(spelling);
@@ -397,7 +408,11 @@ describe("the JSON-escaped spelling of an env value", () => {
     });
     const long = `dummy-env-value-${"0123456789".repeat(4)}`;
     const cases = [
-      { key: QUOTED, body: (key: string) => JSON.stringify({ echo: key }), hidden: [QUOTED, escaped] },
+      {
+        key: QUOTED,
+        body: (key: string) => JSON.stringify({ echo: key }),
+        hidden: [QUOTED, escaped],
+      },
       { key: long, body: (key: string) => `${"x".repeat(490)}${key}`, hidden: [long.slice(0, 10)] },
     ];
     for (const { key, body, hidden } of cases) {

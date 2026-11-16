@@ -318,7 +318,7 @@ describe("running an op with assertions", () => {
 
   it("keeps a failed write's attempts and assertions for pb test, and its errors short", async () => {
     const errors: string[] = [];
-    const writeOp = {
+    const createOp = {
       id: "create",
       effect: "write",
       args: {},
@@ -328,7 +328,7 @@ describe("running an op with assertions", () => {
     const hostRun = (params: Record<string, any>) =>
       runtime.testPlaybookOp({
         playbook: { id: "hr", provenance: { scope: "test" } },
-        op: writeOp,
+        op: createOp,
         assertions: params.assert,
         executeTool: captureTab({ reply: () => ({ body: JSON.stringify({ n: 2 }) }) }).executeTool,
         afterDispatch: async ({ error }: { error?: string }) => {
@@ -356,7 +356,7 @@ describe("running an op with assertions", () => {
       path.join(directory, "playbook.json"),
       JSON.stringify({ id: "hr", version: "1.0.0", origins: ["https://hr.test"] }),
     );
-    fs.writeFileSync(path.join(directory, "ops", "create.json"), JSON.stringify(writeOp));
+    fs.writeFileSync(path.join(directory, "ops", "create.json"), JSON.stringify(createOp));
     const report = await pbTest.runPlaybookTest({
       argv: ["hr", "create", "--assert", "$.bodyJson.n", "equals", "1", "--write"],
       cwd,
