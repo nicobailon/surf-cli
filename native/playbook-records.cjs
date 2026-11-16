@@ -14,7 +14,7 @@ const { redactSensitiveFields, redactUrlSecrets, safeHeaders } = require("./reda
 const { commandMetadata, promoteRedactedStepArgs } = require("./workflow-definition.cjs");
 const { describeCaptureGaps } = require("./formatters/network.cjs");
 const { ASSET_TYPES, isReplayCandidate, isTelemetryRequest, requestEffect, shownUrl } = require("./request-kinds.cjs");
-const { isWeak, pageWords, rankCandidates, scoreEntries, summarizeResponse } = require("./record-candidates.cjs");
+const { WINNER_MARGIN, isWeak, pageWords, rankCandidates, scoreEntries, summarizeResponse } = require("./record-candidates.cjs");
 const { version: PACKAGE_VERSION } = require("../package.json");
 
 function recordsRoot(root = getPrivateStateRoot()) {
@@ -280,14 +280,18 @@ function pickRequest({ record, trace, effect, requestId, warnings }) {
   }
   if (!trace) return undefined;
   const eligible = scoreEntries(entries, { origin: record.origin }).filter((candidate) => candidate.eligible);
-  const top = eligible.filter((candidate) => candidate.effect === (capturedWrite ? "write" : "read"))[0];
+  const [top, next] = eligible.filter((candidate) => candidate.effect === (capturedWrite ? "write" : "read"));
   if (!top) {
     warnings.push(capturedWrite
       ? `the draft has no network strategy: it is a write because of ${shownUrl(capturedWrite)}, which is ${neverReplayed(capturedWrite, record.origin)}, and a write draft never replays a read in its place`
       : NO_REPLAY);
     return undefined;
   }
-  if (isWeak(top)) warnings.push(`the draft's network strategy, ${shownUrl(top.entry)}, is a weak match (score ${top.score}); run surf pb record candidates ${record.id} and choose with --request-id`);
+  const choose = `run surf pb record candidates ${record.id} and choose with --request-id`;
+  if (isWeak(top)) warnings.push(`the draft's network strategy, ${shownUrl(top.entry)}, is a weak match (score ${top.score}); ${choose}`);
+  else if (next && top.score - next.score < WINNER_MARGIN) {
+    warnings.push(`the draft's network strategy, ${shownUrl(top.entry)} (score ${top.score}), ${top.score === next.score ? "ties with" : "is close to"} ${shownUrl(next.entry)} (score ${next.score}); ${choose}`);
+  }
   return top.entry;
 }
 

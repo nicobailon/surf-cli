@@ -1741,7 +1741,7 @@ const TOOLS = {
         ],
       },
       "playbook record candidates": {
-        desc: "Rank a record's requests by how likely each carries the page's data (JSON or HTML document, records, page text overlap, first-party; telemetry, assets, redirects, preflights low)",
+        desc: "Rank a record's requests by how likely each carries the page's data (JSON or HTML document, records, page text overlap, first-party; telemetry, assets, redirects, preflights and small JSON that overlaps little of the page low)",
         args: ["record-id?"],
         opts: { limit: "How many to show (default: 10)", json: "Output raw JSON" },
         examples: [

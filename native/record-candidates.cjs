@@ -11,6 +11,13 @@ const WEAK_SCORE = 5;
 // How far the best read must lead the next for pb client derive to take it without --request-id.
 const WINNER_MARGIN = 3;
 const TINY_BYTES = 64;
+// Overlap is the share of the page's words found in a response. A response holding nearly all of
+// them is the page's own data (+5, above any JSON's records bonus); a small JSON holding under
+// LOW_OVERLAP of them is a side request such as a banner or the web manifest (-3), even when it
+// lists records. A JSON API the page shows overlaps heavily, so it keeps its lead.
+const HEAVY_OVERLAP = 0.8;
+const LOW_OVERLAP = 0.1;
+const SMALL_JSON_BYTES = 16 * 1024;
 // The page's words, capped so a huge page stays cheap; fewer than MIN_PAGE_WORDS gives no overlap.
 const PAGE_WORD_LIMIT = 2000;
 const MIN_PAGE_WORDS = 10;
@@ -172,7 +179,9 @@ function scoreEntry(entry, origin) {
     if (siteOf(host) === siteOf(site)) add(2, "first-party");
     else add(-2, `third-party (${host})`);
   }
-  if (summary.overlap >= 0.1) add(summary.overlap >= 0.3 ? 3 : 1, `overlaps ${Math.round(summary.overlap * 100)}% of the page text`);
+  const overlap = `overlaps ${Math.round(summary.overlap * 100)}% of the page text`;
+  if (summary.overlap >= LOW_OVERLAP) add(summary.overlap >= HEAVY_OVERLAP ? 5 : summary.overlap >= 0.3 ? 3 : 1, overlap);
+  else if (summary.overlap !== undefined && kind === "json" && summary.bytes < SMALL_JSON_BYTES) add(-3, `small JSON that ${overlap}`);
   if (summary.bytes !== undefined && summary.bytes < TINY_BYTES && ok && !emptyRedirect) add(-3, `tiny body (${summary.bytes} B)`);
   return { score, reasons, effect, eligible: isReplayCandidate(entry) && !telemetry && !preflight };
 }

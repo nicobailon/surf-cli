@@ -257,6 +257,95 @@ describe("rankCandidates", () => {
     expect(ranked[0].sample).toContain("Sharp Objects");
   });
 
+  it("puts a document holding the whole page above a small banner JSON and the web manifest", () => {
+    // arXiv: the search page's own HTML, then static.arxiv.org's announcements banner (a list of
+    // records the page doesn't show) and the web manifest's icons, both first-party JSON.
+    const page = "https://papers.example";
+    const json = (id: string, url: string, type: string, mimeType: string, value: unknown) => {
+      const body = JSON.stringify(value);
+      return summarized(
+        get(id, type, url, {
+          mimeType,
+          responseBody: body,
+          bodyCapture: { complete: true, capturedBytes: body.length },
+        }),
+      );
+    };
+    const notices = Array.from({ length: 5 }, (_, index) => ({
+      id: index,
+      message: `Scheduled maintenance window number ${index}`,
+    }));
+    const icons = [192, 512].map((size) => ({
+      src: `/icon-${size}.png`,
+      sizes: `${size}x${size}`,
+    }));
+    const ranked = candidates.rankCandidates(
+      [
+        summarized(
+          get("r_doc", "Document", `${page}/search/advanced?terms-0-term=diffusion`, {
+            mimeType: "text/html",
+            responseBody: listing,
+          }),
+        ),
+        json(
+          "r_banner",
+          "https://static.papers.example/announcements.json",
+          "Fetch",
+          "application/json",
+          notices,
+        ),
+        json("r_manifest", `${page}/site.webmanifest`, "Manifest", "application/manifest+json", {
+          name: "Papers",
+          icons,
+        }),
+      ],
+      { origin: page },
+    );
+    expect(ranked.map((item: { id: string }) => item.id)).toEqual([
+      "r_doc",
+      "r_manifest",
+      "r_banner",
+    ]);
+    expect(ranked[0].reasons).toEqual([
+      "HTML document",
+      "first-party",
+      "overlaps 100% of the page text",
+    ]);
+    expect(ranked[0].score - ranked[1].score).toBeGreaterThanOrEqual(candidates.WINNER_MARGIN);
+    expect(ranked[2].reasons).toContain("small JSON that overlaps 0% of the page text");
+  });
+
+  it("still puts a JSON API that fills the page above the page's empty app shell", () => {
+    // crates.io: the document is a script shell; /api/v1/crates holds every crate the page lists.
+    const crates = ["Sharp Objects", "Tipping Velvet", "Soumission", "Starving Hearts"].map(
+      (name) => ({
+        name,
+        description: `${name} Shakespeare Sonnets Libertarianism Beginners Mesaerion Olio`,
+      }),
+    );
+    const body = JSON.stringify({ crates, meta: { total: 4 } });
+    const ranked = candidates.rankCandidates(
+      [
+        summarized(
+          get("r_shell", "Document", `${ORIGIN}/search?q=books`, {
+            mimeType: "text/html",
+            responseBody: '<html><body><div id="app">Loading products</div></body></html>',
+          }),
+        ),
+        summarized(
+          get("r_api", "Fetch", `${ORIGIN}/api/v1/crates?q=books`, {
+            mimeType: "application/json",
+            responseBody: body,
+            bodyCapture: { complete: true, capturedBytes: body.length },
+          }),
+        ),
+      ],
+      { origin: ORIGIN },
+    );
+    expect(ranked.map((item: { id: string }) => item.id)).toEqual(["r_api", "r_shell"]);
+    expect(ranked[0].reasons).toContain("4 records");
+  });
+
   it("lists and flags a write without hiding it", () => {
     const ranked = candidates.rankCandidates(
       [{ ...get("r_create", "XHR", `${ORIGIN}/api/books`), method: "POST", status: 201 }],

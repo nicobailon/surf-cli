@@ -480,6 +480,22 @@ describe("choosing the draft's request", () => {
     expect(warnings).toBeUndefined();
   });
 
+  it("warns when the pick ties or nearly ties with the next read, pointing at pb record candidates", () => {
+    const more = json("r_more", "https://example.test/api/related?q=shoes", {
+      items: [{ name: "Summit hiking shoes" }, { name: "Runner Pro trainers" }],
+    });
+    const { draft, warnings, record } = stopFlow({
+      commands: ["click"],
+      trace: [products, more],
+      pageText: PAGE_TEXT,
+      stop: { draft: true, read: true },
+    });
+    expect(networkRequest(draft)).toMatchObject({ url: "https://example.test/api/related" });
+    expect(warnings).toEqual([
+      `the draft's network strategy, GET https://example.test/api/related (score 12), ties with GET https://example.test/api/search (score 12); run surf pb record candidates ${record.id} and choose with --request-id`,
+    ]);
+  });
+
   it("warns when the best request scores low, pointing at pb record candidates", () => {
     const thirdParty = {
       id: "r_x",
