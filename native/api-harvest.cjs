@@ -26,7 +26,7 @@ function isPlainObject(value) {
 
 // A glob is checked when an op is saved and loaded, and over PATTERN_LIMIT characters it is
 // refused; a URL whose tested part is over URL_TEST_LIMIT characters never matches. A match then
-// takes at most PATTERN_LIMIT x URL_TEST_LIMIT steps (about 4 million, a few milliseconds).
+// takes at most PATTERN_LIMIT x URL_TEST_LIMIT steps (about 4 million, some 10 ms).
 const URL_TEST_LIMIT = 8 * 1024;
 
 // A glob as tokens: a literal character, "*" (any run except /) or "**" (any run); "***" is "**" then "*".

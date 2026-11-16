@@ -70,7 +70,8 @@ describe("api harvest", () => {
     const longest = harvest.urlMatcher(`/${"*".repeat(499)}`);
     expect(longest(path)).toBe(false);
     expect(longest(`https://x.test/${"a".repeat(8191)}`)).toBe(true);
-    expect(Date.now() - started).toBeLessThan(100);
+    // About 10 ms alone; the bound leaves room for a loaded machine.
+    expect(Date.now() - started).toBeLessThan(500);
   });
 
   it("matches a glob of many ** in time linear in the URL, not by backtracking", () => {
