@@ -496,6 +496,35 @@ describe("choosing the draft's request", () => {
     ]);
   });
 
+  it("warns when it picks a document too large to compare with the page over a JSON with records", () => {
+    const bigPage = {
+      id: "r_page",
+      method: "GET",
+      status: 200,
+      type: "Document",
+      mimeType: "text/html",
+      url: "https://example.test/search?q=shoes",
+      bodyCapture: { mode: "text", complete: false, reason: "per-body-cap", sizeBytes: 248_000 },
+    };
+    const stock = json("r_stock", "https://cdn.other.test/api/stock?q=shoes", {
+      levels: [
+        { sku: 1, n: 4 },
+        { sku: 2, n: 0 },
+        { sku: 3, n: 9 },
+      ],
+    });
+    const { draft, warnings, record } = stopFlow({
+      commands: ["click"],
+      trace: [bigPage, stock],
+      pageText: PAGE_TEXT,
+      stop: { draft: true, read: true },
+    });
+    expect(networkRequest(draft)).toMatchObject({ url: "https://example.test/search" });
+    expect(warnings).toEqual([
+      `the draft's network strategy, GET https://example.test/search (score 6), is a document too large to compare with the page (per-body-cap), and GET https://cdn.other.test/api/stock (score 2) holds 3 records; run surf pb record candidates ${record.id} and choose with --request-id`,
+    ]);
+  });
+
   it("warns when the best request scores low, pointing at pb record candidates", () => {
     const thirdParty = {
       id: "r_x",

@@ -280,7 +280,8 @@ function pickRequest({ record, trace, effect, requestId, warnings }) {
   }
   if (!trace) return undefined;
   const eligible = scoreEntries(entries, { origin: record.origin }).filter((candidate) => candidate.eligible);
-  const [top, next] = eligible.filter((candidate) => candidate.effect === (capturedWrite ? "write" : "read"));
+  const sameEffect = eligible.filter((candidate) => candidate.effect === (capturedWrite ? "write" : "read"));
+  const [top, next] = sameEffect;
   if (!top) {
     warnings.push(capturedWrite
       ? `the draft has no network strategy: it is a write because of ${shownUrl(capturedWrite)}, which is ${neverReplayed(capturedWrite, record.origin)}, and a write draft never replays a read in its place`
@@ -288,8 +289,14 @@ function pickRequest({ record, trace, effect, requestId, warnings }) {
     return undefined;
   }
   const choose = `run surf pb record candidates ${record.id} and choose with --request-id`;
+  // A document over the capture cap can't be compared with the page, so a JSON with records may hold
+  // the page's data instead.
+  const unmeasured = top.entry.type === "Document" && top.entry.responseSummary?.unsampled;
+  const records = unmeasured && sameEffect.find((candidate) => candidate.listsRecords);
   if (isWeak(top)) warnings.push(`the draft's network strategy, ${shownUrl(top.entry)}, is a weak match (score ${top.score}); ${choose}`);
-  else if (next && top.score - next.score < WINNER_MARGIN) {
+  else if (records) {
+    warnings.push(`the draft's network strategy, ${shownUrl(top.entry)} (score ${top.score}), is a document too large to compare with the page (${unmeasured}), and ${shownUrl(records.entry)} (score ${records.score}) holds ${records.entry.responseSummary.records} records; ${choose}`);
+  } else if (next && top.score - next.score < WINNER_MARGIN) {
     warnings.push(`the draft's network strategy, ${shownUrl(top.entry)} (score ${top.score}), ${top.score === next.score ? "ties with" : "is close to"} ${shownUrl(next.entry)} (score ${next.score}); ${choose}`);
   }
   return top.entry;

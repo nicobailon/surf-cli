@@ -13,12 +13,13 @@ const WINNER_MARGIN = 3;
 const TINY_BYTES = 64;
 // Overlap is the share of the page's words found in a response. A response holding nearly all of
 // them is the page's own data (+5, above any JSON's records bonus). A small JSON holding under
-// LOW_OVERLAP of them is a side request such as a banner or the web manifest: its records aren't
-// the page's, so they don't count, and it scores -3, below a document too large to sample. A JSON
-// API the page shows overlaps heavily, so it keeps its lead.
+// LOW_OVERLAP of them is a side request (-3) when it lists no records, or when it is the web
+// manifest or a banner or announcements feed, whose records don't count either. A JSON with
+// records whose text isn't on the page (a chart's numbers) keeps its records bonus.
 const HEAVY_OVERLAP = 0.8;
 const LOW_OVERLAP = 0.1;
 const SMALL_JSON_BYTES = 16 * 1024;
+const SIDE_PATH = /(?:^|[^a-z])(?:announcements?|banners?)(?:[^a-z]|$)/i;
 // The page's words, capped so a huge page stays cheap; fewer than MIN_PAGE_WORDS gives no overlap.
 const PAGE_WORD_LIMIT = 2000;
 const MIN_PAGE_WORDS = 10;
@@ -140,6 +141,16 @@ function summarizeResponse(entry, page, { sample: withSample = false } = {}) {
   return summary;
 }
 
+// Never the page's data, however many records it lists: the web manifest or a site banner feed.
+function isSideRequest(entry) {
+  if (entry.type === "Manifest" || mimeOf(entry).includes("manifest+json")) return true;
+  try {
+    return SIDE_PATH.test(new URL(entry.url).pathname);
+  } catch {
+    return false;
+  }
+}
+
 // Same site: the hosts share their last two labels, or three under a two-letter country code
 // with a short second level (example.co.uk).
 function siteOf(host) {
@@ -173,8 +184,9 @@ function scoreEntry(entry, origin) {
     if (kind === "json") add(4, "JSON");
     else if (kind === "html") add(entry.type === "Document" ? 4 : 2, entry.type === "Document" ? "HTML document" : "HTML");
   }
-  const sideJson = kind === "json" && summary.overlap < LOW_OVERLAP && summary.bytes < SMALL_JSON_BYTES;
-  if (summary.records >= 2 && !sideJson) add(3, `${summary.records} records`);
+  const sideJson = kind === "json" && summary.overlap < LOW_OVERLAP && summary.bytes < SMALL_JSON_BYTES && (!(summary.records >= 2) || isSideRequest(entry));
+  const listsRecords = summary.records >= 2 && !sideJson;
+  if (listsRecords) add(3, `${summary.records} records`);
   const site = hostname(origin);
   const host = hostname(entry.url);
   if (site && host) {
@@ -185,7 +197,7 @@ function scoreEntry(entry, origin) {
   if (summary.overlap >= LOW_OVERLAP) add(summary.overlap >= HEAVY_OVERLAP ? 5 : summary.overlap >= 0.3 ? 3 : 1, overlap);
   else if (sideJson) add(-3, `small JSON that ${overlap}`);
   if (summary.bytes !== undefined && summary.bytes < TINY_BYTES && ok && !emptyRedirect) add(-3, `tiny body (${summary.bytes} B)`);
-  return { score, reasons, effect, eligible: isReplayCandidate(entry) && !telemetry && !preflight };
+  return { score, reasons, effect, eligible: isReplayCandidate(entry) && !telemetry && !preflight, listsRecords: kind === "json" && listsRecords };
 }
 
 // Every entry scored, best first; ties go to the later request (the pick before ranking).

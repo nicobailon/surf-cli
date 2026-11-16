@@ -372,6 +372,64 @@ describe("rankCandidates", () => {
     expect(ranked[0].reasons).toContain("4 records");
   });
 
+  // A chart or numbers API: real records, none of whose text is on the page (90 bytes).
+  const series = (id: string) => {
+    const body = JSON.stringify({
+      series: [
+        { t: 1001, v: 3.25, n: 1 },
+        { t: 1002, v: 5.5, n: 2 },
+        { t: 1003, v: 8.75, n: 30 },
+      ],
+    });
+    expect(body).toHaveLength(90);
+    return summarized(
+      get(id, "Fetch", `${ORIGIN}/api/chart/series?range=7d`, {
+        mimeType: "application/json",
+        responseBody: body,
+        bodyCapture: { complete: true, capturedBytes: body.length },
+      }),
+    );
+  };
+
+  it("keeps a small chart API with records above an empty shell or a document too large to sample", () => {
+    const shell = summarized(
+      get("r_shell", "Document", `${ORIGIN}/dashboard`, {
+        mimeType: "text/html",
+        responseBody: '<html><body><div id="app">Loading products</div></body></html>',
+      }),
+    );
+    const overCap = summarized(
+      get("r_big", "Document", `${ORIGIN}/dashboard`, {
+        mimeType: "text/html",
+        bodyCapture: { complete: false, reason: "per-body-cap", sizeBytes: 248_000 },
+      }),
+    );
+    for (const page of [shell, overCap]) {
+      const ranked = candidates.rankCandidates([page, series("r_series")], { origin: ORIGIN });
+      expect(ranked.map((item: { id: string }) => item.id)).toEqual(["r_series", page.id]);
+      expect(ranked[0].reasons).toEqual(["JSON", "3 records", "first-party"]);
+    }
+  });
+
+  it("puts a document holding the whole page above a data JSON whose records aren't on it", () => {
+    const ranked = candidates.rankCandidates(
+      [
+        summarized(
+          get("r_doc", "Document", `${ORIGIN}/catalogue/`, {
+            mimeType: "text/html",
+            responseBody: listing,
+          }),
+        ),
+        series("r_series"),
+      ],
+      { origin: ORIGIN },
+    );
+    expect(ranked.map((item: { id: string; score: number }) => [item.id, item.score])).toEqual([
+      ["r_doc", 11],
+      ["r_series", 9],
+    ]);
+  });
+
   it("lists and flags a write without hiding it", () => {
     const ranked = candidates.rankCandidates(
       [{ ...get("r_create", "XHR", `${ORIGIN}/api/books`), method: "POST", status: 201 }],
