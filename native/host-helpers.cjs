@@ -1,5 +1,7 @@
 const fs = require("fs");
 const networkFormatters = require("./formatters/network.cjs");
+const { publicEntry } = require("./network-export.cjs");
+const { isSecretHeader, redactObject, redactValues } = require("./redaction.cjs");
 const { recoveryFor } = require("./surf-error.cjs");
 
 function buildProviderUploadMessage(provider, tabId, filePaths, id) {
@@ -55,6 +57,38 @@ function truncatePageText(text, { maxBytes, maxChars = 50_000, fullPath } = {}) 
   const truncated = { shownBytes: Buffer.byteLength(kept), totalBytes: full.length, ...(fullPath ? { path: fullPath } : {}) };
   const note = `[Truncated: showing ${truncated.shownBytes} of ${truncated.totalBytes} bytes.${fullPath ? ` Full text: ${fullPath}.` : ""}]`;
   return { text: `${kept}\n\n${note}`, truncated };
+}
+
+// Tools that print captured requests: their entries are shown as an export holds them (secret
+// headers as <redacted>, URL credentials and echoes of a secret header's value redacted). Only what
+// is sent back to the caller is redacted; network.replay reads the raw entry inside the host.
+const NETWORK_VIEW_TOOLS = new Set(["network", "get_network_entries", "read_network_requests", "network.get", "get_network_entry", "network.curl"]);
+const isEntry = (value) => Boolean(value) && typeof value === "object" && !Array.isArray(value);
+
+function publicNetworkResult(tool, result) {
+  if (!NETWORK_VIEW_TOOLS.has(tool) || !isEntry(result)) return result;
+  const view = { ...result };
+  if (isEntry(result.entry)) view.entry = publicEntry(result.entry);
+  for (const key of ["entries", "requests"]) {
+    if (Array.isArray(result[key])) view[key] = result[key].map((entry) => (isEntry(entry) ? publicEntry(entry) : entry));
+  }
+  return view;
+}
+
+// A response the host read from capture for network.wait, network.replay or network.body: its URL
+// by the export rules, and a body or JSON echoing a secret header value of `entries` (the request
+// it answers) with <redacted> in its place, as network.get shows it.
+function publicResponse(response, entries) {
+  if (!isEntry(response)) return response;
+  const secrets = entries.filter(isEntry).flatMap((entry) =>
+    [entry.requestHeaders, entry.responseHeaders].filter(isEntry).flatMap((headers) =>
+      Object.entries(headers).filter(([name]) => isSecretHeader(name)).map(([, value]) => String(value))));
+  const view = { ...response };
+  if (typeof view.url === "string") view.url = publicEntry({ url: view.url }).url;
+  if (secrets.length === 0) return view;
+  if (typeof view.body === "string" && view.base64Encoded !== true) view.body = redactValues(view.body, secrets);
+  if (view.json !== undefined) view.json = redactObject(view.json, secrets);
+  return view;
 }
 
 /**
@@ -1440,4 +1474,4 @@ function applySemanticExpectedIdentity(request, extensionMessage, args) {
   };
 }
 
-module.exports = { mapToolToMessage, mapComputerAction, formatToolContent, formatToolError, buildProviderUploadMessage, readinessExpectations, applySemanticExpectedIdentity, truncatePageText };
+module.exports = { mapToolToMessage, mapComputerAction, formatToolContent, publicNetworkResult, publicResponse, formatToolError, buildProviderUploadMessage, readinessExpectations, applySemanticExpectedIdentity, truncatePageText };

@@ -250,6 +250,23 @@ describe("verifying clients made by earlier versions", () => {
       execution: { requests: 1 },
     });
   });
+
+  it('verifies a client generated at b2e12357, which reads --author "" as true', async () => {
+    const fixture = path.join(
+      __dirname,
+      "..",
+      "fixtures",
+      "clients",
+      "main-b2e12357-empty-default",
+    );
+    const copy = fs.mkdtempSync(path.join(os.tmpdir(), "surf-old-client-"));
+    directories.push(copy);
+    fs.cpSync(fixture, copy, { recursive: true });
+    await expect(clients.verifyClient(copy, { live: false })).resolves.toMatchObject({
+      valid: true,
+      execution: { requests: 1 },
+    });
+  });
 });
 
 describe("clients from parameterised ops", () => {
@@ -353,6 +370,74 @@ describe("clients from parameterised ops", () => {
       url: "/catalogue/page-2.html?v=%7B%22page%22%3A2%7D",
       body: '{"page":2,"q":"x y"}',
     });
+    await expect(clients.verifyClient(out, { live: false })).resolves.toMatchObject({
+      valid: true,
+      execution: { requests: 1 },
+    });
+  });
+
+  it('reads --x "" and --x= as the empty string, and a bare --flag only for a boolean', async () => {
+    const cwd = writeOp({
+      id: "search",
+      effect: "read",
+      args: {
+        query: { type: "string", required: true },
+        author: { type: "string", default: "" },
+        sort: { type: "string", default: "-date" },
+        abstracts: { type: "boolean", default: false },
+      },
+      run: [
+        {
+          using: "network",
+          request: {
+            method: "GET",
+            url: "https://books.test/search",
+            query: {
+              q: "{{query}}",
+              author: "{{author}}",
+              order: "{{sort}}",
+              abs: "{{abstracts}}",
+            },
+          },
+        },
+      ],
+    });
+    const out = path.join(cwd, "client");
+    clients.exportClient("books", "search", out, { cwd });
+    await expect(clients.verifyClient(out, { live: false })).resolves.toMatchObject({
+      valid: true,
+      execution: { requests: 1 },
+    });
+    const requests = await serve(async (origin) => {
+      const env = { SURF_CLIENT_ORIGIN: origin };
+      await runClient(out, ["--query", "x", "--author", "", "--sort", ""], env);
+      await runClient(out, ["--query=a=b", "--author=", "--abstracts"], env);
+      await runClient(out, ["--query", "x", "--abstracts", "--sort", "-relevance"], env);
+      await expect(runClient(out, ["--query", "x", "--author"], env)).rejects.toThrow(
+        /--author needs a value \(--author "" for an empty one\)/,
+      );
+    });
+    expect(requests.map((request) => request.url)).toEqual([
+      "/search?q=x&author=&order=&abs=false",
+      "/search?q=a%3Db&author=&order=-date&abs=true",
+      "/search?q=x&author=&order=-relevance&abs=true",
+    ]);
+  });
+
+  it("verifies an op whose string default starts with --", async () => {
+    const cwd = writeOp({
+      id: "sorted",
+      effect: "read",
+      args: { order: { type: "string", default: "--submitted" } },
+      run: [
+        {
+          using: "network",
+          request: { method: "GET", url: "https://books.test/list", query: { order: "{{order}}" } },
+        },
+      ],
+    });
+    const out = path.join(cwd, "client");
+    clients.exportClient("books", "sorted", out, { cwd });
     await expect(clients.verifyClient(out, { live: false })).resolves.toMatchObject({
       valid: true,
       execution: { requests: 1 },

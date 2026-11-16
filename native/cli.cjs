@@ -1080,7 +1080,7 @@ const TOOLS = {
     desc: "Network capture",
     commands: {
       "network": {
-        desc: "List captured network requests",
+        desc: "List captured network requests (secret headers such as Authorization and Cookie show as <redacted>, as in network.export)",
         args: [],
         opts: {
           origin: "Filter by origin (domain)",
@@ -1106,7 +1106,7 @@ const TOOLS = {
         ]
       },
       "network.get": {
-        desc: "Get full details for a request",
+        desc: "Get full details for a request; secret headers (Authorization, Cookie, API keys) show as <redacted>, and network.replay still sends them",
         args: ["id"],
         opts: {},
         examples: [
@@ -1114,7 +1114,7 @@ const TOOLS = {
         ]
       },
       "network.body": {
-        desc: "Get response body (for piping)",
+        desc: "Get response body (for piping); an echo of the request's secret headers shows as <redacted>",
         args: ["id"],
         opts: { request: "Get request body instead" },
         examples: [
@@ -1123,7 +1123,7 @@ const TOOLS = {
         ]
       },
       "network.wait": {
-        desc: "Wait for the page's next response whose URL matches a glob and print its JSON (or text)",
+        desc: "Wait for the page's next response whose URL matches a glob and print its JSON (or text); an echo of the request's secret headers shows as <redacted>",
         args: ["match"],
         opts: {
           match: "URL glob without query string: a path (/api/*/items) or a full URL (https://site/api/**); * stays within one path segment, ** matches anything",
@@ -1137,7 +1137,7 @@ const TOOLS = {
         ]
       },
       "network.replay": {
-        desc: "Re-send a captured request from inside its tab (same cookies and headers) and print the response; the tab must still be on the request's origin or the page that sent it",
+        desc: "Re-send a captured request from inside its tab (same cookies and headers) and print the response, with echoes of its secret headers as <redacted>; the tab must still be on the request's origin or the page that sent it",
         args: ["id"],
         opts: {
           set: "Edit before sending (repeatable): query.<param>=v, query.<param>.<json.path>=v, body=v, body.<json.path>=v; values are parsed as JSON when valid",
@@ -1150,7 +1150,7 @@ const TOOLS = {
         ]
       },
       "network.curl": {
-        desc: "Generate curl command for request",
+        desc: "Generate curl command for request (secret headers show as <redacted>; network.replay re-sends with them)",
         args: ["id"],
         opts: {},
         examples: [
@@ -1741,7 +1741,7 @@ const TOOLS = {
         ],
       },
       "playbook record candidates": {
-        desc: "Rank a record's requests by how likely each carries the page's data (JSON or HTML document, records, page text overlap, first-party; telemetry, assets, redirects, preflights low)",
+        desc: "Rank a record's requests by how likely each carries the page's data (JSON or HTML document, records, page text overlap, first-party; telemetry, assets, redirects, preflights and small JSON that overlaps little of the page low)",
         args: ["record-id?"],
         opts: { limit: "How many to show (default: 10)", json: "Output raw JSON" },
         examples: [
@@ -1758,7 +1758,12 @@ const TOOLS = {
         args: ["playbook"],
         opts: { op: "Operation name", "from-record": "Record id", "request-id": "Request id in the record", out: "Output directory" },
       },
-      "playbook client export": { desc: "Export a client for a playbook op", args: ["playbook"], opts: { op: "Operation name", out: "Output directory" } },
+      "playbook client export": {
+        desc: "Export a client for a playbook op; client.mjs takes the op's inputs as --name value or --name=value (\"\" for an empty one; a bare --name only for a boolean)",
+        args: ["playbook"],
+        opts: { op: "Operation name", out: "Output directory" },
+        examples: [{ cmd: "pb client export papers --op search --out ./papers && node papers/client.mjs --query graphs --author \"\"", desc: "Run it with an empty filter" }],
+      },
       "playbook client verify": { desc: "Verify a generated client", args: ["dir"], opts: { live: "Also call the live endpoint" } },
       "playbook test": {
         desc: "Run an op as surf use does and check assertions on its result; exits 1 when one fails or no strategy answers",

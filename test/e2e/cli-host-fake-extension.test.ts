@@ -62,6 +62,10 @@ type FakeHostOptions = {
   env?: Record<string, string>;
   // Requests the page made before the test, already in network capture.
   pageTraffic?: CapturedRequest[];
+  // Captured on each navigation, each time under a new id.
+  navigationTraffic?: CapturedRequest[];
+  // Merged into what capture holds for each script's request (a response body, say).
+  scriptResponse?: Record<string, unknown>;
 };
 
 type CliResult = {
@@ -211,12 +215,17 @@ function buildExtensionResponse(
     // Network capture holds what each script sent; its body is the fixture API's.
     case "READ_NETWORK_REQUESTS":
       return { id: message.id, entries: captured };
-    case "GET_NETWORK_ENTRY":
-      return { id: message.id, entry: captured.find((entry) => entry.id === message.requestId) };
+    case "GET_NETWORK_ENTRY": {
+      const entry = captured.find((candidate) => candidate.id === message.requestId);
+      return entry
+        ? { id: message.id, entry }
+        : { id: message.id, error: `Entry not found: ${String(message.requestId)}` };
+    }
     case "GET_RESPONSE_BODY":
       return {
         id: message.id,
         success: true,
+        base64Encoded: false,
         body:
           captured.find((entry) => entry.id === message.requestId)?.responseBody ?? '{"ok":true}',
       };
@@ -265,6 +274,21 @@ function startHost(socketPath: string, options: FakeHostOptions = {}) {
     }
   };
 
+  // What network capture records for a navigation or a script's request.
+  const captureTraffic = (message: NativeMessage) => {
+    if (message.type === "EXECUTE_NAVIGATE") {
+      for (const request of options.navigationTraffic ?? []) {
+        captured.push({ ...request, id: `${request.id}_${captured.length + 1}`, ts: Date.now() });
+      }
+    }
+    if (message.type === "EXECUTE_JAVASCRIPT") {
+      captured.push({
+        ...capturedRequest(message, captured.length + 1),
+        ...options.scriptResponse,
+      });
+    }
+  };
+
   child.stdout.on("data", (chunk: unknown) => {
     stdoutBuffer = BufferCtor.concat([stdoutBuffer, chunk as BufferLike]);
 
@@ -295,9 +319,7 @@ function startHost(socketPath: string, options: FakeHostOptions = {}) {
       if (message.type === "EXECUTE_NAVIGATE" && message.url) {
         currentUrl = message.url;
       }
-      if (message.type === "EXECUTE_JAVASCRIPT") {
-        captured.push(capturedRequest(message, captured.length + 1));
-      }
+      captureTraffic(message);
       writeNativeMessage(
         child.stdin,
         buildExtensionResponse(message, currentUrl, targetActive, captured),
@@ -692,6 +714,174 @@ describe("CLI/native-host/fake-extension E2E contract", () => {
       expect(files.length).toBeGreaterThan(2);
       expect(files.filter((file) => fs.readFileSync(file, "utf8").includes(secret))).toEqual([]);
       expect(`${run.stdout}${run.stderr}${missing.stderr}`).not.toContain(secret);
+    } finally {
+      await host.dispose();
+    }
+  });
+
+  it("shows a captured request's secret headers as <redacted> and still replays them", async () => {
+    const socketPath = createSocketPath();
+    const scratch = fs.mkdtempSync(path.join(os.tmpdir(), "surf-network-view-"));
+    tempDirs.push(scratch);
+    const env = { HOME: path.join(scratch, "home"), SURF_TMP: path.join(scratch, "tmp") };
+    for (const directory of [env.HOME, env.SURF_TMP]) {
+      fs.mkdirSync(directory, { recursive: true });
+    }
+    const auth = "dummy-auth-value-for-tests";
+    const cookie = "dummy-cookie-value-for-tests";
+    const host = startHost(socketPath, {
+      env,
+      pageTraffic: [
+        {
+          id: "r_auth",
+          ts: Date.now() - 60_000,
+          method: "GET",
+          url: "https://fixture.test/headers?session_token=dummy-query-value",
+          type: "Fetch",
+          requestHeaders: {
+            Authorization: auth,
+            Cookie: `sid=${cookie}`,
+            Accept: "application/json",
+          },
+          status: 200,
+          responseHeaders: { "content-type": "application/json", "set-cookie": `sid=${cookie}` },
+          responseBody: `{"headers":{"Authorization":"${auth}"}}`,
+          flags: [],
+          _loadingFinished: true,
+        },
+      ],
+    });
+    try {
+      await host.waitForMessage((message) => message.type === "HOST_READY");
+      const views = [
+        ["network.get", "r_auth"],
+        ["network.get", "r_auth", "--json"],
+        ["network.curl", "r_auth"],
+        ["network", "-v"],
+        ["network", "--format", "raw"],
+        ["network", "--format", "curl"],
+      ];
+      for (const args of views) {
+        const view = await runCli(socketPath, args, scratch, env);
+        expect(view.code, args.join(" ")).toBe(0);
+        expect(view.stdout, args.join(" ")).toMatch(/authorization\W+<redacted>/i);
+        for (const secret of [auth, cookie, "dummy-query-value"]) {
+          expect(view.stdout, args.join(" ")).not.toContain(secret);
+        }
+      }
+      const replay = await runCli(socketPath, ["network.replay", "r_auth", "--json"], scratch, env);
+      expect(replay.code).toBe(0);
+      const sent = host.messages.filter((message) => message.type === "EXECUTE_JAVASCRIPT");
+      expect(JSON.stringify(sent.at(-1))).toContain(auth);
+    } finally {
+      await host.dispose();
+    }
+  });
+
+  it("hides an echoed secret header in network.wait, network.replay and network.body, over the CLI and MCP", async () => {
+    const socketPath = createSocketPath();
+    const scratch = fs.mkdtempSync(path.join(os.tmpdir(), "surf-network-echo-"));
+    tempDirs.push(scratch);
+    const env = { HOME: path.join(scratch, "home"), SURF_TMP: path.join(scratch, "tmp") };
+    for (const directory of [env.HOME, env.SURF_TMP]) {
+      fs.mkdirSync(directory, { recursive: true });
+    }
+    const auth = "dummy-echo-value-for-tests";
+    const echo = {
+      mimeType: "application/json",
+      responseBody: `{"headers":{"Authorization":"${auth}"}}`,
+    };
+    const sentWithAuth = {
+      id: "r_echo",
+      ts: Date.now() - 60_000,
+      method: "GET",
+      url: "https://fixture.test/headers",
+      type: "Fetch",
+      requestHeaders: { Authorization: auth, Accept: "application/json" },
+      status: 200,
+      responseHeaders: { "content-type": "application/json" },
+      ...echo,
+      flags: [],
+      _loadingFinished: true,
+    };
+    const host = startHost(socketPath, {
+      env,
+      pageTraffic: [sentWithAuth],
+      navigationTraffic: [sentWithAuth],
+      scriptResponse: echo,
+    });
+    const sent = () =>
+      JSON.stringify(
+        host.messages.filter((message) => message.type === "EXECUTE_JAVASCRIPT").at(-1),
+      );
+    try {
+      await host.waitForMessage((message) => message.type === "HOST_READY");
+      const views = [
+        ["network.body", "r_echo"],
+        ["network.wait", "/headers", "--open", "https://fixture.test/", "--json"],
+        ["network.wait", "/headers", "--open", "https://fixture.test/"],
+        ["network.replay", "r_echo", "--json"],
+        ["network.replay", "r_echo"],
+      ];
+      // A body read from Chrome when capture has no entry for it still prints.
+      const uncaptured = await runCli(socketPath, ["network.body", "r_cdp_only"], scratch, env);
+      expect(uncaptured, uncaptured.stderr).toMatchObject({ code: 0, stdout: '{"ok":true}' });
+
+      for (const args of views) {
+        const view = await runCli(socketPath, args, scratch, env);
+        expect(view.code, `${args.join(" ")}: ${view.stderr}`).toBe(0);
+        expect(view.stdout, args.join(" ")).toContain("<redacted>");
+        expect(view.stdout, args.join(" ")).not.toContain(auth);
+        if (args[0] === "network.replay") {
+          expect(sent()).toContain(auth);
+        }
+      }
+
+      const { Client } = require("@modelcontextprotocol/sdk/client/index.js") as {
+        Client: new (info: {
+          name: string;
+          version: string;
+        }) => {
+          connect(transport: unknown): Promise<void>;
+          callTool(request: { name: string; arguments: Record<string, unknown> }): Promise<{
+            content: Array<{ text?: string }>;
+            isError?: boolean;
+          }>;
+          close(): Promise<void>;
+        };
+      };
+      const { InMemoryTransport } = require("@modelcontextprotocol/sdk/inMemory.js") as {
+        InMemoryTransport: { createLinkedPair(): [unknown, unknown] };
+      };
+      const { PiChromeMcpServer } = require("../../native/mcp-server.cjs") as {
+        PiChromeMcpServer: new (
+          endpoint: unknown,
+        ) => { server: { connect(t: unknown): Promise<void> } };
+      };
+      const { selectEndpoint } = require("../../native/endpoint.cjs") as {
+        selectEndpoint(args: string[], env: Record<string, string>): { endpoint: unknown };
+      };
+      const mcp = new PiChromeMcpServer(selectEndpoint([], { SURF_SOCKET: socketPath }).endpoint);
+      const [clientSide, serverSide] = InMemoryTransport.createLinkedPair();
+      await mcp.server.connect(serverSide);
+      const client = new Client({ name: "surf-e2e", version: "1.0.0" });
+      await client.connect(clientSide);
+      try {
+        const calls = [
+          { name: "network.wait", arguments: { match: "/headers", open: "https://fixture.test/" } },
+          { name: "network.replay", arguments: { id: "r_echo" } },
+        ];
+        for (const call of calls) {
+          const result = await client.callTool(call);
+          const text = result.content.map((item) => item.text ?? "").join("\n");
+          expect(result.isError, `${call.name}: ${text}`).toBeFalsy();
+          expect(text, call.name).toContain("<redacted>");
+          expect(text, call.name).not.toContain(auth);
+        }
+        expect(sent()).toContain(auth);
+      } finally {
+        await client.close();
+      }
     } finally {
       await host.dispose();
     }

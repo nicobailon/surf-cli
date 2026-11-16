@@ -480,6 +480,120 @@ describe("choosing the draft's request", () => {
     expect(warnings).toBeUndefined();
   });
 
+  it("warns when the pick ties or nearly ties with the next read, pointing at pb record candidates", () => {
+    const more = json("r_more", "https://example.test/api/related?q=shoes", {
+      items: [{ name: "Summit hiking shoes" }, { name: "Runner Pro trainers" }],
+    });
+    const { draft, warnings, record } = stopFlow({
+      commands: ["click"],
+      trace: [products, more],
+      pageText: PAGE_TEXT,
+      stop: { draft: true, read: true },
+    });
+    expect(networkRequest(draft)).toMatchObject({ url: "https://example.test/api/related" });
+    expect(warnings).toEqual([
+      `the draft's network strategy, GET https://example.test/api/related (score 12), ties with GET https://example.test/api/search (score 12); run surf pb record candidates ${record.id} and choose with --request-id`,
+    ]);
+  });
+
+  it("warns when it picks a document too large to compare with the page over a JSON with records", () => {
+    const bigPage = {
+      id: "r_page",
+      method: "GET",
+      status: 200,
+      type: "Document",
+      mimeType: "text/html",
+      url: "https://example.test/search?q=shoes",
+      bodyCapture: { mode: "text", complete: false, reason: "per-body-cap", sizeBytes: 248_000 },
+    };
+    const stock = json("r_stock", "https://cdn.other.test/api/stock?q=shoes", {
+      levels: [
+        { sku: 1, n: 4 },
+        { sku: 2, n: 0 },
+        { sku: 3, n: 9 },
+      ],
+    });
+    const { draft, warnings, record } = stopFlow({
+      commands: ["click"],
+      trace: [bigPage, stock],
+      pageText: PAGE_TEXT,
+      stop: { draft: true, read: true },
+    });
+    expect(networkRequest(draft)).toMatchObject({ url: "https://example.test/search" });
+    expect(warnings).toEqual([
+      `the draft's network strategy, GET https://example.test/search (score 6), is a document too large to compare with the page (per-body-cap), and GET https://cdn.other.test/api/stock (score 2) holds 3 records; run surf pb record candidates ${record.id} and choose with --request-id`,
+    ]);
+  });
+
+  describe("a JSON with records demoted only for its banner-like path", () => {
+    const shell = {
+      id: "r_page",
+      method: "GET",
+      status: 200,
+      type: "Document",
+      mimeType: "text/html",
+      url: "https://example.test/dashboard",
+      responseBody:
+        '<html><head><title>Dashboard</title></head><body><div id="app">Loading</div><script src="/app.js"></script></body></html>',
+      bodyCapture: { mode: "text", complete: true },
+    };
+    const overCap = {
+      ...shell,
+      responseBody: undefined,
+      bodyCapture: { mode: "text", complete: false, reason: "per-body-cap", sizeBytes: 248_000 },
+    };
+    const metrics = json("r_metrics", "https://example.test/api/banner/metrics", {
+      points: [
+        { t: 1001, v: 2.5, n: 1 },
+        { t: 1002, v: 3.5, n: 2 },
+        { t: 1003, v: 5.5, n: 3 },
+      ],
+    });
+
+    it.each([
+      ["an empty shell", shell],
+      ["a document over the capture cap", overCap],
+    ])("warns when it picks %s over it", (_, picked) => {
+      const { draft, warnings, record } = stopFlow({
+        commands: ["click"],
+        trace: [picked, metrics],
+        pageText: PAGE_TEXT,
+        stop: { draft: true, read: true },
+      });
+      expect(networkRequest(draft)).toMatchObject({ url: "https://example.test/dashboard" });
+      expect(warnings).toEqual([
+        `the draft's network strategy, GET https://example.test/dashboard (score 6), was picked over GET https://example.test/api/banner/metrics (score 3), whose 3 records weren't counted because its path reads like a banner or announcements feed; counted, it would score 9; run surf pb record candidates ${record.id} and choose with --request-id`,
+      ]);
+    });
+
+    it("keeps arXiv's announcements feed from winning over an unsampled search page, with a warning", () => {
+      const notices = json(
+        "r_notices",
+        "https://static.example.test/static/json/announcements.json",
+        {
+          announcements: [1, 2, 3, 4, 5].map((id) => ({ id, text: `Scheduled maintenance ${id}` })),
+        },
+      );
+      const manifest = json(
+        "r_manifest",
+        "https://static.example.test/site.webmanifest",
+        { name: "Example", icons: [{ src: "/a.png" }, { src: "/b.png" }] },
+        { type: "Manifest", mimeType: "application/manifest+json" },
+      );
+      const { draft, warnings } = stopFlow({
+        commands: ["click"],
+        trace: [overCap, notices, manifest],
+        pageText: PAGE_TEXT,
+        stop: { draft: true, read: true },
+      });
+      expect(networkRequest(draft)).toMatchObject({ url: "https://example.test/dashboard" });
+      expect(warnings).toHaveLength(1);
+      expect(warnings?.[0]).toMatch(
+        /was picked over GET https:\/\/static\.example\.test\/static\/json\/announcements\.json \(score 3\), whose 5 records weren't counted/,
+      );
+    });
+  });
+
   it("warns when the best request scores low, pointing at pb record candidates", () => {
     const thirdParty = {
       id: "r_x",
