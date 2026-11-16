@@ -702,7 +702,9 @@ describe("CLI/native-host/fake-extension E2E contract", () => {
     const scratch = fs.mkdtempSync(path.join(os.tmpdir(), "surf-network-view-"));
     tempDirs.push(scratch);
     const env = { HOME: path.join(scratch, "home"), SURF_TMP: path.join(scratch, "tmp") };
-    for (const directory of [env.HOME, env.SURF_TMP]) fs.mkdirSync(directory, { recursive: true });
+    for (const directory of [env.HOME, env.SURF_TMP]) {
+      fs.mkdirSync(directory, { recursive: true });
+    }
     const auth = "dummy-auth-value-for-tests";
     const cookie = "dummy-cookie-value-for-tests";
     const host = startHost(socketPath, {
