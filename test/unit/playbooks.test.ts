@@ -112,6 +112,46 @@ describe("playbook resolution and strategies", () => {
     );
   });
 
+  it("never sends a redacted placeholder: the network strategy refuses and the workflow runs", async () => {
+    const executeTool = vi.fn(async (tool: string) =>
+      tool === "page.text" ? { value: "page words" } : { success: true },
+    );
+    const result = await runtime.runPlaybookOp({
+      playbook: { id: "fixture", provenance: { scope: "test" } },
+      op: {
+        id: "search",
+        effect: "read",
+        args: { text: { required: true } },
+        run: [
+          {
+            using: "network",
+            request: { method: "GET", url: "https://example.test/get", query: { q: "<text>" } },
+          },
+          {
+            using: "workflow",
+            stepDelay: 0,
+            steps: [
+              { cmd: "type", args: { selector: "#q", text: "{{text}}" } },
+              { cmd: "page.text", args: {}, as: "content" },
+            ],
+          },
+        ],
+      },
+      args: { text: "dummy-input-echo" },
+      executeTool,
+      sleep: vi.fn(),
+    });
+    expect(result.strategy).toBe("workflow");
+    expect(result.attempts[0].error).toMatch(
+      /query\.q holds <text>, a value the record redacted; run surf pb param fixture search query\.q --as <name>/,
+    );
+    expect(executeTool).not.toHaveBeenCalledWith(
+      "javascript_tool",
+      expect.anything(),
+      expect.anything(),
+    );
+  });
+
   it("defaults protected writes to explicit authorization and uses op auth origins", () => {
     const op = playbooks.validateOp(
       {

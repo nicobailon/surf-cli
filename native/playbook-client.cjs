@@ -4,6 +4,7 @@ const path = require("path");
 const { execFile } = require("child_process");
 const { atomicWriteFile, atomicWriteJson, ensurePrivateDir, getPrivateStateRoot, readPrivateJson } = require("./private-state.cjs");
 const { escapedOp, renderRequest, resolveArgValues } = require("./playbook-template.cjs");
+const { findRedactedPlaceholder, placeholderError } = require("./record-typed-values.cjs");
 const { resolveOp } = require("./playbooks.cjs");
 const { isReplayCandidate, readRecord, recordsRoot, requestEffect, requestFromEntry } = require("./playbook-records.cjs");
 const { WINNER_MARGIN, isWeak, scoreEntries } = require("./record-candidates.cjs");
@@ -145,6 +146,8 @@ function generateClient({ playbookId, op, strategy, provenance, out, allowWrite 
   if (typeof out !== "string" || !out) throw new Error("client projection requires --out <directory>");
   const directory = path.resolve(out);
   const request = strategy.request;
+  const placeholder = findRedactedPlaceholder(request);
+  if (placeholder) throw placeholderError(placeholder, `${playbookId} ${op.id}`);
   const endpoint = {
     method: request.method || "GET",
     url: absoluteEndpointUrl(request.url, origins, { escapes }),

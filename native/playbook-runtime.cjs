@@ -7,6 +7,7 @@ const { htmlExtractFunction, runCollect } = require("./dom-collect.cjs");
 const { editDistance } = require("./edit-distance.cjs");
 const { GLOBAL_OPTIONS } = require("./global-options.cjs");
 const { LITERAL_OPEN, escapedOp, renderRequest, resolveArgValues } = require("./playbook-template.cjs");
+const { findRedactedPlaceholder, placeholderError } = require("./record-typed-values.cjs");
 const { checkAssertions, createRegexBudget, describeAssertion } = require("./playbook-assertions.cjs");
 const { redactObject } = require("./redaction.cjs");
 const boundedRegex = require("./bounded-regex.cjs");
@@ -399,6 +400,9 @@ async function runStrategy(strategy, context) {
   }
   if (strategy.using === "network") {
     const { authInputs: inputs = [], ...template } = strategy.request;
+    // A draft's request can hold <text> where the record redacted a typed value: never send it.
+    const placeholder = findRedactedPlaceholder(template);
+    if (placeholder) throw placeholderError(placeholder, context.label);
     const rendered = renderRequest(template, context.args, { escapes: context.escapes });
     for (const input of inputs) {
       const value = context.authValues?.[input.env];
@@ -498,6 +502,7 @@ async function runPlaybookOp({ playbook, op, args: providedArgs = {}, secrets = 
         signal,
         sleep,
         onEvent,
+        label: `${playbook.id} ${op.id}`,
         allowedOrigins: op.origins || playbook.origins || [],
         authValues,
         fieldRegexBudget,

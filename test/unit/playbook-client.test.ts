@@ -160,6 +160,27 @@ describe("playbook client projection", () => {
     },
   );
 
+  it("refuses to build a client that would send a redacted placeholder", () => {
+    const parent = fs.mkdtempSync(path.join(os.tmpdir(), "surf-client-"));
+    directories.push(parent);
+    expect(() =>
+      clients.generateClient({
+        playbookId: "fixture",
+        op: { id: "search", effect: "read", run: [] },
+        strategy: {
+          using: "network",
+          request: {
+            method: "GET",
+            url: "https://example.test/api/search",
+            query: { q: "<text>" },
+          },
+        },
+        provenance: { type: "test" },
+        out: path.join(parent, "client"),
+      }),
+    ).toThrow(/query\.q holds <text>.*surf pb param fixture search query\.q --as <name>/);
+  });
+
   it("derives from the one clear winner of the ranking, and asks for --request-id when there is none", () => {
     const parent = fs.mkdtempSync(path.join(os.tmpdir(), "surf-client-"));
     directories.push(parent);
