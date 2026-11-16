@@ -307,6 +307,37 @@ describe("network strategy response bodies", () => {
     ],
   });
 
+  it("refuses a relative URL on a tab whose origin isn't allowed before the write is sent", async () => {
+    const relative = {
+      ...writeOp(),
+      origins: ["https://site.test"],
+      run: [{ using: "network", request: { method: "POST", url: "/api/save", body: { id: 1 } } }],
+    };
+    const run = (href: string) => {
+      const statuses: string[] = [];
+      const tab = captureTab({ href, reply: () => ({ body: "{}" }) });
+      const done = runtime.runPlaybookOp({
+        playbook,
+        op: relative,
+        executeTool: tab.executeTool,
+        beforeDispatch: async () => statuses.push("dispatched"),
+        afterDispatch: async ({ status }: { status: string }) => statuses.push(status),
+      });
+      return { statuses, tab, done };
+    };
+    const refused = run("https://elsewhere.test/page");
+    await expect(refused.done).rejects.toThrow(
+      "playbook network origin is not allowed: https://elsewhere.test",
+    );
+    expect(refused.statuses).toEqual(["not_dispatched"]);
+    expect(refused.tab.fetchImpl).not.toHaveBeenCalled();
+    // On an allowed page the relative URL resolves there and is sent.
+    const allowed = run("https://site.test/page");
+    await expect(allowed.done).resolves.toMatchObject({ status: "completed" });
+    expect(allowed.statuses).toEqual(["dispatched", "verified"]);
+    expect(allowed.tab.fetchImpl).toHaveBeenCalledOnce();
+  });
+
   it("turns capture on before a write is sent, so a capture failure leaves it unsent", async () => {
     const statuses: string[] = [];
     const tab = captureTab();
