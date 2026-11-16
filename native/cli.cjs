@@ -19,6 +19,7 @@ const {
   listWorkflows,
   normalizeWorkflow,
   parseDoCommands,
+  redactArgValues,
   resolveWorkflow,
   summarizeArgs,
   validateWorkflowArgs,
@@ -2799,7 +2800,8 @@ if (args.includes("--script")) {
       try {
         const resp = await sendScriptRequest(toolName, toolArgs);
         if (resp.error) {
-          const errText = resp.error.content?.[0]?.text || JSON.stringify(resp.error);
+          // An error that quotes what the step typed prints <redacted> in its place.
+          const errText = redactArgValues(toolName, toolArgs, resp.error.content?.[0]?.text || JSON.stringify(resp.error));
           console.log(`FAIL`);
           console.log(`     Error: ${errText}`);
           results.push({ step: i + 1, tool: toolName, status: "fail", error: errText });
@@ -2810,9 +2812,10 @@ if (args.includes("--script")) {
           results.push({ step: i + 1, tool: toolName, status: "ok" });
         }
       } catch (e) {
+        const message = redactArgValues(toolName, toolArgs, e.message);
         console.log(`FAIL`);
-        console.log(`     Error: ${e.message}`);
-        results.push({ step: i + 1, tool: toolName, status: "fail", error: e.message });
+        console.log(`     Error: ${message}`);
+        results.push({ step: i + 1, tool: toolName, status: "fail", error: message });
         failed++;
         if (stopOnError) break;
       }

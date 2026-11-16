@@ -1,7 +1,8 @@
 // What surf do and surf --script print before and while they run: no typed text or variable values.
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-const { spawnSync } = require("node:child_process");
+const { spawn, spawnSync } = require("node:child_process");
+const net = require("node:net");
 const { mkdtempSync, rmSync, writeFileSync } = require("node:fs");
 const { tmpdir } = require("node:os");
 const { join, resolve } = require("node:path");
@@ -94,5 +95,58 @@ describe("surf do and surf --script output", () => {
     expect(result.status).toBe(0);
     expect(result.output).toContain("type");
     expect(result.output).not.toContain(TYPED);
+  });
+
+  it("prints a failed --script step's error without the text it typed", async () => {
+    const root = tempRoot();
+    // A dummy value with a quote and a backslash, quoted back by the error as is and escaped.
+    const quoted = ["dummy", 'quo"ted', "va\\lue", "5"].join("-");
+    const file = join(root, "script.json");
+    writeFileSync(
+      file,
+      JSON.stringify({ steps: [{ tool: "type", args: { selector: "#pw", text: quoted } }] }),
+    );
+    const socketPath = join(tmpdir(), `surf-script-${process.pid}-${Date.now()}.sock`);
+    const error = `could not type "${quoted}" (${JSON.stringify(quoted)})`;
+    const server = net.createServer(
+      (socket: {
+        on(event: string, listener: (chunk: unknown) => void): void;
+        write(text: string): void;
+      }) => {
+        let buffer = "";
+        socket.on("data", (chunk: unknown) => {
+          buffer += String(chunk);
+          for (let end = buffer.indexOf("\n"); end !== -1; end = buffer.indexOf("\n")) {
+            const request = JSON.parse(buffer.slice(0, end));
+            buffer = buffer.slice(end + 1);
+            socket.write(
+              `${JSON.stringify({ id: request.id, error: { content: [{ type: "text", text: error }] } })}\n`,
+            );
+          }
+        });
+      },
+    );
+    await new Promise((listening) => server.listen(socketPath, listening));
+    try {
+      const output = await new Promise<string>((done) => {
+        const child = spawn(process.execPath, [cli, "--script", file], {
+          env: { ...process.env, SURF_SOCKET: socketPath },
+        });
+        let text = "";
+        child.stdout.on("data", (chunk: unknown) => {
+          text += String(chunk);
+        });
+        child.stderr.on("data", (chunk: unknown) => {
+          text += String(chunk);
+        });
+        child.on("close", () => done(text));
+      });
+      expect(output).toContain("FAIL");
+      expect(output).toContain("could not type");
+      expect(output).not.toContain("dummy");
+    } finally {
+      await new Promise((closed) => server.close(closed));
+      rmSync(socketPath, { force: true });
+    }
   });
 });
