@@ -28,9 +28,7 @@ function redactUrl(url) {
   }
   const secretParam = [...parsed.searchParams.keys()].some(isSensitiveName);
   if (!parsed.username && !parsed.password && !secretParam) return url;
-  parsed.username = "";
-  parsed.password = "";
-  return redactUrlSecrets(parsed.toString());
+  return redactUrlSecrets(url);
 }
 
 const BODY_FIELDS = new Set(["requestBody", "responseBody"]);

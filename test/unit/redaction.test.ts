@@ -2,6 +2,45 @@ import { describe, expect, it } from "vitest";
 
 const redaction = require("../../native/redaction.cjs");
 
+// Dummy credentials, built from parts so no literal in this file reads as one.
+const USER = ["dummy", "user"].join("-");
+const PASS = ["dummy", "pw", "41"].join("-");
+const TOKEN = ["dummy", "tok", "41"].join("-");
+
+describe("redactUrlSecrets", () => {
+  it("drops the URL's user and password along with secret-named query values", () => {
+    const url = redaction.redactUrlSecrets(
+      `https://${USER}:${PASS}@example.test/a?token=${TOKEN}&page=2`,
+    );
+    expect(url).not.toContain(USER);
+    expect(url).not.toContain(PASS);
+    expect(url).not.toContain(TOKEN);
+    expect(url).toBe("https://example.test/a?token=%3Credacted%3E&page=2");
+  });
+
+  it("keeps a navigate step's URL password out of every file the journal writes", () => {
+    const fs = require("node:fs");
+    const os = require("node:os");
+    const path = require("node:path");
+    const { journalCommand } = require("../../native/activity-journal.cjs");
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "surf-url-journal-"));
+    try {
+      journalCommand("navigate", { url: `https://${USER}:${PASS}@example.test/` }, { root });
+      const files = fs
+        .readdirSync(root, { recursive: true })
+        .map((name: string) => path.join(root, name))
+        .filter((file: string) => fs.statSync(file).isFile());
+      expect(files.length).toBeGreaterThan(0);
+      for (const file of files) {
+        expect(fs.readFileSync(file, "utf8")).not.toContain(PASS);
+      }
+      expect(fs.readFileSync(files[0], "utf8")).toContain('"url":"https://example.test/"');
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+});
+
 describe("redactValues", () => {
   it("replaces a short value only where it stands alone, by default", () => {
     expect(redaction.redactValues("prefixabcSuffix abc", ["abc"])).toBe(

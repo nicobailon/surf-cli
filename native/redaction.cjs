@@ -79,6 +79,7 @@ function safeHeaders(headers = {}) {
   return Object.fromEntries(Object.entries(headers).filter(([name]) => !isSecretHeader(name)));
 }
 
+// Drops a URL's user and password and redacts its secret-named query params.
 function redactUrlSecrets(url) {
   if (typeof url !== "string") return url;
   const absolute = /^[a-zA-Z][a-zA-Z0-9+.-]*:/.test(url);
@@ -88,6 +89,8 @@ function redactUrlSecrets(url) {
   } catch {
     return url;
   }
+  parsed.username = "";
+  parsed.password = "";
   for (const [name] of parsed.searchParams) {
     if (isSensitiveName(name)) parsed.searchParams.set(name, "<redacted>");
   }
