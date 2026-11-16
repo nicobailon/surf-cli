@@ -5,6 +5,7 @@
 const { isDeepStrictEqual } = require("node:util");
 const bounded = require("./bounded-regex.cjs");
 const { compileJsonPath } = require("./records.cjs");
+const { redactObject, redactValues } = require("./redaction.cjs");
 
 // matches patterns come from the CLI and from op files, so every run of one is bounded as
 // bounded-regex.cjs describes: a 100 ms timeout on at most the first 64 KB of the text. A pattern is
@@ -91,13 +92,17 @@ function validateAssertions(list) {
   return list.map((assertion, index) => validateAssertion(assertion, `assertion ${index + 1}`));
 }
 
-/** What the value was, short enough to print: text, numbers and null as is; arrays and objects by shape. */
-function describeActual(found) {
+/**
+ * What the value was, short enough to print: text, numbers and null as is; arrays and objects by
+ * shape. Redacted in full before it is cut, so the preview can't keep the start of an env value.
+ */
+function describeActual(found, secrets) {
   if (found === undefined) return "missing";
   if (Array.isArray(found)) return `array(${found.length})`;
   if (found !== null && typeof found === "object") return "object";
-  if (typeof found === "string" && found.length > ACTUAL_TEXT_LIMIT) return `${found.slice(0, ACTUAL_TEXT_LIMIT)}…`;
-  return found;
+  const shown = redactObject(found, secrets);
+  if (typeof shown === "string" && shown.length > ACTUAL_TEXT_LIMIT) return `${shown.slice(0, ACTUAL_TEXT_LIMIT)}…`;
+  return shown;
 }
 
 /** Every key and leaf of a value, numbers, booleans and null as their text (an env value can read "true"). */
@@ -134,8 +139,10 @@ function touchesSecret(assertion, found, secrets, budget) {
 }
 
 /**
- * `secrets`: the run's env values; an assertion that touches one gets `secretSensitive: true`.
- * `budget`: the op run's regex budget (a fresh one when not given).
+ * `secrets`: the run's env values; an assertion that touches one gets `secretSensitive: true`, and
+ * each result's path, value and actual come back with <redacted> in their place, so anything built
+ * from a result (a failure message included) is redacted too. `budget`: the op run's regex budget
+ * (a fresh one when not given).
  */
 function checkAssertions(value, list, secrets = [], budget = createRegexBudget()) {
   return list.map((assertion) => {
@@ -149,7 +156,14 @@ function checkAssertions(value, list, secrets = [], budget = createRegexBudget()
       pass = false;
       error = caught.message;
     }
-    const result = { ...assertion, pass, actual: describeActual(found), ...(error ? { error } : {}) };
+    const result = {
+      path: redactValues(assertion.path, secrets),
+      op: assertion.op,
+      ...(Object.hasOwn(assertion, "value") ? { value: redactObject(assertion.value, secrets) } : {}),
+      pass,
+      actual: describeActual(found, secrets),
+      ...(error ? { error } : {}),
+    };
     return touchesSecret(assertion, found, secrets, budget) ? { ...result, secretSensitive: true } : result;
   });
 }

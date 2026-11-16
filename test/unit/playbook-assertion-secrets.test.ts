@@ -113,3 +113,32 @@ describe("pb test --save and env values that read as JSON literals", () => {
     expect(fs.readFileSync(file, "utf8")).toBe(before);
   });
 });
+
+describe("a failed assertion and env values", () => {
+  // JSON escapes the quote and backslash, so the JSON text of this value doesn't contain it as is.
+  const QUOTED = 'dummy"quoted\\value';
+  const escaped = JSON.stringify(QUOTED).slice(1, -1);
+
+  it("keeps a value JSON would escape out of the error, the attempts and the journal", async () => {
+    const events: Array<Record<string, unknown>> = [];
+    const failed = await hostRun({ x: "other" }, QUOTED, [{ path: "$.x", op: "equals", value: QUOTED }], (event: Record<string, unknown>) => events.push(event));
+    expect(failed.status).toBe("failed");
+    expect(failed.attempts[0].assertions[0]).toMatchObject({ value: "<redacted>", pass: false });
+    const failures = events.filter((event) => event.type === "strategy.failed");
+    expect(failures).toHaveLength(1);
+    // The raw strings: JSON.stringify of the whole result would escape them again and hide a leak.
+    for (const text of [failed.error, failed.attempts[0].error, ...failures.map((event) => event.error)]) {
+      expect(text).not.toContain(escaped);
+      expect(text).not.toContain(QUOTED);
+    }
+  });
+
+  it("redacts an actual value in full before cutting it to its 200-character preview", async () => {
+    const long = `dummy-env-value-${"0123456789".repeat(4)}`;
+    const failed = await hostRun({ x: `${"x".repeat(190)}${long}` }, long, [
+      { path: "$.x", op: "equals", value: "y" },
+    ]);
+    expect(failed.attempts[0].assertions[0].actual).toBe(`${"x".repeat(190)}<redacted>`);
+    expect(JSON.stringify(failed)).not.toContain(long.slice(0, 10));
+  });
+});
