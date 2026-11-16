@@ -5,8 +5,7 @@ const { writeNetworkExport } = require("./network-export.cjs");
 const { getPrivateStateRoot, readPrivateJson } = require("./private-state.cjs");
 const { REVIEW_KEY_ARG, draftFromRecord, readRecord, recordsRoot } = require("./playbook-records.cjs");
 const { isCommitWorkflow, savePlaybook, validateOp } = require("./playbooks.cjs");
-const { siteOf } = require("./record-candidates.cjs");
-const { hostname, isTelemetryRequest, requestEffect, shownUrl } = require("./request-kinds.cjs");
+const { isTelemetryRequest, requestEffect, shownUrl } = require("./request-kinds.cjs");
 const { commandMetadata, normalizeStep, promoteRedactedStepArgs } = require("./workflow-definition.cjs");
 
 function suggestions({ since = "1h", root } = {}) {
@@ -28,8 +27,10 @@ function saveFromRecent({ site, op: opId, since = "1h", scope = "user", cwd, hom
   return savePlaybook({ manifest: { id: site, name: site, version: "1.0.0", origins: [] }, op, scope, cwd, home });
 }
 
-// The captured write a network-only write op replays: the site's own, and when the record holds
-// several writes, the one named with --request-id (at stop or at save).
+// The captured write a network-only write op replays: one on the record's page origin, unless
+// --request-id (at stop or at save) names it. When the record holds several writes, the one named.
+// Origins are compared exactly: a host's last labels don't make a site (alice.github.io and
+// bob.github.io are different sites).
 function replayedWrite({ op, record, trace, requestId, request }) {
   const fail = (why) => new Error(`write op ${op.id} can't be saved network-only: ${why}`);
   const writes = (trace?.entries || []).filter((entry) => requestEffect(entry) === "write" && !isTelemetryRequest(entry, record.origin));
@@ -41,10 +42,15 @@ function replayedWrite({ op, record, trace, requestId, request }) {
   const entry = chosen ? writes.find((candidate) => candidate.id === chosen) : writes[0];
   const sent = `${request.method} ${request.url}`;
   if (!entry || shownUrl(entry) !== sent) throw fail(`it would replay ${shownUrl(request)}, which isn't a write the record captured`);
-  const site = hostname(record.origin || entry.tabUrl);
-  if (!site || siteOf(hostname(entry.url)) !== siteOf(site)) {
-    throw fail(`it would replay ${sent}, which isn't on the record's site (${record.origin || "unknown"}); the op must replay the site's own write`);
+  const page = originOf(record.origin || entry.tabUrl);
+  const origin = originOf(entry.url);
+  if (!chosen && origin !== page) {
+    throw fail(`it would replay ${sent}, whose origin (${origin}) isn't the record's page origin (${page || "unknown"}); name it with --request-id ${entry.id} to replay it anyway`);
   }
+}
+
+function originOf(url) {
+  try { return new URL(url).origin; } catch { return ""; }
 }
 
 // A write draft whose workflow can't be its fallback (a navigate first, or a type and a click)
@@ -79,13 +85,13 @@ function fitWriteWorkflow(op, { record, trace, requestId }, warnings) {
 // The origins an op saved from a record may send to: the page the record ran on, and the request
 // its network strategy replays (an API on another host, as api.resy.com for resy.com). Other
 // captured origins stay out.
-// A replayed request on another site than the page (a CDN's JSON, say) is allowed with a warning,
-// so a wrong pick shows.
+// A replayed request on another origin than the page (an api. host, a CDN's JSON) is allowed with a
+// warning, so a wrong pick shows.
 function allowedOrigins(record, op, warnings) {
   const request = op.run.find((strategy) => strategy.using === "network")?.request;
   const replayed = request && new URL(request.url).origin;
-  if (replayed && record.origin && siteOf(hostname(replayed)) !== siteOf(hostname(record.origin))) {
-    warnings.push(`the op may also send to ${replayed}, the origin of the request it replays (${shownUrl(request)}), which is on another site than the record's page (${record.origin}); if that is the wrong request, save again with --request-id <r_…> from pb record candidates`);
+  if (replayed && record.origin && replayed !== originOf(record.origin)) {
+    warnings.push(`the op may also send to ${replayed}, the origin of the request it replays (${shownUrl(request)}), which isn't the origin of the record's page (${record.origin}); if that is the wrong request, save again with --request-id <r_…> from pb record candidates`);
   }
   return [...new Set([record.origin, replayed].filter(Boolean))];
 }

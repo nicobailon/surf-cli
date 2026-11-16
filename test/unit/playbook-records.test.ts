@@ -1251,10 +1251,10 @@ describe("activity and explicit record evidence", () => {
         JSON.parse(fs.readFileSync(path.join(saved.directory, "playbook.json"), "utf8")).origins,
       ).toEqual(origins);
       expect(savedOp(saved).origins).toEqual(origins);
-      // The save names the origins; api.resy.test is the page's own site, so no warning.
+      // The save names the origins, and warns that api.resy.test isn't the page's origin.
       expect(saved.origins).toEqual(origins);
-      expect(saved.warnings?.filter((warning: string) => /different site/.test(warning))).toEqual(
-        [],
+      expect(saved.warnings).toContain(
+        "the op may also send to https://api.resy.test, the origin of the request it replays (POST https://api.resy.test/3/venuesearch/search), which isn't the origin of the record's page (https://resy.test); if that is the wrong request, save again with --request-id <r_…> from pb record candidates",
       );
       // A request on another site (a CDN's JSON) is allowed too, with a warning naming it.
       const onCdn = recordFlow({
@@ -1269,7 +1269,7 @@ describe("activity and explicit record evidence", () => {
       });
       expect(cdnSaved.origins).toEqual(["https://resy.test", "https://cdn.other.test"]);
       expect(cdnSaved.warnings).toEqual([
-        "the op may also send to https://cdn.other.test, the origin of the request it replays (GET https://cdn.other.test/config.json), which is on another site than the record's page (https://resy.test); if that is the wrong request, save again with --request-id <r_…> from pb record candidates",
+        "the op may also send to https://cdn.other.test, the origin of the request it replays (GET https://cdn.other.test/config.json), which isn't the origin of the record's page (https://resy.test); if that is the wrong request, save again with --request-id <r_…> from pb record candidates",
       ]);
       // A read replayed on the page's own origin keeps that one origin.
       const read = recordFlow({
@@ -1333,8 +1333,35 @@ describe("activity and explicit record evidence", () => {
         expect(() => save(root, record.id)).toThrow(
           "write op search can't be saved network-only: the record captured 2 writes (r_put PUT https://example.test/api/employees/7, r_hb POST https://heartbeat.vendor.test/ping); name the one the op replays with pb save --from-record <id> --request-id <r_…>",
         );
-        expect(() => save(root, record.id, "r_hb")).toThrow(
-          "write op search can't be saved network-only: it would replay POST https://heartbeat.vendor.test/ping, which isn't on the record's site (https://example.test); the op must replay the site's own write",
+        // Named explicitly, a write on another origin saves, with a warning naming that origin.
+        expect(save(root, record.id, "r_hb").warnings).toContain(
+          "the op may also send to https://heartbeat.vendor.test, the origin of the request it replays (POST https://heartbeat.vendor.test/ping), which isn't the origin of the record's page (https://example.test); if that is the wrong request, save again with --request-id <r_…> from pb record candidates",
+        );
+      });
+
+      it.each([
+        [
+          "another user's site on a shared host",
+          "https://alice.github.io",
+          "https://bob.github.io/api/save",
+        ],
+        ["the site's api. subdomain", "https://example.test", "https://api.example.test/save"],
+      ])("replays a write on %s only when --request-id names it", (_case, origin, url) => {
+        const write = { ...create, id: "r_other", url };
+        const flow = recordFlow({
+          commands: ["navigate"],
+          origin,
+          trace: [{ ...page, url: `${origin}/` }, write],
+        });
+        const { record } = flow.stopped();
+        const other = new URL(url).origin;
+        expect(() => save(flow.root, record.id)).toThrow(
+          `write op search can't be saved network-only: it would replay POST ${url}, whose origin (${other}) isn't the record's page origin (${origin}); name it with --request-id r_other to replay it anyway`,
+        );
+        const saved = save(flow.root, record.id, "r_other");
+        expect(saved.origins).toEqual([origin, other]);
+        expect(saved.warnings).toContain(
+          `the op may also send to ${other}, the origin of the request it replays (POST ${url}), which isn't the origin of the record's page (${origin}); if that is the wrong request, save again with --request-id <r_…> from pb record candidates`,
         );
       });
 
