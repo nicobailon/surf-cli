@@ -72,7 +72,8 @@ function validateCollectSpec(spec) {
 }
 
 // Page-side helpers shared by collect and playbook HTML extraction. The script defines `textOf`, and
-// `boundedRegex` (tabSource()), whose tabExtract runs the reading.
+// `boundedRegex` (tabSource()), whose tabExtract runs them: readItem reads an item's raw values off
+// the page once, and buildItem makes its record from them, running match patterns, without the page.
 const PICK_SOURCE = `// Dotted field names ("quoted.text") build nested objects.
 const assign = (record, name, value) => {
   if (value === undefined) return;
@@ -81,8 +82,20 @@ const assign = (record, name, value) => {
   for (const part of parts.slice(0, -1)) node = node[part] ??= {};
   node[parts[parts.length - 1]] = value;
 };
-// \`where\` names the field in a match pattern's error.
-const pick = (item, field, record, where) => {
+// A field's raw values: what each element it selects reads as (text or attribute), or null for a
+// template, which reads the record instead.
+const readField = (item, field) => {
+  if (field.template !== undefined) return null;
+  const elements = field.selector === ":scope" ? [item] : field.all ? [...item.querySelectorAll(field.selector)] : [item.querySelector(field.selector)].filter(Boolean);
+  const read = (element) => {
+    if (!field.attr) return textOf(element);
+    const property = element[field.attr];
+    return typeof property === "string" ? property : element.getAttribute(field.attr) ?? undefined;
+  };
+  return field.all ? elements.map(read) : elements.slice(0, 1).map(read);
+};
+// A field's value from its raw values and the record so far. \`where\` names it in a pattern's error.
+const buildField = (field, raw, record, where) => {
   if (field.template !== undefined) {
     let missing = false;
     const text = field.template.replace(/\\{\\{([a-zA-Z0-9._-]+)\\}\\}/g, (_, name) => {
@@ -92,32 +105,27 @@ const pick = (item, field, record, where) => {
     });
     return missing ? undefined : text;
   }
-  const elements = field.selector === ":scope" ? [item] : field.all ? [...item.querySelectorAll(field.selector)] : [item.querySelector(field.selector)].filter(Boolean);
-  const read = (element) => {
-    if (!field.attr) return textOf(element);
-    const property = element[field.attr];
-    return typeof property === "string" ? property : element.getAttribute(field.attr) ?? undefined;
-  };
   const apply = (value) => {
     if (!field.match || typeof value !== "string") return value;
     const found = boundedRegex.boundedExec({ pattern: field.match, text: value, label: \`\${where} match\` });
     return found ? (found.length > 1 ? found[1] : found[0]) : undefined;
   };
   if (field.all) {
-    const values = elements.map(read).map(apply).filter((value) => value !== undefined && value !== null);
+    const values = raw.map(apply).filter((value) => value !== undefined && value !== null);
     return values.length ? values : undefined;
   }
-  return elements.length ? apply(read(elements[0])) : undefined;
+  return raw.length ? apply(raw[0]) : undefined;
 };
+const readItem = (item, fields) => Object.entries(fields).map(([name, field]) => [name, readField(item, field)]);
 // Templates run last, so they can use the item's other fields.
-const readItem = (item, fields) => {
+const buildItem = (raws, fields) => {
   const record = {};
-  const templates = [];
-  for (const [name, field] of Object.entries(fields)) {
-    if (field.template !== undefined) templates.push([name, field]);
-    else assign(record, name, pick(item, field, record, \`field \${name}\`));
+  for (const [name, raw] of raws) {
+    if (fields[name].template === undefined) assign(record, name, buildField(fields[name], raw, record, \`field \${name}\`));
   }
-  for (const [name, field] of templates) assign(record, name, pick(item, field, record, \`field \${name}\`));
+  for (const [name, raw] of raws) {
+    if (fields[name].template !== undefined) assign(record, name, buildField(fields[name], raw, record, \`field \${name}\`));
+  }
   return record;
 };
 `;
@@ -153,9 +161,10 @@ ${PICK_SOURCE}if (spec.expand) {
 const items = [...document.querySelectorAll(spec.item)];
 return boundedRegex.tabExtract({
   budget: regexBudget,
-  extract: () => items.map((item) => {
-    const record = readItem(item, spec.fields);
-    return { record, key: pick(item, spec.key, record, "key") };
+  read: () => items.map((item) => ({ raws: readItem(item, spec.fields), key: readField(item, spec.key) })),
+  extract: (rows) => rows.map(({ raws, key }) => {
+    const record = buildItem(raws, spec.fields);
+    return { record, key: buildField(spec.key, key, record, "key") };
   }),
   onValue: (read) => {
     const records = [];
@@ -218,8 +227,9 @@ function parseHtmlExtract(spec) {
 }
 
 /**
- * Page-side function `(doc) => records | value` for an extract.html spec, to run in
- * boundedRegex.tabExtract (the script defines `boundedRegex` with tabSource()). Text is the element's text
+ * Page-side function `(doc) => ({ read, extract })` for an extract.html spec, the reading and the
+ * building of its records or value, for boundedRegex.tabExtract (the script defines `boundedRegex`
+ * with tabSource()). Text is the element's text
  * with whitespace collapsed, the same in a parsed response body (which has no layout) and a live page.
  */
 function htmlExtractFunction(spec) {
@@ -235,12 +245,22 @@ ${PICK_SOURCE}const check = (where, field) => {
   }
 };
 if (spec.value) {
-  check("value", spec.value);
-  return pick(doc, spec.value, {}, "value") ?? null;
+  return {
+    read: () => {
+      check("value", spec.value);
+      return readField(doc, spec.value);
+    },
+    extract: (raw) => buildField(spec.value, raw, {}, "value") ?? null,
+  };
 }
-check("item", { selector: spec.item });
-for (const [name, field] of Object.entries(spec.fields)) check(\`field \${name}\`, field);
-return [...doc.querySelectorAll(spec.item)].map((item) => readItem(item, spec.fields));
+return {
+  read: () => {
+    check("item", { selector: spec.item });
+    for (const [name, field] of Object.entries(spec.fields)) check(\`field \${name}\`, field);
+    return [...doc.querySelectorAll(spec.item)].map((item) => readItem(item, spec.fields));
+  },
+  extract: (items) => items.map((raws) => buildItem(raws, spec.fields)),
+};
 })`;
 }
 

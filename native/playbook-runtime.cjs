@@ -162,15 +162,16 @@ function extractsInTab(extract) {
   return Boolean(extract?.html) || isJsonExtract(extract);
 }
 
-// Page-side finish(head, run, narrow): runs the extract `run` through boundedRegex.tabExtract and
+// Page-side finish(head, { read, extract }, narrow): runs an extract through boundedRegex.tabExtract and
 // resolves to its result, or an extractError when it fails or would not fit in the tab's output.
 // It can also resolve to regexNeeded (see bounded-regex.cjs), which runTabExtract completes.
 // `regexBudget` is what is left of the op run's field-regex budget.
 const finishSource = (budget) => `${boundedRegex.tabSource()}
 ${boundedRegex.tabBudgetSource(budget)}
-const finish = (head, run, narrow) => boundedRegex.tabExtract({
+const finish = (head, { read, extract }, narrow) => boundedRegex.tabExtract({
   budget: regexBudget,
-  extract: run,
+  read,
+  extract,
   onValue: (extracted) => {
     const out = { ...head, extracted: extracted === undefined ? null : extracted };
     if (JSON.stringify(out, null, 2).length <= boundedRegex.RESULT_LIMIT) return out;
@@ -222,17 +223,20 @@ else {
   element.setAttribute("href", responseUrl);
   doc.head.prepend(element);
 }
-return finish(head, () => ${htmlExtractFunction(html)}(doc), "--item/--field");`;
+return finish(head, ${htmlExtractFunction(html)}(doc), "--item/--field");`;
   } else if (isJsonExtract(extract)) {
     tail = `${finishSource(regexBudget)}
-return finish(head, () => {
-  let json;
-  try {
-    json = JSON.parse(text);
-  } catch {
-    throw new Error(\`the response is not JSON (\${response.headers.get("content-type") || "no content type"})\`);
-  }
-  ${jsonExtractSource(extract)}
+return finish(head, {
+  read: () => {
+    try {
+      return JSON.parse(text);
+    } catch {
+      throw new Error(\`the response is not JSON (\${response.headers.get("content-type") || "no content type"})\`);
+    }
+  },
+  extract: (json) => {
+    ${jsonExtractSource(extract)}
+  },
 }, "--records/--field");`;
   }
   // The script's output is capped, so without an in-tab extract it reports the response and when it
@@ -307,7 +311,7 @@ async function runStrategy(strategy, context) {
     if (result.status !== "completed") throw new Error(result.error || "workflow strategy failed");
     if (!strategy.extract?.html) return result;
     // The same extraction as the network strategy, on the page the workflow ended on.
-    const found = await runTabExtract(context, (budget) => `(async () => {\n${finishSource(budget)}\nreturn finish({}, () => ${htmlExtractFunction(strategy.extract.html)}(document), "--item/--field");\n})()`);
+    const found = await runTabExtract(context, (budget) => `(async () => {\n${finishSource(budget)}\nreturn finish({}, ${htmlExtractFunction(strategy.extract.html)}(document), "--item/--field");\n})()`);
     if (found?.extractError) throw new Error(found.extractError);
     return { ...result, extracted: found?.extracted };
   }

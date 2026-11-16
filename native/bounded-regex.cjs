@@ -8,7 +8,8 @@
 // rest don't run.
 //
 // In a tab (tabSource() injects this file) a regex can't run on the page's own thread, where
-// nothing could stop it. An extract runs through tabExtract in two passes: the first collects every
+// nothing could stop it. An extract runs through tabExtract: it reads the page once into a
+// snapshot, then builds the result from that snapshot in two passes. The first collects every
 // pattern and text the extract needs without running any, then each runs in a Web Worker (one per
 // extract, reused) that is terminated after MATCH_TIMEOUT_MS, and the second pass builds the result
 // from the answers. When the page won't start a worker (a Content-Security-Policy without blob:
@@ -240,22 +241,23 @@ async function matchInWorker(worker, pairs, budget) {
   return matches;
 }
 
-function extractWith(extract, pairs, matches) {
+function extractWith(extract, snapshot, pairs, matches) {
   const found = new Map(pairs.map((pair, index) => [pairKey(pair.pattern, pair.text), matches[index]]));
   return withTabRunner(({ pattern, text }) => {
     const key = pairKey(pattern, text);
     if (!found.has(key)) throw new Error("the extract asked for a pattern its first pass didn't");
     return found.get(key);
-  }, extract);
+  }, () => extract(snapshot));
 }
 
 /**
- * Runs `extract` (synchronous; its patterns go through boundedExec) in a tab and returns
+ * Reads the page once with `read()` and runs `extract(snapshot)` (synchronous, without reading the
+ * page; its patterns go through boundedExec) in a tab, and returns
  * `onValue(result)`, or `onError(error)` when it throws or a pattern fails. When the page won't start a
  * worker it returns { regexNeeded: { key, pairs } } instead: the host runs the pairs and completes
  * it with finishTabExtract. The returned object gets `regexSpentMs`, what the run took from `budget`.
  */
-async function tabExtract({ extract, budget, onValue, onError }) {
+async function tabExtract({ read = () => undefined, extract, budget, onValue, onError }) {
   const startMs = budget.remainingMs;
   // The whole output, regexSpentMs included, must fit what the tab can send; one that doesn't
   // could not be read, and its regex time would go uncharged.
@@ -277,19 +279,21 @@ async function tabExtract({ extract, budget, onValue, onError }) {
     }
   };
   try {
+    // Both passes build from this snapshot, so a page that changes meanwhile can't split them.
+    const snapshot = read();
     const wanted = new Map();
     const first = withTabRunner(({ pattern, text, label }) => {
       const key = pairKey(pattern, text);
       if (!wanted.has(key)) wanted.set(key, { pattern, text, label });
       return null;
-    }, extract);
+    }, () => extract(snapshot));
     // Without patterns, the first pass is the result.
     if (wanted.size === 0) return spent(finish(() => first));
     const pairs = [...wanted.values()];
     const worker = await startWorker();
     if (worker) {
       const matches = await matchInWorker(worker, pairs, budget);
-      return spent(finish(() => extractWith(extract, pairs, matches)));
+      return spent(finish(() => extractWith(extract, snapshot, pairs, matches)));
     }
     const key = `${Date.now().toString(36)}${Math.random().toString(36).slice(2)}`;
     // Measured as sent: escaping can double a text's length.
@@ -300,7 +304,7 @@ async function tabExtract({ extract, budget, onValue, onError }) {
       );
     }
     if (!globalThis[STASH]) Object.defineProperty(globalThis, STASH, { value: new Map() });
-    globalThis[STASH].set(key, (matches) => fit(finish(() => extractWith(extract, pairs, matches))));
+    globalThis[STASH].set(key, (matches) => fit(finish(() => extractWith(extract, snapshot, pairs, matches))));
     setTimeout(() => globalThis[STASH].delete(key), STASH_MS);
     return spent({ regexNeeded: { key, pairs } });
   } catch (error) {

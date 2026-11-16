@@ -147,7 +147,7 @@ async function runHtmlExtract(
 const regexBudget = boundedRegex.createRegexBudget({ ms: 2000, scope: "extract" });
 return (doc) => boundedRegex.tabExtract({
   budget: regexBudget,
-  extract: () => (${collect.htmlExtractFunction(html)})(doc),
+  ...(${collect.htmlExtractFunction(html)})(doc),
   onValue: (records) => ({ records }),
   onError: (error) => { throw error; },
 });`,
@@ -293,6 +293,61 @@ describe("field match patterns in the tab", () => {
       }),
     ).rejects.toThrow("collect round failed: skipped: the run's 2 s regex budget is spent");
     expect(round).toBe(2);
+  });
+
+  it("build records from what they read once, even when the page changes meanwhile", async () => {
+    // Each read of a row's text gives the next number, as a live page might while the worker runs.
+    let reads = 0;
+    const text = () => `Item #${reads++}`;
+    const twoFields = {
+      item: "li",
+      fields: { id: { selector: "h2", match: "#(\\d+)" }, raw: "h2" },
+    };
+    const changing = {
+      querySelector: () => null,
+      querySelectorAll: () => [
+        {
+          querySelector: (selector: string) =>
+            selector === "h2"
+              ? {
+                  get textContent() {
+                    return text();
+                  },
+                }
+              : null,
+          querySelectorAll: () => [],
+        },
+      ],
+    };
+    for (const worker of [PageWorker, null]) {
+      reads = 0;
+      const run = new Function(
+        "performance",
+        "Worker",
+        `${bounded.tabSource()}
+const regexBudget = boundedRegex.createRegexBudget({ ms: 2000, scope: "extract" });
+return (doc) => boundedRegex.tabExtract({
+  budget: regexBudget,
+  ...(${collect.htmlExtractFunction(twoFields)})(doc),
+  onValue: (records) => ({ records }),
+  onError: (error) => ({ error: error.message }),
+});`,
+      )(performance, worker);
+      const result = await run(changing);
+      const finished = await bounded.finishTabExtract({
+        result,
+        budget: bounded.createRegexBudget({ ms: 1000, scope: "extract" }),
+        runScript: async (code: string) => new Function(`return ${code}`)(),
+      });
+      expect(finished.records).toEqual([{ id: "0", raw: "Item #1" }]);
+    }
+    reads = 0;
+    const records = await collect.runCollect({
+      executeTool: rowsTab(1, { text }),
+      sleep: async () => undefined,
+      spec: rowSpec("#(\\d+)"),
+    });
+    expect(records).toEqual([{ n: "0" }]);
   });
 
   it("run on the host when the page blocks workers", async () => {
