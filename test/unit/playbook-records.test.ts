@@ -553,10 +553,10 @@ describe("choosing the draft's request", () => {
     it.each([
       ["an empty shell", shell],
       ["a document over the capture cap", overCap],
-    ])("warns when it picks %s over it", (_, page) => {
+    ])("warns when it picks %s over it", (_, picked) => {
       const { draft, warnings, record } = stopFlow({
         commands: ["click"],
-        trace: [page, metrics],
+        trace: [picked, metrics],
         pageText: PAGE_TEXT,
         stop: { draft: true, read: true },
       });
