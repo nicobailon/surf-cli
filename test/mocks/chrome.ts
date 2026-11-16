@@ -23,6 +23,7 @@ type ChromeMock = {
     update: ReturnType<typeof vi.fn>;
     move: ReturnType<typeof vi.fn>;
     group: ReturnType<typeof vi.fn>;
+    ungroup: ReturnType<typeof vi.fn>;
     remove: ReturnType<typeof vi.fn>;
     sendMessage: ReturnType<typeof vi.fn>;
     onUpdated: {
@@ -115,6 +116,7 @@ type ChromeMock = {
     };
   };
   tabGroups: {
+    get: ReturnType<typeof vi.fn>;
     update: ReturnType<typeof vi.fn>;
     query: ReturnType<typeof vi.fn>;
     TAB_GROUP_ID_NONE: number;
@@ -140,6 +142,7 @@ export function createChromeMock(): ChromeMock {
       update: vi.fn().mockResolvedValue({}),
       move: vi.fn().mockResolvedValue({}),
       group: vi.fn().mockResolvedValue(1),
+      ungroup: vi.fn().mockResolvedValue(undefined),
       remove: vi.fn().mockResolvedValue(undefined),
       sendMessage: vi.fn().mockResolvedValue(undefined),
       onUpdated: {
@@ -237,6 +240,7 @@ export function createChromeMock(): ChromeMock {
       },
     },
     tabGroups: {
+      get: vi.fn().mockResolvedValue({ id: 1, title: "" }),
       update: vi.fn().mockResolvedValue({}),
       query: vi.fn().mockResolvedValue([]),
       TAB_GROUP_ID_NONE: -1,

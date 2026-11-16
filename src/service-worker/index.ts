@@ -213,6 +213,22 @@ async function resolveDefaultTarget(windowId?: number, allowCreate = true): Prom
   return { tab, autoCreated };
 }
 
+// Chrome saves tab groups, so removing the last tab of a group leaves the group behind as a saved
+// group. Ungroup tabs from Surf's own session groups first; the empty group then disappears.
+// Groups the user made are left alone.
+async function releaseSurfGroups(tabIds: number[]): Promise<void> {
+  for (const tabId of tabIds) {
+    try {
+      const tab = await chrome.tabs.get(tabId);
+      if (tab.groupId === chrome.tabGroups.TAB_GROUP_ID_NONE) continue;
+      const group = await chrome.tabGroups.get(tab.groupId);
+      if (group.title?.startsWith("Surf: ")) await chrome.tabs.ungroup(tabId);
+    } catch {
+      // The tab or group is already gone; removal below handles the rest.
+    }
+  }
+}
+
 // Without createProperties.windowId, Chrome creates the group in the last-focused window and moves
 // the tab there, which pulls an unfocused session window's tab into the user's window.
 async function labelSessionTab(tabId: number, windowId: number, name: string): Promise<number | undefined> {
@@ -1017,6 +1033,7 @@ export async function handleMessage(
         throw new BrowserCommandError("target_required", "SESSION_CLOSE_TARGET requires a valid tabId");
       }
       try {
+        await releaseSurfGroups([targetTabId]);
         await chrome.tabs.remove(targetTabId);
       } catch {
         return { success: true, tabId: targetTabId, alreadyGone: true };
@@ -3595,6 +3612,7 @@ export async function handleMessage(
     case "CLOSE_TAB": {
       const tabIds = message.tabIds || (message.tabId ? [message.tabId] : []);
       if (tabIds.length === 0) throw new Error("No tabId(s) provided");
+      await releaseSurfGroups(tabIds.map(Number));
       await chrome.tabs.remove(tabIds);
       if (tabIds.length === 1) {
         return { success: true, tabId: tabIds[0] };
