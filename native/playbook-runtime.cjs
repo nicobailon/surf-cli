@@ -478,6 +478,8 @@ async function runPlaybookOp({ playbook, op, args: providedArgs = {}, secrets = 
   // field match patterns, shared by every strategy, collect round and API page.
   const regexBudget = createRegexBudget();
   const fieldRegexBudget = boundedRegex.createFieldRegexBudget();
+  // A strategy's own events (a workflow step's tool.failed) are journaled: no env value goes with them.
+  const reportStep = (event) => onEvent(redactSecrets(event, authValues));
   const attempts = [];
   // In an op saved from a record, a failed check its file wrote is the op's, so a draft's check
   // never sends more. A read still tries its next strategy (the recorded steps) when its request
@@ -502,7 +504,7 @@ async function runPlaybookOp({ playbook, op, args: providedArgs = {}, secrets = 
         executeNative,
         signal,
         sleep,
-        onEvent,
+        onEvent: reportStep,
         label: `${playbook.id} ${op.id}`,
         allowedOrigins: op.origins || playbook.origins || [],
         authValues,
