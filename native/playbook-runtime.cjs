@@ -113,6 +113,12 @@ function resolveAuthValues(op, secrets = {}, env = process.env) {
   return values;
 }
 
+// The texts to redact for env-supplied values: each value, and its JSON-escaped form, which a raw
+// JSON body holds when the value has a quote, a backslash or a control character.
+function secretTexts(authValues) {
+  return [...new Set(Object.values(authValues).flatMap((value) => [value, JSON.stringify(value).slice(1, -1)]))];
+}
+
 // Env-supplied values never leave a run: a response that echoes one in a value (or an error that
 // quotes it) comes back with <redacted> in its place, however short the value. A key is a field's
 // name and changes only when it holds a value of 4 characters or more (see redactObject).
@@ -539,7 +545,7 @@ async function runPlaybookOp({ playbook, op, args: providedArgs = {}, secrets = 
         value = extractResult(raw, strategy.extract, fieldRegexBudget);
         const expect = strategy.verify || strategy.expect || op.on?.success?.expect;
         // Saved assertions hold for every strategy, even one with its own verify.
-        checked = verifyResult(value, assert ? { ...expect, assert } : expect, raw, Object.values(authValues), regexBudget);
+        checked = verifyResult(value, assert ? { ...expect, assert } : expect, raw, secretTexts(authValues), regexBudget);
       } catch (error) {
         throw checkFailure(error);
       }

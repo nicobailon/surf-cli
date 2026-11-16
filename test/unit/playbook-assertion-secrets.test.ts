@@ -197,6 +197,57 @@ describe("a failed assertion and env values", () => {
     }
   });
 
+  it("redacts the value's JSON-escaped form, as a raw JSON body echoes it, from the result and the preview", async () => {
+    // httpbin's /headers answers with JSON text, so the run's raw body holds the escaped form.
+    const body = JSON.stringify({ headers: { Authorization: QUOTED } });
+    const failed = await hostRun({ body }, QUOTED, [{ path: "$.body", op: "equals", value: "y" }]);
+    expect(failed.attempts[0].assertions[0]).toMatchObject({
+      actual: '{"headers":{"Authorization":"<redacted>"}}',
+      secretSensitive: true,
+    });
+    const passed = await hostRun({ body }, QUOTED, [{ path: "$.body", op: "not_null" }]);
+    expect(passed.value.body).toBe('{"headers":{"Authorization":"<redacted>"}}');
+    for (const text of [JSON.stringify(failed), JSON.stringify(passed)]) {
+      expect(text).not.toContain(JSON.stringify(escaped).slice(1, -1));
+    }
+  });
+
+  it("redacts the value's JSON-escaped form from a generated client's output", async () => {
+    const out = path.join(tempShop().cwd, "client");
+    clients.generateClient({
+      playbookId: "shop",
+      op,
+      strategy: op.run[0],
+      provenance: { type: "playbook", id: "shop" },
+      out,
+    });
+    const server = http.createServer((req: any, res: any) => {
+      res.writeHead(200, { "content-type": "application/json" });
+      const text = JSON.stringify({ Authorization: req.headers["x-api-key"] });
+      res.end(JSON.stringify({ result: { text } }));
+    });
+    await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+    try {
+      const stdout = await new Promise<string>((resolve, reject) =>
+        execFile(
+          process.execPath,
+          [path.join(out, "client.mjs")],
+          {
+            env: {
+              ...process.env,
+              [ENV]: QUOTED,
+              SURF_CLIENT_ORIGIN: `http://127.0.0.1:${server.address().port}`,
+            },
+          },
+          (error: Error | null, output: string) => (error ? reject(error) : resolve(output)),
+        ),
+      );
+      expect(JSON.parse(stdout)).toEqual({ text: '{"Authorization":"<redacted>"}' });
+    } finally {
+      await new Promise((resolve) => server.close(resolve));
+    }
+  });
+
   it("redacts an actual value in full before cutting it to its 200-character preview", async () => {
     const long = `dummy-env-value-${"0123456789".repeat(4)}`;
     const failed = await hostRun({ x: `${"x".repeat(190)}${long}` }, long, [
