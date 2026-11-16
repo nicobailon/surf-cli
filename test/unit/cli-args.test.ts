@@ -161,6 +161,7 @@ function createCliFixtureResult(request: any) {
 function runCli(
   args: string[],
   extraEnv: Record<string, string | undefined> = {},
+  cwd: string = process.cwd(),
 ): Promise<{ request: any; stdout: string; stderr: string }> {
   return new Promise((resolve, reject) => {
     const socketPath = createSocketPath();
@@ -190,8 +191,8 @@ function runCli(
 
     server.on("error", reject);
     server.listen(socketPath, () => {
-      const child = spawn(process.execPath, ["native/cli.cjs", ...args], {
-        cwd: process.cwd(),
+      const child = spawn(process.execPath, [path.join(process.cwd(), "native/cli.cjs"), ...args], {
+        cwd,
         env: { ...createCliEnv(socketPath), ...extraEnv },
         stdio: ["ignore", "pipe", "pipe"],
       });
@@ -1128,6 +1129,28 @@ describe("CLI argument parsing", () => {
       ).toBeUndefined();
     } finally {
       fs.rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  it("never takes echoValue from a project's surf.json, only from the user's", async () => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), "surf-echo-home-"));
+    const project = fs.mkdtempSync(path.join(os.tmpdir(), "surf-echo-project-"));
+    try {
+      fs.writeFileSync(path.join(project, "surf.json"), JSON.stringify({ echoValue: true }));
+      const fill = ["locate.label", "Name", "--action", "fill", "--value", "dummy-typed"];
+      const fromProject = await runCli(fill, { HOME: home }, project);
+      expect(fromProject.request.params.args["echo-value"]).toBeUndefined();
+      const perCall = await runCli([...fill, "--echo-value"], { HOME: home }, project);
+      expect(perCall.request.params.args["echo-value"]).toBe(true);
+      // The user's own setting still applies when a project has a surf.json without it.
+      fs.writeFileSync(path.join(project, "surf.json"), JSON.stringify({ settleMs: 0 }));
+      fs.writeFileSync(path.join(home, "surf.json"), JSON.stringify({ echoValue: true }));
+      expect((await runCli(fill, { HOME: home }, project)).request.params.args["echo-value"]).toBe(
+        true,
+      );
+    } finally {
+      fs.rmSync(home, { recursive: true, force: true });
+      fs.rmSync(project, { recursive: true, force: true });
     }
   });
 

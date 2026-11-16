@@ -7,7 +7,7 @@ for (const stream of [process.stdout, process.stderr]) {
 const fs = require("fs");
 const path = require("path");
 const { execFileSync, execSync } = require("child_process");
-const { loadConfig, getConfigPath, createStarterConfig, STARTER_CONFIG } = require("./config.cjs");
+const { loadConfig, loadUserConfig, getConfigPath, createStarterConfig, STARTER_CONFIG } = require("./config.cjs");
 const networkFormatters = require("./formatters/network.cjs");
 const { formatPageChanges } = require("./formatters/page-changes.cjs");
 const {
@@ -799,7 +799,7 @@ const TOOLS = {
           name: "Element name/text",
           action: "Action to perform (click|fill|hover|text)",
           value: "Value for fill action",
-          "echo-value": "Print the filled value in the result (hidden by default; or set echoValue: true in surf.json)",
+          "echo-value": "Print the filled value in the result (hidden by default; or set echoValue: true in ~/surf.json)",
           all: "Return all matches"
         },
         examples: [
@@ -815,7 +815,7 @@ const TOOLS = {
           exact: "Exact match",
           action: "Action to perform",
           value: "Value for fill action",
-          "echo-value": "Print the filled value in the result (hidden by default; or set echoValue: true in surf.json)"
+          "echo-value": "Print the filled value in the result (hidden by default; or set echoValue: true in ~/surf.json)"
         },
         examples: [
           { cmd: 'locate.text "Sign In" --action click', desc: "Click by text" },
@@ -828,7 +828,7 @@ const TOOLS = {
         opts: {
           action: "Action to perform",
           value: "Value for fill action",
-          "echo-value": "Print the filled value in the result (hidden by default; or set echoValue: true in surf.json)"
+          "echo-value": "Print the filled value in the result (hidden by default; or set echoValue: true in ~/surf.json)"
         },
         examples: [
           { cmd: 'locate.label "Username" --action fill --value "john"', desc: "Fill by label" },
@@ -857,7 +857,7 @@ const TOOLS = {
         args: ["ref_or_selector", "values..."],
         opts: {
           by: "Match by: value (default), label, index",
-          "echo-value": "Print the chosen option values (by default only how many; or set echoValue: true in surf.json)"
+          "echo-value": "Print the chosen option values (by default only how many; or set echoValue: true in ~/surf.json)"
         },
         examples: [
           { cmd: 'select e5 "US"', desc: "Select by value" },
@@ -3547,8 +3547,9 @@ if (options["full-page"] === true) {
 }
 
 const config = loadConfig();
-// Fill and select results show the value typed or the options chosen only when asked.
-if (config.echoValue === true && ["locate.role", "locate.text", "locate.label", "select"].includes(tool)) options["echo-value"] = true;
+// Fill and select results show the value typed or the options chosen only when asked: per call,
+// or in the user's own ~/surf.json (never a project's).
+if (loadUserConfig().echoValue === true && ["locate.role", "locate.text", "locate.label", "select"].includes(tool)) options["echo-value"] = true;
 const autoSaveEnabled = config.autoSaveScreenshots !== false && !options["no-save"];
 if (tool === "screenshot" && !options.output && !options.savePath && firstArg === undefined && autoSaveEnabled) {
   options.savePath = path.join(SURF_TMP, `surf-snap-${Date.now()}.png`);

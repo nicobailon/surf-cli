@@ -310,7 +310,7 @@ surf locate.text "Accept" --exact                 # Exact match only
 surf locate.label "Email" --action fill --value "test@example.com"
 ```
 
-A fill prints `OK` without the value it typed, and `select` prints how many options it chose. Pass `--echo-value` to print them, or set `echoValue: true` in `surf.json`.
+A fill prints `OK` without the value it typed, and `select` prints how many options it chose. Pass `--echo-value` to print them, or set `echoValue: true` in `~/surf.json` (a project's `surf.json` can't turn it on).
 
 An exact name match wins over partial ones, so `--name "Save"` picks a "Save" button over "Save draft". With `--action`, if more than one element still matches, Surf does nothing and lists each match with its ref, so you can act on the one you mean with `surf click <ref>`.
 
