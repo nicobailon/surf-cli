@@ -1206,6 +1206,44 @@ describe("activity and explicit record evidence", () => {
       });
     });
 
+    it("allows the page's origin and the replayed request's, and no other captured origin", () => {
+      const search = {
+        ...create,
+        id: "r_search",
+        url: "https://api.resy.test/3/venuesearch/search",
+        tabUrl: "https://resy.test/search",
+      };
+      const cdn = { ...page, id: "r_cdn", url: "https://cdn.other.test/config.json" };
+      const { root, stopped } = recordFlow({
+        commands: ["navigate"],
+        origin: "https://resy.test",
+        trace: [{ ...page, url: "https://resy.test/search" }, cdn, search],
+        stop: { draft: true, requestId: "r_search" },
+      });
+      const { record } = stopped();
+      const saved = authoring.saveFromRecord({
+        recordId: record.id,
+        root,
+        home: path.dirname(root),
+      });
+      const origins = ["https://resy.test", "https://api.resy.test"];
+      expect(
+        JSON.parse(fs.readFileSync(path.join(saved.directory, "playbook.json"), "utf8")).origins,
+      ).toEqual(origins);
+      expect(savedOp(saved).origins).toEqual(origins);
+      // A read replayed on the page's own origin keeps that one origin.
+      const read = recordFlow({
+        origin: "https://resy.test",
+        trace: [{ ...page, url: "https://resy.test/search" }, cdn],
+      });
+      const readSaved = authoring.saveFromRecord({
+        recordId: read.stopped().record.id,
+        root: read.root,
+        home: path.dirname(read.root),
+      });
+      expect(savedOp(readSaved).origins).toEqual(["https://resy.test"]);
+    });
+
     it("refuses when it has no network strategy for the write", () => {
       const update = {
         ...create,

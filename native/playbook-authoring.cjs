@@ -54,6 +54,15 @@ function fitWriteWorkflow(op, warnings) {
   return { ...op, args, safety: { ...op.safety, key }, run };
 }
 
+// The origins an op saved from a record may send to: the page the record ran on, and the request
+// its network strategy replays (an API on another host, as api.resy.com for resy.com). Other
+// captured origins stay out.
+function allowedOrigins(record, op) {
+  const request = op.run.find((strategy) => strategy.using === "network")?.request;
+  const origins = [record.origin, request && new URL(request.url).origin].filter(Boolean);
+  return [...new Set(origins)];
+}
+
 // `requestId` redrafts the op to replay that request, keeping a read draft a read (its checks rerun).
 function saveFromRecord({ recordId, requestId, scope = "user", cwd, home, root = getPrivateStateRoot() }) {
   const record = readRecord(recordId, root);
@@ -62,8 +71,9 @@ function saveFromRecord({ recordId, requestId, scope = "user", cwd, home, root =
   const draft = fs.existsSync(draftPath) ? readPrivateJson(draftPath, null, { root }) : null;
   const warnings = [];
   const op = fitWriteWorkflow(draft && !requestId ? draft : draftFromRecord(recordId, root, { read: draft?.effect === "read", requestId, warnings }), warnings);
-  validateOp(op, { origins: record.origin ? [record.origin] : [] });
-  const saved = savePlaybook({ manifest: { id: record.site, name: record.site, version: "1.0.0", origins: record.origin ? [record.origin] : [] }, op, scope, cwd, home });
+  const origins = allowedOrigins(record, op);
+  validateOp(op, { origins });
+  const saved = savePlaybook({ manifest: { id: record.site, name: record.site, version: "1.0.0", origins }, op, scope, cwd, home });
   return warnings.length > 0 ? { ...saved, warnings } : saved;
 }
 
