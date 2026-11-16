@@ -397,6 +397,27 @@ describe("pb param --link: a drafted typed-value input", () => {
     expect(again.changed).toBe(false);
   });
 
+  it("renames the input at every depth: loop bodies, until steps and nested loops", () => {
+    const looped = drafted();
+    (looped.run[1] as any).steps = [
+      {
+        repeat: 3,
+        steps: [
+          { cmd: "type", args: { text: "{{text}}" } },
+          { repeat: 2, steps: [{ cmd: "key", args: { key: "{{text}}" } }] },
+        ],
+        until: { cmd: "locate.text", args: { text: "{{text}}" } },
+      },
+    ];
+    const { op, notes } = paramOp(looped, { fields: ["query.nameOrId"], as: "name", link: "text" });
+    expect(JSON.stringify(op.run)).not.toContain("{{text}}");
+    expect((op.run[1] as any).steps[0].until.args.text).toBe("{{name}}");
+    expect(notes).toEqual([
+      "workflow fallback takes --name in place of --text: type text, key key, locate.text text",
+    ]);
+    expect(() => playbooks.validateOp(op, { origins: [] })).not.toThrow();
+  });
+
   it("moves a write's safety key to the named input", () => {
     const write = drafted({
       effect: "write",

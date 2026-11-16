@@ -295,14 +295,24 @@ function workflowOnlyInputs(op) {
   return Object.keys(op.args || {}).filter((input) => usesInput(workflows, input) && !usesInput(others, input));
 }
 
+// Renames {{from}} to {{to}} at every depth: step args, loop bodies, a loop's `until` step and its
+// own fields (`each`). `touched` collects the step arguments it changed.
 function renameInSteps(steps, from, to, touched) {
+  const swap = (value) => JSON.parse(JSON.stringify(value).split(from).join(to));
   return steps.map((step) => {
-    if (Array.isArray(step.steps)) return { ...step, steps: renameInSteps(step.steps, from, to, touched) };
+    if (Array.isArray(step.steps)) {
+      const { steps: body, until, ...loop } = step;
+      for (const [field, value] of Object.entries(loop)) if (JSON.stringify(value)?.includes(from)) touched.push(`loop ${field}`);
+      return {
+        ...swap(loop),
+        steps: renameInSteps(body, from, to, touched),
+        ...(until ? { until: renameInSteps([until], from, to, touched)[0] } : {}),
+      };
+    }
     const args = { ...(step.args || {}) };
     for (const [arg, value] of Object.entries(args)) {
-      const json = JSON.stringify(value);
-      if (!json?.includes(from)) continue;
-      args[arg] = JSON.parse(json.split(from).join(to));
+      if (!JSON.stringify(value)?.includes(from)) continue;
+      args[arg] = swap(value);
       touched.push(`${step.cmd || step.tool} ${arg}`);
     }
     return { ...step, args };
@@ -323,6 +333,7 @@ function linkInput(op, link, name) {
   const touched = [];
   for (const workflow of op.run.filter((strategy) => strategy.using === "workflow")) workflow.steps = renameInSteps(workflow.steps, from, `{{${name}}}`, touched);
   if (touched.length === 0) throw new Error(`--link ${link}: no workflow step takes ${from}`);
+  if (usesInput(op.run, link)) throw new Error(`--link ${link}: ${from} is still in the op after renaming; edit it by hand`);
   delete op.args[link];
   if (op.safety?.key?.includes(link)) op.safety.key = [...new Set(op.safety.key.map((key) => (key === link ? name : key)))];
   return touched;
