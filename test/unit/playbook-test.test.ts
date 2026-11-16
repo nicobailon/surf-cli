@@ -316,6 +316,58 @@ describe("running an op with assertions", () => {
     expect(statuses).toEqual(["dispatched", "indeterminate"]);
   });
 
+  it("keeps a failed write's attempts and assertions for pb test, and its errors short", async () => {
+    const errors: string[] = [];
+    const writeOp = {
+      id: "create",
+      effect: "write",
+      args: {},
+      safety: { duplicate: "transactional", key: ["name"] },
+      run: [{ using: "network", request: { method: "POST", url: "https://hr.test/a" } }],
+    };
+    const hostRun = (params: Record<string, any>) =>
+      runtime.testPlaybookOp({
+        playbook: { id: "hr", provenance: { scope: "test" } },
+        op: writeOp,
+        assertions: params.assert,
+        executeTool: captureTab({ reply: () => ({ body: JSON.stringify({ n: 2 }) }) }).executeTool,
+        afterDispatch: async ({ error }: { error?: string }) => {
+          if (error) {
+            errors.push(error);
+          }
+        },
+      });
+    const failing = { path: "$.bodyJson.n", op: "equals", value: 1, pass: false, actual: 2 };
+    const failed = await hostRun({ assert: [{ path: "$.bodyJson.n", op: "equals", value: 1 }] });
+    expect(failed).toMatchObject({
+      status: "failed",
+      error: "assertion failed: $.bodyJson.n equals",
+      attempts: [
+        { using: "network", error: "assertion failed: $.bodyJson.n equals", assertions: [failing] },
+      ],
+    });
+    expect(errors).toEqual(["assertion failed: $.bodyJson.n equals"]);
+    // pb test reports it, as it does for a read.
+    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "surf-pbtest-"));
+    tempDirs.push(cwd);
+    const directory = path.join(cwd, ".surf", "playbooks", "hr");
+    fs.mkdirSync(path.join(directory, "ops"), { recursive: true });
+    fs.writeFileSync(
+      path.join(directory, "playbook.json"),
+      JSON.stringify({ id: "hr", version: "1.0.0", origins: ["https://hr.test"] }),
+    );
+    fs.writeFileSync(path.join(directory, "ops", "create.json"), JSON.stringify(writeOp));
+    const report = await pbTest.runPlaybookTest({
+      argv: ["hr", "create", "--assert", "$.bodyJson.n", "equals", "1", "--write"],
+      cwd,
+      home: cwd,
+      env: {},
+      runOp: hostRun,
+    });
+    expect(report).toMatchObject({ ok: false, assertions: [failing] });
+    expect(report.attempts).toHaveLength(1);
+  });
+
   it("validates saved assertions when it loads an op", () => {
     const validate = (assert: unknown) =>
       playbooks.validateOp(op([network], { on: { success: { expect: { assert } } } }), {

@@ -562,6 +562,8 @@ async function runPlaybookOp({ playbook, op, args: providedArgs = {}, secrets = 
       onEvent({ type: "strategy.failed", playbook: playbook.id, op: op.id, using: strategy.using, index, error: message, endedAt: new Date().toISOString() });
       if (op.effect === "write") {
         await afterDispatch({ status: dispatched ? "indeterminate" : "not_dispatched", strategy, index, error: message });
+        // pb test reports the attempt (its assertions already redacted); the message stays short.
+        error.attempts = attempts;
         throw error;
       }
       if (fromRecord && caught?.[CHECK_FAILED]) {
