@@ -3,7 +3,7 @@
 
 const os = require("os");
 const { editSavedOp, validateOp } = require("./playbooks.cjs");
-const { isSecretHeader, isSensitiveName, redactValues } = require("./redaction.cjs");
+const { isSecretHeader, isSensitiveName, redactSecretValues } = require("./redaction.cjs");
 const { LITERAL_OPEN, escapeTemplates, escapedOp, requestInputs, sentRequest, templateInputs, unescapeTemplates } = require("./playbook-template.cjs");
 const { lineDiff } = require("./text-diff.cjs");
 const { commandMetadata } = require("./workflow-definition.cjs");
@@ -26,16 +26,12 @@ function headerValue(headers, name) {
   return Object.entries(headers || {}).find(([key]) => key.toLowerCase() === name.toLowerCase());
 }
 
-// What pb param prints with a value it took out of the op: the value as the op file stored it
-// (raw, JSON-escaped, URL- or form-encoded) replaced with <redacted>. `anyLength` for a secret.
+// What pb param prints with a value it took out of the op: the value in every spelling the op file
+// can store it (as is, JSON-escaped once or twice, URL- or form-encoded) replaced with <redacted>.
+// `anyLength` for a secret.
 function removedValueRedactor(values, { anyLength = false } = {}) {
-  const forms = values.flatMap((value) => {
-    const text = String(value);
-    const encoded = encodeURIComponent(text);
-    return [text, JSON.stringify(text).slice(1, -1), encoded, encoded.replace(/%20/g, "+")];
-  });
-  const unique = [...new Set(forms)];
-  return (text) => (unique.length ? redactValues(text, unique, { anyLength }) : text);
+  const texts = values.map(String);
+  return (text) => (texts.length ? redactSecretValues(text, texts, { anyLength }) : text);
 }
 
 const keepText = (text) => text;

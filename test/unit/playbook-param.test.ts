@@ -1112,6 +1112,22 @@ describe("pb param: what it prints about the value it removed", () => {
     expect(JSON.stringify(json.value)).not.toContain(VALUE);
   });
 
+  it("keeps a nested JSON literal out of the diff, double-escaped in the op file", async () => {
+    // A quote and a backslash, so the op file holds it escaped twice (JSON inside a JSON string).
+    const quoted = ["dummy", 'quo"ted', "va\\lue", "14"].join("-");
+    const variables = JSON.stringify({ token: quoted, page: 2 });
+    const { cwd, file } = project(
+      networkOp({ url: "https://shop.test/graphql", query: { variables } }),
+    );
+    expect(fs.readFileSync(file, "utf8")).toContain(
+      JSON.stringify(JSON.stringify(quoted).slice(1, -1)).slice(1, -1),
+    );
+    const text = await printed(cwd, ["query.variables.token", "--as", "token", "--required"]);
+    expect(text).toMatch(/^- .*<redacted>/m);
+    expect(text).not.toContain("dummy");
+    expect(text).not.toContain("lue-14");
+  });
+
   it("keeps an --env header's recorded value out of the diff", async () => {
     const { cwd } = project(
       networkOp({ url: "https://shop.test/search", headers: { "X-Site-Key": HEADER_VALUE } }),
