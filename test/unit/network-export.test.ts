@@ -399,3 +399,55 @@ describe("network export of quoted and escaped header values", () => {
     },
   );
 });
+
+describe("a record's trace and its HAR, when a response echoes a secret header", () => {
+  const TOKEN = ["dummy", "plain", "auth", "10"].join("-");
+  const QUOTED = ["dummy", 'quo"ted', "va\\lue", "10"].join("-");
+
+  it.each([TOKEN, QUOTED])("keep %s out of every file, the echo included", async (value) => {
+    const authoring = require("../../native/playbook-authoring.cjs");
+    const records = require("../../native/playbook-records.cjs");
+    const root = await tempDir();
+    const home = await tempDir();
+    const record = records.startRecord({
+      site: "shop",
+      op: "items",
+      tabId: 1,
+      network: true,
+      includeInputValues: true,
+      root,
+    });
+    records.attachNetworkTrace(
+      record.id,
+      [
+        {
+          id: "r-1",
+          method: "POST",
+          // httpbin's /response-headers takes the header to echo in the query.
+          url: `https://example.test/response-headers?X-Echo=${encodeURIComponent(`Bearer ${value}`)}`,
+          requestHeaders: { Authorization: `Bearer ${value}`, accept: "*/*" },
+          requestBody: JSON.stringify({ echo: value }),
+          responseHeaders: { "x-echo": `Bearer ${value}`, "content-type": "application/json" },
+          status: 200,
+        },
+      ],
+      root,
+      { capture: { active: true, interruptions: [], dropped: 0 } },
+    );
+    const output = path.join(root, "export", "trace.har");
+    authoring.exportRecordHar(record.id, output, root, { cwd: home, home });
+    const files = (await fs.readdir(root, { recursive: true }))
+      .map((name: string) => path.join(root, name))
+      .filter((file: string) => !file.endsWith(path.sep));
+    let checked = 0;
+    for (const file of files) {
+      if (!(await fs.stat(file)).isFile()) {
+        continue;
+      }
+      checked++;
+      expect(await fs.readFile(file, "utf8"), file).not.toContain("dummy");
+    }
+    expect(checked).toBeGreaterThan(1);
+    expect(await fs.readFile(output, "utf8")).toContain("x-echo");
+  });
+});

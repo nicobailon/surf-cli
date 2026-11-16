@@ -11,7 +11,7 @@ const {
   readPrivateFile,
   readPrivateJson,
 } = require("./private-state.cjs");
-const { redactSensitiveFields, redactUrlSecrets, safeHeaders } = require("./redaction.cjs");
+const { redactSensitiveFields, redactUrlSecrets, redactValues, safeHeaders, secretHeaderValues } = require("./redaction.cjs");
 const { draftedEvents, forgetTypedValues, heldTypingCalls, maskTypedValuesInUrl, numberRedactedMarkers, redactTypedValuesInUrl, rememberTypedValues, typedValuesForTrace } = require("./record-typed-values.cjs");
 const { commandMetadata, promoteRedactedStepArgs } = require("./workflow-definition.cjs");
 const { escapeStepArgs, escapeTemplates } = require("./playbook-template.cjs");
@@ -215,19 +215,25 @@ function redactTypedHeaders(headers, typed) {
   return Object.fromEntries(Object.entries(headers).map(([name, value]) => [name, /^(referer|location)$/i.test(name) ? redactTypedValuesInUrl(String(value), typed) : value]));
 }
 
-// `typed` lists the values the record's steps typed; each becomes its marker in the entry's URLs.
-// `urlMarkers` lists the markers in the entry's URL, with the JSON type of a number or boolean one.
+// The trace drops secret headers, so the values they held are known only here: the URL, a header or
+// a request body kept in the trace that echoes one has it replaced with <redacted> before it is saved.
+// `typed` lists the values the record's steps typed; each becomes its marker in the entry's URLs,
+// after the echoes go, so the markers' offsets hold. `urlMarkers` lists the markers in the entry's
+// URL, with the JSON type of a number or boolean one.
 function sanitizeTraceEntry(entry, includeInputValues = false, typed = []) {
-  const { url, markers } = maskTypedValuesInUrl(redactUrlSecrets(entry.url), typed, { body: entry.requestBody });
+  const secrets = [entry.requestHeaders, entry.responseHeaders].flatMap((headers) => secretHeaderValues(headers));
+  const scrub = (value) => (typeof value === "string" && secrets.length > 0 ? redactValues(value, secrets) : value);
+  const keptHeaders = (headers) => redactTypedHeaders(Object.fromEntries(Object.entries(safeHeaders(headers)).map(([name, value]) => [name, scrub(value)])), typed);
+  const { url, markers } = maskTypedValuesInUrl(scrub(redactUrlSecrets(entry.url)), typed, { body: entry.requestBody });
   return {
     ...redactSensitiveFields(entry),
     url,
     ...(markers.length ? { urlMarkers: markers } : {}),
-    ...(entry.tabUrl !== undefined ? { tabUrl: redactTypedValuesInUrl(redactUrlSecrets(entry.tabUrl), typed) } : {}),
-    requestHeaders: redactTypedHeaders(safeHeaders(entry.requestHeaders), typed),
-    responseHeaders: redactTypedHeaders(safeHeaders(entry.responseHeaders), typed),
+    ...(entry.tabUrl !== undefined ? { tabUrl: redactTypedValuesInUrl(scrub(redactUrlSecrets(entry.tabUrl)), typed) } : {}),
+    requestHeaders: keptHeaders(entry.requestHeaders),
+    responseHeaders: keptHeaders(entry.responseHeaders),
     responseBody: entry.responseBody === undefined ? undefined : "<response-body>",
-    ...(includeInputValues ? {} : { requestBody: entry.requestBody === undefined ? undefined : "<request-body>" }),
+    requestBody: entry.requestBody === undefined ? undefined : includeInputValues ? scrub(entry.requestBody) : "<request-body>",
   };
 }
 
