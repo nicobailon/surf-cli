@@ -1,0 +1,42 @@
+{
+  "version": 1,
+  "generator": {
+    "name": "surf-cli",
+    "version": "2.26.0"
+  },
+  "source": {
+    "type": "playbook",
+    "id": "papers",
+    "op": "search",
+    "scope": "user"
+  },
+  "playbook": "papers",
+  "op": "search",
+  "effect": "read",
+  "endpoint": {
+    "method": "GET",
+    "url": "https://papers.test/search/advanced",
+    "query": {
+      "terms-0-term": "{{query}}",
+      "terms-1-term": "{{author}}"
+    },
+    "headers": {
+      "accept": "text/html"
+    }
+  },
+  "args": {
+    "query": {
+      "type": "string",
+      "required": true
+    },
+    "author": {
+      "type": "string",
+      "default": ""
+    }
+  },
+  "extract": null,
+  "authInputs": [],
+  "verification": null,
+  "verificationCommand": "surf pb client verify .",
+  "noEmbeddedSecrets": true
+}

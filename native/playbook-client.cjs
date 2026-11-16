@@ -41,6 +41,26 @@ function networkStrategy(op) {
   return strategy;
 }
 
+// The generated client's options: `--name value` and `--name=value`, either of which can be the
+// empty string. A bare `--name` is true only for an input the op declares a boolean.
+function parseClientArgs(argv, specs) {
+  const args = {};
+  for (let i = 0; i < argv.length; i++) {
+    if (!argv[i].startsWith("--")) continue;
+    const equals = argv[i].indexOf("=");
+    if (equals > 2) {
+      args[argv[i].slice(2, equals)] = argv[i].slice(equals + 1);
+      continue;
+    }
+    const name = argv[i].slice(2);
+    const next = argv[i + 1];
+    if (next !== undefined && !next.startsWith("--")) args[name] = argv[++i];
+    else if (specs[name]?.type === "boolean") args[name] = true;
+    else throw new Error(`--${name} needs a value (--${name} "" for an empty one)`);
+  }
+  return args;
+}
+
 function clientSource() {
   return `#!/usr/bin/env node
 import fs from "node:fs";
@@ -49,13 +69,8 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 const directory = path.dirname(fileURLToPath(import.meta.url));
 const manifest = JSON.parse(fs.readFileSync(path.join(directory, "surf-client.json"), "utf8"));
-const args = {};
-for (let i = 2; i < process.argv.length; i++) {
-  if (!process.argv[i].startsWith("--")) continue;
-  const name = process.argv[i].slice(2);
-  const next = process.argv[i + 1];
-  args[name] = next && !next.startsWith("--") ? (i++, next) : true;
-}
+${parseClientArgs.toString()}
+const args = parseClientArgs(process.argv.slice(2), manifest.args || {});
 ${resolveArgValues.toString()}
 ${renderRequest.toString()}
 const endpoint = renderRequest(manifest.endpoint, resolveArgValues(manifest.args || {}, args));
@@ -237,8 +252,13 @@ function sampleArgs(manifest) {
   return Object.fromEntries([...collectTemplateArgs(manifest.endpoint)].map((name) => [name, specs[name]?.default ?? samples[specs[name]?.type] ?? "verify"]));
 }
 
-function clientArgs(manifest) {
-  return Object.entries(sampleArgs(manifest)).flatMap(([name, value]) => [`--${name}`, String(value)]);
+// Clients made before parseClientArgs read `--name ""` as true, so an empty value is left out for
+// them and the client takes it from its default.
+function clientArgs(manifest, source) {
+  const takesEmpty = source.includes("function parseClientArgs(");
+  return Object.entries(sampleArgs(manifest))
+    .filter(([, value]) => takesEmpty || String(value) !== "")
+    .flatMap(([name, value]) => [`--${name}`, String(value)]);
 }
 
 function authEnv(manifest, live) {
@@ -270,9 +290,9 @@ function verificationBody(manifest) {
   return JSON.stringify({ ok: true, body: "verified", data: "verified", items: ["verified"] });
 }
 
-function runClient(resolved, manifest, { env = {}, live = false } = {}) {
+function runClient(resolved, manifest, source, { env = {}, live = false } = {}) {
   return new Promise((resolve, reject) => {
-    execFile(process.execPath, [path.join(resolved, "client.mjs"), ...clientArgs(manifest)], {
+    execFile(process.execPath, [path.join(resolved, "client.mjs"), ...clientArgs(manifest, source)], {
       cwd: resolved,
       env: { ...process.env, ...authEnv(manifest, live), ...env },
       encoding: "utf8",
@@ -325,7 +345,7 @@ async function verifyWithLocalServer(resolved, manifest, source) {
   await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
   try {
     const address = server.address();
-    const stdout = await runClient(resolved, manifest, {
+    const stdout = await runClient(resolved, manifest, source, {
       // Clients made before SURF_CLIENT_ORIGIN read the whole URL.
       env: { SURF_CLIENT_ORIGIN: `http://127.0.0.1:${address.port}`, SURF_CLIENT_ENDPOINT_URL: `http://127.0.0.1:${address.port}${expectedPath}` },
     });
@@ -349,7 +369,7 @@ async function verifyClient(directory, { live } = {}) {
   if (!manifest.noEmbeddedSecrets || /bearer [a-z0-9._-]+|cookie:\s*[^<]|authorization\s*[:=]\s*["'][^<]/i.test(serialized)) throw new Error("generated client contains embedded credentials");
   if (!manifest.endpoint?.method || !manifest.endpoint?.url) throw new Error("generated client endpoint is incomplete");
   absoluteEndpointUrl(manifest.endpoint.url);
-  const execution = live ? { stdout: (await runClient(resolved, manifest, { live: true })).trim() } : await verifyWithLocalServer(resolved, manifest, source);
+  const execution = live ? { stdout: (await runClient(resolved, manifest, source, { live: true })).trim() } : await verifyWithLocalServer(resolved, manifest, source);
   return { valid: true, playbook: manifest.playbook, op: manifest.op, endpoint: manifest.endpoint, execution };
 }
 
