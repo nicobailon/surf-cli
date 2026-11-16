@@ -29,15 +29,20 @@ function redactValues(text, values, { anyLength = false } = {}) {
   return result;
 }
 
-// redactValues over a JSON value's strings, at any depth. A key is a field's name, so a value
-// rewrites one only when it is a secret by any measure: a value of 8 characters or more wherever it
-// appears in the key, one of 4 to 7 only as the whole key, a shorter one never. A key that redacts
-// to one already present takes <redacted-2>, <redacted-3>... so no entry is lost. Self-contained but
-// for redactValues: generated clients embed both.
+// redactValues over a JSON value's strings, at any depth. A number, boolean or null whose text
+// holds a value becomes that text, redacted. A key is a field's name, so a value rewrites one only
+// when it is a secret by any measure: a value of 8 characters or more wherever it appears in the
+// key, one of 4 to 7 only as the whole key, a shorter one never. A key that redacts to one already
+// present takes <redacted-2>, <redacted-3>... so no entry is lost. Self-contained but for
+// redactValues: generated clients embed both.
 function redactObject(value, values, options = {}) {
   if (typeof value === "string") return redactValues(value, values, options);
   if (Array.isArray(value)) return value.map((item) => redactObject(item, values, options));
-  if (!value || typeof value !== "object") return value;
+  if (value === undefined) return value;
+  if (value === null || typeof value !== "object") {
+    const redacted = redactValues(String(value), values, options);
+    return redacted === String(value) ? value : redacted;
+  }
   const texts = values.map(String);
   const long = texts.filter((text) => text.length >= 8);
   const redactKey = (key) => (texts.some((text) => text.length >= 4 && text === key) ? "<redacted>" : redactValues(key, long));

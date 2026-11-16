@@ -114,6 +114,56 @@ describe("pb test --save and env values that read as JSON literals", () => {
   });
 });
 
+describe("env values that read as numbers", () => {
+  const NUMBER = "123456789012";
+
+  it("are redacted from a run's result and from pb test's assertion values and actuals", async () => {
+    const result = await hostRun({ n: Number(NUMBER), list: [Number(NUMBER), 7] }, NUMBER, [
+      { path: "$.n", op: "equals", value: Number(NUMBER) },
+    ]);
+    expect(result.status).toBe("completed");
+    expect(result.value).toEqual({ n: "<redacted>", list: ["<redacted>", 7] });
+    expect(result.assertions[0]).toMatchObject({ value: "<redacted>", actual: "<redacted>" });
+    expect(JSON.stringify(result)).not.toContain(NUMBER);
+  });
+
+  it("are redacted from a generated client's output", async () => {
+    const out = path.join(tempShop().cwd, "client");
+    clients.generateClient({
+      playbookId: "shop",
+      op,
+      strategy: op.run[0],
+      provenance: { type: "playbook", id: "shop" },
+      out,
+    });
+    const server = http.createServer((req: any, res: any) => {
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(JSON.stringify({ result: { n: Number(req.headers["x-api-key"]), other: 7 } }));
+    });
+    await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+    try {
+      const stdout = await new Promise<string>((resolve, reject) =>
+        execFile(
+          process.execPath,
+          [path.join(out, "client.mjs")],
+          {
+            env: {
+              ...process.env,
+              [ENV]: NUMBER,
+              SURF_CLIENT_ORIGIN: `http://127.0.0.1:${server.address().port}`,
+            },
+          },
+          (error: Error | null, output: string) => (error ? reject(error) : resolve(output)),
+        ),
+      );
+      expect(stdout).not.toContain(NUMBER);
+      expect(JSON.parse(stdout)).toEqual({ n: "<redacted>", other: 7 });
+    } finally {
+      await new Promise((resolve) => server.close(resolve));
+    }
+  });
+});
+
 describe("a failed assertion and env values", () => {
   // JSON escapes the quote and backslash, so the JSON text of this value doesn't contain it as is.
   const QUOTED = 'dummy"quoted\\value';
