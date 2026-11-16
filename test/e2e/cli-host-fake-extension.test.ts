@@ -270,6 +270,21 @@ function startHost(socketPath: string, options: FakeHostOptions = {}) {
     }
   };
 
+  // What network capture records for a navigation or a script's request.
+  const captureTraffic = (message: NativeMessage) => {
+    if (message.type === "EXECUTE_NAVIGATE") {
+      for (const request of options.navigationTraffic ?? []) {
+        captured.push({ ...request, id: `${request.id}_${captured.length + 1}`, ts: Date.now() });
+      }
+    }
+    if (message.type === "EXECUTE_JAVASCRIPT") {
+      captured.push({
+        ...capturedRequest(message, captured.length + 1),
+        ...options.scriptResponse,
+      });
+    }
+  };
+
   child.stdout.on("data", (chunk: unknown) => {
     stdoutBuffer = BufferCtor.concat([stdoutBuffer, chunk as BufferLike]);
 
@@ -299,16 +314,8 @@ function startHost(socketPath: string, options: FakeHostOptions = {}) {
       }
       if (message.type === "EXECUTE_NAVIGATE" && message.url) {
         currentUrl = message.url;
-        for (const request of options.navigationTraffic ?? []) {
-          captured.push({ ...request, id: `${request.id}_${captured.length + 1}`, ts: Date.now() });
-        }
       }
-      if (message.type === "EXECUTE_JAVASCRIPT") {
-        captured.push({
-          ...capturedRequest(message, captured.length + 1),
-          ...options.scriptResponse,
-        });
-      }
+      captureTraffic(message);
       writeNativeMessage(
         child.stdin,
         buildExtensionResponse(message, currentUrl, targetActive, captured),
@@ -817,7 +824,9 @@ describe("CLI/native-host/fake-extension E2E contract", () => {
         expect(view.code, `${args.join(" ")}: ${view.stderr}`).toBe(0);
         expect(view.stdout, args.join(" ")).toContain("<redacted>");
         expect(view.stdout, args.join(" ")).not.toContain(auth);
-        if (args[0] === "network.replay") expect(sent()).toContain(auth);
+        if (args[0] === "network.replay") {
+          expect(sent()).toContain(auth);
+        }
       }
 
       const { Client } = require("@modelcontextprotocol/sdk/client/index.js") as {

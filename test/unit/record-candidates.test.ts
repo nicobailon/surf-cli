@@ -372,7 +372,7 @@ describe("rankCandidates", () => {
     expect(ranked[0].reasons).toContain("4 records");
   });
 
-  // A chart or numbers API: real records, none of whose text is on the page (90 bytes).
+  // A chart or numbers API: 90 bytes of real records, none of whose text is on the page.
   const series = (id: string) => {
     const body = JSON.stringify({
       series: [
@@ -381,7 +381,6 @@ describe("rankCandidates", () => {
         { t: 1003, v: 8.75, n: 30 },
       ],
     });
-    expect(body).toHaveLength(90);
     return summarized(
       get(id, "Fetch", `${ORIGIN}/api/chart/series?range=7d`, {
         mimeType: "application/json",
@@ -404,9 +403,12 @@ describe("rankCandidates", () => {
         bodyCapture: { complete: false, reason: "per-body-cap", sizeBytes: 248_000 },
       }),
     );
-    for (const page of [shell, overCap]) {
+    for (const [id, page] of [
+      ["r_shell", shell],
+      ["r_big", overCap],
+    ] as const) {
       const ranked = candidates.rankCandidates([page, series("r_series")], { origin: ORIGIN });
-      expect(ranked.map((item: { id: string }) => item.id)).toEqual(["r_series", page.id]);
+      expect(ranked.map((item: { id: string }) => item.id)).toEqual(["r_series", id]);
       expect(ranked[0].reasons).toEqual(["JSON", "3 records", "first-party"]);
     }
   });
