@@ -9,7 +9,7 @@ const { GLOBAL_OPTIONS } = require("./global-options.cjs");
 const { renderRequest, resolveArgValues } = require("./playbook-template.cjs");
 const { checkAssertions, createRegexBudget, describeAssertion } = require("./playbook-assertions.cjs");
 const { redactObject } = require("./redaction.cjs");
-const { tabSource } = require("./bounded-regex.cjs");
+const boundedRegex = require("./bounded-regex.cjs");
 const { extractRecords } = require("./records.cjs");
 
 function applyTemplate(value, args) {
@@ -162,25 +162,38 @@ function extractsInTab(extract) {
   return Boolean(extract?.html) || isJsonExtract(extract);
 }
 
-// Page-side finish(head, run, narrow): the extract's result, or an extractError when it fails or
-// would not fit in the tab's output.
-const FINISH_SOURCE = `const finish = (head, run, narrow) => {
-  let extracted;
-  try {
-    extracted = run();
-  } catch (error) {
-    return { ...head, extractError: error.message };
-  }
-  const out = { ...head, extracted: extracted === undefined ? null : extracted };
-  if (JSON.stringify(out, null, 2).length <= ${TAB_OUTPUT_LIMIT}) return out;
-  return { ...head, extractError: \`extracted result is \${JSON.stringify(extracted, null, 2).length} characters; narrow \${narrow}\` };
-};`;
+// Page-side finish(head, run, narrow): runs the extract `run` through boundedRegex.tabExtract and
+// resolves to its result, or an extractError when it fails or would not fit in the tab's output.
+// It can also resolve to regexNeeded (see bounded-regex.cjs), which runTabExtract completes.
+const FINISH_SOURCE = `${boundedRegex.tabSource()}
+const regexBudget = boundedRegex.createRegexBudget({ ms: ${boundedRegex.EXTRACT_REGEX_BUDGET_MS}, scope: "extract" });
+const finish = (head, run, narrow) => boundedRegex.tabExtract({
+  budget: regexBudget,
+  extract: run,
+  onValue: (extracted) => {
+    const out = { ...head, extracted: extracted === undefined ? null : extracted };
+    if (JSON.stringify(out, null, 2).length <= ${TAB_OUTPUT_LIMIT}) return out;
+    return { ...head, extractError: \`extracted result is \${JSON.stringify(extracted, null, 2).length} characters; narrow \${narrow}\` };
+  },
+  onError: (error) => ({ ...head, extractError: error.message }),
+});`;
+
+/** Runs a tab script that may end in finish(), completing an extract the tab handed over. */
+async function runTabExtract(context, code) {
+  const runScript = async (script) => {
+    const response = await context.executeTool("javascript_tool", { code: script }, { signal: context.signal });
+    if (response?.error) throw new Error(typeof response.error === "string" ? response.error : JSON.stringify(response.error));
+    return response?.output !== undefined ? JSON.parse(response.output) : response?.value ?? response;
+  };
+  const budget = boundedRegex.createRegexBudget({ ms: boundedRegex.EXTRACT_REGEX_BUDGET_MS, scope: "extract" });
+  const { regexSpentMs: _spent, ...result } = await boundedRegex.finishTabExtract({ result: await runScript(code), budget, runScript });
+  return result;
+}
 
 function jsonExtractSource(extract) {
   if (extract.jsonPath) return `${getJsonPath.toString()}\nreturn getJsonPath(json, ${JSON.stringify(extract.jsonPath)});`;
   const { records, fields, filter } = extract;
-  return `${tabSource()}
-const module = { exports: {} };
+  return `const module = { exports: {} };
 const require = (name) => name === "./bounded-regex.cjs" ? boundedRegex : { isDeepStrictEqual: () => { throw new Error("isDeepStrictEqual is not available in the tab"); } };
 (function (module, exports, require) {
 ${RECORDS_SOURCE}
@@ -196,19 +209,17 @@ function networkScript(request, allowedOrigins = [], extract) {
   let tail;
   if (html) {
     tail = `${FINISH_SOURCE}
-return finish(head, () => {
-  const doc = new DOMParser().parseFromString(text, "text/html");
-  // Relative links resolve against the response URL, not the tab's page.
-  const responseUrl = response.url || url.toString();
-  const base = doc.querySelector("base[href]");
-  if (base) base.setAttribute("href", new URL(base.getAttribute("href"), responseUrl).href);
-  else {
-    const element = doc.createElement("base");
-    element.setAttribute("href", responseUrl);
-    doc.head.prepend(element);
-  }
-  return ${htmlExtractFunction(html)}(doc);
-}, "--item/--field");`;
+const doc = new DOMParser().parseFromString(text, "text/html");
+// Relative links resolve against the response URL, not the tab's page.
+const responseUrl = response.url || url.toString();
+const base = doc.querySelector("base[href]");
+if (base) base.setAttribute("href", new URL(base.getAttribute("href"), responseUrl).href);
+else {
+  const element = doc.createElement("base");
+  element.setAttribute("href", responseUrl);
+  doc.head.prepend(element);
+}
+return finish(head, () => ${htmlExtractFunction(html)}(doc), "--item/--field");`;
   } else if (isJsonExtract(extract)) {
     tail = `${FINISH_SOURCE}
 return finish(head, () => {
@@ -293,10 +304,8 @@ async function runStrategy(strategy, context) {
     if (result.status !== "completed") throw new Error(result.error || "workflow strategy failed");
     if (!strategy.extract?.html) return result;
     // The same extraction as the network strategy, on the page the workflow ended on.
-    const code = `(() => {\n${FINISH_SOURCE}\nreturn finish({}, () => ${htmlExtractFunction(strategy.extract.html)}(document), "--item/--field");\n})()`;
-    const page = await context.executeTool("javascript_tool", { code }, { signal: context.signal });
-    if (page?.error) throw new Error(typeof page.error === "string" ? page.error : JSON.stringify(page.error));
-    const found = page?.output !== undefined ? JSON.parse(page.output) : page?.value;
+    const code = `(async () => {\n${FINISH_SOURCE}\nreturn finish({}, () => ${htmlExtractFunction(strategy.extract.html)}(document), "--item/--field");\n})()`;
+    const found = await runTabExtract(context, code);
     if (found?.extractError) throw new Error(found.extractError);
     return { ...result, extracted: found?.extracted };
   }
@@ -318,9 +327,7 @@ async function runStrategy(strategy, context) {
     const inTab = extractsInTab(strategy.extract);
     const capture = inTab ? undefined : await watchCapture({ executeTool: context.executeTool, sleep: context.sleep });
     await context.markDispatched?.();
-    const response = await context.executeTool("javascript_tool", { code: networkScript(request, context.allowedOrigins, strategy.extract) }, { signal: context.signal });
-    if (response?.error) throw new Error(typeof response.error === "string" ? response.error : JSON.stringify(response.error));
-    const { requestUrl, sentAt, doneAt, redirected, ...result } = response?.output !== undefined ? JSON.parse(response.output) : response?.value ?? response;
+    const { requestUrl, sentAt, doneAt, redirected, ...result } = await runTabExtract(context, networkScript(request, context.allowedOrigins, strategy.extract));
     if (!result?.ok && (strategy.acceptStatus || []).includes(result?.status) === false) throw new Error(`network strategy returned ${result?.status || "an unknown status"}`);
     if (result.extractError) throw new Error(result.extractError);
     if (inTab) return result;

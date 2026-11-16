@@ -1,7 +1,7 @@
 // Scroll-and-harvest for virtualized lists: read the visible items each round, merge by key on
 // the host (so a page reload does not lose records), stop when scrolling stops adding items.
 
-const { EXTRACT_REGEX_BUDGET_MS, checkPattern, tabSource } = require("./bounded-regex.cjs");
+const { EXTRACT_REGEX_BUDGET_MS, checkPattern, createRegexBudget, finishTabExtract, tabSource } = require("./bounded-regex.cjs");
 const { assertFieldName, filterRecords } = require("./records.cjs");
 
 const COLLECT_KEYS = ["open", "item", "key", "fields", "maxItems", "idleRounds", "scrollDelayMs", "expand", "keep"];
@@ -71,11 +71,9 @@ function validateCollectSpec(spec) {
   };
 }
 
-// Page-side helpers shared by collect and playbook HTML extraction. The script defines `textOf`.
-// One script run (a collect round, or an extract) is one extract for the regex budget.
-const PICK_SOURCE = `${tabSource()}
-const regexBudget = boundedRegex.createRegexBudget({ ms: ${EXTRACT_REGEX_BUDGET_MS}, scope: "extract" });
-// Dotted field names ("quoted.text") build nested objects.
+// Page-side helpers shared by collect and playbook HTML extraction. The script defines `textOf`, and
+// `boundedRegex` (tabSource()), whose tabExtract runs the reading.
+const PICK_SOURCE = `// Dotted field names ("quoted.text") build nested objects.
 const assign = (record, name, value) => {
   if (value === undefined) return;
   const parts = name.split(".");
@@ -102,7 +100,7 @@ const pick = (item, field, record, where) => {
   };
   const apply = (value) => {
     if (!field.match || typeof value !== "string") return value;
-    const found = boundedRegex.boundedExec({ pattern: field.match, text: value, budget: regexBudget, label: \`\${where} match\` });
+    const found = boundedRegex.boundedExec({ pattern: field.match, text: value, label: \`\${where} match\` });
     return found ? (found.length > 1 ? found[1] : found[0]) : undefined;
   };
   if (field.all) {
@@ -128,6 +126,8 @@ const readItem = (item, fields) => {
 function roundScript(spec, seenKeys) {
   const input = JSON.stringify({ item: spec.item, key: spec.key, fields: spec.fields, expand: spec.expand, seen: seenKeys });
   return `(async () => {
+${tabSource()}
+const regexBudget = boundedRegex.createRegexBudget({ ms: ${EXTRACT_REGEX_BUDGET_MS}, scope: "extract" });
 const spec = ${input};
 // Background tabs and minimized windows do not render virtualized lists.
 if (document.visibilityState === "hidden") return { hidden: true };
@@ -151,23 +151,27 @@ ${PICK_SOURCE}if (spec.expand) {
   }
 }
 const items = [...document.querySelectorAll(spec.item)];
-const records = [];
-try {
-  for (const item of items) {
+return boundedRegex.tabExtract({
+  budget: regexBudget,
+  extract: () => items.map((item) => {
     const record = readItem(item, spec.fields);
-    const key = pick(item, spec.key, record, "key");
-    if (key === undefined || key === null || key === "") continue;
-    const id = JSON.stringify(key);
-    if (seen.has(id)) continue;
-    seen.add(id);
-    records.push({ id, record });
-  }
-} catch (error) {
-  return { error: error.message };
-}
-if (items.length) items[items.length - 1].scrollIntoView({ block: "start" });
-else window.scrollBy(0, window.innerHeight);
-return { records };
+    return { record, key: pick(item, spec.key, record, "key") };
+  }),
+  onValue: (read) => {
+    const records = [];
+    for (const { record, key } of read) {
+      if (key === undefined || key === null || key === "") continue;
+      const id = JSON.stringify(key);
+      if (seen.has(id)) continue;
+      seen.add(id);
+      records.push({ id, record });
+    }
+    if (items.length) items[items.length - 1].scrollIntoView({ block: "start" });
+    else window.scrollBy(0, window.innerHeight);
+    return { records };
+  },
+  onError: (error) => ({ error: error.message }),
+});
 })()`;
 }
 
@@ -214,7 +218,8 @@ function parseHtmlExtract(spec) {
 }
 
 /**
- * Page-side function `(doc) => records | value` for an extract.html spec. Text is the element's text
+ * Page-side function `(doc) => records | value` for an extract.html spec, to run in
+ * boundedRegex.tabExtract (the script defines `boundedRegex` with tabSource()). Text is the element's text
  * with whitespace collapsed, the same in a parsed response body (which has no layout) and a live page.
  */
 function htmlExtractFunction(spec) {
@@ -256,11 +261,10 @@ async function runCollect({ spec, executeTool, sleep = (ms) => new Promise((reso
   await executeTool("wait.element", { selector: options.item, timeout: ITEM_WAIT_MS });
   const byKey = new Map();
   let idle = 0;
-  while (byKey.size < options.maxItems && idle < options.idleRounds) {
-    const result = await executeTool("javascript_tool", { code: roundScript(options, [...byKey.keys()]) });
-    let round;
+  const runRound = async (code) => {
+    const result = await executeTool("javascript_tool", { code });
     try {
-      round = JSON.parse(result?.output);
+      return JSON.parse(result?.output);
     } catch {
       const size = typeof result?.output === "string" ? result.output.length : 0;
       throw new Error(
@@ -269,6 +273,11 @@ async function runCollect({ spec, executeTool, sleep = (ms) => new Promise((reso
           : "collect round returned no records",
       );
     }
+  };
+  // Patterns a page won't run in a worker run here.
+  const regexBudget = createRegexBudget({ ms: EXTRACT_REGEX_BUDGET_MS, scope: "extract" });
+  while (byKey.size < options.maxItems && idle < options.idleRounds) {
+    const round = await finishTabExtract({ result: await runRound(roundScript(options, [...byKey.keys()])), budget: regexBudget, runScript: runRound });
     if (round?.hidden === true) throw hiddenTabError();
     if (typeof round?.error === "string") throw new Error(`collect round failed: ${round.error}`);
     if (!Array.isArray(round?.records)) throw new Error("collect round returned no records");

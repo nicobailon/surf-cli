@@ -4,37 +4,72 @@ import { describe, expect, it } from "vitest";
 import * as bounded from "../../native/bounded-regex.cjs";
 // @ts-expect-error - CommonJS module without type definitions
 import * as assertions from "../../native/playbook-assertions.cjs";
+import { PageWorker } from "../fixtures/page-worker";
 
 const timedOut = "x pattern took too long (over 100 ms); simplify it";
 
-/** The module as it runs in a tab: from its injected source, on a clock where each run takes stepMs. */
-function inTab(stepMs: number) {
+type TabRegex = {
+  boundedExec: (run: { pattern: string; text: string; label: string }) => unknown;
+  createRegexBudget: (budget: { ms: number; scope: string }) => { remainingMs: number };
+  tabExtract: (run: Record<string, unknown>) => Promise<Record<string, unknown>>;
+};
+
+/** The module as it runs in a tab, from its injected source, with the tab's Worker (null: none). */
+function inTab({
+  stepMs,
+  worker = PageWorker,
+}: {
+  stepMs?: number;
+  worker?: unknown;
+} = {}): TabRegex {
   let now = 0;
-  const clock = { now: () => (now += stepMs) };
-  return new Function("performance", `${bounded.tabSource()}\nreturn boundedRegex;`)(clock);
+  const clock = stepMs === undefined ? performance : { now: () => (now += stepMs) };
+  return new Function("performance", "Worker", `${bounded.tabSource()}\nreturn boundedRegex;`)(
+    clock,
+    worker,
+  );
 }
 
-describe("bounded regex", () => {
+/** Runs [pattern, text] pairs as one tab extract: resolves to { value: matches } or rejects. */
+function tabMatches(regex: TabRegex, pairs: Array<[string, string]>, budgetMs = 1000) {
+  return regex.tabExtract({
+    budget: regex.createRegexBudget({ ms: budgetMs, scope: "extract" }),
+    extract: () => pairs.map(([pattern, text]) => regex.boundedExec({ pattern, text, label: "x" })),
+    onValue: (value: unknown) => ({ value }),
+    onError: (error: Error) => {
+      throw error;
+    },
+  });
+}
+
+/** Runs a script the host sends to the tab, here in Node's global scope. */
+const runScript = async (code: string) => new Function(`return ${code}`)();
+
+class BlockedWorker {
+  constructor() {
+    throw new Error("Refused to create a worker: Content Security Policy");
+  }
+}
+
+describe("bounded regex on the host", () => {
   it("returns the match with its groups, or null", () => {
-    for (const regex of [bounded, inTab(0)]) {
-      const budget = regex.createRegexBudget({ ms: 1000, scope: "extract" });
-      const found = regex.boundedExec({
-        pattern: "(\\d+)-(\\w+)?",
-        text: "id 42-",
-        budget,
-        label: "x",
-      });
-      expect(found).toEqual(["42-", "42", undefined]);
-      expect(Array.isArray(found)).toBe(true);
-      expect(regex.boundedExec({ pattern: "z", text: "abc", budget, label: "x" })).toBeNull();
-      // Only the first 64 KB of the text is tested.
-      expect(
-        regex.boundedExec({ pattern: "x$", text: `${"a".repeat(70000)}x`, budget, label: "x" }),
-      ).toBeNull();
-    }
+    const budget = bounded.createRegexBudget({ ms: 1000, scope: "extract" });
+    const found = bounded.boundedExec({
+      pattern: "(\\d+)-(\\w+)?",
+      text: "id 42-",
+      budget,
+      label: "x",
+    });
+    expect(found).toEqual(["42-", "42", undefined]);
+    expect(Array.isArray(found)).toBe(true);
+    expect(bounded.boundedExec({ pattern: "z", text: "abc", budget, label: "x" })).toBeNull();
+    // Only the first 64 KB of the text is tested.
+    expect(
+      bounded.boundedExec({ pattern: "x$", text: `${"a".repeat(70000)}x`, budget, label: "x" }),
+    ).toBeNull();
   });
 
-  it("stops a run past 100 ms on the host", () => {
+  it("stops a run past 100 ms", () => {
     const budget = bounded.createRegexBudget({ ms: 1000, scope: "extract" });
     const started = Date.now();
     expect(() =>
@@ -43,40 +78,97 @@ describe("bounded regex", () => {
     expect(Date.now() - started).toBeLessThan(500);
   });
 
-  it("in a tab, fails a run that took over 100 ms and stops once the budget is spent", () => {
-    const slow = inTab(150);
-    const budget = slow.createRegexBudget({ ms: 1000, scope: "extract" });
-    expect(() => slow.boundedExec({ pattern: "a", text: "a", budget, label: "x" })).toThrow(
-      timedOut,
+  it("refuses a pattern over 500 characters or that is not a regex", () => {
+    const budget = bounded.createRegexBudget({ ms: 1000, scope: "extract" });
+    expect(() =>
+      bounded.boundedExec({ pattern: "a".repeat(501), text: "a", budget, label: "x" }),
+    ).toThrow("x is 501 characters; the limit is 500");
+    expect(() => bounded.boundedExec({ pattern: "(", text: "a", budget, label: "x" })).toThrow(
+      /x is not a valid regex/,
     );
-
-    const tab = inTab(60);
-    const spent = tab.createRegexBudget({ ms: 1000, scope: "extract" });
-    let runs = 0;
-    expect(() => {
-      for (;;) {
-        tab.boundedExec({ pattern: "a", text: "a", budget: spent, label: "x" });
-        runs++;
-      }
-    }).toThrow("skipped: the extract's 1 s regex budget is spent");
-    expect(runs).toBe(16);
-  });
-
-  it("refuses a pattern over 500 characters or that is not a regex, in a tab too", () => {
-    for (const regex of [bounded, inTab(0)]) {
-      const budget = regex.createRegexBudget({ ms: 1000, scope: "extract" });
-      expect(() =>
-        regex.boundedExec({ pattern: "a".repeat(501), text: "a", budget, label: "x" }),
-      ).toThrow("x is 501 characters; the limit is 500");
-      expect(() => regex.boundedExec({ pattern: "(", text: "a", budget, label: "x" })).toThrow(
-        /x is not a valid regex/,
-      );
-    }
   });
 
   it("is where playbook-assertions.cjs takes its limits from, MATCH_INPUT_LIMIT included", () => {
     // Callers of boundedMatch read the input limit from playbook-assertions.cjs.
     expect(assertions.MATCH_INPUT_LIMIT).toBe(64 * 1024);
     expect(assertions.MATCH_INPUT_LIMIT).toBe(bounded.MATCH_INPUT_LIMIT);
+  });
+});
+
+describe("bounded regex in a tab", () => {
+  it("runs patterns in a worker and returns their groups", async () => {
+    const result = await tabMatches(inTab(), [
+      ["(\\d+)-(\\w+)?", "id 42-"],
+      ["z", "abc"],
+      ["x$", `${"a".repeat(70000)}x`],
+      ["(\\d+)-(\\w+)?", "id 42-"],
+    ]);
+    expect(result.value).toEqual([["42-", "42", undefined], null, null, ["42-", "42", undefined]]);
+    expect(result.regexSpentMs).toBeGreaterThanOrEqual(0);
+  });
+
+  it("terminates a run that never ends after 100 ms", async () => {
+    // On the page's own thread this outlived an external 1 s kill; a worker can be stopped.
+    const started = Date.now();
+    await expect(
+      tabMatches(inTab(), [
+        ["(\\d)", "1"],
+        ["(a?){500}b", "aaaa"],
+      ]),
+    ).rejects.toThrow(timedOut);
+    expect(Date.now() - started).toBeLessThan(600);
+  });
+
+  it("stops once the budget is spent", async () => {
+    // Each run takes 60 ms on this clock: a 1 s budget covers 16 of them.
+    const pairs = Array.from({ length: 30 }, (_, index): [string, string] => ["\\d", `n${index}`]);
+    await expect(tabMatches(inTab({ stepMs: 60 }), pairs.slice(0, 16))).resolves.toHaveProperty(
+      "value",
+    );
+    await expect(tabMatches(inTab({ stepMs: 60 }), pairs)).rejects.toThrow(
+      "skipped: the extract's 1 s regex budget is spent",
+    );
+  });
+
+  it("hands the patterns to the host's vm when the page blocks workers", async () => {
+    for (const blocked of [null, BlockedWorker]) {
+      const handed = await tabMatches(inTab({ worker: blocked }), [
+        ["(\\d+)", "id 42"],
+        ["z", "abc"],
+      ]);
+      expect(handed.regexNeeded).toMatchObject({
+        pairs: [
+          { pattern: "(\\d+)", text: "id 42" },
+          { pattern: "z", text: "abc" },
+        ],
+      });
+      const budget = bounded.createRegexBudget({ ms: 1000, scope: "extract" });
+      await expect(
+        bounded.finishTabExtract({ result: handed, budget, runScript }),
+      ).resolves.toEqual({
+        value: [["42", "42"], null],
+      });
+    }
+    const slow = await tabMatches(inTab({ worker: null }), [["(a?){500}b", "aaaa"]]);
+    const budget = bounded.createRegexBudget({ ms: 1000, scope: "extract" });
+    const started = Date.now();
+    await expect(bounded.finishTabExtract({ result: slow, budget, runScript })).rejects.toThrow(
+      timedOut,
+    );
+    expect(Date.now() - started).toBeLessThan(500);
+    // Texts too large to send back are refused, not run on the page.
+    await expect(tabMatches(inTab({ worker: null }), [["x", "a".repeat(50000)]])).rejects.toThrow(
+      /this page blocks the Web Worker that match patterns run in .*, and the 50001 characters to match are too many to send to Surf/,
+    );
+  });
+
+  it("refuses a long or invalid pattern and runs none outside tabExtract", async () => {
+    await expect(tabMatches(inTab(), [["a".repeat(501), "a"]])).rejects.toThrow(
+      "x is 501 characters; the limit is 500",
+    );
+    await expect(tabMatches(inTab(), [["(", "a"]])).rejects.toThrow(/x is not a valid regex/);
+    expect(() => inTab().boundedExec({ pattern: "a", text: "a", label: "x" })).toThrow(
+      "in a tab, a pattern runs only inside tabExtract",
+    );
   });
 });

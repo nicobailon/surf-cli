@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { PageWorker } from "../fixtures/page-worker";
 
 const fs = require("node:fs");
 const os = require("node:os");
@@ -217,10 +218,12 @@ describe("extracting records from JSON", () => {
  * A tab whose network strategy answers `body`, with the service worker's output handling: the
  * script's value pretty-printed and cut at 50,000 characters.
  */
+type TabOptions = { clock?: { now: () => number }; worker?: unknown };
+
 function jsonTab(
   body: string,
   contentType = "application/json",
-  clock: { now: () => number } = performance,
+  { clock = performance, worker = PageWorker }: TabOptions = {},
 ) {
   const outputs: Record<string, unknown>[] = [];
   const executeTool = async (_tool: string, args: { code: string }) => {
@@ -231,11 +234,13 @@ function jsonTab(
       headers: new Headers({ "content-type": contentType }),
       text: async () => body,
     });
-    const value = await new Function("fetch", "location", "performance", `return ${args.code}`)(
-      fetchImpl,
-      { href: "https://api.test/" },
-      clock,
-    );
+    const value = await new Function(
+      "fetch",
+      "location",
+      "performance",
+      "Worker",
+      `return ${args.code}`,
+    )(fetchImpl, { href: "https://api.test/" }, clock, worker);
     outputs.push(value);
     return { output: JSON.stringify(value, null, 2).substring(0, 50000) };
   };
@@ -252,9 +257,9 @@ function runJson(
   body: string,
   spec: Record<string, unknown>,
   contentType?: string,
-  clock?: { now: () => number },
+  tabOptions?: TabOptions,
 ) {
-  const tab = jsonTab(body, contentType, clock);
+  const tab = jsonTab(body, contentType, tabOptions);
   const run = runtime.runPlaybookOp({
     playbook: { id: "fixture", provenance: { scope: "test" } },
     op: op([
@@ -311,11 +316,25 @@ describe("a JSON extract runs in the tab", () => {
       return { now: () => (now += ms) };
     };
     await expect(
-      runJson(body, { records: "$", fields: { id } }, undefined, step(60)).run,
+      runJson(body, { records: "$", fields: { id } }, undefined, { clock: step(60) }).run,
     ).rejects.toThrow("skipped: the extract's 2 s regex budget is spent");
-    await expect(
-      runJson(body, { records: "$", fields: { id } }, undefined, step(150)).run,
-    ).rejects.toThrow("fields.id.match pattern took too long (over 100 ms); simplify it");
+    // A run that never ends is stopped after 100 ms, in the tab's worker or, when the page blocks
+    // workers, on the host.
+    const never = { fields: { t: { path: "t", match: "(a?){500}b" } } };
+    for (const tabWorker of [PageWorker, null]) {
+      const started = Date.now();
+      await expect(
+        runJson('{"t":"aaaa"}', never, undefined, { worker: tabWorker }).run,
+      ).rejects.toThrow("fields.t.match pattern took too long (over 100 ms); simplify it");
+      expect(Date.now() - started).toBeLessThan(600);
+    }
+    const handed = await runJson(
+      JSON.stringify(items.slice(0, 2).map((item) => ({ id: item.id }))),
+      { records: "$", fields: { id } },
+      undefined,
+      { worker: null },
+    ).run;
+    expect(handed.value).toEqual([{ id: "0" }, { id: "1" }]);
   });
 
   it("says when the response is not JSON", async () => {
