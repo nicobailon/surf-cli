@@ -1,5 +1,6 @@
 // Assertions and env-header values: what pb test may save, and what a run reports and journals.
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { captureTab } from "../fixtures/capture-tab";
 
 const fs = require("node:fs");
 const http = require("node:http");
@@ -37,7 +38,7 @@ const op = {
   ],
 };
 
-function tempShop() {
+function tempShop(value: Record<string, unknown> = op) {
   const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "surf-assert-secrets-"));
   tempDirs.push(cwd);
   const directory = path.join(cwd, ".surf", "playbooks", "shop");
@@ -47,7 +48,7 @@ function tempShop() {
     JSON.stringify({ id: "shop", version: "1.0.0", origins: ["https://api.test"] }),
   );
   const file = path.join(directory, "ops", "items.json");
-  fs.writeFileSync(file, `${JSON.stringify(op, null, 2)}\n`);
+  fs.writeFileSync(file, `${JSON.stringify(value, null, 2)}\n`);
   return { cwd, file };
 }
 
@@ -283,5 +284,46 @@ describe("matches patterns and env values over the 64 KB match cap", () => {
       [LONG],
     );
     expect(checked).toMatchObject({ pass: true, secretSensitive: true });
+  });
+});
+
+describe("the JSON-escaped spelling of an env value", () => {
+  const QUOTED = 'dummy"quoted\\value';
+  const escaped = JSON.stringify(QUOTED).slice(1, -1);
+  const twiceEscaped = JSON.stringify(escaped).slice(1, -1);
+  // No extract: the body is read from network capture, as for httpbin's /headers.
+  const rawOp = { ...op, run: [{ ...op.run[0], extract: undefined }] };
+
+  it("is refused by both --save checks (the reviewer's reproduction)", async () => {
+    const { cwd, file } = tempShop(rawOp);
+    const before = fs.readFileSync(file, "utf8");
+    const body = JSON.stringify({ echo: QUOTED });
+    const hosted = vi.fn((params: Record<string, any>) =>
+      runtime.testPlaybookOp({
+        playbook: { id: "shop", provenance: { scope: "test" } },
+        op: rawOp,
+        secrets: params.secret ?? {},
+        env: { [ENV]: QUOTED },
+        assertions: params.assert,
+        executeTool: captureTab({ reply: () => ({ body }) }).executeTool,
+      }),
+    );
+    // The value is a JSON string literal, so the assertion holds the body's text, not its object.
+    const asserts = ["--assert", "$.body", "equals", JSON.stringify(body)];
+    // Set in the caller's shell (and the host's): refused before the run.
+    await expect(save(cwd, asserts, { [ENV]: QUOTED }, hosted)).rejects.toThrow(
+      /--save refused: assertion 1 contains the value of SURF_TEST_ITEMS_KEY/,
+    );
+    expect(hosted).not.toHaveBeenCalled();
+    // Only in the host's environment: the run marks it.
+    await expect(save(cwd, asserts, {}, hosted)).rejects.toThrow(
+      /--save refused: assertion 1's value passed through env-header redaction/,
+    );
+    // A pattern that matches only the escaped spelling.
+    await expect(
+      save(cwd, ["--assert", "$.body", "matches", "quoted\\\\\\\\value"], { [ENV]: QUOTED }, hosted),
+    ).rejects.toThrow(/--save refused: assertion 1's pattern matches the value of SURF_TEST_ITEMS_KEY/);
+    expect(hosted).toHaveBeenCalledOnce();
+    expect(fs.readFileSync(file, "utf8")).toBe(before);
   });
 });

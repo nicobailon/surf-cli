@@ -141,7 +141,15 @@ function touchesSecret(assertion, found, secrets, budget) {
 }
 
 /**
- * `secrets`: the run's env values; an assertion that touches one gets `secretSensitive: true`, and
+ * The spellings of env values that output can hold: each value as is, and JSON-escaped, as a raw
+ * JSON body holds one with a quote, a backslash or a control character.
+ */
+function secretSpellings(values) {
+  return [...new Set(values.flatMap((value) => [value, JSON.stringify(value).slice(1, -1)]))];
+}
+
+/**
+ * `secrets`: the run's env values (with secretSpellings); an assertion that touches one gets `secretSensitive: true`, and
  * each result's path, value and actual come back with <redacted> in their place, so anything built
  * from a result (a failure message included) is redacted too. `budget`: the op run's regex budget
  * (a fresh one when not given).
@@ -175,4 +183,4 @@ function describeAssertion({ path, op, value }) {
 }
 
 // MATCH_INPUT_LIMIT is bounded-regex.cjs's, exported here too for callers of boundedMatch.
-module.exports = { ASSERTION_LIMIT, MATCH_INPUT_LIMIT, MATCH_SKIPPED, MATCH_TIMED_OUT, boundedMatch, checkAssertions, createRegexBudget, describeAssertion, validateAssertions, valueTexts };
+module.exports = { ASSERTION_LIMIT, MATCH_INPUT_LIMIT, MATCH_SKIPPED, MATCH_TIMED_OUT, boundedMatch, checkAssertions, createRegexBudget, describeAssertion, secretSpellings, validateAssertions, valueTexts };

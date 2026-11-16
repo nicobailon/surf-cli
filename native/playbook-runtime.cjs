@@ -8,7 +8,7 @@ const { editDistance } = require("./edit-distance.cjs");
 const { GLOBAL_OPTIONS } = require("./global-options.cjs");
 const { LITERAL_OPEN, escapedOp, renderRequest, resolveArgValues, sentRequest } = require("./playbook-template.cjs");
 const { findRedactedPlaceholder, placeholderError } = require("./record-typed-values.cjs");
-const { checkAssertions, createRegexBudget } = require("./playbook-assertions.cjs");
+const { checkAssertions, createRegexBudget, secretSpellings } = require("./playbook-assertions.cjs");
 const { redactObject, redactSecretValues, valueSpellings } = require("./redaction.cjs");
 const boundedRegex = require("./bounded-regex.cjs");
 const { extractRecords } = require("./records.cjs");
@@ -113,10 +113,9 @@ function resolveAuthValues(op, secrets = {}, env = process.env) {
   return values;
 }
 
-// The texts to redact for env-supplied values: each value, and its JSON-escaped form, which a raw
-// JSON body holds when the value has a quote, a backslash or a control character.
+// The texts to redact for env-supplied values: each value and its JSON-escaped spelling.
 function secretTexts(authValues) {
-  return [...new Set(Object.values(authValues).flatMap((value) => [value, JSON.stringify(value).slice(1, -1)]))];
+  return secretSpellings(Object.values(authValues));
 }
 
 // Env-supplied values never leave a run: a response that echoes one in a value (or an error that
