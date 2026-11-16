@@ -116,13 +116,6 @@ const sensors = [
     url: "https://collector-pxabc123.px-cloud.net/api/v2/collector",
   },
   {
-    id: "r_pxchk",
-    method: "POST",
-    status: 200,
-    type: "XHR",
-    url: "https://collector-pxabc123.pxchk.net/api/v2/collector",
-  },
-  {
     id: "r_qualtrics",
     method: "POST",
     status: 200,
@@ -290,13 +283,40 @@ describe("draft effect and pb record stop --read", () => {
       {
         trace: [
           {
-            ...sensors[2],
+            ...sensors[1],
             url: "https://siteintercept.qualtrics.com/WRSiteInterceptEngine/Targeting.php",
           },
         ],
         origin: "https://www.qualtrics.com",
       },
       /captured POST https:\/\/siteintercept\.qualtrics\.com/,
+    ],
+    [
+      "the bot-sensor vendor's own site",
+      { trace: [sensors[0]], origin: "https://www.humansecurity.com" },
+      /captured POST https:\/\/collector-pxabc123\.px-cloud\.net/,
+    ],
+    [
+      "the bot-sensor vendor's own site (DataDome)",
+      { trace: [sensors[2]], origin: "https://datadome.co" },
+      /captured POST https:\/\/api-js\.datadome\.co/,
+    ],
+    [
+      "a feedback form's submission (Medallia), which isn't a sensor",
+      {
+        trace: [
+          page,
+          { ...create, id: "r_feedback", url: "https://api-us.kampyle.com/api/v1/feedback" },
+        ],
+      },
+      /captured POST https:\/\/api-us\.kampyle\.com\/api\/v1\/feedback/,
+    ],
+    [
+      "a DataDome host other than its collector",
+      {
+        trace: [page, { ...create, id: "r_dd", url: "https://customer-api.datadome.co/1.1/rules" }],
+      },
+      /captured POST https:\/\/customer-api\.datadome\.co/,
     ],
     [
       "a vendor host with no known site",
