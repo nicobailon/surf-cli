@@ -175,4 +175,4 @@ function describeAssertion({ path, op, value }) {
 }
 
 // MATCH_INPUT_LIMIT is bounded-regex.cjs's, exported here too for callers of boundedMatch.
-module.exports = { MATCH_INPUT_LIMIT, MATCH_SKIPPED, MATCH_TIMED_OUT, boundedMatch, checkAssertions, createRegexBudget, describeAssertion, validateAssertions, valueTexts };
+module.exports = { ASSERTION_LIMIT, MATCH_INPUT_LIMIT, MATCH_SKIPPED, MATCH_TIMED_OUT, boundedMatch, checkAssertions, createRegexBudget, describeAssertion, validateAssertions, valueTexts };

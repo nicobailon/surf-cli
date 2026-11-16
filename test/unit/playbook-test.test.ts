@@ -326,6 +326,40 @@ describe("running an op with assertions", () => {
     expect(() => validate({})).toThrow(/must be an array/);
   });
 
+  it("validates a strategy's own verify.assert and expect.assert, and caps all of an op's at 50", () => {
+    const many = (count: number) => Array.from({ length: count }, () => ({ path: "$", op: "exists" }));
+    const validate = (strategy: Record<string, unknown>, extra: Record<string, unknown> = {}) =>
+      playbooks.validateOp(op([{ ...network, ...strategy }], extra), { origins: [] });
+    for (const key of ["verify", "expect"]) {
+      const where = `op get_books network strategy ${key}\\.assert`;
+      const check = (assert: unknown) => () => validate({ [key]: { assert } });
+      expect(check(many(50))).not.toThrow();
+      expect(check(many(51))).toThrow(new RegExp(`${where}: at most 50 assertions per op \\(got 51\\)`));
+      expect(check([{ path: "records", op: "exists" }])).toThrow(
+        new RegExp(`${where}: assertion 1: path must be`),
+      );
+      expect(check([{ path: "$", op: "matches", value: "(" }])).toThrow(
+        new RegExp(`${where}: assertion 1: matches needs a valid regex`),
+      );
+      expect(check([{ path: "$", op: "matches", value: "a".repeat(501) }])).toThrow(
+        new RegExp(`${where}: assertion 1: matches pattern is 501 characters`),
+      );
+    }
+    // Every location counts toward the op's 50.
+    expect(() =>
+      validate(
+        { verify: { assert: many(20) }, expect: { assert: many(20) } },
+        { on: { success: { expect: { assert: many(11) } } } },
+      ),
+    ).toThrow(/op get_books: at most 50 assertions per op across all its strategies and on\.success \(got 51\)/);
+    expect(() =>
+      validate(
+        { verify: { assert: many(20) }, expect: { assert: many(20) } },
+        { on: { success: { expect: { assert: many(10) } } } },
+      ),
+    ).not.toThrow();
+  });
+
   it("keeps the actual value out of a failed assertion's error, which is journaled", async () => {
     const echoed = "dummy-echoed-input";
     const events: Array<Record<string, unknown>> = [];
