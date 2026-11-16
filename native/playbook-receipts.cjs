@@ -10,6 +10,17 @@ const {
   writePrivateFileExclusive,
 } = require("./private-state.cjs");
 
+// Attempt ids are the UUIDs surf generates. Any other value (a path, `..`) is refused before a file
+// name is built from it.
+const ATTEMPT_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+
+function assertAttemptId(value, label = "attempt id") {
+  if (typeof value !== "string" || !ATTEMPT_ID.test(value)) {
+    throw new Error(`${label} must be a write attempt id, a UUID such as 6f1c2a3b-4d5e-4f60-8a7b-9c0d1e2f3a4b`);
+  }
+  return value;
+}
+
 function receiptRoot(root = getPrivateStateRoot()) {
   return path.join(root, "playbook-receipts");
 }
@@ -80,16 +91,22 @@ function checkAttempts({ claimDir, op, repeat, retryAttempt, overrideInDoubt, no
 // run and reserves only once the request is dispatched, so a run refused before sending leaves none.
 function checkReceipt({ playbookId, op, args, repeat = false, retryAttempt, overrideInDoubt = false, now = Date.now(), root = getPrivateStateRoot() }) {
   if (op.effect !== "write") return;
+  if (retryAttempt !== undefined) assertAttemptId(retryAttempt, "--retry-attempt");
   const claimDir = path.join(receiptRoot(root), semanticClaimKey({ playbookId, op, args, root }));
   if (fs.existsSync(claimDir)) checkAttempts({ claimDir, op, repeat, retryAttempt, overrideInDoubt, now });
+  else if (retryAttempt !== undefined) throw new Error(`receipt attempt not found: ${retryAttempt}`);
 }
 
 function reserveReceipt({ playbookId, op, args, repeat = false, retryAttempt, overrideInDoubt = false, attemptId = crypto.randomUUID(), now = Date.now(), root = getPrivateStateRoot() }) {
   if (op.effect !== "write") return null;
+  assertAttemptId(attemptId);
+  if (retryAttempt !== undefined) assertAttemptId(retryAttempt, "--retry-attempt");
   const base = receiptRoot(root);
   ensurePrivateDir(base, root);
   const claimKey = semanticClaimKey({ playbookId, op, args, root });
   const claimDir = path.join(base, claimKey);
+  // --retry-attempt names an attempt the claim already holds; a fresh claim has none.
+  if (retryAttempt !== undefined && !fs.existsSync(claimDir)) throw new Error(`receipt attempt not found: ${retryAttempt}`);
   let created = false;
   try {
     fs.mkdirSync(claimDir, { mode: 0o700 });
@@ -120,4 +137,4 @@ function updateReceipt(handle, status, details = {}, root = getPrivateStateRoot(
   return receipt;
 }
 
-module.exports = { checkReceipt, receiptRoot, reserveReceipt, semanticClaimKey, updateReceipt };
+module.exports = { assertAttemptId, checkReceipt, receiptRoot, reserveReceipt, semanticClaimKey, updateReceipt };

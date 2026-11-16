@@ -5,7 +5,11 @@ const os = require("node:os");
 const path = require("node:path");
 
 const receipts = require("../../native/playbook-receipts.cjs");
+const { handlePlaybookCli } = require("../../native/playbook-cli.cjs");
 const roots: string[] = [];
+// Attempt ids are the UUIDs surf generates.
+const ATTEMPT_ONE = "6f1c2a3b-4d5e-4f60-8a7b-9c0d1e2f3a4b";
+const ATTEMPT_TWO = "0a1b2c3d-4e5f-4a6b-8c7d-8e9f0a1b2c3d";
 
 afterEach(() => {
   for (const root of roots.splice(0)) {
@@ -26,7 +30,7 @@ describe("playbook write receipts", () => {
       playbookId: "fixture",
       op,
       args: { resourceId: "r1", secret: "do-not-store" },
-      attemptId: "attempt-one",
+      attemptId: ATTEMPT_ONE,
       root,
     });
     receipts.updateReceipt(first, "indeterminate", { error: "timeout with secret" }, root);
@@ -35,7 +39,7 @@ describe("playbook write receipts", () => {
         playbookId: "fixture",
         op,
         args: { resourceId: "r1", secret: "different" },
-        attemptId: "attempt-two",
+        attemptId: ATTEMPT_TWO,
         root,
       }),
     ).toThrow(/indeterminate/);
@@ -43,7 +47,7 @@ describe("playbook write receipts", () => {
     expect(stored).not.toContain("r1");
     expect(stored).not.toContain("secret");
     expect(fs.readdirSync(first.claimDir).filter((name: string) => name.endsWith(".json"))).toEqual(
-      ["attempt-one.json"],
+      [`${ATTEMPT_ONE}.json`],
     );
   });
 
@@ -62,7 +66,7 @@ describe("playbook write receipts", () => {
         .readdirSync(receipts.receiptRoot(root), { withFileTypes: true })
         .filter((entry: { isDirectory(): boolean }) => entry.isDirectory());
     expect(claims()).toEqual([]);
-    const first = receipts.reserveReceipt({ ...claim, attemptId: "attempt-one" });
+    const first = receipts.reserveReceipt({ ...claim, attemptId: ATTEMPT_ONE });
     receipts.updateReceipt(first, "indeterminate", { error: "timeout" }, root);
     expect(() => receipts.checkReceipt(claim)).toThrow(/write blocked by indeterminate receipt/);
     expect(() => receipts.checkReceipt({ ...claim, overrideInDoubt: true })).not.toThrow();
@@ -106,7 +110,7 @@ describe("playbook write receipts", () => {
       playbookId: "fixture",
       op,
       args: { resourceId: "r1" },
-      attemptId: "attempt-one",
+      attemptId: ATTEMPT_ONE,
       root,
     });
     receipts.updateReceipt(first, "not_dispatched", {}, root);
@@ -115,10 +119,10 @@ describe("playbook write receipts", () => {
         playbookId: "fixture",
         op,
         args: { resourceId: "r1" },
-        retryAttempt: "attempt-one",
+        retryAttempt: ATTEMPT_ONE,
         root,
       }).attemptId,
-    ).toBe("attempt-one");
+    ).toBe(ATTEMPT_ONE);
 
     receipts.updateReceipt(first, "indeterminate", { error: "timeout" }, root);
     expect(() =>
@@ -126,7 +130,7 @@ describe("playbook write receipts", () => {
         playbookId: "fixture",
         op,
         args: { resourceId: "r1" },
-        retryAttempt: "attempt-one",
+        retryAttempt: ATTEMPT_ONE,
         root,
       }),
     ).toThrow(/server idempotency/);
@@ -135,9 +139,81 @@ describe("playbook write receipts", () => {
         playbookId: "fixture",
         op: { ...op, safety: { ...op.safety, serverIdempotency: { header: "Idempotency-Key" } } },
         args: { resourceId: "r1" },
-        retryAttempt: "attempt-one",
+        retryAttempt: ATTEMPT_ONE,
         root,
       }).attemptId,
-    ).toBe("attempt-one");
+    ).toBe(ATTEMPT_ONE);
+  });
+
+  describe("attempt ids", () => {
+    const op = {
+      id: "mutate",
+      effect: "write",
+      safety: { duplicate: "transactional", key: ["resourceId"] },
+    };
+    const setup = () => {
+      const root = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "surf-receipts-")), "state");
+      roots.push(path.dirname(root));
+      return { root, claim: { playbookId: "fixture", op, args: { resourceId: "r1" }, root } };
+    };
+    const files = (directory: string): string[] =>
+      fs
+        .readdirSync(directory, { withFileTypes: true })
+        .flatMap((entry: { name: string; isDirectory(): boolean }) =>
+          entry.isDirectory()
+            ? files(path.join(directory, entry.name))
+            : [path.join(directory, entry.name)],
+        );
+
+    it.each([
+      ["a path", "../../victim"],
+      ["a backslash path", "..\\..\\victim"],
+      ["a dot-dot", ".."],
+      ["a made-up name", "attempt-one"],
+    ])("refuses %s before building a path", (_case, id) => {
+      const { root, claim } = setup();
+      const first = receipts.reserveReceipt({ ...claim, attemptId: ATTEMPT_ONE });
+      receipts.updateReceipt(first, "not_dispatched", {}, root);
+      const before = files(path.dirname(root)).sort();
+      for (const call of [
+        () => receipts.checkReceipt({ ...claim, retryAttempt: id }),
+        () => receipts.reserveReceipt({ ...claim, retryAttempt: id }),
+        () => receipts.reserveReceipt({ ...claim, attemptId: id }),
+      ]) {
+        expect(call).toThrow(/must be a write attempt id/);
+      }
+      expect(files(path.dirname(root)).sort()).toEqual(before);
+    });
+
+    it("honours --retry-attempt only for an attempt the claim holds", () => {
+      const { root, claim } = setup();
+      // A fresh claim: nothing to retry, and nothing is written.
+      expect(() => receipts.checkReceipt({ ...claim, retryAttempt: ATTEMPT_TWO })).toThrow(
+        `receipt attempt not found: ${ATTEMPT_TWO}`,
+      );
+      expect(() => receipts.reserveReceipt({ ...claim, retryAttempt: ATTEMPT_TWO })).toThrow(
+        `receipt attempt not found: ${ATTEMPT_TWO}`,
+      );
+      const base = receipts.receiptRoot(root);
+      const claims = fs.existsSync(base)
+        ? fs
+            .readdirSync(base, { withFileTypes: true })
+            .filter((entry: { isDirectory(): boolean }) => entry.isDirectory())
+        : [];
+      expect(claims).toEqual([]);
+    });
+
+    it("refuses a bad --retry-attempt in surf use before reaching the host", async () => {
+      await expect(
+        handlePlaybookCli([
+          "use",
+          "fixture",
+          "mutate",
+          "--write",
+          "--retry-attempt",
+          "../../victim",
+        ]),
+      ).rejects.toThrow(/--retry-attempt must be a write attempt id/);
+    });
   });
 });

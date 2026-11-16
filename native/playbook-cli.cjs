@@ -5,6 +5,7 @@ const { exportRecordHar, saveFromRecent, saveFromRecord, suggestions } = require
 const { deriveClient, exportClient, verifyClient } = require("./playbook-client.cjs");
 const { formatCandidates } = require("./record-candidates.cjs");
 const { RESERVED_RUN_OPTIONS, applyParam, formatParamResult } = require("./playbook-param.cjs");
+const { assertAttemptId } = require("./playbook-receipts.cjs");
 const { authInputs } = require("./playbook-runtime.cjs");
 const { formatExtractResult, parseExtractArgs, saveExtract } = require("./playbook-extract.cjs");
 const { formatTestReport, runPlaybookTest } = require("./playbook-test.cjs");
@@ -138,6 +139,7 @@ async function handlePlaybookCli(argv, { endpoint, cwd = process.cwd(), session,
   if (!["playbook", "pb", "use"].includes(argv[0])) return { handled: false };
   if (argv[0] === "use" || argv[1] === "run") {
     const spec = runSpec(argv);
+    if (spec.options["retry-attempt"] !== undefined) assertAttemptId(spec.options["retry-attempt"], "--retry-attempt");
     const format = spec.options.format;
     if (format !== undefined && format !== "md" && format !== "jsonl") throw new Error("--format must be md or jsonl");
     const timeout = resolveRunTimeout(spec, cwd);
