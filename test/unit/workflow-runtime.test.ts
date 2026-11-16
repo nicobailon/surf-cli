@@ -222,3 +222,25 @@ describe("workflow result variables", () => {
     expect(failed).not.toHaveProperty("vars");
   });
 });
+
+describe("a capture named like an input", () => {
+  it("is returned even when it equals the input, and an uncaptured input never is", async () => {
+    const result = await runtime.executeWorkflow(
+      [
+        { cmd: "page.text", args: {}, as: "content" },
+        { cmd: "fail", args: {}, as: "missing" },
+      ],
+      {
+        executeTool: vi.fn(async (tool: string) =>
+          tool === "page.text" ? { value: "same words" } : { error: "expected failure" },
+        ),
+        onError: "continue",
+        sleep: vi.fn(),
+        stepDelay: 0,
+        vars: { content: "same words", missing: "dummy-input-foxtrot" },
+      },
+    );
+    expect(result.vars).toEqual({ content: "same words" });
+    expect(JSON.stringify(result)).not.toContain("dummy-input-foxtrot");
+  });
+});
