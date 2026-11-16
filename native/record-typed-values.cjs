@@ -1,7 +1,8 @@
 // Values a record's own typing steps entered (type, locate.* --action fill, form.fill, select...),
-// so the URLs its trace captured can hold `<text>` or `<value>` where they appear, the way the
-// drafted step holds `{{text}}` or `{{value}}`. The values live in the host's memory only, for as
-// long as the record is open, and are never written anywhere.
+// so the URLs its trace captured can hold a placeholder where one appears: `<text>`, `<text-2>`,
+// `<value>`..., the name of the input the draft gives that step (`{{text}}`, `{{text-2}}`). The
+// values live in the host's memory only, for as long as the record is open, and are never written.
+const { commandMetadata } = require("./workflow-definition.cjs");
 
 // The argument each command types, named as its redacted step names it.
 const TYPED_ARGS = {
@@ -17,9 +18,13 @@ const TYPED_ARGS = {
   "dialog.accept": "text",
 };
 
-// Shorter values replace only a whole query value or path segment, so a short value can't break up
-// the text around it.
-const MIN_SUBSTRING_LENGTH = 4;
+// A shorter value (a page number, a one-letter filter) matches too much to be redacted.
+const MIN_LENGTH = 3;
+// Enough for a value encoded twice over and its form-encoded spaces.
+const MAX_DECODES = 4;
+// The placeholders a draft or trace can hold where a value was redacted.
+const PLACEHOLDER = /<(?:text|value|values|data|redacted|request-body)(?:-\d+)?>/;
+const REDACTED_MARKER = /^<([a-z0-9._-]+)>$/;
 
 const held = new Map();
 
@@ -30,7 +35,7 @@ function typedArg(command, args) {
   return name;
 }
 
-// [{ value, marker }] for the values one command typed.
+/** [{ value, marker }] for the values one command typed, each marked with its argument's name. */
 function typedValues(command, args) {
   const name = typedArg(command, args);
   if (!name) return [];
@@ -44,31 +49,79 @@ function typedValues(command, args) {
       }
     }
     const items = Array.isArray(raw) ? raw : [];
-    return items.map((item) => item?.value).filter((value) => typeof value === "string" && value).map((value) => ({ value, marker: "<value>" }));
+    return items.map((item) => item?.value).filter((value) => typeof value === "string" && value).map((value) => ({ value, marker: "<data>" }));
   }
   return (Array.isArray(raw) ? raw : [raw])
     .filter((value) => (typeof value === "string" && value) || typeof value === "number")
     .map((value) => ({ value: String(value), marker: `<${name}>` }));
 }
 
-function rememberTypedValues(recordId, command, args) {
+/** Holds what one typing call entered. `paused`: the record was paused, so the call gets no event. */
+function rememberTypedValues(recordId, command, args, { paused = false } = {}) {
   if (!typedArg(command, args)) return;
-  const entry = held.get(recordId) || { values: new Map(), steps: 0 };
-  entry.steps++;
-  for (const { value, marker } of typedValues(command, args)) {
-    if (!entry.values.has(value)) entry.values.set(value, marker);
-  }
-  held.set(recordId, entry);
+  const calls = held.get(recordId) || [];
+  calls.push({ command, values: typedValues(command, args).map(({ value }) => value), paused });
+  held.set(recordId, calls);
 }
 
-function heldTypedValues(recordId) {
-  const entry = held.get(recordId);
-  const values = entry ? [...entry.values].map(([value, marker]) => ({ value, marker })) : [];
-  return { values: values.sort((a, b) => b.value.length - a.value.length), steps: entry?.steps || 0 };
+function heldTypingCalls(recordId) {
+  return held.get(recordId) || [];
 }
 
 function forgetTypedValues(recordId) {
   held.delete(recordId);
+}
+
+/**
+ * Numbers the redacted markers in drafted steps the way the draft names its inputs: the first
+ * `<text>` stays `<text>`, the next becomes `<text-2>`, so each typing step gets its own input.
+ * `<redacted>` (a secret-named field) is left as is.
+ */
+function numberRedactedMarkers(steps) {
+  const counts = new Map();
+  const visit = (value) => {
+    if (typeof value === "string") {
+      const name = value.match(REDACTED_MARKER)?.[1];
+      if (!name || name === "redacted") return value;
+      const count = (counts.get(name) || 0) + 1;
+      counts.set(name, count);
+      return count === 1 ? value : `<${name}-${count}>`;
+    }
+    if (Array.isArray(value)) return value.map(visit);
+    if (value && typeof value === "object") return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, visit(item)]));
+    return value;
+  };
+  return steps.map((step) => ({ ...step, args: visit(step.args || {}) }));
+}
+
+/** The steps a draft is made of: the record's completed, recordable commands, in order. */
+function draftedEvents(events) {
+  return events.filter((event) => event.type === "tool.completed" && commandMetadata(event.command).recordable);
+}
+
+/**
+ * Pairs the held typing calls with the record's typing events and gives each value the
+ * placeholder of its drafted step. Calls and events come in the same order; after a host restart
+ * the first calls are gone, so they are paired from the end. `unheld` counts typing events with
+ * no call. A failed step isn't drafted, so its values become `<redacted>`.
+ */
+function typedValuesForTrace(events, calls) {
+  const drafted = draftedEvents(events);
+  const numbered = numberRedactedMarkers(drafted.map((event) => ({ args: event.argsRedacted || {} })));
+  const markers = new Map(drafted.map((event, index) => {
+    const name = typedArg(event.command, event.argsRedacted);
+    const marker = name ? numbered[index].args[name] : undefined;
+    return [event, typeof marker === "string" && REDACTED_MARKER.test(marker) ? marker : "<redacted>"];
+  }));
+  const typing = events.filter((event) => ["tool.completed", "tool.failed"].includes(event.type) && typedArg(event.command, event.argsRedacted));
+  const evented = calls.filter((call) => !call.paused);
+  const paired = Math.min(typing.length, evented.length);
+  const markerOf = new Map();
+  for (let offset = 1; offset <= paired; offset++) {
+    markerOf.set(evented[evented.length - offset], markers.get(typing[typing.length - offset]) || "<redacted>");
+  }
+  const typed = calls.flatMap((call) => call.values.map((value) => ({ value, marker: markerOf.get(call) || "<redacted>" })));
+  return { typed, unheld: typing.length - paired };
 }
 
 const decode = (text) => {
@@ -78,7 +131,17 @@ const decode = (text) => {
     return text;
   }
 };
-const decodeForm = (text) => decode(text.replace(/\+/g, " "));
+
+// Every reading of a URL part: as is, percent-decoded and form-decoded (+ for space), repeatedly.
+function decodings(raw) {
+  const seen = new Set([raw]);
+  let current = [raw];
+  for (let round = 0; round < MAX_DECODES && current.length > 0; round++) {
+    current = current.flatMap((text) => [decode(text), decode(text.replace(/\+/g, " "))]).filter((text) => !seen.has(text));
+    for (const text of current) seen.add(text);
+  }
+  return seen;
+}
 
 // The forms a typed value takes in a URL: as typed, percent-encoded, and form-encoded (+ for space).
 function encodedForms(value) {
@@ -86,25 +149,85 @@ function encodedForms(value) {
   return [...new Set([value, encoded, encoded.replace(/%20/g, "+"), value.replace(/ /g, "+")])];
 }
 
+function markerFor(raw, typed) {
+  if (!raw) return undefined;
+  const readings = decodings(raw);
+  return typed.find(({ value }) => value.length >= MIN_LENGTH && readings.has(value))?.marker;
+}
+
+// Pairs (key=value) keep their keys; a part without `=` is a value.
+function redactPairs(text, typed) {
+  return text.split("&").map((pair) => {
+    const split = pair.indexOf("=");
+    if (split < 0) return markerFor(pair, typed) || pair;
+    const value = pair.slice(split + 1);
+    return `${pair.slice(0, split + 1)}${markerFor(value, typed) || value}`;
+  }).join("&");
+}
+
 /**
- * Replaces each typed value in `url` with its marker: a path segment or query value that is the
- * value, and any other place in the query or fragment that holds it. The origin is never changed.
+ * Replaces each typed value in `url` with its marker where a whole query value, path segment,
+ * fragment or fragment value is that value, however many times it was encoded. Keys, the origin
+ * and parts of longer values are never changed.
  */
 function redactTypedValuesInUrl(url, typed) {
   if (typeof url !== "string" || typed.length === 0) return url;
-  const match = url.match(/^([a-zA-Z][a-zA-Z0-9+.-]*:\/\/[^/?#]*)?([^?#]*)(.*)$/s);
+  const match = url.match(/^([a-zA-Z][a-zA-Z0-9+.-]*:\/\/[^/?#]*)?([^?#]*)(\?[^#]*)?(#.*)?$/s);
   if (!match) return url;
-  const origin = match[1] || "";
-  let pathname = match[2];
-  let tail = match[3];
-  for (const { value, marker } of typed) {
-    pathname = pathname.split("/").map((segment) => (segment && (decode(segment) === value || decodeForm(segment) === value) ? marker : segment)).join("/");
-    tail = tail.replace(/([?&#;][^=&#;]*=)([^&#;]*)/g, (pair, key, raw) => (raw && decodeForm(raw) === value ? `${key}${marker}` : pair));
-    if (value.length >= MIN_SUBSTRING_LENGTH) {
-      for (const form of encodedForms(value)) tail = tail.split(form).join(marker);
-    }
+  const [, origin = "", pathname, query, fragment] = match;
+  const path = pathname.split("/").map((segment) => markerFor(segment, typed) || segment).join("/");
+  const search = query === undefined ? "" : `?${redactPairs(query.slice(1), typed)}`;
+  let hash = "";
+  if (fragment !== undefined) {
+    const body = fragment.slice(1);
+    hash = `#${body.includes("=") ? redactPairs(body, typed) : markerFor(body, typed) || body}`;
   }
-  return `${origin}${pathname}${tail}`;
+  return `${origin}${path}${search}${hash}`;
 }
 
-module.exports = { encodedForms, typedValues, forgetTypedValues, heldTypedValues, redactTypedValuesInUrl, rememberTypedValues, typedArg };
+/**
+ * The first place a network request (url, query, headers, body) still holds a redacted
+ * placeholder, as `{ field, placeholder }`, or null. Sending one would send `<text>` to the site.
+ */
+function findRedactedPlaceholder(request) {
+  const found = (field, value) => {
+    const text = typeof value === "string" ? value : value && typeof value === "object" ? JSON.stringify(value) : "";
+    const placeholder = (text.match(PLACEHOLDER) || decode(text).match(PLACEHOLDER))?.[0];
+    return placeholder ? { field, placeholder } : null;
+  };
+  const segments = String(request?.url || "").replace(/^[a-zA-Z][a-zA-Z0-9+.-]*:\/\/[^/?#]*/, "").split(/[?#]/)[0].split("/").slice(1);
+  for (const [index, segment] of segments.entries()) {
+    const hit = found(`path.${index + 1}`, segment);
+    if (hit) return hit;
+  }
+  for (const [name, value] of Object.entries(request?.query || {})) {
+    const hit = found(`query.${name}`, value);
+    if (hit) return hit;
+  }
+  for (const [name, value] of Object.entries(request?.headers || {})) {
+    const hit = found(`headers.${name}`, value);
+    if (hit) return hit;
+  }
+  return request?.body === undefined ? null : found("body", request.body);
+}
+
+/** The error for a request that holds a placeholder, naming the pb param command that fixes it. */
+function placeholderError({ field, placeholder }, label = "<playbook> <op>") {
+  if (placeholder === "<request-body>") return new Error(`${field} holds ${placeholder}: the record redacted the request body; record again with pb record start --include-input-values to keep it`);
+  return new Error(`${field} holds ${placeholder}, a value the record redacted; run surf pb param ${label} ${field} --as <name> to make it an input (or record again with pb record start --include-input-values)`);
+}
+
+module.exports = {
+  draftedEvents,
+  encodedForms,
+  findRedactedPlaceholder,
+  forgetTypedValues,
+  heldTypingCalls,
+  numberRedactedMarkers,
+  placeholderError,
+  redactTypedValuesInUrl,
+  rememberTypedValues,
+  typedArg,
+  typedValues,
+  typedValuesForTrace,
+};

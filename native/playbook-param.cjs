@@ -493,7 +493,8 @@ function paramOp(op, { fields, as: name, env, required = false, default: default
       segments: templated.filter((result) => result.segment).map((result) => ({ ...result.segment, stored: result.stored })),
       queries: templated.filter((result) => result.whole && !result.json && /^query\.[^.]+$/.test(result.field)).map((result) => result.field.slice("query.".length)),
       // The drafted step that typed a redacted value holds {{text}} or {{value}}; it takes the input too.
-      ...(redacted ? { typedStep: `{{${redacted[1]}}}` } : {}),
+      // Only a typed text or value is one input; form.fill's data and select's values are whole lists.
+      ...(redacted && /^(text|value)(-\d+)?$/.test(redacted[1]) ? { typedStep: `{{${redacted[1]}}}` } : {}),
     };
     for (const workflow of workflows) workflow.steps = templateSteps(workflow.steps, context, touched);
     if (touched.length) notes.push(`workflow fallback takes the input too: ${touched.join(", ")}`);

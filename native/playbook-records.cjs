@@ -11,7 +11,7 @@ const {
   readPrivateJson,
 } = require("./private-state.cjs");
 const { redactSensitiveFields, redactUrlSecrets, safeHeaders } = require("./redaction.cjs");
-const { forgetTypedValues, heldTypedValues, redactTypedValuesInUrl, rememberTypedValues, typedArg } = require("./record-typed-values.cjs");
+const { draftedEvents, forgetTypedValues, heldTypingCalls, numberRedactedMarkers, redactTypedValuesInUrl, rememberTypedValues, typedValuesForTrace } = require("./record-typed-values.cjs");
 const { commandMetadata, promoteRedactedStepArgs } = require("./workflow-definition.cjs");
 const { escapeStepArgs, escapeTemplates } = require("./playbook-template.cjs");
 const { describeCaptureGaps } = require("./formatters/network.cjs");
@@ -133,11 +133,18 @@ function appendToRecord(record, event, root) {
   writeRecord(record, root);
 }
 
-// `args` are the command's arguments as given: values it typed are held in memory (see
+// Holds the values a command types for the caller's record, in memory (see
 // record-typed-values.cjs), even while paused, so the trace's URLs can be redacted at stop.
-function appendRecordEvent(event, { target, args, root = getPrivateStateRoot() } = {}) {
+function rememberRecordInput(command, args, { target, root = getPrivateStateRoot() } = {}) {
   const record = recordFor(target, root);
-  if (record && args) rememberTypedValues(record.id, event.command, args);
+  if (record) rememberTypedValues(record.id, command, args, { paused: record.status !== "recording" });
+}
+
+// `args` are the command's arguments as given, for rememberRecordInput. A host-owned workflow
+// passes them to rememberRecordInput itself, before its event comes without them.
+function appendRecordEvent(event, { target, args, root = getPrivateStateRoot() } = {}) {
+  if (args) rememberRecordInput(event.command, args, { target, root });
+  const record = recordFor(target, root);
   if (!record || record.status !== "recording") return false;
   appendToRecord(record, event, root);
   return true;
@@ -205,10 +212,10 @@ function traceEntriesForRecord(record, entries) {
 // instead (see summarizeResponse), so pb record candidates can rank it. `pageText` is the page's
 // visible text, used for the overlap score and never stored. `sample` adds a short sample, for
 // live ranking only: entries with samples are never written.
-function sanitizeTraceEntries(record, entries, pageText, { sample = false } = {}) {
+function sanitizeTraceEntries(record, entries, pageText, { sample = false, root = getPrivateStateRoot() } = {}) {
   const page = pageWords(pageText);
   const keepValues = record.redaction?.includeInputValues === true;
-  const typed = keepValues ? [] : heldTypedValues(record.id).values;
+  const typed = keepValues ? [] : typedValuesForTrace(readEvents(record.id, root), heldTypingCalls(record.id)).typed;
   return entries.map((entry) => {
     const responseSummary = summarizeResponse(entry, page, { sample });
     return sanitizeTraceEntry(responseSummary ? { ...entry, responseSummary } : entry, keepValues, typed);
@@ -221,15 +228,16 @@ function sanitizeTraceEntries(record, entries, pageText, { sample = false } = {}
 function attachNetworkTrace(recordId, entries, root = getPrivateStateRoot(), { capture, truncatedAt, pageText } = {}) {
   const record = readRecord(recordId, root);
   if (!record) throw new Error(`record not found: ${recordId}`);
-  const sanitized = sanitizeTraceEntries(record, entries, pageText);
+  const sanitized = sanitizeTraceEntries(record, entries, pageText, { root });
   const warnings = capture
     ? describeCaptureGaps(capture, { atStop: true })
     : ["the extension did not report whether network capture ran (it may be older than this Surf); requests may be missing"];
   if (truncatedAt) warnings.push(`the trace holds only the first ${truncatedAt} requests read from the tab; later ones are missing`);
   if (record.redaction?.includeInputValues !== true) {
-    const typingSteps = readEvents(recordId, root).filter((event) => ["tool.completed", "tool.failed"].includes(event.type) && typedArg(event.command, event.argsRedacted)).length;
-    const unheld = typingSteps - heldTypedValues(recordId).steps;
-    if (unheld > 0) warnings.push(`${unheld} typing step${unheld === 1 ? "" : "s"} ran before this Surf host started, so the typed values they entered may remain in the trace's URLs`);
+    const { unheld } = typedValuesForTrace(readEvents(recordId, root), heldTypingCalls(recordId));
+    if (unheld > 0) warnings.push(unheld === 1
+      ? "1 typing step entered a value this Surf host no longer holds (it restarted during the record), so it may remain in the trace's URLs"
+      : `${unheld} typing steps entered values this Surf host no longer holds (it restarted during the record), so they may remain in the trace's URLs`);
   }
   const complete = Boolean(capture) && warnings.length === 0;
   const directory = path.join(recordDirectory(recordId, root), "network");
@@ -342,11 +350,10 @@ const REVIEW_KEY_ARG = { required: true, desc: "Semantic key for reviewed write 
 
 // The steps a record ran that a draft replays: its completed recordable commands, in order. Their
 // arguments are escaped, so text like `{{review_key}}` in a recorded selector or URL is sent as
-// recorded; a redacted value (`<text>`) still becomes an input.
+// recorded; a redacted value (`<text>`) still becomes an input, each typing step's its own
+// (<text>, <text-2>), as the trace's URLs name them.
 function recordedSteps(recordId, root = getPrivateStateRoot()) {
-  return readEvents(recordId, root)
-    .filter((event) => event.type === "tool.completed" && commandMetadata(event.command).recordable)
-    .map((event) => ({ tool: event.command, args: escapeStepArgs(event.argsRedacted || {}) }));
+  return numberRedactedMarkers(draftedEvents(readEvents(recordId, root)).map((event) => ({ tool: event.command, args: escapeStepArgs(event.argsRedacted || {}) })));
 }
 
 // The op the draft builder makes from a record, and `because`, why it is a write. It writes
@@ -446,7 +453,7 @@ function recordCandidates(record, { root = getPrivateStateRoot(), limit = 10, li
   if (!Number.isInteger(limit) || limit < 1) throw new Error("--limit must be a positive integer");
   let entries;
   let warnings = [];
-  if (live) entries = sanitizeTraceEntries(record, live.entries, live.pageText, { sample: true });
+  if (live) entries = sanitizeTraceEntries(record, live.entries, live.pageText, { sample: true, root });
   else {
     const trace = readPrivateJson(path.join(recordDirectory(record.id, root), "network", "trace.json"), null, { root });
     if (!trace) throw new Error(`record ${record.id} has no network trace; start a record with --network to rank its requests`);
@@ -488,6 +495,7 @@ module.exports = {
   neverReplayed,
   pauseRecord: (options) => updateStatus("paused", options),
   readEvents,
+  rememberRecordInput,
   isReplayCandidate,
   readRecord,
   recordCandidates,

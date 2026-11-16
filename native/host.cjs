@@ -50,6 +50,7 @@ const { checkReceipt, reserveReceipt, updateReceipt } = require("./playbook-rece
 const {
   appendRecordEvent,
   attachNetworkTrace,
+  rememberRecordInput,
   discardRecord,
   findCandidatesRecord,
   isActive,
@@ -1600,7 +1601,11 @@ async function runHostPlaybook(msg, request) {
     ...(params.strategy !== undefined ? { strategy: params.strategy } : {}),
     attemptId: op.effect === "write" ? claim.attemptId : undefined,
     signal: request.signal,
-    executeTool: (tool, args) => executeMappedHostTool(request, tool, args, msg.tabId),
+    // The workflow's own events carry no arguments, so the values it types reach the record here.
+    executeTool: (tool, args) => {
+      rememberRecordInput(tool, args, { target: recordEventTarget(request) });
+      return executeMappedHostTool(request, tool, args, msg.tabId);
+    },
     executeNative: (handler, args, options) => executeNativePlaybook(request, handler, args, options),
     sleep: (ms) => abortableDelay(ms, request.signal),
     onEvent: report,

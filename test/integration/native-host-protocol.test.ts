@@ -947,6 +947,88 @@ describe("native host protocol integration", () => {
     expect(used.stdout).not.toContain("dummy-lima");
   });
 
+  it("redacts values a playbook typed during a record from the URLs its trace captured", async () => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), "surf-host-typed-use-"));
+    tempDirs.push(home);
+    const stateDir = path.join(home, "state");
+    const ops = path.join(home, ".surf", "playbooks", "pw", "ops");
+    fs.mkdirSync(ops, { recursive: true });
+    fs.writeFileSync(
+      path.join(ops, "..", "playbook.json"),
+      JSON.stringify({ id: "pw", version: "1.0.0" }),
+    );
+    fs.writeFileSync(
+      path.join(ops, "search.json"),
+      JSON.stringify({
+        id: "search",
+        effect: "read",
+        args: { q: { required: true } },
+        run: [
+          {
+            using: "workflow",
+            autoWait: false,
+            stepDelay: 0,
+            steps: [{ tool: "type", args: { selector: "#q", text: "{{q}}" } }],
+          },
+        ],
+      }),
+    );
+    const records = require("../../native/playbook-records.cjs") as any;
+    const record = records.startRecord({
+      site: "s",
+      op: "search",
+      tabId: 1,
+      network: true,
+      root: stateDir,
+    });
+    const host = await startHostHarness({ HOME: home, SURF_STATE_DIR: stateDir });
+    const used = runCli(
+      ["use", "pw", "search", "--q", "dummy papa words", "--json"],
+      host.socketPath,
+      {
+        HOME: home,
+      },
+    );
+    const typing = await host.waitForMessage(
+      (message) => message.type === "SMART_TYPE",
+      "SMART_TYPE",
+    );
+    host.send({ id: typing.id, success: true });
+    expect((await used).code).toBe(0);
+
+    const stop = runCli(["pb", "record", "stop", "--json"], host.socketPath);
+    const read = await host.waitForMessage(
+      (message) => message.type === "READ_NETWORK_REQUESTS",
+      "READ_NETWORK_REQUESTS",
+    );
+    host.send({
+      id: read.id,
+      entries: [
+        {
+          id: "r1",
+          method: "GET",
+          status: 200,
+          type: "XHR",
+          url: "https://example.test/api?q=dummy+papa+words",
+        },
+      ],
+      capture: { active: true, interruptions: [], dropped: 0 },
+    });
+    const stopCapture = await host.waitForMessage(
+      (message) => message.type === "STOP_NETWORK_CAPTURE",
+      "STOP_NETWORK_CAPTURE",
+    );
+    host.send({ id: stopCapture.id, success: true });
+    const stopped = await stop;
+    expect(stopped.code).toBe(0);
+    expect(stopped.stdout).not.toContain("no longer holds");
+    const trace = fs.readFileSync(
+      path.join(records.recordsRoot(stateDir), record.id, "network", "trace.json"),
+      "utf8",
+    );
+    expect(JSON.parse(trace).entries[0].url).toBe("https://example.test/api?q=<text>");
+  });
+
   it("redacts secret-named body fields in network.export unless --raw-bodies", async () => {
     const host = await startHostHarness();
     const directory = fs.mkdtempSync(path.join(os.tmpdir(), "surf-host-export-"));

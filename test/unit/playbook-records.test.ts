@@ -2974,6 +2974,66 @@ describe("values typed during a record, in captured URLs", () => {
     expect(notes.join("\n")).toMatch(/redacted/);
   });
 
+  it("gives each typing step its own placeholder, which pb param links to that step", () => {
+    const root = tempRoot();
+    const record = records.startRecord({
+      site: "fixture",
+      op: "search",
+      tabId: 1,
+      origin: "https://example.test",
+      network: true,
+      root,
+    });
+    for (const text of ["dummy first words", "dummy second words"]) {
+      const args = { selector: "#q", text };
+      records.appendRecordEvent(hostEvent("type", args), { target: TAB, root, args });
+    }
+    const url = "https://example.test/api?a=dummy+first+words&b=dummy+second+words";
+    records.attachNetworkTrace(record.id, [{ ...search, url, tabUrl: undefined }], root, {
+      capture: COMPLETE,
+    });
+    const { draft } = records.stopRecord({ target: TAB, draft: true, read: true, root });
+    const network = draft.run.find((strategy: { using: string }) => strategy.using === "network");
+    expect(network.request.query).toEqual({ a: "<text>", b: "<text-2>" });
+    const typing = (op: typeof draft) =>
+      op.run
+        .find((strategy: { using: string }) => strategy.using === "workflow")
+        .steps.filter((step: { tool: string }) => step.tool === "type")
+        .map((step: { args: Entry }) => step.args.text);
+    expect(typing(draft)).toEqual(["{{text}}", "{{text-2}}"]);
+    const named = paramOp(paramOp(draft, { fields: ["query.a"], as: "first" }).op, {
+      fields: ["query.b"],
+      as: "second",
+    }).op;
+    expect(typing(named)).toEqual(["{{first}}", "{{second}}"]);
+    expect(Object.keys(named.args).sort()).toEqual(["first", "second"]);
+  });
+
+  it("redacts values a playbook typed in the host process during the record", () => {
+    const root = tempRoot();
+    const record = records.startRecord({
+      site: "fixture",
+      op: "search",
+      tabId: 1,
+      origin: "https://example.test",
+      network: true,
+      root,
+    });
+    // The host's playbook runner hands each tool call to rememberRecordInput before running it;
+    // the workflow's own event comes after, without arguments.
+    records.rememberRecordInput("type", typeArgs, { target: TAB, root });
+    records.appendRecordEvent(hostEvent("type", typeArgs), { target: TAB, root });
+    records.attachNetworkTrace(record.id, [search], root, { capture: COMPLETE });
+    const { record: stopped, warnings } = records.stopRecord({ target: TAB, root });
+    const trace = fs.readFileSync(
+      path.join(records.recordsRoot(root), stopped.id, "network", "trace.json"),
+      "utf8",
+    );
+    expect(trace).toContain("q=<text>");
+    expect(trace).not.toContain("dummy+echo+words");
+    expect(warnings).toBeUndefined();
+  });
+
   it("warns when typing steps ran before this host held their values", () => {
     const root = tempRoot();
     const record = records.startRecord({
@@ -2987,6 +3047,8 @@ describe("values typed during a record, in captured URLs", () => {
     records.appendRecordEvent(hostEvent("type", typeArgs), { target: TAB, root });
     records.attachNetworkTrace(record.id, [search], root, { capture: COMPLETE });
     const { warnings } = records.stopRecord({ target: TAB, root });
-    expect(warnings.join("\n")).toMatch(/typed values .* may remain/);
+    expect(warnings.join("\n")).toMatch(
+      /1 typing step entered a value this Surf host no longer holds \(it restarted during the record\), so it may remain in the trace's URLs/,
+    );
   });
 });
