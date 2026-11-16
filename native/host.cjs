@@ -28,7 +28,7 @@ const grokClient = require("./grok-client.cjs");
 const kimiClient = require("./kimi-client.cjs");
 const aistudioClient = require("./aistudio-client.cjs");
 const aistudioBuild = require("./aistudio-build.cjs");
-const { mapToolToMessage, mapComputerAction, formatToolContent, formatToolError, publicNetworkResult, publicResponse, buildProviderUploadMessage, applySemanticExpectedIdentity, truncatePageText } = require("./host-helpers.cjs");
+const { mapToolToMessage, mapComputerAction, formatToolContent, withoutTypedEcho, formatToolError, publicNetworkResult, publicResponse, buildProviderUploadMessage, applySemanticExpectedIdentity, truncatePageText } = require("./host-helpers.cjs");
 const { createOracleHost } = require("./oracle-host.cjs");
 
 const IS_WIN = process.platform === "win32";
@@ -1923,7 +1923,7 @@ function sendToolResponse(socket, id, result, error) {
     if (pageChanges) response.pageChanges = pageChanges;
     if (formattedError) response.error = formattedError;
     else {
-      response.result = { content: formatToolContent(output, log) };
+      response.result = { content: formatToolContent(withoutTypedEcho(output, request?.args), log) };
       if (output?.truncated) response.truncated = output.truncated;
       if (request?.tool === "tab.new" && Number.isInteger(output?.tabId) && output.tabId > 0) {
         response.result.tabId = output.tabId;

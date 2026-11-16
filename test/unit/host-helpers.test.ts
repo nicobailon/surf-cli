@@ -1059,3 +1059,31 @@ describe("formatToolContent network listing", () => {
     expect(JSON.parse(text({ ...result, format: "json" }))).toEqual(expected);
   });
 });
+
+describe("fill and select results", () => {
+  const filled = { success: true, action: "fill", ref: "e3", value: "dummy-typed-alpha" };
+  const selected = { selected: ["dummy-option-a", "dummy-option-b"] };
+  const shown = (result: unknown, args: Record<string, unknown> = {}) =>
+    helpers.formatToolContent(helpers.withoutTypedEcho(result, args))[0].text;
+
+  it("prints neither the filled value nor the chosen options by default", () => {
+    expect(shown(filled)).toBe("OK");
+    expect(shown(selected)).toBe("Selected 2 options");
+    expect(shown({ selected: ["dummy-option-a"] })).toBe("Selected 1 option");
+    expect(JSON.stringify(helpers.withoutTypedEcho(filled, {}))).not.toContain("dummy-typed-alpha");
+    expect(JSON.stringify(helpers.withoutTypedEcho(selected, {}))).not.toContain("dummy-option");
+  });
+
+  it.each([{ "echo-value": true }, { echoValue: true }])("prints them with %o", (args) => {
+    expect(shown(filled, args)).toBe('OK\nValue: "dummy-typed-alpha"');
+    expect(shown(selected, args)).toBe("Selected: dummy-option-a, dummy-option-b");
+  });
+
+  it("asks the extension for the filled value only with --echo-value", () => {
+    for (const tool of ["locate.role", "locate.text", "locate.label"]) {
+      const args = { role: "textbox", text: "Name", label: "Name", action: "fill", value: "x" };
+      expect(helpers.mapToolToMessage(tool, args, 1).echoValue).toBe(false);
+      expect(helpers.mapToolToMessage(tool, { ...args, "echo-value": true }, 1).echoValue).toBe(true);
+    }
+  });
+});

@@ -1107,6 +1107,25 @@ describe("CLI argument parsing", () => {
     expect(request.params.args).toMatchObject({ compact: true, "max-bytes": 1200 });
   });
 
+  it("asks for typed values back only with --echo-value or echoValue in surf.json", async () => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), "surf-echo-home-"));
+    try {
+      const fill = ["locate.label", "Name", "--action", "fill", "--value", "dummy-typed"];
+      const select = ["select", "e5", "dummy-option"];
+      const plain = { HOME: home };
+      expect((await runCli(fill, plain)).request.params.args["echo-value"]).toBeUndefined();
+      expect((await runCli(select, plain)).request.params.args["echo-value"]).toBeUndefined();
+      const flagged = await runCli([...select.slice(0, 2), "--echo-value", "dummy-option"], plain);
+      expect(flagged.request.params.args).toMatchObject({ "echo-value": true, values: "dummy-option" });
+      fs.writeFileSync(path.join(home, "surf.json"), JSON.stringify({ echoValue: true }));
+      expect((await runCli(fill, plain)).request.params.args["echo-value"]).toBe(true);
+      expect((await runCli(select, plain)).request.params.args["echo-value"]).toBe(true);
+      expect((await runCli(["click", "e1"], plain)).request.params.args["echo-value"]).toBeUndefined();
+    } finally {
+      fs.rmSync(home, { recursive: true, force: true });
+    }
+  });
+
   it("requests and prints rendered page HTML", async () => {
     const { request, stdout } = await runCli([
       "page.html",

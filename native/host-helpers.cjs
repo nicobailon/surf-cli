@@ -138,7 +138,10 @@ function formatToolContent(result, log = () => {}) {
     return text(output || "No elements found");
   }
   
-  // Handle select response
+  // Handle select response (selectedCount when withoutTypedEcho kept the options out)
+  if (result.selectedCount !== undefined) {
+    return text(`Selected ${result.selectedCount} option${result.selectedCount === 1 ? "" : "s"}${result.warning ? `\n[Warning: ${result.warning}]` : ""}`);
+  }
   if (result.selected !== undefined) {
     // An extension older than this host reports missing options as a warning instead of an error.
     return text(`Selected: ${result.selected.join(', ')}${result.warning ? `\n[Warning: ${result.warning}]` : ""}`);
@@ -518,6 +521,7 @@ function formatToolContent(result, log = () => {}) {
     }
     // Include _hint handling here instead of unreachable code below
     let msg = "OK";
+    if (result.action === "fill" && typeof result.value === "string") msg += `\nValue: ${JSON.stringify(result.value)}`;
     if (result._hint) msg += `\n[hint] ${result._hint}`;
     return text(msg);
   }
@@ -532,6 +536,23 @@ function formatToolContent(result, log = () => {}) {
     return text(JSON.stringify(cleanResult) + `\n[hint] ${_hint}`);
   }
   return text(JSON.stringify(cleanResult));
+}
+
+const echoesValue = (args) => args?.["echo-value"] === true || args?.echoValue === true;
+
+// A fill or select result carries the value typed or the options chosen. It reaches the caller
+// only with --echo-value (or echoValue in surf.json); otherwise the result says only that it worked.
+function withoutTypedEcho(result, args) {
+  if (!result || typeof result !== "object" || echoesValue(args)) return result;
+  if (result.action === "fill" && Object.hasOwn(result, "value")) {
+    const { value: _value, ...rest } = result;
+    return rest;
+  }
+  if (Array.isArray(result.selected)) {
+    const { selected, ...rest } = result;
+    return { ...rest, selectedCount: selected.length };
+  }
+  return result;
 }
 
 /**
@@ -1130,6 +1151,7 @@ function mapToolToMessage(tool, args, tabId) {
         name: a.name,
         action: a.action,
         value: a.value,
+        echoValue: echoesValue(a),
         all: a.all || false,
         ...baseMsg 
       };
@@ -1141,6 +1163,7 @@ function mapToolToMessage(tool, args, tabId) {
         exact: a.exact || false,
         action: a.action,
         value: a.value,
+        echoValue: echoesValue(a),
         ...baseMsg 
       };
     case "locate.label":
@@ -1150,6 +1173,7 @@ function mapToolToMessage(tool, args, tabId) {
         label: a.label,
         action: a.action,
         value: a.value,
+        echoValue: echoesValue(a),
         ...baseMsg 
       };
     case "element.styles":
@@ -1474,4 +1498,4 @@ function applySemanticExpectedIdentity(request, extensionMessage, args) {
   };
 }
 
-module.exports = { mapToolToMessage, mapComputerAction, formatToolContent, publicNetworkResult, publicResponse, formatToolError, buildProviderUploadMessage, readinessExpectations, applySemanticExpectedIdentity, truncatePageText };
+module.exports = { mapToolToMessage, mapComputerAction, formatToolContent, withoutTypedEcho, publicNetworkResult, publicResponse, formatToolError, buildProviderUploadMessage, readinessExpectations, applySemanticExpectedIdentity, truncatePageText };
