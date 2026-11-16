@@ -340,7 +340,8 @@ function draftFromRecord(recordId, root = getPrivateStateRoot(), { read = false,
   if (strategies.length === 0) throw new Error("record has no executable evidence");
   const safety = effect === "write" ? { authorization: "explicit", duplicate: "transactional", key: Object.keys(args).length ? Object.keys(args) : ["review_key"] } : undefined;
   if (effect === "write" && !args.review_key && safety.key.includes("review_key")) args.review_key = REVIEW_KEY_ARG;
-  const op = { id: record.op, description: `Drafted from ${record.id}`, effect, args, ...(safety ? { safety } : {}), run: strategies, provenance: { recordId: record.id } };
+  const provenance = { recordId: record.id, ...(requestId ? { requestId } : {}) };
+  const op = { id: record.op, description: `Drafted from ${record.id}`, effect, args, ...(safety ? { safety } : {}), run: strategies, provenance };
   const draftDir = path.join(recordDirectory(recordId, root), "draft");
   ensurePrivateDir(draftDir, root);
   atomicWriteJson(path.join(draftDir, "op.json"), op, { root });

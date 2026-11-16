@@ -1280,6 +1280,64 @@ describe("activity and explicit record evidence", () => {
       );
     });
 
+    describe("which write it replays", () => {
+      const update = {
+        ...create,
+        id: "r_put",
+        method: "PUT",
+        url: "https://example.test/api/employees/7",
+      };
+      const heartbeat = {
+        ...create,
+        id: "r_hb",
+        status: 200,
+        url: "https://heartbeat.vendor.test/ping",
+      };
+      const second = { ...create, id: "r_note", url: "https://example.test/api/notes" };
+      const save = (root: string, recordId: string, requestId?: string) =>
+        authoring.saveFromRecord({
+          recordId,
+          root,
+          home: path.dirname(root),
+          ...(requestId ? { requestId } : {}),
+        });
+
+      it("refuses a choice among several captured writes unless --request-id names one", () => {
+        const { root, stopped } = recordFlow({
+          commands: ["navigate"],
+          trace: [update, heartbeat],
+        });
+        const { record, draft } = stopped();
+        // The draft's pick, the only write it can replay, is the unrelated third-party heartbeat.
+        expect(draft.run[0].request.url).toBe("https://heartbeat.vendor.test/ping");
+        expect(() => save(root, record.id)).toThrow(
+          "write op search can't be saved network-only: the record captured 2 writes (r_put PUT https://example.test/api/employees/7, r_hb POST https://heartbeat.vendor.test/ping); name the one the op replays with pb save --from-record <id> --request-id <r_…>",
+        );
+        expect(() => save(root, record.id, "r_hb")).toThrow(
+          "write op search can't be saved network-only: it would replay POST https://heartbeat.vendor.test/ping, which isn't on the record's site (https://example.test); the op must replay the site's own write",
+        );
+      });
+
+      it("saves the write named with --request-id, at stop or at save", () => {
+        const atStop = recordFlow({
+          commands: ["navigate"],
+          trace: [page, create, second],
+          stop: { draft: true, requestId: "r_note" },
+        });
+        const stoppedAt = atStop.stopped();
+        expect(save(atStop.root, stoppedAt.record.id).warnings).toEqual([
+          expect.stringMatching(
+            /so the op replays POST https:\/\/example\.test\/api\/notes alone$/,
+          ),
+        ]);
+        const atSave = recordFlow({ commands: ["navigate"], trace: [page, create, second] });
+        const { record } = atSave.stopped();
+        expect(() => save(atSave.root, record.id)).toThrow(/the record captured 2 writes/);
+        const saved = save(atSave.root, record.id, "r_2");
+        expect(savedOp(saved).run[0].request.url).toBe("https://example.test/api/employees");
+      });
+    });
+
     it("refuses when its network strategy replays a read, not the write", () => {
       const { root, stopped } = recordFlow({ commands: [typed, "click"], trace: [page] });
       const { record, draft } = stopped();

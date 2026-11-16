@@ -5,7 +5,8 @@ const { writeNetworkExport } = require("./network-export.cjs");
 const { getPrivateStateRoot, readPrivateJson } = require("./private-state.cjs");
 const { REVIEW_KEY_ARG, draftFromRecord, readRecord, recordsRoot } = require("./playbook-records.cjs");
 const { isCommitWorkflow, savePlaybook, validateOp } = require("./playbooks.cjs");
-const { requestEffect, shownUrl } = require("./request-kinds.cjs");
+const { siteOf } = require("./record-candidates.cjs");
+const { hostname, isTelemetryRequest, requestEffect, shownUrl } = require("./request-kinds.cjs");
 const { commandMetadata, normalizeStep, promoteRedactedStepArgs } = require("./workflow-definition.cjs");
 
 function suggestions({ since = "1h", root } = {}) {
@@ -27,10 +28,30 @@ function saveFromRecent({ site, op: opId, since = "1h", scope = "user", cwd, hom
   return savePlaybook({ manifest: { id: site, name: site, version: "1.0.0", origins: [] }, op, scope, cwd, home });
 }
 
+// The captured write a network-only write op replays: the site's own, and when the record holds
+// several writes, the one named with --request-id (at stop or at save).
+function replayedWrite({ op, record, trace, requestId, request }) {
+  const fail = (why) => new Error(`write op ${op.id} can't be saved network-only: ${why}`);
+  const writes = (trace?.entries || []).filter((entry) => requestEffect(entry) === "write" && !isTelemetryRequest(entry, record.origin));
+  const chosen = requestId ?? op.provenance?.requestId;
+  if (!chosen && writes.length > 1) {
+    const listed = writes.map((entry) => `${entry.id} ${shownUrl(entry)}`).join(", ");
+    throw fail(`the record captured ${writes.length} writes (${listed}); name the one the op replays with pb save --from-record <id> --request-id <r_…>`);
+  }
+  const entry = chosen ? writes.find((candidate) => candidate.id === chosen) : writes[0];
+  const sent = `${request.method} ${request.url}`;
+  if (!entry || shownUrl(entry) !== sent) throw fail(`it would replay ${shownUrl(request)}, which isn't a write the record captured`);
+  const site = hostname(record.origin || entry.tabUrl);
+  if (!site || siteOf(hostname(entry.url)) !== siteOf(site)) {
+    throw fail(`it would replay ${sent}, which isn't on the record's site (${record.origin || "unknown"}); the op must replay the site's own write`);
+  }
+}
+
 // A write draft whose workflow can't be its fallback (a navigate first, or a type and a click)
-// saves with its network strategy alone when that replays the write. The workflow's inputs go with
-// it, and the review key takes their place as the safety key when none is left.
-function fitWriteWorkflow(op, warnings) {
+// saves with its network strategy alone when that replays the site's own captured write. The
+// workflow's inputs go with it, and the review key takes their place as the safety key when none
+// is left.
+function fitWriteWorkflow(op, { record, trace, requestId }, warnings) {
   const workflow = op.effect === "write" && op.run.find((strategy) => strategy.using === "workflow");
   if (!workflow) return op;
   const steps = workflow.steps.map(normalizeStep);
@@ -42,6 +63,7 @@ function fitWriteWorkflow(op, warnings) {
   }
   const shown = shownUrl(network.request);
   if (requestEffect(network.request) !== "write") throw new Error(`write op ${op.id} can't be saved: ${why}, and its network strategy replays ${shown}, a read, not the write`);
+  replayedWrite({ op, record, trace, requestId, request: network.request });
   warnings.push(`saved network-only: ${why}, so the op replays ${shown} alone`);
   const run = op.run.filter((strategy) => strategy !== workflow);
   const used = JSON.stringify(run);
@@ -70,7 +92,9 @@ function saveFromRecord({ recordId, requestId, scope = "user", cwd, home, root =
   const draftPath = path.join(recordsRoot(root), recordId, "draft", "op.json");
   const draft = fs.existsSync(draftPath) ? readPrivateJson(draftPath, null, { root }) : null;
   const warnings = [];
-  const op = fitWriteWorkflow(draft && !requestId ? draft : draftFromRecord(recordId, root, { read: draft?.effect === "read", requestId, warnings }), warnings);
+  const drafted = draft && !requestId ? draft : draftFromRecord(recordId, root, { read: draft?.effect === "read", requestId, warnings });
+  const trace = readPrivateJson(path.join(recordsRoot(root), recordId, "network", "trace.json"), null, { root });
+  const op = fitWriteWorkflow(drafted, { record, trace, requestId }, warnings);
   const origins = allowedOrigins(record, op);
   validateOp(op, { origins });
   const saved = savePlaybook({ manifest: { id: record.site, name: record.site, version: "1.0.0", origins }, op, scope, cwd, home });
