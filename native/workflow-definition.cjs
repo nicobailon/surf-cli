@@ -1,7 +1,7 @@
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
-const { isSensitiveName, redactSensitiveFields, redactUrlSecrets } = require("./redaction.cjs");
+const { isSensitiveName, redactSecretValues, redactSensitiveFields, redactUrlSecrets } = require("./redaction.cjs");
 const { SEMANTIC_POLICY, extractionFieldName, fieldsJsonField } = require("./semantic-core.cjs");
 
 const COMMANDS = {
@@ -144,6 +144,18 @@ function redactCommandArgs(command, args, includeInputValues = false) {
     if (isSensitiveName(name)) redacted[name] = "<redacted>";
   }
   return redacted;
+}
+
+// `text` (a step's error) with the text of the step's sensitive arguments (what `type` types, a
+// form's values, at any depth) replaced with <redacted>, in every spelling (see valueSpellings).
+function redactArgValues(command, args, text) {
+  const values = [];
+  const collect = (value) => {
+    if (typeof value === "string" || typeof value === "number") values.push(String(value));
+    else if (value && typeof value === "object") Object.values(value).forEach(collect);
+  };
+  for (const name of commandMetadata(command).sensitiveArgs) collect(args?.[name]);
+  return values.length ? redactSecretValues(text, values) : text;
 }
 
 // A step's arguments for a progress line: redacted as the journal has them, long text cut short.
@@ -595,6 +607,7 @@ module.exports = {
   parseCommandLine,
   parseDoCommands,
   promoteRedactedStepArgs,
+  redactArgValues,
   redactCommandArgs,
   summarizeArgs,
   resolveWorkflow,

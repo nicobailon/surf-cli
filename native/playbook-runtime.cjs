@@ -9,7 +9,7 @@ const { GLOBAL_OPTIONS } = require("./global-options.cjs");
 const { LITERAL_OPEN, escapedOp, renderRequest, resolveArgValues, sentRequest } = require("./playbook-template.cjs");
 const { findRedactedPlaceholder, placeholderError } = require("./record-typed-values.cjs");
 const { checkAssertions, createRegexBudget, describeAssertion } = require("./playbook-assertions.cjs");
-const { redactObject } = require("./redaction.cjs");
+const { redactObject, redactSecretValues, valueSpellings } = require("./redaction.cjs");
 const boundedRegex = require("./bounded-regex.cjs");
 const { extractRecords } = require("./records.cjs");
 
@@ -117,7 +117,21 @@ function resolveAuthValues(op, secrets = {}, env = process.env) {
 // (or an error that quotes it), comes back with <redacted> in its place, however short the value.
 function redactSecrets(value, secrets) {
   const values = Object.values(secrets);
-  return values.length === 0 ? value : redactObject(value, values, { anyLength: true });
+  return values.length === 0 ? value : redactObject(value, values.flatMap(valueSpellings), { anyLength: true });
+}
+
+// The free text of a strategy's event (an error, a step's result) without the run's env values.
+// Its other fields and the step's arguments are surf's own data, which no env value reaches, and
+// stay as written, so a short value such as `a` can't rewrite them.
+const EVENT_TEXT_FIELDS = ["resultSummary", "error", "reason"];
+function redactEventText(event, secrets) {
+  const values = Object.values(secrets);
+  if (values.length === 0) return event;
+  const redacted = { ...event };
+  for (const field of EVENT_TEXT_FIELDS) {
+    if (typeof redacted[field] === "string") redacted[field] = redactSecretValues(redacted[field], values, { anyLength: true });
+  }
+  return redacted;
 }
 
 function getJsonPath(value, jsonPath) {
@@ -479,7 +493,7 @@ async function runPlaybookOp({ playbook, op, args: providedArgs = {}, secrets = 
   const regexBudget = createRegexBudget();
   const fieldRegexBudget = boundedRegex.createFieldRegexBudget();
   // A strategy's own events (a workflow step's tool.failed) are journaled: no env value goes with them.
-  const reportStep = (event) => onEvent(redactSecrets(event, authValues));
+  const reportStep = (event) => onEvent(redactEventText(event, authValues));
   const attempts = [];
   // In an op saved from a record, a failed check its file wrote is the op's, so a draft's check
   // never sends more. A read still tries its next strategy (the recorded steps) when its request

@@ -106,3 +106,115 @@ describe("a failed workflow step's events", () => {
     expect(journal).toContain('"type":"tool.failed"');
   });
 });
+
+describe("a failed step's error in escaped form", () => {
+  // Dummy values: one plain, one with a quote and a backslash, so their escaped spellings differ.
+  const PLAIN = ["dummy", "plain", "pw", "8"].join("-");
+  const QUOTED = ["dummy", 'quo"ted', "va\\lue", "8"].join("-");
+  const spellings = (value: string) => {
+    const once = JSON.stringify(value).slice(1, -1);
+    return [value, once, JSON.stringify(once).slice(1, -1), encodeURIComponent(value)];
+  };
+
+  it.each([PLAIN, QUOTED])(
+    "keeps %s, JSON-escaped or URL-encoded, out of every file",
+    async (typed) => {
+      const root = stateRoot();
+      records.startRecord({ site: "shop", op: "login", tabId: 1, root });
+      const report = (event: Record<string, unknown>) => {
+        appendActivity(event, { root });
+        records.appendRecordEvent(event, { target: { tabId: 1 }, root });
+      };
+      const once = JSON.stringify(typed).slice(1, -1);
+      const error = `rejected {"value":"${once}"} at /login?pw=${encodeURIComponent(typed)} (${JSON.stringify(JSON.stringify(typed))})`;
+      const result = await runtime.executeSingleStep(
+        { cmd: "type", args: { selector: "#pw", text: typed } },
+        {},
+        { executeTool: async () => ({ error }), onEvent: report, stepDelay: 0 },
+      );
+      expect(result.success).toBe(false);
+      for (const spelling of [...spellings(typed), "dummy"]) {
+        expect(result.error).not.toContain(spelling);
+        for (const file of filesUnder(root)) {
+          expect(fs.readFileSync(file, "utf8"), file).not.toContain(spelling);
+        }
+      }
+    },
+  );
+});
+
+describe("a very short env value", () => {
+  it.each(["a", "1"])(
+    "(%s) leaves the run's events and the draft made from them intact",
+    async (value) => {
+      const root = stateRoot();
+      const record = records.startRecord({ site: "shop", op: "browse", tabId: 1, root });
+      const report = (event: Record<string, unknown>) => {
+        records.appendRecordEvent(event, { target: { tabId: 1 }, root });
+      };
+      const op = {
+        id: "browse",
+        effect: "read",
+        args: {},
+        run: [
+          {
+            using: "network",
+            request: {
+              method: "GET",
+              url: "https://shop.test/api",
+              authInputs: [{ env: "SURF_TEST_SHORT", header: "X-Site-Key" }],
+            },
+          },
+          {
+            using: "workflow",
+            steps: [
+              { cmd: "navigate", args: { url: "https://shop.test/page/1" } },
+              { cmd: "click", args: { selector: "a" } },
+              { cmd: "type", args: { selector: "#q", text: "books" } },
+            ],
+          },
+        ],
+      };
+      const executeTool = async (tool: string) => {
+        if (tool === "type") {
+          return { error: `rejected key ${value}` };
+        }
+        if (tool === "javascript_tool") {
+          return { error: "network unavailable" };
+        }
+        return { success: true };
+      };
+      await expect(
+        playbookRuntime.runPlaybookOp({
+          playbook: { id: "shop", provenance: { scope: "test" } },
+          op,
+          secrets: { SURF_TEST_SHORT: value },
+          env: {},
+          executeTool,
+          sleep: async () => undefined,
+          onEvent: report,
+        }),
+      ).rejects.toThrow(/All strategies failed/);
+      const events = records.readEvents(record.id, root);
+      const steps = events.filter((event: { type: string }) => event.type === "tool.completed");
+      expect(steps.map((event: { argsRedacted: unknown }) => event.argsRedacted)).toEqual([
+        { url: "https://shop.test/page/1" },
+        { selector: "a" },
+      ]);
+      const failed = events.find((event: { type: string }) => event.type === "tool.failed");
+      expect(failed).toMatchObject({
+        type: "tool.failed",
+        command: "type",
+        resultSummary: "rejected key <redacted>",
+      });
+      const { draft } = records.stopRecord({ target: { tabId: 1 }, draft: true, root });
+      const workflow = draft.run.find(
+        (strategy: { using: string }) => strategy.using === "workflow",
+      );
+      expect(workflow.steps.slice(0, 2)).toEqual([
+        { tool: "navigate", args: { url: "https://shop.test/page/1" } },
+        { tool: "click", args: { selector: "a" } },
+      ]);
+    },
+  );
+});
