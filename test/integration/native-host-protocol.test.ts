@@ -863,6 +863,90 @@ describe("native host protocol integration", () => {
     expect((await select(["--echo-value"])).stdout).toBe("Selected: dummy-lima\n");
   });
 
+  it("keeps a typed value out of the page-change diff unless --echo-value", async () => {
+    const host = await startHostHarness();
+    const fill = async (extra: string[]) => {
+      const cli = runCli(
+        ["type", "dummy-kilo", "--ref", "e1", ...extra, "--no-screenshot"],
+        host.socketPath,
+      );
+      const request = await host.waitForMessage(
+        (message) => message.type === "FORM_FILL",
+        "FORM_FILL",
+      );
+      expect(request.pageChanges).toBeDefined();
+      host.send({
+        id: request.id,
+        success: true,
+        filled: 1,
+        failed: 0,
+        results: [{ ref: "e1", success: true }],
+        pageChanges: {
+          settle: { state: "settled", ms: 5 },
+          navigated: null,
+          changes: [
+            {
+              kind: "changed",
+              ref: "e1",
+              role: "textbox",
+              name: "Name",
+              property: "value",
+              from: "",
+              to: "dummy-kilo",
+            },
+          ],
+          text: [],
+          omitted: 0,
+        },
+      });
+      return await cli;
+    };
+    const plain = await fill([]);
+    expect(plain.code).toBe(0);
+    expect(plain.stdout).toContain('e1 textbox "Name"  value changed');
+    expect(plain.stdout).not.toContain("dummy-kilo");
+    expect((await fill(["--echo-value"])).stdout).toContain('value "" -> "dummy-kilo"');
+  });
+
+  it("keeps chosen options out of a playbook step's captured result", async () => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), "surf-host-pick-"));
+    tempDirs.push(home);
+    const ops = path.join(home, ".surf", "playbooks", "pw", "ops");
+    fs.mkdirSync(ops, { recursive: true });
+    fs.writeFileSync(
+      path.join(ops, "..", "playbook.json"),
+      JSON.stringify({ id: "pw", version: "1.0.0" }),
+    );
+    fs.writeFileSync(
+      path.join(ops, "pick.json"),
+      JSON.stringify({
+        id: "pick",
+        effect: "read",
+        run: [
+          {
+            using: "workflow",
+            autoWait: false,
+            stepDelay: 0,
+            steps: [
+              { tool: "select", args: { selector: "#s", values: "dummy-lima" }, as: "chosen" },
+            ],
+          },
+        ],
+      }),
+    );
+    const host = await startHostHarness({ HOME: home });
+    const cli = runCli(["use", "pw", "pick", "--json"], host.socketPath, { HOME: home });
+    const select = await host.waitForMessage(
+      (message) => message.type === "SELECT_OPTION",
+      "SELECT_OPTION",
+    );
+    host.send({ id: select.id, selected: ["dummy-lima"] });
+    const used = await cli;
+    expect(used.code).toBe(0);
+    expect(used.stdout).toContain('"selectedCount": 1');
+    expect(used.stdout).not.toContain("dummy-lima");
+  });
+
   it("redacts secret-named body fields in network.export unless --raw-bodies", async () => {
     const host = await startHostHarness();
     const directory = fs.mkdtempSync(path.join(os.tmpdir(), "surf-host-export-"));

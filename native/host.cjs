@@ -28,7 +28,7 @@ const grokClient = require("./grok-client.cjs");
 const kimiClient = require("./kimi-client.cjs");
 const aistudioClient = require("./aistudio-client.cjs");
 const aistudioBuild = require("./aistudio-build.cjs");
-const { mapToolToMessage, mapComputerAction, formatToolContent, withoutTypedEcho, formatToolError, publicNetworkResult, publicResponse, buildProviderUploadMessage, applySemanticExpectedIdentity, truncatePageText } = require("./host-helpers.cjs");
+const { mapToolToMessage, mapComputerAction, formatToolContent, withoutTypedEcho, withoutTypedPageChanges, formatToolError, publicNetworkResult, publicResponse, buildProviderUploadMessage, applySemanticExpectedIdentity, truncatePageText } = require("./host-helpers.cjs");
 const { createOracleHost } = require("./oracle-host.cjs");
 
 const IS_WIN = process.platform === "win32";
@@ -1536,7 +1536,8 @@ async function executeMappedHostTool(request, tool, args, tabId) {
   if (extensionMsg.type === "BATCH_EXECUTE" || extensionMsg.type.endsWith("_QUERY")) {
     throw new Error(`tool ${tool} is not available inside a host-owned workflow`);
   }
-  return requestExtensionOrThrow(request, tool, extensionMsg, resolveRequestDeadlineMs(tool, args));
+  // A workflow step's result can be captured (`as`) and returned, so it hides typed values too.
+  return withoutTypedEcho(await requestExtensionOrThrow(request, tool, extensionMsg, resolveRequestDeadlineMs(tool, args)), args);
 }
 
 async function executeNativePlaybook(request, handler, args, options = {}) {
@@ -1874,6 +1875,7 @@ function sendToolResponse(socket, id, result, error) {
     const formattedError = finalError ? formatToolError(finalError) : null;
     let pageChanges;
     if (!formattedError && output?.pageChanges) ({ pageChanges, ...output } = output);
+    pageChanges = withoutTypedPageChanges(pageChanges, request?.tool, request?.args);
     if (formattedError && request) {
       const rewrittenMessage = rewriteTransferPaths(
         formattedError.content[0].text,

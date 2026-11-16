@@ -107,4 +107,4 @@ function redactTypedValuesInUrl(url, typed) {
   return `${origin}${pathname}${tail}`;
 }
 
-module.exports = { forgetTypedValues, heldTypedValues, redactTypedValuesInUrl, rememberTypedValues, typedArg };
+module.exports = { encodedForms, typedValues, forgetTypedValues, heldTypedValues, redactTypedValuesInUrl, rememberTypedValues, typedArg };

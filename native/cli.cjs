@@ -954,7 +954,8 @@ const TOOLS = {
           submit: "Press Enter after (at the cursor or with --into; not with --ref)",
           clear: "Clear the field first (with --into)",
           escapes: "Turn \\n, \\t, \\r and \\\\ in the text into newline, tab, carriage return and backslash",
-          method: "cdp|js (cursor typing uses CDP; selector/ref targets use JS)"
+          method: "cdp|js (cursor typing uses CDP; selector/ref targets use JS)",
+          "echo-value": "Show the typed text in the page-change report (shown as 'value changed' by default; or echoValue: true in ~/surf.json)"
         },
         examples: [
           { cmd: 'type "hello world"', desc: "Type at cursor (CDP events)" },
@@ -1334,7 +1335,7 @@ const TOOLS = {
       "form.fill": {
         desc: "Batch fill form fields",
         args: [],
-        opts: { data: "JSON array of {ref, value}; true/false sets a checkbox" },
+        opts: { data: "JSON array of {ref, value}; true/false sets a checkbox", "echo-value": "Show the filled values in the page-change report (hidden by default)" },
         examples: [{ cmd: `form.fill --data '[{"ref":"e1","value":"John"},{"ref":"e7","value":true}]'`, desc: "Text field and checkbox" }],
       },
     }
@@ -3549,7 +3550,7 @@ if (options["full-page"] === true) {
 const config = loadConfig();
 // Fill and select results show the value typed or the options chosen only when asked: per call,
 // or in the user's own ~/surf.json (never a project's).
-if (loadUserConfig().echoValue === true && ["locate.role", "locate.text", "locate.label", "select"].includes(tool)) options["echo-value"] = true;
+if (loadUserConfig().echoValue === true && ["locate.role", "locate.text", "locate.label", "select", "type", "smart_type", "form_input", "form.fill"].includes(tool)) options["echo-value"] = true;
 const autoSaveEnabled = config.autoSaveScreenshots !== false && !options["no-save"];
 if (tool === "screenshot" && !options.output && !options.savePath && firstArg === undefined && autoSaveEnabled) {
   options.savePath = path.join(SURF_TMP, `surf-snap-${Date.now()}.png`);
