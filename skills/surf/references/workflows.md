@@ -54,9 +54,11 @@ surf playbook export example --out ./example-playbook
 surf playbook import ./example-playbook
 ```
 
-A draft that clicked or typed is a write, as is one whose recorded requests include one other than GET, HEAD or OPTIONS (beacons and analytics aside). When the flow only read data, stop with `--draft --read`; it needs `--network`, and Surf refuses it if a captured request can change data or a step acts beyond the page (cookies, tabs, windows, emulation, AI providers).
+A draft that clicked or typed is a write, as is one whose recorded requests include one other than GET, HEAD or OPTIONS (beacons, analytics, bot sensors such as PerimeterX and survey intercepts such as Qualtrics aside). When the flow only read data, stop with `--draft --read`; it needs `--network`, and Surf refuses it if a captured request can change data or a step acts beyond the page (cookies, tabs, windows, emulation, AI providers).
 
 The draft replays the top-ranked request (never telemetry, page assets or preflights; never a write on a read draft, nor a read on a draft made a write by a captured request); a weak top score, one within 3 points of the next, or a pick that may have passed over the page's data (a JSON with records demoted for a banner-like path, or one next to a document too large to compare) adds a warning. `record candidates` ranks your active record live, else your latest one, or a record id you pass; choose with `--request-id` on `record stop --draft` or `save --from-record`.
+
+`save --from-record` lets the playbook send to the page the record ran on and to the request its draft replays (`api.resy.com` for a search on `resy.com`), no other captured origin. A write op's browser fallback must be one page-write step; a write draft whose workflow isn't (a `navigate` first, or a `type` and a `click`) is saved with its network strategy alone, with a note, when that replays the write, and refused otherwise. A write refused before it sends (a missing `--env` variable, a disallowed origin, a missing input) leaves no receipt, so the same `--review_key` works on the next try.
 
 Name a recorded op's inputs with `pb param`. A field is `query.<param>` (plus `.<json.path>` inside a JSON-valued param), `path.<n>` (`path.1` is the first segment), `body.<path>` (JSON, urlencoded or multipart) or `headers.<name>`. The input defaults to the recorded value unless you pass `--required` or `--default`. Surf prints a diff, saves the op where it is, and also templates a workflow step that carries the same value:
 
@@ -64,8 +66,11 @@ Name a recorded op's inputs with `pb param`. A field is `query.<param>` (plus `.
 surf playbook param books get_books path.2 --value 2 --as page   # page-2.html → page-{{page}}.html
 surf playbook param shop search query.q body.query --as q --required  # one input, several fields
 surf playbook param resy search headers.authorization --env RESY_API_KEY
+surf playbook param hr search query.nameOrId --as name --required --link text   # the typed step takes --name too; --text goes
 surf use books get_books --page 3
 ```
+
+A draft never stores a typed value, so its workflow types `{{text}}`, an input of its own; `--link text` gives those steps the new input and drops `text` (a write's safety key follows). `pb param` names such inputs in its note.
 
 `--env` headers are read from the shell that runs `surf use` (or a generated client) and are never stored; secret headers take only `--env`.
 
