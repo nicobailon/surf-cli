@@ -314,6 +314,7 @@ describe("rankCandidates", () => {
     expect(ranked[0].score - ranked[1].score).toBeGreaterThanOrEqual(candidates.WINNER_MARGIN);
     expect(ranked[2].reasons).toEqual([
       "JSON",
+      "5 records not counted (the path reads like a banner or announcements feed)",
       "first-party",
       "small JSON that overlaps 0% of the page text",
     ]);

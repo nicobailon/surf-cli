@@ -14,8 +14,10 @@ const TINY_BYTES = 64;
 // Overlap is the share of the page's words found in a response. A response holding nearly all of
 // them is the page's own data (+5, above any JSON's records bonus). A small JSON holding under
 // LOW_OVERLAP of them is a side request (-3) when it lists no records, or when it is the web
-// manifest or a banner or announcements feed, whose records don't count either. A JSON with
-// records whose text isn't on the page (a chart's numbers) keeps its records bonus.
+// manifest or its path reads like a banner or announcements feed, whose records don't count
+// either. The path is only a guess, so such a JSON keeps `unguessedScore`, what it would score
+// with its records counted, and pb record stop warns when that would have beaten the pick. A JSON
+// with records whose text isn't on the page (a chart's numbers) keeps its records bonus.
 const HEAVY_OVERLAP = 0.8;
 const LOW_OVERLAP = 0.1;
 const SMALL_JSON_BYTES = 16 * 1024;
@@ -141,9 +143,13 @@ function summarizeResponse(entry, page, { sample: withSample = false } = {}) {
   return summary;
 }
 
-// Never the page's data, however many records it lists: the web manifest or a site banner feed.
-function isSideRequest(entry) {
-  if (entry.type === "Manifest" || mimeOf(entry).includes("manifest+json")) return true;
+const RECORDS_POINTS = 3;
+const SIDE_POINTS = -3;
+
+const isManifest = (entry) => entry.type === "Manifest" || mimeOf(entry).includes("manifest+json");
+
+// A path that reads like a site banner or announcements feed: a guess, unlike the manifest's type.
+function hasSidePath(entry) {
   try {
     return SIDE_PATH.test(new URL(entry.url).pathname);
   } catch {
@@ -184,9 +190,13 @@ function scoreEntry(entry, origin) {
     if (kind === "json") add(4, "JSON");
     else if (kind === "html") add(entry.type === "Document" ? 4 : 2, entry.type === "Document" ? "HTML document" : "HTML");
   }
-  const sideJson = kind === "json" && summary.overlap < LOW_OVERLAP && summary.bytes < SMALL_JSON_BYTES && (!(summary.records >= 2) || isSideRequest(entry));
-  const listsRecords = summary.records >= 2 && !sideJson;
-  if (listsRecords) add(3, `${summary.records} records`);
+  const hasRecords = summary.records >= 2;
+  const smallLowJson = kind === "json" && summary.overlap < LOW_OVERLAP && summary.bytes < SMALL_JSON_BYTES;
+  const manifest = smallLowJson && isManifest(entry);
+  const guessedSide = smallLowJson && hasRecords && !manifest && hasSidePath(entry);
+  const sideJson = smallLowJson && (!hasRecords || manifest || guessedSide);
+  if (hasRecords && !sideJson) add(RECORDS_POINTS, `${summary.records} records`);
+  else if (guessedSide) reasons.push(`${summary.records} records not counted (the path reads like a banner or announcements feed)`);
   const site = hostname(origin);
   const host = hostname(entry.url);
   if (site && host) {
@@ -195,9 +205,16 @@ function scoreEntry(entry, origin) {
   }
   const overlap = `overlaps ${Math.round(summary.overlap * 100)}% of the page text`;
   if (summary.overlap >= LOW_OVERLAP) add(summary.overlap >= HEAVY_OVERLAP ? 5 : summary.overlap >= 0.3 ? 3 : 1, overlap);
-  else if (sideJson) add(-3, `small JSON that ${overlap}`);
+  else if (sideJson) add(SIDE_POINTS, `small JSON that ${overlap}`);
   if (summary.bytes !== undefined && summary.bytes < TINY_BYTES && ok && !emptyRedirect) add(-3, `tiny body (${summary.bytes} B)`);
-  return { score, reasons, effect, eligible: isReplayCandidate(entry) && !telemetry && !preflight, listsRecords: kind === "json" && listsRecords };
+  return {
+    score,
+    reasons,
+    effect,
+    eligible: isReplayCandidate(entry) && !telemetry && !preflight,
+    listsRecords: kind === "json" && hasRecords && !manifest,
+    ...(guessedSide ? { unguessedScore: score + RECORDS_POINTS - SIDE_POINTS } : {}),
+  };
 }
 
 // Every entry scored, best first; ties go to the later request (the pick before ranking).

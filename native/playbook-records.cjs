@@ -293,8 +293,12 @@ function pickRequest({ record, trace, effect, requestId, warnings }) {
   // the page's data instead.
   const unmeasured = top.entry.type === "Document" && top.entry.responseSummary?.unsampled;
   const records = unmeasured && sameEffect.find((candidate) => candidate.listsRecords);
+  // Records left out only because of a banner-like path, which might be the page's data after all.
+  const guessed = sameEffect.find((candidate) => candidate !== top && candidate.unguessedScore >= top.score);
   if (isWeak(top)) warnings.push(`the draft's network strategy, ${shownUrl(top.entry)}, is a weak match (score ${top.score}); ${choose}`);
-  else if (records) {
+  else if (guessed) {
+    warnings.push(`the draft's network strategy, ${shownUrl(top.entry)} (score ${top.score}), was picked over ${shownUrl(guessed.entry)} (score ${guessed.score}), whose ${guessed.entry.responseSummary.records} records weren't counted because its path reads like a banner or announcements feed; counted, it would score ${guessed.unguessedScore}; ${choose}`);
+  } else if (records) {
     warnings.push(`the draft's network strategy, ${shownUrl(top.entry)} (score ${top.score}), is a document too large to compare with the page (${unmeasured}), and ${shownUrl(records.entry)} (score ${records.score}) holds ${records.entry.responseSummary.records} records; ${choose}`);
   } else if (next && top.score - next.score < WINNER_MARGIN) {
     warnings.push(`the draft's network strategy, ${shownUrl(top.entry)} (score ${top.score}), ${top.score === next.score ? "ties with" : "is close to"} ${shownUrl(next.entry)} (score ${next.score}); ${choose}`);
