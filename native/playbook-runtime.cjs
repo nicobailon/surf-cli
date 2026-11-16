@@ -8,7 +8,7 @@ const { editDistance } = require("./edit-distance.cjs");
 const { GLOBAL_OPTIONS } = require("./global-options.cjs");
 const { LITERAL_OPEN, escapedOp, renderRequest, resolveArgValues, sentRequest } = require("./playbook-template.cjs");
 const { findRedactedPlaceholder, placeholderError } = require("./record-typed-values.cjs");
-const { checkAssertions, createRegexBudget, describeAssertion } = require("./playbook-assertions.cjs");
+const { checkAssertions, createRegexBudget } = require("./playbook-assertions.cjs");
 const { redactObject, redactSecretValues, valueSpellings } = require("./redaction.cjs");
 const boundedRegex = require("./bounded-regex.cjs");
 const { extractRecords } = require("./records.cjs");
@@ -163,7 +163,8 @@ function extractResult(result, extract, regexBudget) {
 
 /**
  * Throws on the first failed check; returns the assertion results (expect.assert), if any. The
- * results are redacted against `secrets`, and a failure's message is built from them alone.
+ * results are redacted against `secrets`. A failure's message goes to the journal and receipts, so
+ * it names the assertion's path and op only, never a value: the error's `assertions` hold the rest.
  */
 function verifyResult(value, expect = {}, raw = value, secrets = [], budget = undefined) {
   if (expect.status !== undefined && raw?.status !== expect.status) throw new Error(`expected status ${expect.status}`);
@@ -173,8 +174,7 @@ function verifyResult(value, expect = {}, raw = value, secrets = [], budget = un
   const results = checkAssertions(value, expect.assert, secrets, budget);
   const failed = results.find((result) => !result.pass);
   if (failed) {
-    const got = failed.error ?? `got ${typeof failed.actual === "string" ? failed.actual : JSON.stringify(failed.actual)}`;
-    const error = new Error(`assertion failed: ${describeAssertion(failed)} (${got})`);
+    const error = new Error(`assertion failed: ${failed.path} ${failed.op}${failed.error ? ` (${failed.error})` : ""}`);
     error.assertions = results;
     throw error;
   }

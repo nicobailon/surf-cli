@@ -244,7 +244,7 @@ describe("running an op with assertions", () => {
     ]);
     expect(result.attempts[0]).toMatchObject({
       using: "network",
-      error: "assertion failed: $ array_min_len 1 (got array(0))",
+      error: "assertion failed: $ array_min_len",
       assertions: [{ path: "$", op: "array_min_len", value: 1, pass: false, actual: "array(0)" }],
     });
   });
@@ -277,6 +277,7 @@ describe("running an op with assertions", () => {
 
   it("never retries a write on the next strategy after a failed assertion, and leaves it in doubt", async () => {
     const statuses: string[] = [];
+    const errors: string[] = [];
     // A raw-body op: the body is read from network capture.
     const { executeTool } = captureTab({
       reply: () => ({ body: JSON.stringify({ created: false }) }),
@@ -301,9 +302,14 @@ describe("running an op with assertions", () => {
         },
         executeTool,
         beforeDispatch: async () => statuses.push("dispatched"),
-        afterDispatch: async ({ status }: { status: string }) => statuses.push(status),
+        afterDispatch: async ({ status, error }: { status: string; error?: string }) => {
+          statuses.push(status);
+          if (error) errors.push(error);
+        },
       }),
-    ).rejects.toThrow(/assertion failed: \$\.bodyJson\.created equals true/);
+    ).rejects.toThrow(/^assertion failed: \$\.bodyJson\.created equals$/);
+    // The receipt records the failure without the value the response held.
+    expect(errors).toEqual(["assertion failed: $.bodyJson.created equals"]);
     expect(executeTool.mock.calls.filter(([tool]) => tool === "javascript_tool")).toHaveLength(1);
     expect(statuses).toEqual(["dispatched", "indeterminate"]);
   });
@@ -318,6 +324,29 @@ describe("running an op with assertions", () => {
       /op get_books on.success.expect.assert: assertion 1: op must be one of/,
     );
     expect(() => validate({})).toThrow(/must be an array/);
+  });
+
+  it("keeps the actual value out of a failed assertion's error, which is journaled", async () => {
+    const echoed = "dummy-echoed-input";
+    const events: Array<Record<string, unknown>> = [];
+    const failed = await runtime.testPlaybookOp({
+      playbook: { id: "books", provenance: { scope: "test" } },
+      op: op([{ ...network, extract: { jsonPath: "$" } }]),
+      assertions: [{ path: "$.note", op: "equals", value: "expected" }],
+      executeTool: tab({ note: echoed }),
+      onEvent: (event: Record<string, unknown>) => events.push(event),
+    });
+    expect(failed.attempts[0]).toEqual({
+      using: "network",
+      error: "assertion failed: $.note equals",
+      // pb test's own report still shows it.
+      assertions: [{ path: "$.note", op: "equals", value: "expected", pass: false, actual: echoed }],
+    });
+    expect(failed.error).not.toContain(echoed);
+    expect(events.find((event) => event.type === "strategy.failed")).toMatchObject({
+      error: "assertion failed: $.note equals",
+    });
+    expect(JSON.stringify(events)).not.toContain(echoed);
   });
 });
 
@@ -469,7 +498,7 @@ describe("surf pb test", () => {
         attempts: [
           {
             using: "network",
-            error: 'assertion failed: $[0].title equals "x"',
+            error: "assertion failed: $[0].title equals",
             assertions: [failing],
           },
           { using: "workflow", error: "navigate failed" },
