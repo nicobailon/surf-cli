@@ -47,6 +47,28 @@ describe("playbook write receipts", () => {
     );
   });
 
+  it("checks a write without writing a receipt, refusing what reserveReceipt would", () => {
+    const root = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "surf-receipts-")), "state");
+    roots.push(path.dirname(root));
+    const op = {
+      id: "mutate",
+      effect: "write",
+      safety: { duplicate: "transactional", key: ["resourceId"] },
+    };
+    const claim = { playbookId: "fixture", op, args: { resourceId: "r1" }, root };
+    receipts.checkReceipt(claim);
+    const claims = () =>
+      fs
+        .readdirSync(receipts.receiptRoot(root), { withFileTypes: true })
+        .filter((entry: { isDirectory(): boolean }) => entry.isDirectory());
+    expect(claims()).toEqual([]);
+    const first = receipts.reserveReceipt({ ...claim, attemptId: "attempt-one" });
+    receipts.updateReceipt(first, "indeterminate", { error: "timeout" }, root);
+    expect(() => receipts.checkReceipt(claim)).toThrow(/write blocked by indeterminate receipt/);
+    expect(() => receipts.checkReceipt({ ...claim, overrideInDoubt: true })).not.toThrow();
+    expect(claims()).toHaveLength(1);
+  });
+
   it("fails closed when a process created the semantic claim but crashed before its attempt receipt", () => {
     const root = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "surf-receipts-")), "state");
     roots.push(path.dirname(root));

@@ -269,6 +269,15 @@ ${read}
 })()`;
 }
 
+// Refuses a request to an origin the op doesn't allow before anything is sent. The tab checks again,
+// and resolves a relative URL against its page.
+function assertAllowedOrigin(url, allowedOrigins = []) {
+  if (allowedOrigins.length === 0) return;
+  let origin;
+  try { ({ origin } = new URL(url)); } catch { return; }
+  if (!allowedOrigins.includes(origin)) throw new Error(`playbook network origin is not allowed: ${origin}`);
+}
+
 async function runStrategy(strategy, context) {
   if (strategy.using === "script") {
     if (context.allowScript !== true) throw new Error("script strategy requires --allow-script");
@@ -330,6 +339,7 @@ async function runStrategy(strategy, context) {
       context.serverIdempotency,
       context.attemptId,
     );
+    assertAllowedOrigin(request.url, context.allowedOrigins);
     // Without an in-tab extract the body comes from network capture: turn it on before sending.
     const inTab = extractsInTab(strategy.extract);
     const capture = inTab ? undefined : await watchCapture({ executeTool: context.executeTool, sleep: context.sleep });

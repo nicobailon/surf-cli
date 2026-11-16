@@ -602,6 +602,84 @@ describe("CLI/native-host/fake-extension E2E contract", () => {
     }
   });
 
+  it("leaves no write receipt for a run refused before it sends, so the same key runs next", async () => {
+    const socketPath = createSocketPath();
+    const project = fs.mkdtempSync(path.join(os.tmpdir(), "surf-playbook-project-"));
+    tempDirs.push(project);
+    const opsDir = path.join(project, ".surf", "playbooks", "mutation", "ops");
+    fs.mkdirSync(opsDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(project, ".surf", "playbooks", "mutation", "playbook.json"),
+      JSON.stringify({ id: "mutation", version: "1.0.0", origins: ["https://fixture.test"] }),
+    );
+    const writeOp = (id: string, url: string, extra: Record<string, unknown> = {}) =>
+      fs.writeFileSync(
+        path.join(opsDir, `${id}.json`),
+        JSON.stringify({
+          id,
+          effect: "write",
+          args: { action: { required: true } },
+          safety: { authorization: "explicit", duplicate: "transactional", key: ["action"] },
+          run: [
+            {
+              using: "network",
+              request: { method: "POST", url, body: { action: "{{action}}" }, ...extra },
+              extract: { jsonPath: "$.ok" },
+              expect: { truthy: true },
+            },
+          ],
+        }),
+      );
+    writeOp("submit", "https://fixture.test/api", {
+      authInputs: [{ env: "SURF_E2E_SITE_KEY", header: "X-Site-Key", required: true }],
+    });
+    writeOp("elsewhere", "https://other.test/api");
+    writeOp("untemplated", "https://fixture.test/{{missing}}");
+    const host = startHost(socketPath);
+    const receipts = () => {
+      const root = path.join(host.stateDir, "playbook-receipts");
+      if (!fs.existsSync(root)) {
+        return [];
+      }
+      return fs
+        .readdirSync(root, { withFileTypes: true })
+        .filter((entry) => entry.isDirectory())
+        .flatMap((claim) =>
+          fs
+            .readdirSync(path.join(root, claim.name), { withFileTypes: true })
+            .filter((entry) => entry.name.endsWith(".json"))
+            .map((entry) =>
+              JSON.parse(fs.readFileSync(path.join(root, claim.name, entry.name), "utf8")),
+            ),
+        );
+    };
+    const sent = () => host.messages.filter((message) => message.type === "EXECUTE_JAVASCRIPT");
+    const use = (op: string, env: Record<string, string> = {}) =>
+      runCli(socketPath, ["use", "mutation", op, "--action", "same", "--write"], project, env);
+
+    try {
+      await host.waitForMessage((message) => message.type === "HOST_READY");
+      const refusals = [
+        [await use("submit"), /environment variable SURF_E2E_SITE_KEY is not set/],
+        [await use("elsewhere"), /playbook network origin is not allowed: https:\/\/other\.test/],
+        [await use("untemplated"), /missing template argument: missing/],
+      ] as const;
+      for (const [result, error] of refusals) {
+        expect(result.code).toBe(1);
+        expect(result.stderr).toMatch(error);
+      }
+      expect(sent()).toHaveLength(0);
+      expect(receipts()).toEqual([]);
+
+      const run = await use("submit", { SURF_E2E_SITE_KEY: "dummy-site-key" });
+      expect(run).toMatchObject({ code: 0, stderr: "" });
+      expect(sent()).toHaveLength(1);
+      expect(receipts()).toEqual([expect.objectContaining({ op: "submit", status: "verified" })]);
+    } finally {
+      await host.dispose();
+    }
+  });
+
   it("sends an env-supplied header from the caller's shell and writes its value nowhere", async () => {
     const socketPath = createSocketPath();
     const scratch = fs.mkdtempSync(path.join(os.tmpdir(), "surf-secret-header-"));
