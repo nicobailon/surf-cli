@@ -327,6 +327,65 @@ describe("the JSON-escaped spelling of an env value", () => {
     expect(fs.readFileSync(file, "utf8")).toBe(before);
   });
 
+  it("is redacted from a structured tab error before it becomes text", async () => {
+    for (const echo of [QUOTED, JSON.stringify({ echo: QUOTED })]) {
+      const events: Array<Record<string, unknown>> = [];
+      const failed = await runtime.testPlaybookOp({
+        playbook: { id: "shop", provenance: { scope: "test" } },
+        op,
+        env: { [ENV]: QUOTED },
+        executeTool: async () => ({ error: { nested: { echo } } }),
+        onEvent: (event: Record<string, unknown>) => events.push(event),
+      });
+      expect(failed.status).toBe("failed");
+      const failures = events.filter((event) => event.type === "strategy.failed");
+      for (const text of [failed.error, failed.attempts[0].error, ...failures.map((event) => event.error)]) {
+        expect(text).toContain("<redacted>");
+        for (const spelling of [QUOTED, escaped, twiceEscaped]) {
+          expect(text).not.toContain(spelling);
+        }
+      }
+    }
+  });
+
+  it("is redacted from a workflow strategy's structured extract error, as from the network strategy's", async () => {
+    const workflowOp = {
+      ...op,
+      run: [
+        {
+          using: "workflow",
+          steps: [{ cmd: "navigate", args: { url: "https://api.test/" } }],
+          stepDelay: 0,
+          autoWait: false,
+          extract: { html: { value: "h1" } },
+        },
+        op.run[0],
+      ],
+    };
+    const executeTool = async (tool: string) =>
+      tool === "javascript_tool"
+        ? { error: { nested: { echo: JSON.stringify({ echo: QUOTED }) } } }
+        : { success: true };
+    const failed = await runtime.testPlaybookOp({
+      playbook: { id: "shop", provenance: { scope: "test" } },
+      op: workflowOp,
+      env: { [ENV]: QUOTED },
+      executeTool,
+      sleep: vi.fn(),
+    });
+    expect(failed.status).toBe("failed");
+    expect(failed.attempts.map((attempt: { using: string }) => attempt.using)).toEqual([
+      "workflow",
+      "network",
+    ]);
+    for (const text of [failed.error, ...failed.attempts.map((attempt: any) => attempt.error)]) {
+      expect(text).toContain("<redacted>");
+      for (const spelling of [QUOTED, escaped, twiceEscaped]) {
+        expect(text).not.toContain(spelling);
+      }
+    }
+  });
+
   it("is redacted from a generated client's HTTP error, before the error is cut to 500 characters", async () => {
     const out = path.join(tempShop().cwd, "client");
     clients.generateClient({

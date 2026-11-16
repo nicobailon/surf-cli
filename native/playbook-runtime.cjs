@@ -253,8 +253,10 @@ async function runTabExtract(context, script, { onAnswered = () => {} } = {}) {
     budget: context.fieldRegexBudget,
     script,
     now: context.now,
+    // An error object is redacted before it becomes text: as JSON, a value inside it is escaped.
     execute: async (code) => {
       const response = await context.executeTool("javascript_tool", { code }, { signal: context.signal });
+      if (response?.error && typeof response.error === "object") return { ...response, error: redactSecrets(response.error, context.authValues || {}) };
       if (!response?.error) onAnswered();
       return response;
     },
