@@ -1251,6 +1251,26 @@ describe("activity and explicit record evidence", () => {
         JSON.parse(fs.readFileSync(path.join(saved.directory, "playbook.json"), "utf8")).origins,
       ).toEqual(origins);
       expect(savedOp(saved).origins).toEqual(origins);
+      // The save names the origins; api.resy.test is the page's own site, so no warning.
+      expect(saved.origins).toEqual(origins);
+      expect(saved.warnings?.filter((warning: string) => /different site/.test(warning))).toEqual(
+        [],
+      );
+      // A request on another site (a CDN's JSON) is allowed too, with a warning naming it.
+      const onCdn = recordFlow({
+        origin: "https://resy.test",
+        trace: [{ ...page, url: "https://resy.test/search" }, cdn],
+        stop: { draft: true, requestId: "r_cdn" },
+      });
+      const cdnSaved = authoring.saveFromRecord({
+        recordId: onCdn.stopped().record.id,
+        root: onCdn.root,
+        home: path.dirname(onCdn.root),
+      });
+      expect(cdnSaved.origins).toEqual(["https://resy.test", "https://cdn.other.test"]);
+      expect(cdnSaved.warnings).toEqual([
+        "the op may also send to https://cdn.other.test, the origin of the request it replays (GET https://cdn.other.test/config.json), which is on another site than the record's page (https://resy.test); if that is the wrong request, save again with --request-id <r_…> from pb record candidates",
+      ]);
       // A read replayed on the page's own origin keeps that one origin.
       const read = recordFlow({
         origin: "https://resy.test",

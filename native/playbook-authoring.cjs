@@ -79,10 +79,15 @@ function fitWriteWorkflow(op, { record, trace, requestId }, warnings) {
 // The origins an op saved from a record may send to: the page the record ran on, and the request
 // its network strategy replays (an API on another host, as api.resy.com for resy.com). Other
 // captured origins stay out.
-function allowedOrigins(record, op) {
+// A replayed request on another site than the page (a CDN's JSON, say) is allowed with a warning,
+// so a wrong pick shows.
+function allowedOrigins(record, op, warnings) {
   const request = op.run.find((strategy) => strategy.using === "network")?.request;
-  const origins = [record.origin, request && new URL(request.url).origin].filter(Boolean);
-  return [...new Set(origins)];
+  const replayed = request && new URL(request.url).origin;
+  if (replayed && record.origin && siteOf(hostname(replayed)) !== siteOf(hostname(record.origin))) {
+    warnings.push(`the op may also send to ${replayed}, the origin of the request it replays (${shownUrl(request)}), which is on another site than the record's page (${record.origin}); if that is the wrong request, save again with --request-id <r_…> from pb record candidates`);
+  }
+  return [...new Set([record.origin, replayed].filter(Boolean))];
 }
 
 // `requestId` redrafts the op to replay that request, keeping a read draft a read (its checks rerun).
@@ -95,10 +100,10 @@ function saveFromRecord({ recordId, requestId, scope = "user", cwd, home, root =
   const drafted = draft && !requestId ? draft : draftFromRecord(recordId, root, { read: draft?.effect === "read", requestId, warnings });
   const trace = readPrivateJson(path.join(recordsRoot(root), recordId, "network", "trace.json"), null, { root });
   const op = fitWriteWorkflow(drafted, { record, trace, requestId }, warnings);
-  const origins = allowedOrigins(record, op);
+  const origins = allowedOrigins(record, op, warnings);
   validateOp(op, { origins });
   const saved = savePlaybook({ manifest: { id: record.site, name: record.site, version: "1.0.0", origins }, op, scope, cwd, home });
-  return warnings.length > 0 ? { ...saved, warnings } : saved;
+  return { ...saved, origins, ...(warnings.length > 0 ? { warnings } : {}) };
 }
 
 function exportRecordHar(recordId, output, root = getPrivateStateRoot()) {
