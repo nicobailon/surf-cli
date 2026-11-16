@@ -289,3 +289,80 @@ describe("secret-named fields in base64 response bodies", () => {
     expect(exporter.publicEntry(raw, { rawBodies: true }).responseBody).toBe(raw.responseBody);
   });
 });
+
+describe("network export of env-backed and echoed header values", () => {
+  // Dummy values, built from parts so no literal here reads as a credential.
+  const SITE_KEY = ["dummy", "site", "key", "9"].join("-");
+  const AUTH = ["dummy", 'au"th', "9\\x"].join("-");
+  const entry = {
+    id: "r-9",
+    method: "GET",
+    url: "https://example.test/api",
+    requestHeaders: { Authorization: AUTH, "X-Site-Key": SITE_KEY, accept: "*/*" },
+    responseHeaders: { "content-type": "application/json", "x-echo-auth": `seen ${AUTH}` },
+    responseBody: JSON.stringify({ auth: AUTH, siteKey: SITE_KEY }),
+    status: 200,
+  };
+  const escaped = JSON.stringify(AUTH).slice(1, -1);
+
+  it("redacts an Authorization value a body echoes JSON-escaped, and a response header's echo", () => {
+    for (const format of ["json", "jsonl", "har"]) {
+      const text = exporter.serializeNetworkExport([entry], format);
+      expect(text, format).not.toContain(escaped);
+      expect(text, format).not.toContain(JSON.stringify(escaped).slice(1, -1));
+      expect(text, format).not.toContain("dummy-au");
+      expect(text, format).toContain("x-echo-auth");
+    }
+  });
+
+  it("redacts a header ops read from the environment, where it is sent and echoed", () => {
+    for (const format of ["json", "jsonl", "har"]) {
+      const text = exporter.serializeNetworkExport([entry], format, {
+        secretHeaders: ["x-site-key"],
+      });
+      expect(text, format).not.toContain(SITE_KEY);
+      expect(text, format).toContain("X-Site-Key");
+    }
+  });
+
+  it("finds the env-backed headers of saved ops and keeps their values out of a record's HAR", async () => {
+    const playbooks = require("../../native/playbooks.cjs");
+    const authoring = require("../../native/playbook-authoring.cjs");
+    const records = require("../../native/playbook-records.cjs");
+    const cwd = await tempDir();
+    const home = await tempDir();
+    const root = await tempDir();
+    const directory = path.join(cwd, ".surf", "playbooks", "shop");
+    await fs.mkdir(path.join(directory, "ops"), { recursive: true });
+    await fs.writeFile(
+      path.join(directory, "playbook.json"),
+      JSON.stringify({ id: "shop", version: "1.0.0", origins: [] }),
+    );
+    const request = {
+      method: "GET",
+      url: "https://example.test/api",
+      authInputs: [{ env: "SHOP_SITE_KEY", header: "X-Site-Key" }],
+    };
+    await fs.writeFile(
+      path.join(directory, "ops", "items.json"),
+      JSON.stringify({ id: "items", effect: "read", run: [{ using: "network", request }] }),
+    );
+    expect(playbooks.envBackedHeaders({ cwd, home })).toContain("x-site-key");
+
+    const record = records.startRecord({
+      site: "shop",
+      op: "items",
+      tabId: 1,
+      network: true,
+      root,
+    });
+    records.attachNetworkTrace(record.id, [entry], root, {
+      capture: { active: true, interruptions: [], dropped: 0 },
+    });
+    const output = path.join(cwd, "out", "trace.har");
+    authoring.exportRecordHar(record.id, output, root, { cwd, home });
+    const har = await fs.readFile(output, "utf8");
+    expect(har).toContain("X-Site-Key");
+    expect(har).not.toContain(SITE_KEY);
+  });
+});

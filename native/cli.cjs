@@ -3895,6 +3895,8 @@ if (tool === "gemini") {
 if (tool === "network.export" && outputPath !== undefined) {
   toolArgs.output = outputPath;
 }
+// The export redacts the headers this project's saved ops read from the environment.
+if (tool === "network.export") toolArgs.projectDir = process.cwd();
 if ((tool === "video.start" || tool === "video.restart") && outputPath !== undefined) {
   toolArgs.output = outputPath;
 }

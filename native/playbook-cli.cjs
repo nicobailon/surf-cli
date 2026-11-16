@@ -257,7 +257,7 @@ async function handlePlaybookCli(argv, { endpoint, cwd = process.cwd(), session,
   }
   if (command === "trace" && parsed.positional[0] === "export") {
     if (!parsed.options["from-record"] || !parsed.options.har) throw new Error("trace export requires --from-record <id> --har <path>");
-    return { handled: true, value: exportRecordHar(parsed.options["from-record"], path.resolve(parsed.options.har)), json: parsed.options.json === true };
+    return { handled: true, value: exportRecordHar(parsed.options["from-record"], path.resolve(parsed.options.har), undefined, { cwd }), json: parsed.options.json === true };
   }
   if (command === "export") return { handled: true, value: exportPlaybookDirectory(parsed.positional[0], { out: parsed.options.out, cwd }), json: parsed.options.json === true };
   if (command === "import") return { handled: true, value: importPlaybookDirectory(parsed.positional[0], { scope: parsed.options.project ? "project" : "user", cwd }), json: parsed.options.json === true };

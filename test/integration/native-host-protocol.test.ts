@@ -1885,6 +1885,61 @@ describe("native host protocol integration", () => {
     }
   });
 
+  it("redacts the headers the caller's project ops read from the environment in a network export", async () => {
+    // A dummy value, built from parts so no literal here reads as a credential.
+    const siteKey = ["dummy", "site", "key", "10"].join("-");
+    const project = fs.mkdtempSync(path.join(os.tmpdir(), "surf-export-project-"));
+    tempDirs.push(project);
+    const directory = path.join(project, ".surf", "playbooks", "shop");
+    (require("node:fs") as any).mkdirSync(path.join(directory, "ops"), { recursive: true });
+    fs.writeFileSync(
+      path.join(directory, "playbook.json"),
+      JSON.stringify({ id: "shop", version: "1.0.0", origins: [] }),
+    );
+    fs.writeFileSync(
+      path.join(directory, "ops", "items.json"),
+      JSON.stringify({
+        id: "items",
+        effect: "read",
+        run: [
+          {
+            using: "network",
+            request: {
+              method: "GET",
+              url: "https://example.test/api",
+              authInputs: [{ env: "SHOP_SITE_KEY", header: "X-Site-Key" }],
+            },
+          },
+        ],
+      }),
+    );
+    const output = path.join(project, "requests.json");
+    const host = await startHostHarness();
+    const exporting = runCli(["network.export", "--output", output], host.socketPath, {}, project);
+    const request = await host.waitForMessage(
+      (message) => message.type === "EXPORT_NETWORK_REQUESTS",
+      "EXPORT_NETWORK_REQUESTS",
+    );
+    host.send({
+      id: request.id,
+      entries: [
+        {
+          id: "r1",
+          url: "https://example.test/api",
+          requestHeaders: { "X-Site-Key": siteKey },
+          responseBody: JSON.stringify({ echo: siteKey }),
+        },
+      ],
+      jsonl: false,
+      har: false,
+    });
+    const exported = await exporting;
+    expect(exported.code).toBe(0);
+    const written = fs.readFileSync(output, "utf8");
+    expect(written).toContain("X-Site-Key");
+    expect(written).not.toContain(siteKey);
+  });
+
   it("transfers successful remote auto-screenshots without inline image data", async () => {
     const reservation = net.createServer();
     await new Promise<void>((resolve) => reservation.listen(0, "127.0.0.1", resolve));
