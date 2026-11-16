@@ -1820,7 +1820,8 @@ export class CDPController {
   async pressKey(tabId: number, key: string, modifiers = 0): Promise<void> {
     const keyDef = this.getKeyDefinition(key);
     if (!keyDef) {
-      throw new Error(`Unknown key: ${key}`);
+      // The key can be text a step typed, so the error doesn't repeat it.
+      throw new Error("Unknown key: pass key a key name such as Enter, Tab or ArrowDown, or one character");
     }
 
     await this.dispatchKeyEvent(tabId, "keyDown", keyDef, modifiers);

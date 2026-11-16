@@ -2410,7 +2410,8 @@ function handleContentMessage(
           ].some(field => normalizeLocatorText(field).includes(query)));
         }
 
-        const described = `role "${role}"${name ? ` and name "${name}"` : ''}`;
+        // The name can be text the caller typed: errors name the field, not its value.
+        const described = `role "${role}"${name ? " and the given name" : ''}`;
         const narrowed = narrowLocated(
           matches,
           el => query !== "" && normalizeLocatorText(getName(el)) === query,
@@ -2457,8 +2458,8 @@ function handleContentMessage(
           sorted,
           el => normalizeLocatorText(el.textContent) === query,
           unique,
-          `text "${text}"`,
-          `No element found with text "${text}"`,
+          "the given text",
+          "No element found with the given text",
         );
         if (typeof narrowed === "string") {
           sendResponse({ error: narrowed });
@@ -2505,8 +2506,8 @@ function handleContentMessage(
           [...fields],
           field => exactFields.has(field),
           unique,
-          `label "${label}"`,
-          `No form field found with label "${label}"`,
+          "the given label",
+          "No form field found with the given label",
         );
         if (typeof narrowed === "string") {
           sendResponse({ error: narrowed });

@@ -857,6 +857,8 @@ describe("CDPController", () => {
 
       expect(error).toBeDefined();
       expect(error?.message).toContain("Unknown key");
+      // `key` can be what a step types: the error names the command, not the value.
+      expect(error?.message).not.toContain("UnknownSpecialKey");
     });
   });
 

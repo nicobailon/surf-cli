@@ -1414,6 +1414,25 @@ describe("accessibility tree", () => {
     expect(tree).toContain(`${role} "${name}" [${located.matches[0].ref}]`);
   });
 
+  it("names the locator and its field, not the text looked up, when nothing matches", () => {
+    // A dummy lookup text: what the caller passed, which the error must not repeat.
+    const query = ["dummy", "lookup", "9"].join("-");
+    (globalThis as any).NodeFilter = { SHOW_TEXT: 4 };
+    (document as any).createTreeWalker = () => ({ currentNode: null, nextNode: () => null });
+    (document as any).querySelectorAll = () => [];
+    const errors = [
+      sendMessage({ type: "LOCATE_ROLE", role: "button", name: query }).error,
+      sendMessage({ type: "LOCATE_TEXT", text: query }).error,
+      sendMessage({ type: "LOCATE_LABEL", label: query }).error,
+    ];
+    expect(errors).toEqual([
+      'No element found with role "button" and the given name',
+      "No element found with the given text",
+      "No form field found with the given label",
+    ]);
+    expect(errors.join("\n")).not.toContain(query);
+  });
+
   it("returns the whole visible text so the host can mark a cut", () => {
     const long = "😀".repeat(30000);
     (document.body as unknown as FakeElement).append(text(long));
