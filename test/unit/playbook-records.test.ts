@@ -106,6 +106,37 @@ const telemetry = [
     url: "https://o1.ingest.sentry.io/api/1/envelope/",
   },
 ];
+// Bot-sensor and survey POSTs a page sends to third parties (resy.com, blast.ncbi.nlm.nih.gov).
+const sensors = [
+  {
+    id: "r_px",
+    method: "POST",
+    status: 200,
+    type: "XHR",
+    url: "https://collector-pxabc123.px-cloud.net/api/v2/collector",
+  },
+  {
+    id: "r_pxchk",
+    method: "POST",
+    status: 200,
+    type: "XHR",
+    url: "https://collector-pxabc123.pxchk.net/api/v2/collector",
+  },
+  {
+    id: "r_qualtrics",
+    method: "POST",
+    status: 200,
+    type: "XHR",
+    url: "https://zn0abc.siteintercept.qualtrics.com/WRSiteInterceptEngine/Targeting.php?Q_ZoneID=ZN_0abc",
+  },
+  {
+    id: "r_datadome",
+    method: "POST",
+    status: 200,
+    type: "XHR",
+    url: "https://api-js.datadome.co/js/",
+  },
+];
 const sentryCreate = {
   id: "r_6",
   method: "POST",
@@ -214,6 +245,16 @@ describe("draft effect and pb record stop --read", () => {
       "read",
     ],
     [
+      "a bot-sensor or survey POST doesn't block --read",
+      { commands: ["click"], trace: [page, ...sensors], stop: { draft: true, read: true } },
+      "read",
+    ],
+    [
+      "a bot-sensor or survey POST doesn't make a navigation a write",
+      { commands: ["navigate"], trace: [page, ...sensors] },
+      "read",
+    ],
+    [
       "a vendor's request from another site's page is telemetry",
       {
         commands: ["click"],
@@ -243,6 +284,19 @@ describe("draft effect and pb record stop --read", () => {
       "the vendor's own site (sending page)",
       { trace: [{ ...sentryCreate, tabUrl: "https://sentry.io/organizations/acme/" }] },
       /captured POST https:\/\/sentry\.io/,
+    ],
+    [
+      "a survey vendor's own site",
+      {
+        trace: [
+          {
+            ...sensors[2],
+            url: "https://siteintercept.qualtrics.com/WRSiteInterceptEngine/Targeting.php",
+          },
+        ],
+        origin: "https://www.qualtrics.com",
+      },
+      /captured POST https:\/\/siteintercept\.qualtrics\.com/,
     ],
     [
       "a vendor host with no known site",
@@ -343,6 +397,18 @@ describe("draft effect and pb record stop --read", () => {
       request: { method: "GET", url: "https://example.test/search" },
     });
     expect(stopped.warnings).toBeUndefined();
+    // A bot sensor's POST is never the draft's request, nor one --request-id may choose.
+    const sensed = stopFlow({ commands: ["navigate"], trace: [...sensors, page] });
+    expect(sensed.draft.run[0].request).toMatchObject({ url: "https://example.test/search" });
+    expect(
+      recordFlow({
+        commands: ["navigate"],
+        trace: [page, ...sensors],
+        stop: { draft: true, requestId: "r_px" },
+      }).stopped,
+    ).toThrow(
+      /request r_px \(POST https:\/\/collector-pxabc123\.px-cloud\.net\/api\/v2\/collector\) is telemetry/,
+    );
     // A write draft replays the write it captured, the request that holds its effect.
     const { draft } = stopFlow({ commands: ["click"], trace: [create, page] });
     expect(draft.effect).toBe("write");
