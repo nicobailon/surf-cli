@@ -304,7 +304,9 @@ describe("running an op with assertions", () => {
         beforeDispatch: async () => statuses.push("dispatched"),
         afterDispatch: async ({ status, error }: { status: string; error?: string }) => {
           statuses.push(status);
-          if (error) errors.push(error);
+          if (error) {
+            errors.push(error);
+          }
         },
       }),
     ).rejects.toThrow(/^assertion failed: \$\.bodyJson\.created equals$/);
@@ -327,14 +329,17 @@ describe("running an op with assertions", () => {
   });
 
   it("validates a strategy's own verify.assert and expect.assert, and caps all of an op's at 50", () => {
-    const many = (count: number) => Array.from({ length: count }, () => ({ path: "$", op: "exists" }));
+    const many = (count: number) =>
+      Array.from({ length: count }, () => ({ path: "$", op: "exists" }));
     const validate = (strategy: Record<string, unknown>, extra: Record<string, unknown> = {}) =>
       playbooks.validateOp(op([{ ...network, ...strategy }], extra), { origins: [] });
     for (const key of ["verify", "expect"]) {
       const where = `op get_books network strategy ${key}\\.assert`;
       const check = (assert: unknown) => () => validate({ [key]: { assert } });
       expect(check(many(50))).not.toThrow();
-      expect(check(many(51))).toThrow(new RegExp(`${where}: at most 50 assertions per op \\(got 51\\)`));
+      expect(check(many(51))).toThrow(
+        new RegExp(`${where}: at most 50 assertions per op \\(got 51\\)`),
+      );
       expect(check([{ path: "records", op: "exists" }])).toThrow(
         new RegExp(`${where}: assertion 1: path must be`),
       );
@@ -351,7 +356,9 @@ describe("running an op with assertions", () => {
         { verify: { assert: many(20) }, expect: { assert: many(20) } },
         { on: { success: { expect: { assert: many(11) } } } },
       ),
-    ).toThrow(/op get_books: at most 50 assertions per op across all its strategies and on\.success \(got 51\)/);
+    ).toThrow(
+      /op get_books: at most 50 assertions per op across all its strategies and on\.success \(got 51\)/,
+    );
     expect(() =>
       validate(
         { verify: { assert: many(20) }, expect: { assert: many(20) } },
@@ -374,7 +381,9 @@ describe("running an op with assertions", () => {
       using: "network",
       error: "assertion failed: $.note equals",
       // pb test's own report still shows it.
-      assertions: [{ path: "$.note", op: "equals", value: "expected", pass: false, actual: echoed }],
+      assertions: [
+        { path: "$.note", op: "equals", value: "expected", pass: false, actual: echoed },
+      ],
     });
     expect(failed.error).not.toContain(echoed);
     expect(events.find((event) => event.type === "strategy.failed")).toMatchObject({

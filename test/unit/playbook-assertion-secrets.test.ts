@@ -69,7 +69,12 @@ function tabAnswering(result: unknown) {
 }
 
 /** A pb test run on the browser host, whose environment alone holds the env value. */
-function hostRun(result: unknown, secret: string, assert: unknown[], onEvent = () => {}) {
+function hostRun(
+  result: unknown,
+  secret: string,
+  assert: unknown[],
+  onEvent: (event: Record<string, unknown>) => void = () => undefined,
+) {
   return runtime.testPlaybookOp({
     playbook: { id: "shop", provenance: { scope: "test" } },
     op,
@@ -171,13 +176,22 @@ describe("a failed assertion and env values", () => {
 
   it("keeps a value JSON would escape out of the error, the attempts and the journal", async () => {
     const events: Array<Record<string, unknown>> = [];
-    const failed = await hostRun({ x: "other" }, QUOTED, [{ path: "$.x", op: "equals", value: QUOTED }], (event: Record<string, unknown>) => events.push(event));
+    const failed = await hostRun(
+      { x: "other" },
+      QUOTED,
+      [{ path: "$.x", op: "equals", value: QUOTED }],
+      (event: Record<string, unknown>) => events.push(event),
+    );
     expect(failed.status).toBe("failed");
     expect(failed.attempts[0].assertions[0]).toMatchObject({ value: "<redacted>", pass: false });
     const failures = events.filter((event) => event.type === "strategy.failed");
     expect(failures).toHaveLength(1);
     // The raw strings: JSON.stringify of the whole result would escape them again and hide a leak.
-    for (const text of [failed.error, failed.attempts[0].error, ...failures.map((event) => event.error)]) {
+    for (const text of [
+      failed.error,
+      failed.attempts[0].error,
+      ...failures.map((event) => event.error),
+    ]) {
       expect(text).not.toContain(escaped);
       expect(text).not.toContain(QUOTED);
     }
@@ -212,7 +226,11 @@ describe("matches patterns and env values over the 64 KB match cap", () => {
       /--save refused: assertion 1's value passed through env-header redaction/,
     );
     expect(fs.readFileSync(file, "utf8")).toBe(before);
-    const [checked] = assertions.checkAssertions("ok", [{ path: "$", op: "matches", value: pattern }], [LONG]);
+    const [checked] = assertions.checkAssertions(
+      "ok",
+      [{ path: "$", op: "matches", value: pattern }],
+      [LONG],
+    );
     expect(checked).toMatchObject({ pass: true, secretSensitive: true });
   });
 });
