@@ -2,6 +2,7 @@ const { openClientTransport } = require("./client-transport.cjs");
 const { selectEndpoint } = require("./endpoint.cjs");
 const { prepareRemoteTool, validateLocalToolPaths } = require("./file-transfer.cjs");
 const { resolveRequestDeadlineMs } = require("./host-sessions.cjs");
+const { summarizeArgs } = require("./workflow-definition.cjs");
 const runtime = require("./workflow-runtime.cjs");
 
 function sendDoRequest(toolName, toolArgs, context = {}) {
@@ -43,12 +44,6 @@ function semanticRequestContext(context, timeoutMs, identity) {
   };
 }
 
-function summarizeArgs(step) {
-  return Object.entries(step.args || {})
-    .map(([key, value]) => typeof value === "string" && value.length > 40 ? `${key}="${value.slice(0, 37)}..."` : `${key}=${JSON.stringify(value)}`)
-    .join(" ");
-}
-
 function printProgress(event) {
   const stepNum = `[${event.index + 1}/${event.total}]`;
   if (event.type === "loop") {
@@ -60,7 +55,7 @@ function printProgress(event) {
     return;
   }
   if (event.phase === "start") {
-    const args = summarizeArgs(event.step);
+    const args = summarizeArgs(event.step.cmd, event.step.args);
     process.stdout.write(`${stepNum} ${event.step.cmd}${args ? ` ${args}` : ""} ... `);
   } else if (event.phase === "ok") console.log(`OK (${event.ms}ms)`);
   else {

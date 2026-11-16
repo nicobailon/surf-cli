@@ -146,6 +146,13 @@ function redactCommandArgs(command, args, includeInputValues = false) {
   return redacted;
 }
 
+// A step's arguments for a progress line: redacted as the journal has them, long text cut short.
+function summarizeArgs(command, args) {
+  return Object.entries(redactCommandArgs(command, args || {}))
+    .map(([key, value]) => (typeof value === "string" && value.length > 40 ? `${key}="${value.slice(0, 37)}..."` : `${key}=${JSON.stringify(value)}`))
+    .join(" ");
+}
+
 function templateRedactedArgs(value, args = {}) {
   if (typeof value === "string") {
     const match = value.match(/^<([a-z0-9._-]+)>$/);
@@ -543,7 +550,7 @@ function formatStep(step, indent = 0) {
     return lines.join("\n");
   }
   const tool = step.tool || step.cmd;
-  const argStr = Object.entries(step.args || {}).map(([key, value]) => `${key}=${JSON.stringify(value)}`).join(" ");
+  const argStr = Object.entries(redactCommandArgs(tool, step.args || {})).map(([key, value]) => `${key}=${JSON.stringify(value)}`).join(" ");
   return `${pad}${tool}${argStr ? ` ${argStr}` : ""}${step.as ? ` → ${step.as}` : ""}`;
 }
 
@@ -589,6 +596,7 @@ module.exports = {
   parseDoCommands,
   promoteRedactedStepArgs,
   redactCommandArgs,
+  summarizeArgs,
   resolveWorkflow,
   tokenize,
   validateWorkflowArgs,

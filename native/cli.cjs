@@ -20,6 +20,7 @@ const {
   normalizeWorkflow,
   parseDoCommands,
   resolveWorkflow,
+  summarizeArgs,
   validateWorkflowArgs,
   validateWorkflowFile,
   ECHO_COMMANDS,
@@ -2784,9 +2785,7 @@ if (args.includes("--script")) {
       // A script file can't turn on what loosens a safe default; only the command line can.
       const toolArgs = withoutOptIns(step.args);
 
-      const argSummary = Object.entries(toolArgs)
-        .map(([k, v]) => typeof v === "string" && v.length > 40 ? `${k}="${v.slice(0, 37)}..."` : `${k}=${JSON.stringify(v)}`)
-        .join(" ");
+      const argSummary = summarizeArgs(toolName, toolArgs);
       const desc = argSummary ? `${toolName} ${argSummary}` : toolName;
 
       if (dryRun) {
@@ -3072,10 +3071,11 @@ if (args[0] === "do") {
     steps.forEach((s, i) => {
       console.log(`  ${i + 1}. ${formatStep(s)}`);
     });
+    // Names only: a variable can hold a password or other typed input.
     if (Object.keys(vars).length > 0) {
       console.log(`\nVariables:`);
-      for (const [k, v] of Object.entries(vars)) {
-        console.log(`  ${k} = ${JSON.stringify(v)}`);
+      for (const k of Object.keys(vars)) {
+        console.log(`  ${k} = <redacted>`);
       }
     }
     process.exit(0);
