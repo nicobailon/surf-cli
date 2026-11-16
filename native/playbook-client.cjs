@@ -108,7 +108,8 @@ const response = await fetch(url, {
   ...(endpoint.body === undefined ? {} : { body: typeof endpoint.body === "string" ? endpoint.body : JSON.stringify(endpoint.body) }),
 });
 const text = await response.text();
-if (!response.ok) throw new Error(\`HTTP \${response.status}: \${text.slice(0, 500)}\`);
+// Redacted in full before it is cut, so the cut can't keep the start of an env value.
+if (!response.ok) throw new Error(\`HTTP \${response.status}: \${redact(text).slice(0, 500)}\`);
 let bodyJson;
 try { bodyJson = JSON.parse(text); } catch {}
 let output = manifest.extract ? {

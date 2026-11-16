@@ -326,4 +326,50 @@ describe("the JSON-escaped spelling of an env value", () => {
     expect(hosted).toHaveBeenCalledOnce();
     expect(fs.readFileSync(file, "utf8")).toBe(before);
   });
+
+  it("is redacted from a generated client's HTTP error, before the error is cut to 500 characters", async () => {
+    const out = path.join(tempShop().cwd, "client");
+    clients.generateClient({
+      playbookId: "shop",
+      op,
+      strategy: op.run[0],
+      provenance: { type: "playbook", id: "shop" },
+      out,
+    });
+    const long = `dummy-env-value-${"0123456789".repeat(4)}`;
+    const cases = [
+      { key: QUOTED, body: (key: string) => JSON.stringify({ echo: key }), hidden: [QUOTED, escaped] },
+      { key: long, body: (key: string) => `${"x".repeat(490)}${key}`, hidden: [long.slice(0, 10)] },
+    ];
+    for (const { key, body, hidden } of cases) {
+      const server = http.createServer((req: any, res: any) => {
+        res.writeHead(500, { "content-type": "application/json" });
+        res.end(body(req.headers["x-api-key"]));
+      });
+      await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+      try {
+        const stderr = await new Promise<string>((resolve) =>
+          execFile(
+            process.execPath,
+            [path.join(out, "client.mjs")],
+            {
+              env: {
+                ...process.env,
+                [ENV]: key,
+                SURF_CLIENT_ORIGIN: `http://127.0.0.1:${server.address().port}`,
+              },
+            },
+            (_error: Error | null, _stdout: string, output: string) => resolve(output),
+          ),
+        );
+        expect(stderr).toContain("HTTP 500: ");
+        expect(stderr).toContain("<redacted>");
+        for (const text of hidden) {
+          expect(stderr).not.toContain(text);
+        }
+      } finally {
+        await new Promise((resolve) => server.close(resolve));
+      }
+    }
+  });
 });
