@@ -359,6 +359,16 @@ describe("a JSON extract runs in the tab", () => {
     );
   });
 
+  it("gives the same records with or without the tab's worker when a group doesn't match", async () => {
+    const optional = {
+      fields: { optional: { path: "t", match: "(x)?a" }, whole: { path: "t", match: "a" } },
+    };
+    for (const worker of [PageWorker, null]) {
+      const result = await runJson('{"t":"a"}', optional, undefined, { worker }).run;
+      expect(result.value).toStrictEqual({ whole: "a" });
+    }
+  });
+
   it("says when the response is not JSON", async () => {
     const { run } = runJson("<html></html>", { records: "$.hits" }, "text/html");
     await expect(run).rejects.toThrow(/the response is not JSON \(text\/html\)/);

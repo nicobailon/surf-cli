@@ -305,11 +305,16 @@ async function finishTabExtract({ result, budget, runScript }) {
   if (!result?.regexNeeded) return result;
   const { key, pairs } = result.regexNeeded;
   const matches = pairs.map(({ pattern, text, label }) => boundedExec({ pattern, text, budget, label }));
+  // JSON has no undefined: a match crosses as its strings and the indexes of its unmatched groups.
+  const sent = matches.map((match) =>
+    match === null ? null : { values: match.map((value) => value ?? ""), unmatched: match.flatMap((value, index) => (value === undefined ? [index] : [])) },
+  );
   return runScript(`(() => {
 const finish = globalThis[Symbol.for("surf.boundedRegex.extracts")]?.get(${JSON.stringify(key)});
 if (!finish) throw new Error("the tab no longer holds this extract (it navigated or took over a minute); run it again");
 globalThis[Symbol.for("surf.boundedRegex.extracts")].delete(${JSON.stringify(key)});
-return finish(${JSON.stringify(matches)});
+const sent = ${JSON.stringify(sent)};
+return finish(sent.map((match) => match === null ? null : match.values.map((value, index) => match.unmatched.includes(index) ? undefined : value)));
 })()`);
 }
 

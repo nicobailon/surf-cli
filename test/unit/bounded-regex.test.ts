@@ -162,6 +162,15 @@ describe("bounded regex in a tab", () => {
     );
   });
 
+  it("returns the same matches from the worker and the host, unmatched groups included", async () => {
+    const pairs: Array<[string, string]> = [["(x)?a", "a"]];
+    expect((await tabMatches(inTab(), pairs)).value).toStrictEqual([["a", undefined]]);
+    const handed = await tabMatches(inTab({ worker: null }), pairs);
+    const budget = bounded.createRegexBudget({ ms: 1000, scope: "extract" });
+    const finished = await bounded.finishTabExtract({ result: handed, budget, runScript });
+    expect(finished.value).toStrictEqual([["a", undefined]]);
+  });
+
   it("keeps pairs apart whose pattern and text join the same way", async () => {
     const pairs: Array<[string, string]> = [
       ["a", "\u0000a"],
