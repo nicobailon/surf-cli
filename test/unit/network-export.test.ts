@@ -252,3 +252,39 @@ describe("secret-named fields in exported bodies", () => {
     }
   });
 });
+
+describe("secret-named fields in base64 response bodies", () => {
+  const encoded = (text: string) => Buffer.from(text).toString("base64");
+  const entry = (mimeType: string, text: string) => ({
+    id: "r-b64",
+    method: "GET",
+    url: "https://example.test/api",
+    responseHeaders: { "content-type": mimeType },
+    mimeType,
+    responseBodyEncoding: "base64",
+    responseBody: encoded(text),
+  });
+  const decoded = (value: unknown) => Buffer.from(String(value), "base64").toString("utf8");
+
+  it("decodes a text body, redacts it and encodes it again", () => {
+    const json = exporter.publicEntry(
+      entry("application/json", '{"token":"dummy-kilo","name":"dummy-lima"}'),
+    );
+    expect(JSON.parse(decoded(json.responseBody))).toEqual({
+      token: "<redacted>",
+      name: "dummy-lima",
+    });
+    expect(json.responseBodyEncoding).toBe("base64");
+    const form = exporter.publicEntry(
+      entry("application/x-www-form-urlencoded", "password=dummy-mike&user=dummy-lima"),
+    );
+    expect(decoded(form.responseBody)).toBe("password=<redacted>&user=dummy-lima");
+  });
+
+  it("leaves binary bodies and --raw-bodies exports as captured", () => {
+    const image = entry("image/png", '{"token":"dummy-kilo"}');
+    expect(exporter.publicEntry(image).responseBody).toBe(image.responseBody);
+    const raw = entry("application/json", '{"token":"dummy-kilo"}');
+    expect(exporter.publicEntry(raw, { rawBodies: true }).responseBody).toBe(raw.responseBody);
+  });
+});

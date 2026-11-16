@@ -34,6 +34,7 @@ function redactUrl(url) {
 }
 
 const BODY_FIELDS = new Set(["requestBody", "responseBody"]);
+const TEXT_BODY_TYPE = /json|x-www-form-urlencoded|multipart\/form-data|^text\/|xml|javascript/i;
 
 function secretHeaderValues(entry) {
   return [entry.requestHeaders, entry.responseHeaders].flatMap((headers) =>
@@ -60,9 +61,15 @@ function publicEntry(entry, { rawBodies = false } = {}) {
   }
   if (!rawBodies) {
     for (const key of BODY_FIELDS) {
-      if (key === "responseBody" && entry.responseBodyEncoding === "base64") continue;
       const type = key === "requestBody" ? headerValue(entry.requestHeaders, "content-type") : headerValue(entry.responseHeaders, "content-type") || entry.mimeType;
-      if (typeof result[key] === "string") result[key] = redactSecretBodyFields(result[key], type);
+      if (typeof result[key] !== "string") continue;
+      if (key === "responseBody" && entry.responseBodyEncoding === "base64") {
+        // A text body Chrome sent as base64 is decoded, redacted and encoded again; binary stays as is.
+        if (!TEXT_BODY_TYPE.test(String(type))) continue;
+        const text = Buffer.from(result[key], "base64").toString("utf8");
+        const redacted = redactSecretBodyFields(text, type);
+        if (redacted !== text) result[key] = Buffer.from(redacted, "utf8").toString("base64");
+      } else result[key] = redactSecretBodyFields(result[key], type);
     }
   }
   return result;
