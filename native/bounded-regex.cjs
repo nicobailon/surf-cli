@@ -146,6 +146,7 @@ return module.exports;
 
 module.exports = {
   EXTRACT_REGEX_BUDGET_MS,
+  MATCH_INPUT_LIMIT,
   MATCH_SKIPPED,
   MATCH_TIMED_OUT,
   PATTERN_LIMIT,

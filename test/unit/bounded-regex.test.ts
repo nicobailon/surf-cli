@@ -2,6 +2,8 @@ import { describe, expect, it } from "vitest";
 
 // @ts-expect-error - CommonJS module without type definitions
 import * as bounded from "../../native/bounded-regex.cjs";
+// @ts-expect-error - CommonJS module without type definitions
+import * as assertions from "../../native/playbook-assertions.cjs";
 
 const timedOut = "x pattern took too long (over 100 ms); simplify it";
 
@@ -70,5 +72,11 @@ describe("bounded regex", () => {
         /x is not a valid regex/,
       );
     }
+  });
+
+  it("is where playbook-assertions.cjs takes its limits from, MATCH_INPUT_LIMIT included", () => {
+    // Callers of boundedMatch read the input limit from playbook-assertions.cjs.
+    expect(assertions.MATCH_INPUT_LIMIT).toBe(64 * 1024);
+    expect(assertions.MATCH_INPUT_LIMIT).toBe(bounded.MATCH_INPUT_LIMIT);
   });
 });

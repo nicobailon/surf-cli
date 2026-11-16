@@ -9,7 +9,7 @@ const { compileJsonPath } = require("./records.cjs");
 // matches patterns come from the CLI and from op files, so every run of one is bounded as
 // bounded-regex.cjs describes: a 100 ms timeout on at most the first 64 KB of the text. A pattern is
 // refused only when it is over PATTERN_LIMIT characters or isn't a valid regex.
-const { MATCH_SKIPPED, MATCH_TIMED_OUT, PATTERN_LIMIT, isBoundedOut } = bounded;
+const { MATCH_INPUT_LIMIT, MATCH_SKIPPED, MATCH_TIMED_OUT, PATTERN_LIMIT, isBoundedOut } = bounded;
 // Each run is bounded, and so is a run's total: one budget is shared by an op run's matches checks
 // and its secret checks. Once it is spent, the rest don't run. Ops hold at most ASSERTION_LIMIT.
 const REGEX_BUDGET_MS = 1000;
@@ -158,4 +158,5 @@ function describeAssertion({ path, op, value }) {
   return [path, op, ...(value === undefined ? [] : [JSON.stringify(value)])].join(" ");
 }
 
-module.exports = { MATCH_SKIPPED, MATCH_TIMED_OUT, boundedMatch, checkAssertions, createRegexBudget, describeAssertion, validateAssertions, valueTexts };
+// MATCH_INPUT_LIMIT is bounded-regex.cjs's, exported here too for callers of boundedMatch.
+module.exports = { MATCH_INPUT_LIMIT, MATCH_SKIPPED, MATCH_TIMED_OUT, boundedMatch, checkAssertions, createRegexBudget, describeAssertion, validateAssertions, valueTexts };
