@@ -189,6 +189,16 @@ describe("a short env value inside a longer string", () => {
 });
 
 describe("redactUrlsInText", () => {
+  it("redacts a quoted token whole, its tail included, and leaves other URLs as written", () => {
+    const quoted = ["dummy", 'quo"ted', "va\\lue", "13"].join("-");
+    const line = `API_REQUEST: GET https://example.test/v1?access_token=${quoted}&page=2 then "https://example.test/x?a=1"`;
+    const redacted = redaction.redactUrlsInText(line);
+    expect(redacted).not.toContain("dummy");
+    expect(redacted).not.toContain("quo");
+    expect(redacted).not.toContain("lue-13");
+    expect(redacted).toContain('then "https://example.test/x?a=1"');
+  });
+
   it("redacts every URL in a line and leaves the rest as written", () => {
     const user = ["dummy", "user"].join("-");
     const pass = ["dummy", "pw", "12"].join("-");

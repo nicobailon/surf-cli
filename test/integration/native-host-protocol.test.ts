@@ -2005,7 +2005,8 @@ describe("native host protocol integration", () => {
   it("logs an API request's URL without its password or secret query values", async () => {
     // Dummy credentials, built from parts so no literal here reads as one.
     const password = ["dummy", "log", "pw", "11"].join("-");
-    const token = ["dummy", "log", "tok", "11"].join("-");
+    // A quote and a backslash in the token, so a redactor that stops at the quote leaves its tail.
+    const token = ["dummy", "log", 'to"k', "va\\lue", "11"].join("-");
     const surfTmp = fs.mkdtempSync(path.join(os.tmpdir(), "surf-host-log-"));
     tempDirs.push(surfTmp);
     const host = await startHostHarness({ SURF_TMP: surfTmp });
@@ -2024,6 +2025,7 @@ describe("native host protocol integration", () => {
     expect(logged).toContain("API_REQUEST: GET https://127.0.0.1:1/v1?access_token=");
     expect(logged).not.toContain(password);
     expect(logged).not.toContain(token);
+    expect(logged).not.toContain("lue-11");
     expect(logged).not.toContain("dummy-user");
   });
 

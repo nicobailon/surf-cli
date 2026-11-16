@@ -135,9 +135,24 @@ function redactUrlSecrets(url) {
   return absolute ? parsed.toString() : `${parsed.pathname}${parsed.search}${parsed.hash}`;
 }
 
-// redactUrlSecrets over every absolute URL in free text, such as a log line.
+// An absolute URL as written, unless it holds a user, a password or a secret-named query param:
+// then redactUrlSecrets of it.
+function redactUrlIfSecret(url) {
+  if (typeof url !== "string") return url;
+  let parsed;
+  try {
+    parsed = new URL(url);
+  } catch {
+    return url;
+  }
+  const secretParam = [...parsed.searchParams.keys()].some(isSensitiveName);
+  return parsed.username || parsed.password || secretParam ? redactUrlSecrets(url) : url;
+}
+
+// redactUrlIfSecret over every absolute URL in free text, such as a log line. A URL runs to the next
+// space, so a quote inside a token can't leave the token's tail behind.
 function redactUrlsInText(text) {
-  return String(text).replace(/\b[a-zA-Z][a-zA-Z0-9+.-]*:\/\/[^\s"'<>`]+/g, (url) => redactUrlSecrets(url));
+  return String(text).replace(/\b[a-zA-Z][a-zA-Z0-9+.-]*:\/\/[^\s<>`]+/g, (url) => redactUrlIfSecret(url));
 }
 
 // Walks `value` in order with its own stack, so JSON nested any depth is checked.
@@ -186,6 +201,7 @@ module.exports = {
   redactObject,
   redactSecretValues,
   redactSensitiveFields,
+  redactUrlIfSecret,
   redactUrlSecrets,
   redactUrlsInText,
   redactValues,
