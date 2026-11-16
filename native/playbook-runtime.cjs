@@ -173,20 +173,23 @@ const finish = (head, run, narrow) => boundedRegex.tabExtract({
   extract: run,
   onValue: (extracted) => {
     const out = { ...head, extracted: extracted === undefined ? null : extracted };
-    if (JSON.stringify(out, null, 2).length <= ${TAB_OUTPUT_LIMIT}) return out;
+    if (JSON.stringify(out, null, 2).length <= boundedRegex.RESULT_LIMIT) return out;
     return { ...head, extractError: \`extracted result is \${JSON.stringify(extracted, null, 2).length} characters; narrow \${narrow}\` };
   },
   onError: (error) => ({ ...head, extractError: error.message }),
 });`;
 
-/** Runs a tab script that may end in finish(), completing an extract the tab handed over. */
-async function runTabExtract(context, code) {
-  const runScript = async (script) => {
-    const response = await context.executeTool("javascript_tool", { code: script }, { signal: context.signal });
-    if (response?.error) throw new Error(typeof response.error === "string" ? response.error : JSON.stringify(response.error));
-    return response?.output !== undefined ? JSON.parse(response.output) : response?.value ?? response;
-  };
-  const { regexSpentMs: _spent, ...result } = await boundedRegex.finishTabExtract({ result: await runScript(code), budget: context.fieldRegexBudget, runScript });
+/**
+ * Runs the tab script `script(budget)` makes, which may end in finish(), charging the op run's
+ * field-regex budget and completing an extract the tab handed over.
+ */
+async function runTabExtract(context, script) {
+  const { regexSpentMs: _spent, ...result } = await boundedRegex.runTabScript({
+    budget: context.fieldRegexBudget,
+    script,
+    execute: (code) => context.executeTool("javascript_tool", { code }, { signal: context.signal }),
+    unreadable: (size) => new Error(`the tab's output could not be read (${size} characters; the tab cuts it at ${TAB_OUTPUT_LIMIT})`),
+  });
   return result;
 }
 
@@ -304,8 +307,7 @@ async function runStrategy(strategy, context) {
     if (result.status !== "completed") throw new Error(result.error || "workflow strategy failed");
     if (!strategy.extract?.html) return result;
     // The same extraction as the network strategy, on the page the workflow ended on.
-    const code = `(async () => {\n${finishSource(context.fieldRegexBudget)}\nreturn finish({}, () => ${htmlExtractFunction(strategy.extract.html)}(document), "--item/--field");\n})()`;
-    const found = await runTabExtract(context, code);
+    const found = await runTabExtract(context, (budget) => `(async () => {\n${finishSource(budget)}\nreturn finish({}, () => ${htmlExtractFunction(strategy.extract.html)}(document), "--item/--field");\n})()`);
     if (found?.extractError) throw new Error(found.extractError);
     return { ...result, extracted: found?.extracted };
   }
@@ -327,7 +329,7 @@ async function runStrategy(strategy, context) {
     const inTab = extractsInTab(strategy.extract);
     const capture = inTab ? undefined : await watchCapture({ executeTool: context.executeTool, sleep: context.sleep });
     await context.markDispatched?.();
-    const { requestUrl, sentAt, doneAt, redirected, ...result } = await runTabExtract(context, networkScript(request, context.allowedOrigins, strategy.extract, context.fieldRegexBudget));
+    const { requestUrl, sentAt, doneAt, redirected, ...result } = await runTabExtract(context, (budget) => networkScript(request, context.allowedOrigins, strategy.extract, budget));
     if (!result?.ok && (strategy.acceptStatus || []).includes(result?.status) === false) throw new Error(`network strategy returned ${result?.status || "an unknown status"}`);
     if (result.extractError) throw new Error(result.extractError);
     if (inTab) return result;

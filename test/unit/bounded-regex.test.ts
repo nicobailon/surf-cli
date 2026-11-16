@@ -174,6 +174,23 @@ describe("bounded regex in a tab", () => {
     expect(finished.value).toStrictEqual([["a", undefined]]);
   });
 
+  it("keeps its whole output, regexSpentMs included, within what the tab can send", async () => {
+    // Under the limit alone, over it once regexSpentMs is added.
+    const result = await inTab().tabExtract({
+      budget: bounded.createRegexBudget({ ms: 1000, scope: "extract" }),
+      extract: () => "a".repeat(49_975),
+      onValue: (text: string) => ({ text }),
+      onError: (error: Error) => ({ error: error.message }),
+    });
+    expect(JSON.stringify(result, null, 2).length).toBeLessThanOrEqual(50_000);
+    expect(result).toMatchObject({
+      error: expect.stringMatching(
+        /^the tab's result is \d+ characters, more than the 50000 it can send to Surf; narrow the fields$/,
+      ),
+      regexSpentMs: 0,
+    });
+  });
+
   it("keeps pairs apart whose pattern and text join the same way", async () => {
     const pairs: Array<[string, string]> = [
       ["a", "\u0000a"],
@@ -195,5 +212,25 @@ describe("bounded regex in a tab", () => {
     expect(() => inTab().boundedExec({ pattern: "a", text: "a", label: "x" })).toThrow(
       "in a tab, a pattern runs only inside tabExtract",
     );
+  });
+
+  it("charges a script's whole allowance when its output can't be read", async () => {
+    const budget = bounded.createRegexBudget({ ms: 2000, scope: "run" });
+    budget.remainingMs = 1500;
+    let given = "";
+    await expect(
+      bounded.runTabScript({
+        budget,
+        script: (left: { remainingMs: number }) => {
+          given = String(left.remainingMs);
+          return "code";
+        },
+        // The tab's output, cut at 50,000 characters.
+        execute: async () => ({ output: `{"records": [${'"x",'.repeat(20_000)}`.slice(0, 50_000) }),
+        unreadable: (size: number) => new Error(`unreadable (${size} characters)`),
+      }),
+    ).rejects.toThrow("unreadable (50000 characters)");
+    expect(given).toBe("1500");
+    expect(budget.remainingMs).toBe(0);
   });
 });

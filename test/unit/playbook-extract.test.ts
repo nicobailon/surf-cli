@@ -369,6 +369,51 @@ describe("a JSON extract runs in the tab", () => {
     }
   });
 
+  it("charges a near-limit tab result's regex time to the run", async () => {
+    // 30 records whose match takes 60 ms each on this clock: 1.8 s a strategy, with a result just
+    // under the tab's 50,000 characters until regexSpentMs is added.
+    const head = {
+      status: 200,
+      ok: true,
+      url: "https://api.test/search",
+      headers: { "content-type": "application/json" },
+    };
+    const rows = (length: number) =>
+      Array.from({ length: 30 }, (_, index) => ({
+        id: `id-${index}`,
+        pad: index ? "" : "p".repeat(length),
+      }));
+    const size = (length: number) =>
+      JSON.stringify(
+        {
+          ...head,
+          extracted: rows(length).map(({ id, pad: text }) => ({ id: id.slice(3), pad: text })),
+        },
+        null,
+        2,
+      ).length;
+    const padding = 49_990 - size(0);
+    expect(size(padding)).toBe(49_990);
+    const near = { records: "$", fields: { id: { path: "id", match: "id-(\\d+)" }, pad: "pad" } };
+    let now = 0;
+    const tab = jsonTab(JSON.stringify(rows(padding)), undefined, {
+      clock: { now: () => (now += 60) },
+    });
+    const strategy = {
+      using: "network",
+      request: { method: "GET", url: "https://api.test/search" },
+      extract: near,
+    };
+    const run = runtime.runPlaybookOp({
+      playbook: { id: "fixture", provenance: { scope: "test" } },
+      op: op([strategy, strategy]),
+      executeTool: tab.executeTool,
+    });
+    await expect(run).rejects.toThrow(
+      /^All strategies failed \(network: extracted result is \d+ characters; narrow --records\/--field; network: skipped: the run's 2 s regex budget is spent\)$/,
+    );
+  });
+
   it("says when the response is not JSON", async () => {
     const { run } = runJson("<html></html>", { records: "$.hits" }, "text/html");
     await expect(run).rejects.toThrow(/the response is not JSON \(text\/html\)/);

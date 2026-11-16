@@ -1,7 +1,7 @@
 // Scroll-and-harvest for virtualized lists: read the visible items each round, merge by key on
 // the host (so a page reload does not lose records), stop when scrolling stops adding items.
 
-const { checkPattern, createFieldRegexBudget, finishTabExtract, tabBudgetSource, tabSource } = require("./bounded-regex.cjs");
+const { checkPattern, createFieldRegexBudget, runTabScript, tabBudgetSource, tabSource } = require("./bounded-regex.cjs");
 const { assertFieldName, filterRecords } = require("./records.cjs");
 
 const COLLECT_KEYS = ["open", "item", "key", "fields", "maxItems", "idleRounds", "scrollDelayMs", "expand", "keep"];
@@ -264,21 +264,18 @@ async function runCollect({ spec, executeTool, sleep = (ms) => new Promise((reso
   await executeTool("wait.element", { selector: options.item, timeout: ITEM_WAIT_MS });
   const byKey = new Map();
   let idle = 0;
-  const runRound = async (code) => {
-    const result = await executeTool("javascript_tool", { code });
-    try {
-      return JSON.parse(result?.output);
-    } catch {
-      const size = typeof result?.output === "string" ? result.output.length : 0;
-      throw new Error(
-        size >= OUTPUT_LIMIT
-          ? `collect round output reached the ${OUTPUT_LIMIT}-character script limit; narrow the fields`
-          : "collect round returned no records",
-      );
-    }
-  };
   while (byKey.size < options.maxItems && idle < options.idleRounds) {
-    const round = await finishTabExtract({ result: await runRound(roundScript(options, [...byKey.keys()], regexBudget)), budget: regexBudget, runScript: runRound });
+    const round = await runTabScript({
+      budget: regexBudget,
+      script: (budget) => roundScript(options, [...byKey.keys()], budget),
+      execute: (code) => executeTool("javascript_tool", { code }),
+      unreadable: (size) =>
+        new Error(
+          size >= OUTPUT_LIMIT
+            ? `collect round output reached the ${OUTPUT_LIMIT}-character script limit; narrow the fields`
+            : "collect round returned no records",
+        ),
+    });
     if (round?.hidden === true) throw hiddenTabError();
     if (typeof round?.error === "string") throw new Error(`collect round failed: ${round.error}`);
     if (!Array.isArray(round?.records)) throw new Error("collect round returned no records");

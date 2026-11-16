@@ -164,6 +164,8 @@ const TIMED_OUT = Symbol("timed out");
 // extension; OUTPUT_ROOM of it is kept for regexSpentMs.
 const TAB_OUTPUT_LIMIT = 50000;
 const OUTPUT_ROOM = 64;
+/** What a tab script's own result may take, leaving room for regexSpentMs. */
+const RESULT_LIMIT = TAB_OUTPUT_LIMIT - OUTPUT_ROOM;
 const STASH = Symbol.for("surf.boundedRegex.extracts");
 const STASH_MS = 60000;
 
@@ -255,7 +257,18 @@ function extractWith(extract, pairs, matches) {
  */
 async function tabExtract({ extract, budget, onValue, onError }) {
   const startMs = budget.remainingMs;
-  const spent = (value) => ({ ...value, regexSpentMs: Math.max(0, startMs - budget.remainingMs) });
+  // The whole output, regexSpentMs included, must fit what the tab can send; one that doesn't
+  // could not be read, and its regex time would go uncharged.
+  const fit = (value) => {
+    const size = JSON.stringify(value, null, 2).length;
+    if (size <= TAB_OUTPUT_LIMIT) return value;
+    return onError(new Error(`the tab's result is ${size} characters, more than the ${TAB_OUTPUT_LIMIT} it can send to Surf; narrow the fields`));
+  };
+  const spent = (value) => {
+    const out = { ...value, regexSpentMs: Math.ceil(Math.max(0, startMs - budget.remainingMs)) };
+    const sent = fit(out);
+    return sent === out ? out : { ...sent, regexSpentMs: out.regexSpentMs };
+  };
   const finish = (run) => {
     try {
       return onValue(run());
@@ -287,7 +300,7 @@ async function tabExtract({ extract, budget, onValue, onError }) {
       );
     }
     if (!globalThis[STASH]) Object.defineProperty(globalThis, STASH, { value: new Map() });
-    globalThis[STASH].set(key, (matches) => finish(() => extractWith(extract, pairs, matches)));
+    globalThis[STASH].set(key, (matches) => fit(finish(() => extractWith(extract, pairs, matches))));
     setTimeout(() => globalThis[STASH].delete(key), STASH_MS);
     return spent({ regexNeeded: { key, pairs } });
   } catch (error) {
@@ -296,6 +309,28 @@ async function tabExtract({ extract, budget, onValue, onError }) {
 }
 
 // --- On the host ----------------------------------------------------------------------------------
+
+/**
+ * Runs a tab script made by `script(budget)`, which gives the tab what is left of `budget`, with
+ * `execute(code)` (javascript_tool), and completes it with finishTabExtract. An output that isn't
+ * JSON (cut at the tab's limit, say) fails closed: it is charged the whole allowance the script had,
+ * then throws `unreadable(size)`.
+ */
+async function runTabScript({ budget, script, execute, unreadable }) {
+  const allowanceMs = Math.max(0, budget.remainingMs);
+  const read = async (code) => {
+    const response = await execute(code);
+    if (response?.error) throw new Error(typeof response.error === "string" ? response.error : JSON.stringify(response.error));
+    if (typeof response?.output !== "string") return response?.value ?? response;
+    try {
+      return JSON.parse(response.output);
+    } catch {
+      budget.remainingMs -= allowanceMs;
+      throw unreadable(response.output.length);
+    }
+  };
+  return finishTabExtract({ result: await read(script(budget)), budget, runScript: read });
+}
 
 /**
  * Completes a tab script's result: charges `budget` with what the tab spent (regexSpentMs) and,
@@ -339,6 +374,8 @@ module.exports = {
   MATCH_SKIPPED,
   MATCH_TIMED_OUT,
   PATTERN_LIMIT,
+  RESULT_LIMIT,
+  TAB_OUTPUT_LIMIT,
   boundedExec,
   boundedTest,
   checkPattern,
@@ -346,6 +383,7 @@ module.exports = {
   createRegexBudget,
   finishTabExtract,
   isBoundedOut,
+  runTabScript,
   tabBudgetSource,
   tabExtract,
   tabSource,
