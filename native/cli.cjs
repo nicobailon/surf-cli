@@ -1114,7 +1114,7 @@ const TOOLS = {
         ]
       },
       "network.body": {
-        desc: "Get response body (for piping)",
+        desc: "Get response body (for piping); an echo of the request's secret headers shows as <redacted>",
         args: ["id"],
         opts: { request: "Get request body instead" },
         examples: [
@@ -1123,7 +1123,7 @@ const TOOLS = {
         ]
       },
       "network.wait": {
-        desc: "Wait for the page's next response whose URL matches a glob and print its JSON (or text)",
+        desc: "Wait for the page's next response whose URL matches a glob and print its JSON (or text); an echo of the request's secret headers shows as <redacted>",
         args: ["match"],
         opts: {
           match: "URL glob without query string: a path (/api/*/items) or a full URL (https://site/api/**); * stays within one path segment, ** matches anything",
@@ -1137,7 +1137,7 @@ const TOOLS = {
         ]
       },
       "network.replay": {
-        desc: "Re-send a captured request from inside its tab (same cookies and headers) and print the response; the tab must still be on the request's origin or the page that sent it",
+        desc: "Re-send a captured request from inside its tab (same cookies and headers) and print the response, with echoes of its secret headers as <redacted>; the tab must still be on the request's origin or the page that sent it",
         args: ["id"],
         opts: {
           set: "Edit before sending (repeatable): query.<param>=v, query.<param>.<json.path>=v, body=v, body.<json.path>=v; values are parsed as JSON when valid",

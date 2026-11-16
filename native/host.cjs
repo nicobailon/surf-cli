@@ -28,7 +28,7 @@ const grokClient = require("./grok-client.cjs");
 const kimiClient = require("./kimi-client.cjs");
 const aistudioClient = require("./aistudio-client.cjs");
 const aistudioBuild = require("./aistudio-build.cjs");
-const { mapToolToMessage, mapComputerAction, formatToolContent, formatToolError, publicNetworkResult, buildProviderUploadMessage, applySemanticExpectedIdentity, truncatePageText } = require("./host-helpers.cjs");
+const { mapToolToMessage, mapComputerAction, formatToolContent, formatToolError, publicNetworkResult, publicResponse, buildProviderUploadMessage, applySemanticExpectedIdentity, truncatePageText } = require("./host-helpers.cjs");
 const { createOracleHost } = require("./oracle-host.cjs");
 
 const IS_WIN = process.platform === "win32";
@@ -1610,15 +1610,20 @@ async function runHostPlaybook(msg, request) {
 async function runHarvestTool(tool, args, msg, request) {
   const executeTool = (name, toolArgs) => executeMappedHostTool(request, name, toolArgs, msg.tabId);
   const sleep = (ms) => abortableDelay(ms, request.signal);
+  // What they print hides echoes of the request's secret headers; the replay itself sends them.
+  const capturedEntry = async (id) => (await executeTool("network.get", { id }))?.entry;
   if (tool === "network.wait") {
     const seconds = args.timeout === undefined ? 30 : Number(args.timeout);
     if (!Number.isFinite(seconds) || seconds <= 0) throw new Error("--timeout must be a positive number of seconds");
-    return JSON.stringify(await waitForResponse({ executeTool, sleep, match: args.match, open: args.open, timeoutMs: seconds * 1000 }));
+    const response = await waitForResponse({ executeTool, sleep, match: args.match, open: args.open, timeoutMs: seconds * 1000 });
+    return JSON.stringify(publicResponse(response, [await capturedEntry(response.id)]));
   }
   if (tool === "network.replay") {
     if (typeof args.id !== "string" || !args.id) throw new Error("network.replay requires a request id");
     const allowPost = args["allow-post"] === true || args.allowPost === true;
-    return JSON.stringify(await replay({ executeTool, sleep, id: args.id, set: args.set, allowPost }));
+    // Read before sending, so a sent replay never fails for want of its entry.
+    const entry = await capturedEntry(args.id);
+    return JSON.stringify(publicResponse(await replay({ executeTool, sleep, id: args.id, set: args.set, allowPost }), [entry]));
   }
   const spec = { item: args.item, key: args.key, fields: args.fields, open: args.open, maxItems: args.max, idleRounds: args.idle, expand: args.expand };
   const records = await runCollect({ executeTool, sleep, spec: Object.fromEntries(Object.entries(spec).filter(([, value]) => value !== undefined)) });
@@ -2038,6 +2043,13 @@ function handleToolRequest(msg, socket, requestContext = requestStorage.getStore
   if (tool === "network.wait" || tool === "network.replay" || tool === "collect") {
     runHarvestTool(tool, args || {}, msg, requestContext)
       .then((output) => sendToolResponse(socket, originalId, { output }, null))
+      .catch((error) => sendToolResponse(socket, originalId, null, error));
+    return;
+  }
+  if (tool === "network.body") {
+    const run = (name, toolArgs) => executeMappedHostTool(requestContext, name, toolArgs, tabId);
+    Promise.all([run("network.body", args || {}), run("network.get", { id: args?.id })])
+      .then(([body, loaded]) => sendToolResponse(socket, originalId, publicResponse(body, [loaded?.entry]), null))
       .catch((error) => sendToolResponse(socket, originalId, null, error));
     return;
   }
