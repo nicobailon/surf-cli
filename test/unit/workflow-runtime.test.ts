@@ -185,3 +185,38 @@ describe("workflow runtime characterization", () => {
     expect(executeSemanticStep).not.toHaveBeenCalled();
   });
 });
+
+describe("workflow result variables", () => {
+  const executeTool = vi.fn(async (tool: string) => {
+    if (tool === "page.text") return { value: "page words" };
+    return tool === "fail" ? { error: "expected failure" } : { success: true };
+  });
+  const run = (steps: Array<Record<string, unknown>>, onError = "stop") =>
+    runtime.executeWorkflow(steps, {
+      executeTool,
+      onError,
+      sleep: vi.fn(),
+      stepDelay: 0,
+      vars: { query: "dummy-input-bravo" },
+      context: { vars: { other: "dummy-input-charlie" } },
+    });
+
+  it("returns the values steps capture with as, never the inputs", async () => {
+    const result = await run([
+      { cmd: "type", args: { text: "%{query}" } },
+      { cmd: "page.text", args: {}, as: "content" },
+    ]);
+    expect(result.status).toBe("completed");
+    expect(result.vars).toEqual({ content: "page words" });
+    expect(JSON.stringify(result)).not.toMatch(/dummy-input/);
+  });
+
+  it("returns no vars when no step captures one, completed or failed", async () => {
+    const completed = await run([{ cmd: "type", args: { text: "%{query}" } }]);
+    expect(completed.status).toBe("completed");
+    expect(completed).not.toHaveProperty("vars");
+    const failed = await run([{ cmd: "fail", args: {} }]);
+    expect(failed.status).toBe("failed");
+    expect(failed).not.toHaveProperty("vars");
+  });
+});

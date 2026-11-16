@@ -256,12 +256,27 @@ function copyCapturedVars(steps, source, target) {
   }
 }
 
+// A workflow returns what its steps captured with `as` (a loop's direct steps included, as
+// copyCapturedVars copies them out), never the inputs it ran with: those stay private to the run.
+function capturedOutputs(steps, vars, inputs) {
+  const names = steps.flatMap((step) => {
+    if (step.repeat === undefined && step.each === undefined) return step.as ? [step.as] : [];
+    return (step.steps || []).filter((child) => child.repeat === undefined && child.each === undefined && child.as).map((child) => child.as);
+  });
+  const outputs = {};
+  for (const name of names) {
+    if (vars[name] !== undefined && vars[name] !== inputs[name]) outputs[name] = vars[name];
+  }
+  return Object.keys(outputs).length > 0 ? { vars: outputs } : {};
+}
+
 async function executeWorkflow(steps, options = {}) {
   const semanticEnabled = steps.some((step) => step.cmd === "semantic.step");
   if (semanticEnabled && (options.onError || "stop") !== "stop") {
-    return { status: "failed", completedSteps: 0, totalSteps: steps.length, results: [], error: "semantic workflows require onError='stop'", totalMs: 0, vars: { ...(options.vars || {}), ...(options.context?.vars || {}) } };
+    return { status: "failed", completedSteps: 0, totalSteps: steps.length, results: [], error: "semantic workflows require onError='stop'", totalMs: 0 };
   }
-  const vars = { ...(options.vars || {}), ...(options.context?.vars || {}) };
+  const inputs = { ...(options.vars || {}), ...(options.context?.vars || {}) };
+  const vars = { ...inputs };
   const semanticContext = semanticEnabled ? (options.createSemanticContext?.() || Object.create(null)) : undefined;
   const executionOptions = semanticEnabled ? { ...options, semanticContext } : options;
   const results = [];
@@ -288,14 +303,14 @@ async function executeWorkflow(steps, options = {}) {
       results.push({ step: index + 1, ...(type === "loop" ? { type: "loop" } : { cmd: step.cmd }), status: "error", error: result.error, ...(result.semantic ? { semantic: result.semantic } : {}), ms });
       options.onProgress?.({ phase: "fail", index, total: steps.length, step, type, ms, error: result.error });
       if ((options.onError || "stop") === "stop") {
-        return { status: "failed", completedSteps: type === "loop" ? stepsExecuted : stepsExecuted - 1, totalSteps: steps.length, results, error: result.error, ...(semantic ? { semantic } : {}), totalMs: Date.now() - startTotal, vars };
+        return { status: "failed", completedSteps: type === "loop" ? stepsExecuted : stepsExecuted - 1, totalSteps: steps.length, results, error: result.error, ...(semantic ? { semantic } : {}), totalMs: Date.now() - startTotal, ...capturedOutputs(steps, vars, inputs) };
       }
     } else {
       results.push({ step: index + 1, ...(type === "loop" ? { type: "loop", stepsExecuted: result.stepsExecuted } : { cmd: step.cmd }), status: "ok", ...(result.semantic ? { semantic: result.semantic } : {}), ms });
       options.onProgress?.({ phase: "ok", index, total: steps.length, step, type, ms, stepsExecuted: result.stepsExecuted });
     }
   }
-  return { status: failed > 0 ? "partial" : "completed", completedSteps: stepsExecuted, totalSteps: steps.length, results, failed, ...(semantic ? { semantic } : {}), totalMs: Date.now() - startTotal, vars };
+  return { status: failed > 0 ? "partial" : "completed", completedSteps: stepsExecuted, totalSteps: steps.length, results, failed, ...(semantic ? { semantic } : {}), totalMs: Date.now() - startTotal, ...capturedOutputs(steps, vars, inputs) };
 }
 
 module.exports = {

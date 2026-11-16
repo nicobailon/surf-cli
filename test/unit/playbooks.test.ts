@@ -79,6 +79,35 @@ describe("playbook resolution and strategies", () => {
     expect(executeTool).toHaveBeenCalledWith("page.text", { label: "fallback" }, expect.anything());
   });
 
+  it("returns a workflow op's captured outputs, never its inputs", async () => {
+    const executeTool = vi.fn(async (tool: string) =>
+      tool === "page.text" ? { value: "page words" } : { success: true },
+    );
+    const op = (steps: Array<Record<string, unknown>>) => ({
+      id: "search",
+      effect: "read",
+      args: { query: {} },
+      run: [{ using: "workflow", steps, stepDelay: 0 }],
+    });
+    const use = (steps: Array<Record<string, unknown>>) =>
+      runtime.runPlaybookOp({
+        playbook: { id: "fixture", provenance: { scope: "test" } },
+        op: op(steps),
+        args: { query: "dummy-input-delta" },
+        executeTool,
+        sleep: vi.fn(),
+      });
+    const typed = { cmd: "type", args: { selector: "#q", text: "{{query}}" } };
+    const captured = await use([typed, { cmd: "page.text", args: {}, as: "content" }]);
+    expect(captured.status).toBe("completed");
+    expect(captured.value.vars).toEqual({ content: "page words" });
+    expect(JSON.stringify(captured)).not.toContain("dummy-input-delta");
+    const bare = await use([typed]);
+    expect(bare.value).not.toHaveProperty("vars");
+    expect(JSON.stringify(bare)).not.toContain("dummy-input-delta");
+    expect(executeTool).toHaveBeenCalledWith("type", { selector: "#q", text: "dummy-input-delta" }, expect.anything());
+  });
+
   it("defaults protected writes to explicit authorization and uses op auth origins", () => {
     const op = playbooks.validateOp(
       {
