@@ -101,6 +101,12 @@ function validateWriteWorkflowSteps(steps, opId) {
   }
 }
 
+// A write op's workflow fallback is one page-write step: the commit.
+function isCommitWorkflow(steps) {
+  const [step] = steps;
+  return steps.length === 1 && step.repeat === undefined && step.each === undefined && commandMetadata(step.cmd, step.args).effect === "page-write";
+}
+
 function normalizeScript(value) {
   if (typeof value === "string") return value;
   if (Array.isArray(value) && value.every((line) => typeof line === "string")) return value.join("\n");
@@ -331,6 +337,7 @@ module.exports = {
   editSavedOp,
   exportPlaybookDirectory,
   importPlaybookDirectory,
+  isCommitWorkflow,
   listPlaybooks,
   resolveEditablePlaybook,
   resolveOp,

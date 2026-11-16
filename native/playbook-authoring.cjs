@@ -3,9 +3,10 @@ const path = require("path");
 const { readRecent } = require("./activity-journal.cjs");
 const { writeNetworkExport } = require("./network-export.cjs");
 const { getPrivateStateRoot, readPrivateJson } = require("./private-state.cjs");
-const { draftFromRecord, readRecord, recordsRoot } = require("./playbook-records.cjs");
-const { savePlaybook, validateOp } = require("./playbooks.cjs");
-const { commandMetadata, promoteRedactedStepArgs } = require("./workflow-definition.cjs");
+const { REVIEW_KEY_ARG, draftFromRecord, readRecord, recordsRoot } = require("./playbook-records.cjs");
+const { isCommitWorkflow, savePlaybook, validateOp } = require("./playbooks.cjs");
+const { requestEffect, shownUrl } = require("./request-kinds.cjs");
+const { commandMetadata, normalizeStep, promoteRedactedStepArgs } = require("./workflow-definition.cjs");
 
 function suggestions({ since = "1h", root } = {}) {
   const events = readRecent({ since, root });
@@ -26,6 +27,33 @@ function saveFromRecent({ site, op: opId, since = "1h", scope = "user", cwd, hom
   return savePlaybook({ manifest: { id: site, name: site, version: "1.0.0", origins: [] }, op, scope, cwd, home });
 }
 
+// A write draft whose workflow can't be its fallback (a navigate first, or a type and a click)
+// saves with its network strategy alone when that replays the write. The workflow's inputs go with
+// it, and the review key takes their place as the safety key when none is left.
+function fitWriteWorkflow(op, warnings) {
+  const workflow = op.effect === "write" && op.run.find((strategy) => strategy.using === "workflow");
+  if (!workflow) return op;
+  const steps = workflow.steps.map(normalizeStep);
+  if (isCommitWorkflow(steps)) return op;
+  const why = `a write op's workflow fallback must be one page-write step, and this draft's is ${steps.map((step) => step.cmd).join(" + ")}`;
+  const network = op.run.find((strategy) => strategy.using === "network");
+  if (!network) {
+    throw new Error(`write op ${op.id} can't be saved: ${why}, and the draft has no network strategy to replay the write instead. Record the write as a single click, or start the record with --network so the draft can replay its request`);
+  }
+  const shown = shownUrl(network.request);
+  if (requestEffect(network.request) !== "write") throw new Error(`write op ${op.id} can't be saved: ${why}, and its network strategy replays ${shown}, a read, not the write`);
+  warnings.push(`saved network-only: ${why}, so the op replays ${shown} alone`);
+  const run = op.run.filter((strategy) => strategy !== workflow);
+  const used = JSON.stringify(run);
+  const args = Object.fromEntries(Object.entries(op.args || {}).filter(([name]) => used.includes(`{{${name}}}`)));
+  let key = op.safety.key.filter((name) => Object.hasOwn(args, name));
+  if (key.length === 0) {
+    key = ["review_key"];
+    args.review_key = REVIEW_KEY_ARG;
+  }
+  return { ...op, args, safety: { ...op.safety, key }, run };
+}
+
 // `requestId` redrafts the op to replay that request, keeping a read draft a read (its checks rerun).
 function saveFromRecord({ recordId, requestId, scope = "user", cwd, home, root = getPrivateStateRoot() }) {
   const record = readRecord(recordId, root);
@@ -33,7 +61,7 @@ function saveFromRecord({ recordId, requestId, scope = "user", cwd, home, root =
   const draftPath = path.join(recordsRoot(root), recordId, "draft", "op.json");
   const draft = fs.existsSync(draftPath) ? readPrivateJson(draftPath, null, { root }) : null;
   const warnings = [];
-  const op = draft && !requestId ? draft : draftFromRecord(recordId, root, { read: draft?.effect === "read", requestId, warnings });
+  const op = fitWriteWorkflow(draft && !requestId ? draft : draftFromRecord(recordId, root, { read: draft?.effect === "read", requestId, warnings }), warnings);
   validateOp(op, { origins: record.origin ? [record.origin] : [] });
   const saved = savePlaybook({ manifest: { id: record.site, name: record.site, version: "1.0.0", origins: record.origin ? [record.origin] : [] }, op, scope, cwd, home });
   return warnings.length > 0 ? { ...saved, warnings } : saved;

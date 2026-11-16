@@ -306,6 +306,9 @@ function pickRequest({ record, trace, effect, requestId, warnings }) {
   return top.entry;
 }
 
+// The input a write op without other inputs takes as its semantic safety key.
+const REVIEW_KEY_ARG = { required: true, desc: "Semantic key for reviewed write replay" };
+
 // `warnings` collects why the draft left something out. `requestId` picks the request to replay.
 function draftFromRecord(recordId, root = getPrivateStateRoot(), { read = false, requestId, warnings = [] } = {}) {
   const record = readRecord(recordId, root);
@@ -336,7 +339,7 @@ function draftFromRecord(recordId, root = getPrivateStateRoot(), { read = false,
   }
   if (strategies.length === 0) throw new Error("record has no executable evidence");
   const safety = effect === "write" ? { authorization: "explicit", duplicate: "transactional", key: Object.keys(args).length ? Object.keys(args) : ["review_key"] } : undefined;
-  if (effect === "write" && !args.review_key && safety.key.includes("review_key")) args.review_key = { required: true, desc: "Semantic key for reviewed write replay" };
+  if (effect === "write" && !args.review_key && safety.key.includes("review_key")) args.review_key = REVIEW_KEY_ARG;
   const op = { id: record.op, description: `Drafted from ${record.id}`, effect, args, ...(safety ? { safety } : {}), run: strategies, provenance: { recordId: record.id } };
   const draftDir = path.join(recordDirectory(recordId, root), "draft");
   ensurePrivateDir(draftDir, root);
@@ -428,6 +431,7 @@ function discardRecord({ target, root = getPrivateStateRoot() } = {}) {
 }
 
 module.exports = {
+  REVIEW_KEY_ARG,
   activeRecords,
   appendRecordEvent,
   attachNetworkTrace,
