@@ -1668,7 +1668,7 @@ const TOOLS = {
           write: "Authorize a write operation",
           "allow-script": "Allow the playbook's trusted script strategy",
           repeat: "Repeat a write whose last attempt was verified",
-          "retry-attempt": "Retry this write attempt id",
+          "retry-attempt": "Retry this write attempt (its UUID); the claim must already hold it",
           "override-in-doubt": "Write again after an indeterminate attempt",
           "pin-built-in": "Use the built-in playbook even if a user or project copy exists",
           json: "Output raw JSON",
