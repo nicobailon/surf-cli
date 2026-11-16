@@ -13,13 +13,14 @@ const TEMPLATE_PATTERN = /\{\{[a-zA-Z0-9._-]+\}\}/;
 const CREDENTIAL_LITERAL_PATTERN = /\bbearer\s+[a-z0-9._~-]+|\bsk-[a-z0-9_-]{12,}|\bgh[pousr]_[a-z0-9_]{12,}|\beyj[a-z0-9_-]+\.[a-z0-9_-]+\.[a-z0-9_-]+/i;
 
 // Replaces each of `values` in `text` with <redacted>, longest first. A value under 8 characters is
-// replaced only where it stands alone, so a short value can't break up the words around it.
+// replaced only where it stands alone, so a short value can't break up the words around it, unless
+// `anyLength` is set: for values known to be secrets (env values), every occurrence goes.
 // Self-contained: generated clients embed its source.
-function redactValues(text, values) {
+function redactValues(text, values, { anyLength = false } = {}) {
   let result = String(text);
   const sorted = [...values].map(String).filter(Boolean).sort((a, b) => b.length - a.length);
   for (const value of sorted) {
-    if (value.length >= 8) result = result.split(value).join("<redacted>");
+    if (anyLength || value.length >= 8) result = result.split(value).join("<redacted>");
     else result = result.replace(new RegExp(`(?<![A-Za-z0-9])${value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(?![A-Za-z0-9])`, "g"), "<redacted>");
   }
   return result;
@@ -29,11 +30,11 @@ function redactValues(text, values) {
 // one already present (another redacted key, or a key that reads <redacted>) takes <redacted-2>,
 // <redacted-3>... so no entry is lost. Keys left unchanged keep their names. Self-contained but for
 // redactValues: generated clients embed both.
-function redactObject(value, values) {
-  if (typeof value === "string") return redactValues(value, values);
-  if (Array.isArray(value)) return value.map((item) => redactObject(item, values));
+function redactObject(value, values, options = {}) {
+  if (typeof value === "string") return redactValues(value, values, options);
+  if (Array.isArray(value)) return value.map((item) => redactObject(item, values, options));
   if (!value || typeof value !== "object") return value;
-  const entries = Object.entries(value).map(([key, item]) => [key, redactValues(key, values), redactObject(item, values)]);
+  const entries = Object.entries(value).map(([key, item]) => [key, redactValues(key, values, options), redactObject(item, values, options)]);
   const taken = new Set(entries.filter(([key, redacted]) => key === redacted).map(([key]) => key));
   return Object.fromEntries(entries.map(([key, redacted, item]) => {
     if (key === redacted) return [key, item];

@@ -587,7 +587,7 @@ describe("env-supplied headers", () => {
     expect(JSON.stringify(events)).not.toContain("shell-secret-value");
   });
 
-  it("redacts the value from results and errors, short values where they stand alone", async () => {
+  it("redacts the value from results and errors, a short value inside a word too", async () => {
     const echo = captureTab({
       reply: () => ({
         body: JSON.stringify({
@@ -606,7 +606,7 @@ describe("env-supplied headers", () => {
     });
     expect(result.value.bodyJson).toEqual({
       headers: { Authorization: "<redacted>" },
-      note: "k9x stays",
+      note: "<redacted>x stays",
       list: ["Bearer <redacted>"],
     });
 
@@ -622,7 +622,7 @@ describe("env-supplied headers", () => {
         executeTool: fail,
       })
       .catch((caught: Error) => caught);
-    expect(error.message).toContain("rejected <redacted> (k9x)");
+    expect(error.message).toContain("rejected <redacted> (<redacted>x)");
   });
 
   it("validates auth inputs and refuses one that duplicates a literal header", () => {

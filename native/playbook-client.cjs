@@ -87,7 +87,7 @@ const headers = { ...endpoint.headers };
 const secretValues = [];
 ${redactValues.toString()}
 ${redactObject.toString()}
-const redact = (text) => redactValues(text, secretValues);
+const redact = (text) => redactValues(text, secretValues, { anyLength: true });
 process.on("uncaughtException", (error) => {
   process.stderr.write(\`\${redact(error?.stack || error)}\\n\`);
   process.exit(1);
@@ -128,7 +128,7 @@ if (manifest.extract && (manifest.extract.records !== undefined || manifest.extr
   output = extractRecords(bodyJson ?? output, manifest.extract);
 }
 // Objects are redacted before they become text, so a secret used as a key can't merge two keys.
-process.stdout.write(output === undefined ? "" : typeof output === "string" ? redact(output) : JSON.stringify(redactObject(output, secretValues), null, 2));
+process.stdout.write(output === undefined ? "" : typeof output === "string" ? redact(output) : JSON.stringify(redactObject(output, secretValues, { anyLength: true }), null, 2));
 process.stdout.write("\\n");
 `;
 }

@@ -114,10 +114,10 @@ function resolveAuthValues(op, secrets = {}, env = process.env) {
 }
 
 // Env-supplied values never leave a run: a response that echoes one, in a value or an object key
-// (or an error that quotes it), comes back with <redacted> in its place.
+// (or an error that quotes it), comes back with <redacted> in its place, however short the value.
 function redactSecrets(value, secrets) {
   const values = Object.values(secrets);
-  return values.length === 0 ? value : redactObject(value, values);
+  return values.length === 0 ? value : redactObject(value, values, { anyLength: true });
 }
 
 function getJsonPath(value, jsonPath) {
