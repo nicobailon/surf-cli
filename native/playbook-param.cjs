@@ -14,6 +14,8 @@ const NAME_PATTERN = /^[a-z0-9][a-z0-9._-]{0,63}$/;
 const ENV_PATTERN = /^[A-Za-z_][A-Za-z0-9_]*$/;
 const TEMPLATE_ONLY = /^\{\{[a-zA-Z0-9._-]+\}\}$/;
 const REDACTED_BODY = "<request-body>";
+// Where a record redacted a value its steps typed (record-typed-values.cjs): <text>, <value>...
+const REDACTED_VALUE = /^<([a-z0-9._-]+)>$/;
 
 const keep = (text) => text;
 const decodePath = (text) => { try { return decodeURIComponent(text); } catch { return text; } };
@@ -317,7 +319,7 @@ function templateSteps(steps, context, touched) {
     for (const [arg, value] of Object.entries(args)) {
       if (typeof value !== "string") continue;
       let next = value;
-      if (kinds[arg] === "user-input" && value === context.literal) next = context.placeholder;
+      if (kinds[arg] === "user-input" && (value === context.literal || value === context.typedStep)) next = context.placeholder;
       else if (kinds[arg] === "url") next = templateStepUrl(value, context);
       if (next !== value) {
         args[arg] = next;
@@ -461,6 +463,8 @@ function paramOp(op, { fields, as: name, env, required = false, default: default
     const shown = templated.map((result) => `${result.field}=${JSON.stringify(result.literal)}`).join(", ");
     throw new Error(`the fields hold different values (${shown}); pass --value <text> to template the same text in each`);
   }
+  // A value the record redacted has no recorded value to default to: the input is required.
+  const redacted = literals.length === 1 ? literals[0].match(REDACTED_VALUE) : null;
   const sensitive = results.find((result) => result.sensitive);
   if (sensitive && !required) throw new Error(`${sensitive.field} looks secret: pass --required so its value isn't stored as a default`);
 
@@ -468,15 +472,15 @@ function paramOp(op, { fields, as: name, env, required = false, default: default
   const type = templated.length ? inputType(templated) : existing?.type || "string";
   let fallback;
   if (defaultValue !== undefined) fallback = coerce(defaultValue, type, "--default");
-  else if (!required) fallback = templated.length ? coerce(templated[0].literal, type, `the value of ${templated[0].field}`) : existing?.default;
+  else if (!required && !redacted) fallback = templated.length ? coerce(templated[0].literal, type, `the value of ${templated[0].field}`) : existing?.default;
   const description = desc ?? existing?.desc;
-  const spec = { type, ...(required ? { required: true } : {}), ...(fallback !== undefined ? { default: fallback } : {}), ...(description !== undefined ? { desc: description } : {}) };
+  const spec = { type, ...(required || (redacted && fallback === undefined) ? { required: true } : {}), ...(fallback !== undefined ? { default: fallback } : {}), ...(description !== undefined ? { desc: description } : {}) };
   if (existing && !sameSpec(existing, spec)) {
     throw new Error(`input ${name} already exists with a different definition (${JSON.stringify(existing)}); pick another --as or repeat its definition`);
   }
   next.args = { ...(next.args || {}), [name]: { ...(existing || {}), ...spec } };
 
-  const notes = [];
+  const notes = redacted && fallback === undefined ? [`the record redacted the value it typed here (${redacted[0]}), so --${name} is required`] : [];
   const workflows = next.run.filter((candidate) => candidate.using === "workflow");
   const linked = link === undefined ? [] : linkInput(next, link, name);
   if (linked.length) notes.push(`workflow fallback takes --${name} in place of --${link}: ${linked.join(", ")}`);
@@ -488,6 +492,8 @@ function paramOp(op, { fields, as: name, env, required = false, default: default
       literal: literals[0],
       segments: templated.filter((result) => result.segment).map((result) => ({ ...result.segment, stored: result.stored })),
       queries: templated.filter((result) => result.whole && !result.json && /^query\.[^.]+$/.test(result.field)).map((result) => result.field.slice("query.".length)),
+      // The drafted step that typed a redacted value holds {{text}} or {{value}}; it takes the input too.
+      ...(redacted ? { typedStep: `{{${redacted[1]}}}` } : {}),
     };
     for (const workflow of workflows) workflow.steps = templateSteps(workflow.steps, context, touched);
     if (touched.length) notes.push(`workflow fallback takes the input too: ${touched.join(", ")}`);
@@ -495,6 +501,14 @@ function paramOp(op, { fields, as: name, env, required = false, default: default
       const hints = workflowOnlyInputs(next).filter((input) => input !== name).map((input) => `; if --${input} holds the same value, add --link ${input}`);
       notes.push(`workflow strategy unchanged: no step argument holds ${JSON.stringify(literals[0])}, so the browser fallback still runs as recorded${hints.join("")}`);
     }
+  }
+  // The draft's input for that step (--text, --value) goes once nothing uses it, so it isn't still required.
+  const replaced = redacted?.[1];
+  if (replaced && replaced !== name && next.args?.[replaced] && !JSON.stringify(next.run).includes(`{{${replaced}}}`)) {
+    const { [replaced]: _replaced, ...rest } = next.args;
+    next.args = rest;
+    if (next.safety?.key?.includes(replaced)) next.safety = { ...next.safety, key: [...new Set(next.safety.key.map((key) => (key === replaced ? name : key)))] };
+    notes.push(`input ${replaced} is now ${name}`);
   }
   return { op: next, changed: JSON.stringify(next) !== JSON.stringify(op), notes };
 }

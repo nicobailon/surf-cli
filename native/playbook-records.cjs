@@ -11,6 +11,7 @@ const {
   readPrivateJson,
 } = require("./private-state.cjs");
 const { redactSensitiveFields, redactUrlSecrets, safeHeaders } = require("./redaction.cjs");
+const { forgetTypedValues, heldTypedValues, redactTypedValuesInUrl, rememberTypedValues, typedArg } = require("./record-typed-values.cjs");
 const { commandMetadata, promoteRedactedStepArgs } = require("./workflow-definition.cjs");
 const { escapeStepArgs, escapeTemplates } = require("./playbook-template.cjs");
 const { describeCaptureGaps } = require("./formatters/network.cjs");
@@ -132,8 +133,11 @@ function appendToRecord(record, event, root) {
   writeRecord(record, root);
 }
 
-function appendRecordEvent(event, { target, root = getPrivateStateRoot() } = {}) {
+// `args` are the command's arguments as given: values it typed are held in memory (see
+// record-typed-values.cjs), even while paused, so the trace's URLs can be redacted at stop.
+function appendRecordEvent(event, { target, args, root = getPrivateStateRoot() } = {}) {
   const record = recordFor(target, root);
+  if (record && args) rememberTypedValues(record.id, event.command, args);
   if (!record || record.status !== "recording") return false;
   appendToRecord(record, event, root);
   return true;
@@ -170,12 +174,19 @@ function readEvents(recordId, root = getPrivateStateRoot()) {
   return content.split("\n").filter(Boolean).map((line) => JSON.parse(line));
 }
 
-function sanitizeTraceEntry(entry, includeInputValues = false) {
+// A URL header (referer, location) can hold a typed value as the request URL can.
+function redactTypedHeaders(headers, typed) {
+  return Object.fromEntries(Object.entries(headers).map(([name, value]) => [name, /^(referer|location)$/i.test(name) ? redactTypedValuesInUrl(String(value), typed) : value]));
+}
+
+// `typed` lists the values the record's steps typed; each becomes its marker in the entry's URLs.
+function sanitizeTraceEntry(entry, includeInputValues = false, typed = []) {
   return {
     ...redactSensitiveFields(entry),
-    url: redactUrlSecrets(entry.url),
-    requestHeaders: safeHeaders(entry.requestHeaders),
-    responseHeaders: safeHeaders(entry.responseHeaders),
+    url: redactTypedValuesInUrl(redactUrlSecrets(entry.url), typed),
+    ...(entry.tabUrl !== undefined ? { tabUrl: redactTypedValuesInUrl(redactUrlSecrets(entry.tabUrl), typed) } : {}),
+    requestHeaders: redactTypedHeaders(safeHeaders(entry.requestHeaders), typed),
+    responseHeaders: redactTypedHeaders(safeHeaders(entry.responseHeaders), typed),
     responseBody: entry.responseBody === undefined ? undefined : "<response-body>",
     ...(includeInputValues ? {} : { requestBody: entry.requestBody === undefined ? undefined : "<request-body>" }),
   };
@@ -196,9 +207,11 @@ function traceEntriesForRecord(record, entries) {
 // live ranking only: entries with samples are never written.
 function sanitizeTraceEntries(record, entries, pageText, { sample = false } = {}) {
   const page = pageWords(pageText);
+  const keepValues = record.redaction?.includeInputValues === true;
+  const typed = keepValues ? [] : heldTypedValues(record.id).values;
   return entries.map((entry) => {
     const responseSummary = summarizeResponse(entry, page, { sample });
-    return sanitizeTraceEntry(responseSummary ? { ...entry, responseSummary } : entry, record.redaction?.includeInputValues);
+    return sanitizeTraceEntry(responseSummary ? { ...entry, responseSummary } : entry, keepValues, typed);
   });
 }
 
@@ -213,6 +226,11 @@ function attachNetworkTrace(recordId, entries, root = getPrivateStateRoot(), { c
     ? describeCaptureGaps(capture, { atStop: true })
     : ["the extension did not report whether network capture ran (it may be older than this Surf); requests may be missing"];
   if (truncatedAt) warnings.push(`the trace holds only the first ${truncatedAt} requests read from the tab; later ones are missing`);
+  if (record.redaction?.includeInputValues !== true) {
+    const typingSteps = readEvents(recordId, root).filter((event) => ["tool.completed", "tool.failed"].includes(event.type) && typedArg(event.command, event.argsRedacted)).length;
+    const unheld = typingSteps - heldTypedValues(recordId).steps;
+    if (unheld > 0) warnings.push(`${unheld} typing step${unheld === 1 ? "" : "s"} ran before this Surf host started, so the typed values they entered may remain in the trace's URLs`);
+  }
   const complete = Boolean(capture) && warnings.length === 0;
   const directory = path.join(recordDirectory(recordId, root), "network");
   ensurePrivateDir(directory, root);
@@ -378,6 +396,7 @@ function stopRecord({ target, draft = false, read = false, requestId, root = get
   const op = draft ? draftFromRecord(record.id, root, { read, requestId, warnings: draftWarnings }) : undefined;
   record = updateStatus("stopping", { target, root });
   record = readRecord(record.id, root);
+  forgetTypedValues(record.id);
   record.status = draft ? "draft_created" : "stopped";
   record.stoppedAt = new Date().toISOString();
   if (requestId) record.requestId = requestId;
@@ -450,6 +469,7 @@ function discardRecord({ target, root = getPrivateStateRoot() } = {}) {
   const record = requireRecordFor(target, root);
   const directory = assertWithin(recordsRoot(root), recordDirectory(record.id, root));
   fs.rmSync(directory, { recursive: true, force: true });
+  forgetTypedValues(record.id);
   writeActiveIds(activeIds(root).filter((id) => id !== record.id), root);
   return { discarded: record.id };
 }

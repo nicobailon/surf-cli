@@ -1894,7 +1894,7 @@ function sendToolResponse(socket, id, result, error) {
           resultSummary: finalError ? "failed" : "success",
         };
         appendActivity(event);
-        appendRecordEvent(event, { target: recordEventTarget(request) });
+        appendRecordEvent(event, { target: recordEventTarget(request), args: request.args });
       }
     }
     await cleanupRequestTransfers(request);

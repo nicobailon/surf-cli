@@ -2875,3 +2875,112 @@ describe("what a hand-edited draft can't change", () => {
     });
   });
 });
+
+describe("values typed during a record, in captured URLs", () => {
+  const { redactCommandArgs } = require("../../native/workflow-definition.cjs");
+  const TYPED = "dummy echo words";
+  const FILLED = "dummyfoxtrot";
+  const hostEvent = (command: string, args: Entry) => ({
+    type: "tool.completed",
+    command,
+    argsRedacted: redactCommandArgs(command, args),
+    startedAt: new Date().toISOString(),
+  });
+  const typeArgs = { selector: "#q", text: TYPED };
+  const fillArgs = { label: "City", action: "fill", value: FILLED };
+  const search = {
+    id: "r_1",
+    method: "GET",
+    status: 200,
+    type: "XHR",
+    url: `https://example.test/api/search?q=${encodeURIComponent(TYPED).replace(/%20/g, "+")}&page=1`,
+    tabUrl: `https://example.test/search/${encodeURIComponent(FILLED)}?term=${encodeURIComponent(TYPED)}`,
+    requestHeaders: { accept: "application/json", referer: `https://example.test/?q=${TYPED.replace(/ /g, "+")}` },
+    responseHeaders: { "content-type": "application/json" },
+  };
+  const everyFile = (directory: string): string =>
+    fs
+      .readdirSync(directory, { recursive: true, withFileTypes: true })
+      .filter((entry: { isFile: () => boolean }) => entry.isFile())
+      .map((entry: { parentPath: string; name: string }) =>
+        fs.readFileSync(path.join(entry.parentPath, entry.name), "utf8"),
+      )
+      .join("\n");
+
+  function recordSearch(includeInputValues: boolean) {
+    const root = tempRoot();
+    const home = path.dirname(root);
+    const record = records.startRecord({
+      site: "fixture",
+      op: "search",
+      tabId: 1,
+      origin: "https://example.test",
+      network: true,
+      includeInputValues,
+      root,
+    });
+    records.appendRecordEvent(hostEvent("type", typeArgs), { target: TAB, root, args: typeArgs });
+    records.appendRecordEvent(hostEvent("locate.label", fillArgs), {
+      target: TAB,
+      root,
+      args: fillArgs,
+    });
+    records.attachNetworkTrace(record.id, [search], root, { capture: COMPLETE });
+    const { draft } = records.stopRecord({ target: TAB, draft: true, read: true, root });
+    authoring.saveFromRecord({ recordId: record.id, root, home });
+    authoring.exportRecordHar(record.id, path.join(home, "trace.har"), root);
+    return { root, home, record, draft };
+  }
+
+  it("puts <text> and <value> where the typed values were, in the trace, draft, playbook and HAR", () => {
+    const { root, home, record, draft } = recordSearch(false);
+    const trace = JSON.parse(
+      fs.readFileSync(path.join(records.recordsRoot(root), record.id, "network", "trace.json"), "utf8"),
+    );
+    expect(trace.entries[0].url).toBe("https://example.test/api/search?q=<text>&page=1");
+    expect(trace.entries[0].tabUrl).toBe("https://example.test/search/<value>?term=<text>");
+    expect(trace.entries[0].requestHeaders.referer).toBe("https://example.test/?q=<text>");
+    const network = draft.run.find((strategy: { using: string }) => strategy.using === "network");
+    expect(network.request.query).toEqual({ q: "<text>", page: "1" });
+    const written = everyFile(home);
+    expect(written).toContain("<text>");
+    for (const form of [TYPED, encodeURIComponent(TYPED), TYPED.replace(/ /g, "+"), FILLED]) {
+      expect(written).not.toContain(form);
+    }
+  });
+
+  it("keeps the URLs as captured in a record started with --include-input-values", () => {
+    const { draft, home } = recordSearch(true);
+    const network = draft.run.find((strategy: { using: string }) => strategy.using === "network");
+    expect(network.request.query).toEqual({ q: TYPED, page: "1" });
+    expect(everyFile(home)).toContain(FILLED);
+  });
+
+  it("lets pb param name a redacted value, taking over the step that typed it", () => {
+    const { draft } = recordSearch(false);
+    const { op, notes } = paramOp(draft, { fields: ["query.q"], as: "q" });
+    const network = op.run.find((strategy: { using: string }) => strategy.using === "network");
+    expect(network.request.query.q).toBe("{{q}}");
+    expect(op.args.q).toEqual({ type: "string", required: true });
+    expect(op.args).not.toHaveProperty("text");
+    const workflow = op.run.find((strategy: { using: string }) => strategy.using === "workflow");
+    expect(workflow.steps[0].args.text).toBe("{{q}}");
+    expect(notes.join("\n")).toMatch(/redacted/);
+  });
+
+  it("warns when typing steps ran before this host held their values", () => {
+    const root = tempRoot();
+    const record = records.startRecord({
+      site: "fixture",
+      op: "search",
+      tabId: 1,
+      origin: "https://example.test",
+      network: true,
+      root,
+    });
+    records.appendRecordEvent(hostEvent("type", typeArgs), { target: TAB, root });
+    records.attachNetworkTrace(record.id, [search], root, { capture: COMPLETE });
+    const { warnings } = records.stopRecord({ target: TAB, root });
+    expect(warnings.join("\n")).toMatch(/typed values .* may remain/);
+  });
+});

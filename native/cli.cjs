@@ -1729,7 +1729,7 @@ const TOOLS = {
       "playbook record start": {
         desc: "Start recording a playbook op",
         args: ["playbook"],
-        opts: { op: "Operation name", network: "Record network requests", watch: "Watch page changes", "include-input-values": "Keep typed values (redacted by default)" },
+        opts: { op: "Operation name", network: "Record network requests", watch: "Watch page changes", "include-input-values": "Keep typed values in request bodies and captured URLs (by default bodies read <request-body> and typed values in URLs <text> or <value>)" },
         examples: [{ cmd: "pb record start example --op read --network --watch", desc: "Record with network" }],
       },
       "playbook record mark": { desc: "Add a note to the recording", args: ["note"] },
