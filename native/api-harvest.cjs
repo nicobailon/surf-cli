@@ -3,6 +3,7 @@
 
 const { createRecordSet, readCursor } = require("./records.cjs");
 const { hiddenTabError } = require("./dom-collect.cjs");
+const { PATTERN_LIMIT } = require("./bounded-regex.cjs");
 const { redactValues } = require("./redaction.cjs");
 
 const POLL_MS = 500;
@@ -22,6 +23,11 @@ const DROPPED_HEADERS = new Set([
 function isPlainObject(value) {
   return value !== null && typeof value === "object" && !Array.isArray(value);
 }
+
+// A glob is checked when an op is saved and loaded, and over PATTERN_LIMIT characters it is
+// refused; a URL whose tested part is over URL_TEST_LIMIT characters never matches. A match then
+// takes at most PATTERN_LIMIT x URL_TEST_LIMIT steps (about 4 million, a few milliseconds).
+const URL_TEST_LIMIT = 8 * 1024;
 
 // A glob as tokens: a literal character, "*" (any run except /) or "**" (any run); "***" is "**" then "*".
 function globTokens(pattern) {
@@ -76,6 +82,7 @@ function globMatches(tokens, text) {
  */
 function urlMatcher(pattern) {
   if (typeof pattern !== "string" || !pattern) throw new Error("match must be a non-empty URL glob");
+  if (pattern.length > PATTERN_LIMIT) throw new Error(`match is ${pattern.length} characters; the limit is ${PATTERN_LIMIT}`);
   if (/[?#]/.test(pattern)) {
     throw new Error(`match "${pattern}" must not contain ? or #: it is tested against the URL without its query string`);
   }
@@ -91,7 +98,8 @@ function urlMatcher(pattern) {
     } catch {
       return false;
     }
-    return globMatches(tokens, whole ? `${parsed.origin}${parsed.pathname}` : parsed.pathname);
+    const tested = whole ? `${parsed.origin}${parsed.pathname}` : parsed.pathname;
+    return tested.length <= URL_TEST_LIMIT && globMatches(tokens, tested);
   };
 }
 

@@ -57,6 +57,22 @@ describe("api harvest", () => {
     }
   });
 
+  it("refuses a glob over 500 characters and never tests a path over 8 KB", () => {
+    // A 20 KB all-* glob against a 20 KB path held the host for about 6 s.
+    const path = `https://x.test/${"a".repeat(20000)}`;
+    const started = Date.now();
+    expect(() => harvest.urlMatcher(`/${"*".repeat(19999)}`)).toThrow(
+      "match is 20000 characters; the limit is 500",
+    );
+    expect(() => harvest.validateApiSpec({ match: `/${"*".repeat(500)}`, records: {} })).toThrow(
+      "match is 501 characters; the limit is 500",
+    );
+    const longest = harvest.urlMatcher(`/${"*".repeat(499)}`);
+    expect(longest(path)).toBe(false);
+    expect(longest(`https://x.test/${"a".repeat(8191)}`)).toBe(true);
+    expect(Date.now() - started).toBeLessThan(100);
+  });
+
   it("matches a glob of many ** in time linear in the URL, not by backtracking", () => {
     // The first backtracked for about 2 s; the second (from the review) never finished.
     const path = `https://x.test/${"a".repeat(80)}`;
