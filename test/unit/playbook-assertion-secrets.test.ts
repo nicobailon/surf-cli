@@ -192,3 +192,27 @@ describe("a failed assertion and env values", () => {
     expect(JSON.stringify(failed)).not.toContain(long.slice(0, 10));
   });
 });
+
+describe("matches patterns and env values over the 64 KB match cap", () => {
+  const LONG = `${"a".repeat(66000)}z`;
+  const pattern = "^(?:a{66000}z|ok)$";
+
+  it("refuses --save, before the run and after it", async () => {
+    const { cwd, file } = tempShop();
+    const before = fs.readFileSync(file, "utf8");
+    const runOp = vi.fn();
+    await expect(
+      save(cwd, ["--assert", "$.x", "matches", pattern], { [ENV]: LONG }, runOp),
+    ).rejects.toThrow(
+      /--save refused: the value of SURF_TEST_ITEMS_KEY is over 64 KB, too long to check assertion 1's pattern against/,
+    );
+    expect(runOp).not.toHaveBeenCalled();
+    const hosted = (params: Record<string, any>) => hostRun({ x: "ok" }, LONG, params.assert);
+    await expect(save(cwd, ["--assert", "$.x", "matches", pattern], {}, hosted)).rejects.toThrow(
+      /--save refused: assertion 1's value passed through env-header redaction/,
+    );
+    expect(fs.readFileSync(file, "utf8")).toBe(before);
+    const [checked] = assertions.checkAssertions("ok", [{ path: "$", op: "matches", value: pattern }], [LONG]);
+    expect(checked).toMatchObject({ pass: true, secretSensitive: true });
+  });
+});

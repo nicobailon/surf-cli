@@ -1,6 +1,6 @@
 // surf pb test: run an op the way `surf use` does and check assertions on its result.
 
-const { MATCH_SKIPPED, MATCH_TIMED_OUT, boundedMatch, createRegexBudget, describeAssertion, validateAssertions, valueTexts } = require("./playbook-assertions.cjs");
+const { MATCH_INPUT_LIMIT, MATCH_SKIPPED, MATCH_TIMED_OUT, boundedMatch, createRegexBudget, describeAssertion, validateAssertions, valueTexts } = require("./playbook-assertions.cjs");
 const { authInputs, resolveArgs } = require("./playbook-runtime.cjs");
 const { editSavedOp, resolveEditablePlaybook, resolveOp } = require("./playbooks.cjs");
 
@@ -88,7 +88,8 @@ function localOp(playbook, op, { cwd, home }) {
 
 // pb test --save writes assertions to the op file, which must never hold an env header's value.
 // Before the run: refuse when the path, any key or leaf of the value, or a matches pattern's source
-// contains one, or when the pattern matches one (which also refuses broad patterns such as .*).
+// contains one, or when the pattern matches one (which also refuses broad patterns such as .*). A
+// value over MATCH_INPUT_LIMIT is refused for any pattern: a run tests only its start.
 // Errors name the assertion's position and the variable, never the value.
 function refuseSecretAssertions(assertions, secret) {
   const budget = createRegexBudget();
@@ -100,6 +101,9 @@ function refuseSecretAssertions(assertions, secret) {
         throw new Error(`--save refused: ${position} contains the value of ${name}, which is never stored; assert on something else`);
       }
       if (assertion.op !== "matches") continue;
+      if (value.length > MATCH_INPUT_LIMIT) {
+        throw new Error(`--save refused: the value of ${name} is over ${MATCH_INPUT_LIMIT / 1024} KB, too long to check ${position}'s pattern against; assert on something else`);
+      }
       let matched;
       try {
         matched = boundedMatch(assertion.value, value, budget);

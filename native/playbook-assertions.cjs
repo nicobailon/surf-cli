@@ -123,11 +123,13 @@ function valueTexts(value, out = []) {
 // (keys and leaves) contains one, its matches pattern matches one, or, for equals and matches (whose
 // stored value is compared with the content), the full, untruncated actual value contains one.
 // Only the run knows every value, the browser host's own included; callers get the boolean alone.
-// A pattern that runs too long against a value counts as matching it.
+// A pattern that runs too long against a value counts as matching it, and so does any pattern
+// against a value over MATCH_INPUT_LIMIT, which a run would test only the start of.
 function touchesSecret(assertion, found, secrets, budget) {
   const texts = [assertion.path, ...valueTexts(assertion.value)];
   if (assertion.op === "equals" || assertion.op === "matches") texts.push(...valueTexts(found));
   const patternMatches = (secret) => {
+    if (secret.length > MATCH_INPUT_LIMIT) return true;
     try {
       return boundedMatch(assertion.value, secret, budget);
     } catch (error) {
