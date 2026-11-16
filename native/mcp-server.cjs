@@ -367,7 +367,9 @@ const TOOL_SCHEMAS = {
   }
 };
 
-async function sendSocketRequest(tool, args = {}, endpoint = selectEndpoint([]).endpoint) {
+async function sendSocketRequest(tool, toolArgs = {}, endpoint = selectEndpoint([]).endpoint) {
+  // As from the CLI: the export redacts the headers this project's saved ops read from the environment.
+  const args = tool === "network.export" ? { ...toolArgs, projectDir: process.cwd() } : toolArgs;
   const requestTimeoutMs = resolveRequestDeadlineMs(tool, args);
   const transport = await openClientTransport(endpoint, { requestTimeoutMs });
   try {

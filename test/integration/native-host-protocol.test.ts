@@ -386,6 +386,28 @@ async function startHostHarness(
   };
 }
 
+/** A project folder whose saved op sends X-Site-Key from an environment variable. */
+function siteKeyProject() {
+  const project = fs.mkdtempSync(path.join(os.tmpdir(), "surf-export-project-"));
+  tempDirs.push(project);
+  const directory = path.join(project, ".surf", "playbooks", "shop");
+  (require("node:fs") as any).mkdirSync(path.join(directory, "ops"), { recursive: true });
+  fs.writeFileSync(
+    path.join(directory, "playbook.json"),
+    JSON.stringify({ id: "shop", version: "1.0.0", origins: [] }),
+  );
+  const request = {
+    method: "GET",
+    url: "https://example.test/api",
+    authInputs: [{ env: "SHOP_SITE_KEY", header: "X-Site-Key" }],
+  };
+  fs.writeFileSync(
+    path.join(directory, "ops", "items.json"),
+    JSON.stringify({ id: "items", effect: "read", run: [{ using: "network", request }] }),
+  );
+  return project;
+}
+
 afterEach(async () => {
   for (const child of children.splice(0)) {
     await cleanupChild(child);
@@ -1888,31 +1910,7 @@ describe("native host protocol integration", () => {
   it("redacts the headers the caller's project ops read from the environment in a network export", async () => {
     // A dummy value, built from parts so no literal here reads as a credential.
     const siteKey = ["dummy", "site", "key", "10"].join("-");
-    const project = fs.mkdtempSync(path.join(os.tmpdir(), "surf-export-project-"));
-    tempDirs.push(project);
-    const directory = path.join(project, ".surf", "playbooks", "shop");
-    (require("node:fs") as any).mkdirSync(path.join(directory, "ops"), { recursive: true });
-    fs.writeFileSync(
-      path.join(directory, "playbook.json"),
-      JSON.stringify({ id: "shop", version: "1.0.0", origins: [] }),
-    );
-    fs.writeFileSync(
-      path.join(directory, "ops", "items.json"),
-      JSON.stringify({
-        id: "items",
-        effect: "read",
-        run: [
-          {
-            using: "network",
-            request: {
-              method: "GET",
-              url: "https://example.test/api",
-              authInputs: [{ env: "SHOP_SITE_KEY", header: "X-Site-Key" }],
-            },
-          },
-        ],
-      }),
-    );
+    const project = siteKeyProject();
     const output = path.join(project, "requests.json");
     const host = await startHostHarness();
     const exporting = runCli(["network.export", "--output", output], host.socketPath, {}, project);
@@ -1939,6 +1937,70 @@ describe("native host protocol integration", () => {
     expect(written).toContain("X-Site-Key");
     expect(written).not.toContain(siteKey);
   });
+
+  it.each([
+    ["plain", ["dummy", "site", "key", "12"].join("-")],
+    ["quoted", ["dummy", 'quo"ted', "va\\lue", "12"].join("-")],
+  ])(
+    "redacts a project op's env-backed header in an MCP network.export (%s value)",
+    async (_label, siteKey) => {
+      const project = siteKeyProject();
+      const output = path.join(project, "requests.json");
+      const host = await startHostHarness();
+      const mcp = spawn(process.execPath, [path.join(process.cwd(), "native", "mcp-server.cjs")], {
+        cwd: project,
+        env: { ...process.env, SURF_SOCKET: host.socketPath },
+        stdio: ["pipe", "pipe", "pipe"],
+      });
+      children.push(mcp);
+      let replies = "";
+      mcp.stdout.on("data", (chunk) => {
+        replies += String(chunk);
+      });
+      const rpc = (message: Record<string, unknown>) =>
+        (mcp.stdin as any).write(`${JSON.stringify({ jsonrpc: "2.0", ...message })}\n`);
+      rpc({
+        id: 1,
+        method: "initialize",
+        params: {
+          protocolVersion: "2024-11-05",
+          capabilities: {},
+          clientInfo: { name: "test", version: "1" },
+        },
+      });
+      rpc({ method: "notifications/initialized" });
+      rpc({
+        id: 2,
+        method: "tools/call",
+        params: { name: "network.export", arguments: { output } },
+      });
+      const request = await host.waitForMessage(
+        (message) => message.type === "EXPORT_NETWORK_REQUESTS",
+        "EXPORT_NETWORK_REQUESTS",
+      );
+      host.send({
+        id: request.id,
+        entries: [
+          {
+            id: "r1",
+            url: "https://example.test/api",
+            requestHeaders: { "X-Site-Key": siteKey },
+            responseBody: JSON.stringify({ echo: siteKey }),
+          },
+        ],
+        jsonl: false,
+        har: false,
+      });
+      const deadline = Date.now() + 5000;
+      while (!replies.includes('"id":2') && Date.now() < deadline) {
+        await new Promise((resolve) => setTimeout(resolve, 50));
+      }
+      expect(replies).toContain('"id":2');
+      const written = fs.readFileSync(output, "utf8");
+      expect(written).toContain("X-Site-Key");
+      expect(written).not.toContain("dummy");
+    },
+  );
 
   it("logs an API request's URL without its password or secret query values", async () => {
     // Dummy credentials, built from parts so no literal here reads as one.
