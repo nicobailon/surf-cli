@@ -4,6 +4,7 @@ const fs = require("node:fs/promises");
 const os = require("node:os");
 const path = require("node:path");
 const exporter = require("../../native/network-export.cjs");
+const { Buffer } = require("node:buffer");
 
 const tempDirs: string[] = [];
 

@@ -67,6 +67,7 @@ const { spawn } = require("node:child_process") as {
 const fs = require("node:fs") as {
   existsSync(targetPath: string): boolean;
   mkdtempSync(prefix: string): string;
+  mkdirSync(targetPath: string, options: { recursive: boolean }): void;
   statSync(targetPath: string): { gid: number; mode: number };
   rmSync(targetPath: string, options: { recursive: boolean; force: boolean }): void;
   readdirSync(targetPath: string): string[];

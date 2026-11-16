@@ -2997,9 +2997,9 @@ describe("values typed during a record, in captured URLs", () => {
     expect(network.request.query).toEqual({ a: "<text>", b: "<text-2>" });
     const typing = (op: typeof draft) =>
       op.run
-        .find((strategy: { using: string }) => strategy.using === "workflow")
-        .steps.filter((step: { tool: string }) => step.tool === "type")
-        .map((step: { args: Entry }) => step.args.text);
+        .find((candidate: { using: string }) => candidate.using === "workflow")
+        .steps.filter((item: { tool: string }) => item.tool === "type")
+        .map((item: { args: Entry }) => item.args.text);
     expect(typing(draft)).toEqual(["{{text}}", "{{text-2}}"]);
     const named = paramOp(paramOp(draft, { fields: ["query.a"], as: "first" }).op, {
       fields: ["query.b"],
