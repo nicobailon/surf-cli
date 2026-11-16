@@ -12,9 +12,10 @@ const WEAK_SCORE = 5;
 const WINNER_MARGIN = 3;
 const TINY_BYTES = 64;
 // Overlap is the share of the page's words found in a response. A response holding nearly all of
-// them is the page's own data (+5, above any JSON's records bonus); a small JSON holding under
-// LOW_OVERLAP of them is a side request such as a banner or the web manifest (-3), even when it
-// lists records. A JSON API the page shows overlaps heavily, so it keeps its lead.
+// them is the page's own data (+5, above any JSON's records bonus). A small JSON holding under
+// LOW_OVERLAP of them is a side request such as a banner or the web manifest: its records aren't
+// the page's, so they don't count, and it scores -3, below a document too large to sample. A JSON
+// API the page shows overlaps heavily, so it keeps its lead.
 const HEAVY_OVERLAP = 0.8;
 const LOW_OVERLAP = 0.1;
 const SMALL_JSON_BYTES = 16 * 1024;
@@ -172,7 +173,8 @@ function scoreEntry(entry, origin) {
     if (kind === "json") add(4, "JSON");
     else if (kind === "html") add(entry.type === "Document" ? 4 : 2, entry.type === "Document" ? "HTML document" : "HTML");
   }
-  if (summary.records >= 2) add(3, `${summary.records} records`);
+  const sideJson = kind === "json" && summary.overlap < LOW_OVERLAP && summary.bytes < SMALL_JSON_BYTES;
+  if (summary.records >= 2 && !sideJson) add(3, `${summary.records} records`);
   const site = hostname(origin);
   const host = hostname(entry.url);
   if (site && host) {
@@ -181,7 +183,7 @@ function scoreEntry(entry, origin) {
   }
   const overlap = `overlaps ${Math.round(summary.overlap * 100)}% of the page text`;
   if (summary.overlap >= LOW_OVERLAP) add(summary.overlap >= HEAVY_OVERLAP ? 5 : summary.overlap >= 0.3 ? 3 : 1, overlap);
-  else if (summary.overlap !== undefined && kind === "json" && summary.bytes < SMALL_JSON_BYTES) add(-3, `small JSON that ${overlap}`);
+  else if (sideJson) add(-3, `small JSON that ${overlap}`);
   if (summary.bytes !== undefined && summary.bytes < TINY_BYTES && ok && !emptyRedirect) add(-3, `tiny body (${summary.bytes} B)`);
   return { score, reasons, effect, eligible: isReplayCandidate(entry) && !telemetry && !preflight };
 }

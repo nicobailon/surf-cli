@@ -312,7 +312,33 @@ describe("rankCandidates", () => {
       "overlaps 100% of the page text",
     ]);
     expect(ranked[0].score - ranked[1].score).toBeGreaterThanOrEqual(candidates.WINNER_MARGIN);
-    expect(ranked[2].reasons).toContain("small JSON that overlaps 0% of the page text");
+    expect(ranked[2].reasons).toEqual([
+      "JSON",
+      "first-party",
+      "small JSON that overlaps 0% of the page text",
+    ]);
+
+    // A 50-result search page is over capture's per-body cap, so its overlap is unknown; the
+    // banner's records still don't lift it over the document.
+    const unsampled = get("r_doc", "Document", `${page}/search/?query=diffusion`, {
+      mimeType: "text/html",
+      bodyCapture: { complete: false, reason: "per-body-cap", sizeBytes: 248_000 },
+    });
+    const overCap = candidates.rankCandidates(
+      [
+        summarized(unsampled),
+        json(
+          "r_banner",
+          "https://static.papers.example/announcements.json",
+          "Fetch",
+          "application/json",
+          notices,
+        ),
+      ],
+      { origin: page },
+    );
+    expect(overCap.map((item: { id: string }) => item.id)).toEqual(["r_doc", "r_banner"]);
+    expect(overCap[0].score - overCap[1].score).toBeGreaterThanOrEqual(candidates.WINNER_MARGIN);
   });
 
   it("still puts a JSON API that fills the page above the page's empty app shell", () => {
