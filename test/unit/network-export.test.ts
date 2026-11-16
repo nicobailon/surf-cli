@@ -195,7 +195,10 @@ describe("secret-named fields in exported bodies", () => {
       requestHeaders: { "content-type": "application/x-www-form-urlencoded" },
       requestBody: "custname=dummy-golf&user_password=dummy-hotel&api_key=dummy-india",
       responseHeaders: { "content-type": "application/json" },
-      responseBody: JSON.stringify({ form: { custname: "dummy-golf", user_password: "dummy-hotel" }, access_token: "dummy-juliet" }),
+      responseBody: JSON.stringify({
+        form: { custname: "dummy-golf", user_password: "dummy-hotel" },
+        access_token: "dummy-juliet",
+      }),
     },
     {
       id: "r-multipart",
@@ -216,25 +219,36 @@ describe("secret-named fields in exported bodies", () => {
 
   it.each(["json", "jsonl", "har"])("redacts their values and keeps the rest in %s", (format) => {
     const text = exporter.serializeNetworkExport(exported, format);
-    for (const secret of secrets) expect(text).not.toContain(secret);
+    for (const secret of secrets) {
+      expect(text).not.toContain(secret);
+    }
     expect(text).toContain("dummy-golf");
     expect(text).toContain("user_password=<redacted>");
     expect(text).toContain("custname");
   });
 
   it("keeps each body's shape", () => {
-    const [form, upload, login] = exported.map(exporter.publicEntry);
-    expect(form.requestBody).toBe("custname=dummy-golf&user_password=<redacted>&api_key=<redacted>");
+    const [form, upload, login] = exported.map(
+      (entry) => exporter.publicEntry(entry) as Record<string, string>,
+    );
+    expect(form.requestBody).toBe(
+      "custname=dummy-golf&user_password=<redacted>&api_key=<redacted>",
+    );
     expect(JSON.parse(form.responseBody)).toEqual({
       form: { custname: "dummy-golf", user_password: "<redacted>" },
       access_token: "<redacted>",
     });
     expect(upload.requestBody).toBe(multipart.replace("dummy-hotel", "<redacted>"));
-    expect(JSON.parse(login.requestBody)).toEqual({ user: "dummy-golf", credentials: { password: "<redacted>" } });
+    expect(JSON.parse(login.requestBody)).toEqual({
+      user: "dummy-golf",
+      credentials: { password: "<redacted>" },
+    });
   });
 
   it.each(["json", "jsonl", "har"])("keeps them as captured with --raw-bodies in %s", (format) => {
     const text = exporter.serializeNetworkExport(exported, format, { rawBodies: true });
-    for (const secret of secrets) expect(text).toContain(secret);
+    for (const secret of secrets) {
+      expect(text).toContain(secret);
+    }
   });
 });

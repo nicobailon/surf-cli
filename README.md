@@ -310,6 +310,8 @@ surf locate.text "Accept" --exact                 # Exact match only
 surf locate.label "Email" --action fill --value "test@example.com"
 ```
 
+A fill prints `OK` without the value it typed, and `select` prints how many options it chose. Pass `--echo-value` to print them, or set `echoValue: true` in `surf.json`.
+
 An exact name match wins over partial ones, so `--name "Save"` picks a "Save" button over "Save draft". With `--action`, if more than one element still matches, Surf does nothing and lists each match with its ref, so you can act on the one you mean with `surf click <ref>`.
 
 ### Iframe Support
@@ -746,6 +748,8 @@ surf network.export --har --output ./trace.har
 ```
 
 `network -v`, `network --format raw|curl`, `network.get` (and `--json`) and `network.curl` show secret headers (`Authorization`, `Cookie`, `Set-Cookie`, API-key, CSRF, token and session headers) as `<redacted>`, with secret-named query params and `user:password@` redacted, as exports do, and `network.body`, `network.wait` and `network.replay` print a body that echoes one with `<redacted>` in its place; `network.replay` still sends the real values.
+
+Exports show `<redacted>` for secret headers and for the values of secret-named body fields (`password=`, `"token":`) in JSON, urlencoded and multipart bodies; `--raw-bodies` keeps the bodies as captured.
 
 Response bodies are fetched at `Network.loadingFinished` when capture is enabled. `--body-mode none|text|all`, `--per-body-bytes`, and `--total-body-bytes` control content and caps; exports include completeness metadata.
 

@@ -1083,7 +1083,9 @@ describe("fill and select results", () => {
     for (const tool of ["locate.role", "locate.text", "locate.label"]) {
       const args = { role: "textbox", text: "Name", label: "Name", action: "fill", value: "x" };
       expect(helpers.mapToolToMessage(tool, args, 1).echoValue).toBe(false);
-      expect(helpers.mapToolToMessage(tool, { ...args, "echo-value": true }, 1).echoValue).toBe(true);
+      expect(helpers.mapToolToMessage(tool, { ...args, "echo-value": true }, 1).echoValue).toBe(
+        true,
+      );
     }
   });
 });

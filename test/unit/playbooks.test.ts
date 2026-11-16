@@ -105,7 +105,11 @@ describe("playbook resolution and strategies", () => {
     const bare = await use([typed]);
     expect(bare.value).not.toHaveProperty("vars");
     expect(JSON.stringify(bare)).not.toContain("dummy-input-delta");
-    expect(executeTool).toHaveBeenCalledWith("type", { selector: "#q", text: "dummy-input-delta" }, expect.anything());
+    expect(executeTool).toHaveBeenCalledWith(
+      "type",
+      { selector: "#q", text: "dummy-input-delta" },
+      expect.anything(),
+    );
   });
 
   it("defaults protected writes to explicit authorization and uses op auth origins", () => {

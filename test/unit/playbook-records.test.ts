@@ -2895,7 +2895,10 @@ describe("values typed during a record, in captured URLs", () => {
     type: "XHR",
     url: `https://example.test/api/search?q=${encodeURIComponent(TYPED).replace(/%20/g, "+")}&page=1`,
     tabUrl: `https://example.test/search/${encodeURIComponent(FILLED)}?term=${encodeURIComponent(TYPED)}`,
-    requestHeaders: { accept: "application/json", referer: `https://example.test/?q=${TYPED.replace(/ /g, "+")}` },
+    requestHeaders: {
+      accept: "application/json",
+      referer: `https://example.test/?q=${TYPED.replace(/ /g, "+")}`,
+    },
     responseHeaders: { "content-type": "application/json" },
   };
   const everyFile = (directory: string): string =>
@@ -2935,7 +2938,10 @@ describe("values typed during a record, in captured URLs", () => {
   it("puts <text> and <value> where the typed values were, in the trace, draft, playbook and HAR", () => {
     const { root, home, record, draft } = recordSearch(false);
     const trace = JSON.parse(
-      fs.readFileSync(path.join(records.recordsRoot(root), record.id, "network", "trace.json"), "utf8"),
+      fs.readFileSync(
+        path.join(records.recordsRoot(root), record.id, "network", "trace.json"),
+        "utf8",
+      ),
     );
     expect(trace.entries[0].url).toBe("https://example.test/api/search?q=<text>&page=1");
     expect(trace.entries[0].tabUrl).toBe("https://example.test/search/<value>?term=<text>");

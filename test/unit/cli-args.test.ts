@@ -1116,11 +1116,16 @@ describe("CLI argument parsing", () => {
       expect((await runCli(fill, plain)).request.params.args["echo-value"]).toBeUndefined();
       expect((await runCli(select, plain)).request.params.args["echo-value"]).toBeUndefined();
       const flagged = await runCli([...select.slice(0, 2), "--echo-value", "dummy-option"], plain);
-      expect(flagged.request.params.args).toMatchObject({ "echo-value": true, values: "dummy-option" });
+      expect(flagged.request.params.args).toMatchObject({
+        "echo-value": true,
+        values: "dummy-option",
+      });
       fs.writeFileSync(path.join(home, "surf.json"), JSON.stringify({ echoValue: true }));
       expect((await runCli(fill, plain)).request.params.args["echo-value"]).toBe(true);
       expect((await runCli(select, plain)).request.params.args["echo-value"]).toBe(true);
-      expect((await runCli(["click", "e1"], plain)).request.params.args["echo-value"]).toBeUndefined();
+      expect(
+        (await runCli(["click", "e1"], plain)).request.params.args["echo-value"],
+      ).toBeUndefined();
     } finally {
       fs.rmSync(home, { recursive: true, force: true });
     }

@@ -824,8 +824,23 @@ describe("native host protocol integration", () => {
   it("prints a filled value or chosen options only with --echo-value", async () => {
     const host = await startHostHarness();
     const fill = async (extra: string[]) => {
-      const cli = runCli(["locate.label", "Name", "--action", "fill", "--value", "dummy-kilo", ...extra, "--no-diff"], host.socketPath);
-      const request = await host.waitForMessage((message) => message.type === "LOCATE_LABEL", "LOCATE_LABEL");
+      const cli = runCli(
+        [
+          "locate.label",
+          "Name",
+          "--action",
+          "fill",
+          "--value",
+          "dummy-kilo",
+          ...extra,
+          "--no-diff",
+        ],
+        host.socketPath,
+      );
+      const request = await host.waitForMessage(
+        (message) => message.type === "LOCATE_LABEL",
+        "LOCATE_LABEL",
+      );
       // An extension older than this host sends the value back whatever it was asked.
       host.send({ id: request.id, success: true, action: "fill", ref: "e1", value: "dummy-kilo" });
       return { echoValue: request.echoValue, ...(await cli) };
@@ -837,7 +852,10 @@ describe("native host protocol integration", () => {
 
     const select = async (extra: string[]) => {
       const cli = runCli(["select", "e2", ...extra, "dummy-lima", "--no-diff"], host.socketPath);
-      const request = await host.waitForMessage((message) => message.type === "SELECT_OPTION", "SELECT_OPTION");
+      const request = await host.waitForMessage(
+        (message) => message.type === "SELECT_OPTION",
+        "SELECT_OPTION",
+      );
       host.send({ id: request.id, selected: ["dummy-lima"] });
       return await cli;
     };
@@ -849,17 +867,25 @@ describe("native host protocol integration", () => {
     const host = await startHostHarness();
     const directory = fs.mkdtempSync(path.join(os.tmpdir(), "surf-host-export-"));
     tempDirs.push(directory);
-    const entries = [{
-      id: "r1",
-      method: "POST",
-      url: "https://example.test/post",
-      requestHeaders: { "content-type": "application/x-www-form-urlencoded" },
-      requestBody: "custname=dummy-mike&password=dummy-november",
-    }];
+    const entries = [
+      {
+        id: "r1",
+        method: "POST",
+        url: "https://example.test/post",
+        requestHeaders: { "content-type": "application/x-www-form-urlencoded" },
+        requestBody: "custname=dummy-mike&password=dummy-november",
+      },
+    ];
     const exported = async (name: string, extra: string[]) => {
       const output = path.join(directory, name);
-      const cli = runCli(["network.export", "--har", ...extra, "--output", output], host.socketPath);
-      const request = await host.waitForMessage((message) => message.type === "EXPORT_NETWORK_REQUESTS", "EXPORT_NETWORK_REQUESTS");
+      const cli = runCli(
+        ["network.export", "--har", ...extra, "--output", output],
+        host.socketPath,
+      );
+      const request = await host.waitForMessage(
+        (message) => message.type === "EXPORT_NETWORK_REQUESTS",
+        "EXPORT_NETWORK_REQUESTS",
+      );
       host.send({ id: request.id, entries, har: true, jsonl: false });
       expect((await cli).code).toBe(0);
       return fs.readFileSync(output, "utf8");
@@ -874,24 +900,54 @@ describe("native host protocol integration", () => {
     const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), "surf-host-typed-"));
     tempDirs.push(stateDir);
     const records = require("../../native/playbook-records.cjs") as any;
-    const record = records.startRecord({ site: "s", op: "search", tabId: 1, network: true, origin: "https://example.test", root: stateDir });
+    const record = records.startRecord({
+      site: "s",
+      op: "search",
+      tabId: 1,
+      network: true,
+      origin: "https://example.test",
+      root: stateDir,
+    });
     const host = await startHostHarness({ SURF_STATE_DIR: stateDir });
-    const typed = runCli(["type", "dummy oscar", "--into", "#q", "--no-diff", "--no-screenshot"], host.socketPath);
-    const typing = await host.waitForMessage((message) => message.type === "SMART_TYPE", "SMART_TYPE");
+    const typed = runCli(
+      ["type", "dummy oscar", "--into", "#q", "--no-diff", "--no-screenshot"],
+      host.socketPath,
+    );
+    const typing = await host.waitForMessage(
+      (message) => message.type === "SMART_TYPE",
+      "SMART_TYPE",
+    );
     host.send({ id: typing.id, success: true });
     expect((await typed).code).toBe(0);
 
     const stop = runCli(["pb", "record", "stop"], host.socketPath);
-    const read = await host.waitForMessage((message) => message.type === "READ_NETWORK_REQUESTS", "READ_NETWORK_REQUESTS");
+    const read = await host.waitForMessage(
+      (message) => message.type === "READ_NETWORK_REQUESTS",
+      "READ_NETWORK_REQUESTS",
+    );
     host.send({
       id: read.id,
-      entries: [{ id: "r1", method: "GET", status: 200, type: "XHR", url: "https://example.test/api?q=dummy+oscar" }],
+      entries: [
+        {
+          id: "r1",
+          method: "GET",
+          status: 200,
+          type: "XHR",
+          url: "https://example.test/api?q=dummy+oscar",
+        },
+      ],
       capture: { active: true, interruptions: [], dropped: 0 },
     });
-    const stopCapture = await host.waitForMessage((message) => message.type === "STOP_NETWORK_CAPTURE", "STOP_NETWORK_CAPTURE");
+    const stopCapture = await host.waitForMessage(
+      (message) => message.type === "STOP_NETWORK_CAPTURE",
+      "STOP_NETWORK_CAPTURE",
+    );
     host.send({ id: stopCapture.id, success: true });
     expect((await stop).code).toBe(0);
-    const trace = fs.readFileSync(path.join(records.recordsRoot(stateDir), record.id, "network", "trace.json"), "utf8");
+    const trace = fs.readFileSync(
+      path.join(records.recordsRoot(stateDir), record.id, "network", "trace.json"),
+      "utf8",
+    );
     expect(JSON.parse(trace).entries[0].url).toBe("https://example.test/api?q=<text>");
     expect(trace).not.toContain("oscar");
   });

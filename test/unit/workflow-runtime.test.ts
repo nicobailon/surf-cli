@@ -188,7 +188,9 @@ describe("workflow runtime characterization", () => {
 
 describe("workflow result variables", () => {
   const executeTool = vi.fn(async (tool: string) => {
-    if (tool === "page.text") return { value: "page words" };
+    if (tool === "page.text") {
+      return { value: "page words" };
+    }
     return tool === "fail" ? { error: "expected failure" } : { success: true };
   });
   const run = (steps: Array<Record<string, unknown>>, onError = "stop") =>
