@@ -165,8 +165,9 @@ const HOST_TEXT_LIMIT = 40000;
 const STASH = Symbol.for("surf.boundedRegex.extracts");
 const STASH_MS = 60000;
 
+// JSON keeps the two strings apart: no pattern and text pair can join into another's key.
 function pairKey(pattern, text) {
-  return `${pattern}\u0000${text}`;
+  return JSON.stringify([pattern, text]);
 }
 
 /** A worker that answered a ping, or null when the page won't start one. */

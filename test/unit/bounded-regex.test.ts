@@ -162,6 +162,19 @@ describe("bounded regex in a tab", () => {
     );
   });
 
+  it("keeps pairs apart whose pattern and text join the same way", async () => {
+    const pairs: Array<[string, string]> = [
+      ["a", "\u0000a"],
+      ["a\u0000", "a"],
+    ];
+    expect((await tabMatches(inTab(), pairs)).value).toEqual([["a"], null]);
+    const handed = await tabMatches(inTab({ worker: null }), pairs);
+    const budget = bounded.createRegexBudget({ ms: 1000, scope: "extract" });
+    await expect(bounded.finishTabExtract({ result: handed, budget, runScript })).resolves.toEqual({
+      value: [["a"], null],
+    });
+  });
+
   it("refuses a long or invalid pattern and runs none outside tabExtract", async () => {
     await expect(tabMatches(inTab(), [["a".repeat(501), "a"]])).rejects.toThrow(
       "x is 501 characters; the limit is 500",
