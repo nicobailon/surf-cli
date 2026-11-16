@@ -250,26 +250,41 @@ function extractWith(extract, snapshot, pairs, matches) {
   }, () => extract(snapshot));
 }
 
+function stashCall(key, run) {
+  if (!globalThis[STASH]) Object.defineProperty(globalThis, STASH, { value: new Map() });
+  globalThis[STASH].set(key, run);
+  setTimeout(() => globalThis[STASH].delete(key), STASH_MS);
+}
+
+// A match crosses from the host as JSON, which has no undefined: its strings and the indexes of
+// its unmatched groups.
+function encodeMatches(matches) {
+  return matches.map((match) =>
+    match === null ? null : { values: match.map((value) => value ?? ""), unmatched: match.flatMap((value, index) => (value === undefined ? [index] : [])) },
+  );
+}
+
+function decodeMatches(sent) {
+  return sent.map((match) => (match === null ? null : match.values.map((value, index) => (match.unmatched.includes(index) ? undefined : value))));
+}
+
 /**
- * Reads the page once with `read()` and runs `extract(snapshot)` (synchronous, without reading the
- * page; its patterns go through boundedExec) in a tab, and returns
- * `onValue(result)`, or `onError(error)` when it throws or a pattern fails. When the page won't start a
- * worker it returns { regexNeeded: { key, pairs } } instead: the host runs the pairs and completes
- * it with finishTabExtract. The returned object gets `regexSpentMs`, what the run took from `budget`.
+ * Reads the page once with `read()` and builds the result with `extract(snapshot)` (synchronous,
+ * without reading the page; its patterns go through boundedExec), giving `onValue(result)`, or
+ * `onError(error)` when it throws or a pattern fails.
+ *
+ * When the extract needs patterns, the tab script returns { regexPending: { key } } after the first
+ * pass, and the host runs them with a second script of their own (runTabScript), which it times:
+ * a page can rewrite what the tab reports, but not make that call look shorter. That second script
+ * resolves to the result with `regexSpentMs`, or, when the page won't start a worker, to
+ * { regexNeeded: { key, pairs } }: the host runs the pairs and completes it with finishTabExtract.
  */
 async function tabExtract({ read = () => undefined, extract, budget, onValue, onError }) {
-  const startMs = budget.remainingMs;
-  // The whole output, regexSpentMs included, must fit what the tab can send; one that doesn't
-  // could not be read, and its regex time would go uncharged.
+  // The whole output must fit what the tab can send; one that doesn't could not be read.
   const fit = (value) => {
     const size = JSON.stringify(value, null, 2).length;
     if (size <= TAB_OUTPUT_LIMIT) return value;
     return onError(new Error(`the tab's result is ${size} characters, more than the ${TAB_OUTPUT_LIMIT} it can send to Surf; narrow the fields`));
-  };
-  const spent = (value) => {
-    const out = { ...value, regexSpentMs: Math.ceil(Math.max(0, startMs - budget.remainingMs)) };
-    const sent = fit(out);
-    return sent === out ? out : { ...sent, regexSpentMs: out.regexSpentMs };
   };
   const finish = (run) => {
     try {
@@ -278,9 +293,11 @@ async function tabExtract({ read = () => undefined, extract, budget, onValue, on
       return onError(error);
     }
   };
+  let snapshot;
+  let pairs;
   try {
     // Both passes build from this snapshot, so a page that changes meanwhile can't split them.
-    const snapshot = read();
+    snapshot = read();
     const wanted = new Map();
     const first = withTabRunner(({ pattern, text, label }) => {
       const key = pairKey(pattern, text);
@@ -288,76 +305,107 @@ async function tabExtract({ read = () => undefined, extract, budget, onValue, on
       return null;
     }, () => extract(snapshot));
     // Without patterns, the first pass is the result.
-    if (wanted.size === 0) return spent(finish(() => first));
-    const pairs = [...wanted.values()];
-    const worker = await startWorker();
-    if (worker) {
-      const matches = await matchInWorker(worker, pairs, budget);
-      return spent(finish(() => extractWith(extract, snapshot, pairs, matches)));
-    }
-    const key = `${Date.now().toString(36)}${Math.random().toString(36).slice(2)}`;
-    // Measured as sent: escaping can double a text's length.
-    const size = JSON.stringify({ regexNeeded: { key, pairs } }, null, 2).length;
-    if (size > TAB_OUTPUT_LIMIT - OUTPUT_ROOM) {
-      throw new Error(
-        `this page blocks the Web Worker that match patterns run in (its Content-Security-Policy or Trusted Types), and the texts to match come to ${size} characters as JSON, more than the ${TAB_OUTPUT_LIMIT} the tab can send to Surf; narrow the fields that use match`,
-      );
-    }
-    if (!globalThis[STASH]) Object.defineProperty(globalThis, STASH, { value: new Map() });
-    globalThis[STASH].set(key, (matches) => fit(finish(() => extractWith(extract, snapshot, pairs, matches))));
-    setTimeout(() => globalThis[STASH].delete(key), STASH_MS);
-    return spent({ regexNeeded: { key, pairs } });
+    if (wanted.size === 0) return fit(finish(() => first));
+    pairs = [...wanted.values()];
   } catch (error) {
-    return spent(onError(error));
+    return fit(onError(error));
   }
+  const pending = `${Date.now().toString(36)}${Math.random().toString(36).slice(2)}`;
+  stashCall(pending, async () => {
+    const startMs = budget.remainingMs;
+    const spent = (value) => {
+      const out = { ...value, regexSpentMs: Math.ceil(Math.max(0, startMs - budget.remainingMs)) };
+      const sent = fit(out);
+      return sent === out ? out : { ...sent, regexSpentMs: out.regexSpentMs };
+    };
+    try {
+      const worker = await startWorker();
+      if (worker) {
+        const matches = await matchInWorker(worker, pairs, budget);
+        return spent(finish(() => extractWith(extract, snapshot, pairs, matches)));
+      }
+      const key = `${Date.now().toString(36)}${Math.random().toString(36).slice(2)}`;
+      // Measured as sent: escaping can double a text's length.
+      const size = JSON.stringify({ regexNeeded: { key, pairs } }, null, 2).length;
+      if (size > TAB_OUTPUT_LIMIT - OUTPUT_ROOM) {
+        throw new Error(
+          `this page blocks the Web Worker that match patterns run in (its Content-Security-Policy or Trusted Types), and the texts to match come to ${size} characters as JSON, more than the ${TAB_OUTPUT_LIMIT} the tab can send to Surf; narrow the fields that use match`,
+        );
+      }
+      stashCall(key, (sent) => fit(finish(() => extractWith(extract, snapshot, pairs, decodeMatches(sent)))));
+      return spent({ regexNeeded: { key, pairs } });
+    } catch (error) {
+      return spent(onError(error));
+    }
+  });
+  return { regexPending: { key: pending } };
 }
 
 // --- On the host ----------------------------------------------------------------------------------
 
+/** The script that calls what the tab stashed under `key`, with `argument` (JSON) if given. */
+function stashCallScript(key, argument) {
+  return `(async () => {
+const run = globalThis[Symbol.for("surf.boundedRegex.extracts")]?.get(${JSON.stringify(key)});
+if (!run) throw new Error("the tab no longer holds this extract (it navigated or took over a minute); run it again");
+globalThis[Symbol.for("surf.boundedRegex.extracts")].delete(${JSON.stringify(key)});
+return run(${argument === undefined ? "" : JSON.stringify(argument)});
+})()`;
+}
+
+/**
+ * Charges `budget` for a tab call that ran patterns: what the tab reported, when it is a number from
+ * 0 to the allowance the call had, else the whole allowance; and never less than the `observedMs`
+ * the host timed the call at. The budget never grows.
+ */
+function chargeTab({ budget, allowanceMs, reported, observedMs }) {
+  const valid = typeof reported === "number" && Number.isFinite(reported) && reported >= 0 && reported <= allowanceMs;
+  budget.remainingMs -= Math.max(valid ? reported : allowanceMs, Number.isFinite(observedMs) ? Math.max(0, observedMs) : allowanceMs);
+}
+
 /**
  * Runs a tab script made by `script(budget)`, which gives the tab what is left of `budget`, with
- * `execute(code)` (javascript_tool), and completes it with finishTabExtract. An output that isn't
- * JSON (cut at the tab's limit, say) fails closed: it is charged the whole allowance the script had,
- * then throws `unreadable(size)`.
+ * `execute(code)` (javascript_tool). When the tab has patterns to run, a second call runs them,
+ * timed with `now()` and charged by chargeTab; the first call (reading the page, fetching) runs
+ * none and is charged nothing, so a script without patterns, such as a plain network request,
+ * leaves the budget as it was. Then finishTabExtract completes it. An output that isn't JSON (cut
+ * at the tab's limit, say) throws `unreadable(size)`; from the pattern call it is first charged the
+ * whole allowance.
  */
-async function runTabScript({ budget, script, execute, unreadable }) {
-  const allowanceMs = Math.max(0, budget.remainingMs);
-  const read = async (code) => {
+async function runTabScript({ budget, script, execute, unreadable, now = () => performance.now() }) {
+  // `onUnreadable` runs before an output that isn't JSON throws.
+  const read = async (code, onUnreadable = () => {}) => {
     const response = await execute(code);
     if (response?.error) throw new Error(typeof response.error === "string" ? response.error : JSON.stringify(response.error));
     if (typeof response?.output !== "string") return response?.value ?? response;
     try {
       return JSON.parse(response.output);
     } catch {
-      budget.remainingMs -= allowanceMs;
+      onUnreadable();
       throw unreadable(response.output.length);
     }
   };
-  return finishTabExtract({ result: await read(script(budget)), budget, runScript: read });
+  let result = await read(script(budget));
+  if (result?.regexPending) {
+    const allowanceMs = Math.max(0, budget.remainingMs);
+    const started = now();
+    const charge = (reported) => chargeTab({ budget, allowanceMs, reported, observedMs: now() - started });
+    result = await read(stashCallScript(result.regexPending.key), () => charge(undefined));
+    charge(result?.regexSpentMs);
+  }
+  return finishTabExtract({ result, budget, runScript: read });
 }
 
 /**
- * Completes a tab script's result: charges `budget` with what the tab spent (regexSpentMs) and,
- * when the tab handed its patterns over (regexNeeded), runs them
+ * Completes a tab script's result: when the tab handed its patterns over (regexNeeded), runs them
  * here, spending from `budget`, and returns what `runScript(code)` gives for the script that
  * finishes the extract in the tab. A pattern that fails here throws.
  */
 async function finishTabExtract({ result, budget, runScript }) {
-  if (typeof result?.regexSpentMs === "number") budget.remainingMs -= result.regexSpentMs;
   if (!result?.regexNeeded) return result;
   const { key, pairs } = result.regexNeeded;
   const matches = pairs.map(({ pattern, text, label }) => boundedExec({ pattern, text, budget, label }));
-  // JSON has no undefined: a match crosses as its strings and the indexes of its unmatched groups.
-  const sent = matches.map((match) =>
-    match === null ? null : { values: match.map((value) => value ?? ""), unmatched: match.flatMap((value, index) => (value === undefined ? [index] : [])) },
-  );
-  return runScript(`(() => {
-const finish = globalThis[Symbol.for("surf.boundedRegex.extracts")]?.get(${JSON.stringify(key)});
-if (!finish) throw new Error("the tab no longer holds this extract (it navigated or took over a minute); run it again");
-globalThis[Symbol.for("surf.boundedRegex.extracts")].delete(${JSON.stringify(key)});
-const sent = ${JSON.stringify(sent)};
-return finish(sent.map((match) => match === null ? null : match.values.map((value, index) => match.unmatched.includes(index) ? undefined : value)));
-})()`);
+  return runScript(stashCallScript(key, encodeMatches(matches)));
 }
 
 /** Page source that defines `boundedRegex`, this module as it runs in a tab. Call it on the host. */
@@ -388,6 +436,7 @@ module.exports = {
   finishTabExtract,
   isBoundedOut,
   runTabScript,
+  stashCallScript,
   tabBudgetSource,
   tabExtract,
   tabSource,

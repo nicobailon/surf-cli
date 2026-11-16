@@ -188,6 +188,7 @@ async function runTabExtract(context, script) {
   const { regexSpentMs: _spent, ...result } = await boundedRegex.runTabScript({
     budget: context.fieldRegexBudget,
     script,
+    now: context.now,
     execute: (code) => context.executeTool("javascript_tool", { code }, { signal: context.signal }),
     unreadable: (size) => new Error(`the tab's output could not be read (${size} characters; the tab cuts it at ${TAB_OUTPUT_LIMIT})`),
   });
@@ -364,14 +365,15 @@ async function runStrategy(strategy, context) {
       });
     }
     const { fields, key, ...rest } = spec;
-    return runCollect({ spec: { ...applyTemplate(rest, context.args), fields, key }, executeTool: context.executeTool, sleep: context.sleep, regexBudget: context.fieldRegexBudget });
+    return runCollect({ spec: { ...applyTemplate(rest, context.args), fields, key }, executeTool: context.executeTool, sleep: context.sleep, regexBudget: context.fieldRegexBudget, now: context.now });
   }
   throw new Error(`unsupported strategy: ${strategy.using}`);
 }
 
 // `assertions` replaces the op's saved on.success.expect.assert for this run (pb test --assert).
-// `strategy` runs only the strategies of that kind (pb test --strategy).
-async function runPlaybookOp({ playbook, op, args: providedArgs = {}, secrets = {}, env = process.env, attemptId, executeTool, executeNative, signal, sleep, onEvent = () => {}, beforeDispatch = async () => {}, afterDispatch = async () => {}, allowScript = false, assertions, strategy: forced }) {
+// `strategy` runs only the strategies of that kind (pb test --strategy). `now` is the host's clock
+// for timing the tab's pattern calls.
+async function runPlaybookOp({ playbook, op, args: providedArgs = {}, secrets = {}, env = process.env, attemptId, executeTool, executeNative, signal, sleep, now = () => performance.now(), onEvent = () => {}, beforeDispatch = async () => {}, afterDispatch = async () => {}, allowScript = false, assertions, strategy: forced }) {
   const args = resolveArgs(op, providedArgs, { playbookId: playbook.id });
   const authValues = resolveAuthValues(op, secrets, env);
   const run = strategiesToRun(op, forced);
@@ -402,6 +404,7 @@ async function runPlaybookOp({ playbook, op, args: providedArgs = {}, secrets = 
         allowedOrigins: op.origins || playbook.origins || [],
         authValues,
         fieldRegexBudget,
+        now,
         markDispatched: op.effect === "write" ? markDispatched : undefined,
         serverIdempotency: op.effect === "write" ? op.safety?.serverIdempotency : undefined,
         allowScript,

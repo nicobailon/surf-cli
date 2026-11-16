@@ -30,20 +30,29 @@ function inTab({
   );
 }
 
-/** Runs [pattern, text] pairs as one tab extract: resolves to { value: matches } or rejects. */
-function tabMatches(regex: TabRegex, pairs: Array<[string, string]>, budgetMs = 1000) {
-  return regex.tabExtract({
-    budget: regex.createRegexBudget({ ms: budgetMs, scope: "extract" }),
-    extract: () => pairs.map(([pattern, text]) => regex.boundedExec({ pattern, text, label: "x" })),
-    onValue: (value: unknown) => ({ value }),
-    onError: (error: Error) => {
-      throw error;
-    },
-  });
-}
-
 /** Runs a script the host sends to the tab, here in Node's global scope. */
 const runScript = async (code: string) => new Function(`return ${code}`)();
+
+/** A tab extract's result once the host has made the call that runs its patterns, if it has any. */
+async function settle(result: Record<string, unknown>) {
+  const pending = result.regexPending as { key: string } | undefined;
+  return pending ? runScript(bounded.stashCallScript(pending.key)) : result;
+}
+
+/** Runs [pattern, text] pairs as one tab extract: resolves to { value: matches } or rejects. */
+async function tabMatches(regex: TabRegex, pairs: Array<[string, string]>, budgetMs = 1000) {
+  return settle(
+    await regex.tabExtract({
+      budget: regex.createRegexBudget({ ms: budgetMs, scope: "extract" }),
+      extract: () =>
+        pairs.map(([pattern, text]) => regex.boundedExec({ pattern, text, label: "x" })),
+      onValue: (value: unknown) => ({ value }),
+      onError: (error: Error) => {
+        throw error;
+      },
+    }),
+  );
+}
 
 class BlockedWorker {
   constructor() {
@@ -176,18 +185,24 @@ describe("bounded regex in a tab", () => {
 
   it("keeps its whole output, regexSpentMs included, within what the tab can send", async () => {
     // Under the limit alone, over it once regexSpentMs is added.
-    const result = await inTab().tabExtract({
-      budget: bounded.createRegexBudget({ ms: 1000, scope: "extract" }),
-      extract: () => "a".repeat(49_975),
-      onValue: (text: string) => ({ text }),
-      onError: (error: Error) => ({ error: error.message }),
-    });
+    const tab = inTab();
+    const result = await settle(
+      await tab.tabExtract({
+        budget: bounded.createRegexBudget({ ms: 1000, scope: "extract" }),
+        extract: () => {
+          tab.boundedExec({ pattern: "a", text: "a", label: "x" });
+          return "a".repeat(49_975);
+        },
+        onValue: (text: string) => ({ text }),
+        onError: (error: Error) => ({ error: error.message }),
+      }),
+    );
     expect(JSON.stringify(result, null, 2).length).toBeLessThanOrEqual(50_000);
     expect(result).toMatchObject({
       error: expect.stringMatching(
         /^the tab's result is \d+ characters, more than the 50000 it can send to Surf; narrow the fields$/,
       ),
-      regexSpentMs: 0,
+      regexSpentMs: expect.any(Number),
     });
   });
 
@@ -214,10 +229,11 @@ describe("bounded regex in a tab", () => {
     );
   });
 
-  it("charges a script's whole allowance when its output can't be read", async () => {
+  it("charges the pattern call's whole allowance when its output can't be read", async () => {
     const budget = bounded.createRegexBudget({ ms: 2000, scope: "run" });
     budget.remainingMs = 1500;
     let given = "";
+    let calls = 0;
     await expect(
       bounded.runTabScript({
         budget,
@@ -225,12 +241,87 @@ describe("bounded regex in a tab", () => {
           given = String(left.remainingMs);
           return "code";
         },
-        // The tab's output, cut at 50,000 characters.
-        execute: async () => ({ output: `{"records": [${'"x",'.repeat(20_000)}`.slice(0, 50_000) }),
+        execute: async () =>
+          ++calls === 1
+            ? { output: JSON.stringify({ regexPending: { key: "k" } }) }
+            : // The tab's output, cut at 50,000 characters.
+              { output: `{"records": [${'"x",'.repeat(20_000)}`.slice(0, 50_000) },
         unreadable: (size: number) => new Error(`unreadable (${size} characters)`),
       }),
     ).rejects.toThrow("unreadable (50000 characters)");
     expect(given).toBe("1500");
     expect(budget.remainingMs).toBe(0);
+  });
+
+  it("leaves the budget alone for a script that runs no patterns, however long it takes", async () => {
+    // A plain network request: no extract, so no regexSpentMs and no pattern call.
+    const budget = bounded.createRegexBudget({ ms: 2000, scope: "run" });
+    let now = 0;
+    const plain = { status: 200, ok: true, url: "https://x.test/", headers: {} };
+    const result = await bounded.runTabScript({
+      budget,
+      now: () => now,
+      script: () => "code",
+      execute: async () => {
+        now += 5000;
+        return { output: JSON.stringify(plain) };
+      },
+      unreadable: () => new Error("unreadable"),
+    });
+    expect(result).toEqual(plain);
+    expect(budget.remainingMs).toBe(2000);
+    await expect(
+      bounded.runTabScript({
+        budget,
+        now: () => now,
+        script: () => "code",
+        execute: async () => ({ output: '{"status": 2' }),
+        unreadable: () => new Error("unreadable"),
+      }),
+    ).rejects.toThrow("unreadable");
+    expect(budget.remainingMs).toBe(2000);
+  });
+
+  it("charges what the host saw the regex call take, and the whole allowance for a report it can't use", async () => {
+    // [what the tab reports, ms the host sees the regex call take, ms charged]; 1,500 ms allowed.
+    const cases: Array<[unknown, number, number]> = [
+      [undefined, 5, 1500],
+      ["12", 5, 1500],
+      [Number.NaN, 5, 1500],
+      [-3000, 5, 1500],
+      [99_999, 5, 1500],
+      // A report of 0 while the call took 150 ms (a pattern over 100 ms) is charged the 150.
+      [0, 150, 150],
+      [40, 150, 150],
+      [400, 150, 400],
+    ];
+    for (const [reported, observedMs, chargedMs] of cases) {
+      const budget = bounded.createRegexBudget({ ms: 2000, scope: "run" });
+      budget.remainingMs = 1500;
+      let now = 0;
+      let calls = 0;
+      await bounded.runTabScript({
+        budget,
+        now: () => now,
+        script: () => "code",
+        execute: async () => {
+          calls++;
+          if (calls === 1) {
+            // Reading the page and fetching cost the regex budget nothing.
+            now += 900;
+            return { output: JSON.stringify({ regexPending: { key: "k" }, regexSpentMs: 0 }) };
+          }
+          now += observedMs;
+          return {
+            output: JSON.stringify(
+              reported === undefined ? { value: 1 } : { value: 1, regexSpentMs: reported },
+            ),
+          };
+        },
+        unreadable: () => new Error("unreadable"),
+      });
+      expect(calls, String(reported)).toBe(2);
+      expect(budget.remainingMs, String(reported)).toBe(1500 - chargedMs);
+    }
   });
 });

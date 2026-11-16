@@ -276,7 +276,7 @@ function hiddenTabError(what = "collect") {
  * Collects records from a virtualized list. Returns records in first-seen order, deduped by key.
  * Every round's field match patterns spend from `regexBudget` (an op run's, or one for the collect).
  */
-async function runCollect({ spec, executeTool, sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms)), regexBudget = createFieldRegexBudget() }) {
+async function runCollect({ spec, executeTool, sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms)), regexBudget = createFieldRegexBudget(), now = () => performance.now() }) {
   const options = validateCollectSpec(spec);
   if (options.open) await executeTool("navigate", { url: options.open });
   const visibility = await executeTool("javascript_tool", { code: "document.visibilityState" });
@@ -287,6 +287,7 @@ async function runCollect({ spec, executeTool, sleep = (ms) => new Promise((reso
   while (byKey.size < options.maxItems && idle < options.idleRounds) {
     const round = await runTabScript({
       budget: regexBudget,
+      now,
       script: (budget) => roundScript(options, [...byKey.keys()], budget),
       execute: (code) => executeTool("javascript_tool", { code }),
       unreadable: (size) =>

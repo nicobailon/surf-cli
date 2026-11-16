@@ -34,6 +34,41 @@ function readOp(request: Record<string, unknown> = {}, strategy: Record<string, 
 }
 
 describe("network strategy response bodies", () => {
+  it("charges a plain network request nothing from the field-regex budget, however long it takes", async () => {
+    // The plain request takes 10 s on the host's clock and fails its check; the next strategy's
+    // match patterns still have the whole budget.
+    const body = JSON.stringify([{ id: "id-1" }, { id: "id-2" }]);
+    const tab = captureTab({ reply: () => ({ body }) });
+    let now = 0;
+    const executeTool = async (tool: string, args: Record<string, unknown>) => {
+      if (tool === "javascript_tool" && !String(args.code).includes("boundedRegex")) {
+        now += 10_000;
+      }
+      return tab.executeTool(tool, args);
+    };
+    const plain = { using: "network", request: { method: "GET", url: "https://api.test/items" } };
+    const result = await runtime.runPlaybookOp({
+      playbook,
+      op: {
+        id: "items",
+        effect: "read",
+        args: {},
+        run: [
+          { ...plain, verify: { status: 201 } },
+          {
+            ...plain,
+            extract: { records: "$", fields: { id: { path: "id", match: "id-(\\d+)" } } },
+          },
+        ],
+      },
+      executeTool,
+      now: () => now,
+    });
+    expect(now).toBe(10_000);
+    expect(result).toMatchObject({ status: "completed", value: [{ id: "1" }, { id: "2" }] });
+    expect(result.attempts).toEqual([{ using: "network", error: "expected status 201" }]);
+  });
+
   it("returns a body over the script output cap whole, read from network capture", async () => {
     const body = html(62 * 1024);
     const tab = captureTab({ reply: () => ({ body, headers: { "content-type": "text/html" } }) });

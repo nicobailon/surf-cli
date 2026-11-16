@@ -152,7 +152,14 @@ return (doc) => boundedRegex.tabExtract({
   onError: (error) => { throw error; },
 });`,
   )(clock, worker);
-  return (await run(listDocument(texts))).records;
+  return (await settle(await run(listDocument(texts)))).records;
+}
+
+/** A tab extract's result once the host has made the call that runs its patterns, if it has any. */
+async function settle(result: { regexPending?: { key: string } }) {
+  return result.regexPending
+    ? new Function(`return ${bounded.stashCallScript(result.regexPending.key)}`)()
+    : result;
 }
 
 /** A tab with `count` rows whose h2 reads `text(n)`, running collect's scripts with `worker`. */
@@ -333,7 +340,7 @@ return (doc) => boundedRegex.tabExtract({
   onError: (error) => ({ error: error.message }),
 });`,
       )(performance, worker);
-      const result = await run(changing);
+      const result = await settle(await run(changing));
       const finished = await bounded.finishTabExtract({
         result,
         budget: bounded.createRegexBudget({ ms: 1000, scope: "extract" }),
