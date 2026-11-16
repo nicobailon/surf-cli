@@ -22,7 +22,8 @@ const COMMANDS = {
   click: { effect: "page-write", argKinds: { ref: "element-ref", selector: "selector", x: "number", y: "number" } },
   check: { primaryArg: "ref", effect: "page-write", argKinds: { ref: "element-ref" } },
   uncheck: { primaryArg: "ref", effect: "page-write", argKinds: { ref: "element-ref" } },
-  key: { primaryArg: "key", effect: "page-write", argKinds: { key: "key" } },
+  // A key step can type text (key "S"), so its key and text are redacted like type's text.
+  key: { primaryArg: "key", effect: "page-write", argKinds: { key: "key", text: "key" }, sensitiveArgs: ["key", "text"] },
   submit: { effect: "page-write" },
   hover: { effect: "read", argKinds: { ref: "element-ref", selector: "selector" } },
   scroll: { effect: "page-write", argKinds: { direction: "name", scroll_pixels: "number" } },
@@ -65,7 +66,8 @@ const COMMANDS = {
   "network.curl": { primaryArg: "id", effect: "read", argKinds: { id: "request-id" } },
   "network.path": { primaryArg: "id", effect: "read", argKinds: { id: "request-id" } },
   "network.wait": { primaryArg: "match", effect: "read", argKinds: { match: "url-pattern", open: "url" } },
-  "network.replay": { primaryArg: "id", effect: "read", argKinds: { id: "request-id" } },
+  // --set path=value can carry a token or a typed query.
+  "network.replay": { primaryArg: "id", effect: "read", argKinds: { id: "request-id", set: "user-input" }, sensitiveArgs: ["set"] },
   collect: { effect: "read", argKinds: { item: "selector", expand: "selector", open: "url" } },
   "page.read": { effect: "read" },
   "page.text": { effect: "read" },
@@ -78,8 +80,9 @@ const COMMANDS = {
   "window.new": { primaryArg: "url", effect: "navigation", argKinds: { url: "url" } },
   "window.focus": { primaryArg: "id", effect: "navigation", argKinds: { id: "window-id" } },
   "window.close": { primaryArg: "id", effect: "page-write", argKinds: { id: "window-id" } },
-  // `value` is what --action fill types, so it is redacted like type's text.
-  "locate.role": { primaryArg: "role", effect: "read", argKinds: { role: "role", value: "user-input" }, sensitiveArgs: ["value"] },
+  // `value` is what --action fill types, so it is redacted like type's text; --name is lookup text,
+  // redacted like locate.text's text.
+  "locate.role": { primaryArg: "role", effect: "read", argKinds: { role: "role", name: "user-input", value: "user-input" }, sensitiveArgs: ["name", "value"] },
   "locate.text": { primaryArg: "text", effect: "read", argKinds: { text: "user-input", value: "user-input" }, sensitiveArgs: ["text", "value"] },
   "locate.label": { primaryArg: "label", effect: "read", argKinds: { label: "user-input", value: "user-input" }, sensitiveArgs: ["label", "value"] },
   "emulate.device": { primaryArg: "device", effect: "page-write", argKinds: { device: "name" } },

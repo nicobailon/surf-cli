@@ -2289,10 +2289,13 @@ describe("values typed with locate.* --action fill", () => {
     expect(JSON.stringify(redacted)).not.toContain("hunter2-S3cret!");
   });
 
-  it.each(["click", "hover"])("leaves locate.role --action %s unchanged", (action) => {
-    const args = { role: "button", name: "Save", action };
-    expect(redactCommandArgs("locate.role", args)).toEqual(args);
-  });
+  it.each(["click", "hover"])(
+    "keeps locate.role --action %s, redacting only its name",
+    (action) => {
+      const args = { role: "button", name: "Save", action };
+      expect(redactCommandArgs("locate.role", args)).toEqual({ ...args, name: "<name>" });
+    },
+  );
 
   it.each([false, true])(
     "keeps or redacts the value as type does its text (include input values: %s)",
@@ -3542,5 +3545,50 @@ describe("a typed value a URL holds only on a guessed reading, through every art
     for (const file of files) {
       expect(fs.readFileSync(file, "utf8")).not.toContain("kilo");
     }
+  });
+});
+
+describe("values key, network.replay --set and locate.role --name carry", () => {
+  const { redactCommandArgs } = require("../../native/workflow-definition.cjs");
+  // A dummy value, built from parts so no literal here reads as a credential.
+  const TYPED = ["dummy", "typed", "3"].join("-");
+  const commands: Array<[string, Entry, string]> = [
+    ["key", { key: TYPED }, "key"],
+    ["key", { text: TYPED }, "text"],
+    ["network.replay", { id: "r_1", set: { "query.q": TYPED } }, "set"],
+    ["locate.role", { role: "textbox", name: TYPED, action: "click" }, "name"],
+  ];
+  const everyFile = (directory: string): string =>
+    fs
+      .readdirSync(directory, { recursive: true, withFileTypes: true })
+      .filter((entry: { isFile: () => boolean }) => entry.isFile())
+      .map((entry: { parentPath: string; name: string }) =>
+        fs.readFileSync(path.join(entry.parentPath, entry.name), "utf8"),
+      )
+      .join("\n");
+
+  it.each(commands)("redacts %s %j", (command, args, name) => {
+    expect(redactCommandArgs(command, args)[name]).toBe(`<${name}>`);
+    expect(redactCommandArgs(command, args, true)[name]).toEqual(args[name]);
+  });
+
+  it.each(commands)("writes %s %j to no journal, record or draft file", (command, args) => {
+    const root = tempRoot();
+    journal.journalCommand(command, args, { root });
+    records.startRecord({ site: "fixture", op: "flow", tabId: 1, root });
+    records.appendRecordEvent(
+      {
+        type: "tool.completed",
+        command,
+        argsRedacted: redactCommandArgs(command, args),
+        startedAt: new Date().toISOString(),
+        endedAt: new Date().toISOString(),
+      },
+      { target: TAB, root },
+    );
+    records.stopRecord({ target: TAB, draft: true, root });
+    const written = everyFile(root);
+    expect(written).toContain('"flow"');
+    expect(written).not.toContain(TYPED);
   });
 });
