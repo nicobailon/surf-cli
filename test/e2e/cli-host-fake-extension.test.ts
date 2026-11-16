@@ -215,8 +215,12 @@ function buildExtensionResponse(
     // Network capture holds what each script sent; its body is the fixture API's.
     case "READ_NETWORK_REQUESTS":
       return { id: message.id, entries: captured };
-    case "GET_NETWORK_ENTRY":
-      return { id: message.id, entry: captured.find((entry) => entry.id === message.requestId) };
+    case "GET_NETWORK_ENTRY": {
+      const entry = captured.find((candidate) => candidate.id === message.requestId);
+      return entry
+        ? { id: message.id, entry }
+        : { id: message.id, error: `Entry not found: ${String(message.requestId)}` };
+    }
     case "GET_RESPONSE_BODY":
       return {
         id: message.id,
@@ -819,6 +823,10 @@ describe("CLI/native-host/fake-extension E2E contract", () => {
         ["network.replay", "r_echo", "--json"],
         ["network.replay", "r_echo"],
       ];
+      // A body read from Chrome when capture has no entry for it still prints.
+      const uncaptured = await runCli(socketPath, ["network.body", "r_cdp_only"], scratch, env);
+      expect(uncaptured, uncaptured.stderr).toMatchObject({ code: 0, stdout: '{"ok":true}' });
+
       for (const args of views) {
         const view = await runCli(socketPath, args, scratch, env);
         expect(view.code, `${args.join(" ")}: ${view.stderr}`).toBe(0);

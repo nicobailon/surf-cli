@@ -2048,7 +2048,8 @@ function handleToolRequest(msg, socket, requestContext = requestStorage.getStore
   }
   if (tool === "network.body") {
     const run = (name, toolArgs) => executeMappedHostTool(requestContext, name, toolArgs, tabId);
-    Promise.all([run("network.body", args || {}), run("network.get", { id: args?.id })])
+    // The body can come from Chrome when capture has no entry for it; then no secret values are known.
+    Promise.all([run("network.body", args || {}), run("network.get", { id: args?.id }).catch(() => null)])
       .then(([body, loaded]) => sendToolResponse(socket, originalId, publicResponse(body, [loaded?.entry]), null))
       .catch((error) => sendToolResponse(socket, originalId, null, error));
     return;
