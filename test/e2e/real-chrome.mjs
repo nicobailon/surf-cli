@@ -989,7 +989,7 @@ setInterval(() => {}, 60_000);
   const ambiguousDelete = await runSurfExpectingFailure(
     "locate.role", "button", "--name", "Delete", "--action", "click", "--tab-id", locateTabId, "--no-screenshot",
   );
-  const deleteRefs = [...ambiguousDelete.stderr.matchAll(/^ {2}(e\d+) button "Delete"$/gm)].map((match) => match[1]);
+  const deleteRefs = [...ambiguousDelete.stderr.matchAll(/^ {2}(e\d+) button$/gm)].map((match) => match[1]);
   if (!ambiguousDelete.stderr.includes('2 elements match role "button" and the given name, so nothing was done') || deleteRefs.length !== 2) {
     throw new Error(`ambiguous locate did not list both candidates: ${JSON.stringify(ambiguousDelete)}`);
   }

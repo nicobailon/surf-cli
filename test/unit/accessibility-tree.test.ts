@@ -1414,6 +1414,36 @@ describe("accessibility tree", () => {
     expect(tree).toContain(`${role} "${name}" [${located.matches[0].ref}]`);
   });
 
+  it("lists the elements a sensitive lookup matched by ref and role, without their names", () => {
+    // A dummy lookup text, which the matching elements' names contain.
+    const query = ["dummy", "lookup", "16"].join("-");
+    const body = document.body as unknown as FakeElement;
+    const named = (label: string) => {
+      const node = element("button");
+      node.append(text(label));
+      return node;
+    };
+    body.append(named(`Delete ${query}`), named(`Archive ${query}`), named("Plain"));
+    (document as any).querySelectorAll = (selector: string) =>
+      selector.split(",").some((part) => part.trim() === "button")
+        ? body.children.filter((child) => child.tagName === "BUTTON")
+        : [];
+    const ambiguous = sendMessage({
+      type: "LOCATE_ROLE",
+      role: "button",
+      name: query,
+      unique: true,
+    }).error;
+    expect(ambiguous).toMatch(
+      /^2 elements match role "button" and the given name, so nothing was done/,
+    );
+    expect(ambiguous).toMatch(/ e\d+ button$/m);
+    expect(ambiguous).not.toContain("dummy");
+    // Without a name the lookup holds nothing sensitive, so the names help pick one.
+    const byRole = sendMessage({ type: "LOCATE_ROLE", role: "button", unique: true }).error;
+    expect(byRole).toContain('button "Plain"');
+  });
+
   it("names the locator and its field, not the text looked up, when nothing matches", () => {
     // A dummy lookup text: what the caller passed, which the error must not repeat.
     const query = ["dummy", "lookup", "9"].join("-");
