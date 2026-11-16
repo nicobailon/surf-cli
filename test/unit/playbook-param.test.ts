@@ -1083,3 +1083,46 @@ describe("pb param: saving", () => {
     ).rejects.toThrow(/--as <name> or --env <VAR>/);
   });
 });
+
+describe("pb param: what it prints about the value it removed", () => {
+  // Dummy values, built from parts so no literal here reads as a credential.
+  const VALUE = ["dummy", "q", "8"].join("-");
+  const HEADER_VALUE = ["dummy", "site", "key", "8"].join("-");
+
+  const printed = async (cwd: string, args: string[]) => {
+    const text = await handlePlaybookCli(["pb", "param", "shop", "search", ...args], { cwd });
+    return String(text.value);
+  };
+
+  it("keeps a --required input's recorded value out of the diff, notes and JSON result", async () => {
+    const request = { url: "https://shop.test/search", query: { q: VALUE } };
+    const op = networkOp(request);
+    op.run.push({ using: "workflow", steps: [{ cmd: "click", args: { ref: "e9" } }] } as never);
+    const { cwd } = project(op);
+    const text = await printed(cwd, ["query.q", "--as", "q", "--required"]);
+    expect(text).toMatch(/^- .*<redacted>/m);
+    expect(text).toContain("workflow strategy unchanged");
+    expect(text).not.toContain(VALUE);
+
+    const again = project(op);
+    const json = await handlePlaybookCli(
+      ["pb", "param", "shop", "search", "query.q", "--as", "q", "--required", "--json"],
+      { cwd: again.cwd },
+    );
+    expect(JSON.stringify(json.value)).not.toContain(VALUE);
+  });
+
+  it("keeps an --env header's recorded value out of the diff", async () => {
+    const { cwd } = project(
+      networkOp({ url: "https://shop.test/search", headers: { "X-Site-Key": HEADER_VALUE } }),
+    );
+    const text = await printed(cwd, ["headers.X-Site-Key", "--env", "SHOP_SITE_KEY"]);
+    expect(text).toMatch(/^- .*"X-Site-Key": "<redacted>"/m);
+    expect(text).not.toContain(HEADER_VALUE);
+  });
+
+  it("still shows a value that becomes a default", async () => {
+    const { cwd } = project(networkOp({ url: "https://shop.test/search", query: { q: VALUE } }));
+    expect(await printed(cwd, ["query.q", "--as", "q"])).toContain(VALUE);
+  });
+});
