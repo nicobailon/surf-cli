@@ -1080,7 +1080,7 @@ const TOOLS = {
     desc: "Network capture",
     commands: {
       "network": {
-        desc: "List captured network requests",
+        desc: "List captured network requests (secret headers such as Authorization and Cookie show as <redacted>, as in network.export)",
         args: [],
         opts: {
           origin: "Filter by origin (domain)",
@@ -1106,7 +1106,7 @@ const TOOLS = {
         ]
       },
       "network.get": {
-        desc: "Get full details for a request",
+        desc: "Get full details for a request; secret headers (Authorization, Cookie, API keys) show as <redacted>, and network.replay still sends them",
         args: ["id"],
         opts: {},
         examples: [
@@ -1150,7 +1150,7 @@ const TOOLS = {
         ]
       },
       "network.curl": {
-        desc: "Generate curl command for request",
+        desc: "Generate curl command for request (secret headers show as <redacted>; network.replay re-sends with them)",
         args: ["id"],
         opts: {},
         examples: [

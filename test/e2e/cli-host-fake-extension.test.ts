@@ -697,6 +697,63 @@ describe("CLI/native-host/fake-extension E2E contract", () => {
     }
   });
 
+  it("shows a captured request's secret headers as <redacted> and still replays them", async () => {
+    const socketPath = createSocketPath();
+    const scratch = fs.mkdtempSync(path.join(os.tmpdir(), "surf-network-view-"));
+    tempDirs.push(scratch);
+    const env = { HOME: path.join(scratch, "home"), SURF_TMP: path.join(scratch, "tmp") };
+    for (const directory of [env.HOME, env.SURF_TMP]) fs.mkdirSync(directory, { recursive: true });
+    const auth = "dummy-auth-value-for-tests";
+    const cookie = "dummy-cookie-value-for-tests";
+    const host = startHost(socketPath, {
+      env,
+      pageTraffic: [
+        {
+          id: "r_auth",
+          ts: Date.now() - 60_000,
+          method: "GET",
+          url: "https://fixture.test/headers?session_token=dummy-query-value",
+          type: "Fetch",
+          requestHeaders: {
+            Authorization: auth,
+            Cookie: `sid=${cookie}`,
+            Accept: "application/json",
+          },
+          status: 200,
+          responseHeaders: { "content-type": "application/json", "set-cookie": `sid=${cookie}` },
+          responseBody: `{"headers":{"Authorization":"${auth}"}}`,
+          flags: [],
+          _loadingFinished: true,
+        },
+      ],
+    });
+    try {
+      await host.waitForMessage((message) => message.type === "HOST_READY");
+      const views = [
+        ["network.get", "r_auth"],
+        ["network.get", "r_auth", "--json"],
+        ["network.curl", "r_auth"],
+        ["network", "-v"],
+        ["network", "--format", "raw"],
+        ["network", "--format", "curl"],
+      ];
+      for (const args of views) {
+        const view = await runCli(socketPath, args, scratch, env);
+        expect(view.code, args.join(" ")).toBe(0);
+        expect(view.stdout, args.join(" ")).toMatch(/authorization\W+<redacted>/i);
+        for (const secret of [auth, cookie, "dummy-query-value"]) {
+          expect(view.stdout, args.join(" ")).not.toContain(secret);
+        }
+      }
+      const replay = await runCli(socketPath, ["network.replay", "r_auth", "--json"], scratch, env);
+      expect(replay.code).toBe(0);
+      const sent = host.messages.filter((message) => message.type === "EXECUTE_JAVASCRIPT");
+      expect(JSON.stringify(sent.at(-1))).toContain(auth);
+    } finally {
+      await host.dispose();
+    }
+  });
+
   it("keeps the page's other captured requests off disk when surf use and network.replay read capture", async () => {
     const socketPath = createSocketPath();
     const scratch = fs.mkdtempSync(path.join(os.tmpdir(), "surf-capture-disk-"));

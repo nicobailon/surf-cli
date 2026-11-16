@@ -28,7 +28,7 @@ const grokClient = require("./grok-client.cjs");
 const kimiClient = require("./kimi-client.cjs");
 const aistudioClient = require("./aistudio-client.cjs");
 const aistudioBuild = require("./aistudio-build.cjs");
-const { mapToolToMessage, mapComputerAction, formatToolContent, formatToolError, buildProviderUploadMessage, applySemanticExpectedIdentity, truncatePageText } = require("./host-helpers.cjs");
+const { mapToolToMessage, mapComputerAction, formatToolContent, formatToolError, publicNetworkResult, buildProviderUploadMessage, applySemanticExpectedIdentity, truncatePageText } = require("./host-helpers.cjs");
 const { createOracleHost } = require("./oracle-host.cjs");
 
 const IS_WIN = process.platform === "win32";
@@ -1851,6 +1851,7 @@ function sendToolResponse(socket, id, result, error) {
       if (!error) output = await sendRequestDownloads(context, request, result);
       if (!error) output = await truncatePageRead(context, request, output);
       if (!error) output = await truncatePageTextResult(context, request, output);
+      if (!error) output = publicNetworkResult(request?.tool, output);
       if (!error && output?.semanticObservation?.identity && request?.target) {
         output.semanticObservation.identity.browserEpoch = request.target.browserEpoch;
       }

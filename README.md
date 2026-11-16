@@ -745,6 +745,8 @@ surf network.stats                    # Capture statistics
 surf network.export --har --output ./trace.har
 ```
 
+`network -v`, `network --format raw|curl`, `network.get` (and `--json`) and `network.curl` show secret headers (`Authorization`, `Cookie`, `Set-Cookie`, API-key, CSRF, token and session headers) as `<redacted>`, with secret-named query params and `user:password@` redacted, as exports do; `network.replay` still sends the real values.
+
 Response bodies are fetched at `Network.loadingFinished` when capture is enabled. `--body-mode none|text|all`, `--per-body-bytes`, and `--total-body-bytes` control content and caps; exports include completeness metadata.
 
 Storage location: `~/.surf/state/network/` (override with `SURF_NETWORK_PATH` in the native host environment). Surf creates private `0700` directories and `0600` files and rejects symlink targets. Auto-cleanup: 24 hours TTL, 200MB max.

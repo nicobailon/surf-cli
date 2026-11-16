@@ -1,5 +1,6 @@
 const fs = require("fs");
 const networkFormatters = require("./formatters/network.cjs");
+const { publicEntry } = require("./network-export.cjs");
 const { recoveryFor } = require("./surf-error.cjs");
 
 function buildProviderUploadMessage(provider, tabId, filePaths, id) {
@@ -63,6 +64,22 @@ function truncatePageText(text, { maxBytes, maxChars = 50_000, fullPath } = {}) 
  * @param {Function} log - Logging function (defaults to no-op for testing)
  * @returns {Array} Array of content objects with type and text/data
  */
+// Tools that print captured requests: their entries are shown as an export holds them (secret
+// headers as <redacted>, URL credentials and echoes of a secret header's value redacted). Only what
+// is sent back to the caller is redacted; network.replay reads the raw entry inside the host.
+const NETWORK_VIEW_TOOLS = new Set(["network", "get_network_entries", "read_network_requests", "network.get", "get_network_entry", "network.curl"]);
+const isEntry = (value) => Boolean(value) && typeof value === "object" && !Array.isArray(value);
+
+function publicNetworkResult(tool, result) {
+  if (!NETWORK_VIEW_TOOLS.has(tool) || !isEntry(result)) return result;
+  const view = { ...result };
+  if (isEntry(result.entry)) view.entry = publicEntry(result.entry);
+  for (const key of ["entries", "requests"]) {
+    if (Array.isArray(result[key])) view[key] = result[key].map((entry) => (isEntry(entry) ? publicEntry(entry) : entry));
+  }
+  return view;
+}
+
 function formatToolContent(result, log = () => {}) {
   const text = (s) => [{ type: "text", text: s }];
   
@@ -1440,4 +1457,4 @@ function applySemanticExpectedIdentity(request, extensionMessage, args) {
   };
 }
 
-module.exports = { mapToolToMessage, mapComputerAction, formatToolContent, formatToolError, buildProviderUploadMessage, readinessExpectations, applySemanticExpectedIdentity, truncatePageText };
+module.exports = { mapToolToMessage, mapComputerAction, formatToolContent, publicNetworkResult, formatToolError, buildProviderUploadMessage, readinessExpectations, applySemanticExpectedIdentity, truncatePageText };
