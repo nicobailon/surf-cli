@@ -160,8 +160,10 @@ onmessage = ({ data }) => {
 // Starting a worker takes a few milliseconds; one that hasn't answered by then counts as blocked.
 const WORKER_START_MS = 2000;
 const TIMED_OUT = Symbol("timed out");
-// What the tab sends back is cut at 50,000 characters, so texts for the host stop short of that.
-const HOST_TEXT_LIMIT = 40000;
+// What a tab script returns is pretty-printed JSON, cut at TAB_OUTPUT_LIMIT characters by the
+// extension; OUTPUT_ROOM of it is kept for regexSpentMs.
+const TAB_OUTPUT_LIMIT = 50000;
+const OUTPUT_ROOM = 64;
 const STASH = Symbol.for("surf.boundedRegex.extracts");
 const STASH_MS = 60000;
 
@@ -276,14 +278,15 @@ async function tabExtract({ extract, budget, onValue, onError }) {
       const matches = await matchInWorker(worker, pairs, budget);
       return spent(finish(() => extractWith(extract, pairs, matches)));
     }
-    const size = pairs.reduce((total, pair) => total + pair.pattern.length + pair.text.length, 0);
-    if (size > HOST_TEXT_LIMIT) {
+    const key = `${Date.now().toString(36)}${Math.random().toString(36).slice(2)}`;
+    // Measured as sent: escaping can double a text's length.
+    const size = JSON.stringify({ regexNeeded: { key, pairs } }, null, 2).length;
+    if (size > TAB_OUTPUT_LIMIT - OUTPUT_ROOM) {
       throw new Error(
-        `this page blocks the Web Worker that match patterns run in (its Content-Security-Policy or Trusted Types), and the ${size} characters to match are too many to send to Surf; narrow the fields that use match`,
+        `this page blocks the Web Worker that match patterns run in (its Content-Security-Policy or Trusted Types), and the texts to match come to ${size} characters as JSON, more than the ${TAB_OUTPUT_LIMIT} the tab can send to Surf; narrow the fields that use match`,
       );
     }
     if (!globalThis[STASH]) Object.defineProperty(globalThis, STASH, { value: new Map() });
-    const key = `${Date.now().toString(36)}${Math.random().toString(36).slice(2)}`;
     globalThis[STASH].set(key, (matches) => finish(() => extractWith(extract, pairs, matches)));
     setTimeout(() => globalThis[STASH].delete(key), STASH_MS);
     return spent({ regexNeeded: { key, pairs } });

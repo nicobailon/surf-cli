@@ -156,10 +156,13 @@ describe("bounded regex in a tab", () => {
       timedOut,
     );
     expect(Date.now() - started).toBeLessThan(500);
-    // Texts too large to send back are refused, not run on the page.
-    await expect(tabMatches(inTab({ worker: null }), [["x", "a".repeat(50000)]])).rejects.toThrow(
-      /this page blocks the Web Worker that match patterns run in .*, and the 50001 characters to match are too many to send to Surf/,
-    );
+    // Texts too large to send back are refused, not run on the page. The tab's 50,000-character
+    // limit counts the JSON it sends, where a newline takes two characters.
+    for (const text of ["a".repeat(50000), "\n".repeat(30000)]) {
+      await expect(tabMatches(inTab({ worker: null }), [["x", text]])).rejects.toThrow(
+        /this page blocks the Web Worker that match patterns run in .*, and the texts to match come to \d+ characters as JSON, more than the 50000 the tab can send to Surf; narrow the fields that use match/,
+      );
+    }
   });
 
   it("returns the same matches from the worker and the host, unmatched groups included", async () => {
