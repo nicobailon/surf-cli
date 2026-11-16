@@ -1196,6 +1196,7 @@ const TOOLS = {
           "body-mode": "Response bodies: none, text, or all (default: text)",
           "per-body-bytes": "Maximum captured bytes per response body",
           "total-body-bytes": "Maximum captured response-body bytes per tab session",
+          "raw-bodies": "Keep secret-named body fields (password=, \"token\":) as captured; by default their values read <redacted>",
         },
         examples: [
           { cmd: "network.export --jsonl --output /tmp/requests.jsonl", desc: "Export as JSONL" },

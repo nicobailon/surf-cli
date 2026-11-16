@@ -2857,6 +2857,7 @@ function handleToolRequest(msg, socket, requestContext = requestStorage.getStore
     networkExportPath: args?.output,
     networkPath: args?.["network-path"],
     networkExportFormat: extensionMsg.har ? "har" : extensionMsg.jsonl ? "jsonl" : "json",
+    networkExportRawBodies: args?.["raw-bodies"] === true || args?.rawBodies === true,
     fullRes: extensionMsg.fullRes || args?.fullRes,
     maxSize: extensionMsg.maxSize || args?.maxSize,
     tabId: extensionMsg.tabId || tabId
@@ -3115,7 +3116,7 @@ function processInput() {
           
           if (pending.networkExport && Array.isArray(msg.entries)) {
             try {
-              const exportResult = writeNetworkExport(pending.networkExportPath, msg.entries, pending.networkExportFormat);
+              const exportResult = writeNetworkExport(pending.networkExportPath, msg.entries, pending.networkExportFormat, { rawBodies: pending.networkExportRawBodies });
               sendToolResponse(socket, originalId, exportResult, null);
             } catch (error) {
               sendToolResponse(socket, originalId, null, `Failed to export network requests: ${error.message}`);

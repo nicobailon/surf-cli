@@ -1,6 +1,7 @@
 const fs = require("fs");
 const path = require("path");
 const { version: PACKAGE_VERSION } = require("../package.json");
+const { redactSecretBodyFields } = require("./body-redaction.cjs");
 const { atomicWriteFile } = require("./private-state.cjs");
 const { isSecretHeader, isSensitiveName, redactUrlSecrets, redactValues } = require("./redaction.cjs");
 
@@ -42,7 +43,8 @@ function secretHeaderValues(entry) {
 
 // What an export may contain: no internal fields, secret headers or URL credentials, and no echo
 // of a secret header's value in a text body (a page that reflects its Authorization header).
-function publicEntry(entry) {
+// Secret-named body fields (password=, "token":) read <redacted> unless `rawBodies` (--raw-bodies).
+function publicEntry(entry, { rawBodies = false } = {}) {
   if (!entry || typeof entry !== "object" || Array.isArray(entry)) {
     throw new Error("network export entries must be objects");
   }
@@ -55,6 +57,13 @@ function publicEntry(entry) {
     else if (BODY_FIELDS.has(key) && typeof value === "string" && secrets.length > 0 && !(key === "responseBody" && entry.responseBodyEncoding === "base64")) {
       result[key] = redactValues(value, secrets);
     } else result[key] = value;
+  }
+  if (!rawBodies) {
+    for (const key of BODY_FIELDS) {
+      if (key === "responseBody" && entry.responseBodyEncoding === "base64") continue;
+      const type = key === "requestBody" ? headerValue(entry.requestHeaders, "content-type") : headerValue(entry.responseHeaders, "content-type") || entry.mimeType;
+      if (typeof result[key] === "string") result[key] = redactSecretBodyFields(result[key], type);
+    }
   }
   return result;
 }
@@ -122,10 +131,10 @@ function harEntry(entry) {
   };
 }
 
-function serializeNetworkExport(entries, format = "json") {
+function serializeNetworkExport(entries, format = "json", { rawBodies = false } = {}) {
   if (!Array.isArray(entries)) throw new Error("network export entries must be an array");
   if (format !== "json" && format !== "jsonl" && format !== "har") throw new Error(`unsupported network export format: ${format}`);
-  const publicEntries = entries.map(publicEntry);
+  const publicEntries = entries.map((entry) => publicEntry(entry, { rawBodies }));
   if (format === "jsonl") return `${publicEntries.map((entry) => JSON.stringify(entry)).join("\n")}\n`;
   if (format === "har") {
     return JSON.stringify({
@@ -139,9 +148,9 @@ function serializeNetworkExport(entries, format = "json") {
   return JSON.stringify(publicEntries, null, 2);
 }
 
-function writeNetworkExport(outputPath, entries, format = "json") {
+function writeNetworkExport(outputPath, entries, format = "json", { rawBodies = false } = {}) {
   if (typeof outputPath !== "string" || !path.isAbsolute(outputPath)) throw new Error("network export output must be an absolute path");
-  const content = serializeNetworkExport(entries, format);
+  const content = serializeNetworkExport(entries, format, { rawBodies });
   const bytes = Buffer.byteLength(content);
   if (bytes > MAX_NETWORK_EXPORT_FILE_BYTES) throw new Error("network export exceeds the 256 MiB file limit");
   fs.mkdirSync(path.dirname(outputPath), { recursive: true });
