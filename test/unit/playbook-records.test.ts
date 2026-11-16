@@ -996,6 +996,74 @@ describe("pb record candidates", () => {
     expect(written).not.toContain("Jane Placeholder");
   });
 
+  describe("a live sample of a response that reflects what was sent", () => {
+    // Dummy values, built from parts so no literal here reads as a credential.
+    const TYPED = ["dummy", "typed", "6"].join("-");
+    const AUTH = ["dummy", "auth", "6", 'with"quote'].join("-");
+    const reflecting = (extra: Entry = {}) => ({
+      id: "r_p",
+      method: "GET",
+      status: 200,
+      type: "XHR",
+      mimeType: "application/json",
+      url: "https://a.test/p",
+      responseBody: JSON.stringify({
+        people: [{ name: "Jane Placeholder", searched: TYPED, auth: `got ${AUTH}` }],
+      }),
+      ...extra,
+    });
+    const typedEvent = (value: string) => ({
+      type: "browser.event",
+      event: "input",
+      selector: "#q",
+      value,
+      timestamp: new Date().toISOString(),
+    });
+    const sampleOf = (record: Entry, root: string, entry: Entry) =>
+      records.recordCandidates(record, { root, live: { entries: [entry], pageText: "" } });
+
+    it("redacts the text the record typed, when the record kept it", () => {
+      const root = tempRoot();
+      const record = records.startRecord({
+        site: "a",
+        op: "one",
+        tabId: 11,
+        network: true,
+        includeInputValues: true,
+        root,
+      });
+      records.appendRecordEvent(typedEvent(TYPED), { target: { tabId: 11 }, root });
+      const result = sampleOf(record, root, reflecting());
+      expect(result.candidates[0].sample).toContain("Jane Placeholder");
+      expect(result.candidates[0].sample).toContain("<redacted>");
+      expect(JSON.stringify(result)).not.toContain(TYPED);
+    });
+
+    it("leaves the sample out when the record typed text it didn't keep", () => {
+      const root = tempRoot();
+      const record = records.startRecord({ site: "a", op: "one", tabId: 11, network: true, root });
+      records.appendRecordEvent(typedEvent("<input>"), { target: { tabId: 11 }, root });
+      const result = sampleOf(record, root, reflecting());
+      expect(result.candidates[0]).not.toHaveProperty("sample");
+      expect(result.warnings?.join("\n")).toMatch(/typed/);
+      expect(JSON.stringify(result)).not.toContain(TYPED);
+    });
+
+    it("redacts the secret header values the request carried, JSON-escaped too", () => {
+      const root = tempRoot();
+      const record = records.startRecord({ site: "a", op: "one", tabId: 11, network: true, root });
+      const result = sampleOf(
+        record,
+        root,
+        reflecting({ requestHeaders: { Authorization: AUTH } }),
+      );
+      const { sample } = result.candidates[0];
+      expect(sample).toContain("Jane Placeholder");
+      expect(sample).not.toContain(JSON.stringify(AUTH).slice(1, -1));
+      expect(sample).not.toContain("dummy-auth-6");
+    });
+  });
+
   it("explains a record without a network trace", () => {
     const root = tempRoot();
     const record = records.startRecord({ site: "a", op: "one", tabId: 11, root });

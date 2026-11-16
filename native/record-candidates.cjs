@@ -1,7 +1,7 @@
 // Ranks a record's captured requests by how likely each is the one that carries the page's data.
 // Scores are integers from fixed rules, so the same trace always ranks the same way.
 
-const { redactCredentialLiterals, redactSensitiveFields } = require("./redaction.cjs");
+const { redactCredentialLiterals, redactSensitiveFields, redactValues, secretHeaderValues } = require("./redaction.cjs");
 const { ASSET_TYPES, hostname, isReplayCandidate, isTelemetryRequest, requestEffect } = require("./request-kinds.cjs");
 
 const SAMPLE_CHARS = 200;
@@ -110,9 +110,10 @@ function fieldsOf(value, { names = false } = {}) {
 // holds, how many fields it has of each type, and what share of the page's words it contains. No
 // values, text or field names, so a trace on disk holds nothing the response said. `sample` (live
 // ranking only, never saved) adds the field names and a short redacted sample of JSON or of an
-// HTML page's visible text.
+// HTML page's visible text. The sample never holds a value in `redact` (what the record typed) or
+// a secret header value the request carried, as a response can reflect either.
 // `page` is pageWords() of the page's visible text. Page assets get none.
-function summarizeResponse(entry, page, { sample: withSample = false } = {}) {
+function summarizeResponse(entry, page, { sample: withSample = false, redact = [] } = {}) {
   if (ASSET_TYPES.has(entry.type)) return undefined;
   const body = typeof entry.responseBody === "string" && entry.responseBodyEncoding !== "base64" ? entry.responseBody : undefined;
   const capture = entry.bodyCapture || {};
@@ -138,8 +139,11 @@ function summarizeResponse(entry, page, { sample: withSample = false } = {}) {
     for (const word of page) if (found.has(word)) shared++;
     summary.overlap = Math.round((shared / page.size) * 100) / 100;
   }
-  sample = redactCredentialLiterals(sample).slice(0, SAMPLE_CHARS);
-  if (withSample && sample) summary.sample = sample;
+  if (withSample && sample) {
+    const reflected = [...redact.flatMap((value) => [value, JSON.stringify(value).slice(1, -1)]), ...secretHeaderValues(entry.requestHeaders)];
+    sample = redactCredentialLiterals(redactValues(sample, reflected)).slice(0, SAMPLE_CHARS);
+    if (sample) summary.sample = sample;
+  }
   return summary;
 }
 

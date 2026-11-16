@@ -244,12 +244,12 @@ function traceEntriesForRecord(record, entries) {
 // instead (see summarizeResponse), so pb record candidates can rank it. `pageText` is the page's
 // visible text, used for the overlap score and never stored. `sample` adds a short sample, for
 // live ranking only: entries with samples are never written.
-function sanitizeTraceEntries(record, entries, pageText, { sample = false, root = getPrivateStateRoot() } = {}) {
+function sanitizeTraceEntries(record, entries, pageText, { sample = false, redact = [], root = getPrivateStateRoot() } = {}) {
   const page = pageWords(pageText);
   const keepValues = record.redaction?.includeInputValues === true;
   const typed = keepValues ? [] : typedValuesForTrace(readEvents(record.id, root), heldTypingCalls(record.id)).typed;
   return entries.map((entry) => {
-    const responseSummary = summarizeResponse(entry, page, { sample });
+    const responseSummary = summarizeResponse(entry, page, { sample, redact });
     return sanitizeTraceEntry(responseSummary ? { ...entry, responseSummary } : entry, keepValues, typed);
   });
 }
@@ -489,6 +489,33 @@ function findCandidatesRecord({ recordId, target, root = getPrivateStateRoot() }
 
 const isActive = (record) => ["recording", "paused"].includes(record.status);
 
+// The text a record's steps and page inputs typed, so a live sample can leave it out. `known` is
+// false when the record typed something it didn't keep (a record without --include-input-values,
+// or a password field), so the text can't be found to redact.
+function typedInputs(record, root) {
+  const values = [];
+  const collect = (value) => {
+    if (typeof value === "string" || typeof value === "number") values.push(String(value));
+    else if (value && typeof value === "object") Object.values(value).forEach(collect);
+  };
+  let known = true;
+  for (const event of readEvents(record.id, root)) {
+    if (event.type === "browser.event" && event.event === "input") {
+      if (typeof event.value !== "string" || event.value === "<input>") known = false;
+      else values.push(event.value);
+      continue;
+    }
+    if (typeof event.command !== "string" || !event.argsRedacted) continue;
+    for (const name of commandMetadata(event.command).sensitiveArgs) {
+      const value = event.argsRedacted[name];
+      if (value === undefined) continue;
+      if (value === `<${name}>`) known = false;
+      else collect(value);
+    }
+  }
+  return { known, values: values.filter(Boolean) };
+}
+
 // Ranks a record's requests, best first. An active record has no trace yet, so the host reads its
 // requests from the tab and passes them as `live` ({ entries, pageText }); only then does the
 // result carry response samples, held in memory and printed, never saved.
@@ -496,8 +523,11 @@ function recordCandidates(record, { root = getPrivateStateRoot(), limit = 10, li
   if (!Number.isInteger(limit) || limit < 1) throw new Error("--limit must be a positive integer");
   let entries;
   let warnings = [];
-  if (live) entries = sanitizeTraceEntries(record, live.entries, live.pageText, { sample: true, root });
-  else {
+  if (live) {
+    const typed = typedInputs(record, root);
+    entries = sanitizeTraceEntries(record, live.entries, live.pageText, { sample: typed.known, redact: typed.values, root });
+    if (!typed.known) warnings = ["no response samples: the record typed text it didn't keep, which a response could show"];
+  } else {
     const trace = readPrivateJson(path.join(recordDirectory(record.id, root), "network", "trace.json"), null, { root });
     if (!trace) throw new Error(`record ${record.id} has no network trace; start a record with --network to rank its requests`);
     entries = trace.entries;
