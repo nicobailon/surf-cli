@@ -48,12 +48,49 @@ describe("redactValues", () => {
     );
   });
 
-  it("replaces every occurrence of a known secret, whatever its length, with anyLength", () => {
-    expect(redaction.redactValues("prefixabcSuffix abc", ["abc"], { anyLength: true })).toBe(
+  it("replaces every occurrence of a known secret of 4 characters or more, with anyLength", () => {
+    expect(redaction.redactValues("prefixabcdSuffix abcd", ["abcd"], { anyLength: true })).toBe(
       "prefix<redacted>Suffix <redacted>",
     );
-    expect(redaction.redactObject({ prefixabcKey: "xabcx" }, ["abc"], { anyLength: true })).toEqual(
-      { "prefix<redacted>Key": "x<redacted>x" },
+    expect(
+      redaction.redactObject({ prefixabcdKey: "xabcdx" }, ["abcd"], { anyLength: true }),
+    ).toEqual({ "prefix<redacted>Key": "x<redacted>x" });
+  });
+
+  it.each(["a", "1"])(
+    "replaces a known secret under 4 characters (%s) only as a whole token",
+    (value) => {
+      const text = `type tool.failed ${value} at step 21 of a run`;
+      const expected = text.replace(
+        new RegExp(`(?<![A-Za-z0-9])${value}(?![A-Za-z0-9])`, "g"),
+        "<redacted>",
+      );
+      expect(redaction.redactValues(text, [value], { anyLength: true })).toBe(expected);
+      expect(redaction.redactValues("tool.failed", [value], { anyLength: true })).toBe(
+        "tool.failed",
+      );
+    },
+  );
+});
+
+describe("redactSecretValues", () => {
+  // A dummy value with a quote and a backslash, so its escaped spellings differ from it.
+  const QUOTED = ["dummy", 'quo"ted', "va\\lue"].join("-");
+  const once = JSON.stringify(QUOTED).slice(1, -1);
+  const twice = JSON.stringify(once).slice(1, -1);
+
+  it("redacts a value as is, JSON-escaped once and twice, and URL- or form-encoded", () => {
+    const text = [
+      QUOTED,
+      once,
+      twice,
+      encodeURIComponent(QUOTED),
+      new URLSearchParams({ q: `a b ${QUOTED}` }).toString(),
+    ].join(" | ");
+    const redacted = redaction.redactSecretValues(text, [QUOTED]);
+    expect(redacted).not.toContain("dummy");
+    expect(redaction.valueSpellings(QUOTED)).toEqual(
+      expect.arrayContaining([QUOTED, once, twice, encodeURIComponent(QUOTED)]),
     );
   });
 });
@@ -67,7 +104,7 @@ describe("a short env value inside a longer string", () => {
   const runtime = require("../../native/playbook-runtime.cjs");
   const clients = require("../../native/playbook-client.cjs");
   // A dummy env value, short enough that the stand-alone rule would skip it inside a word.
-  const SHORT = "qzx";
+  const SHORT = "qzxw";
   const op = {
     id: "items",
     effect: "read",

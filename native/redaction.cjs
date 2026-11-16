@@ -13,14 +13,15 @@ const TEMPLATE_PATTERN = /\{\{[a-zA-Z0-9._-]+\}\}/;
 const CREDENTIAL_LITERAL_PATTERN = /\bbearer\s+[a-z0-9._~-]+|\bsk-[a-z0-9_-]{12,}|\bgh[pousr]_[a-z0-9_]{12,}|\beyj[a-z0-9_-]+\.[a-z0-9_-]+\.[a-z0-9_-]+/i;
 
 // Replaces each of `values` in `text` with <redacted>, longest first. A value under 8 characters is
-// replaced only where it stands alone, so a short value can't break up the words around it, unless
-// `anyLength` is set: for values known to be secrets (env values), every occurrence goes.
-// Self-contained: generated clients embed its source.
+// replaced only where it stands alone, so a short value can't break up the words around it. With
+// `anyLength`, for values known to be secrets (env values), every occurrence of one of 4 characters
+// or more goes; a shorter one (`a`, `1`) still only where it stands alone, so it can't rewrite the
+// text around it. Self-contained: generated clients embed its source.
 function redactValues(text, values, { anyLength = false } = {}) {
   let result = String(text);
   const sorted = [...values].map(String).filter(Boolean).sort((a, b) => b.length - a.length);
   for (const value of sorted) {
-    if (anyLength || value.length >= 8) result = result.split(value).join("<redacted>");
+    if (value.length >= 8 || (anyLength && value.length >= 4)) result = result.split(value).join("<redacted>");
     else result = result.replace(new RegExp(`(?<![A-Za-z0-9])${value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(?![A-Za-z0-9])`, "g"), "<redacted>");
   }
   return result;
@@ -43,6 +44,21 @@ function redactObject(value, values, options = {}) {
     taken.add(name);
     return [name, item];
   }));
+}
+
+// The spellings a value takes in text that holds it encoded: as is, JSON-escaped once and twice (a
+// JSON string inside a JSON string), and URL- and form-encoded.
+function valueSpellings(value) {
+  const text = String(value);
+  const once = JSON.stringify(text).slice(1, -1);
+  const twice = JSON.stringify(once).slice(1, -1);
+  const encoded = encodeURIComponent(text);
+  return [...new Set([text, once, twice, encoded, encoded.replace(/%20/g, "+")])].filter(Boolean);
+}
+
+// redactValues over every spelling of each of `values` (see valueSpellings).
+function redactSecretValues(text, values, options = {}) {
+  return redactValues(text, values.flatMap(valueSpellings), options);
 }
 
 function isTemplate(value) {
@@ -162,10 +178,12 @@ module.exports = {
   isTemplate,
   redactCredentialLiterals,
   redactObject,
+  redactSecretValues,
   redactSensitiveFields,
   redactUrlSecrets,
   redactUrlsInText,
   redactValues,
   safeHeaders,
   secretHeaderValues,
+  valueSpellings,
 };

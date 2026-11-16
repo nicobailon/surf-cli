@@ -689,8 +689,8 @@ describe("clients from parameterised ops", () => {
         await runClient(out, [], { SURF_CLIENT_ORIGIN: origin, SURF_TEST_ECHO_KEY: "zz" }),
       );
       expect(stdout).toContain('"Authorization": "<redacted>"');
-      // An env value is a known secret: it goes even inside a longer string.
-      expect(stdout).toContain('"other": "<redacted>9"');
+      // An env value under 4 characters goes only where it stands alone, so it can't rewrite data.
+      expect(stdout).toContain('"other": "zz9"');
       const failure = await runClient(out, [], {
         SURF_CLIENT_ENDPOINT_URL: `${origin}/headers?fail`,
         SURF_TEST_ECHO_KEY: "zz",
