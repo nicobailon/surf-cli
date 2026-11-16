@@ -559,3 +559,24 @@ describe("formatCandidates for an active record", () => {
     );
   });
 });
+
+describe("a live sample's field names", () => {
+  // Dummy values, built from parts so no literal here reads as a credential.
+  const TYPED = ["dummy", "typed", "15"].join("-");
+  const AUTH = ["dummy", "auth", "15"].join("-");
+
+  it("leave out a name that is text the record typed or a secret header's value", () => {
+    const body = JSON.stringify({ [TYPED]: { hits: 2 }, [AUTH]: true, title: "Sharp Objects" });
+    const summary = candidates.summarizeResponse(
+      get("r_1", "XHR", "https://books.example/api", {
+        mimeType: "application/json",
+        requestHeaders: { Authorization: `Bearer ${AUTH}` },
+        responseBody: body,
+      }),
+      candidates.pageWords(""),
+      { sample: true, redact: [TYPED] },
+    );
+    expect(summary.fieldNames).toEqual({ title: "string" });
+    expect(JSON.stringify(summary)).not.toContain("dummy");
+  });
+});

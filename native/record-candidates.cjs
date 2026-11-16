@@ -1,7 +1,7 @@
 // Ranks a record's captured requests by how likely each is the one that carries the page's data.
 // Scores are integers from fixed rules, so the same trace always ranks the same way.
 
-const { redactCredentialLiterals, redactSensitiveFields, redactValues, secretHeaderValues } = require("./redaction.cjs");
+const { redactCredentialLiterals, redactSensitiveFields, redactValues, secretHeaderValues, valueSpellings } = require("./redaction.cjs");
 const { ASSET_TYPES, hostname, isReplayCandidate, isTelemetryRequest, requestEffect } = require("./request-kinds.cjs");
 
 const SAMPLE_CHARS = 200;
@@ -91,14 +91,14 @@ const MAX_FIELDS = 20;
 // The fields of a JSON body's top level, or for a top-level list, of its first record. Keys can be
 // data (a map keyed by username or account), so what is saved is only how many fields there are
 // and how many of each type; `names` adds the names with their types, for live ranking only.
-function fieldsOf(value, { names = false } = {}) {
+function fieldsOf(value, { names = false, hide = () => false } = {}) {
   const shape = Array.isArray(value) ? value.find((item) => item && typeof item === "object" && !Array.isArray(item)) : value;
   if (!shape || typeof shape !== "object" || Array.isArray(shape)) return {};
   const entries = Object.entries(shape);
   if (entries.length === 0) return {};
   const types = {};
   for (const type of entries.map(([, item]) => typeOf(item)).sort()) types[type] = (types[type] || 0) + 1;
-  const named = entries.filter(([name]) => FIELD_NAME.test(name)).slice(0, MAX_FIELDS);
+  const named = entries.filter(([name]) => FIELD_NAME.test(name) && !hide(name)).slice(0, MAX_FIELDS);
   return {
     fields: entries.length,
     types,
@@ -111,7 +111,8 @@ function fieldsOf(value, { names = false } = {}) {
 // values, text or field names, so a trace on disk holds nothing the response said. `sample` (live
 // ranking only, never saved) adds the field names and a short redacted sample of JSON or of an
 // HTML page's visible text. The sample never holds a value in `redact` (what the record typed) or
-// a secret header value the request carried, as a response can reflect either.
+// a secret header value the request carried, as a response can reflect either, and the field names
+// leave out a name that holds one.
 // `page` is pageWords() of the page's visible text. Page assets get none.
 function summarizeResponse(entry, page, { sample: withSample = false, redact = [] } = {}) {
   if (ASSET_TYPES.has(entry.type)) return undefined;
@@ -123,11 +124,13 @@ function summarizeResponse(entry, page, { sample: withSample = false, redact = [
   if (body === undefined) return capture.reason ? { ...summary, unsampled: capture.reason } : summary;
   let text = body;
   let sample = "";
+  // What a response can reflect: the record's typed text and the request's secret header values.
+  const reflected = withSample ? [...redact.flatMap(valueSpellings), ...secretHeaderValues(entry.requestHeaders)] : [];
   const parsed = kind === "json" ? parseJson(body) : null;
   if (parsed) {
     const records = recordCount(parsed.value);
     if (records > 0) summary.records = records;
-    Object.assign(summary, fieldsOf(parsed.value, { names: withSample }));
+    Object.assign(summary, fieldsOf(parsed.value, { names: withSample, hide: (name) => redactValues(name, reflected) !== name }));
     sample = JSON.stringify(redactSensitiveFields(parsed.value));
   } else if (kind === "html") {
     text = visibleText(body);
@@ -140,7 +143,6 @@ function summarizeResponse(entry, page, { sample: withSample = false, redact = [
     summary.overlap = Math.round((shared / page.size) * 100) / 100;
   }
   if (withSample && sample) {
-    const reflected = [...redact.flatMap((value) => [value, JSON.stringify(value).slice(1, -1)]), ...secretHeaderValues(entry.requestHeaders)];
     sample = redactCredentialLiterals(redactValues(sample, reflected)).slice(0, SAMPLE_CHARS);
     if (sample) summary.sample = sample;
   }
