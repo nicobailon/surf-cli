@@ -33,7 +33,7 @@ function parseCommandArgs(argv) {
 }
 
 const PARAM_FLAGS = new Set(["required", "json"]);
-const PARAM_VALUES = new Set(["as", "env", "default", "desc", "value"]);
+const PARAM_VALUES = new Set(["as", "env", "default", "desc", "value", "link"]);
 
 // pb param's options are known, so a field may follow a flag (`--required query.q`).
 function parseParamArgs(argv) {
@@ -53,7 +53,7 @@ function parseParamArgs(argv) {
     } else throw new Error(`pb param has no --${name} option`);
   }
   const [playbook, op, ...fields] = positional;
-  if (!playbook || !op) throw new Error("Usage: surf pb param <playbook> <op> <field>... --as <name> [--required | --default <v>] [--desc <text>] [--value <text>], or <field> --env <VAR>");
+  if (!playbook || !op) throw new Error("Usage: surf pb param <playbook> <op> <field>... --as <name> [--required | --default <v>] [--desc <text>] [--value <text>] [--link <input>], or <field> --env <VAR>");
   return { playbook, op, fields, options };
 }
 
@@ -171,7 +171,7 @@ async function handlePlaybookCli(argv, { endpoint, cwd = process.cwd(), session,
   const command = argv[1];
   if (command === "param") {
     const { playbook, op, fields, options } = parseParamArgs(argv.slice(2));
-    const result = applyParam({ playbook, op, fields, cwd, as: options.as, env: options.env, required: options.required === true, default: options.default, desc: options.desc, value: options.value });
+    const result = applyParam({ playbook, op, fields, cwd, as: options.as, env: options.env, required: options.required === true, default: options.default, desc: options.desc, value: options.value, link: options.link });
     return { handled: true, value: options.json ? result : formatParamResult(result), json: options.json === true };
   }
   const parsed = parseCommandArgs(argv.slice(2));

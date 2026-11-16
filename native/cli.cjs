@@ -1710,6 +1710,7 @@ const TOOLS = {
           desc: "Input description",
           value: "Template only this text inside the field, as 2 in page-2.html",
           env: "With one headers.<name> field: send the header from this variable, read from the caller's shell at run time and never stored",
+          link: "With --as: give the workflow's steps that take this drafted input (text, from a typed value) the new input instead, and drop it",
           json: "Output raw JSON",
         },
         examples: [
@@ -1718,6 +1719,7 @@ const TOOLS = {
           { cmd: "pb param walmart search query.variables.query query.variables.searchArgs.query --as query", desc: "One input in two places in a JSON query param" },
           { cmd: "pb param resy search body.slot_filter.party_size --as party_size", desc: "A JSON body field (form and multipart fields work the same way)" },
           { cmd: "pb param resy search headers.authorization --env RESY_API_KEY", desc: "A site's public key from the environment" },
+          { cmd: "pb param hr search_employees query.nameOrId --as name --required --link text", desc: "The typed name and the request's name are one input, --name" },
         ],
       },
       "playbook record start": {

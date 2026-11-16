@@ -285,6 +285,49 @@ function templateStepUrl(value, { origin, segments, queries, placeholder, litera
   return joinUrl({ ...url, rest });
 }
 
+const usesInput = (value, input) => JSON.stringify(value).includes(`{{${input}}}`);
+
+// Inputs only workflow steps take, such as the {{text}} a draft makes of a typed value (it never
+// stores the value, so pb param can't match it to a request field).
+function workflowOnlyInputs(op) {
+  const workflows = op.run.filter((strategy) => strategy.using === "workflow");
+  const others = op.run.filter((strategy) => strategy.using !== "workflow");
+  return Object.keys(op.args || {}).filter((input) => usesInput(workflows, input) && !usesInput(others, input));
+}
+
+function renameInSteps(steps, from, to, touched) {
+  return steps.map((step) => {
+    if (Array.isArray(step.steps)) return { ...step, steps: renameInSteps(step.steps, from, to, touched) };
+    const args = { ...(step.args || {}) };
+    for (const [arg, value] of Object.entries(args)) {
+      const json = JSON.stringify(value);
+      if (!json?.includes(from)) continue;
+      args[arg] = JSON.parse(json.split(from).join(to));
+      touched.push(`${step.cmd || step.tool} ${arg}`);
+    }
+    return { ...step, args };
+  });
+}
+
+// --link: the workflow-only input `link` becomes `name`. Its steps take {{name}}, the input goes,
+// and a write's safety key follows. Returns the step arguments it changed; none when it is
+// already linked.
+function linkInput(op, link, name) {
+  const from = `{{${link}}}`;
+  if (!Object.hasOwn(op.args || {}, link)) {
+    if (!usesInput(op.run, link) && usesInput(op.run.filter((strategy) => strategy.using === "workflow"), name)) return [];
+    throw new Error(`--link ${link}: the op has no input ${link} (inputs: ${listOf(Object.keys(op.args || {}))})`);
+  }
+  const other = op.run.find((strategy) => strategy.using !== "workflow" && usesInput(strategy, link));
+  if (other) throw new Error(`--link ${link}: the ${other.using} strategy uses ${from} too, so it is an input of its own; pick another --as`);
+  const touched = [];
+  for (const workflow of op.run.filter((strategy) => strategy.using === "workflow")) workflow.steps = renameInSteps(workflow.steps, from, `{{${name}}}`, touched);
+  if (touched.length === 0) throw new Error(`--link ${link}: no workflow step takes ${from}`);
+  delete op.args[link];
+  if (op.safety?.key?.includes(link)) op.safety.key = [...new Set(op.safety.key.map((key) => (key === link ? name : key)))];
+  return touched;
+}
+
 // Adds a header read from an environment variable at run time; nothing about its value is stored.
 function envHeader(op, request, fields, env) {
   if (fields.length !== 1 || !fields[0].startsWith("headers.") || fields[0].length === "headers.".length) throw new Error("--env takes one field, headers.<name>");
@@ -310,9 +353,10 @@ function envHeader(op, request, fields, env) {
  * op an `args.<as>` entry (typed from the value; defaulting to the recorded value unless `required`
  * or `default`). With `env`, the one `headers.<name>` field comes from that environment variable.
  */
-function paramOp(op, { fields, as: name, env, required = false, default: defaultValue, desc, value: literal } = {}) {
+function paramOp(op, { fields, as: name, env, required = false, default: defaultValue, desc, value: literal, link } = {}) {
   if (!Array.isArray(fields) || fields.length === 0) throw new Error("pb param needs at least one field, such as query.q, path.2, body.page or headers.x-version");
   if ((name === undefined) === (env === undefined)) throw new Error("pb param needs --as <name> or --env <VAR>, not both");
+  if (link !== undefined && name === undefined) throw new Error("--link goes with --as");
   const next = structuredClone(op);
   const strategy = next.run.find((candidate) => candidate.using === "network");
   if (!strategy?.request) throw new Error(`op ${op.id} has no network strategy to take inputs`);
@@ -326,6 +370,7 @@ function paramOp(op, { fields, as: name, env, required = false, default: default
   if (typeof name !== "string" || !NAME_PATTERN.test(name)) throw new Error("--as must use lowercase letters, numbers, dot, underscore, or hyphen");
   if (RESERVED_RUN_OPTIONS.has(name)) throw new Error(`--as ${name} is reserved: surf use takes --${name} as its own option`);
   if (required && defaultValue !== undefined) throw new Error("--required and --default can't be combined");
+  if (link !== undefined && link === name) throw new Error(`--link ${link} names the same input as --as`);
 
   const request = strategy.request;
   const originalUrl = splitUrl(request.url);
@@ -361,6 +406,8 @@ function paramOp(op, { fields, as: name, env, required = false, default: default
 
   const notes = [];
   const workflows = next.run.filter((candidate) => candidate.using === "workflow");
+  const linked = link === undefined ? [] : linkInput(next, link, name);
+  if (linked.length) notes.push(`workflow fallback takes --${name} in place of --${link}: ${linked.join(", ")}`);
   if (templated.length && workflows.length) {
     const touched = [];
     const context = {
@@ -371,9 +418,11 @@ function paramOp(op, { fields, as: name, env, required = false, default: default
       queries: templated.filter((result) => result.whole && !result.json && /^query\.[^.]+$/.test(result.field)).map((result) => result.field.slice("query.".length)),
     };
     for (const workflow of workflows) workflow.steps = templateSteps(workflow.steps, context, touched);
-    notes.push(touched.length
-      ? `workflow fallback takes the input too: ${touched.join(", ")}`
-      : `workflow strategy unchanged: no step argument holds ${JSON.stringify(literals[0])}, so the browser fallback still runs as recorded`);
+    if (touched.length) notes.push(`workflow fallback takes the input too: ${touched.join(", ")}`);
+    else if (!linked.length) {
+      const hints = workflowOnlyInputs(next).filter((input) => input !== name).map((input) => `; if --${input} holds the same value, add --link ${input}`);
+      notes.push(`workflow strategy unchanged: no step argument holds ${JSON.stringify(literals[0])}, so the browser fallback still runs as recorded${hints.join("")}`);
+    }
   }
   return { op: next, changed: JSON.stringify(next) !== JSON.stringify(op), notes };
 }
