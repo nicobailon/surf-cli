@@ -76,7 +76,8 @@ function isSecretHeader(name) {
 
 // The values of the secret headers in `headers` (and of the headers named in `names`), in the
 // forms a body or another header can echo: whole, the credential after an auth scheme, each
-// cookie's value (8 characters or more, as a shorter one is no secret), and each JSON-escaped.
+// cookie's or auth parameter's value (8 characters or more, as a shorter one is no secret), a quoted
+// one with and without its quotes and escapes, and each in every spelling (see valueSpellings).
 function secretHeaderValues(headers, names = []) {
   if (!headers || typeof headers !== "object" || Array.isArray(headers)) return [];
   const named = new Set(names.map((name) => String(name).toLowerCase()));
@@ -84,10 +85,15 @@ function secretHeaderValues(headers, names = []) {
   for (const [name, value] of Object.entries(headers)) {
     if (!isSecretHeader(name) && !named.has(name.toLowerCase())) continue;
     const text = String(value);
-    const parts = [text.replace(/^[A-Za-z]+\s+/, ""), ...text.split(/;\s*/).map((part) => part.slice(part.indexOf("=") + 1))];
+    const parts = [text.replace(/^[A-Za-z]+\s+/, "")];
+    for (const part of parts[0].split(/[;,]\s*/)) {
+      const assigned = part.slice(part.indexOf("=") + 1).trim();
+      const quoted = assigned.match(/^"(.*)"$/);
+      parts.push(assigned, ...(quoted ? [quoted[1], quoted[1].replace(/\\(.)/g, "$1")] : []));
+    }
     values.push(text, ...parts.filter((part) => part.length >= 8));
   }
-  return [...new Set(values.flatMap((value) => [value, JSON.stringify(value).slice(1, -1)]))].filter(Boolean);
+  return [...new Set(values.flatMap(valueSpellings))];
 }
 
 function redactSensitiveFields(value) {

@@ -366,3 +366,36 @@ describe("network export of env-backed and echoed header values", () => {
     expect(har).not.toContain(SITE_KEY);
   });
 });
+
+describe("network export of quoted and escaped header values", () => {
+  // Dummy values, built from parts so no literal here reads as a credential.
+  const TOKEN = ["dummy", "plain", "key", "9"].join("-");
+  const QUOTED = ["dummy", 'quo"ted', "va\\lue", "9"].join("-");
+  const spellings = (value: string) => {
+    const once = JSON.stringify(value).slice(1, -1);
+    return [value, once, JSON.stringify(once).slice(1, -1), encodeURIComponent(value)];
+  };
+
+  it.each([TOKEN, QUOTED])(
+    "redacts a quoted auth parameter (%s) wherever it is echoed",
+    (value) => {
+      const once = JSON.stringify(value).slice(1, -1);
+      const entry = {
+        id: "r-q",
+        method: "GET",
+        url: "https://example.test/api",
+        requestHeaders: { Authorization: `ResyAPI api_key="${once}"` },
+        responseHeaders: { "x-echo": value },
+        responseBody: JSON.stringify({ token: value, nested: JSON.stringify({ token: value }) }),
+        status: 200,
+      };
+      for (const format of ["json", "jsonl", "har"]) {
+        const text = exporter.serializeNetworkExport([entry], format);
+        for (const spelling of spellings(value)) {
+          expect(text, format).not.toContain(spelling);
+        }
+        expect(text, format).not.toContain("dummy");
+      }
+    },
+  );
+});
