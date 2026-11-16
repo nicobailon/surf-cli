@@ -219,8 +219,11 @@ function filterRecords(records, keep) {
   return records.filter((record) => rules.every(([get, value]) => isDeepStrictEqual(get(record), value)));
 }
 
-/** Collects records across pages: dedupes by key (first seen wins), applies `keep` on read. */
-function createRecordSet(spec) {
+/**
+ * Collects records across pages: dedupes by key (first seen wins), applies `keep` on read. Every
+ * page's field match patterns spend from `regexBudget` (an op run's, or a fresh one for the set).
+ */
+function createRecordSet(spec, { regexBudget = extractBudget("run") } = {}) {
   checkKeys(spec, ["find", "key", "fields", "keep"], "records");
   if (spec.find === undefined) throw new Error("records needs find");
   if (spec.key === undefined) throw new Error("records needs key");
@@ -231,7 +234,6 @@ function createRecordSet(spec) {
   const byKey = new Map();
   return {
     add(doc) {
-      const budget = extractBudget();
       let added = 0;
       for (const object of collectMatches(doc, test, [])) {
         const key = getKey(object);
@@ -240,7 +242,7 @@ function createRecordSet(spec) {
         }
         const id = JSON.stringify(key);
         if (byKey.has(id)) continue;
-        byKey.set(id, map(object, budget));
+        byKey.set(id, map(object, regexBudget));
         added++;
       }
       return added;
@@ -278,8 +280,8 @@ function compileJsonPath(source, where) {
   return path ? compilePath(path) : (value) => value;
 }
 
-function extractBudget() {
-  return createRegexBudget({ ms: EXTRACT_REGEX_BUDGET_MS, scope: "extract" });
+function extractBudget(scope = "extract") {
+  return createRegexBudget({ ms: EXTRACT_REGEX_BUDGET_MS, scope });
 }
 
 /**

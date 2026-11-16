@@ -1,7 +1,7 @@
 // Scroll-and-harvest for virtualized lists: read the visible items each round, merge by key on
 // the host (so a page reload does not lose records), stop when scrolling stops adding items.
 
-const { EXTRACT_REGEX_BUDGET_MS, checkPattern, createRegexBudget, finishTabExtract, tabSource } = require("./bounded-regex.cjs");
+const { checkPattern, createFieldRegexBudget, finishTabExtract, tabBudgetSource, tabSource } = require("./bounded-regex.cjs");
 const { assertFieldName, filterRecords } = require("./records.cjs");
 
 const COLLECT_KEYS = ["open", "item", "key", "fields", "maxItems", "idleRounds", "scrollDelayMs", "expand", "keep"];
@@ -123,11 +123,11 @@ const readItem = (item, fields) => {
 `;
 
 // Runs in the page. Reads unseen items, then scrolls the last item to the top for the next round.
-function roundScript(spec, seenKeys) {
+function roundScript(spec, seenKeys, budget) {
   const input = JSON.stringify({ item: spec.item, key: spec.key, fields: spec.fields, expand: spec.expand, seen: seenKeys });
   return `(async () => {
 ${tabSource()}
-const regexBudget = boundedRegex.createRegexBudget({ ms: ${EXTRACT_REGEX_BUDGET_MS}, scope: "extract" });
+${tabBudgetSource(budget)}
 const spec = ${input};
 // Background tabs and minimized windows do not render virtualized lists.
 if (document.visibilityState === "hidden") return { hidden: true };
@@ -252,8 +252,11 @@ function hiddenTabError(what = "collect") {
   );
 }
 
-/** Collects records from a virtualized list. Returns records in first-seen order, deduped by key. */
-async function runCollect({ spec, executeTool, sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms)) }) {
+/**
+ * Collects records from a virtualized list. Returns records in first-seen order, deduped by key.
+ * Every round's field match patterns spend from `regexBudget` (an op run's, or one for the collect).
+ */
+async function runCollect({ spec, executeTool, sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms)), regexBudget = createFieldRegexBudget() }) {
   const options = validateCollectSpec(spec);
   if (options.open) await executeTool("navigate", { url: options.open });
   const visibility = await executeTool("javascript_tool", { code: "document.visibilityState" });
@@ -274,10 +277,8 @@ async function runCollect({ spec, executeTool, sleep = (ms) => new Promise((reso
       );
     }
   };
-  // Patterns a page won't run in a worker run here.
-  const regexBudget = createRegexBudget({ ms: EXTRACT_REGEX_BUDGET_MS, scope: "extract" });
   while (byKey.size < options.maxItems && idle < options.idleRounds) {
-    const round = await finishTabExtract({ result: await runRound(roundScript(options, [...byKey.keys()])), budget: regexBudget, runScript: runRound });
+    const round = await finishTabExtract({ result: await runRound(roundScript(options, [...byKey.keys()], regexBudget)), budget: regexBudget, runScript: runRound });
     if (round?.hidden === true) throw hiddenTabError();
     if (typeof round?.error === "string") throw new Error(`collect round failed: ${round.error}`);
     if (!Array.isArray(round?.records)) throw new Error("collect round returned no records");

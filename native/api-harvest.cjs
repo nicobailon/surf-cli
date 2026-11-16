@@ -534,10 +534,10 @@ async function driveNext(ctx, matches, filter) {
  * The `api` strategy: first matching response, then next pages by `mode` (auto: replay, then
  * drive after the first replay failure). Returns the merged records.
  */
-async function runApiHarvest({ spec, origins = [], onEvent = () => {}, ...options }) {
+async function runApiHarvest({ spec, origins = [], onEvent = () => {}, regexBudget, ...options }) {
   validateApiSpec(spec);
   const ctx = context(options);
-  const records = createRecordSet(spec.records);
+  const records = createRecordSet(spec.records, regexBudget ? { regexBudget } : {});
   const { entry, response } = await waitWith(ctx, spec);
   if (response.json === undefined) throw new Error(`the response matching "${spec.match}" is not JSON`);
   records.add(response.json);

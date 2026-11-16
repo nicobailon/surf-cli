@@ -317,7 +317,7 @@ describe("a JSON extract runs in the tab", () => {
     };
     await expect(
       runJson(body, { records: "$", fields: { id } }, undefined, { clock: step(60) }).run,
-    ).rejects.toThrow("skipped: the extract's 2 s regex budget is spent");
+    ).rejects.toThrow("skipped: the run's 2 s regex budget is spent");
     // A run that never ends is stopped after 100 ms, in the tab's worker or, when the page blocks
     // workers, on the host.
     const never = { fields: { t: { path: "t", match: "(a?){500}b" } } };
@@ -335,6 +335,28 @@ describe("a JSON extract runs in the tab", () => {
       { worker: null },
     ).run;
     expect(handed.value).toEqual([{ id: "0" }, { id: "1" }]);
+  });
+
+  it("shares one 2 s field-regex budget across an op run's strategies", async () => {
+    // 20 records whose match takes 60 ms each on this clock: 1.2 s a strategy. The first fails its
+    // status check, so the second runs on what is left and spends it.
+    const body = JSON.stringify(Array.from({ length: 20 }, (_, index) => ({ id: `id-${index}` })));
+    const ids = { records: "$", fields: { id: { path: "id", match: "id-(\\d+)" } } };
+    let now = 0;
+    const tab = jsonTab(body, undefined, { clock: { now: () => (now += 60) } });
+    const strategy = {
+      using: "network",
+      request: { method: "GET", url: "https://api.test/search" },
+      extract: ids,
+    };
+    const run = runtime.runPlaybookOp({
+      playbook: { id: "fixture", provenance: { scope: "test" } },
+      op: op([{ ...strategy, verify: { status: 201 } }, strategy]),
+      executeTool: tab.executeTool,
+    });
+    await expect(run).rejects.toThrow(
+      "All strategies failed (network: expected status 201; network: skipped: the run's 2 s regex budget is spent)",
+    );
   });
 
   it("says when the response is not JSON", async () => {

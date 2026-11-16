@@ -251,7 +251,48 @@ describe("field match patterns in the tab", () => {
         sleep: async () => undefined,
         spec: rowSpec("#(\\d+)"),
       }),
-    ).rejects.toThrow("collect round failed: skipped: the extract's 2 s regex budget is spent");
+    ).rejects.toThrow("collect round failed: skipped: the run's 2 s regex budget is spent");
+  });
+
+  it("share one 2 s budget across a collect's rounds", async () => {
+    // 20 new rows a round, each run 60 ms on this clock: 1.2 s a round, so the second round spends it.
+    const clock = steppingClock(60);
+    let round = 0;
+    const executeTool = async (tool: string, args: Record<string, unknown>) => {
+      if (tool !== "javascript_tool") {
+        return { success: true };
+      }
+      const code = String(args.code);
+      const first = code.includes("tabExtract") ? 20 * round++ : 0;
+      const rows = Array.from({ length: 20 }, (_, index) => ({
+        tagName: "ARTICLE",
+        getAttribute: (name: string) => (name === "data-id" ? `row-${first + index}` : null),
+        querySelector: (selector: string) =>
+          selector === "h2" ? { innerText: `Item #${first + index}` } : null,
+        querySelectorAll: () => [],
+        scrollIntoView: () => undefined,
+      }));
+      const document = {
+        visibilityState: "visible",
+        querySelectorAll: (selector: string) => (selector === "article" ? rows : []),
+      };
+      const value = await new Function(
+        "document",
+        "window",
+        "performance",
+        "Worker",
+        `return ${code}`,
+      )(document, {}, clock, PageWorker);
+      return { output: JSON.stringify(value, null, 2) };
+    };
+    await expect(
+      collect.runCollect({
+        executeTool,
+        sleep: async () => undefined,
+        spec: { ...rowSpec("#(\\d+)"), maxItems: 60 },
+      }),
+    ).rejects.toThrow("collect round failed: skipped: the run's 2 s regex budget is spent");
+    expect(round).toBe(2);
   });
 
   it("run on the host when the page blocks workers", async () => {

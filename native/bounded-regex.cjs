@@ -33,6 +33,16 @@ function createRegexBudget({ ms, scope }) {
   return { remainingMs: ms, limitMs: ms, scope };
 }
 
+/** A budget for one op run's field match patterns, shared by its strategies, rounds and pages. */
+function createFieldRegexBudget() {
+  return createRegexBudget({ ms: EXTRACT_REGEX_BUDGET_MS, scope: "run" });
+}
+
+/** Page source for `regexBudget`, what is left of `budget`; finishTabExtract charges what the tab spends. */
+function tabBudgetSource(budget) {
+  return `const regexBudget = ${JSON.stringify({ remainingMs: budget.remainingMs, limitMs: budget.limitMs, scope: budget.scope })};`;
+}
+
 /** Refuses a pattern over PATTERN_LIMIT characters or that isn't a valid regex; `label` names it in the error. */
 function checkPattern(pattern, label) {
   if (typeof pattern !== "string") throw new Error(`${label} must be a regex string`);
@@ -284,11 +294,13 @@ async function tabExtract({ extract, budget, onValue, onError }) {
 // --- On the host ----------------------------------------------------------------------------------
 
 /**
- * Completes a tab script's result: when the tab handed its patterns over (regexNeeded), runs them
+ * Completes a tab script's result: charges `budget` with what the tab spent (regexSpentMs) and,
+ * when the tab handed its patterns over (regexNeeded), runs them
  * here, spending from `budget`, and returns what `runScript(code)` gives for the script that
  * finishes the extract in the tab. A pattern that fails here throws.
  */
 async function finishTabExtract({ result, budget, runScript }) {
+  if (typeof result?.regexSpentMs === "number") budget.remainingMs -= result.regexSpentMs;
   if (!result?.regexNeeded) return result;
   const { key, pairs } = result.regexNeeded;
   const matches = pairs.map(({ pattern, text, label }) => boundedExec({ pattern, text, budget, label }));
@@ -321,9 +333,11 @@ module.exports = {
   boundedExec,
   boundedTest,
   checkPattern,
+  createFieldRegexBudget,
   createRegexBudget,
   finishTabExtract,
   isBoundedOut,
+  tabBudgetSource,
   tabExtract,
   tabSource,
 };

@@ -90,12 +90,12 @@ function getJsonPath(value, jsonPath) {
   return current;
 }
 
-function extractResult(result, extract) {
+function extractResult(result, extract, regexBudget) {
   if (!extract) return result;
   // The tab ran the extract and sent back only what it found.
   if (result && typeof result === "object" && Object.hasOwn(result, "extracted")) return result.extracted;
   if (extract.records !== undefined || extract.fields || extract.filter) {
-    return extractRecords(result.bodyJson !== undefined ? result.bodyJson : result, extract);
+    return extractRecords(result.bodyJson !== undefined ? result.bodyJson : result, extract, { regexBudget });
   }
   if (extract.jsonPath) {
     const source = result.bodyJson !== undefined ? result.bodyJson : result;
@@ -165,8 +165,9 @@ function extractsInTab(extract) {
 // Page-side finish(head, run, narrow): runs the extract `run` through boundedRegex.tabExtract and
 // resolves to its result, or an extractError when it fails or would not fit in the tab's output.
 // It can also resolve to regexNeeded (see bounded-regex.cjs), which runTabExtract completes.
-const FINISH_SOURCE = `${boundedRegex.tabSource()}
-const regexBudget = boundedRegex.createRegexBudget({ ms: ${boundedRegex.EXTRACT_REGEX_BUDGET_MS}, scope: "extract" });
+// `regexBudget` is what is left of the op run's field-regex budget.
+const finishSource = (budget) => `${boundedRegex.tabSource()}
+${boundedRegex.tabBudgetSource(budget)}
 const finish = (head, run, narrow) => boundedRegex.tabExtract({
   budget: regexBudget,
   extract: run,
@@ -185,8 +186,7 @@ async function runTabExtract(context, code) {
     if (response?.error) throw new Error(typeof response.error === "string" ? response.error : JSON.stringify(response.error));
     return response?.output !== undefined ? JSON.parse(response.output) : response?.value ?? response;
   };
-  const budget = boundedRegex.createRegexBudget({ ms: boundedRegex.EXTRACT_REGEX_BUDGET_MS, scope: "extract" });
-  const { regexSpentMs: _spent, ...result } = await boundedRegex.finishTabExtract({ result: await runScript(code), budget, runScript });
+  const { regexSpentMs: _spent, ...result } = await boundedRegex.finishTabExtract({ result: await runScript(code), budget: context.fieldRegexBudget, runScript });
   return result;
 }
 
@@ -201,14 +201,14 @@ ${RECORDS_SOURCE}
 return module.exports.extractRecords(json, ${JSON.stringify({ records, fields, filter })});`;
 }
 
-function networkScript(request, allowedOrigins = [], extract) {
+function networkScript(request, allowedOrigins = [], extract, regexBudget = boundedRegex.createFieldRegexBudget()) {
   const html = extract?.html;
   const headers = request.headers || {};
   const query = request.query || {};
   const body = request.body;
   let tail;
   if (html) {
-    tail = `${FINISH_SOURCE}
+    tail = `${finishSource(regexBudget)}
 const doc = new DOMParser().parseFromString(text, "text/html");
 // Relative links resolve against the response URL, not the tab's page.
 const responseUrl = response.url || url.toString();
@@ -221,7 +221,7 @@ else {
 }
 return finish(head, () => ${htmlExtractFunction(html)}(doc), "--item/--field");`;
   } else if (isJsonExtract(extract)) {
-    tail = `${FINISH_SOURCE}
+    tail = `${finishSource(regexBudget)}
 return finish(head, () => {
   let json;
   try {
@@ -304,7 +304,7 @@ async function runStrategy(strategy, context) {
     if (result.status !== "completed") throw new Error(result.error || "workflow strategy failed");
     if (!strategy.extract?.html) return result;
     // The same extraction as the network strategy, on the page the workflow ended on.
-    const code = `(async () => {\n${FINISH_SOURCE}\nreturn finish({}, () => ${htmlExtractFunction(strategy.extract.html)}(document), "--item/--field");\n})()`;
+    const code = `(async () => {\n${finishSource(context.fieldRegexBudget)}\nreturn finish({}, () => ${htmlExtractFunction(strategy.extract.html)}(document), "--item/--field");\n})()`;
     const found = await runTabExtract(context, code);
     if (found?.extractError) throw new Error(found.extractError);
     return { ...result, extracted: found?.extracted };
@@ -327,7 +327,7 @@ async function runStrategy(strategy, context) {
     const inTab = extractsInTab(strategy.extract);
     const capture = inTab ? undefined : await watchCapture({ executeTool: context.executeTool, sleep: context.sleep });
     await context.markDispatched?.();
-    const { requestUrl, sentAt, doneAt, redirected, ...result } = await runTabExtract(context, networkScript(request, context.allowedOrigins, strategy.extract));
+    const { requestUrl, sentAt, doneAt, redirected, ...result } = await runTabExtract(context, networkScript(request, context.allowedOrigins, strategy.extract, context.fieldRegexBudget));
     if (!result?.ok && (strategy.acceptStatus || []).includes(result?.status) === false) throw new Error(`network strategy returned ${result?.status || "an unknown status"}`);
     if (result.extractError) throw new Error(result.extractError);
     if (inTab) return result;
@@ -354,10 +354,11 @@ async function runStrategy(strategy, context) {
         sleep: context.sleep,
         onEvent: context.onEvent,
         origins: context.allowedOrigins,
+        regexBudget: context.fieldRegexBudget,
       });
     }
     const { fields, key, ...rest } = spec;
-    return runCollect({ spec: { ...applyTemplate(rest, context.args), fields, key }, executeTool: context.executeTool, sleep: context.sleep });
+    return runCollect({ spec: { ...applyTemplate(rest, context.args), fields, key }, executeTool: context.executeTool, sleep: context.sleep, regexBudget: context.fieldRegexBudget });
   }
   throw new Error(`unsupported strategy: ${strategy.using}`);
 }
@@ -369,8 +370,10 @@ async function runPlaybookOp({ playbook, op, args: providedArgs = {}, secrets = 
   const authValues = resolveAuthValues(op, secrets, env);
   const run = strategiesToRun(op, forced);
   const assert = assertions ?? op.on?.success?.expect?.assert;
-  // One regex budget for the whole run, shared by every strategy's assertion checks.
+  // One regex budget for the whole run, shared by every strategy's assertion checks, and one for
+  // field match patterns, shared by every strategy, collect round and API page.
   const regexBudget = createRegexBudget();
+  const fieldRegexBudget = boundedRegex.createFieldRegexBudget();
   const attempts = [];
   for (let index = 0; index < run.length; index++) {
     const strategy = run[index];
@@ -392,11 +395,12 @@ async function runPlaybookOp({ playbook, op, args: providedArgs = {}, secrets = 
         onEvent,
         allowedOrigins: op.origins || playbook.origins || [],
         authValues,
+        fieldRegexBudget,
         markDispatched: op.effect === "write" ? markDispatched : undefined,
         serverIdempotency: op.effect === "write" ? op.safety?.serverIdempotency : undefined,
         allowScript,
       });
-      const value = extractResult(raw, strategy.extract);
+      const value = extractResult(raw, strategy.extract, fieldRegexBudget);
       const expect = strategy.verify || strategy.expect || op.on?.success?.expect;
       // Saved assertions hold for every strategy, even one with its own verify.
       const checked = verifyResult(value, assert ? { ...expect, assert } : expect, raw, Object.values(authValues), regexBudget);

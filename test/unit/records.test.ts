@@ -219,4 +219,19 @@ describe("records", () => {
       "fields.x.match must be a regex string",
     );
   });
+
+  it("spends one regex budget across a record set's pages, the one it is given", () => {
+    const budget = { remainingMs: 2000, limitMs: 2000, scope: "run" };
+    const set = records.createRecordSet(
+      { find: { exists: ["id"] }, key: "id", fields: { id: { path: "id", match: "(\\d+)" } } },
+      { regexBudget: budget },
+    );
+    set.add({ id: "p1" });
+    const afterFirst = budget.remainingMs;
+    expect(afterFirst).toBeLessThan(2000);
+    set.add({ id: "p2" });
+    expect(budget.remainingMs).toBeLessThan(afterFirst);
+    budget.remainingMs = 0;
+    expect(() => set.add({ id: "p3" })).toThrow("skipped: the run's 2 s regex budget is spent");
+  });
 });
