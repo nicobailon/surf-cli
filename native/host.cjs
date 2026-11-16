@@ -44,7 +44,7 @@ const { RequestPendingMap } = require("./request-pending.cjs");
 const { PAGE_CHANGES_TOOLS, cleanupFilePaths, createStagingDirectory, createTransferState, materializeRemoteTool, rewriteTransferPaths, streamFileDownload, transferError } = require("./file-transfer.cjs");
 const { writeNetworkExport } = require("./network-export.cjs");
 const networkStore = require("./network-store.cjs");
-const { redactUrlSecrets } = require("./redaction.cjs");
+const { redactUrlSecrets, redactUrlsInText } = require("./redaction.cjs");
 const { appendActivity, journalCommand } = require("./activity-journal.cjs");
 const { checkReceipt, reserveReceipt, updateReceipt } = require("./playbook-receipts.cjs");
 const {
@@ -412,8 +412,9 @@ async function handleApiRequest(msg, sendResponse) {
   }
 }
 
+// A URL in a log line loses its user, password and secret-named query values.
 const log = (msg) => {
-  fs.appendFileSync(LOG_FILE, `${new Date().toISOString()} ${msg}\n`);
+  fs.appendFileSync(LOG_FILE, `${new Date().toISOString()} ${redactUrlsInText(msg)}\n`);
 };
 
 if (require.main === module) {

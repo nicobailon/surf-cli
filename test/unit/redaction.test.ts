@@ -150,3 +150,14 @@ describe("a short env value inside a longer string", () => {
     }
   });
 });
+
+describe("redactUrlsInText", () => {
+  it("redacts every URL in a line and leaves the rest as written", () => {
+    const user = ["dummy", "user"].join("-");
+    const pass = ["dummy", "pw", "12"].join("-");
+    const line = `API_REQUEST: GET https://${user}:${pass}@example.test/a?token=${pass} streamId=7`;
+    expect(redaction.redactUrlsInText(line)).toBe(
+      "API_REQUEST: GET https://example.test/a?token=%3Credacted%3E streamId=7",
+    );
+  });
+});

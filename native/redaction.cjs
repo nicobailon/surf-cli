@@ -113,6 +113,11 @@ function redactUrlSecrets(url) {
   return absolute ? parsed.toString() : `${parsed.pathname}${parsed.search}${parsed.hash}`;
 }
 
+// redactUrlSecrets over every absolute URL in free text, such as a log line.
+function redactUrlsInText(text) {
+  return String(text).replace(/\b[a-zA-Z][a-zA-Z0-9+.-]*:\/\/[^\s"'<>`]+/g, (url) => redactUrlSecrets(url));
+}
+
 // Walks `value` in order with its own stack, so JSON nested any depth is checked.
 function assertNoEmbeddedSecrets(value, key = "value") {
   const stack = [{ value, key }];
@@ -159,6 +164,7 @@ module.exports = {
   redactObject,
   redactSensitiveFields,
   redactUrlSecrets,
+  redactUrlsInText,
   redactValues,
   safeHeaders,
   secretHeaderValues,

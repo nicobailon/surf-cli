@@ -1940,6 +1940,31 @@ describe("native host protocol integration", () => {
     expect(written).not.toContain(siteKey);
   });
 
+  it("logs an API request's URL without its password or secret query values", async () => {
+    // Dummy credentials, built from parts so no literal here reads as one.
+    const password = ["dummy", "log", "pw", "11"].join("-");
+    const token = ["dummy", "log", "tok", "11"].join("-");
+    const surfTmp = fs.mkdtempSync(path.join(os.tmpdir(), "surf-host-log-"));
+    tempDirs.push(surfTmp);
+    const host = await startHostHarness({ SURF_TMP: surfTmp });
+    host.send({
+      type: "API_REQUEST",
+      streamId: "log-redaction",
+      method: "GET",
+      // Port 1 refuses the connection, so the request fails fast and logs its error too.
+      url: `https://dummy-user:${password}@127.0.0.1:1/v1?access_token=${token}&page=2`,
+    });
+    await host.waitForMessage(
+      (message) => message.type === "API_RESPONSE_ERROR" && message.streamId === "log-redaction",
+      "API_RESPONSE_ERROR",
+    );
+    const logged = fs.readFileSync(path.join(surfTmp, "surf-host.log"), "utf8");
+    expect(logged).toContain("API_REQUEST: GET https://127.0.0.1:1/v1?access_token=");
+    expect(logged).not.toContain(password);
+    expect(logged).not.toContain(token);
+    expect(logged).not.toContain("dummy-user");
+  });
+
   it("transfers successful remote auto-screenshots without inline image data", async () => {
     const reservation = net.createServer();
     await new Promise<void>((resolve) => reservation.listen(0, "127.0.0.1", resolve));
