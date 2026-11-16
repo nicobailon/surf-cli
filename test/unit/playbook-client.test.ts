@@ -424,6 +424,26 @@ describe("clients from parameterised ops", () => {
     ]);
   });
 
+  it("verifies an op whose string default starts with --", async () => {
+    const cwd = writeOp({
+      id: "sorted",
+      effect: "read",
+      args: { order: { type: "string", default: "--submitted" } },
+      run: [
+        {
+          using: "network",
+          request: { method: "GET", url: "https://books.test/list", query: { order: "{{order}}" } },
+        },
+      ],
+    });
+    const out = path.join(cwd, "client");
+    clients.exportClient("books", "sorted", out, { cwd });
+    await expect(clients.verifyClient(out, { live: false })).resolves.toMatchObject({
+      valid: true,
+      execution: { requests: 1 },
+    });
+  });
+
   it("redacts its env-supplied header values from stdout and errors", async () => {
     const cwd = writeOp({
       id: "echo",

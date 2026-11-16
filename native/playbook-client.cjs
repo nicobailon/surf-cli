@@ -252,13 +252,14 @@ function sampleArgs(manifest) {
   return Object.fromEntries([...collectTemplateArgs(manifest.endpoint)].map((name) => [name, specs[name]?.default ?? samples[specs[name]?.type] ?? "verify"]));
 }
 
-// Clients made before parseClientArgs read `--name ""` as true, so an empty value is left out for
-// them and the client takes it from its default.
+// Values go as --name=value, so one starting with -- stays a value. Clients made before
+// parseClientArgs take neither that form nor `--name ""`, so they get --name value, with empty
+// values left out for the client to take from its defaults.
 function clientArgs(manifest, source) {
-  const takesEmpty = source.includes("function parseClientArgs(");
+  const current = source.includes("function parseClientArgs(");
   return Object.entries(sampleArgs(manifest))
-    .filter(([, value]) => takesEmpty || String(value) !== "")
-    .flatMap(([name, value]) => [`--${name}`, String(value)]);
+    .filter(([, value]) => current || String(value) !== "")
+    .flatMap(([name, value]) => (current ? [`--${name}=${value}`] : [`--${name}`, String(value)]));
 }
 
 function authEnv(manifest, live) {
