@@ -100,10 +100,10 @@ function describeActual(found) {
   return found;
 }
 
-/** Every key and string or number leaf of a value, numbers as text. */
+/** Every key and leaf of a value, numbers, booleans and null as their text (an env value can read "true"). */
 function valueTexts(value, out = []) {
   if (typeof value === "string") out.push(value);
-  else if (typeof value === "number") out.push(String(value));
+  else if (typeof value === "number" || typeof value === "boolean" || value === null) out.push(String(value));
   else if (Array.isArray(value)) for (const item of value) valueTexts(item, out);
   else if (value && typeof value === "object") {
     for (const [key, item] of Object.entries(value)) {
