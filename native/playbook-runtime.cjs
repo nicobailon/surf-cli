@@ -9,6 +9,7 @@ const { GLOBAL_OPTIONS } = require("./global-options.cjs");
 const { renderRequest, resolveArgValues } = require("./playbook-template.cjs");
 const { checkAssertions, createRegexBudget, describeAssertion } = require("./playbook-assertions.cjs");
 const { redactObject } = require("./redaction.cjs");
+const { tabSource } = require("./bounded-regex.cjs");
 const { extractRecords } = require("./records.cjs");
 
 function applyTemplate(value, args) {
@@ -147,7 +148,8 @@ function withServerIdempotency(request, idempotency, attemptId) {
 // The tab's script output is pretty-printed JSON cut at 50,000 characters
 // (src/service-worker/index.ts), so an extract runs in the tab and only its result comes back.
 const TAB_OUTPUT_LIMIT = 50000;
-// records.cjs runs in the tab as a module; its node:util import serves only api record sets.
+// records.cjs runs in the tab as a module; its node:util import serves only api record sets, and
+// bounded-regex.cjs runs its field match patterns.
 const RECORDS_SOURCE = fs.readFileSync(path.join(__dirname, "records.cjs"), "utf8");
 
 function isJsonExtract(extract) {
@@ -177,8 +179,9 @@ const FINISH_SOURCE = `const finish = (head, run, narrow) => {
 function jsonExtractSource(extract) {
   if (extract.jsonPath) return `${getJsonPath.toString()}\nreturn getJsonPath(json, ${JSON.stringify(extract.jsonPath)});`;
   const { records, fields, filter } = extract;
-  return `const module = { exports: {} };
-const require = () => ({ isDeepStrictEqual: () => { throw new Error("isDeepStrictEqual is not available in the tab"); } });
+  return `${tabSource()}
+const module = { exports: {} };
+const require = (name) => name === "./bounded-regex.cjs" ? boundedRegex : { isDeepStrictEqual: () => { throw new Error("isDeepStrictEqual is not available in the tab"); } };
 (function (module, exports, require) {
 ${RECORDS_SOURCE}
 })(module, module.exports, require);

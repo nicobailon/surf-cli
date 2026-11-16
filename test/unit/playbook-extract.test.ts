@@ -217,7 +217,11 @@ describe("extracting records from JSON", () => {
  * A tab whose network strategy answers `body`, with the service worker's output handling: the
  * script's value pretty-printed and cut at 50,000 characters.
  */
-function jsonTab(body: string, contentType = "application/json") {
+function jsonTab(
+  body: string,
+  contentType = "application/json",
+  clock: { now: () => number } = performance,
+) {
   const outputs: Record<string, unknown>[] = [];
   const executeTool = async (_tool: string, args: { code: string }) => {
     const fetchImpl = async (url: string) => ({
@@ -227,9 +231,11 @@ function jsonTab(body: string, contentType = "application/json") {
       headers: new Headers({ "content-type": contentType }),
       text: async () => body,
     });
-    const value = await new Function("fetch", "location", `return ${args.code}`)(fetchImpl, {
-      href: "https://api.test/",
-    });
+    const value = await new Function("fetch", "location", "performance", `return ${args.code}`)(
+      fetchImpl,
+      { href: "https://api.test/" },
+      clock,
+    );
     outputs.push(value);
     return { output: JSON.stringify(value, null, 2).substring(0, 50000) };
   };
@@ -242,8 +248,13 @@ const hits = Array.from({ length: 400 }, (_, index) => ({
 }));
 const largeBody = JSON.stringify({ hits, meta: { total: 400 } });
 
-function runJson(body: string, spec: Record<string, unknown>, contentType?: string) {
-  const tab = jsonTab(body, contentType);
+function runJson(
+  body: string,
+  spec: Record<string, unknown>,
+  contentType?: string,
+  clock?: { now: () => number },
+) {
+  const tab = jsonTab(body, contentType, clock);
   const run = runtime.runPlaybookOp({
     playbook: { id: "fixture", provenance: { scope: "test" } },
     op: op([
@@ -279,6 +290,32 @@ describe("a JSON extract runs in the tab", () => {
     await expect(run).rejects.toThrow(
       /extracted result is \d+ characters; narrow --records\/--field/,
     );
+  });
+
+  it("bounds field match patterns in the tab: 64 KB of text, a 2 s budget, 100 ms a run", async () => {
+    const items = Array.from({ length: 50 }, (_, index) => ({
+      id: `id-${index}`,
+      t: `${"a".repeat(70000)}x`,
+    }));
+    const body = JSON.stringify(items);
+    const id = { path: "id", match: "id-(\\d+)" };
+    const end = { path: "t", match: "x$" };
+    const small = await runJson(JSON.stringify(items.slice(0, 2)), {
+      records: "$",
+      fields: { id, end },
+    }).run;
+    expect(small.value).toEqual([{ id: "0" }, { id: "1" }]);
+    // On a clock where each run takes 60 ms, the 34th run spends the budget.
+    const step = (ms: number) => {
+      let now = 0;
+      return { now: () => (now += ms) };
+    };
+    await expect(
+      runJson(body, { records: "$", fields: { id } }, undefined, step(60)).run,
+    ).rejects.toThrow("skipped: the extract's 2 s regex budget is spent");
+    await expect(
+      runJson(body, { records: "$", fields: { id } }, undefined, step(150)).run,
+    ).rejects.toThrow("fields.id.match pattern took too long (over 100 ms); simplify it");
   });
 
   it("says when the response is not JSON", async () => {
@@ -440,6 +477,36 @@ describe("validating an op's extract", () => {
         },
       }),
     ).not.toThrow();
+  });
+
+  it("refuses a field match over 500 characters on every kind of op extract", () => {
+    const long = "a".repeat(501);
+    expect(() => validate({ extract: { fields: { id: { path: "id", match: long } } } })).toThrow(
+      "op get_books extract: fields.id.match is 501 characters; the limit is 500",
+    );
+    expect(() =>
+      validate({
+        extract: { html: { item: "li", fields: { id: { selector: "a", match: long } } } },
+      }),
+    ).toThrow("op get_books extract: html field id.match is 501 characters; the limit is 500");
+    expect(() => validate({ extract: { fields: { id: { path: "id", match: "(" } } } })).toThrow(
+      /fields\.id\.match is not a valid regex/,
+    );
+    const strategy = (using: string, fields: Record<string, unknown>) =>
+      playbooks.validateOp(
+        op([
+          using === "api"
+            ? { using, match: "/api/*", records: { find: { exists: ["id"] }, key: "id", fields } }
+            : { using, item: "li", key: ":scope@data-id", fields },
+        ]),
+        { origins: [] },
+      );
+    expect(() => strategy("api", { id: { path: "id", match: long } })).toThrow(
+      "op get_books api strategy: records.fields.id.match is 501 characters; the limit is 500",
+    );
+    expect(() => strategy("collect", { id: { selector: "a", match: long } })).toThrow(
+      "op get_books collect strategy: collect field id.match is 501 characters; the limit is 500",
+    );
   });
 
   it("rejects malformed selectors, paths and mixes", () => {
@@ -666,6 +733,15 @@ describe("surf pb extract", () => {
         home,
       }),
     ).toThrow(/unbalanced selector/);
+    expect(() =>
+      extract.saveExtract({
+        playbook: "books",
+        op: "get_books",
+        extract: { records: "$.items", fields: { id: { path: "id", match: "a".repeat(501) } } },
+        cwd,
+        home,
+      }),
+    ).toThrow(/fields\.id\.match is 501 characters; the limit is 500/);
     expect(fs.readFileSync(file, "utf8")).toBe(before);
     expect(() =>
       extract.saveExtract({ playbook: "x", op: "thread", extract: htmlExtract, cwd, home }),
@@ -685,7 +761,11 @@ describe("generated clients and extract", () => {
         request: { method: "GET", url: "https://api.lever.test/v0/postings/acme" },
         extract: {
           records: "$",
-          fields: { title: "text", team: "categories.team" },
+          fields: {
+            title: "text",
+            team: "categories.team",
+            code: { path: "id", match: "^lv-(\\d+)$" },
+          },
           filter: { workplaceType: "remote" },
         },
       },
@@ -699,7 +779,7 @@ describe("generated clients and extract", () => {
       response.writeHead(200, { "content-type": "application/json" });
       response.end(
         JSON.stringify([
-          { text: "Engineer", categories: { team: "Dev" }, workplaceType: "remote" },
+          { text: "Engineer", categories: { team: "Dev" }, workplaceType: "remote", id: "lv-7" },
           { text: "Designer", categories: { team: "Design" }, workplaceType: "onsite" },
         ]),
       );
@@ -720,7 +800,8 @@ describe("generated clients and extract", () => {
           (error: Error | null, output: string) => (error ? reject(error) : resolve(output)),
         ),
       );
-      expect(JSON.parse(stdout)).toEqual([{ title: "Engineer", team: "Dev" }]);
+      // The match runs through bounded-regex.cjs, copied next to records.cjs.
+      expect(JSON.parse(stdout)).toEqual([{ title: "Engineer", team: "Dev", code: "7" }]);
     } finally {
       await new Promise((resolve) => server.close(resolve));
     }

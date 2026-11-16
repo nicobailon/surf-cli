@@ -1,6 +1,7 @@
 // Scroll-and-harvest for virtualized lists: read the visible items each round, merge by key on
 // the host (so a page reload does not lose records), stop when scrolling stops adding items.
 
+const { EXTRACT_REGEX_BUDGET_MS, checkPattern, tabSource } = require("./bounded-regex.cjs");
 const { assertFieldName, filterRecords } = require("./records.cjs");
 
 const COLLECT_KEYS = ["open", "item", "key", "fields", "maxItems", "idleRounds", "scrollDelayMs", "expand", "keep"];
@@ -33,14 +34,7 @@ function parseDomField(spec, where) {
   if (typeof spec.selector !== "string" || !spec.selector.trim()) throw new Error(`${where} needs a selector`);
   if (spec.attr !== undefined && (typeof spec.attr !== "string" || !spec.attr)) throw new Error(`${where}.attr must be a string`);
   if (spec.all !== undefined && typeof spec.all !== "boolean") throw new Error(`${where}.all must be a boolean`);
-  if (spec.match !== undefined) {
-    if (typeof spec.match !== "string") throw new Error(`${where}.match must be a regex string`);
-    try {
-      new RegExp(spec.match);
-    } catch (error) {
-      throw new Error(`${where}.match is not a valid regex: ${error.message}`);
-    }
-  }
+  if (spec.match !== undefined) checkPattern(spec.match, `${where}.match`);
   return { ...spec };
 }
 
@@ -78,7 +72,10 @@ function validateCollectSpec(spec) {
 }
 
 // Page-side helpers shared by collect and playbook HTML extraction. The script defines `textOf`.
-const PICK_SOURCE = `// Dotted field names ("quoted.text") build nested objects.
+// One script run (a collect round, or an extract) is one extract for the regex budget.
+const PICK_SOURCE = `${tabSource()}
+const regexBudget = boundedRegex.createRegexBudget({ ms: ${EXTRACT_REGEX_BUDGET_MS}, scope: "extract" });
+// Dotted field names ("quoted.text") build nested objects.
 const assign = (record, name, value) => {
   if (value === undefined) return;
   const parts = name.split(".");
@@ -86,7 +83,8 @@ const assign = (record, name, value) => {
   for (const part of parts.slice(0, -1)) node = node[part] ??= {};
   node[parts[parts.length - 1]] = value;
 };
-const pick = (item, field, record) => {
+// \`where\` names the field in a match pattern's error.
+const pick = (item, field, record, where) => {
   if (field.template !== undefined) {
     let missing = false;
     const text = field.template.replace(/\\{\\{([a-zA-Z0-9._-]+)\\}\\}/g, (_, name) => {
@@ -104,7 +102,7 @@ const pick = (item, field, record) => {
   };
   const apply = (value) => {
     if (!field.match || typeof value !== "string") return value;
-    const found = value.match(new RegExp(field.match));
+    const found = boundedRegex.boundedExec({ pattern: field.match, text: value, budget: regexBudget, label: \`\${where} match\` });
     return found ? (found.length > 1 ? found[1] : found[0]) : undefined;
   };
   if (field.all) {
@@ -119,9 +117,9 @@ const readItem = (item, fields) => {
   const templates = [];
   for (const [name, field] of Object.entries(fields)) {
     if (field.template !== undefined) templates.push([name, field]);
-    else assign(record, name, pick(item, field, record));
+    else assign(record, name, pick(item, field, record, \`field \${name}\`));
   }
-  for (const [name, field] of templates) assign(record, name, pick(item, field, record));
+  for (const [name, field] of templates) assign(record, name, pick(item, field, record, \`field \${name}\`));
   return record;
 };
 `;
@@ -154,14 +152,18 @@ ${PICK_SOURCE}if (spec.expand) {
 }
 const items = [...document.querySelectorAll(spec.item)];
 const records = [];
-for (const item of items) {
-  const record = readItem(item, spec.fields);
-  const key = pick(item, spec.key, record);
-  if (key === undefined || key === null || key === "") continue;
-  const id = JSON.stringify(key);
-  if (seen.has(id)) continue;
-  seen.add(id);
-  records.push({ id, record });
+try {
+  for (const item of items) {
+    const record = readItem(item, spec.fields);
+    const key = pick(item, spec.key, record, "key");
+    if (key === undefined || key === null || key === "") continue;
+    const id = JSON.stringify(key);
+    if (seen.has(id)) continue;
+    seen.add(id);
+    records.push({ id, record });
+  }
+} catch (error) {
+  return { error: error.message };
 }
 if (items.length) items[items.length - 1].scrollIntoView({ block: "start" });
 else window.scrollBy(0, window.innerHeight);
@@ -229,7 +231,7 @@ ${PICK_SOURCE}const check = (where, field) => {
 };
 if (spec.value) {
   check("value", spec.value);
-  return pick(doc, spec.value, {}) ?? null;
+  return pick(doc, spec.value, {}, "value") ?? null;
 }
 check("item", { selector: spec.item });
 for (const [name, field] of Object.entries(spec.fields)) check(\`field \${name}\`, field);
@@ -268,6 +270,7 @@ async function runCollect({ spec, executeTool, sleep = (ms) => new Promise((reso
       );
     }
     if (round?.hidden === true) throw hiddenTabError();
+    if (typeof round?.error === "string") throw new Error(`collect round failed: ${round.error}`);
     if (!Array.isArray(round?.records)) throw new Error("collect round returned no records");
     let added = 0;
     for (const { id, record } of round.records) {

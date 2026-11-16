@@ -139,6 +139,7 @@ describe("a client for an op with inputs, an env header and a JSON extract", () 
     });
     expect(manifest.args).toEqual(op.args);
     expect(fs.readdirSync(out).sort()).toEqual([
+      "bounded-regex.cjs",
       "client.mjs",
       "package.json",
       "records.cjs",

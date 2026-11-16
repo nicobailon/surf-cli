@@ -92,4 +92,116 @@ describe("dom collect", () => {
       /at least one field/,
     );
   });
+
+  it("refuses a field match over 500 characters or that is not a regex", () => {
+    const withMatch = (match: string) => ({
+      ...spec,
+      fields: { title: { selector: "h2", match } },
+    });
+    expect(() => collect.validateCollectSpec(withMatch("a".repeat(501)))).toThrow(
+      "collect field title.match is 501 characters; the limit is 500",
+    );
+    expect(() => collect.validateCollectSpec(withMatch("a".repeat(500)))).not.toThrow();
+    expect(() => collect.validateCollectSpec(withMatch("("))).toThrow(
+      /collect field title\.match is not a valid regex/,
+    );
+    expect(() =>
+      collect.parseHtmlExtract({
+        item: "li",
+        fields: { x: { selector: "a", match: "b".repeat(501) } },
+      }),
+    ).toThrow("html field x.match is 501 characters; the limit is 500");
+  });
+});
+
+/** A clock for the tab's performance.now() that moves `stepMs` on every read, so each regex run takes stepMs. */
+function steppingClock(stepMs: number) {
+  let now = 0;
+  return { now: () => (now += stepMs) };
+}
+
+/** Items whose `h2` text is `texts[i]`, for an extract.html function. */
+function listDocument(texts: string[]) {
+  const items = texts.map((text) => ({
+    querySelector: (selector: string) => (selector === "h2" ? { textContent: text } : null),
+    querySelectorAll: () => [],
+  }));
+  return {
+    querySelector: () => null,
+    querySelectorAll: (selector: string) => (selector === "li" ? items : []),
+  };
+}
+
+function runHtmlExtract(html: unknown, texts: string[], clock = steppingClock(0)) {
+  const extract = new Function("performance", `return ${collect.htmlExtractFunction(html)}`)(clock);
+  return extract(listDocument(texts));
+}
+
+describe("field match patterns in the tab", () => {
+  const html = { item: "li", fields: { id: { selector: "h2", match: "#(\\d+)" } } };
+
+  it("keep their capture group", () => {
+    expect(runHtmlExtract(html, ["post #12", "post #7", "none"])).toEqual([
+      { id: "12" },
+      { id: "7" },
+      {},
+    ]);
+  });
+
+  it("test only the first 64 KB of an element's text", () => {
+    const tail = { item: "li", fields: { end: { selector: "h2", match: "x$" } } };
+    expect(runHtmlExtract(tail, [`${"a".repeat(70000)}x`, "ax"])).toEqual([{}, { end: "x" }]);
+  });
+
+  it("stop an extract once its regex runs have spent the 2 s budget", () => {
+    // Each run takes 60 ms on this clock: under the 100 ms limit, but 34 of them spend the budget.
+    const texts = Array.from({ length: 50 }, (_, index) => `post #${index}`);
+    expect(runHtmlExtract(html, texts.slice(0, 30), steppingClock(60))).toHaveLength(30);
+    expect(() => runHtmlExtract(html, texts, steppingClock(60))).toThrow(
+      "skipped: the extract's 2 s regex budget is spent",
+    );
+  });
+
+  it("stop an extract at the first run over 100 ms", () => {
+    // A run in the tab can't be interrupted, so it is stopped once it returns.
+    expect(() => runHtmlExtract(html, ["post #1", "post #2"], steppingClock(150))).toThrow(
+      "field id match pattern took too long (over 100 ms); simplify it",
+    );
+  });
+
+  it("fail a collect round with the pattern's error", async () => {
+    const rows = Array.from({ length: 50 }, (_, n) => ({
+      tagName: "ARTICLE",
+      getAttribute: (name: string) => (name === "data-id" ? `row-${n}` : null),
+      querySelector: (selector: string) => (selector === "h2" ? { innerText: `Item #${n}` } : null),
+      querySelectorAll: () => [],
+      scrollIntoView: () => undefined,
+    }));
+    const document = {
+      visibilityState: "visible",
+      querySelectorAll: (selector: string) => (selector === "article" ? rows : []),
+    };
+    const executeTool = async (tool: string, args: Record<string, unknown>) => {
+      if (tool !== "javascript_tool") {
+        return { success: true };
+      }
+      const value = await new Function("document", "window", "performance", `return ${args.code}`)(
+        document,
+        {},
+        steppingClock(60),
+      );
+      return { output: JSON.stringify(value, null, 2) };
+    };
+    await expect(
+      collect.runCollect({
+        executeTool,
+        sleep: async () => undefined,
+        spec: {
+          item: "article",
+          key: ":scope@data-id",
+          fields: { n: { selector: "h2", match: "#(\\d+)" } },
+        },
+      }),
+    ).rejects.toThrow("collect round failed: skipped: the extract's 2 s regex budget is spent");
+  });
 });

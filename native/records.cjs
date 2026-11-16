@@ -1,6 +1,8 @@
 // Maps third-party JSON into records. Missing data reads as undefined; malformed specs throw.
 
 const { isDeepStrictEqual } = require("node:util");
+// Field match patterns come from op files: each run is bounded, and one extract's runs share a budget.
+const { EXTRACT_REGEX_BUDGET_MS, boundedExec, checkPattern, createRegexBudget } = require("./bounded-regex.cjs");
 
 const SEGMENT = /^([^[\]\s?*]*)((?:\[(?:\d+|\*)\])*)$/;
 const TEMPLATE_NAME = /\{\{([a-zA-Z0-9._-]+)\}\}/g;
@@ -159,29 +161,24 @@ function compileField(spec, where) {
   const get = compilePath(spec.path);
   let read = get;
   if (spec.match !== undefined) {
-    if (typeof spec.match !== "string") throw new Error(`${where}.match must be a regex string`);
-    let regex;
-    try {
-      regex = new RegExp(spec.match);
-    } catch (error) {
-      throw new Error(`${where}.match is not a valid regex: ${error.message}`);
-    }
-    read = (object) => {
+    const label = `${where}.match`;
+    checkPattern(spec.match, label);
+    read = (object, budget) => {
       const value = get(object);
-      const found = typeof value === "string" ? value.match(regex) : null;
+      const found = typeof value === "string" ? boundedExec({ pattern: spec.match, text: value, budget, label }) : null;
       if (!found) return undefined;
       return found.length > 1 ? found[1] : found[0];
     };
   }
   if (spec.fields !== undefined) {
     const map = compileFields(spec.fields, `${where}.fields`);
-    return (object) => {
+    return (object, budget) => {
       const value = get(object);
-      if (Array.isArray(value)) return value.filter(isPlainObject).map(map);
-      return isPlainObject(value) ? map(value) : undefined;
+      if (Array.isArray(value)) return value.filter(isPlainObject).map((item) => map(item, budget));
+      return isPlainObject(value) ? map(value, budget) : undefined;
     };
   }
-  return spec.as === undefined ? read : (object) => toDatetime(read(object));
+  return spec.as === undefined ? read : (object, budget) => toDatetime(read(object, budget));
 }
 
 function compileFields(fields, where) {
@@ -197,10 +194,10 @@ function compileFields(fields, where) {
       paths.push([name, compileField(spec, `${where}.${name}`)]);
     }
   }
-  return (object) => {
+  return (object, budget) => {
     const record = {};
     for (const [name, get] of paths) {
-      const value = get(object);
+      const value = get(object, budget);
       if (value !== undefined) record[name] = value;
     }
     for (const [name, render] of templates) {
@@ -234,6 +231,7 @@ function createRecordSet(spec) {
   const byKey = new Map();
   return {
     add(doc) {
+      const budget = extractBudget();
       let added = 0;
       for (const object of collectMatches(doc, test, [])) {
         const key = getKey(object);
@@ -242,7 +240,7 @@ function createRecordSet(spec) {
         }
         const id = JSON.stringify(key);
         if (byKey.has(id)) continue;
-        byKey.set(id, map(object));
+        byKey.set(id, map(object, budget));
         added++;
       }
       return added;
@@ -280,10 +278,15 @@ function compileJsonPath(source, where) {
   return path ? compilePath(path) : (value) => value;
 }
 
+function extractBudget() {
+  return createRegexBudget({ ms: EXTRACT_REGEX_BUDGET_MS, scope: "extract" });
+}
+
 /**
  * A playbook extract over JSON: `records` picks the array, `filter` keeps records whose path equals
  * a value (compared as text), `fields` maps output names to paths. Without `records`, `fields` maps
- * the whole document. Malformed specs throw when compiled.
+ * the whole document. Malformed specs throw when compiled. A call's field match patterns share
+ * `regexBudget`, a fresh 2 s one when not given.
  */
 function compileJsonExtract({ records, fields, filter }) {
   const getRecords = records === undefined ? undefined : compileJsonPath(records, "records");
@@ -293,7 +296,8 @@ function compileJsonExtract({ records, fields, filter }) {
     if (!isPlainObject(filter) || Object.keys(filter).length === 0) throw new Error("filter must map a path to a value");
     rules = Object.entries(filter).map(([path, value]) => [compilePath(path), String(value)]);
   }
-  return (doc) => {
+  return (doc, { regexBudget = extractBudget() } = {}) => {
+    const mapRecord = (record) => map(record, regexBudget);
     let value = doc;
     if (getRecords) {
       value = getRecords(doc);
@@ -307,13 +311,13 @@ function compileJsonExtract({ records, fields, filter }) {
       }));
     }
     if (!map) return value;
-    if (Array.isArray(value)) return value.map((record) => (isPlainObject(record) ? map(record) : record));
-    return isPlainObject(value) ? map(value) : value;
+    if (Array.isArray(value)) return value.map((record) => (isPlainObject(record) ? mapRecord(record) : record));
+    return isPlainObject(value) ? mapRecord(value) : value;
   };
 }
 
-function extractRecords(doc, spec) {
-  return compileJsonExtract(spec)(doc);
+function extractRecords(doc, spec, options) {
+  return compileJsonExtract(spec)(doc, options);
 }
 
 module.exports = { assertFieldName, compileJsonExtract, compileJsonPath, createRecordSet, extractRecords, filterRecords, findObjects, getPath, readCursor };
