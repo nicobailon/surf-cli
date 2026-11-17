@@ -1071,6 +1071,33 @@ describe("native host installer", () => {
     expect(fs.readFileSync(wrapperPath, "utf8")).not.toContain("SURF_FFMPEG");
   });
 
+  // A relative pin runs from the folder the refresh runs in, but the browser starts the host elsewhere.
+  it("--refresh drops a relative SURF_FFMPEG pin", ({ skip }) => {
+    if (process.platform !== "darwin") {
+      skip();
+      return;
+    }
+    const home = makeTempDir();
+    const binDir = path.join(home, "bin");
+    fs.mkdirSync(binDir, { recursive: true });
+    fs.writeFileSync(path.join(binDir, "ffmpeg"), "#!/bin/sh\nexit 0\n");
+    fs.chmodSync(path.join(binDir, "ffmpeg"), 0o755);
+    const run = (...args: string[]) =>
+      spawnSync(process.execPath, [path.resolve("scripts/install-native-host.cjs"), ...args], {
+        cwd: binDir,
+        encoding: "utf8",
+        env: { ...installEnv(home), PATH: "/usr/bin:/bin:/usr/sbin:/sbin", SURF_FFMPEG: undefined },
+      });
+    const wrapperPath = path.join(home, "Library/Application Support/surf-cli/host-wrapper.sh");
+
+    expect(run(extensionA).status).toBe(0);
+    fs.appendFileSync(wrapperPath, "export SURF_FFMPEG='ffmpeg'\n");
+    const refreshed = run("--refresh");
+    expect(refreshed.stderr).toBe("");
+    expect(refreshed.status).toBe(0);
+    expect(fs.readFileSync(wrapperPath, "utf8")).not.toContain("SURF_FFMPEG");
+  });
+
   describe("agent skill links", () => {
     const skillDir = path.resolve("skills/surf");
 

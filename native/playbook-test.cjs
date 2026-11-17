@@ -6,10 +6,10 @@ const { authInputs, resolveArgs } = require("./playbook-runtime.cjs");
 const { editSavedOp, resolveEditablePlaybook, resolveOp } = require("./playbooks.cjs");
 
 const USAGE =
-  "Usage: surf pb test <playbook> <op> [--args <json> | --<input> <value>...] [--assert <path> <op> [value]]... [--strategy <using>] [--save] [--write] [--json]";
+  "Usage: surf pb test <playbook> <op> [--args <json> | --<input> <value>...] [--assert <path> <op> [value]]... [--strategy <using>] [--save] [--write [--repeat]] [--json]";
 const VALUE_OPS = new Set(["equals", "array_min_len", "matches"]);
 // Options of pb test itself; any other --name is an op input, as with surf use.
-const FLAGS = new Set(["json", "save", "write", "allow-script", "no-wait", "pin-built-in"]);
+const FLAGS = new Set(["json", "save", "write", "repeat", "allow-script", "no-wait", "pin-built-in"]);
 const OPTIONS = new Set(["strategy", "args", "session", "tab-id"]);
 
 function assertValue(op, text) {
@@ -181,6 +181,7 @@ async function runPlaybookTest({ argv, cwd = process.cwd(), home, env = process.
       ...(spec.assertions ? { assert: spec.assertions } : {}),
       ...(options.strategy ? { strategy: options.strategy } : {}),
       write: options.write === true,
+      ...(options.repeat ? { repeat: true } : {}),
       allowScript: options.allowScript === true,
     });
   } catch (error) {

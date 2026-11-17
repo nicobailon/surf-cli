@@ -1284,10 +1284,10 @@ describe("CLI/native-host/fake-extension E2E contract", () => {
     }
   }, 60000);
 
-  // A recorded write whose one step types the value it sends: that step's input is its one input.
-  // pb param on the masked number gives the request and the step one input, so the step's own
-  // input goes, though a draft's check still names it: a check is never filled or sent. The op
-  // keeps no key, so the duplicate claim is every input: the same year is blocked, a new one sent.
+  // A recorded write whose one step types the value it sends, masked as a number: the request
+  // doesn't send the step's input, so the op saves without it, though a draft's check names it: a
+  // check is never filled or sent. pb param on the masked number gives the op one input, and no
+  // key, so the duplicate claim is every input: the same year is blocked, a new one sent.
   it("keys a recorded write on the input it sends after pb param, not one only its check names", async () => {
     const socketPath = createSocketPath();
     const project = fs.mkdtempSync(path.join(os.tmpdir(), "surf-record-check-key-"));
@@ -1324,7 +1324,7 @@ describe("CLI/native-host/fake-extension E2E contract", () => {
       const saved = await cli(["pb", "save", "--from-record", record.id, "--project", "--json"]);
       expect(saved).toMatchObject({ code: 0, stderr: "" });
       expect(savedOp().safety.key).toBeUndefined();
-      expect(Object.keys(savedOp().args)).toEqual(["text"]);
+      expect(savedOp().args).toEqual({});
 
       const param = await cli([
         "pb",
@@ -1404,7 +1404,7 @@ describe("CLI/native-host/fake-extension E2E contract", () => {
           (await cli(["pb", "save", "--from-record", record.id, "--project", "--json"])).code,
         ).toBe(0);
         const saved = JSON.parse(fs.readFileSync(file, "utf8"));
-        expect(Object.keys(saved.args)).toEqual(["text"]);
+        expect(saved.args).toEqual({});
         Object.assign(saved.run[0].request, unsent);
         fs.writeFileSync(file, JSON.stringify(saved));
         const param = await cli([
@@ -2895,15 +2895,8 @@ describe("CLI/native-host/fake-extension E2E contract", () => {
         const saved = await cli(["pb", "save", "--from-record", record.id, "--project", "--json"]);
         expect(saved).toMatchObject({ code: 0, stderr: "" });
         const before = scripts().length;
-        const used = await cli([
-          "use",
-          "fixture",
-          "submit",
-          "--text",
-          "dummy run",
-          "--write",
-          "--json",
-        ]);
+        // The typed text isn't sent (the body is as captured), so the op takes no --text.
+        const used = await cli(["use", "fixture", "submit", "--write", "--json"]);
         expect(used.code).toBe(0);
         expect(JSON.parse(used.stdout)).toMatchObject({ strategy: "network" });
         // The one script surf use ran fetches with the recorded body.
@@ -2967,15 +2960,8 @@ describe("CLI/native-host/fake-extension E2E contract", () => {
         const saved = await cli(["pb", "save", "--from-record", record.id, "--project", "--json"]);
         expect(saved).toMatchObject({ code: 0, stderr: "" });
         const before = scripts().length;
-        const used = await cli([
-          "use",
-          "fixture",
-          "submit",
-          "--text",
-          "dummy run",
-          "--write",
-          "--json",
-        ]);
+        // The typed text isn't sent (the body is as captured), so the op takes no --text.
+        const used = await cli(["use", "fixture", "submit", "--write", "--json"]);
         expect(used.code).toBe(0);
         expect(JSON.parse(used.stdout)).toMatchObject({ strategy: "network" });
         // The one script surf use ran sends the captured method and body.

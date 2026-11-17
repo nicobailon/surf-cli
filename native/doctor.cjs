@@ -477,7 +477,7 @@ async function checkSocket(socketPath, context) {
         : {
           id: "host-ffmpeg",
           status: "warn",
-          message: `The native host can't find ffmpeg ${pinned ? `at SURF_FFMPEG (${pinned}) or ` : ""}on its PATH (${searchedPath}), so \`surf video.start\` will fail. If ffmpeg is installed, rerun \`surf install\` or set SURF_FFMPEG in the host wrapper, then reload the Surf extension.`,
+          message: `The native host can't find ffmpeg ${pinned ? `at SURF_FFMPEG (${pinned}) or ` : ""}on its PATH (${searchedPath}), so \`surf video.start\` will fail. If ffmpeg is installed, rerun \`surf install\` from a shell that finds it, or \`SURF_FFMPEG=/path/to/ffmpeg surf install\`, then reload the Surf extension.`,
         });
     }
   }

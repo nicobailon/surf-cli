@@ -880,6 +880,36 @@ describe("choosing the draft's request", () => {
     expect(records.recordStatus({ target: TAB, root: flow.root }).status).toBe("recording");
   });
 
+  it.each(["TRACE", "PROPPATCH"])(
+    "refuses --request-id for a %s, a method a draft never replays",
+    (method) => {
+      const odd = { ...create, id: "r_odd", method, status: 200 };
+      const flow = recordFlow({
+        commands: ["click"],
+        trace: [page, odd],
+        stop: { draft: true, requestId: "r_odd" },
+      });
+      expect(flow.stopped).toThrow(
+        `request r_odd (${method} https://example.test/api/employees) is a ${method} (a draft replays only GET, HEAD, POST, PUT, PATCH and DELETE); a draft never replays it`,
+      );
+      expect(records.recordStatus({ target: TAB, root: flow.root }).status).toBe("recording");
+    },
+  );
+
+  // pb save refuses a read op that sends a PUT, PATCH or DELETE, so --read never drafts one.
+  it.each(["PUT", "PATCH", "DELETE"])("refuses --read --request-id for a %s", (method) => {
+    const write = { ...create, id: "r_write", method, status: 200 };
+    const flow = recordFlow({
+      commands: ["click"],
+      trace: [page, write],
+      stop: { draft: true, read: true, requestId: "r_write" },
+    });
+    expect(flow.stopped).toThrow(
+      `request r_write (${method} https://example.test/api/employees) is a ${method}, and a --read draft replays only GET, HEAD, OPTIONS or POST; drop --read to draft a write`,
+    );
+    expect(records.recordStatus({ target: TAB, root: flow.root }).status).toBe("recording");
+  });
+
   it("never gives a write draft a read to replay in place of a write it can't replay", () => {
     const update = {
       id: "r_put",
@@ -1417,6 +1447,27 @@ describe("activity and explicit record evidence", () => {
         duplicate: "repeatable-window",
         windowMs: 300_000,
       });
+    });
+
+    // A lone type step keeps its workflow, but a write runs only its network strategy: an input
+    // the POST doesn't send would make each new --text a new claim that resends the same POST.
+    it("drops a lone type step's input that the captured POST doesn't send", () => {
+      const { root, stopped } = recordFlow({ commands: [typed], trace: [page, create] });
+      const { record, draft } = stopped();
+      expect(draft.effect).toBe("write");
+      expect(Object.keys(draft.args)).toEqual(["text"]);
+      const saved = authoring.saveFromRecord({
+        recordId: record.id,
+        root,
+        home: path.dirname(root),
+      });
+      expect(saved.warnings).toBeUndefined();
+      const op = savedOp(saved);
+      expect(op.run.map((strategy: { using: string }) => strategy.using)).toEqual([
+        "network",
+        "workflow",
+      ]);
+      expect(op.args).toEqual({});
     });
 
     it("saves its whole workflow, typed input included, when the record captured no request", () => {

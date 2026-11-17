@@ -539,12 +539,14 @@ function usesInput(strategies, input, { escapes }) {
 }
 
 // Inputs only workflow steps take, such as the {{text}} a draft makes of a typed value (it never
-// stores the value, so pb param can't match it to a request field).
+// stores the value, so pb param can't match it to a request field). Read from the steps, as a write
+// saved from a record keeps only the inputs its request sends, not the one its step types.
 function workflowOnlyInputs(op) {
   const workflows = op.run.filter((strategy) => strategy.using === "workflow");
   const others = op.run.filter((strategy) => strategy.using !== "workflow");
   const render = { escapes: escapedOp(op) };
-  return Object.keys(op.args || {}).filter((input) => usesInput(workflows, input, render) && !usesInput(others, input, render));
+  const names = new Set([...Object.keys(op.args || {}), ...workflows.flatMap((workflow) => [...filledInputs(workflow, render.escapes)])]);
+  return [...names].filter((input) => usesInput(workflows, input, render) && !usesInput(others, input, render));
 }
 
 // Renames {{from}} to {{to}} at every depth: step args, loop bodies, a loop's `until` step and its
@@ -573,14 +575,16 @@ function renameInSteps(steps, from, to, touched) {
 
 // --link: the workflow-only input `link` becomes `name`. Its steps take {{name}}, and %{name}
 // where they read the input as a var, the input goes, and a declared safety key follows (without
-// one, a write's claim covers every input, so it needs no change). A %{link}
+// one, a write's claim covers every input, so it needs no change). `link` may be only a name the
+// workflow takes, as a saved write drops the typed input its request doesn't send. A %{link}
 // a capture or loop var named `link` or `name` may shadow is refused, as renaming it could change
 // what the step reads. Returns the step arguments it changed; none when it is already linked.
 function linkInput(op, link, name) {
   const from = `{{${link}}}`;
   const render = { escapes: escapedOp(op) };
-  if (!Object.hasOwn(op.args || {}, link)) {
-    if (!usesInput(op.run, link, render) && usesInput(op.run.filter((strategy) => strategy.using === "workflow"), name, render)) return [];
+  const workflows = op.run.filter((strategy) => strategy.using === "workflow");
+  if (!Object.hasOwn(op.args || {}, link) && !usesInput(workflows, link, render)) {
+    if (!usesInput(op.run, link, render) && usesInput(workflows, name, render)) return [];
     throw new Error(`--link ${link}: the op has no input ${link} (inputs: ${listOf(Object.keys(op.args || {}))})`);
   }
   const other = op.run.find((strategy) => strategy.using !== "workflow" && usesInput(strategy, link, render));
@@ -603,7 +607,7 @@ function linkInput(op, link, name) {
   }
   if (touched.length === 0) throw new Error(`--link ${link}: no workflow step takes ${from} or %{${link}}`);
   if (usesInput(op.run, link, render)) throw new Error(`--link ${link}: ${from} is still in the op after renaming; edit it by hand`);
-  delete op.args[link];
+  if (op.args) delete op.args[link];
   if (op.safety?.key?.includes(link)) op.safety.key = [...new Set(op.safety.key.map((key) => (key === link ? name : key)))];
   return [...new Set(touched)];
 }

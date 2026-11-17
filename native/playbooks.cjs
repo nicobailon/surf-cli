@@ -8,6 +8,7 @@ const { ASSERTION_LIMIT, validateAssertions } = require("./playbook-assertions.c
 const { validateExtract } = require("./playbook-extract.cjs");
 const { validateMarkdownSpec } = require("./record-format.cjs");
 const { assertNoEmbeddedSecrets, assertUrlHasNoEmbeddedSecrets } = require("./redaction.cjs");
+const { READ_OP_METHODS } = require("./request-kinds.cjs");
 const { normalizeStep } = require("./workflow-definition.cjs");
 
 const BUILTIN_DIR = path.join(__dirname, "..", "playbooks");
@@ -121,7 +122,7 @@ function validateStrategy(strategy, effect, opId) {
     const request = strategy.request;
     if (!request || typeof request !== "object" || typeof request.url !== "string") throw new Error("network strategy requires request.url");
     const method = String(request.method || "GET").toUpperCase();
-    if (effect === "read" && !["GET", "HEAD", "OPTIONS", "POST"].includes(method)) throw new Error("read ops cannot use a mutating network method");
+    if (effect === "read" && !READ_OP_METHODS.has(method)) throw new Error("read ops cannot use a mutating network method");
     assertUrlHasNoEmbeddedSecrets(request.url);
     assertNoEmbeddedSecrets(request.headers || {});
     assertNoEmbeddedSecrets(request.query || {});
