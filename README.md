@@ -1097,13 +1097,14 @@ Chains read only for now: a chain op can't be a write, and a chain whose steps i
 For a list and a detail op, `--each-from` runs the same two-step chain without a file:
 
 ```bash
-# get_posting once per record of list_postings, its first required input from each record's id
-surf use lever get_posting --company acme --each-from list_postings:id --limit 3
-# the URL's second path segment, into the input you name
-surf use lever get_posting --company acme --each-from list_postings:url@path.2 --each-into posting_id --delay-ms 3000
+# get_posting (inputs company, posting_id) once per record of list_postings (input company):
+# you pass company, so each record's id fills posting_id
+surf use lever get_posting --company palantir --each-from list_postings:id --limit 3
+# the second path segment of each record's url, into the input you name, 3 s apart
+surf use lever get_posting --company palantir --each-from list_postings:url@path.2 --each-into posting_id --delay-ms 3000
 ```
 
-The other inputs go to whichever of the two ops takes them. `--dry-run` lists a chain's steps and sends nothing.
+Without `--each-into`, each record fills the detail op's one required input you didn't pass; when none or several are left, surf asks for `--each-into`. The other inputs go to whichever of the two ops takes them. A binding (here, the record's `id`) must find a string, number or boolean: an object, a list or nothing stops the chain, naming the step, input and path. `--dry-run` lists a chain's steps and sends nothing.
 
 ### Threads and Feeds
 

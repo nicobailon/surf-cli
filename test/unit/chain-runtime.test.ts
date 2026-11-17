@@ -7,6 +7,7 @@ const path = require("node:path");
 
 const playbooks = require("../../native/playbooks.cjs");
 const chain = require("../../native/chain-runtime.cjs");
+const runtime = require("../../native/playbook-runtime.cjs");
 
 const tempDirs: string[] = [];
 
@@ -90,9 +91,12 @@ function jobsTab({ count = 3, failOn }: { count?: number; failOn?: string } = {}
       const parsed = new URL(url);
       if (parsed.pathname === "/api/list") {
         const company = parsed.searchParams.get("company");
-        const items = ids
-          .slice(0, count)
-          .map((posting) => ({ id: posting, url: `https://jobs.test/${company}/${posting}` }));
+        const items = ids.slice(0, count).map((posting) => ({
+          id: posting,
+          url: `https://jobs.test/${company}/${posting}`,
+          team: { name: "Data" },
+          tags: ["remote"],
+        }));
         return { body: JSON.stringify({ items }) };
       }
       const id = parsed.pathname.split("/").pop() ?? "";
@@ -411,7 +415,9 @@ describe("chain op runs", () => {
         op: optional,
         eachFrom: { op: "list_postings", path: "id" },
       }),
-    ).toThrow(/get_posting has no required input; name the one to fill with --each-into/);
+    ).toThrow(
+      /get_posting has no required input left for each record to fill; name it with --each-into/,
+    );
     expect(() =>
       chain.eachFromChain({
         playbook,
@@ -419,5 +425,136 @@ describe("chain op runs", () => {
         eachFrom: { op: "list_postings", path: "id", into: "nope" },
       }),
     ).toThrow(/--each-into nope is no input of get_posting/);
+  });
+
+  it("stops when a binding finds an object, a list or nothing, naming the step, input and path", async () => {
+    const bound = (binding: Record<string, unknown>) => ({
+      ...jobsChain,
+      id: `bad_${Object.values(binding)
+        .join("_")
+        .replace(/[^a-z0-9]/g, "")}`,
+      chain: [
+        listStep,
+        {
+          id: "detail",
+          op: "get_posting",
+          each: { from: "list", delayMs: 0 },
+          with: { posting_id: binding },
+        },
+      ],
+    });
+    const cases: Array<[Record<string, unknown>, RegExp]> = [
+      [
+        { from: "item", path: "team" },
+        /step detail \(get_posting, record 1 of 3\) failed: binding detail\.posting_id → item\.team is an object; bind a field inside it/,
+      ],
+      [
+        { from: "item", path: "tags" },
+        /binding detail\.posting_id → item\.tags is a list; bind a field inside it/,
+      ],
+      [{ from: "item" }, /binding detail\.posting_id → item is an object; bind a field inside it/],
+      [
+        { from: "item", path: "missing" },
+        /binding detail\.posting_id → item\.missing is missing; bind a path that holds a value/,
+      ],
+      [
+        { from: "list", path: "$[0].team" },
+        /binding detail\.posting_id → list\.\$\[0\]\.team is an object; bind a field inside it/,
+      ],
+      [
+        { from: "item", path: "team", segment: 1 },
+        /binding detail\.posting_id → item\.team is an object, not a URL, so it has no path segment 1/,
+      ],
+    ];
+    for (const [binding, message] of cases) {
+      const op = bound(binding);
+      const playbook = load([listOp, detailOp, op]);
+      const tab = jobsTab();
+      await expect(
+        chain.runChainOp({
+          playbook,
+          op: playbook.ops.get(op.id),
+          args: { company: "acme" },
+          executeTool: tab.executeTool,
+          sleep: noWait,
+        }),
+      ).rejects.toThrow(message);
+      expect(sentPaths(tab.fetchImpl)).toEqual(["/api/list?company=acme"]);
+    }
+  });
+
+  it("fills the one required input the caller didn't pass, as on a Lever posting", () => {
+    const leverDetail = {
+      ...detailOp,
+      args: {
+        company: { type: "string", required: true },
+        posting_id: { type: "string", required: true },
+      },
+    };
+    const playbook = load([listOp, leverDetail]);
+    const op = playbook.ops.get("get_posting");
+    const built = chain.eachFromChain({
+      playbook,
+      op,
+      eachFrom: { op: "list_postings", path: "id" },
+      given: ["company"],
+    });
+    expect(built.args).toEqual({ company: { type: "string", required: true } });
+    expect(built.chain[1].with).toEqual({
+      company: "{{company}}",
+      posting_id: { from: "item", path: "id" },
+    });
+    expect(() =>
+      chain.eachFromChain({ playbook, op, eachFrom: { op: "list_postings", path: "id" } }),
+    ).toThrow(
+      /get_posting has several required inputs you didn't pass \(company, posting_id\); name the one each record fills with --each-into/,
+    );
+    expect(() =>
+      chain.eachFromChain({
+        playbook,
+        op,
+        eachFrom: { op: "list_postings", path: "id" },
+        given: ["company", "posting_id"],
+      }),
+    ).toThrow(/get_posting has no required input left for each record to fill/);
+    expect(
+      chain.eachFromChain({
+        playbook,
+        op,
+        eachFrom: { op: "list_postings", path: "id", into: "posting_id" },
+      }).chain[1].with.posting_id,
+    ).toEqual({ from: "item", path: "id" });
+  });
+
+  it("reads a deep, diamond-shaped chain's env headers once per op, at once", () => {
+    const leaf = {
+      id: "leaf",
+      args: {},
+      run: [
+        {
+          using: "network",
+          request: {
+            url: "https://jobs.test/api/list",
+            authInputs: [{ env: "SURF_CHAIN_TEST_KEY", header: "X-Chain-Key" }],
+          },
+        },
+      ],
+    };
+    // Each level runs the next twice: walked naively, that is 2^30 visits of leaf.
+    const levels = Array.from({ length: 30 }, (_, index) => ({
+      id: `level${index}`,
+      args: {},
+      chain: ["a", "b"].map((step) => ({
+        id: step,
+        op: index === 29 ? "leaf" : `level${index + 1}`,
+      })),
+      output: "a",
+    }));
+    const playbook = load([leaf, ...levels]);
+    const started = performance.now();
+    expect(runtime.authInputs(playbook.ops.get("level0"), playbook)).toEqual([
+      { env: "SURF_CHAIN_TEST_KEY", header: "X-Chain-Key" },
+    ]);
+    expect(performance.now() - started).toBeLessThan(1000);
   });
 });

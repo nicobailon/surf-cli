@@ -1593,7 +1593,7 @@ async function runHostPlaybook(msg, request) {
   });
   const { playbook } = resolved;
   // surf use <op> --each-from <list-op>:<path> runs op once per list record, as a chain made here.
-  const op = params.eachFrom === undefined ? resolved.op : eachFromChain({ playbook, op: resolved.op, eachFrom: params.eachFrom });
+  const op = params.eachFrom === undefined ? resolved.op : eachFromChain({ playbook, op: resolved.op, eachFrom: params.eachFrom, given: Object.keys(params.args || {}) });
   if (params.test === true && op.chain) throw new Error(`${playbook.id} ${op.id} is a chain op; pb test runs single ops, so test each step's op`);
   const runArgs = resolveArgs(op, params.args || {}, { playbookId: playbook.id });
   if (params.test === true && op.effect === "write" && params.write !== true) {

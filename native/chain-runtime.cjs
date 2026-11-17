@@ -8,32 +8,39 @@ const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 /** The `n`th (from 1) path segment of a URL, decoded; a relative URL counts from its first segment. */
 function urlSegment(value, n) {
-  if (typeof value !== "string") throw new Error(`segment ${n} needs a URL, got ${value === null ? "null" : typeof value}`);
+  if (typeof value !== "string") throw new Error(`is ${describe(value)}, not a URL, so it has no path segment ${n}`);
   const segments = new URL(value, "https://chain.invalid/").pathname.split("/").filter(Boolean);
-  if (segments.length < n) throw new Error(`${value} has no path segment ${n}`);
+  if (segments.length < n) throw new Error(`is ${value}, which has no path segment ${n}`);
   return decodeURIComponent(segments[n - 1]);
 }
 
+const describe = (value) => (value === null ? "null" : Array.isArray(value) ? "a list" : value === undefined ? "missing" : typeof value === "object" ? "an object" : typeof value);
+
 // One input's value: a template filled from the chain's inputs (unset when it names an unset
-// input), a literal, or a binding read from the record or an earlier step's result.
-function bindValue(input, binding, { args, values, item }) {
+// input), a literal, or a binding read from the record or an earlier step's result. A binding must
+// find a string, number or boolean: anything else stops the chain, naming the step, input and path.
+function bindValue(step, input, binding, { args, values, item }) {
   if (typeof binding === "string") return applyTemplate(binding, args);
   if (!binding || typeof binding !== "object") return binding;
-  const fromItem = binding.from === "item";
-  let value = fromItem ? item : values.get(binding.from);
-  if (binding.path !== undefined) {
-    value = compileBindingPath(binding.path)(value);
-    if (value === undefined || value === null) {
-      throw new Error(`binding ${input}: ${binding.path} is not in ${fromItem ? "the record" : `step ${binding.from}'s result`}`);
+  const label = `binding ${step.id}.${input} → ${binding.from}${binding.path === undefined ? "" : `.${binding.path}`}`;
+  let value = binding.from === "item" ? item : values.get(binding.from);
+  if (binding.path !== undefined) value = compileBindingPath(binding.path)(value);
+  if (binding.segment !== undefined) {
+    try {
+      value = urlSegment(value, binding.segment);
+    } catch (error) {
+      throw new Error(`${label} ${error.message}`);
     }
   }
-  return binding.segment === undefined ? value : urlSegment(value, binding.segment);
+  if (value === undefined || value === null) throw new Error(`${label} is ${describe(value)}; bind a path that holds a value`);
+  if (typeof value === "object") throw new Error(`${label} is ${describe(value)}; bind a field inside it`);
+  return value;
 }
 
 function bindArgs(step, context) {
   const args = {};
   for (const [input, binding] of Object.entries(step.with || {})) {
-    const value = bindValue(input, binding, context);
+    const value = bindValue(step, input, binding, context);
     if (value !== undefined) args[input] = value;
   }
   return args;
@@ -140,19 +147,26 @@ function parseEachFrom(text) {
   return { op: match[1], ...(match[2] ? { path: match[2] } : {}), ...(match[3] ? { segment: Number(match[3]) } : {}) };
 }
 
+// Without --each-into, each record fills op's one required input the caller didn't pass.
+function eachTarget(op, given) {
+  const open = Object.entries(op.args || {}).filter(([name, spec]) => spec.required && !given.includes(name)).map(([name]) => name);
+  if (open.length === 1) return open[0];
+  if (open.length === 0) throw new Error(`--each-from: ${op.id} has no required input left for each record to fill; name it with --each-into`);
+  throw new Error(`--each-from: ${op.id} has several required inputs you didn't pass (${open.join(", ")}); name the one each record fills with --each-into, and pass the others`);
+}
+
 /**
  * `surf use <pb> <op> --each-from <list-op>:<path>`: a two-step chain, made in memory, that runs
- * `op` once per record of the list op, filling `into` (default: op's first required input) from
- * each record. The chain takes both ops' other inputs and passes each on by name.
+ * `op` once per record of the list op, filling `into` (default: op's one required input not in
+ * `given`, the inputs the caller passed) from each record. The chain takes both ops' other inputs and passes each on by name.
  */
-function eachFromChain({ playbook, op, eachFrom }) {
+function eachFromChain({ playbook, op, eachFrom, given = [] }) {
   const { op: listId, path, segment, into, limit, delayMs } = eachFrom || {};
   const list = playbook.ops.get(listId);
   if (!list) throw new Error(`--each-from: playbook ${playbook.id} has no op ${listId}`);
   if (list.id === op.id) throw new Error(`--each-from names ${op.id} itself`);
   const specs = op.args || {};
-  const target = into ?? Object.keys(specs).find((name) => specs[name].required);
-  if (target === undefined) throw new Error(`${op.id} has no required input; name the one to fill with --each-into`);
+  const target = into ?? eachTarget(op, given);
   if (!Object.hasOwn(specs, target)) throw new Error(`--each-into ${target} is no input of ${op.id}`);
   const { [target]: _bound, ...rest } = specs;
   const passOn = (names) => Object.fromEntries(names.map((name) => [name, `{{${name}}}`]));

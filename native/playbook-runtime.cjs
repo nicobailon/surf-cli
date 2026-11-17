@@ -86,11 +86,13 @@ function resolveArgs(op, provided, { playbookId } = {}) {
 }
 
 // Env-supplied headers (`request.authInputs`) of an op's network strategies; a chain op's are its
-// steps' ops', read from `playbook`.
-function authInputs(op, playbook) {
+// steps' ops', read from `playbook`, each op walked once (`seen`), however often chains share it.
+function authInputs(op, playbook, seen = new Set()) {
+  if (seen.has(op.id)) return [];
+  seen.add(op.id);
   if (op.chain) return op.chain.flatMap((step) => {
     const target = playbook?.ops?.get(step.op);
-    return target ? authInputs(target, playbook) : [];
+    return target ? authInputs(target, playbook, seen) : [];
   });
   return op.run.filter((strategy) => strategy.using === "network").flatMap((strategy) => strategy.request?.authInputs || []);
 }
