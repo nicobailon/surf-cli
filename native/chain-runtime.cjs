@@ -46,29 +46,101 @@ function bindArgs(step, context) {
   return args;
 }
 
-// each.limit or each.delayMs: the saved number, the input it names, or the default (also when
-// that input is unset).
-function eachBound(value, { args, fallback, min, max, name }) {
+// An each or page bound (`name`, such as each.limit): the saved number, the input it names, or
+// the default (also when that input is unset).
+function stepBound(value, { args, fallback, min, max, name }) {
   const filled = typeof value === "string" ? applyTemplate(value, args) : value;
   if (filled === undefined) return fallback;
   const number = typeof filled === "string" && filled.trim() !== "" ? Number(filled) : filled;
   if (!Number.isInteger(number) || number < min || number > max) {
-    throw new Error(`each.${name} must be an integer from ${min} to ${max} (got ${JSON.stringify(filled)})`);
+    throw new Error(`${name} must be an integer from ${min} to ${max} (got ${JSON.stringify(filled)})`);
   }
   return number;
 }
 
 function eachBounds(step, args) {
   return {
-    limit: eachBound(step.each.limit, { args, fallback: CHAIN_LIMITS.eachLimit, min: 1, max: CHAIN_LIMITS.eachMax, name: "limit" }),
-    delayMs: eachBound(step.each.delayMs, { args, fallback: CHAIN_LIMITS.delayMs, min: 0, max: CHAIN_LIMITS.delayMax, name: "delayMs" }),
+    limit: stepBound(step.each.limit, { args, fallback: CHAIN_LIMITS.eachLimit, min: 1, max: CHAIN_LIMITS.eachMax, name: "each.limit" }),
+    delayMs: stepBound(step.each.delayMs, { args, fallback: CHAIN_LIMITS.delayMs, min: 0, max: CHAIN_LIMITS.delayMax, name: "each.delayMs" }),
   };
+}
+
+function pageBounds(step, args) {
+  return {
+    max: stepBound(step.page.max, { args, fallback: CHAIN_LIMITS.pageLimit, min: 1, max: CHAIN_LIMITS.pageMax, name: "page.max" }),
+    delayMs: stepBound(step.page.delayMs, { args, fallback: CHAIN_LIMITS.delayMs, min: 0, max: CHAIN_LIMITS.delayMax, name: "page.delayMs" }),
+  };
+}
+
+// The value page.into takes on the page after one that ran with `current` and whose response gave
+// `next` (page.next's path or html, read by runPlaybookOp). Undefined: there is no next page.
+function followingPage(step, current, next) {
+  if (step.page.next === "increment") return current + 1;
+  if (next === undefined || next === null || next === "") return undefined;
+  const label = `page.next of step ${step.id}`;
+  if (typeof next === "object") throw new Error(`${label} is ${describe(next)}; read a field inside it`);
+  if (step.page.next.segment === undefined) return next;
+  try {
+    return urlSegment(next, step.page.next.segment);
+  } catch (error) {
+    throw new Error(`${label} ${error.message}`);
+  }
+}
+
+// An increment's first page: the step's own value for page.into, else that input's default, else 1.
+function firstPage(step, target, stepArgs) {
+  const start = stepArgs[step.page.into] ?? target.args?.[step.page.into]?.default ?? 1;
+  const number = typeof start === "string" && start.trim() !== "" ? Number(start) : start;
+  if (!Number.isInteger(number)) throw new Error(`page.next increment needs --${step.page.into} to be a whole page number (got ${JSON.stringify(start)})`);
+  return number;
 }
 
 function stepError(op, step, label, caught) {
   const error = new Error(`chain ${op.id} step ${step.id} (${step.op}${label}) failed: ${caught?.message || String(caught)}`);
   if (caught?.attempts) error.attempts = caught.attempts;
   return error;
+}
+
+/**
+ * A `page` step: runs its op, then again with page.into set from page.next, `delayMs` apart, until
+ * there is no next value, a page has no records, a next value repeats, or `max` pages ran. Returns
+ * the pages' records, concatenated, and how many pages ran.
+ */
+async function runPages({ op, step, target, args, values, runOnce, pause }) {
+  const { into, next } = step.page;
+  const reads = next === "increment" ? undefined : next.path !== undefined ? { path: next.path } : { html: next.html };
+  let stepArgs;
+  let bounds;
+  let current;
+  try {
+    stepArgs = bindArgs(step, { args, values });
+    bounds = pageBounds(step, args);
+    current = next === "increment" ? firstPage(step, target, stepArgs) : stepArgs[into];
+  } catch (caught) {
+    throw stepError(op, step, "", caught);
+  }
+  // The loop guard: a value page.into already had (the first page's included, the op's default when
+  // the step sets none) means the pages go round. Values compare as text: a cursor 2 is "2".
+  const first = current ?? target.args?.[into]?.default;
+  const seen = new Set(first === undefined ? [] : [String(first)]);
+  const records = [];
+  for (let pages = 1; ; pages++) {
+    const label = `, page ${pages}`;
+    let following;
+    try {
+      const result = await runOnce(current === undefined ? stepArgs : { ...stepArgs, [into]: current }, reads);
+      if (!Array.isArray(result.value)) throw new Error(`page needs ${step.op} to return a list of records; it returned ${describe(result.value)}`);
+      records.push(...result.value);
+      if (result.value.length === 0 || pages >= bounds.max) return { value: records, pages };
+      following = followingPage(step, current, result.next);
+    } catch (caught) {
+      throw stepError(op, step, label, caught);
+    }
+    if (following === undefined || seen.has(String(following))) return { value: records, pages };
+    seen.add(String(following));
+    current = following;
+    await pause(bounds.delayMs);
+  }
 }
 
 /**
@@ -86,19 +158,27 @@ async function runChainOp(options) {
   const steps = [];
   for (const step of op.chain) {
     const target = playbook.ops.get(step.op);
+    // One run of the step's op: `page` sets page.into and reads page.next from the response.
+    const runOnce = async (stepArgs, pageNext) => {
+      if (signal?.aborted) throw new Error("the run was cancelled");
+      if (++budget.runs > CHAIN_LIMITS.runs) throw new Error(`a chain run calls at most ${CHAIN_LIMITS.runs} ops`);
+      return target.chain
+        ? runChainOp({ ...options, op: target, args: stepArgs, budget })
+        : runPlaybookOp({ playbook, op: target, args: stepArgs, secrets, env, executeTool, executeStep, executeNative, signal, sleep, now, onEvent, allowScript, ...(pageNext ? { pageNext } : {}) });
+    };
     const runStep = async (item, label) => {
       try {
-        if (signal?.aborted) throw new Error("the run was cancelled");
-        if (++budget.runs > CHAIN_LIMITS.runs) throw new Error(`a chain run calls at most ${CHAIN_LIMITS.runs} ops`);
-        const stepArgs = bindArgs(step, { args, values, item });
-        const result = target.chain
-          ? await runChainOp({ ...options, op: target, args: stepArgs, budget })
-          : await runPlaybookOp({ playbook, op: target, args: stepArgs, secrets, env, executeTool, executeStep, executeNative, signal, sleep, now, onEvent, allowScript });
-        return result.value;
+        return (await runOnce(bindArgs(step, { args, values, item }))).value;
       } catch (caught) {
         throw stepError(op, step, label, caught);
       }
     };
+    if (step.page !== undefined) {
+      const { value, pages } = await runPages({ op, step, target, args, values, runOnce, pause });
+      values.set(step.id, value);
+      steps.push({ id: step.id, op: step.op, runs: pages });
+      continue;
+    }
     if (step.each === undefined) {
       values.set(step.id, await runStep(undefined, ""));
       steps.push({ id: step.id, op: step.op, runs: 1 });
@@ -135,7 +215,12 @@ function previewChainOp({ playbook, op, args: provided = {} }) {
     op: op.id,
     effect: op.effect,
     strategy: "chain",
-    steps: op.chain.map((step) => ({ id: step.id, op: step.op, ...(step.each ? { each: { from: step.each.from, ...eachBounds(step, args) } } : {}) })),
+    steps: op.chain.map((step) => ({
+      id: step.id,
+      op: step.op,
+      ...(step.each ? { each: { from: step.each.from, ...eachBounds(step, args) } } : {}),
+      ...(step.page ? { page: { into: step.page.into, next: step.page.next, ...pageBounds(step, args) } } : {}),
+    })),
     output: op.output,
   };
 }

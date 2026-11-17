@@ -1698,7 +1698,7 @@ const TOOLS = {
           timeout: "Seconds before the run gives up (default: the op's --timeout, else 600)",
           format: "md or jsonl instead of JSON",
           write: "Authorize a write operation",
-          "dry-run": "Print what the op would send (method, URL, header names, body, allowed origins) and the receipt check; sends nothing, and a write needs no --write",
+          "dry-run": "Print what the op would send (method, URL, header names, body, allowed origins) and the receipt check, or a chain op's steps with their each and page bounds; sends nothing, and a write needs no --write",
           "allow-script": "Allow the playbook's trusted script strategy",
           repeat: "Send a write again though an earlier one with the same inputs was sent, is in doubt or was cut off",
           "retry-attempt": "Retry this write attempt (its UUID); the claim must already hold it",
@@ -1714,6 +1714,7 @@ const TOOLS = {
           { cmd: "use x thread --url https://x.com/<user>/status/<id> --format md", desc: "Whole X thread as Markdown" },
           { cmd: "use page read --json", desc: "Read the current page" },
           { cmd: "use quotes get_author --page 2 --each-from list_quotes:author_url@path.2 --limit 3", desc: "The authors of the first 3 quotes on page 2: each quote's author_url fills --author" },
+          { cmd: "use quotes all_quotes --pages 3", desc: "A chain op whose step has page: { into, next, max }: runs list_quotes for each next page (next: \"increment\", { path } or { html: \"li.next a@href\" }; max 3 by default, at most 20; 2 s apart) and joins the records" },
         ],
       },
       parse: {
