@@ -1414,16 +1414,14 @@ describe("accessibility tree", () => {
     expect(tree).toContain(`${role} "${name}" [${located.matches[0].ref}]`);
   });
 
-  it("lists the elements a sensitive lookup matched by ref and role, without their names", () => {
-    // A dummy lookup text, which the matching elements' names contain.
-    const query = ["dummy", "lookup", "16"].join("-");
+  it("lists the elements an ambiguous lookup matched with their names", () => {
     const body = document.body as unknown as FakeElement;
     const named = (label: string) => {
       const node = element("button");
       node.append(text(label));
       return node;
     };
-    body.append(named(`Delete ${query}`), named(`Archive ${query}`), named("Plain"));
+    body.append(named("Save draft"), named("Save and close"), named("Plain"));
     (document as any).querySelectorAll = (selector: string) =>
       selector.split(",").some((part) => part.trim() === "button")
         ? body.children.filter((child) => child.tagName === "BUTTON")
@@ -1431,17 +1429,31 @@ describe("accessibility tree", () => {
     const ambiguous = sendMessage({
       type: "LOCATE_ROLE",
       role: "button",
-      name: query,
+      name: "Save",
       unique: true,
     }).error;
     expect(ambiguous).toMatch(
       /^2 elements match role "button" and the given name, so nothing was done/,
     );
-    expect(ambiguous).toMatch(/ e\d+ button$/m);
-    expect(ambiguous).not.toContain("dummy");
-    // Without a name the lookup holds nothing sensitive, so the names help pick one.
-    const byRole = sendMessage({ type: "LOCATE_ROLE", role: "button", unique: true }).error;
-    expect(byRole).toContain('button "Plain"');
+    expect(ambiguous).toMatch(/^ {2}e\d+ button "Save draft"$/m);
+    expect(ambiguous).toMatch(/^ {2}e\d+ button "Save and close"$/m);
+    expect(ambiguous).not.toContain("Plain");
+  });
+
+  it("lists a field that an ambiguous lookup matched without the value typed in it", () => {
+    // A dummy typed value: an unlabeled field's name is its value, which the list must not show.
+    const typed = ["dummy", "typed", "16"].join("-");
+    const body = document.body as unknown as FakeElement;
+    const filled = element("input", { type: "text" });
+    filled.value = typed;
+    body.append(filled, element("input", { type: "text", placeholder: "Search" }));
+    (document as any).querySelectorAll = (selector: string) =>
+      selector.includes('input[type="text"]') ? body.children : [];
+    const ambiguous = sendMessage({ type: "LOCATE_ROLE", role: "textbox", unique: true }).error;
+    expect(ambiguous).toMatch(/^2 elements match role "textbox", so nothing was done/);
+    expect(ambiguous).toMatch(/^ {2}e\d+ textbox$/m);
+    expect(ambiguous).toMatch(/^ {2}e\d+ textbox "Search"$/m);
+    expect(ambiguous).not.toContain(typed);
   });
 
   it("names the locator and its field, not the text looked up, when nothing matches", () => {

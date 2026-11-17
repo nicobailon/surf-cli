@@ -946,24 +946,33 @@ function registerLocatedRef(el: Element): string {
   return ref;
 }
 
+// A match as an ambiguity lists it: its ref, role and name. An unlabeled field is named by what was
+// typed or chosen in it (getName), so a name drawn from the field's value is left out.
+function listedMatch(el: Element): string {
+  const name = getName(el).replace(/\s+/g, " ");
+  const tag = el.tagName.toLowerCase();
+  const select = el as HTMLSelectElement;
+  const typed = tag === "input" || tag === "textarea" ? (el as HTMLInputElement).value
+    : tag === "select" ? (select.selectedIndex >= 0 ? select.options[select.selectedIndex]?.textContent : "")
+    : (el as HTMLElement).isContentEditable ? el.textContent : "";
+  const fromValue = Boolean(typed?.trim()) && typed!.replace(/\s+/g, " ").includes(name.replace(/\.\.\.$/, ""));
+  return `${registerLocatedRef(el)} ${getResolvedRole(el)}${name && !fromValue ? ` ${JSON.stringify(name)}` : ""}`;
+}
+
 // Exact matches outrank partial ones. When the caller is about to act, two or more remaining
 // matches are refused instead of acting on whichever came first in the document.
-// `listNames` false for a lookup by text the caller passed (a name, text or label): the elements
-// it matched hold that text in their names, so an ambiguity lists them by ref and role only.
 function narrowLocated(
   matches: Element[],
   isExact: (el: Element) => boolean,
   unique: boolean,
   query: string,
   notFound: string,
-  listNames = true,
 ): Element[] | string {
   const exact = matches.filter(isExact);
   const elements = exact.length ? exact : matches;
   if (elements.length === 0) return notFound;
   if (!unique || elements.length < 2) return elements;
-  const listed = elements.slice(0, 10).map((el) =>
-    `  ${registerLocatedRef(el)} ${getResolvedRole(el)}${listNames ? ` ${JSON.stringify(getName(el).replace(/\s+/g, " "))}` : ""}`);
+  const listed = elements.slice(0, 10).map((el) => `  ${listedMatch(el)}`);
   if (elements.length > 10) listed.push(`  ...and ${elements.length - 10} more`);
   return `${elements.length} elements match ${query}, so nothing was done. ` +
     `Act on one of them by ref (for example surf click <ref>), or narrow the query:\n${listed.join("\n")}`;
@@ -2421,7 +2430,6 @@ function handleContentMessage(
           unique,
           described,
           `No element found with ${described}`,
-          !name,
         );
         if (typeof narrowed === "string") {
           sendResponse({ error: narrowed });
@@ -2464,7 +2472,6 @@ function handleContentMessage(
           unique,
           "the given text",
           "No element found with the given text",
-          false,
         );
         if (typeof narrowed === "string") {
           sendResponse({ error: narrowed });
@@ -2513,7 +2520,6 @@ function handleContentMessage(
           unique,
           "the given label",
           "No form field found with the given label",
-          false,
         );
         if (typeof narrowed === "string") {
           sendResponse({ error: narrowed });
