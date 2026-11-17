@@ -5,8 +5,9 @@ const { readRecent } = require("./activity-journal.cjs");
 const { writeNetworkExport } = require("./network-export.cjs");
 const { getPrivateStateRoot, readPrivateJson } = require("./private-state.cjs");
 const { buildDraft, draftFromRecord, readRecord, recordsRoot } = require("./playbook-records.cjs");
-const { escapeStepArgs } = require("./playbook-template.cjs");
+const { escapeStepArgs, requestInputs, sentRequest } = require("./playbook-template.cjs");
 const { envBackedHeaders, savePlaybook, validateOp } = require("./playbooks.cjs");
+const { requestEffect } = require("./request-kinds.cjs");
 const { commandMetadata, normalizeStep, promoteRedactedStepArgs } = require("./workflow-definition.cjs");
 
 function suggestions({ since = "1h", root } = {}) {
@@ -45,6 +46,39 @@ function replayedRequest(op) {
 }
 
 const shownRequest = (request) => (request ? `${String(request.method ?? "GET").toUpperCase()} ${request.url}` : "none");
+
+// A write runs only its first strategy: after any failure it stops, as its next strategy could send
+// it again. So a workflow after a network strategy never runs. When that request replays a write,
+// the op is saved with its network strategy alone, and with only the inputs the request sends: a
+// typing step's input would make each new value a new claim that sends the recorded body again.
+// Which inputs are left is read from what the request sends, never from a draft's checks (extract,
+// verify, expect) or the record's notes for pb param (redactedTypes). A declared safety key keeps
+// the inputs left, and covers every input once none is. A workflow of one page-write step (a click,
+// a type) keeps its steps and inputs. When the request is a read, the op is saved as drafted, with a
+// warning.
+function fitWriteWorkflow(op, warnings) {
+  const [first] = op.run;
+  const workflow = op.effect === "write" && first?.using === "network" && op.run.find((strategy) => strategy?.using === "workflow");
+  if (!workflow || !Array.isArray(workflow.steps)) return op;
+  const shown = shownRequest(first.request);
+  const saved = workflow.steps.map(savedStep);
+  const steps = shownSteps(saved);
+  if (requestEffect({ method: first.request?.method ?? "GET" }) !== "write") {
+    warnings.push(`the op's workflow (${steps}) never runs: a write runs only its first strategy, here its network strategy, ${shown}, a read; record with --network around the real submit, or name the write with --request-id <r_…>`);
+    return op;
+  }
+  const [only] = saved;
+  if (saved.length === 1 && only?.repeat === undefined && only?.each === undefined && commandMetadata(only?.cmd, only?.args).effect === "page-write") return op;
+  warnings.push(`saved network-only: a write runs only its first strategy, and this draft's replays ${shown}, so its workflow (${steps}) would never run; the op replays ${shown} alone`);
+  const run = op.run.filter((strategy) => strategy !== workflow);
+  // The op's provenance says its requests hold escaped text.
+  const used = new Set(run.flatMap((strategy) => (strategy?.using === "network" ? [...requestInputs(sentRequest(strategy.request), { escapes: true })] : [])));
+  const args = Object.fromEntries(Object.entries(op.args || {}).filter(([name]) => used.has(name)));
+  if (!Array.isArray(op.safety?.key)) return { ...op, args, run };
+  const { key: declared, ...safety } = op.safety;
+  const key = declared.filter((name) => Object.hasOwn(args, name));
+  return { ...op, args, safety: key.length > 0 ? { ...safety, key } : safety, run };
+}
 
 // The origins an op saved from a record may send to: the page the record ran on, and the request
 // its network strategy replays (an API on another host, as api.resy.com for resy.com). Other
@@ -127,7 +161,7 @@ function saveFromRecord({ recordId, requestId, scope = "user", cwd, home, root =
   // The saver's, never the draft's: escaped says the op's captured text is escaped (escapedOp), as
   // the record's requests and steps are.
   const provenance = { recordId: record.id, ...(chosen ? { requestId: chosen } : {}), escaped: true };
-  const op = { ...drafted, provenance };
+  const op = fitWriteWorkflow({ ...drafted, provenance }, warnings);
   const origins = allowedOrigins(record, op, warnings);
   const differs = draftDifferences({ draft: drafted, reference, because: built.because, origins: validateOp(op, { origins }).origins, recordOrigins: allowedOrigins(record, reference, []) });
   const saved = savePlaybook({ manifest: { id: record.site, name: record.site, version: "1.0.0", origins }, op, scope, cwd, home });

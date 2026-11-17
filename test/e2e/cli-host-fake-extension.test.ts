@@ -1218,8 +1218,8 @@ describe("CLI/native-host/fake-extension E2E contract", () => {
     }
   }, 60000);
 
-  // A recorded type and click save with the whole workflow; the write's inputs, and so its
-  // duplicate claim, come from what it sends and types, never from its checks.
+  // A recorded type and click with a captured write save network-only (a write runs only its first
+  // strategy); its inputs, and so its duplicate claim, come from what it sends, never from its checks.
   it("keeps a recorded write's inputs when a draft's check names a step's input", async () => {
     const socketPath = createSocketPath();
     const project = fs.mkdtempSync(path.join(os.tmpdir(), "surf-record-key-"));
@@ -1258,16 +1258,8 @@ describe("CLI/native-host/fake-extension E2E contract", () => {
       };
 
       const drafted = await save(original);
-      expect(drafted.run.map((strategy: { using: string }) => strategy.using)).toEqual([
-        "network",
-        "workflow",
-      ]);
-      expect(drafted.run[1].steps.map((step: { cmd: string }) => step.cmd)).toEqual([
-        "type",
-        "click",
-      ]);
       expect(drafted.safety.key).toBeUndefined();
-      expect(Object.keys(drafted.args)).toEqual(["text"]);
+      expect(drafted.args).toEqual({});
       const checked = structuredClone(original);
       checked.run[0].verify = { truthy: true, note: "{{text}}" };
       const withCheck = await save(checked);
@@ -1277,16 +1269,16 @@ describe("CLI/native-host/fake-extension E2E contract", () => {
       });
 
       const before = posts().length;
-      const use = (text: string) =>
-        cli(["use", "fixture", "submit", "--text", text, "--write", "--json"]);
-      expect((await use("one")).code).toBe(0);
-      const again = await use("one");
+      const use = () => cli(["use", "fixture", "submit", "--write", "--json"]);
+      expect((await use()).code).toBe(0);
+      const again = await use();
       expect(again.code).toBe(1);
       expect(again.stderr).toMatch(
         /write blocked: attempt \S+ was sent at .+ and succeeded\. Add --repeat/,
       );
-      expect((await use("two")).code).toBe(0);
-      expect(posts().length - before).toBe(2);
+      const byText = await cli(["use", "fixture", "submit", "--text", "two", "--write"]);
+      expect(byText.stderr).toMatch(/Unknown input --text/);
+      expect(posts().length - before).toBe(1);
     } finally {
       await host.dispose();
     }
@@ -1450,13 +1442,12 @@ describe("CLI/native-host/fake-extension E2E contract", () => {
   }
 
   // The record keeps the type of a number it masked (redactedTypes) under the JSON key it sat at,
-  // here a key reading {{text}}. That note is never sent, so it gives the op no input: its inputs
-  // are the one pb param names and, when pb param leaves the typing step's own, that one (the
-  // workflow types it), and the same values are blocked as a duplicate.
-  for (const [label, field, input, value, stepInputs] of [
-    ["the masked number", "query.variables.{{text}}", "year", "2031", []],
-    ["the whole JSON param", "query.variables", "variables", '{"{{text}}":2031}', ["text"]],
-  ] as const) {
+  // here a key reading {{text}}. That note is never sent, so it gives the op no input: its one
+  // input is the one pb param names, and the same value of it is blocked as a duplicate.
+  for (const [label, field, input, value] of [
+    ["the masked number", "query.variables.{{text}}", "year", "2031"],
+    ["the whole JSON param", "query.variables", "variables", '{"{{text}}":2031}'],
+  ]) {
     it(`keys a recorded write on what it sends, not the record's notes, after pb param on ${label}`, async () => {
       const socketPath = createSocketPath();
       const project = fs.mkdtempSync(path.join(os.tmpdir(), "surf-record-notes-"));
@@ -1489,27 +1480,14 @@ describe("CLI/native-host/fake-extension E2E contract", () => {
           ),
         );
         expect(op.safety.key).toBeUndefined();
-        expect(Object.keys(op.args)).toEqual([...stepInputs, input]);
+        expect(Object.keys(op.args)).toEqual([input]);
 
         const before = posts().length;
-        const typedArgs = stepInputs.flatMap((name) => [`--${name}`, "typed"]);
         const use = (...args: string[]) =>
-          cli([
-            "use",
-            "fixture",
-            "submit",
-            `--${input}`,
-            value,
-            ...typedArgs,
-            ...args,
-            "--write",
-            "--json",
-          ]);
-        if (stepInputs.length === 0) {
-          const byText = await use("--text", "one");
-          expect(byText.code).toBe(1);
-          expect(byText.stderr).toMatch(/Unknown input --text/);
-        }
+          cli(["use", "fixture", "submit", `--${input}`, value, ...args, "--write", "--json"]);
+        const byText = await use("--text", "one");
+        expect(byText.code).toBe(1);
+        expect(byText.stderr).toMatch(/Unknown input --text/);
         expect((await use()).code).toBe(0);
         const again = await use();
         expect(again.code).toBe(1);

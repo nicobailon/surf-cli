@@ -147,12 +147,14 @@ function commandMetadata(command, args) {
 // that can commit.
 const FILL_STEPS = new Set(["type", "smart_type", "form_input", "form.fill", "select"]);
 
-// Whether a step can send a write op's change: any page-write or unknown step but a fill (type or
-// smart_type with --submit presses Enter, so it can). Navigation and reads can't.
+// Whether a step can send a write op's change: any page-write or unknown step but a fill. A type or
+// smart_type presses Enter when it has --submit (any truthy value, as the host reads it) or its
+// text holds a line break, so it can. Navigation and reads can't.
 function canCommit(command, args = {}) {
   const { name, effect } = commandMetadata(command, args);
   if (effect !== "page-write" && effect !== "unknown") return false;
-  return !FILL_STEPS.has(name) || (args.submit !== undefined && args.submit !== false && args.submit !== "false");
+  if (!FILL_STEPS.has(name)) return true;
+  return (name === "type" || name === "smart_type") && (Boolean(args.submit) || /[\r\n]/.test(String(args.text ?? "")));
 }
 
 function redactCommandArgs(command, args, includeInputValues = false) {

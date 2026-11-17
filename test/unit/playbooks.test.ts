@@ -668,7 +668,13 @@ describe("playbook resolution and strategies", () => {
       ["select", { selector: "#size", values: "m" }, "none"],
       ["navigate", { url: "https://example.test/" }, "none"],
       ["scroll.bottom", {}, "none"],
+      ["type", { selector: "#q", text: "{{text}}", submit: false }, "none"],
       ["type", { selector: "#q", text: "{{text}}", submit: true }, "indeterminate"],
+      // The host submits on any truthy --submit, the text "false" too.
+      ["type", { selector: "#q", text: "{{text}}", submit: "false" }, "indeterminate"],
+      // A line break in the text presses Enter.
+      ["type", { selector: "#q", text: "first line\nsecond" }, "indeterminate"],
+      ["smart_type", { selector: "#q", text: "sent\r" }, "indeterminate"],
       ["key", { key: "Enter" }, "indeterminate"],
       ["submit", {}, "indeterminate"],
       ["check", { ref: "e1" }, "indeterminate"],

@@ -1391,11 +1391,36 @@ describe("activity and explicit record evidence", () => {
     const savedOp = (saved: { directory: string }) =>
       JSON.parse(fs.readFileSync(path.join(saved.directory, "ops", "search.json"), "utf8"));
 
+    // A write runs only its first strategy, so after a network strategy that replays the write
+    // its workflow would never run: the op replays the request alone, with the inputs it sends.
     it.each([
-      ["a navigate (resy.com)", ["navigate"], ["navigate"]],
-      ["a type and a click (NCBI BLAST)", [typed, "click"], ["type", "click"]],
-    ])("saves its whole workflow after %s, with no note", (_case, commands, steps) => {
+      ["a navigate (resy.com)", ["navigate"], "navigate"],
+      ["a type and a click (NCBI BLAST)", [typed, "click"], "type + click"],
+    ])("saves network-only after %s, with a note", (_case, commands, shown) => {
       const { root, stopped } = recordFlow({ commands: commands as Step[], trace: [page, create] });
+      const { record, draft } = stopped();
+      expect(draft.effect).toBe("write");
+      const saved = authoring.saveFromRecord({
+        recordId: record.id,
+        root,
+        home: path.dirname(root),
+      });
+      expect(saved.warnings).toEqual([
+        `saved network-only: a write runs only its first strategy, and this draft's replays POST https://example.test/api/employees, so its workflow (${shown}) would never run; the op replays POST https://example.test/api/employees alone`,
+      ]);
+      const op = savedOp(saved);
+      expect(op.run.map((strategy: { using: string }) => strategy.using)).toEqual(["network"]);
+      // The workflow's typed input goes with it; the write needs no input of its own.
+      expect(op.args).toEqual({});
+      expect(op.safety).toEqual({
+        authorization: "explicit",
+        duplicate: "repeatable-window",
+        windowMs: 300_000,
+      });
+    });
+
+    it("saves its whole workflow, typed input included, when the record captured no request", () => {
+      const { root, stopped } = recordFlow({ commands: [typed, "click"] });
       const { record, draft } = stopped();
       expect(draft.effect).toBe("write");
       const saved = authoring.saveFromRecord({
@@ -1405,13 +1430,9 @@ describe("activity and explicit record evidence", () => {
       });
       expect(saved.warnings).toBeUndefined();
       const op = savedOp(saved);
-      expect(op.run.map((strategy: { using: string }) => strategy.using)).toEqual([
-        "network",
-        "workflow",
-      ]);
-      expect(op.run[1].steps.map((entry: { cmd: string }) => entry.cmd)).toEqual(steps);
-      expect(op.args).toEqual(draft.args);
-      expect(op.safety).toEqual({ ...draft.safety, authorization: "explicit" });
+      expect(op.run.map((strategy: { using: string }) => strategy.using)).toEqual(["workflow"]);
+      expect(op.run[0].steps.map((entry: { cmd: string }) => entry.cmd)).toEqual(["type", "click"]);
+      expect(Object.keys(op.args)).toEqual(["text"]);
     });
 
     // Its inputs and duplicate key come from what it sends: a check naming {{text}} keeps neither.
@@ -1589,20 +1610,27 @@ describe("activity and explicit record evidence", () => {
           stop: { draft: true, requestId: "r_note" },
         });
         const stoppedAt = atStop.stopped();
-        const saved = save(atStop.root, stoppedAt.record.id);
-        expect(saved.warnings).toBeUndefined();
-        expect(savedOp(saved).run[0].request.url).toBe("https://example.test/api/notes");
+        expect(save(atStop.root, stoppedAt.record.id).warnings).toEqual([
+          expect.stringMatching(
+            /so its workflow \(navigate\) would never run; the op replays POST https:\/\/example\.test\/api\/notes alone$/,
+          ),
+        ]);
       });
     });
 
-    it("saves as drafted when its network strategy replays a read", () => {
+    it("saves as drafted when its network strategy replays a read, warning its workflow never runs", () => {
       const { root, stopped } = recordFlow({ commands: [typed, "click"], trace: [page] });
       const { record, draft } = stopped();
       expect(draft.effect).toBe("write");
-      const op = savedOp(
-        authoring.saveFromRecord({ recordId: record.id, root, home: path.dirname(root) }),
-      );
-      expect(op.run.map((strategy: { using: string }) => strategy.using)).toEqual(
+      const saved = authoring.saveFromRecord({
+        recordId: record.id,
+        root,
+        home: path.dirname(root),
+      });
+      expect(saved.warnings).toEqual([
+        "the op's workflow (type + click) never runs: a write runs only its first strategy, here its network strategy, GET https://example.test/search, a read; record with --network around the real submit, or name the write with --request-id <r_…>",
+      ]);
+      expect(savedOp(saved).run.map((strategy: { using: string }) => strategy.using)).toEqual(
         draft.run.map((strategy: { using: string }) => strategy.using),
       );
     });
