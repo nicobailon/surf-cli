@@ -284,6 +284,20 @@ if (["playbook", "pb", "use"].includes(args[0]) && !helpRequested()) {
   return;
 }
 
+if (args[0] === "parse" && !helpRequested()) {
+  const { handleParseCli } = require("./parse-cli.cjs");
+  handleParseCli(args, { endpoint, cwd: process.cwd(), ...resolveEarlyTargetOptions(args, { allowWindow: false }) })
+    .then((result) => {
+      console.log(formatPlaybookOutput(result.value, result.json));
+      process.exit(result.exitCode);
+    })
+    .catch((error) => {
+      console.error(`Error: ${error.message}`);
+      process.exit(1);
+    });
+  return;
+}
+
 const ALIASES = {
   snap: "screenshot",
   read: "page.read",
@@ -1695,6 +1709,21 @@ const TOOLS = {
         examples: [
           { cmd: "use x thread --url https://x.com/<user>/status/<id> --format md", desc: "Whole X thread as Markdown" },
           { cmd: "use page read --json", desc: "Read the current page" },
+        ],
+      },
+      parse: {
+        desc: "Make a tested read op from a URL in one command: record it from about:blank, pick the request, name its inputs, infer an extract and save a shape-only network test (heuristics, no model call). Reads robots.txt first. Exits 0 on a saved, tested op, 2 with the top 3 candidates when the pick is weak or tied, 1 on errors, a disallowed path, or a goal that needs a click, scroll or write",
+        args: ["url"],
+        opts: {
+          goal: "What you want from the page; names the op and the inputs it varies",
+          op: "Op name (default: get_ and the goal's first three words)",
+          input: "name=field (repeatable): name the input at this field, as pb param does (page=path.2, company=path.1); with --request-id it reruns on the same record, as the rename line parse prints does",
+          "request-id": "Save the request with this id (from the candidates a weak pick prints)",
+          json: "Output raw JSON",
+        },
+        examples: [
+          { cmd: "parse https://books.toscrape.com/catalogue/page-2.html --goal \"all books with price and rating\"", desc: "A listing: page input, one record per book" },
+          { cmd: "parse https://arxiv.org/abs/2101.10010 --goal \"arxiv paper details\"", desc: "A detail page: paper_id input, meta tag fields" },
         ],
       },
       pb: { alias: "playbook" },

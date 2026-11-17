@@ -1,6 +1,8 @@
 # Parse a site into a reusable op
 
-Use this to go from a URL and a goal ("all books with price and rating") to a saved, tested op that `surf use` answers from the site's own request. Each step's flags and edge cases are in [workflows.md](workflows.md#playbooks). `<pb>` is the playbook (a short site name) and `<op>` a verb phrase (`list_books`, `get_book`).
+Run `surf parse <url> --goal "<what you want>"` first: it does these steps itself, from robots.txt to a saved shape test. Rename an input with the `surf parse … --request-id … --input name=field` line it prints (it reruns on the same record and loads no page), and a field with the `pb extract` line it prints. When you rename a field the saved test checks (`title`, `id`, `url`), save the test again with `pb test … --assert … --save` (step 4), or `surf use` fails its check. Use this recipe when parse exits 1 (an error, a disallowed path, a goal that needs a click, scroll or write, or a test that failed) or 2 (a weak or tied pick: it prints the top 3 candidates and a rerun line with `--request-id`), when the data shows only after a click, search or scroll, and for writes and chains.
+
+The recipe goes from a URL and a goal ("all books with price and rating") to a saved, tested op that `surf use` answers from the site's own request. Each step's flags and edge cases are in [workflows.md](workflows.md#playbooks). `<pb>` is the playbook (a short site name) and `<op>` a verb phrase (`list_books`, `get_book`).
 
 ## 0. Before you start
 
