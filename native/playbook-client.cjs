@@ -3,18 +3,20 @@ const http = require("http");
 const path = require("path");
 const { execFile } = require("child_process");
 const { atomicWriteFile, atomicWriteJson, ensurePrivateDir, getPrivateStateRoot, readPrivateJson } = require("./private-state.cjs");
-const { renderRequest, resolveArgValues } = require("./playbook-template.cjs");
+const { escapedOp, renderRequest, resolveArgValues } = require("./playbook-template.cjs");
 const { resolveOp } = require("./playbooks.cjs");
-const { isReplayCandidate, readRecord, recordsRoot, requestEffect } = require("./playbook-records.cjs");
+const { isReplayCandidate, readRecord, recordsRoot, requestEffect, requestFromEntry } = require("./playbook-records.cjs");
 const { WINNER_MARGIN, isWeak, scoreEntries } = require("./record-candidates.cjs");
 const { assertNoEmbeddedSecrets, assertUrlHasNoEmbeddedSecrets, redactObject, redactValues, safeHeaders } = require("./redaction.cjs");
 const { version: PACKAGE_VERSION } = require("../package.json");
 
-// URL parsing would percent-encode `{{name}}` in a path, so placeholders sit out the parse.
-function absoluteEndpointUrl(url, origins = []) {
+// URL parsing would percent-encode `{{name}}` in a path, so placeholders (and, in escaped text, the
+// `{{!}}` escape) sit out the parse.
+function absoluteEndpointUrl(url, origins = [], { escapes = false } = {}) {
   if (typeof url !== "string" || !url) throw new Error("client projection requires an endpoint URL");
   const placeholders = [];
-  const masked = url.replace(/\{\{[a-zA-Z0-9._-]+\}\}/g, (match) => `__surf_template_${placeholders.push(match) - 1}__`);
+  const pattern = escapes ? /\{\{(?:[a-zA-Z0-9._-]+|!)\}\}/g : /\{\{[a-zA-Z0-9._-]+\}\}/g;
+  const masked = url.replace(pattern, (match) => `__surf_template_${placeholders.push(match) - 1}__`);
   const unmask = (text) => text.replace(/__surf_template_(\d+)__/g, (_, index) => placeholders[Number(index)]);
   try {
     const parsed = new URL(masked);
@@ -73,7 +75,7 @@ ${parseClientArgs.toString()}
 const args = parseClientArgs(process.argv.slice(2), manifest.args || {});
 ${resolveArgValues.toString()}
 ${renderRequest.toString()}
-const endpoint = renderRequest(manifest.endpoint, resolveArgValues(manifest.args || {}, args));
+const endpoint = renderRequest(manifest.endpoint, resolveArgValues(manifest.args || {}, args), { escapes: manifest.escapes === true });
 // SURF_CLIENT_ORIGIN sends the request to another origin (pb client verify's local server).
 let url = new URL(endpoint.url);
 if (process.env.SURF_CLIENT_ORIGIN) url = new URL(\`\${url.pathname}\${url.search}\`, process.env.SURF_CLIENT_ORIGIN);
@@ -136,14 +138,16 @@ function endpointArgs(op, endpoint) {
   return Object.fromEntries(Object.entries(op.args || {}).filter(([name]) => used.has(name)));
 }
 
-function generateClient({ playbookId, op, strategy, provenance, out, allowWrite = false, origins = [] }) {
+// `escapes`: the request holds escaped text (pb save's, or a record's), whose `{{!}}` the client
+// sends as `{{`.
+function generateClient({ playbookId, op, strategy, provenance, out, allowWrite = false, origins = [], escapes = false }) {
   if (op.effect === "write" && !allowWrite) throw new Error(`op ${op.id} can write, and pb client derive and export refuse write requests for now (only GET, HEAD or OPTIONS)`);
   if (typeof out !== "string" || !out) throw new Error("client projection requires --out <directory>");
   const directory = path.resolve(out);
   const request = strategy.request;
   const endpoint = {
     method: request.method || "GET",
-    url: absoluteEndpointUrl(request.url, origins),
+    url: absoluteEndpointUrl(request.url, origins, { escapes }),
     query: request.query || {},
     headers: safeHeaders(request.headers),
     ...(request.body !== undefined ? { body: request.body } : {}),
@@ -167,6 +171,7 @@ function generateClient({ playbookId, op, strategy, provenance, out, allowWrite 
     op: op.id,
     effect: op.effect,
     endpoint,
+    ...(escapes ? { escapes: true } : {}),
     args: endpointArgs(op, endpoint),
     extract,
     // surf use returns these records; this client prints the raw HTML body instead.
@@ -189,7 +194,7 @@ function generateClient({ playbookId, op, strategy, provenance, out, allowWrite 
 
 function exportClient(playbookId, opId, out, options = {}) {
   const { playbook, op } = resolveOp(playbookId, opId, options);
-  return generateClient({ playbookId, op, strategy: networkStrategy(op), provenance: { type: "playbook", id: playbook.id, op: op.id, ...playbook.provenance }, out, allowWrite: options.allowWrite, origins: op.origins || playbook.origins });
+  return generateClient({ playbookId, op, strategy: networkStrategy(op), provenance: { type: "playbook", id: playbook.id, op: op.id, ...playbook.provenance }, out, allowWrite: options.allowWrite, origins: op.origins || playbook.origins, escapes: escapedOp(op) });
 }
 
 function findRecord(site, op, root = getPrivateStateRoot()) {
@@ -228,12 +233,10 @@ function deriveClient(site, opId, out, options = {}) {
   if (!options.requestId && candidates.length > 1 && !entry) throw new Error(`record ${record.id} has several read endpoints and no clear winner; run surf pb record candidates ${record.id} and pass --request-id`);
   if (!entry) throw new Error(`record ${record.id} has no validated read endpoint`);
   const op = { id: opId, effect: requestEffect(entry), run: [] };
-  const url = new URL(entry.url);
-  const query = Object.fromEntries(url.searchParams.entries());
-  url.search = "";
   const extract = savedExtract(site, opId, options);
-  const strategy = { using: "network", request: { method: entry.method, url: url.toString(), query, headers: safeHeaders(entry.requestHeaders), ...(entry.requestBody !== undefined ? { body: entry.requestBody } : {}) }, ...(extract ? { extract } : {}) };
-  return generateClient({ playbookId: site, op, strategy, provenance: { type: "record", recordId: record.id }, out, allowWrite: options.allowWrite });
+  // Escaped as pb save escapes it, so captured text like {{x}} is sent as captured, not an input.
+  const strategy = { using: "network", request: requestFromEntry(entry), ...(extract ? { extract } : {}) };
+  return generateClient({ playbookId: site, op, strategy, provenance: { type: "record", recordId: record.id }, out, allowWrite: options.allowWrite, escapes: true });
 }
 
 function collectTemplateArgs(value, names = new Set()) {
@@ -323,7 +326,7 @@ function expectedEndpoint(manifest, source) {
     const endpoint = legacyEndpoint(manifest.endpoint);
     return { ...endpoint, query: Object.fromEntries(Object.entries(endpoint.query || {}).map(([name, value]) => [name, String(value)])) };
   }
-  return renderRequest(manifest.endpoint, resolveArgValues(manifest.args || {}, sampleArgs(manifest)));
+  return renderRequest(manifest.endpoint, resolveArgValues(manifest.args || {}, sampleArgs(manifest)), { escapes: manifest.escapes === true });
 }
 
 async function verifyWithLocalServer(resolved, manifest, source) {
@@ -371,7 +374,7 @@ async function verifyClient(directory, { live } = {}) {
   const serialized = `${JSON.stringify(manifest)}\n${source}`.toLowerCase();
   if (!manifest.noEmbeddedSecrets || /bearer [a-z0-9._-]+|cookie:\s*[^<]|authorization\s*[:=]\s*["'][^<]/i.test(serialized)) throw new Error("generated client contains embedded credentials");
   if (!manifest.endpoint?.method || !manifest.endpoint?.url) throw new Error("generated client endpoint is incomplete");
-  absoluteEndpointUrl(manifest.endpoint.url);
+  absoluteEndpointUrl(manifest.endpoint.url, [], { escapes: manifest.escapes === true });
   const execution = live ? { stdout: (await runClient(resolved, manifest, source, { live: true })).trim() } : await verifyWithLocalServer(resolved, manifest, source);
   return { valid: true, playbook: manifest.playbook, op: manifest.op, endpoint: manifest.endpoint, execution };
 }

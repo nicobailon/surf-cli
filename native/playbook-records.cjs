@@ -12,6 +12,7 @@ const {
 } = require("./private-state.cjs");
 const { redactSensitiveFields, redactUrlSecrets, safeHeaders } = require("./redaction.cjs");
 const { commandMetadata, promoteRedactedStepArgs } = require("./workflow-definition.cjs");
+const { escapeStepArgs, escapeTemplates } = require("./playbook-template.cjs");
 const { describeCaptureGaps } = require("./formatters/network.cjs");
 const { ASSET_TYPES, isReplayCandidate, isTelemetryRequest, requestEffect, shownUrl } = require("./request-kinds.cjs");
 const { WINNER_MARGIN, isWeak, pageWords, rankCandidates, scoreEntries, summarizeResponse } = require("./record-candidates.cjs");
@@ -244,7 +245,9 @@ function draftEffect({ record, steps, trace, read }) {
     if (write) throw new Error(`--read refused: the record captured ${shownUrl(write)}, which can change data; stop with --draft alone to draft a write`);
     return trace?.complete === true ? { effect: "read" } : { effect: "read", warning: "--read could not check every request: the trace is incomplete (see the warnings above)" };
   }
-  if (write || steps.some(pageWrite)) return { effect: "write" };
+  if (write) return { effect: "write", because: `it captured ${shownUrl(write)}` };
+  const acted = steps.find(pageWrite);
+  if (acted) return { effect: "write", because: `it ran ${acted.tool}, a page write` };
   return { effect: "read" };
 }
 
@@ -306,28 +309,40 @@ function pickRequest({ record, trace, effect, requestId, warnings }) {
   return top.entry;
 }
 
-// `warnings` collects why the draft left something out. `requestId` picks the request to replay.
-function draftFromRecord(recordId, root = getPrivateStateRoot(), { read = false, requestId, warnings = [] } = {}) {
-  const record = readRecord(recordId, root);
-  if (!record) throw new Error(`record not found: ${recordId}`);
-  const events = readEvents(recordId, root).filter((event) => event.type === "tool.completed");
-  const steps = [];
-  for (const event of events) {
-    if (!commandMetadata(event.command).recordable) continue;
-    steps.push({ tool: event.command, args: event.argsRedacted || {} });
-  }
-  const tracePath = path.join(recordDirectory(recordId, root), "network", "trace.json");
+// The request a network strategy sends to replay a captured trace entry: its query apart, its
+// headers without secrets, and its body as captured (`<request-body>` without input values). Text
+// that reads like an input (`{{action}}`) is escaped, so it is sent as captured.
+function requestFromEntry(entry) {
+  const url = new URL(entry.url);
+  const query = Object.fromEntries(url.searchParams.entries());
+  url.search = "";
+  return escapeTemplates({ method: entry.method, url: url.toString(), query, headers: safeHeaders(entry.requestHeaders), ...(entry.requestBody !== undefined ? { body: entry.requestBody } : {}) });
+}
+
+// The input a write op without other inputs takes as its semantic safety key.
+const REVIEW_KEY_ARG = { required: true, desc: "Semantic key for reviewed write replay" };
+
+// The steps a record ran that a draft replays: its completed recordable commands, in order. Their
+// arguments are escaped, so text like `{{review_key}}` in a recorded selector or URL is sent as
+// recorded; a redacted value (`<text>`) still becomes an input.
+function recordedSteps(recordId, root = getPrivateStateRoot()) {
+  return readEvents(recordId, root)
+    .filter((event) => event.type === "tool.completed" && commandMetadata(event.command).recordable)
+    .map((event) => ({ tool: event.command, args: escapeStepArgs(event.argsRedacted || {}) }));
+}
+
+// The op the draft builder makes from a record, and `because`, why it is a write. It writes
+// nothing: pb save --from-record holds a draft file to it. `warnings` collects why the draft left
+// something out. `requestId` picks the request to replay.
+function buildDraft(record, { read = false, requestId, warnings = [], root = getPrivateStateRoot() } = {}) {
+  const steps = recordedSteps(record.id, root);
+  const tracePath = path.join(recordDirectory(record.id, root), "network", "trace.json");
   const trace = readPrivateJson(tracePath, null, { root });
-  const { effect, warning } = draftEffect({ record, steps, trace, read });
+  const { effect, warning, because } = draftEffect({ record, steps, trace, read });
   if (warning) warnings.push(warning);
   const strategies = [];
   const observed = pickRequest({ record, trace, effect, requestId, warnings });
-  if (observed) {
-    const url = new URL(observed.url);
-    const query = Object.fromEntries(url.searchParams.entries());
-    url.search = "";
-    strategies.push({ using: "network", request: { method: observed.method, url: url.toString(), query, headers: safeHeaders(observed.requestHeaders), ...(observed.requestBody !== undefined ? { body: observed.requestBody } : {}) } });
-  }
+  if (observed) strategies.push({ using: "network", request: requestFromEntry(observed) });
   let args = {};
   if (steps.length > 0) {
     const promoted = promoteRedactedStepArgs(steps);
@@ -336,15 +351,25 @@ function draftFromRecord(recordId, root = getPrivateStateRoot(), { read = false,
   }
   if (strategies.length === 0) throw new Error("record has no executable evidence");
   const safety = effect === "write" ? { authorization: "explicit", duplicate: "transactional", key: Object.keys(args).length ? Object.keys(args) : ["review_key"] } : undefined;
-  if (effect === "write" && !args.review_key && safety.key.includes("review_key")) args.review_key = { required: true, desc: "Semantic key for reviewed write replay" };
-  const op = { id: record.op, description: `Drafted from ${record.id}`, effect, args, ...(safety ? { safety } : {}), run: strategies, provenance: { recordId: record.id } };
+  if (effect === "write" && !args.review_key && safety.key.includes("review_key")) args.review_key = REVIEW_KEY_ARG;
+  const provenance = { recordId: record.id, ...(requestId ? { requestId } : {}) };
+  const op = { id: record.op, description: `Drafted from ${record.id}`, effect, args, ...(safety ? { safety } : {}), run: strategies, provenance };
+  return { op, because };
+}
+
+function draftFromRecord(recordId, root = getPrivateStateRoot(), options = {}) {
+  const record = readRecord(recordId, root);
+  if (!record) throw new Error(`record not found: ${recordId}`);
+  const { op } = buildDraft(record, { ...options, root });
   const draftDir = path.join(recordDirectory(recordId, root), "draft");
   ensurePrivateDir(draftDir, root);
   atomicWriteJson(path.join(draftDir, "op.json"), op, { root });
   return op;
 }
 
-// The draft is made before the record stops, so a refused draft (--read) leaves it recording.
+// The draft is made before the record stops, so a refused draft (--read) leaves it recording. The
+// request --request-id names, and --read, are kept in the record, which pb save reads them from:
+// the draft file is only a suggestion.
 function stopRecord({ target, draft = false, read = false, requestId, root = getPrivateStateRoot() } = {}) {
   if (read && !draft) throw new Error("--read applies only with --draft");
   if (requestId && !draft) throw new Error("--request-id applies only with --draft");
@@ -355,6 +380,8 @@ function stopRecord({ target, draft = false, read = false, requestId, root = get
   record = readRecord(record.id, root);
   record.status = draft ? "draft_created" : "stopped";
   record.stoppedAt = new Date().toISOString();
+  if (requestId) record.requestId = requestId;
+  if (read) record.read = true;
   writeRecord(record, root);
   writeActiveIds(activeIds(root).filter((id) => id !== record.id), root);
   const warnings = [...(record.trace?.warnings || []), ...draftWarnings];
@@ -428,22 +455,27 @@ function discardRecord({ target, root = getPrivateStateRoot() } = {}) {
 }
 
 module.exports = {
+  REVIEW_KEY_ARG,
   activeRecords,
   appendRecordEvent,
   attachNetworkTrace,
+  buildDraft,
   discardRecord,
   draftFromRecord,
   findCandidatesRecord,
   isActive,
   markRecord,
+  neverReplayed,
   pauseRecord: (options) => updateStatus("paused", options),
   readEvents,
   isReplayCandidate,
   readRecord,
   recordCandidates,
   recordStatus,
+  recordedSteps,
   requestEffect,
   recordsRoot,
+  requestFromEntry,
   requireRecordFor,
   resumeRecord: (options) => updateStatus("recording", options),
   startRecord,

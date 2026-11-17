@@ -4,6 +4,7 @@
 const os = require("os");
 const { editSavedOp, validateOp } = require("./playbooks.cjs");
 const { isSecretHeader, isSensitiveName } = require("./redaction.cjs");
+const { LITERAL_OPEN, escapeTemplates, escapedOp, unescapeTemplates } = require("./playbook-template.cjs");
 const { lineDiff } = require("./text-diff.cjs");
 const { commandMetadata } = require("./workflow-definition.cjs");
 
@@ -202,11 +203,35 @@ function resolveSlot(request, field) {
 }
 
 // Puts `{{name}}` in the slot: over its whole value, or over the one place `literal` appears in it.
-function templateSlot(slot, name, literal) {
+// `escapes`: the op holds escaped text (escapedOp), so its `{{!}}` stands for `{{`.
+function templateSlot(slot, { name, literal, escapes }) {
   const placeholder = `{{${name}}}`;
   const current = slot.value;
   if (typeof current === "string" && current.includes(placeholder)) return { status: "already" };
   if (typeof current === "string" && TEMPLATE_ONLY.test(current)) throw new Error(`${slot.field}: already the input ${current}`);
+  if (!escapes) return templatePlainSlot(slot, { placeholder, literal });
+  // A recorded `{{…}}` is stored escaped; --value and the input's default are the text it stands
+  // for, and the text around a templated part stays escaped.
+  const text = typeof current === "string" ? unescapeTemplates(current) : current;
+  if (literal === undefined || String(text) === literal) {
+    slot.store(placeholder);
+    return { status: "templated", literal: text, whole: true, stored: placeholder };
+  }
+  if (typeof text !== "string") throw new Error(`${slot.field}: "${literal}" not found in ${JSON.stringify(text)}`);
+  const first = text.indexOf(literal);
+  if (first < 0) throw new Error(`${slot.field}: "${literal}" not found in "${text}"`);
+  if (text.indexOf(literal, first + literal.length) >= 0) throw new Error(`${slot.field}: "${literal}" appears more than once in "${text}"; template the whole value instead`);
+  const pieces = templatePieces(current);
+  const last = first + literal.length;
+  if (pieces.some((piece) => piece.input && piece.start < last && piece.end > first)) throw new Error(`${slot.field}: "${literal}" overlaps an input in "${current}"`);
+  const stored = `${restorePieces(pieces, 0, first, slot.encode)}${placeholder}${restorePieces(pieces, last, text.length, slot.encode)}`;
+  slot.store(stored);
+  return { status: "templated", literal, whole: false, stored };
+}
+
+// templateSlot for an op whose text isn't escaped (a hand-written one): what it holds is the text.
+function templatePlainSlot(slot, { placeholder, literal }) {
+  const current = slot.value;
   if (literal === undefined || String(current) === literal) {
     slot.store(placeholder);
     return { status: "templated", literal: current, whole: true, stored: placeholder };
@@ -218,6 +243,42 @@ function templateSlot(slot, name, literal) {
   const stored = `${slot.encode(current.slice(0, first))}${placeholder}${slot.encode(current.slice(first + literal.length))}`;
   slot.store(stored);
   return { status: "templated", literal, whole: false, stored };
+}
+
+// A stored string as pieces of its text (unescapeTemplates'): recorded text, and the inputs in it,
+// each with where it sits in that text.
+function templatePieces(stored) {
+  const pieces = [];
+  let at = 0;
+  let last = 0;
+  const add = (piece, length) => {
+    pieces.push({ ...piece, start: at, end: at + length });
+    at += length;
+  };
+  for (const match of stored.matchAll(/\{\{(?:[a-zA-Z0-9._-]+|!)\}\}/g)) {
+    const before = stored.slice(last, match.index);
+    add({ text: before }, before.length);
+    if (match[0] === LITERAL_OPEN) add({ text: "{{" }, 2);
+    else add({ input: match[0] }, match[0].length);
+    last = match.index + match[0].length;
+  }
+  add({ text: stored.slice(last) }, stored.length - last);
+  return pieces;
+}
+
+// The stored form of the text from `start` to `end`: its recorded text encoded and escaped again,
+// its inputs as they were.
+function restorePieces(pieces, start, end, encode) {
+  let stored = "";
+  let text = "";
+  for (const piece of pieces) {
+    if (piece.end <= start || piece.start >= end) continue;
+    if (piece.input) {
+      stored += escapeTemplates(encode(text)) + piece.input;
+      text = "";
+    } else text += piece.text.slice(Math.max(start - piece.start, 0), Math.min(end, piece.end) - piece.start);
+  }
+  return stored + escapeTemplates(encode(text));
 }
 
 function coerce(value, type, label) {
@@ -285,6 +346,60 @@ function templateStepUrl(value, { origin, segments, queries, placeholder, litera
   return joinUrl({ ...url, rest });
 }
 
+const usesInput = (value, input) => JSON.stringify(value).includes(`{{${input}}}`);
+
+// Inputs only workflow steps take, such as the {{text}} a draft makes of a typed value (it never
+// stores the value, so pb param can't match it to a request field).
+function workflowOnlyInputs(op) {
+  const workflows = op.run.filter((strategy) => strategy.using === "workflow");
+  const others = op.run.filter((strategy) => strategy.using !== "workflow");
+  return Object.keys(op.args || {}).filter((input) => usesInput(workflows, input) && !usesInput(others, input));
+}
+
+// Renames {{from}} to {{to}} at every depth: step args, loop bodies, a loop's `until` step and its
+// own fields (`each`). `touched` collects the step arguments it changed.
+function renameInSteps(steps, from, to, touched) {
+  const swap = (value) => JSON.parse(JSON.stringify(value).split(from).join(to));
+  return steps.map((step) => {
+    if (Array.isArray(step.steps)) {
+      const { steps: body, until, ...loop } = step;
+      for (const [field, value] of Object.entries(loop)) if (JSON.stringify(value)?.includes(from)) touched.push(`loop ${field}`);
+      return {
+        ...swap(loop),
+        steps: renameInSteps(body, from, to, touched),
+        ...(until ? { until: renameInSteps([until], from, to, touched)[0] } : {}),
+      };
+    }
+    const args = { ...(step.args || {}) };
+    for (const [arg, value] of Object.entries(args)) {
+      if (!JSON.stringify(value)?.includes(from)) continue;
+      args[arg] = swap(value);
+      touched.push(`${step.cmd || step.tool} ${arg}`);
+    }
+    return { ...step, args };
+  });
+}
+
+// --link: the workflow-only input `link` becomes `name`. Its steps take {{name}}, the input goes,
+// and a write's safety key follows. Returns the step arguments it changed; none when it is
+// already linked.
+function linkInput(op, link, name) {
+  const from = `{{${link}}}`;
+  if (!Object.hasOwn(op.args || {}, link)) {
+    if (!usesInput(op.run, link) && usesInput(op.run.filter((strategy) => strategy.using === "workflow"), name)) return [];
+    throw new Error(`--link ${link}: the op has no input ${link} (inputs: ${listOf(Object.keys(op.args || {}))})`);
+  }
+  const other = op.run.find((strategy) => strategy.using !== "workflow" && usesInput(strategy, link));
+  if (other) throw new Error(`--link ${link}: the ${other.using} strategy uses ${from} too, so it is an input of its own; pick another --as`);
+  const touched = [];
+  for (const workflow of op.run.filter((strategy) => strategy.using === "workflow")) workflow.steps = renameInSteps(workflow.steps, from, `{{${name}}}`, touched);
+  if (touched.length === 0) throw new Error(`--link ${link}: no workflow step takes ${from}`);
+  if (usesInput(op.run, link)) throw new Error(`--link ${link}: ${from} is still in the op after renaming; edit it by hand`);
+  delete op.args[link];
+  if (op.safety?.key?.includes(link)) op.safety.key = [...new Set(op.safety.key.map((key) => (key === link ? name : key)))];
+  return touched;
+}
+
 // Adds a header read from an environment variable at run time; nothing about its value is stored.
 function envHeader(op, request, fields, env) {
   if (fields.length !== 1 || !fields[0].startsWith("headers.") || fields[0].length === "headers.".length) throw new Error("--env takes one field, headers.<name>");
@@ -310,9 +425,10 @@ function envHeader(op, request, fields, env) {
  * op an `args.<as>` entry (typed from the value; defaulting to the recorded value unless `required`
  * or `default`). With `env`, the one `headers.<name>` field comes from that environment variable.
  */
-function paramOp(op, { fields, as: name, env, required = false, default: defaultValue, desc, value: literal } = {}) {
+function paramOp(op, { fields, as: name, env, required = false, default: defaultValue, desc, value: literal, link } = {}) {
   if (!Array.isArray(fields) || fields.length === 0) throw new Error("pb param needs at least one field, such as query.q, path.2, body.page or headers.x-version");
   if ((name === undefined) === (env === undefined)) throw new Error("pb param needs --as <name> or --env <VAR>, not both");
+  if (link !== undefined && name === undefined) throw new Error("--link goes with --as");
   const next = structuredClone(op);
   const strategy = next.run.find((candidate) => candidate.using === "network");
   if (!strategy?.request) throw new Error(`op ${op.id} has no network strategy to take inputs`);
@@ -326,6 +442,7 @@ function paramOp(op, { fields, as: name, env, required = false, default: default
   if (typeof name !== "string" || !NAME_PATTERN.test(name)) throw new Error("--as must use lowercase letters, numbers, dot, underscore, or hyphen");
   if (RESERVED_RUN_OPTIONS.has(name)) throw new Error(`--as ${name} is reserved: surf use takes --${name} as its own option`);
   if (required && defaultValue !== undefined) throw new Error("--required and --default can't be combined");
+  if (link !== undefined && link === name) throw new Error(`--link ${link} names the same input as --as`);
 
   const request = strategy.request;
   const originalUrl = splitUrl(request.url);
@@ -336,7 +453,7 @@ function paramOp(op, { fields, as: name, env, required = false, default: default
     const sensitive = slot.sensitive || field.split(".").slice(1).some(isSensitiveName);
     const partial = literal !== undefined && String(slot.value) !== literal && !String(slot.value).includes(`{{${name}}}`);
     if (sensitive && partial) throw new Error(`${field} looks secret: template it whole (leave out --value), so no part of it is stored`);
-    return { ...slot, sensitive, ...templateSlot(slot, name, literal) };
+    return { ...slot, sensitive, ...templateSlot(slot, { name, literal, escapes: escapedOp(op) }) };
   });
   const templated = results.filter((result) => result.status === "templated");
   const literals = [...new Set(templated.map((result) => String(result.literal)))];
@@ -361,6 +478,8 @@ function paramOp(op, { fields, as: name, env, required = false, default: default
 
   const notes = [];
   const workflows = next.run.filter((candidate) => candidate.using === "workflow");
+  const linked = link === undefined ? [] : linkInput(next, link, name);
+  if (linked.length) notes.push(`workflow fallback takes --${name} in place of --${link}: ${linked.join(", ")}`);
   if (templated.length && workflows.length) {
     const touched = [];
     const context = {
@@ -371,9 +490,11 @@ function paramOp(op, { fields, as: name, env, required = false, default: default
       queries: templated.filter((result) => result.whole && !result.json && /^query\.[^.]+$/.test(result.field)).map((result) => result.field.slice("query.".length)),
     };
     for (const workflow of workflows) workflow.steps = templateSteps(workflow.steps, context, touched);
-    notes.push(touched.length
-      ? `workflow fallback takes the input too: ${touched.join(", ")}`
-      : `workflow strategy unchanged: no step argument holds ${JSON.stringify(literals[0])}, so the browser fallback still runs as recorded`);
+    if (touched.length) notes.push(`workflow fallback takes the input too: ${touched.join(", ")}`);
+    else if (!linked.length) {
+      const hints = workflowOnlyInputs(next).filter((input) => input !== name).map((input) => `; if --${input} holds the same value, add --link ${input}`);
+      notes.push(`workflow strategy unchanged: no step argument holds ${JSON.stringify(literals[0])}, so the browser fallback still runs as recorded${hints.join("")}`);
+    }
   }
   return { op: next, changed: JSON.stringify(next) !== JSON.stringify(op), notes };
 }

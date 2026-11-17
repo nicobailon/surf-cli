@@ -46,7 +46,7 @@ const { writeNetworkExport } = require("./network-export.cjs");
 const networkStore = require("./network-store.cjs");
 const { redactUrlSecrets } = require("./redaction.cjs");
 const { appendActivity, journalCommand } = require("./activity-journal.cjs");
-const { reserveReceipt, updateReceipt } = require("./playbook-receipts.cjs");
+const { checkReceipt, reserveReceipt, updateReceipt } = require("./playbook-receipts.cjs");
 const {
   appendRecordEvent,
   attachNetworkTrace,
@@ -1570,14 +1570,19 @@ async function runHostPlaybook(msg, request) {
   if (op.effect === "write" && op.safety.authorization === "explicit" && params.write !== true) {
     throw new Error(`write op ${playbook.id} ${op.id} requires --write`);
   }
-  const receipt = reserveReceipt({
+  const claim = {
     playbookId: playbook.id,
     op,
     args: runArgs,
     repeat: params.repeat === true,
     retryAttempt: params.retryAttempt,
     overrideInDoubt: params.overrideInDoubt === true,
-  });
+    attemptId: params.retryAttempt || crypto.randomUUID(),
+  };
+  // A write is checked now and gets its receipt only when its request is dispatched, so a run
+  // refused before sending (a bad input, a disallowed origin, a missing env var) leaves none.
+  checkReceipt(claim);
+  let receipt = null;
   const report = (event) => {
     appendActivity(event);
     appendRecordEvent(event, { target: recordEventTarget(request) });
@@ -1592,13 +1597,16 @@ async function runHostPlaybook(msg, request) {
     secrets: params.secret || {},
     ...(params.assert !== undefined ? { assertions: validateAssertions(params.assert) } : {}),
     ...(params.strategy !== undefined ? { strategy: params.strategy } : {}),
-    attemptId: receipt?.attemptId,
+    attemptId: op.effect === "write" ? claim.attemptId : undefined,
     signal: request.signal,
     executeTool: (tool, args) => executeMappedHostTool(request, tool, args, msg.tabId),
     executeNative: (handler, args, options) => executeNativePlaybook(request, handler, args, options),
     sleep: (ms) => abortableDelay(ms, request.signal),
     onEvent: report,
-    beforeDispatch: async () => updateReceipt(receipt, "dispatched"),
+    beforeDispatch: async () => {
+      receipt = reserveReceipt(claim);
+      updateReceipt(receipt, "dispatched");
+    },
     afterDispatch: async ({ status, error }) => updateReceipt(receipt, status, { error }),
     allowScript: params.allowScript === true,
   });

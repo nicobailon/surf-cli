@@ -5,6 +5,7 @@ const { exportRecordHar, saveFromRecent, saveFromRecord, suggestions } = require
 const { deriveClient, exportClient, verifyClient } = require("./playbook-client.cjs");
 const { formatCandidates } = require("./record-candidates.cjs");
 const { RESERVED_RUN_OPTIONS, applyParam, formatParamResult } = require("./playbook-param.cjs");
+const { assertAttemptId } = require("./playbook-receipts.cjs");
 const { authInputs } = require("./playbook-runtime.cjs");
 const { formatExtractResult, parseExtractArgs, saveExtract } = require("./playbook-extract.cjs");
 const { formatTestReport, runPlaybookTest } = require("./playbook-test.cjs");
@@ -33,7 +34,7 @@ function parseCommandArgs(argv) {
 }
 
 const PARAM_FLAGS = new Set(["required", "json"]);
-const PARAM_VALUES = new Set(["as", "env", "default", "desc", "value"]);
+const PARAM_VALUES = new Set(["as", "env", "default", "desc", "value", "link"]);
 
 // pb param's options are known, so a field may follow a flag (`--required query.q`).
 function parseParamArgs(argv) {
@@ -53,7 +54,7 @@ function parseParamArgs(argv) {
     } else throw new Error(`pb param has no --${name} option`);
   }
   const [playbook, op, ...fields] = positional;
-  if (!playbook || !op) throw new Error("Usage: surf pb param <playbook> <op> <field>... --as <name> [--required | --default <v>] [--desc <text>] [--value <text>], or <field> --env <VAR>");
+  if (!playbook || !op) throw new Error("Usage: surf pb param <playbook> <op> <field>... --as <name> [--required | --default <v>] [--desc <text>] [--value <text>] [--link <input>], or <field> --env <VAR>");
   return { playbook, op, fields, options };
 }
 
@@ -138,6 +139,7 @@ async function handlePlaybookCli(argv, { endpoint, cwd = process.cwd(), session,
   if (!["playbook", "pb", "use"].includes(argv[0])) return { handled: false };
   if (argv[0] === "use" || argv[1] === "run") {
     const spec = runSpec(argv);
+    if (spec.options["retry-attempt"] !== undefined) assertAttemptId(spec.options["retry-attempt"], "--retry-attempt");
     const format = spec.options.format;
     if (format !== undefined && format !== "md" && format !== "jsonl") throw new Error("--format must be md or jsonl");
     const timeout = resolveRunTimeout(spec, cwd);
@@ -171,7 +173,7 @@ async function handlePlaybookCli(argv, { endpoint, cwd = process.cwd(), session,
   const command = argv[1];
   if (command === "param") {
     const { playbook, op, fields, options } = parseParamArgs(argv.slice(2));
-    const result = applyParam({ playbook, op, fields, cwd, as: options.as, env: options.env, required: options.required === true, default: options.default, desc: options.desc, value: options.value });
+    const result = applyParam({ playbook, op, fields, cwd, as: options.as, env: options.env, required: options.required === true, default: options.default, desc: options.desc, value: options.value, link: options.link });
     return { handled: true, value: options.json ? result : formatParamResult(result), json: options.json === true };
   }
   const parsed = parseCommandArgs(argv.slice(2));

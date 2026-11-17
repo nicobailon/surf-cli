@@ -1,29 +1,69 @@
 const fs = require("fs");
 const path = require("path");
-const { executeSingleStep, executeWorkflow } = require("./workflow-runtime.cjs");
+const { executeSingleStep, executeWorkflow, substituteVars } = require("./workflow-runtime.cjs");
 const { runWorkflowScript } = require("./workflow-script-runtime.cjs");
 const { runApiHarvest, watchCapture } = require("./api-harvest.cjs");
 const { htmlExtractFunction, runCollect } = require("./dom-collect.cjs");
 const { editDistance } = require("./edit-distance.cjs");
 const { GLOBAL_OPTIONS } = require("./global-options.cjs");
-const { renderRequest, resolveArgValues } = require("./playbook-template.cjs");
+const { LITERAL_OPEN, escapedOp, renderRequest, resolveArgValues } = require("./playbook-template.cjs");
 const { checkAssertions, createRegexBudget, describeAssertion } = require("./playbook-assertions.cjs");
 const { redactObject } = require("./redaction.cjs");
 const boundedRegex = require("./bounded-regex.cjs");
 const { extractRecords } = require("./records.cjs");
 
-function applyTemplate(value, args) {
+// Fills an op's inputs into a hand-written op's workflow steps, and into an api or collect
+// strategy's spec. With `escapes` (an op pb save escaped, see escapedOp), `{{!}}` is sent as `{{`;
+// any other op sends it as written. An escaped op's steps are filled by fillEscapedSteps and the
+// workflow runtime.
+function applyTemplate(value, args, { escapes = false } = {}) {
   if (typeof value === "string") {
     const exact = value.match(/^\{\{([a-zA-Z0-9._-]+)\}\}$/);
     if (exact) return args[exact[1]];
-    return value.replace(/\{\{([a-zA-Z0-9._-]+)\}\}/g, (_, name) => {
+    return value.replace(escapes ? /\{\{([a-zA-Z0-9._-]+|!)\}\}/g : /\{\{([a-zA-Z0-9._-]+)\}\}/g, (match, name) => {
+      if (match === LITERAL_OPEN) return "{{";
       if (args[name] === undefined) throw new Error(`missing template argument: ${name}`);
       return String(args[name]);
     });
   }
-  if (Array.isArray(value)) return value.map((item) => applyTemplate(item, args));
-  if (value && typeof value === "object") return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, applyTemplate(item, args)]));
+  if (Array.isArray(value)) return value.map((item) => applyTemplate(item, args, { escapes }));
+  if (value && typeof value === "object") return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, applyTemplate(item, args, { escapes })]));
   return value;
+}
+
+// An escaped op's step fields the workflow runtime doesn't read, such as cmd, as and id (and a
+// semantic step's args), take their inputs here, as applyTemplate gives any other op's. Its args,
+// each and repeat, and until's args, are left as stored: the runtime fills their inputs and vars
+// in the pass that decodes them (resolveVar). So each stored string is read once.
+const RUNTIME_FILLED = new Set(["args", "each", "repeat"]);
+
+function fillEscapedSteps(steps, args) {
+  if (!Array.isArray(steps)) return steps;
+  return steps.map((step) => {
+    if (!step || typeof step !== "object" || Array.isArray(step)) return step;
+    const filled = {};
+    for (const [key, value] of Object.entries(step)) {
+      if (key === "steps") filled.steps = fillEscapedSteps(value, args);
+      else if (key === "until") filled.until = fillEscapedSteps([value], args)[0];
+      else if (!RUNTIME_FILLED.has(key)) filled[key] = applyTemplate(value, args, { escapes: true });
+    }
+    for (const key of RUNTIME_FILLED) {
+      if (!Object.hasOwn(step, key)) continue;
+      const semanticArgs = key === "args" && filled.cmd === "semantic.step";
+      filled[key] = semanticArgs ? applyTemplate(step.args, args, { escapes: true }) : step[key];
+    }
+    return filled;
+  });
+}
+
+// A failure of a check the op's file wrote (its extract, verify, expect or on.success.expect),
+// which ends an op saved from a record: a draft can't use one to reach its next strategy.
+const CHECK_FAILED = Symbol("check failed");
+
+function checkFailure(cause) {
+  const error = cause instanceof Error ? cause : new Error(String(cause));
+  error[CHECK_FAILED] = true;
+  return error;
 }
 
 function unknownInputError(op, name, playbookId) {
@@ -184,12 +224,16 @@ const finish = (head, { read, extract }, narrow) => boundedRegex.tabExtract({
  * Runs the tab script `script(budget)` makes, which may end in finish(), charging the op run's
  * field-regex budget and completing an extract the tab handed over.
  */
-async function runTabExtract(context, script) {
+async function runTabExtract(context, script, { onAnswered = () => {} } = {}) {
   const { regexSpentMs: _spent, ...result } = await boundedRegex.runTabScript({
     budget: context.fieldRegexBudget,
     script,
     now: context.now,
-    execute: (code) => context.executeTool("javascript_tool", { code }, { signal: context.signal }),
+    execute: async (code) => {
+      const response = await context.executeTool("javascript_tool", { code }, { signal: context.signal });
+      if (!response?.error) onAnswered();
+      return response;
+    },
     unreadable: (size) => new Error(`the tab's output could not be read (${size} characters; the tab cuts it at ${TAB_OUTPUT_LIMIT})`),
   });
   return result;
@@ -213,18 +257,26 @@ function networkScript(request, allowedOrigins = [], extract, regexBudget = boun
   const body = request.body;
   let tail;
   if (html) {
+    // Preparing the page is part of the extract: its failure (a <base href> no URL can be made of)
+    // comes back as the extract's, like one finish() catches.
     tail = `${finishSource(regexBudget)}
-const doc = new DOMParser().parseFromString(text, "text/html");
-// Relative links resolve against the response URL, not the tab's page.
-const responseUrl = response.url || url.toString();
-const base = doc.querySelector("base[href]");
-if (base) base.setAttribute("href", new URL(base.getAttribute("href"), responseUrl).href);
-else {
-  const element = doc.createElement("base");
-  element.setAttribute("href", responseUrl);
-  doc.head.prepend(element);
+let prepared;
+try {
+  const doc = new DOMParser().parseFromString(text, "text/html");
+  // Relative links resolve against the response URL, not the tab's page.
+  const responseUrl = response.url || url.toString();
+  const base = doc.querySelector("base[href]");
+  if (base) base.setAttribute("href", new URL(base.getAttribute("href"), responseUrl).href);
+  else {
+    const element = doc.createElement("base");
+    element.setAttribute("href", responseUrl);
+    doc.head.prepend(element);
+  }
+  prepared = ${htmlExtractFunction(html)}(doc);
+} catch (error) {
+  return { ...head, extractError: \`the response couldn't be prepared for its extract: \${error.message}\` };
 }
-return finish(head, ${htmlExtractFunction(html)}(doc), "--item/--field");`;
+return finish(head, prepared, "--item/--field");`;
   } else if (isJsonExtract(extract)) {
     tail = `${finishSource(regexBudget)}
 return finish(head, {
@@ -269,6 +321,21 @@ ${read}
 })()`;
 }
 
+// Refuses a request to an origin the op doesn't allow before anything is sent. A relative URL is
+// resolved against the tab's page, read first; the tab checks again when it sends.
+async function assertAllowedOrigin(url, { allowedOrigins = [], executeTool, signal }) {
+  if (allowedOrigins.length === 0) return;
+  let resolved;
+  try {
+    resolved = new URL(url);
+  } catch {
+    const page = await executeTool("javascript_tool", { code: "location.href" }, { signal });
+    if (page?.error) throw new Error(typeof page.error === "string" ? page.error : JSON.stringify(page.error));
+    resolved = new URL(url, page?.output !== undefined ? JSON.parse(page.output) : page?.value);
+  }
+  if (!allowedOrigins.includes(resolved.origin)) throw new Error(`playbook network origin is not allowed: ${resolved.origin}`);
+}
+
 async function runStrategy(strategy, context) {
   if (strategy.using === "script") {
     if (context.allowScript !== true) throw new Error("script strategy requires --allow-script");
@@ -296,8 +363,17 @@ async function runStrategy(strategy, context) {
     return result.value;
   }
   if (strategy.using === "workflow") {
-    const result = await executeWorkflow(applyTemplate(strategy.steps, context.args), {
+    // An escaped op's steps go to the workflow runtime as stored: it decodes their text and fills
+    // inputs in the same pass (resolveVar), as renderRequest does a request, so it never reads an
+    // input's value. This first pass only checks that every input they embed is set, before any
+    // step runs; fillEscapedSteps fills the fields the runtime doesn't. Any other op gets its
+    // inputs first, then its workflow vars, as on main.
+    if (context.escapes) substituteVars(strategy.steps, {}, { escapes: true, inputs: context.args });
+    const steps = context.escapes ? fillEscapedSteps(strategy.steps, context.args) : applyTemplate(strategy.steps, context.args);
+    const result = await executeWorkflow(steps, {
       autoWait: strategy.autoWait !== false,
+      escapes: context.escapes,
+      inputs: context.args,
       executeTool: async (tool, args, options) => {
         await context.markDispatched?.();
         return context.executeTool(tool, args, options);
@@ -312,13 +388,18 @@ async function runStrategy(strategy, context) {
     if (result.status !== "completed") throw new Error(result.error || "workflow strategy failed");
     if (!strategy.extract?.html) return result;
     // The same extraction as the network strategy, on the page the workflow ended on.
-    const found = await runTabExtract(context, (budget) => `(async () => {\n${finishSource(budget)}\nreturn finish({}, ${htmlExtractFunction(strategy.extract.html)}(document), "--item/--field");\n})()`);
-    if (found?.extractError) throw new Error(found.extractError);
+    let found;
+    try {
+      found = await runTabExtract(context, (budget) => `(async () => {\n${finishSource(budget)}\nreturn finish({}, ${htmlExtractFunction(strategy.extract.html)}(document), "--item/--field");\n})()`);
+    } catch (error) {
+      throw checkFailure(error);
+    }
+    if (found?.extractError) throw checkFailure(found.extractError);
     return { ...result, extracted: found?.extracted };
   }
   if (strategy.using === "network") {
     const { authInputs: inputs = [], ...template } = strategy.request;
-    const rendered = renderRequest(template, context.args);
+    const rendered = renderRequest(template, context.args, { escapes: context.escapes });
     for (const input of inputs) {
       const value = context.authValues?.[input.env];
       if (value) rendered.headers[input.header] = value;
@@ -330,13 +411,23 @@ async function runStrategy(strategy, context) {
       context.serverIdempotency,
       context.attemptId,
     );
+    await assertAllowedOrigin(request.url, context);
     // Without an in-tab extract the body comes from network capture: turn it on before sending.
     const inTab = extractsInTab(strategy.extract);
     const capture = inTab ? undefined : await watchCapture({ executeTool: context.executeTool, sleep: context.sleep });
     await context.markDispatched?.();
-    const { requestUrl, sentAt, doneAt, redirected, ...result } = await runTabExtract(context, (budget) => networkScript(request, context.allowedOrigins, strategy.extract, budget));
+    // An in-tab extract may need a second script (its patterns) once the request is answered; what
+    // fails then is the extract.
+    let answered = false;
+    let tab;
+    try {
+      tab = await runTabExtract(context, (budget) => networkScript(request, context.allowedOrigins, strategy.extract, budget), { onAnswered: () => { answered = true; } });
+    } catch (error) {
+      throw inTab && answered ? checkFailure(error) : error;
+    }
+    const { requestUrl, sentAt, doneAt, redirected, ...result } = tab;
     if (!result?.ok && (strategy.acceptStatus || []).includes(result?.status) === false) throw new Error(`network strategy returned ${result?.status || "an unknown status"}`);
-    if (result.extractError) throw new Error(result.extractError);
+    if (result.extractError) throw checkFailure(result.extractError);
     if (inTab) return result;
     const body = await capture.read({ ...result, method: String(request.method || "GET").toUpperCase(), requestUrl, redirected, sentAt, doneAt });
     let bodyJson;
@@ -354,7 +445,7 @@ async function runStrategy(strategy, context) {
     // Field templates ({{author}}) name record fields, not op args, so they stay as written.
     if (using === "api") {
       const { fields, ...records } = spec.records;
-      const templated = applyTemplate({ ...spec, records }, context.args);
+      const templated = applyTemplate({ ...spec, records }, context.args, { escapes: context.escapes });
       return runApiHarvest({
         spec: { ...templated, records: { ...templated.records, fields } },
         executeTool: context.executeTool,
@@ -365,7 +456,7 @@ async function runStrategy(strategy, context) {
       });
     }
     const { fields, key, ...rest } = spec;
-    return runCollect({ spec: { ...applyTemplate(rest, context.args), fields, key }, executeTool: context.executeTool, sleep: context.sleep, regexBudget: context.fieldRegexBudget, now: context.now });
+    return runCollect({ spec: { ...applyTemplate(rest, context.args, { escapes: context.escapes }), fields, key }, executeTool: context.executeTool, sleep: context.sleep, regexBudget: context.fieldRegexBudget, now: context.now });
   }
   throw new Error(`unsupported strategy: ${strategy.using}`);
 }
@@ -383,6 +474,12 @@ async function runPlaybookOp({ playbook, op, args: providedArgs = {}, secrets = 
   const regexBudget = createRegexBudget();
   const fieldRegexBudget = boundedRegex.createFieldRegexBudget();
   const attempts = [];
+  // In an op saved from a record, a failed check its file wrote is the op's, so a draft's check
+  // never sends more. A read still tries its next strategy (the recorded steps) when its request
+  // fails as the runtime sees it: never answered, or answered with a status that isn't ok. A write
+  // stops at any failure.
+  const fromRecord = op.provenance?.recordId !== undefined;
+  const escapes = escapedOp(op);
   for (let index = 0; index < run.length; index++) {
     const strategy = run[index];
     let dispatched = false;
@@ -406,13 +503,20 @@ async function runPlaybookOp({ playbook, op, args: providedArgs = {}, secrets = 
         fieldRegexBudget,
         now,
         markDispatched: op.effect === "write" ? markDispatched : undefined,
+        escapes,
         serverIdempotency: op.effect === "write" ? op.safety?.serverIdempotency : undefined,
         allowScript,
       });
-      const value = extractResult(raw, strategy.extract, fieldRegexBudget);
-      const expect = strategy.verify || strategy.expect || op.on?.success?.expect;
-      // Saved assertions hold for every strategy, even one with its own verify.
-      const checked = verifyResult(value, assert ? { ...expect, assert } : expect, raw, Object.values(authValues), regexBudget);
+      let value;
+      let checked;
+      try {
+        value = extractResult(raw, strategy.extract, fieldRegexBudget);
+        const expect = strategy.verify || strategy.expect || op.on?.success?.expect;
+        // Saved assertions hold for every strategy, even one with its own verify.
+        checked = verifyResult(value, assert ? { ...expect, assert } : expect, raw, Object.values(authValues), regexBudget);
+      } catch (error) {
+        throw checkFailure(error);
+      }
       if (op.effect === "write") await afterDispatch({ status: "verified", strategy, index });
       onEvent({ type: "strategy.completed", playbook: playbook.id, op: op.id, using: strategy.using, index, endedAt: new Date().toISOString() });
       return { status: "completed", playbook: playbook.id, op: op.id, strategy: strategy.using, value: redactSecrets(value, authValues), provenance: playbook.provenance, attempts, ...(checked ? { assertions: redactSecrets(checked, authValues) } : {}) };
@@ -426,6 +530,12 @@ async function runPlaybookOp({ playbook, op, args: providedArgs = {}, secrets = 
       if (op.effect === "write") {
         await afterDispatch({ status: dispatched ? "indeterminate" : "not_dispatched", strategy, index, error: message });
         throw error;
+      }
+      if (fromRecord && caught?.[CHECK_FAILED]) {
+        const answered = strategy.using === "network" ? "its request was answered" : "it ran";
+        const final = new Error(`${strategy.using} strategy failed after ${answered}: ${message}; an op saved from a record doesn't try its next strategy when a check fails`);
+        final.attempts = attempts;
+        throw final;
       }
     }
   }

@@ -184,6 +184,52 @@ describe("pb param: field locations", () => {
     );
   });
 
+  it("templates a --value that holds a captured {{…}}, the text around it kept as captured", () => {
+    const { escapeTemplates } = require("../../native/playbook-template.cjs");
+    const captured = { note: "a {{x}} b {{y}}", whole: "{{x}}" };
+    // pb save marks an op whose captured text it escaped.
+    const saved = { escapes: true };
+    const { op } = paramOp(
+      networkOp(
+        { url: "https://shop.test/save", query: escapeTemplates(captured) },
+        { provenance: { recordId: "rec-1", escaped: true } },
+      ),
+      {
+        fields: ["query.note"],
+        as: "v",
+        value: "{{x}}",
+      },
+    );
+    expect(op.args.v).toEqual({ type: "string", default: "{{x}}" });
+    expect(renderRequest(requestOf(op), { v: "Z" }, saved).query).toEqual({
+      note: "a Z b {{y}}",
+      whole: "{{x}}",
+    });
+    const whole = paramOp(op, { fields: ["query.whole"], as: "w", value: "{{x}}" }).op;
+    expect(renderRequest(requestOf(whole), { v: "Z", w: "W" }, saved).query).toEqual({
+      note: "a Z b {{y}}",
+      whole: "W",
+    });
+    // A second part of the same field keeps the first input and the captured text around both.
+    const second = paramOp(op, { fields: ["query.note"], as: "u", value: "b" }).op;
+    expect(renderRequest(requestOf(second), { v: "Z", u: "U" }, saved).query.note).toBe(
+      "a Z U {{y}}",
+    );
+    expect(() => paramOp(op, { fields: ["query.note"], as: "t", value: "v}} b" })).toThrow(
+      'query.note: "v}} b" overlaps an input in "a {{v}} b {{!}}y}}"',
+    );
+  });
+
+  // A hand-written op never held the escape: its {{!}} is text, as it always was.
+  it("templates a hand-written op's {{!}} as plain text", () => {
+    const { op } = paramOp(
+      networkOp({ url: "https://shop.test/save", query: { note: "a{{!}}b {{!}}c" } }),
+      { fields: ["query.note"], as: "v", value: "b" },
+    );
+    expect(requestOf(op).query).toEqual({ note: "a{{!}}{{v}} {{!}}c" });
+    expect(renderRequest(requestOf(op), { v: "Z" }).query).toEqual({ note: "a{{!}}Z {{!}}c" });
+  });
+
   it("templates a plain header", () => {
     const { op } = paramOp(
       networkOp({ url: "https://api.test/x", headers: { "X-Origin": "https://resy.test" } }),
@@ -337,6 +383,127 @@ describe("pb param: validation", () => {
     expect(
       paramOp(unrelated, { fields: ["path.2"], as: "page", value: "2" }).notes.join("\n"),
     ).toMatch(/workflow strategy unchanged/);
+  });
+});
+
+describe("pb param --link: a drafted typed-value input", () => {
+  // A draft never stores a typed value, so the workflow types {{text}}, an input of its own.
+  const drafted = (extra: Record<string, unknown> = {}) => ({
+    id: "search",
+    effect: "read",
+    args: { text: { required: true, desc: "Recorded text" } },
+    run: [
+      {
+        using: "network",
+        request: {
+          method: "GET",
+          url: "https://hr.test/api/v2/pim/employees",
+          query: { nameOrId: "Isabela", includeEmployees: "onlyCurrent" },
+        },
+      },
+      {
+        using: "workflow",
+        steps: [
+          { cmd: "type", args: { selector: "input.name", text: "{{text}}" } },
+          { cmd: "key", args: { key: "Enter" } },
+        ] as Array<{ cmd: string; args: Record<string, string> }>,
+      },
+    ],
+    ...extra,
+  });
+
+  it("gives the typed step the named input and drops text, leaving only the named input", () => {
+    const plain = paramOp(drafted(), { fields: ["query.nameOrId"], as: "name", required: true });
+    expect(Object.keys(plain.op.args)).toEqual(["text", "name"]);
+    expect(plain.notes.join("\n")).toMatch(
+      /workflow strategy unchanged.*if --text holds the same value, add --link text/,
+    );
+
+    const result = paramOp(drafted(), {
+      fields: ["query.nameOrId"],
+      as: "name",
+      required: true,
+      link: "text",
+    });
+    expect(result.op.args).toEqual({ name: { type: "string", required: true } });
+    expect(requestOf(result.op).query.nameOrId).toBe("{{name}}");
+    expect(result.op.run[1].steps[0]).toEqual({
+      cmd: "type",
+      args: { selector: "input.name", text: "{{name}}" },
+    });
+    expect(result.notes).toEqual(["workflow fallback takes --name in place of --text: type text"]);
+    expect(() => playbooks.validateOp(result.op, { origins: [] })).not.toThrow();
+    // Again: nothing left to link, nothing changes.
+    const again = paramOp(result.op, {
+      fields: ["query.nameOrId"],
+      as: "name",
+      required: true,
+      link: "text",
+    });
+    expect(again.changed).toBe(false);
+  });
+
+  it("renames the input at every depth: loop bodies, until steps and nested loops", () => {
+    const looped = drafted();
+    (looped.run[1] as any).steps = [
+      {
+        repeat: 3,
+        steps: [
+          { cmd: "type", args: { text: "{{text}}" } },
+          { repeat: 2, steps: [{ cmd: "key", args: { key: "{{text}}" } }] },
+        ],
+        until: { cmd: "locate.text", args: { text: "{{text}}" } },
+      },
+    ];
+    const { op, notes } = paramOp(looped, { fields: ["query.nameOrId"], as: "name", link: "text" });
+    expect(JSON.stringify(op.run)).not.toContain("{{text}}");
+    expect((op.run[1] as any).steps[0].until.args.text).toBe("{{name}}");
+    expect(notes).toEqual([
+      "workflow fallback takes --name in place of --text: type text, key key, locate.text text",
+    ]);
+    expect(() => playbooks.validateOp(op, { origins: [] })).not.toThrow();
+  });
+
+  it("moves a write's safety key to the named input", () => {
+    const write = drafted({
+      effect: "write",
+      safety: { authorization: "explicit", duplicate: "transactional", key: ["text"] },
+    });
+    write.run[1].steps = [{ cmd: "type", args: { text: "{{text}}" } }];
+    const { op } = paramOp(write, { fields: ["query.nameOrId"], as: "name", link: "text" });
+    expect(op.args).toEqual({ name: { type: "string", default: "Isabela" } });
+    expect(op.safety.key).toEqual(["name"]);
+  });
+
+  it("refuses a link that isn't a workflow-only input", () => {
+    const link = (op: Record<string, unknown>, name: string, as = "name") =>
+      paramOp(op, { fields: ["query.nameOrId"], as, link: name });
+    expect(() => link(drafted(), "txt")).toThrow(
+      "--link txt: the op has no input txt (inputs: text, name)",
+    );
+    expect(() => link(drafted(), "text", "text")).toThrow(
+      "--link text names the same input as --as",
+    );
+    const sent = drafted();
+    (sent.run[0] as any).request.query.includeEmployees = "{{text}}";
+    expect(() => link(sent, "text")).toThrow(
+      "--link text: the network strategy uses {{text}} too, so it is an input of its own; pick another --as",
+    );
+    const unused = drafted();
+    unused.run[1].steps = [{ cmd: "key", args: { key: "Enter" } }];
+    expect(() => link(unused, "text")).toThrow("--link text: no workflow step takes {{text}}");
+    expect(() =>
+      paramOp(drafted(), { fields: ["headers.x-v"], env: "SITE_KEY", link: "text" }),
+    ).toThrow("--link goes with --as");
+  });
+
+  it("takes --link from the CLI", async () => {
+    const { cwd, file } = project(drafted());
+    await handlePlaybookCli(
+      ["pb", "param", "shop", "search", "query.nameOrId", "--as", "name", "--link", "text"],
+      { cwd },
+    );
+    expect(Object.keys(JSON.parse(fs.readFileSync(file, "utf8")).args)).toEqual(["name"]);
   });
 });
 

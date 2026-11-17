@@ -10,6 +10,17 @@ const {
   writePrivateFileExclusive,
 } = require("./private-state.cjs");
 
+// Attempt ids are the UUIDs surf generates. Any other value (a path, `..`) is refused before a file
+// name is built from it.
+const ATTEMPT_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+
+function assertAttemptId(value, label = "attempt id") {
+  if (typeof value !== "string" || !ATTEMPT_ID.test(value)) {
+    throw new Error(`${label} must be a write attempt id, a UUID such as 6f1c2a3b-4d5e-4f60-8a7b-9c0d1e2f3a4b`);
+  }
+  return value;
+}
+
 function receiptRoot(root = getPrivateStateRoot()) {
   return path.join(root, "playbook-receipts");
 }
@@ -48,12 +59,54 @@ function attemptFiles(claimDir) {
     .sort((a, b) => String(a.createdAt).localeCompare(String(b.createdAt)));
 }
 
+// Throws when an earlier attempt on the claim blocks this one; returns the attempt retried with
+// --retry-attempt, if any.
+function checkAttempts({ claimDir, op, repeat, retryAttempt, overrideInDoubt, now }) {
+  const existing = attemptFiles(claimDir);
+  const latest = existing.at(-1);
+  if (!latest) {
+    throw new Error("write blocked by an unresolved semantic claim created before an attempt receipt was durable");
+  }
+  if (retryAttempt) {
+    const retry = existing.find((attempt) => attempt.attemptId === retryAttempt);
+    if (!retry) throw new Error(`receipt attempt not found: ${retryAttempt}`);
+    if (retry.status === "verified") throw new Error(`receipt attempt is already verified: ${retryAttempt}`);
+    if (retry.status !== "reserved" && retry.status !== "not_dispatched" && !op.safety.serverIdempotency) {
+      throw new Error("--retry-attempt after dispatch requires declared server idempotency");
+    }
+    return retry;
+  }
+  const ageMs = Math.max(0, now - Date.parse(latest.updatedAt || latest.createdAt));
+  const windowMs = op.safety.windowMs ?? 30000;
+  const windowElapsed = op.safety.duplicate === "repeatable-window" && latest.status === "verified" && ageMs >= windowMs;
+  const deliberateOverride = overrideInDoubt && latest.status === "indeterminate";
+  const deliberateRepeat = repeat && latest.status === "verified";
+  if (!windowElapsed && !deliberateOverride && !deliberateRepeat) {
+    throw new Error(`write blocked by ${latest.status} receipt ${latest.attemptId}; use the policy-specific retry or override flag`);
+  }
+  return null;
+}
+
+// Refuses a write that reserveReceipt would refuse, and writes no receipt. surf use checks before a
+// run and reserves only once the request is dispatched, so a run refused before sending leaves none.
+function checkReceipt({ playbookId, op, args, repeat = false, retryAttempt, overrideInDoubt = false, now = Date.now(), root = getPrivateStateRoot() }) {
+  if (op.effect !== "write") return;
+  if (retryAttempt !== undefined) assertAttemptId(retryAttempt, "--retry-attempt");
+  const claimDir = path.join(receiptRoot(root), semanticClaimKey({ playbookId, op, args, root }));
+  if (fs.existsSync(claimDir)) checkAttempts({ claimDir, op, repeat, retryAttempt, overrideInDoubt, now });
+  else if (retryAttempt !== undefined) throw new Error(`receipt attempt not found: ${retryAttempt}`);
+}
+
 function reserveReceipt({ playbookId, op, args, repeat = false, retryAttempt, overrideInDoubt = false, attemptId = crypto.randomUUID(), now = Date.now(), root = getPrivateStateRoot() }) {
   if (op.effect !== "write") return null;
+  assertAttemptId(attemptId);
+  if (retryAttempt !== undefined) assertAttemptId(retryAttempt, "--retry-attempt");
   const base = receiptRoot(root);
   ensurePrivateDir(base, root);
   const claimKey = semanticClaimKey({ playbookId, op, args, root });
   const claimDir = path.join(base, claimKey);
+  // --retry-attempt names an attempt the claim already holds; a fresh claim has none.
+  if (retryAttempt !== undefined && !fs.existsSync(claimDir)) throw new Error(`receipt attempt not found: ${retryAttempt}`);
   let created = false;
   try {
     fs.mkdirSync(claimDir, { mode: 0o700 });
@@ -62,30 +115,8 @@ function reserveReceipt({ playbookId, op, args, repeat = false, retryAttempt, ov
     if (error?.code !== "EEXIST") throw error;
   }
   if (!created) {
-    const existing = attemptFiles(claimDir);
-    const latest = existing.at(-1);
-    if (!latest) {
-      throw new Error("write blocked by an unresolved semantic claim created before an attempt receipt was durable");
-    }
-    if (retryAttempt) {
-      const retry = existing.find((attempt) => attempt.attemptId === retryAttempt);
-      if (!retry) throw new Error(`receipt attempt not found: ${retryAttempt}`);
-      if (retry.status === "verified") throw new Error(`receipt attempt is already verified: ${retryAttempt}`);
-      if (retry.status !== "reserved" && retry.status !== "not_dispatched" && !op.safety.serverIdempotency) {
-        throw new Error("--retry-attempt after dispatch requires declared server idempotency");
-      }
-      return { claimKey, claimDir, attemptId: retryAttempt, path: path.join(claimDir, `${retryAttempt}.json`), receipt: retry };
-    }
-    if (latest) {
-      const ageMs = Math.max(0, now - Date.parse(latest.updatedAt || latest.createdAt));
-      const windowMs = op.safety.windowMs ?? 30000;
-      const windowElapsed = op.safety.duplicate === "repeatable-window" && latest.status === "verified" && ageMs >= windowMs;
-      const deliberateOverride = overrideInDoubt && latest.status === "indeterminate";
-      const deliberateRepeat = repeat && latest.status === "verified";
-      if (!windowElapsed && !deliberateOverride && !deliberateRepeat) {
-        throw new Error(`write blocked by ${latest.status} receipt ${latest.attemptId}; use the policy-specific retry or override flag`);
-      }
-    }
+    const retry = checkAttempts({ claimDir, op, repeat, retryAttempt, overrideInDoubt, now });
+    if (retry) return { claimKey, claimDir, attemptId: retryAttempt, path: path.join(claimDir, `${retryAttempt}.json`), receipt: retry };
   }
   const createdAt = new Date(now).toISOString();
   const receipt = { version: 1, playbook: playbookId, op: op.id, claimKey, attemptId, status: "reserved", duplicate: op.safety.duplicate, createdAt, updatedAt: createdAt };
@@ -106,4 +137,4 @@ function updateReceipt(handle, status, details = {}, root = getPrivateStateRoot(
   return receipt;
 }
 
-module.exports = { receiptRoot, reserveReceipt, semanticClaimKey, updateReceipt };
+module.exports = { assertAttemptId, checkReceipt, receiptRoot, reserveReceipt, semanticClaimKey, updateReceipt };

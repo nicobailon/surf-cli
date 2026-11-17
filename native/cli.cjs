@@ -1668,7 +1668,7 @@ const TOOLS = {
           write: "Authorize a write operation",
           "allow-script": "Allow the playbook's trusted script strategy",
           repeat: "Repeat a write whose last attempt was verified",
-          "retry-attempt": "Retry this write attempt id",
+          "retry-attempt": "Retry this write attempt (its UUID); the claim must already hold it",
           "override-in-doubt": "Write again after an indeterminate attempt",
           "pin-built-in": "Use the built-in playbook even if a user or project copy exists",
           json: "Output raw JSON",
@@ -1690,7 +1690,7 @@ const TOOLS = {
         opts: {
           op: "Operation name",
           "from-recent": "Use activity from this window (default: 1h)",
-          "from-record": "Use this record id",
+          "from-record": "Use this record id. Origins: the record's page and the replayed request's. A write draft whose workflow isn't one page-write step saves network-only. The record decides what the op sends (effect, safety, its strategies in order, steps, requests); the draft names and describes it, and its checks can only make it fail. Run pb param after",
           "request-id": "With --from-record: replay this request (from pb record candidates) instead of the draft's",
           project: "Save in ./.surf/playbooks instead of ~/.surf/playbooks",
         },
@@ -1710,6 +1710,7 @@ const TOOLS = {
           desc: "Input description",
           value: "Template only this text inside the field, as 2 in page-2.html",
           env: "With one headers.<name> field: send the header from this variable, read from the caller's shell at run time and never stored",
+          link: "With --as: give the workflow's steps that take this drafted input (text, from a typed value) the new input instead, and drop it",
           json: "Output raw JSON",
         },
         examples: [
@@ -1718,6 +1719,7 @@ const TOOLS = {
           { cmd: "pb param walmart search query.variables.query query.variables.searchArgs.query --as query", desc: "One input in two places in a JSON query param" },
           { cmd: "pb param resy search body.slot_filter.party_size --as party_size", desc: "A JSON body field (form and multipart fields work the same way)" },
           { cmd: "pb param resy search headers.authorization --env RESY_API_KEY", desc: "A site's public key from the environment" },
+          { cmd: "pb param hr search_employees query.nameOrId --as name --required --link text", desc: "The typed name and the request's name are one input, --name" },
         ],
       },
       "playbook record start": {

@@ -6,6 +6,7 @@ const path = require("node:path");
 
 const clients = require("../../native/playbook-client.cjs");
 const records = require("../../native/playbook-records.cjs");
+const { renderRequest, resolveArgValues } = require("../../native/playbook-template.cjs");
 const directories: string[] = [];
 
 afterEach(() => {
@@ -122,6 +123,42 @@ describe("playbook client projection", () => {
     });
     expect(result.manifest.endpoint.url).toBe("https://example.test/api/search");
   });
+
+  it.each(["{{x}}", "prefix {{x}}", "{{_open}}", "{{!}}", "{{", "{{{x}}}"])(
+    "derives a client that sends a captured %s as captured, not as an input",
+    (literal) => {
+      const parent = fs.mkdtempSync(path.join(os.tmpdir(), "surf-client-"));
+      directories.push(parent);
+      const root = path.join(parent, "state");
+      const record = records.startRecord({ site: "fixture", op: "search", tabId: 1, root });
+      records.attachNetworkTrace(
+        record.id,
+        [
+          {
+            id: "r-1",
+            method: "GET",
+            status: 200,
+            type: "XHR",
+            url: `https://example.test/api/search?q=${encodeURIComponent(literal)}`,
+            requestHeaders: { "x-note": literal },
+          },
+        ],
+        root,
+      );
+      const { manifest } = clients.deriveClient("fixture", "search", path.join(parent, "client"), {
+        root,
+        recordId: record.id,
+      });
+      expect(manifest.args).toEqual({});
+      expect(manifest.escapes).toBe(true);
+      const sent = renderRequest(
+        manifest.endpoint,
+        resolveArgValues(manifest.args, { x: "deleteAll" }),
+        { escapes: manifest.escapes },
+      );
+      expect(sent).toMatchObject({ query: { q: literal }, headers: { "x-note": literal } });
+    },
+  );
 
   it("derives from the one clear winner of the ranking, and asks for --request-id when there is none", () => {
     const parent = fs.mkdtempSync(path.join(os.tmpdir(), "surf-client-"));
@@ -374,6 +411,64 @@ describe("clients from parameterised ops", () => {
       valid: true,
       execution: { requests: 1 },
     });
+  });
+
+  // Only an op pb save escaped reads {{!}} as {{; a hand-written op's client sends it as written.
+  it.each([
+    ["a hand-written op", {}, "a {{!}} b"],
+    ["an op pb save made", { provenance: { recordId: "rec-1", escaped: true } }, "a {{ b"],
+  ])("exports a client of %s that sends {{!}} as that op does", async (_case, extra, body) => {
+    const cwd = writeOp({
+      id: "note",
+      effect: "read",
+      run: [
+        {
+          using: "network",
+          request: { method: "POST", url: "https://books.test/note", body: "a {{!}} b" },
+        },
+      ],
+      ...extra,
+    });
+    const out = path.join(cwd, "client");
+    clients.exportClient("books", "note", out, { cwd, allowWrite: true });
+    const requests = await serve(async (origin) => {
+      await runClient(out, [], { SURF_CLIENT_ORIGIN: origin });
+    });
+    expect(requests[0]).toMatchObject({ method: "POST", body });
+    await expect(clients.verifyClient(out, { live: false })).resolves.toMatchObject({
+      valid: true,
+    });
+  });
+
+  // The client decodes the op's stored text, never an input's value.
+  it("exports a client of an op pb save made that sends each input as given", async () => {
+    const values = ["%{!}", "{{!}}", "%{x}", "{{x}}", "%{!}_open}", "a{{q}}b"];
+    const cwd = writeOp({
+      id: "note",
+      effect: "read",
+      args: { q: { type: "string", required: true } },
+      provenance: { recordId: "rec-1", escaped: true },
+      run: [
+        {
+          using: "network",
+          request: {
+            method: "POST",
+            url: "https://books.test/note",
+            headers: { "x-q": "{{q}}" },
+            body: "{{!}}q}} {{q}}",
+          },
+        },
+      ],
+    });
+    const out = path.join(cwd, "client");
+    clients.exportClient("books", "note", out, { cwd, allowWrite: true });
+    const requests = await serve(async (origin) => {
+      for (const q of values) {
+        await runClient(out, ["--q", q], { SURF_CLIENT_ORIGIN: origin });
+      }
+    });
+    expect(requests.map((request) => request.body)).toEqual(values.map((q) => `{{q}} ${q}`));
+    expect(requests.map((request) => request.headers["x-q"])).toEqual(values);
   });
 
   it('reads --x "" and --x= as the empty string, and a bare --flag only for a boolean', async () => {

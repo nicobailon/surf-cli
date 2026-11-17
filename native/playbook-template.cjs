@@ -25,12 +25,14 @@ function resolveArgValues(specs, provided) {
 // A string that is only `{{name}}` takes the input's own value (left out when it is unset). Inside
 // a longer string the value is encoded for where it lands: the URL and urlencoded bodies get
 // percent-encoding; query params, headers and other bodies get the text as is. Object and array
-// query params are sent as JSON.
-function renderRequest(request, args) {
+// query params are sent as JSON. With `escapes` (an op pb save escaped, see escapedOp), `{{!}}` is
+// sent as `{{` (see escapeTemplates); any other request sends it as written.
+function renderRequest(request, args, { escapes = false } = {}) {
   const EXACT = /^\{\{([a-zA-Z0-9._-]+)\}\}$/;
-  const ANY = /\{\{([a-zA-Z0-9._-]+)\}\}/g;
+  const ANY = escapes ? /\{\{([a-zA-Z0-9._-]+|!)\}\}/g : /\{\{([a-zA-Z0-9._-]+)\}\}/g;
   const keep = (text) => text;
   const embed = (text, encode) => text.replace(ANY, (_, name) => {
+    if (name === "!") return "{{";
     if (args[name] === undefined) throw new Error(`missing template argument: ${name}`);
     return encode(String(args[name]));
   });
@@ -60,4 +62,45 @@ function renderRequest(request, args) {
   return rendered;
 }
 
-module.exports = { renderRequest, resolveArgValues };
+// Captured text that reads like an input (`{{action}}` in a recorded body) is kept as text: each
+// `{{` that opens one becomes `{{!}}`, which renderRequest sends as `{{` in an op marked escaped. `!` is in no name either
+// template takes: a `{{name}}` is [a-zA-Z0-9._-]+ (renderRequest, applyTemplate in
+// playbook-runtime.cjs) and a `%{name}` is \w+ (resolveVar in workflow-runtime.cjs), so every name
+// is filled as before. The escape is reversible: a captured `{{!}}` opens one too, so it is stored as
+// `{{!}}!}}`, and every `{{!}}` an escaped text holds stands for `{{`.
+const LITERAL_OPEN = "{{!}}";
+const OPENS_PLACEHOLDER = /\{\{(?=(?:[a-zA-Z0-9._-]+|!)\}\})/g;
+// A workflow also fills `%{name}` from its vars (an op's inputs), so a recorded step argument
+// keeps `%{` as `%{!}`, which the workflow runtime sends as `%{`.
+const LITERAL_PERCENT_OPEN = "%{!}";
+const OPENS_VAR = /%\{(?=(?:\w+|!)\})/g;
+
+function escapeText(value, escape) {
+  if (typeof value === "string") return escape(value);
+  if (Array.isArray(value)) return value.map((item) => escapeText(item, escape));
+  if (value && typeof value === "object") return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, escapeText(item, escape)]));
+  return value;
+}
+
+function escapeTemplates(value) {
+  return escapeText(value, (text) => text.replace(OPENS_PLACEHOLDER, LITERAL_OPEN));
+}
+
+// A recorded step's arguments, every string at any depth kept as recorded when the op runs.
+function escapeStepArgs(value) {
+  return escapeText(value, (text) => text.replace(OPENS_VAR, LITERAL_PERCENT_OPEN).replace(OPENS_PLACEHOLDER, LITERAL_OPEN));
+}
+
+// The text an escaped string stands for, its inputs left in place.
+function unescapeTemplates(text) {
+  return text.replaceAll(LITERAL_OPEN, "{{");
+}
+
+// Whether an op holds escaped text: pb save --from-record and --from-recent set provenance.escaped
+// on the op they save, whatever its draft said, and only there do `{{!}}` and `%{!}` stand for `{{`
+// and `%{`. A hand-written op, and surf do, send them as written.
+function escapedOp(op) {
+  return op?.provenance?.escaped === true;
+}
+
+module.exports = { LITERAL_OPEN, escapeStepArgs, escapeTemplates, escapedOp, renderRequest, resolveArgValues, unescapeTemplates };

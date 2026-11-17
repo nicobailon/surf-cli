@@ -27,21 +27,39 @@ function getAutoWaitCommand(cmd) {
   return null;
 }
 
-function resolveVar(template, vars) {
+function varText(vars, name) {
+  const value = vars[name];
+  if (value === undefined) return `%{${name}}`;
+  return typeof value === "object" ? JSON.stringify(value) : String(value);
+}
+
+// The steps of an op pb save escaped (`escapes`) are read in one pass: `{{name}}` takes the op's
+// input (`inputs`), `%{name}` a var, and `{{!}}` and `%{!}` stand for `{{` and `%{` (see
+// escapeStepArgs in playbook-template.cjs). One pass, so a value it puts in is never read again:
+// an input or var holding `%{!}` or `%{name}` is sent as given. `!` is in no name, so every name
+// is filled. surf do and other ops fill only `%{name}` here and send `%{!}` as written.
+const ESCAPED_TEXT = /\{\{([a-zA-Z0-9._-]+|!)\}\}|%\{(\w+|!)\}/g;
+
+function resolveVar(template, vars, { escapes = false, inputs = {} } = {}) {
   if (typeof template !== "string") return template;
+  const input = escapes && template.match(/^\{\{([a-zA-Z0-9._-]+)\}\}$/);
+  if (input) return inputs[input[1]];
   const match = template.match(/^%\{(\w+)\}$/);
   if (match) return vars[match[1]] !== undefined ? vars[match[1]] : template;
-  return template.replace(/%\{(\w+)\}/g, (_, name) => {
-    const value = vars[name];
-    if (value === undefined) return `%{${name}}`;
-    return typeof value === "object" ? JSON.stringify(value) : String(value);
+  if (!escapes) return template.replace(/%\{(\w+)\}/g, (_, name) => varText(vars, name));
+  return template.replace(ESCAPED_TEXT, (_, inputName, varName) => {
+    if (inputName === "!") return "{{";
+    if (varName === "!") return "%{";
+    if (varName !== undefined) return varText(vars, varName);
+    if (inputs[inputName] === undefined) throw new Error(`missing template argument: ${inputName}`);
+    return String(inputs[inputName]);
   });
 }
 
-function substituteVars(value, vars) {
-  if (!value || typeof value !== "object") return typeof value === "string" ? resolveVar(value, vars) : value;
-  if (Array.isArray(value)) return value.map((item) => substituteVars(item, vars));
-  return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, substituteVars(item, vars)]));
+function substituteVars(value, vars, options) {
+  if (!value || typeof value !== "object") return typeof value === "string" ? resolveVar(value, vars, options) : value;
+  if (Array.isArray(value)) return value.map((item) => substituteVars(item, vars, options));
+  return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, substituteVars(item, vars, options)]));
 }
 
 function extractStepOutput(response) {
@@ -130,15 +148,17 @@ async function executeSemanticStep(step, semanticContext, options) {
 async function executeSingleStep(step, vars, options) {
   const {
     autoWait = true,
+    escapes = false,
     executeTool,
     includeInputValues = false,
+    inputs,
     onEvent = () => {},
     signal,
     sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
     stepDelay = 100,
   } = options;
   if (typeof executeTool !== "function") throw new Error("workflow runtime requires executeTool");
-  const args = substituteVars(step.args || {}, vars);
+  const args = substituteVars(step.args || {}, vars, { escapes, inputs });
   const startedAt = new Date().toISOString();
   const baseEvent = { command: step.cmd, argsRedacted: redactCommandArgs(step.cmd, args, includeInputValues), startedAt };
   onEvent({ type: "tool.started", ...baseEvent });
@@ -184,7 +204,7 @@ async function executeStep(step, vars, options) {
     return { ...result, stepsExecuted: 1 };
   }
   if (step.repeat !== undefined) {
-    let max = resolveVar(step.repeat, vars);
+    let max = resolveVar(step.repeat, vars, { escapes: options.escapes, inputs: options.inputs });
     if (typeof max === "string") max = Number.parseInt(max, 10);
     if (typeof max !== "number" || Number.isNaN(max)) max = 1;
     max = Math.min(max, MAX_LOOP_ITERATIONS);
@@ -207,7 +227,10 @@ async function executeStep(step, vars, options) {
     return { success: true, stepsExecuted };
   }
   if (step.each !== undefined) {
-    const items = resolveVar(step.each, vars);
+    // An escaped op's inline list is read like its args, every string at any depth once; an input
+    // or var that is the whole value comes in as is. Any other op's list was filled before the run.
+    const fill = options.escapes ? substituteVars : resolveVar;
+    const items = fill(step.each, vars, { escapes: options.escapes, inputs: options.inputs });
     if (!Array.isArray(items)) return { success: false, error: `each: expected array, got ${typeof items}${items === undefined ? " (undefined)" : ""}`, stepsExecuted: 0 };
     if (!Array.isArray(step.steps) || step.steps.length === 0) return { success: false, error: "each: steps array required", stepsExecuted: 0 };
     const itemVar = step.as || "item";
