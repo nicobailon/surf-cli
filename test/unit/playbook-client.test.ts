@@ -538,6 +538,59 @@ describe("clients from parameterised ops", () => {
     });
   });
 
+  // As deep as an op file holds (pb param writes it pretty-printed, which Node does to about 5,600
+  // levels): exporting, verifying and running the client read it without recursion. A query that
+  // deep is longer than a local server takes, so that one is only exported and rendered.
+  it("exports, verifies and runs a client of an op whose JSON nests 5,000 levels deep", async () => {
+    const depth = 5000;
+    const nested = (leaf: unknown) => {
+      let value = leaf;
+      for (let level = 0; level < depth; level++) {
+        value = { x: value };
+      }
+      return value;
+    };
+    const deepOp = (id: string, request: Record<string, unknown>) => ({
+      id,
+      effect: "write",
+      args: { n: { type: "number", default: 1 } },
+      safety: { duplicate: "repeatable-window", windowMs: 1000, key: ["n"] },
+      provenance: { recordId: "rec-1", escaped: true },
+      run: [
+        {
+          using: "network",
+          request: { method: "POST", url: `https://books.test/${id}`, ...request },
+        },
+      ],
+    });
+    const cwd = writeOp(
+      deepOp("deep", { headers: { "content-type": "application/json" }, body: nested("{{n}}") }),
+    );
+    const out = path.join(cwd, "client");
+    const { manifest } = clients.exportClient("books", "deep", out, { cwd, allowWrite: true });
+    expect(Object.keys(manifest.args)).toEqual(["n"]);
+    await expect(clients.verifyClient(out, { live: false })).resolves.toMatchObject({
+      valid: true,
+    });
+    const requests = await serve(async (origin) => {
+      await runClient(out, ["--n", "2"], { SURF_CLIENT_ORIGIN: origin });
+    });
+    // As text: a matcher compares objects this deep by recursion.
+    expect(requests[0].body).toBe(JSON.stringify(nested(2)));
+
+    fs.writeFileSync(
+      path.join(cwd, ".surf", "playbooks", "books", "ops", "deepq.json"),
+      JSON.stringify(deepOp("deepq", { query: { v: nested("{{n}}") } })),
+    );
+    const query = clients.exportClient("books", "deepq", path.join(cwd, "query-client"), {
+      cwd,
+      allowWrite: true,
+    }).manifest;
+    expect(Object.keys(query.args)).toEqual(["n"]);
+    const sent = renderRequest(query.endpoint, { n: 2 }, { escapes: query.escapes }).query.v;
+    expect(sent).toBe(JSON.stringify(nested(2)));
+  });
+
   it('reads --x "" and --x= as the empty string, and a bare --flag only for a boolean', async () => {
     const cwd = writeOp({
       id: "search",

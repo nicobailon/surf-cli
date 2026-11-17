@@ -1218,24 +1218,26 @@ const redactTypedValuesInUrl = (url, typed, options) => maskTypedValuesInUrl(url
 // A placeholder a body holds as the whole body or a whole field value: a JSON string or a
 // urlencoded value. Markup such as XML-RPC's <value> is part of a longer value, so isn't one.
 function bodyPlaceholder(body) {
-  if (body && typeof body === "object") {
-    for (const item of Object.values(body)) {
-      const placeholder = bodyPlaceholder(item);
-      if (placeholder) return placeholder;
+  // Read in order with its own stack, so a body nested any depth is read.
+  const stack = [body];
+  const pushAll = (items) => {
+    for (let index = items.length - 1; index >= 0; index--) stack.push(items[index]);
+  };
+  while (stack.length) {
+    const item = stack.pop();
+    if (item && typeof item === "object") {
+      pushAll(Object.values(item));
+      continue;
     }
-    return null;
-  }
-  if (typeof body !== "string") return null;
-  const whole = decodings(body).find(({ text }) => WHOLE_PLACEHOLDER.test(text));
-  if (whole) return whole.text;
-  try {
-    const parsed = JSON.parse(body);
-    if (parsed && typeof parsed === "object") return bodyPlaceholder(parsed);
-  } catch {}
-  if (!body.includes("=")) return null;
-  for (const pair of body.split("&")) {
-    const placeholder = pair.includes("=") && bodyPlaceholder(pair.slice(pair.indexOf("=") + 1));
-    if (placeholder) return placeholder;
+    if (typeof item !== "string") continue;
+    const whole = decodings(item).find(({ text }) => WHOLE_PLACEHOLDER.test(text));
+    if (whole) return whole.text;
+    let parsed = null;
+    try {
+      parsed = JSON.parse(item);
+    } catch {}
+    if (parsed && typeof parsed === "object") stack.push(parsed);
+    else if (item.includes("=")) pushAll(item.split("&").filter((pair) => pair.includes("=")).map((pair) => pair.slice(pair.indexOf("=") + 1)));
   }
   return null;
 }

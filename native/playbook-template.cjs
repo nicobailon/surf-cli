@@ -139,17 +139,22 @@ function templateInputs(value, { keys = false } = {}) {
   const add = (text) => {
     for (const match of text.matchAll(/\{\{([a-zA-Z0-9._-]+)\}\}/g)) names.add(match[1]);
   };
-  const visit = (item) => {
-    if (typeof item === "string") add(item);
-    else if (Array.isArray(item)) item.forEach(visit);
-    else if (item && typeof item === "object") {
-      for (const [key, inner] of Object.entries(item)) {
-        if (keys) add(key);
-        visit(inner);
+  // In order, with its own stack, so a value nested any depth is read.
+  const stack = [{ value }];
+  while (stack.length) {
+    const { value: item, key } = stack.pop();
+    if (key !== undefined) add(key);
+    else if (typeof item === "string") add(item);
+    else if (Array.isArray(item)) {
+      for (let index = item.length - 1; index >= 0; index--) stack.push({ value: item[index] });
+    } else if (item && typeof item === "object") {
+      const entries = Object.entries(item);
+      for (let index = entries.length - 1; index >= 0; index--) {
+        stack.push({ value: entries[index][1] });
+        if (keys) stack.push({ key: entries[index][0] });
       }
     }
-  };
-  visit(value);
+  }
   return names;
 }
 

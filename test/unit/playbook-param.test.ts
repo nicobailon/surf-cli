@@ -467,16 +467,29 @@ describe("pb param: field locations", () => {
   });
 
   // JSON.parse reads any depth; so do pb param and renderRequest.
-  it("templates and sends a field of a stored JSON param nested 5,000 levels deep", () => {
+  it("templates, saves and sends a field of a stored JSON param or body nested 5,000 levels deep", () => {
+    const { findRedactedPlaceholder } = require("../../native/record-typed-values.cjs");
     const depth = 5000;
     const raw = `{"n":"seed","deep":${'{"x":'.repeat(depth)}0${"}".repeat(depth)}}`;
-    const saved = savedJsonOp(raw, "query");
-    const { op } = paramOp(saved, { fields: ["query.v.n"], as: "n" });
-    expect(op.args.n).toEqual({ type: "string", default: "seed" });
-    expect(requestOf(op).query.v.n).toBe("{{n}}");
-    // renderRequest reads any depth too.
-    const sent = renderRequest(requestOf(op), { n: "next" }, { escapes: true });
-    expect(sent.query.v).toBe(raw.replace('"seed"', '"next"'));
+    for (const where of ["query", "body"]) {
+      const field = where === "query" ? "query.v.n" : "body.n";
+      const { op } = paramOp(savedJsonOp(raw, where), { fields: [field], as: "n" });
+      expect(op.args.n).toEqual({ type: "string", default: "seed" });
+      // renderRequest reads any depth too.
+      const sent = renderRequest(requestOf(op), { n: "next" }, { escapes: true });
+      const text = where === "query" ? sent.query.v : JSON.stringify(sent.body);
+      expect(text).toBe(raw.replace('"seed"', '"next"'));
+      // Saved through validateOp, and read for a placeholder before it is sent, at that depth.
+      const { cwd, file } = project(savedJsonOp(raw, where));
+      expect(
+        applyParam({ playbook: "shop", op: "search", cwd, fields: [field], as: "n" }).changed,
+      ).toBe(true);
+      const stored = JSON.parse(fs.readFileSync(file, "utf8"));
+      expect(where === "query" ? requestOf(stored).query.v.n : requestOf(stored).body.n).toBe(
+        "{{n}}",
+      );
+      expect(findRedactedPlaceholder(requestOf(stored))).toBeNull();
+    }
   });
 
   // A hand-written op never held the escape: its {{!}} is text, as it always was.
