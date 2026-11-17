@@ -674,7 +674,7 @@ describe("CLI/native-host/fake-extension E2E contract", () => {
       ]);
       expect(results.filter((result) => result.code === 0)).toHaveLength(1);
       expect(results.filter((result) => result.code === 1)[0]?.stderr).toMatch(
-        /write blocked by verified receipt/,
+        /write blocked: attempt \S+ was sent at .+ and succeeded\. Add --repeat/,
       );
       expect(host.messages.filter((message) => message.type === "EXECUTE_JAVASCRIPT")).toHaveLength(
         2,
@@ -761,6 +761,137 @@ describe("CLI/native-host/fake-extension E2E contract", () => {
       await host.dispose();
     }
   });
+
+  // A host killed mid-write leaves its attempt dispatched or reserved, or only its claim; --repeat
+  // gets past each state, as it does past a verified or in-doubt one, and sends one request.
+  it("sends one more request with --repeat whatever the last attempt's state, and names it without", async () => {
+    const socketPath = createSocketPath();
+    const project = fs.mkdtempSync(path.join(os.tmpdir(), "surf-playbook-repeat-"));
+    tempDirs.push(project);
+    const opsDir = path.join(project, ".surf", "playbooks", "mutation", "ops");
+    fs.mkdirSync(opsDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(project, ".surf", "playbooks", "mutation", "playbook.json"),
+      JSON.stringify({ id: "mutation", version: "1.0.0", origins: ["https://fixture.test"] }),
+    );
+    const safety = { duplicate: "transactional", key: ["action"] };
+    fs.writeFileSync(
+      path.join(opsDir, "submit.json"),
+      JSON.stringify({
+        id: "submit",
+        effect: "write",
+        args: { action: { required: true } },
+        safety: { authorization: "explicit", ...safety },
+        run: [
+          {
+            using: "network",
+            request: {
+              method: "POST",
+              url: "https://fixture.test/api",
+              body: { action: "{{action}}" },
+            },
+            extract: { jsonPath: "$.ok" },
+            expect: { truthy: true },
+          },
+        ],
+      }),
+    );
+    const receipts = require("../../native/playbook-receipts.cjs") as {
+      receiptRoot(root: string): string;
+      semanticClaimKey(claim: Record<string, unknown>): string;
+      reserveReceipt(claim: Record<string, unknown>): { attemptId: string };
+      updateReceipt(handle: unknown, status: string, details: object, root: string): unknown;
+    };
+    const host = startHost(socketPath);
+    // What a run that stopped in this state left behind, as surf writes it.
+    const seed = (action: string, status: string | null) => {
+      const claim = {
+        playbookId: "mutation",
+        op: { id: "submit", safety },
+        args: { action },
+        root: host.stateDir,
+      };
+      if (status === null) {
+        fs.mkdirSync(
+          path.join(receipts.receiptRoot(host.stateDir), receipts.semanticClaimKey(claim)),
+          {
+            recursive: true,
+          },
+        );
+        return "";
+      }
+      const handle = receipts.reserveReceipt({ ...claim, op: { ...claim.op, effect: "write" } });
+      if (status !== "reserved") {
+        receipts.updateReceipt(handle, status, {}, host.stateDir);
+      }
+      return handle.attemptId;
+    };
+    const sent = () =>
+      host.messages.filter((message) => message.type === "EXECUTE_JAVASCRIPT").length;
+    const use = (action: string, ...flags: string[]) =>
+      runCli(
+        socketPath,
+        ["use", "mutation", "submit", "--action", action, "--write", ...flags],
+        project,
+      );
+    const at = "(\\d{4}-\\d{2}-\\d{2} )?\\d{2}:\\d{2}";
+
+    try {
+      await host.waitForMessage((message) => message.type === "HOST_READY");
+      const states: Array<[string | null, (attempt: string) => string]> = [
+        [
+          "verified",
+          (attempt) => `attempt ${attempt} was sent at ${at} and succeeded\\. Add --repeat`,
+        ],
+        [
+          "indeterminate",
+          (attempt) =>
+            `attempt ${attempt} was sent at ${at} and its result is unknown\\. Check the site, then add --repeat`,
+        ],
+        [
+          "dispatched",
+          (attempt) =>
+            `attempt ${attempt} was sent at ${at} and surf stopped before its answer came\\. Check the site, then add --repeat`,
+        ],
+        [
+          "reserved",
+          (attempt) =>
+            `attempt ${attempt} began at ${at} and surf stopped before it knew whether it was sent\\. Check the site, then add --repeat`,
+        ],
+        [
+          "not_dispatched",
+          (attempt) => `attempt ${attempt} failed at ${at} before it was sent\\. Add --repeat`,
+        ],
+        [
+          null,
+          () =>
+            `a run at ${at} claimed these inputs and stopped before it saved an attempt.*add --repeat`,
+        ],
+      ];
+      for (const [status, wording] of states) {
+        const action = `left-${status}`;
+        const attempt = seed(action, status);
+        const before = sent();
+        const blocked = await use(action);
+        expect(blocked.code).toBe(1);
+        expect(blocked.stderr).toMatch(new RegExp(`write blocked: ${wording(attempt)}`));
+        expect(sent()).toBe(before);
+        expect(await use(action, "--repeat")).toMatchObject({ code: 0, stderr: "" });
+        expect(sent()).toBe(before + 1);
+        // The repeat is verified now, so the next run is blocked again.
+        expect((await use(action)).stderr).toMatch(/succeeded\. Add --repeat to send it again/);
+        expect(sent()).toBe(before + 1);
+      }
+
+      // --override-in-doubt is the old name for --repeat.
+      seed("alias", "indeterminate");
+      const before = sent();
+      expect(await use("alias", "--override-in-doubt")).toMatchObject({ code: 0, stderr: "" });
+      expect(sent()).toBe(before + 1);
+    } finally {
+      await host.dispose();
+    }
+  }, 60000);
 
   it("shows a write with --dry-run, sending nothing, and names it when --write is missing", async () => {
     const socketPath = createSocketPath();
@@ -1049,7 +1180,9 @@ describe("CLI/native-host/fake-extension E2E contract", () => {
       expect((await use("one")).code).toBe(0);
       const again = await use("one");
       expect(again.code).toBe(1);
-      expect(again.stderr).toMatch(/write blocked by verified receipt/);
+      expect(again.stderr).toMatch(
+        /write blocked: attempt \S+ was sent at .+ and succeeded\. Add --repeat/,
+      );
       const byText = await cli(["use", "fixture", "submit", "--text", "two", "--write"]);
       expect(byText.stderr).toMatch(/Unknown input --text/);
       expect(posts().length - before).toBe(1);
@@ -1126,7 +1259,9 @@ describe("CLI/native-host/fake-extension E2E contract", () => {
       expect((await use()).code).toBe(0);
       const again = await use();
       expect(again.code).toBe(1);
-      expect(again.stderr).toMatch(/write blocked by verified receipt/);
+      expect(again.stderr).toMatch(
+        /write blocked: attempt \S+ was sent at .+ and succeeded\. Add --repeat/,
+      );
       expect(posts().length - before).toBe(1);
     } finally {
       await host.dispose();
@@ -1200,7 +1335,9 @@ describe("CLI/native-host/fake-extension E2E contract", () => {
         expect((await use()).code).toBe(0);
         const again = await use();
         expect(again.code).toBe(1);
-        expect(again.stderr).toMatch(/write blocked by verified receipt/);
+        expect(again.stderr).toMatch(
+          /write blocked: attempt \S+ was sent at .+ and succeeded\. Add --repeat/,
+        );
         expect(posts().length - before).toBe(1);
       } finally {
         await host.dispose();
@@ -1258,7 +1395,9 @@ describe("CLI/native-host/fake-extension E2E contract", () => {
         expect((await use("--review_key", "k")).code).toBe(0);
         const again = await use("--review_key", "k");
         expect(again.code).toBe(1);
-        expect(again.stderr).toMatch(/write blocked by verified receipt/);
+        expect(again.stderr).toMatch(
+          /write blocked: attempt \S+ was sent at .+ and succeeded\. Add --repeat/,
+        );
         expect(posts().length - before).toBe(1);
       } finally {
         await host.dispose();
@@ -2107,7 +2246,9 @@ describe("CLI/native-host/fake-extension E2E contract", () => {
       expect(await use("%{")).toMatchObject({ code: 0, stderr: "" });
       const again = await use("%{!}");
       expect(again.code).toBe(1);
-      expect(again.stderr).toMatch(/write blocked by verified receipt/);
+      expect(again.stderr).toMatch(
+        /write blocked: attempt \S+ was sent at .+ and succeeded\. Add --repeat/,
+      );
       expect(sent("SMART_TYPE", "text").slice(before)).toEqual([...values, "%{"]);
     } finally {
       await host.dispose();
