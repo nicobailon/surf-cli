@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it } from "vitest";
 
+const { spawnSync } = require("node:child_process");
 const fs = require("node:fs/promises");
 const os = require("node:os");
 const path = require("node:path");
@@ -910,5 +911,109 @@ describe("echo redaction that keeps every structure parseable", () => {
       expect(performance.now() - started).toBeLessThan(1_000);
       expect(kept).not.toMatch(new RegExp(`(^|[\\s>])${SHOP}($|[\\s<])`));
     }
+  });
+
+  // What Python's XML parser (expat) and HTML parser read in each text: "valid" or the XML error,
+  // and the HTML parser's tags, attributes (entities decoded), comments and CDATA, in order.
+  const parseMarkup = (texts: string[]): { xml: string; html: unknown[] }[] => {
+    const script = [
+      "import json, sys, xml.etree.ElementTree as ET",
+      "from html.parser import HTMLParser",
+      "class Events(HTMLParser):",
+      "    def __init__(self):",
+      "        super().__init__(convert_charrefs=True); self.events = []",
+      "    def handle_starttag(self, tag, attrs): self.events.append(['start', tag, attrs])",
+      "    def handle_endtag(self, tag): self.events.append(['end', tag])",
+      "    def handle_startendtag(self, tag, attrs): self.events.append(['self', tag, attrs])",
+      "    def handle_comment(self, data): self.events.append(['comment', data])",
+      "    def unknown_decl(self, data): self.events.append(['decl', data])",
+      "out = []",
+      "for text in json.load(sys.stdin):",
+      "    try:",
+      "        ET.fromstring(text); xml = 'valid'",
+      "    except ET.ParseError as error:",
+      "        xml = str(error)",
+      "    parser = Events(); parser.feed(text); parser.close()",
+      "    out.append({'xml': xml, 'html': parser.events})",
+      "print(json.dumps(out))",
+    ].join("\n");
+    const result = spawnSync("python3", ["-I", "-c", script], {
+      input: JSON.stringify(texts),
+      encoding: "utf8",
+    });
+    if (result.status !== 0) {
+      throw new Error(`python3 failed: ${result.error || result.stderr}`);
+    }
+    return JSON.parse(result.stdout);
+  };
+
+  it("keeps a short secret that holds a markup character in markup, so no delimiter goes", () => {
+    const cases: [string, string][] = [
+      [['x"', ">y"].join(""), '<r a=" x">y </r>'],
+      [["--", ">x"].join(""), "<r><!-- -->x <q/></r>"],
+      [["]]", ">x"].join(""), "<r><![CDATA[ ]]>x <q/></r>"],
+      [["x<q", "/>y"].join(""), "<r> x<q/>y </r>"],
+      [["a'", "b"].join(""), "<r> a'b </r>"],
+    ];
+    const kept = cases.map(
+      ([secret, body]) => entry({ "x-csrf-token": secret }, { responseBody: body }).responseBody,
+    );
+    expect(kept).toEqual(cases.map(([, body]) => body));
+    const [inputs, outputs] = [parseMarkup(cases.map(([, body]) => body)), parseMarkup(kept)];
+    expect(outputs.map(({ xml }) => xml)).toEqual(cases.map(() => "valid"));
+    expect(outputs).toEqual(inputs);
+    // Text with no markup still loses it, as it has no structure to break.
+    const [crossing] = cases[0];
+    expect(
+      entry({ "x-csrf-token": crossing }, { responseBody: `say ${crossing} now` }).responseBody,
+    ).toBe("say <redacted> now");
+  });
+
+  it("replaces an attribute name only for a secret of 4 characters or more", () => {
+    const doctype = "<!DOCTYPE r [<!ELEMENT r EMPTY>]> ";
+    const short = [`${doctype}<r a = "x"/>`, '<r a ="x"/>', '<r b="1" a\n= "x"/>'];
+    const kept = short.map(
+      (body) => entry({ "x-csrf-token": "a" }, { responseBody: body }).responseBody,
+    );
+    expect(kept).toEqual(short);
+    expect(parseMarkup(kept).map(({ xml }) => xml)).toEqual(short.map(() => "valid"));
+    // A key-length secret goes as a name, as a JSON key does.
+    const named = entry(
+      { Authorization: resy },
+      { responseBody: `<r ${SHOP} = "x">y</r>` },
+    ).responseBody;
+    expect(named).toBe(`<r ${MARK} = "x">y</r>`);
+    expect(parseMarkup([named])[0].html).toEqual([
+      ["start", "r", [[MARK, "x"]]],
+      ["end", "r"],
+    ]);
+  });
+
+  it("replaces an unquoted value, a CDATA section and an entity-encoded quoted value that is a secret whole", () => {
+    const html = ["<input value=_>", "<input value=_ >", "<p><input value=_/></p>"];
+    for (const template of html) {
+      const body = template.replace("_", SHOP);
+      const kept = entry({ Authorization: resy }, { responseBody: body }).responseBody;
+      expect(kept).toBe(template.replace("_", MARK));
+      // One tag, as in the input, whose value now reads <redacted>.
+      const [input, output] = parseMarkup([body, kept]).map(({ html: events }) =>
+        JSON.stringify(events),
+      );
+      expect(output).toBe(input.replace(SHOP, "<redacted>"));
+    }
+    const amp = ["a", "&", "b"].join("");
+    const long = ["alpha", "&", "beta"].join("");
+    const xml: [Record<string, string>, string, string][] = [
+      [{ Authorization: resy }, `<r><![CDATA[${SHOP}]]></r>`, `<r><![CDATA[${MARK}]]></r>`],
+      [{ "x-csrf-token": amp }, '<r value="a&amp;b"/>', `<r value="${MARK}"/>`],
+      [{ Authorization: resy }, "<r value='sh&#111;p'/>", `<r value='${MARK}'/>`],
+      [{ Authorization: resy }, '<r value = "sh&#x6F;p"/>', `<r value = "${MARK}"/>`],
+      [{ "x-csrf-token": long }, '<r x="alpha&amp;beta"/>', `<r x="${MARK}"/>`],
+      // Only a whole value: one that holds more stays.
+      [{ "x-csrf-token": amp }, '<r value="a&amp;bc"/>', '<r value="a&amp;bc"/>'],
+    ];
+    const kept = xml.map(([headers, body]) => entry(headers, { responseBody: body }).responseBody);
+    expect(kept).toEqual(xml.map(([, , expected]) => expected));
+    expect(parseMarkup(kept).map(({ xml: parsed }) => parsed)).toEqual(xml.map(() => "valid"));
   });
 });

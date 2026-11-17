@@ -198,7 +198,23 @@ function redactEchoQuery(query, rules) {
 const MARKUP_PATTERN = /<[A-Za-z/!?]/;
 // Whether a character code is whitespace, as `\s` reads it.
 const isSpaceCode = (code) => code === 32 || (code >= 9 && code <= 13) || (code > 127 && /\s/.test(String.fromCharCode(code)));
-const [LT, GT, DOUBLE_QUOTE, SINGLE_QUOTE] = ["<", ">", '"', "'"].map((char) => char.charCodeAt(0));
+const [LT, GT, DOUBLE_QUOTE, SINGLE_QUOTE, EQUALS] = ["<", ">", '"', "'", "="].map((char) => char.charCodeAt(0));
+// A character that can open or close a tag, a value, an entity, a comment or a CDATA section.
+const MARKUP_CHAR = /[<>"'&]/;
+// A whole quoted value after `=`, up to its closing quote, holding no `<`.
+const QUOTED_VALUE = /=(\s*)(?:"([^"<]*)"|'([^'<]*)')/g;
+const ENTITY = /&(?:#(\d{1,7})|#[xX]([0-9a-fA-F]{1,6})|(amp|lt|gt|quot|apos));/g;
+const NAMED_ENTITIES = { amp: "&", lt: "<", gt: ">", quot: '"', apos: "'" };
+
+// `text` with its numeric entities and the five XML named ones (`&amp;`, `&lt;`, `&gt;`, `&quot;`,
+// `&apos;`) decoded; any other `&` as it is.
+function decodeEntities(text) {
+  return text.replace(ENTITY, (entity, decimal, hex, name) => {
+    if (name) return NAMED_ENTITIES[name];
+    const code = decimal ? Number(decimal) : Number.parseInt(hex, 16);
+    return code > 0 && code <= 0x10ffff ? String.fromCodePoint(code) : entity;
+  });
+}
 
 // Free text: each long value replaced wherever it appears, each short one only as a whole word, so
 // it can't rewrite a word around it. A word has on each side whitespace or an end of the text, `>`
@@ -207,23 +223,63 @@ const [LT, GT, DOUBLE_QUOTE, SINGLE_QUOTE] = ["<", ">", '"', "'"].map((char) => 
 // markup parsing: in text that holds markup the marker is `&lt;redacted&gt;`, which reads as
 // <redacted> and has no `<`, `>`, quote, `=`, `/` or space, so where a word stood it can only stand
 // as a word, an attribute name or a value, and can't open or close a tag, a comment or a script.
+// In markup, also:
+// - `=` before a word and `>`, `/>` or `]]>` after it count, as do `<![CDATA[` before it, so an
+//   unquoted value (`value=shop>`) and a CDATA section's text (`<![CDATA[shop]]>`) go;
+// - a word followed by `=`, after any whitespace, is an attribute name, and goes only for a secret of
+//   4 characters or more, as a JSON key does;
+// - a short spelling holding `<`, `>`, a quote or `&` is never replaced, as removing it could remove
+//   a delimiter it shares with the markup (`x">y` in `a=" x">y`);
+// - a whole quoted value after `=` goes when, with its entities decoded, it is a secret (`a&amp;b` for
+//   `a&b`, `sh&#111;p` for `shop`): inside its quotes the marker can't break the structure.
 function redactEchoWords(text, rules) {
-  const marker = MARKUP_PATTERN.test(text) ? "&lt;redacted&gt;" : "<redacted>";
+  const markup = MARKUP_PATTERN.test(text);
+  const marker = markup ? "&lt;redacted&gt;" : "<redacted>";
   const byLength = (list) => [...list].filter(Boolean).sort((a, b) => b.length - a.length);
-  const source = byLength(rules.long).reduce((result, value) => (result.includes(value) ? result.split(value).join(marker) : result), text);
+  let source = byLength(rules.long).reduce((result, value) => (result.includes(value) ? result.split(value).join(marker) : result), text);
+  if (markup) {
+    source = source.replace(QUOTED_VALUE, (whole, space, double, single) => {
+      const value = double ?? single;
+      if (!value || !rules.whole.has(decodeEntities(value))) return whole;
+      const quote = double === undefined ? "'" : '"';
+      return `=${space}${quote}${marker}${quote}`;
+    });
+  }
+  // The whitespace run last skipped, so a run is read once however many words end at it.
+  let spaceFrom = -1;
+  let spaceTo = -1;
+  const isName = (end) => {
+    if (end < spaceFrom || end > spaceTo) {
+      spaceFrom = end;
+      spaceTo = end;
+      while (isSpaceCode(source.charCodeAt(spaceTo))) spaceTo++;
+    }
+    return source.charCodeAt(spaceTo) === EQUALS;
+  };
   // NaN past either end of the text.
-  const isWord = (start, end) => {
+  const isWord = (start, end, value) => {
     const before = source.charCodeAt(start - 1);
     const after = source.charCodeAt(end);
-    const opens = Number.isNaN(before) || before === GT || isSpaceCode(before);
-    const closes = Number.isNaN(after) || after === LT || isSpaceCode(after);
-    return (opens && closes) || ((before === DOUBLE_QUOTE || before === SINGLE_QUOTE) && before === after);
+    if ((before === DOUBLE_QUOTE || before === SINGLE_QUOTE) && before === after) return true;
+    const opens =
+      Number.isNaN(before) ||
+      before === GT ||
+      isSpaceCode(before) ||
+      (markup && (before === EQUALS || (start >= 9 && source.startsWith("<![CDATA[", start - 9))));
+    const closes =
+      Number.isNaN(after) ||
+      after === LT ||
+      isSpaceCode(after) ||
+      (markup && (after === GT || source.startsWith("/>", end) || source.startsWith("]]>", end)));
+    if (!opens || !closes) return false;
+    return !markup || !isSpaceCode(after) || rules.keys.has(value) || !isName(end);
   };
   // Where each short value stands as a word, in order, longest value first.
-  const found = byLength(rules.short).map((value) => {
+  const short = byLength(rules.short).filter((value) => !markup || !MARKUP_CHAR.test(value));
+  const found = short.map((value) => {
     const starts = [];
     for (let at = source.indexOf(value); at >= 0; at = source.indexOf(value, at + 1)) {
-      if (isWord(at, at + value.length)) starts.push(at);
+      if (isWord(at, at + value.length, value)) starts.push(at);
     }
     return { length: value.length, starts, next: 0 };
   }).filter(({ starts }) => starts.length > 0);
