@@ -57,16 +57,6 @@ function fillEscapedSteps(steps, args) {
   });
 }
 
-// A failure of a check the op's file wrote (its extract, verify, expect or on.success.expect),
-// which ends an op saved from a record: a draft can't use one to reach its next strategy.
-const CHECK_FAILED = Symbol("check failed");
-
-function checkFailure(cause) {
-  const error = cause instanceof Error ? cause : new Error(String(cause));
-  error[CHECK_FAILED] = true;
-  return error;
-}
-
 function unknownInputError(op, name, playbookId) {
   const specs = Object.entries(op.args || {});
   const label = playbookId ? `${playbookId} ${op.id}` : op.id;
@@ -292,7 +282,7 @@ const finish = (head, { read, extract }, narrow) => boundedRegex.tabExtract({
  * Runs the tab script `script(budget)` makes, which may end in finish(), charging the op run's
  * field-regex budget and completing an extract the tab handed over.
  */
-async function runTabExtract(context, script, { onAnswered = () => {} } = {}) {
+async function runTabExtract(context, script) {
   const { regexSpentMs: _spent, ...result } = await boundedRegex.runTabScript({
     budget: context.fieldRegexBudget,
     script,
@@ -301,7 +291,6 @@ async function runTabExtract(context, script, { onAnswered = () => {} } = {}) {
     execute: async (code) => {
       const response = await context.executeTool("javascript_tool", { code }, { signal: context.signal });
       if (response?.error && typeof response.error === "object") return { ...response, error: redactSecrets(response.error, context.authValues || {}) };
-      if (!response?.error) onAnswered();
       return response;
     },
     unreadable: (size) => new Error(`the tab's output could not be read (${size} characters; the tab cuts it at ${TAB_OUTPUT_LIMIT})`),
@@ -476,13 +465,8 @@ async function runStrategy(strategy, context) {
     if (result.status !== "completed") throw new Error(result.error || "workflow strategy failed");
     if (!strategy.extract?.html) return result;
     // The same extraction as the network strategy, on the page the workflow ended on.
-    let found;
-    try {
-      found = await runTabExtract(context, (budget) => `(async () => {\n${finishSource(budget)}\nreturn finish({}, ${htmlExtractFunction(strategy.extract.html)}(document), "--item/--field");\n})()`);
-    } catch (error) {
-      throw checkFailure(error);
-    }
-    if (found?.extractError) throw checkFailure(found.extractError);
+    const found = await runTabExtract(context, (budget) => `(async () => {\n${finishSource(budget)}\nreturn finish({}, ${htmlExtractFunction(strategy.extract.html)}(document), "--item/--field");\n})()`);
+    if (found?.extractError) throw new Error(found.extractError);
     return { ...result, extracted: found?.extracted };
   }
   if (strategy.using === "network") {
@@ -495,18 +479,9 @@ async function runStrategy(strategy, context) {
     const inTab = extractsInTab(strategy.extract);
     const capture = inTab ? undefined : await watchCapture({ executeTool: context.executeTool, sleep: context.sleep });
     await context.markDispatched?.();
-    // An in-tab extract may need a second script (its patterns) once the request is answered; what
-    // fails then is the extract.
-    let answered = false;
-    let tab;
-    try {
-      tab = await runTabExtract(context, (budget) => networkScript(request, context.allowedOrigins, strategy.extract, budget), { onAnswered: () => { answered = true; } });
-    } catch (error) {
-      throw inTab && answered ? checkFailure(error) : error;
-    }
-    const { requestUrl, sentAt, doneAt, redirected, ...result } = tab;
+    const { requestUrl, sentAt, doneAt, redirected, ...result } = await runTabExtract(context, (budget) => networkScript(request, context.allowedOrigins, strategy.extract, budget));
     if (!result?.ok && (strategy.acceptStatus || []).includes(result?.status) === false) throw new Error(`network strategy returned ${result?.status || "an unknown status"}`);
-    if (result.extractError) throw checkFailure(result.extractError);
+    if (result.extractError) throw new Error(result.extractError);
     if (inTab) return result;
     const body = await capture.read({ ...result, method: String(request.method || "GET").toUpperCase(), requestUrl, redirected, sentAt, doneAt });
     let bodyJson;
@@ -557,11 +532,8 @@ async function runPlaybookOp({ playbook, op, args: providedArgs = {}, secrets = 
   // A strategy's own events (a workflow step's tool.failed) are journaled: no env value goes with them.
   const reportStep = (event) => onEvent(redactEventText(event, authValues));
   const attempts = [];
-  // In an op saved from a record, a failed check its file wrote is the op's, so a draft's check
-  // never sends more. A read still tries its next strategy (the recorded steps) when its request
-  // fails as the runtime sees it: never answered, or answered with a status that isn't ok. A write
-  // stops at any failure.
-  const fromRecord = op.provenance?.recordId !== undefined;
+  // A read tries its next strategy after any failure, a failed check too. A write stops at any
+  // failure: its next strategy could send it again.
   const escapes = escapedOp(op);
   for (let index = 0; index < run.length; index++) {
     const strategy = run[index];
@@ -592,16 +564,10 @@ async function runPlaybookOp({ playbook, op, args: providedArgs = {}, secrets = 
         serverIdempotency: op.effect === "write" ? op.safety?.serverIdempotency : undefined,
         allowScript,
       });
-      let value;
-      let checked;
-      try {
-        value = extractResult(raw, strategy.extract, fieldRegexBudget);
-        const expect = strategy.verify || strategy.expect || op.on?.success?.expect;
-        // Saved assertions hold for every strategy, even one with its own verify.
-        checked = verifyResult(value, assert ? { ...expect, assert } : expect, raw, Object.values(authValues), regexBudget, `${playbook.id} ${op.id}`);
-      } catch (error) {
-        throw checkFailure(error);
-      }
+      const value = extractResult(raw, strategy.extract, fieldRegexBudget);
+      const expect = strategy.verify || strategy.expect || op.on?.success?.expect;
+      // Saved assertions hold for every strategy, even one with its own verify.
+      const checked = verifyResult(value, assert ? { ...expect, assert } : expect, raw, Object.values(authValues), regexBudget, `${playbook.id} ${op.id}`);
       if (op.effect === "write") await afterDispatch({ status: "verified", strategy, index });
       onEvent({ type: "strategy.completed", playbook: playbook.id, op: op.id, using: strategy.using, index, endedAt: new Date().toISOString() });
       // Its parts are redacted one by one; redactResult reads them next to surf's own fields.
@@ -618,12 +584,6 @@ async function runPlaybookOp({ playbook, op, args: providedArgs = {}, secrets = 
         // pb test reports the attempt (its assertions already redacted); the message stays short.
         error.attempts = attempts;
         throw error;
-      }
-      if (fromRecord && caught?.[CHECK_FAILED]) {
-        const answered = strategy.using === "network" ? "its request was answered" : "it ran";
-        const final = new Error(`${strategy.using} strategy failed after ${answered}: ${message}; an op saved from a record doesn't try its next strategy when a check fails`);
-        final.attempts = attempts;
-        throw final;
       }
     }
   }

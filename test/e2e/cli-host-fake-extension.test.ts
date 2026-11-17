@@ -995,7 +995,7 @@ describe("CLI/native-host/fake-extension E2E contract", () => {
     }
   });
 
-  it("saves a recorded op as the record made it, whatever its draft file says", async () => {
+  it("saves a recorded op as its draft file says, listing what differs", async () => {
     const socketPath = createSocketPath();
     const project = fs.mkdtempSync(path.join(os.tmpdir(), "surf-record-save-"));
     tempDirs.push(project);
@@ -1033,29 +1033,18 @@ describe("CLI/native-host/fake-extension E2E contract", () => {
         return cli(["pb", "save", "--from-record", record.id, "--project", "--json"]);
       };
 
-      // A draft that makes the write implicit and repeatable, or a read, doesn't save.
-      const repeatable = await save((op) =>
-        Object.assign(op.safety, {
-          authorization: "implicit",
-          duplicate: "repeatable-window",
-          windowMs: 0,
-        }),
-      );
-      expect(repeatable.code).toBe(1);
-      expect(repeatable.stderr).toContain("its safety is drafted as");
+      // A draft edited to a read saves as a read, and the save lists each difference.
       const asRead = await save((op) => {
         op.effect = "read";
         Reflect.deleteProperty(op, "safety");
         Reflect.deleteProperty(op.args, "review_key");
       });
-      expect(asRead.code).toBe(1);
-      expect(asRead.stderr).toContain(
-        'the record drafts a write op (it ran click, a page write), and the draft\'s effect is "read"',
-      );
-      expect((await cli(["use", "fixture", "save", "--review_key", "k-1"])).stderr).toMatch(
-        /Playbook not found: fixture/,
-      );
-      expect(clicks()).toHaveLength(1);
+      expect(asRead.code).toBe(0);
+      expect(JSON.parse(asRead.stdout).differs).toEqual([
+        "effect: read (the record drafts write: it ran click, a page write)",
+        'safety: none (the record drafts {"authorization":"explicit","duplicate":"transactional","key":["review_key"]})',
+        "inputs: review_key removed",
+      ]);
 
       // As drafted, it saves a write that needs --write and clicks the selector as recorded: pb
       // save, not the draft, marks the op as holding escaped text.
@@ -1063,6 +1052,7 @@ describe("CLI/native-host/fake-extension E2E contract", () => {
         op.provenance = { escaped: false };
       });
       expect(drafted.code).toBe(0);
+      expect(JSON.parse(drafted.stdout).differs).toBeUndefined();
       const unwritten = await cli(["use", "fixture", "save", "--review_key", "deleteAll"]);
       expect(unwritten.stderr).toMatch(/write op fixture save requires --write/);
       expect(clicks()).toHaveLength(1);
@@ -1082,9 +1072,8 @@ describe("CLI/native-host/fake-extension E2E contract", () => {
     }
   }, 60000);
 
-  // The record, not the draft file, decides the strategies and their order; a draft's check can
-  // make the op fail, never send more.
-  it("replays a recorded one-click write in the record's order, and stops at a failed check", async () => {
+  // A write never tries its next strategy: a draft's check can make the op fail, never send more.
+  it("replays a recorded one-click write once, and stops at a failed check", async () => {
     const socketPath = createSocketPath();
     const project = fs.mkdtempSync(path.join(os.tmpdir(), "surf-record-order-"));
     tempDirs.push(project);
@@ -1124,19 +1113,6 @@ describe("CLI/native-host/fake-extension E2E contract", () => {
         return cli(["pb", "save", "--from-record", record.id, "--project", "--json"]);
       };
       const before = sent().length;
-
-      const reversed = await save((op) => op.run.reverse());
-      expect(reversed.code).toBe(1);
-      expect(reversed.stderr).toContain(
-        "its strategies are workflow, then network, and the record drafts network, then workflow",
-      );
-      const twice = await save((op) => op.run.splice(1, 0, structuredClone(op.run[0])));
-      expect(twice.code).toBe(1);
-      expect(twice.stderr).toContain("its strategies are network, then network, then workflow");
-      expect(
-        (await cli(["use", "fixture", "save", "--review_key", "k-1", "--write"])).stderr,
-      ).toMatch(/Playbook not found: fixture/);
-      expect(sent()).toHaveLength(before);
 
       // Saved as recorded with a check its answer fails: the POST is sent once, the click never.
       const checked = await save((op) => (op.run[0].verify = { status: 201 }));
@@ -1885,9 +1861,9 @@ describe("CLI/native-host/fake-extension E2E contract", () => {
     }
   }, 60000);
 
-  // A draft's extract runs in the tab after the answer; a failure anywhere in it, the page it
-  // prepares from the response included, is final.
-  it("stops a recorded read whose extract can't prepare the response", async () => {
+  // A draft's extract runs in the tab after the answer; a read whose extract fails, the page it
+  // prepares from the response included, goes on to its recorded steps.
+  it("runs a recorded read's steps when its extract can't prepare the response", async () => {
     const socketPath = createSocketPath();
     const project = fs.mkdtempSync(path.join(os.tmpdir(), "surf-record-extract-"));
     tempDirs.push(project);
@@ -1969,18 +1945,19 @@ describe("CLI/native-host/fake-extension E2E contract", () => {
       running = true;
       const before = sent().length;
       const run = await cli(["use", "fixture", "page", "--json"]);
-      expect(run.code).toBe(1);
-      expect(run.stderr).toContain("network strategy failed after its request was answered: ");
-      expect(run.stderr).toContain("Invalid URL");
-      expect(sent().slice(before)).toEqual(["EXECUTE_JAVASCRIPT"]);
+      expect(run.code).toBe(0);
+      const result = JSON.parse(run.stdout);
+      expect(result).toMatchObject({ strategy: "workflow" });
+      expect(result.attempts[0].error).toContain("Invalid URL");
+      expect(sent().slice(before)).toEqual(["EXECUTE_JAVASCRIPT", "EXECUTE_NAVIGATE"]);
     } finally {
       await host.dispose();
     }
   }, 60000);
 
-  // A read's recorded steps are its fallback when the request is answered with a failure the
-  // runtime sees itself, as a 401; a draft's check failing is final.
-  it("runs a recorded read's steps after a 401, and stops it at a failed check", async () => {
+  // A read's recorded steps are its fallback when the request is answered with a 401, and when a
+  // draft's check fails.
+  it("runs a recorded read's steps after a 401, and after a failed check", async () => {
     const socketPath = createSocketPath();
     const project = fs.mkdtempSync(path.join(os.tmpdir(), "surf-record-check-"));
     tempDirs.push(project);
@@ -2041,11 +2018,12 @@ describe("CLI/native-host/fake-extension E2E contract", () => {
       await save();
       const before = sent().length;
       const run = await cli(["use", "fixture", "search", "--json"]);
-      expect(run.code).toBe(1);
-      expect(run.stderr).toContain(
-        "network strategy failed after its request was answered: expected status 201",
-      );
-      expect(sent().slice(before)).toEqual(["EXECUTE_JAVASCRIPT"]);
+      expect(run.code).toBe(0);
+      expect(JSON.parse(run.stdout)).toMatchObject({
+        strategy: "workflow",
+        attempts: [{ using: "network", error: "expected status 201" }],
+      });
+      expect(sent().slice(before)).toEqual(["EXECUTE_JAVASCRIPT", "EXECUTE_NAVIGATE"]);
     } finally {
       await host.dispose();
     }
