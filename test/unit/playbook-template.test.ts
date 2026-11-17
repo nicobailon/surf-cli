@@ -188,6 +188,10 @@ describe("request templates", () => {
       "{{!}}k}}": [{ "a{{k}}": 1 }],
     });
     expect(requestInputs(request)).toEqual(new Set(["n"]));
+    // A key filled to one already there would drop a field: refused.
+    expect(() => renderRequest(request, { ...args, k: "{{k}}" }, saved)).toThrow(
+      'an input fills a JSON key that is already there: "{{k}}"',
+    );
   });
 
   it("sends every escaped captured request text as captured", () => {

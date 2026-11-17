@@ -27,7 +27,8 @@ function resolveArgValues(specs, provided) {
 // percent-encoding; query params, headers and other bodies get the text as is. Object and array
 // query params are sent as JSON. With `escapes` (an op pb save escaped, see escapedOp), `{{!}}` is
 // sent as `{{` (see escapeTemplates), and an object's keys are filled as text too: pb param stores
-// them escaped, as it does values. Any other request sends `{{!}}` and its keys as written.
+// them escaped, as it does values. A key an input fills that another key already reads is refused,
+// so no field is dropped. Any other request sends `{{!}}` and its keys as written.
 function renderRequest(request, args, { escapes = false } = {}) {
   const EXACT = /^\{\{([a-zA-Z0-9._-]+)\}\}$/;
   const ANY = escapes ? /\{\{([a-zA-Z0-9._-]+|!)\}\}/g : /\{\{([a-zA-Z0-9._-]+)\}\}/g;
@@ -43,7 +44,15 @@ function renderRequest(request, args, { escapes = false } = {}) {
       return exact ? args[exact[1]] : embed(value, encode);
     }
     if (Array.isArray(value)) return value.map((item) => fill(item));
-    if (value && typeof value === "object") return Object.fromEntries(Object.entries(value).map(([key, item]) => [escapes ? embed(key, keep) : key, fill(item)]));
+    if (value && typeof value === "object") {
+      const entries = Object.entries(value).map(([key, item]) => [escapes ? embed(key, keep) : key, fill(item)]);
+      const keys = new Set();
+      for (const [key] of entries) {
+        if (keys.has(key)) throw new Error(`an input fills a JSON key that is already there: ${JSON.stringify(key)}`);
+        keys.add(key);
+      }
+      return Object.fromEntries(entries);
+    }
     return value;
   };
   const headers = {};
