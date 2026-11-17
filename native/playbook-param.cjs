@@ -550,8 +550,9 @@ function renameInSteps(steps, from, to, touched) {
 }
 
 // --link: the workflow-only input `link` becomes `name`. Its steps take {{name}}, and %{name}
-// where they read the input as a var, the input goes, and a write's safety key follows. Returns
-// the step arguments it changed; none when it is already linked.
+// where they read the input as a var, the input goes, and a write's safety key follows. A %{link}
+// a capture or loop var named `link` or `name` may shadow is refused, as renaming it could change
+// what the step reads. Returns the step arguments it changed; none when it is already linked.
 function linkInput(op, link, name) {
   const from = `{{${link}}}`;
   const render = { escapes: escapedOp(op) };
@@ -562,9 +563,14 @@ function linkInput(op, link, name) {
   const other = op.run.find((strategy) => strategy.using !== "workflow" && usesInput(strategy, link, render));
   if (other) throw new Error(`--link ${link}: the ${other.using} strategy uses ${from} too, so it is an input of its own; pick another --as`);
   const touched = [];
-  const renameVar = (input, field) => {
+  const renameVar = (input, field, maybe) => {
     if (input !== link) return input;
     if (!/^\w+$/.test(name)) throw new Error(`--link ${link}: a step reads %{${link}}, and --as ${name} can't be a var name; pick a name of letters, digits and _`);
+    const shadow = [link, name].find((other) => maybe.has(other));
+    if (shadow !== undefined) {
+      const fix = shadow === name ? "pick another --as" : "rename that var, or edit the op by hand";
+      throw new Error(`--link ${link}: ${field} reads %{${link}} where a capture or loop var ${shadow} may be set, so it may not read the input; ${fix}`);
+    }
     touched.push(field);
     return name;
   };

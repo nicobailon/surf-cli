@@ -335,55 +335,79 @@ async function executeWorkflow(steps, options = {}) {
 // loops at any depth. Never a loop's own vars (its each item, _index, _iteration), a capture (as)
 // an earlier step of the same body made under onError stop (a failed step stops the run), a
 // semantic step's args (its executor reads them), a loop's args or any other field. A list each
-// is read only in an escaped op: any other op's was filled before the run. `rename(name, field)`
-// gives the name each such var is to read, `field` saying where it is (`hover selector`, `loop
-// each`); returns the steps so renamed.
+// is read only in an escaped op: any other op's was filled before the run. `rename(name, field,
+// maybe)` gives the name each such var is to read, `field` saying where it is (`hover selector`,
+// `loop each`) and `maybe` the vars a step or loop may have set there: a capture under onError
+// continue, one made in a loop, one a later step of the loop makes on an earlier pass, a loop's
+// own vars. Returns the steps so renamed.
 function mapStartingVars(steps, { escapes = false, onError = "stop" } = {}, rename) {
-  const renameText = (text, bound, field) => text.replace(VAR_TEXT, (token, name) => {
-    if (bound.has(name)) return token;
-    const next = rename(name, field);
+  const renameText = (text, scope, field) => text.replace(VAR_TEXT, (token, name) => {
+    if (scope.bound.has(name)) return token;
+    const next = rename(name, field, scope.maybe);
     return next === name ? token : `%{${next}}`;
   });
-  const renameValue = (value, bound, field) => {
-    if (typeof value === "string") return renameText(value, bound, field);
-    if (Array.isArray(value)) return value.map((item) => renameValue(item, bound, field));
-    if (value && typeof value === "object") return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, renameValue(item, bound, field)]));
+  const renameValue = (value, scope, field) => {
+    if (typeof value === "string") return renameText(value, scope, field);
+    if (Array.isArray(value)) return value.map((item) => renameValue(item, scope, field));
+    if (value && typeof value === "object") return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, renameValue(item, scope, field)]));
     return value;
   };
-  const single = (step, bound) => {
+  const single = (step, scope) => {
     if (!step || typeof step !== "object" || step.args === undefined) return step;
     const named = step.args && typeof step.args === "object" && !Array.isArray(step.args);
     const args = named
-      ? Object.fromEntries(Object.entries(step.args).map(([key, value]) => [key, renameValue(value, bound, `${step.cmd} ${key}`)]))
-      : renameValue(step.args, bound, String(step.cmd));
+      ? Object.fromEntries(Object.entries(step.args).map(([key, value]) => [key, renameValue(value, scope, `${step.cmd} ${key}`)]))
+      : renameValue(step.args, scope, String(step.cmd));
     return { ...step, args };
   };
+  // The names a step in `list` may capture, in loops at any depth; a loop's own vars stay in it.
+  const captures = (list) => (Array.isArray(list) ? list : []).flatMap((step) => {
+    if (!step || typeof step !== "object") return [];
+    if (step.repeat !== undefined || step.each !== undefined) return captures(step.steps);
+    return typeof step.as === "string" && step.as ? [step.as] : [];
+  });
   const walk = (list, outer) => {
-    if (!Array.isArray(list)) return { steps: list, bound: outer };
-    const bound = new Set(outer);
+    if (!Array.isArray(list)) return { steps: list, scope: outer };
+    const scope = { bound: new Set(outer.bound), maybe: new Set([...outer.maybe, ...outer.bound]) };
+    // A loop's body starts with its own vars and, from its second pass, what its steps captured.
+    const body = (step, own) => walk(step.steps, {
+      bound: new Set([...scope.bound, ...own]),
+      maybe: new Set([...scope.maybe, ...own, ...captures(step.steps)]),
+    });
     const mapped = list.map((step) => {
-      if (!step || typeof step !== "object" || step.cmd === "semantic.step") return step;
+      if (!step || typeof step !== "object") return step;
+      if (step.cmd === "semantic.step") {
+        if (typeof step.as === "string" && step.as) scope.maybe.add(step.as);
+        return step;
+      }
       if (step.repeat !== undefined) {
-        const body = walk(step.steps, new Set([...bound, "_index", "_iteration"]));
-        return {
+        const loop = body(step, ["_index", "_iteration"]);
+        const next = {
           ...step,
-          repeat: typeof step.repeat === "string" ? renameText(step.repeat, bound, "loop repeat") : step.repeat,
-          ...(Array.isArray(step.steps) ? { steps: body.steps } : {}),
-          ...(step.until ? { until: single(step.until, body.bound) } : {}),
+          repeat: typeof step.repeat === "string" ? renameText(step.repeat, scope, "loop repeat") : step.repeat,
+          ...(Array.isArray(step.steps) ? { steps: loop.steps } : {}),
+          ...(step.until ? { until: single(step.until, loop.scope) } : {}),
         };
+        for (const name of captures(step.steps)) scope.maybe.add(name);
+        return next;
       }
       if (step.each !== undefined) {
-        const body = walk(step.steps, new Set([...bound, step.as || "item", "_index", "_iteration"]));
+        const loop = body(step, [step.as || "item", "_index", "_iteration"]);
         const fill = escapes || typeof step.each === "string" ? renameValue : (value) => value;
-        return { ...step, each: fill(step.each, bound, "loop each"), ...(Array.isArray(step.steps) ? { steps: body.steps } : {}) };
+        const next = { ...step, each: fill(step.each, scope, "loop each"), ...(Array.isArray(step.steps) ? { steps: loop.steps } : {}) };
+        for (const name of captures(step.steps)) scope.maybe.add(name);
+        return next;
       }
-      const next = single(step, bound);
-      if (onError === "stop" && typeof step.as === "string" && step.as) bound.add(step.as);
+      const next = single(step, scope);
+      if (typeof step.as === "string" && step.as) {
+        scope.maybe.add(step.as);
+        if (onError === "stop") scope.bound.add(step.as);
+      }
       return next;
     });
-    return { steps: mapped, bound };
+    return { steps: mapped, scope };
   };
-  return walk(steps, new Set()).steps;
+  return walk(steps, { bound: new Set(), maybe: new Set() }).steps;
 }
 
 // The names of the vars mapStartingVars finds.

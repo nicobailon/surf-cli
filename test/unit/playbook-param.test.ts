@@ -916,6 +916,62 @@ describe("pb param --link: a drafted typed-value input", () => {
     );
   });
 
+  it("refuses to rename a %{text} a capture or loop var named text or the new name may shadow", async () => {
+    const typed = { cmd: "type", args: { selector: "input.name", text: "{{text}} %{text}" } };
+    const capture = (as: string) => ({ cmd: "js", args: { code: "'dummy'" }, as });
+    const cases: Array<[string, unknown[], Record<string, unknown>, string]> = [
+      // The new name is a capture, so %{name} would read it, not --name.
+      ["target capture", [capture("name"), typed], {}, "name"],
+      // The new name is the loop's var, so %{name} would read the item, not --name.
+      ["target loop var", [{ each: ["a"], as: "name", steps: [typed] }], {}, "name"],
+      // A later step in the loop body captures name, so a second pass would read it.
+      ["target later in loop", [{ repeat: 2, steps: [typed, capture("name")] }], {}, "name"],
+      // A loop may have captured text, so %{text} may read that, not the input.
+      ["source loop capture", [{ repeat: 1, steps: [capture("text")] }, typed], {}, "text"],
+      // Under onError continue a capture may or may not be set.
+      ["source continue capture", [capture("text"), typed], { onError: "continue" }, "text"],
+    ];
+    for (const escaped of [false, true]) {
+      for (const [label, steps, workflow, shadow] of cases) {
+        const op = drafted({ provenance: { escaped } });
+        Object.assign(op.run[1], { steps, ...workflow });
+        const message =
+          `--link text: type text reads %{text} where a capture or loop var ${shadow} may be set, ` +
+          `so it may not read the input; ${shadow === "name" ? "pick another --as" : "rename that var, or edit the op by hand"}`;
+        expect(
+          () => paramOp(op, { fields: ["query.nameOrId"], as: "name", link: "text" }),
+          `${label}, escaped ${escaped}`,
+        ).toThrow(message);
+        const { cwd, file } = project(op);
+        const before = fs.readFileSync(file, "utf8");
+        await expect(
+          handlePlaybookCli(
+            ["pb", "param", "shop", "search", "query.nameOrId", "--as", "name", "--link", "text"],
+            { cwd },
+          ),
+        ).rejects.toThrow(message);
+        expect(fs.readFileSync(file, "utf8")).toBe(before);
+      }
+    }
+  });
+
+  it("still renames a %{text} no capture or loop var could shadow", () => {
+    for (const escaped of [false, true]) {
+      const op = drafted({ provenance: { escaped } });
+      (op.run[1] as any).steps = [
+        { cmd: "type", args: { text: "{{text}} %{text}" } },
+        // Captures made after the step, outside any loop, can't reach it.
+        { cmd: "js", args: { code: "'dummy'" }, as: "name" },
+        { each: ["a"], as: "item", steps: [{ cmd: "js", args: { code: "'dummy'" }, as: "text" }] },
+      ];
+      const { op: next } = paramOp(op, { fields: ["query.nameOrId"], as: "name", link: "text" });
+      expect((next.run[1] as any).steps[0]).toEqual({
+        cmd: "type",
+        args: { text: "{{name}} %{name}" },
+      });
+    }
+  });
+
   it("moves a write's safety key to the named input", () => {
     const write = drafted({
       effect: "write",
