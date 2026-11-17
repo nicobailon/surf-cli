@@ -3113,6 +3113,13 @@ describe("values typed during a record, in captured URLs", () => {
     expect(JSON.stringify(trace)).not.toMatch(/foo(%20|%2520| )bar/);
   });
 
+  it("masks every spelling of a typed value in one JSON leaf in the trace and the draft", () => {
+    const url = `https://example.test/g?v=${encodeURIComponent('{"q":"foo bar, foo%20bar"}')}`;
+    const { draft, trace } = draftTyping(["foo bar"], url);
+    expect(networkOf(draft).query).toEqual({ v: '{"q":"<text>"}' });
+    expect(JSON.stringify([trace, draft])).not.toMatch(/foo/);
+  });
+
   it("masks two path segments holding a typed value; pb param templates both with one input", () => {
     const { draft } = draftTyping(["users"], "https://example.test/users/users");
     expect(networkOf(draft).url).toBe("https://example.test/%3Ctext%3E/%3Ctext%3E");
@@ -3303,6 +3310,34 @@ describe("values typed during a record, in watch events", () => {
       "https://example.test/get?q=<text>",
       "https://example.test/get?q=<text>&r=<text-2>",
     ]);
+  });
+
+  it("masks a route segment typed later while paused, though an earlier value shares the marker's name", () => {
+    const root = tempRoot();
+    const record = records.startRecord({
+      site: "fixture",
+      op: "search",
+      tabId: 1,
+      origin: "https://example.test",
+      watch: true,
+      root,
+    });
+    const pausedTyping = (text: string) => {
+      records.pauseRecord({ target: TAB, root });
+      records.rememberRecordInput("type", { selector: "#q", text }, { target: TAB, root });
+      records.resumeRecord({ target: TAB, root });
+    };
+    pausedTyping("romeo");
+    records.appendRecordEvent(watchEvent("navigation", "https://example.test/secrets?q=romeo"), {
+      target: { tabId: 1, page: true },
+      root,
+    });
+    pausedTyping("secrets");
+    records.stopRecord({ target: TAB, root });
+    const [event] = records
+      .readEvents(record.id, root)
+      .filter((e: Entry) => e.type === "browser.event");
+    expect(event.url).toBe("https://example.test/<redacted>?q=<redacted>");
   });
 
   it("keeps an event's marker when a later step types that marker's text", () => {

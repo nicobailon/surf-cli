@@ -414,10 +414,30 @@ describe("typed values in a URL's JSON, matched by source span", () => {
     ]);
   });
 
-  it("keeps a route segment on a later pass, when the query's marker is the value's", () => {
-    const first = mask("https://example.test/api/users?q=users", ["users"]);
+  it("keeps a route segment on a later pass, when the query's marker stands for that typed value", () => {
+    const users = [{ value: "users", marker: "<text>", id: "call-1.0" }];
+    const first = typedValues.maskTypedValuesInUrl("https://example.test/api/users?q=users", users);
     expect(first.url).toBe("https://example.test/api/users?q=<text>");
-    expect(mask(first.url, ["users"], { markers: first.markers })).toEqual(first);
+    expect(first.markers).toEqual([{ start: 33, end: 39, typedValue: "call-1.0" }]);
+    expect(typedValues.maskTypedValuesInUrl(first.url, users, { markers: first.markers })).toEqual(
+      first,
+    );
+  });
+
+  it("never takes a listed marker for another typed value that shares its name", () => {
+    const romeo = { value: "romeo", marker: "<redacted>", id: "call-1.0" };
+    const secrets = { value: "secrets", marker: "<redacted>", id: "call-2.0" };
+    const first = typedValues.maskTypedValuesInUrl("https://example.test/secrets?q=romeo", [romeo]);
+    expect(first.url).toBe("https://example.test/secrets?q=<redacted>");
+    const later = typedValues.maskTypedValuesInUrl(first.url, [romeo, secrets], {
+      markers: first.markers,
+    });
+    expect(later.url).toBe("https://example.test/<redacted>?q=<redacted>");
+    // A marker listed with no typed value counts for none.
+    const unnamed = typedValues.maskTypedValuesInUrl(first.url, [romeo, secrets], {
+      markers: [{ start: 31, end: 41 }],
+    });
+    expect(unnamed.url).toBe("https://example.test/<redacted>?q=<redacted>");
   });
 
   it("gives a masked JSON scalar no field when its query key repeats", () => {
@@ -443,5 +463,152 @@ describe("typed values in a URL's JSON, matched by source span", () => {
       "number",
       null,
     ]);
+  });
+});
+
+describe("every spelling of a typed value, masked at any depth", () => {
+  const typed = (...values: string[]) =>
+    values.map((value, index) => ({
+      value,
+      marker: index === 0 ? "<text>" : `<text-${index + 1}>`,
+    }));
+  const mask = (json: string, values: string[], options = {}) =>
+    typedValues.maskTypedValuesInUrl(
+      `https://example.test/g?v=${encodeURIComponent(json)}`,
+      typed(...values),
+      options,
+    );
+  const query = (result: { url: string }) =>
+    JSON.parse(new URL(result.url).searchParams.get("v") as string);
+  // `inner` held in a JSON string `depth` times over: {"payload":"{\"payload\":…}"}.
+  const nest = (inner: string, depth: number) => {
+    let text = inner;
+    for (let level = 0; level < depth; level++) {
+      text = JSON.stringify({ payload: text });
+    }
+    return text;
+  };
+  const unnest = (outer: { payload?: string }, depth: number) => {
+    let value: any = outer;
+    for (let level = 0; level < depth; level++) {
+      value = JSON.parse(value.payload);
+    }
+    return value;
+  };
+
+  it("masks a leaf that spells the value both as typed and encoded once more", () => {
+    const result = mask('{"q":"foo bar, foo%20bar"}', ["foo bar"]);
+    expect(query(result)).toEqual({ q: "<text>" });
+    expect(result.url).not.toMatch(/foo/);
+    const both = mask('{"q":"verylongsecret foo%20bar"}', ["verylongsecret", "foo bar"]);
+    expect(both.url).not.toMatch(/foo|verylongsecret/);
+    // The leaf masked whole for the second value takes the first's match in it.
+    expect(query(both)).toEqual({ q: "<text-2>" });
+  });
+
+  it("masks a JSON string whose whole text is the typed value, before reading it as JSON", () => {
+    for (const value of ['{"q":"words"}', '["private words"]']) {
+      expect(query(mask(JSON.stringify({ payload: value, n: 1 }), [value]))).toEqual({
+        payload: "<text>",
+        n: 1,
+      });
+    }
+  });
+
+  it("walks JSON held in strings at any depth, keeping it valid and its keys as they are", () => {
+    const inner = JSON.stringify({ q: 'say "hi"', secret: "safe", number: 2024 }).replace(
+      '"number"',
+      '"name":"\\u0041lice","number"',
+    );
+    for (const depth of [4, 5, 6, 8]) {
+      for (const [value, field] of [
+        ['say "hi"', "q"],
+        ["Alice", "name"],
+        ["2024", "number"],
+      ]) {
+        const result = mask(nest(inner, depth), [value]);
+        const leaf = unnest(query(result), depth);
+        expect(leaf[field]).toBe("<text>");
+        expect(Object.keys(leaf)).toEqual(["q", "secret", "name", "number"]);
+      }
+      const keyed = unnest(query(mask(nest(inner, depth), ["secret"])), depth);
+      expect(keyed).toEqual({ q: 'say "hi"', secret: "safe", name: "Alice", number: 2024 });
+    }
+  });
+
+  it("walks JSON nested any number of arrays deep", () => {
+    for (const depth of [100, 8000]) {
+      const result = mask(`${"[".repeat(depth)}"secret"${"]".repeat(depth)}`, ["secret"]);
+      expect(result.url).not.toContain("secret");
+      let value = query(result);
+      for (let level = 1; level < depth; level++) {
+        value = value[0];
+      }
+      expect(value).toEqual(["<text>"]);
+    }
+  });
+
+  it("masks a whole value, with no type, when the walk leaves a spelling of a typed value", () => {
+    const url = `https://example.test/g?v=${encodeURIComponent('{"q":"romeo","n":1}')}&w=keep`;
+    const skips = () => [];
+    expect(typedValues.maskTypedValuesInUrl(url, typed("romeo"), { walk: skips })).toEqual({
+      url: "https://example.test/g?v=<text>&w=keep",
+      markers: [{ start: 25, end: 31 }],
+    });
+    // The walk spells the value another way it doesn't decode: percent-encoded twice.
+    const twice = `https://example.test/g?v=${encodeURIComponent(encodeURIComponent("romeo, other"))}`;
+    expect(typedValues.maskTypedValuesInUrl(twice, typed("romeo"), { walk: skips }).url).toBe(
+      "https://example.test/g?v=<text>",
+    );
+  });
+
+  it("masks a whole value, with no type, when the walk leaves JSON that no longer parses", () => {
+    const url = `https://example.test/g?v=${encodeURIComponent('{"n":2024}')}`;
+    // A walk that writes a number's marker without its quotes.
+    const unquoted = (raw: string, offset: number) => {
+      const start = raw.indexOf("2024");
+      return start < 0
+        ? []
+        : [
+            {
+              start: offset + start,
+              end: offset + start + 4,
+              pieces: [{ marker: "<text>", type: "number" }],
+            },
+          ];
+    };
+    expect(typedValues.maskTypedValuesInUrl(url, typed("2024"), { walk: unquoted })).toEqual({
+      url: "https://example.test/g?v=<text>",
+      markers: [{ start: 25, end: 31 }],
+    });
+  });
+
+  it("masks in time linear in the URL's size", () => {
+    const time = (url: string, values: string[]) => {
+      const start = performance.now();
+      const result = typedValues.maskTypedValuesInUrl(url, typed(...values));
+      return { ms: performance.now() - start, result };
+    };
+    // Under 100 ms each on an idle machine; the bound leaves room for a loaded one.
+    const LIMIT = 1000;
+    const array = `https://example.test/g?v=${encodeURIComponent(JSON.stringify(Array(8000).fill("other")))}`;
+    expect(array.length).toBeGreaterThan(112000);
+    expect(time(array, ["2024"]).ms).toBeLessThan(LIMIT);
+    const object = Object.fromEntries(Array.from({ length: 8000 }, (_, i) => [`k${i}`, "other"]));
+    expect(
+      time(`https://example.test/g?v=${encodeURIComponent(JSON.stringify(object))}`, ["2024"]).ms,
+    ).toBeLessThan(LIMIT);
+    const pairs = Array.from({ length: 8000 }, (_, i) => `k${i}=2024`).join("&");
+    const many = time(`https://example.test/g?${pairs}`, ["2024"]);
+    expect(many.ms).toBeLessThan(LIMIT);
+    expect(many.result.markers).toHaveLength(8000);
+    for (const count of [2000, 8000]) {
+      const numbers = time(
+        `https://example.test/g?v=${encodeURIComponent(`[${Array(count).fill("2024").join(",")}]`)}`,
+        ["2024"],
+      );
+      expect(numbers.ms).toBeLessThan(LIMIT);
+      expect(numbers.result.markers).toHaveLength(count);
+    }
   });
 });
