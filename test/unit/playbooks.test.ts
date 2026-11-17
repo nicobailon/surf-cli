@@ -183,6 +183,15 @@ describe("playbook resolution and strategies", () => {
         ],
       }).run[0].request.method,
     ).toBe("POST");
+    for (const method of ["PUT", "PATCH", "DELETE"]) {
+      expect(() =>
+        validate({
+          id: "search",
+          effect: "read",
+          run: [{ using: "network", request: { method, url: "https://example.test/search" } }],
+        }),
+      ).toThrow(/read ops cannot use a mutating network method/);
+    }
     expect(() =>
       validate({
         id: "read",

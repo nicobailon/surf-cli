@@ -1753,7 +1753,7 @@ const TOOLS = {
         args: [],
         opts: {
           draft: "Save a draft playbook from the record (a write if it clicked or typed)",
-          read: "With --draft: mark the draft a read. Needs --network; refused if a captured request can change data or a step acts beyond the page",
+          read: "With --draft: draft a read, as you say; names each captured request that can change data and each step beyond the page",
           "request-id": "With --draft: replay this request (see pb record candidates) instead of the top-ranked one",
           "include-input-values": "Keep request bodies and captured URLs as captured, though the record started without it (or --raw)",
         },

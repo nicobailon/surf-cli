@@ -294,25 +294,28 @@ function attachNetworkTrace(recordId, entries, root = getPrivateStateRoot(), { c
 // tabs and windows, emulation, AI providers) acts beyond it, so a read op must not replay it.
 const PAGE_STEPS = new Set([
   "click", "check", "uncheck", "key", "submit", "type", "smart_type", "find_and_type", "form_input", "form.fill", "select",
-  "scroll", "scroll.top", "scroll.bottom", "scroll_to_position", "dialog.accept", "dialog.dismiss",
+  "dialog.accept", "dialog.dismiss",
   "locate.role", "locate.text", "locate.label",
 ]);
 
 // A draft with page-write steps is a write, as is one whose trace holds a request that can write
-// (a method other than GET/HEAD/OPTIONS that isn't telemetry). `read` (pb record stop --read) makes
-// it a read, refused when a captured request can write, a step acts beyond the page, or the record
-// didn't capture the network.
+// (a method other than GET/HEAD/OPTIONS that isn't telemetry). `read` (pb record stop --read) is
+// the user's statement that the flow only reads: the draft is a read, and `warnings` names each
+// step that acts beyond the page and each captured write, or says no request was checked.
 function draftEffect({ record, steps, trace, read }) {
   const pageWrite = (step) => ["page-write", "unknown"].includes(commandMetadata(step.tool, step.args).effect);
-  const write = trace?.entries?.find((entry) => requestEffect(entry) === "write" && !isTelemetryRequest(entry, record.origin));
+  const writes = (trace?.entries || []).filter((entry) => requestEffect(entry) === "write" && !isTelemetryRequest(entry, record.origin));
   if (read) {
-    if (record.capture?.network !== true) throw new Error("--read needs a record started with --network, so its requests can be checked for writes");
-    const beyond = steps.find((step) => pageWrite(step) && !PAGE_STEPS.has(step.tool));
-    if (beyond) throw new Error(`--read refused: the record ran ${beyond.tool}, which acts beyond the page; stop with --draft alone to draft a write`);
-    if (write) throw new Error(`--read refused: the record captured ${shownUrl(write)}, which can change data; stop with --draft alone to draft a write`);
-    return trace?.complete === true ? { effect: "read" } : { effect: "read", warning: "--read could not check every request: the trace is incomplete (see the warnings above)" };
+    const though = (what) => `--read drafts a read, though the record ${what}`;
+    const warnings = [
+      ...steps.filter((step) => pageWrite(step) && !PAGE_STEPS.has(step.tool)).map((step) => though(`ran ${step.tool}, which acts beyond the page`)),
+      ...writes.map((entry) => though(`captured ${shownUrl(entry)}, which can change data`)),
+    ];
+    if (record.capture?.network !== true) warnings.push("--read checked no request: the record was started without --network, so none was captured");
+    else if (trace?.complete !== true) warnings.push("--read could not check every request: the trace is incomplete (see the warnings above)");
+    return { effect: "read", warnings };
   }
-  if (write) return { effect: "write", because: `it captured ${shownUrl(write)}` };
+  if (writes[0]) return { effect: "write", because: `it captured ${shownUrl(writes[0])}` };
   const acted = steps.find(pageWrite);
   if (acted) return { effect: "write", because: `it ran ${acted.tool}, a page write` };
   return { effect: "read" };
@@ -430,8 +433,8 @@ function buildDraft(record, { read = false, requestId, warnings = [], root = get
   const steps = recordedSteps(record.id, root);
   const tracePath = path.join(recordDirectory(record.id, root), "network", "trace.json");
   const trace = readPrivateJson(tracePath, null, { root });
-  const { effect, warning, because } = draftEffect({ record, steps, trace, read });
-  if (warning) warnings.push(warning);
+  const { effect, warnings: effectWarnings = [], because } = draftEffect({ record, steps, trace, read });
+  warnings.push(...effectWarnings);
   const strategies = [];
   const observed = pickRequest({ record, trace, effect, requestId, warnings });
   if (observed) strategies.push({ using: "network", request: requestFromEntry(observed, warnings) });
@@ -459,7 +462,7 @@ function draftFromRecord(recordId, root = getPrivateStateRoot(), options = {}) {
   return op;
 }
 
-// The draft is made before the record stops, so a refused draft (--read) leaves it recording. The
+// The draft is made before the record stops, so a refused draft (--request-id) leaves it recording. The
 // request --request-id names, and --read, are kept in the record, which pb save reads them from:
 // the draft file is only a suggestion.
 // `includeInputValues` (pb record stop --include-input-values) marks the record as kept, as if
