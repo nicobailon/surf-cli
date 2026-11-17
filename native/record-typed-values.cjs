@@ -195,6 +195,31 @@ function escapedChar(text, index) {
   }
 }
 
+// `text` percent-decoded as URLSearchParams reads it: each %XX is a byte, the bytes are read as
+// UTF-8, and each byte that isn't valid UTF-8 becomes U+FFFD, beside the valid bytes around it.
+const utf8 = new TextDecoder("utf-8", { ignoreBOM: true });
+function decodeLeniently(text) {
+  if (!text.includes("%")) return text;
+  const chunks = [];
+  let copied = 0;
+  for (let index = text.indexOf("%"); index >= 0 && index < text.length; index = text.indexOf("%", index)) {
+    if (escapedByte(text, index) < 0) {
+      index++;
+      continue;
+    }
+    chunks.push(Buffer.from(text.slice(copied, index), "utf8"));
+    const bytes = [];
+    for (let byte = escapedByte(text, index); byte >= 0; byte = escapedByte(text, index)) {
+      bytes.push(byte);
+      index += 3;
+    }
+    chunks.push(Buffer.from(bytes));
+    copied = index;
+  }
+  chunks.push(Buffer.from(text.slice(copied), "utf8"));
+  return utf8.decode(Buffer.concat(chunks));
+}
+
 // One decode of `text`, with where each decoded character came from: `starts[i]` is the index in
 // `text` where character i begins, `starts[length]` the end (none with `track: false`). An escape
 // decodes whole or not at all.
@@ -266,14 +291,15 @@ function toRaw(levels, depth, index) {
   return index;
 }
 
-// The pattern that finds `value` between characters that are not letters or digits, made once per value.
-const insidePatterns = new Map();
+// The pattern that finds `value` between characters that are not letters or digits, made once per
+// value in one masking call (see maskTypedValuesInUrl) and dropped when it returns, so no typed
+// value outlives the call.
+let insidePatterns = null;
 function insidePattern(value) {
-  let pattern = insidePatterns.get(value);
+  let pattern = insidePatterns?.get(value);
   if (!pattern) {
     pattern = new RegExp(`(?<![\\p{L}\\p{N}])${escapeRegExp(value)}(?![\\p{L}\\p{N}])`, "gu");
-    if (insidePatterns.size > 256) insidePatterns.clear();
-    insidePatterns.set(value, pattern);
+    insidePatterns?.set(value, pattern);
   }
   return pattern;
 }
@@ -338,6 +364,20 @@ function jsonTokens(text) {
   if (!parseJsonDocument(text)) return null;
   const leaves = [];
   const keys = [];
+  // The [from, to) ranges of leaves under a key their object holds more than once, marked once
+  // the document is read, so leaves nested under many such keys are marked once each.
+  const repeats = [];
+  const markRepeated = () => {
+    const depth = new Int32Array(leaves.length + 1);
+    for (const [from, to] of repeats) {
+      depth[from]++;
+      depth[to]--;
+    }
+    for (let leaf = 0, open = 0; leaf < leaves.length; leaf++) {
+      open += depth[leaf];
+      if (open > 0) leaves[leaf].repeated = true;
+    }
+  };
   let index = 0;
   const space = () => {
     for (let code = text.charCodeAt(index); code === 32 || code === 9 || code === 10 || code === 13; code = text.charCodeAt(index)) index++;
@@ -386,7 +426,10 @@ function jsonTokens(text) {
     }
     // A value ended: so did its member, and each object or array it closes.
     for (;;) {
-      if (!frame) return { leaves, keys };
+      if (!frame) {
+        markRepeated();
+        return { leaves, keys };
+      }
       if (frame.object) {
         const ranges = frame.members.get(frame.name) || [];
         ranges.push([frame.from, leaves.length]);
@@ -397,10 +440,7 @@ function jsonTokens(text) {
         key = member();
         break;
       }
-      for (const ranges of frame.members.values()) {
-        if (ranges.length < 2) continue;
-        for (const [from, to] of ranges) for (let leaf = from; leaf < to; leaf++) leaves[leaf].repeated = true;
-      }
+      for (const ranges of frame.members.values()) if (ranges.length > 1) for (const range of ranges) repeats.push(range);
       key = frame.key;
       frame = frame.parent;
     }
@@ -457,8 +497,9 @@ function encodeLike(text, original, plusIsSpace) {
 const markerFor = (typed) => ({ marker: typed.marker, ...(typed.id ? { typedValue: typed.id } : {}) });
 
 // Whether any decoding of `text` (see levelsOf) is the typed value or holds it (see matchesIn).
-const spelledIn = (text, value, plusIsSpace) =>
-  decodedTexts(text, plusIsSpace).some((decoded) => (value.length >= MIN_LENGTH && decoded === value) || matchesIn(decoded, value).length > 0);
+// A JSON string's text: + is never a space in it.
+const spelledIn = (text, value) =>
+  decodedTexts(text, false).some((decoded) => (value.length >= MIN_LENGTH && decoded === value) || matchesIn(decoded, value).length > 0);
 
 /**
  * The edits that mask `typed` in a JSON document's values, never its keys, in source order: a
@@ -467,9 +508,10 @@ const spelledIn = (text, value, plusIsSpace) =>
  * string when a decoding of what's left still holds it), and a number or literal that is the value
  * as written or as read (`2024.0`, `1e3`, `null`), which becomes a marker string recording its JSON
  * type and `field` path. `at(i)` is where index i of `text` sits in the URL; `encode` writes text
- * of `text`'s level as the URL holds it. `plusIsSpace`: a string decoded again reads + as a space.
+ * of `text`'s level as the URL holds it. A string is decoded again as percent-encoded, never with +
+ * as a space: the JSON holds it as written.
  */
-function maskJson(text, typed, { at, encode, free, field, repeatedKey, plusIsSpace }) {
+function maskJson(text, typed, { at, encode, free, field, repeatedKey }) {
   const tokens = jsonTokens(text);
   if (!tokens) return [];
   const marker = markerFor(typed);
@@ -491,13 +533,13 @@ function maskJson(text, typed, { at, encode, free, field, repeatedKey, plusIsSpa
     const { value, starts } = decodeJsonString(source);
     const inLeaf = (index) => at(leaf.start + starts[index]);
     const whole = { start: inLeaf(0), end: inLeaf(value.length), pieces: [marker] };
-    if (typed.value.length >= MIN_LENGTH && decodedTexts(value, plusIsSpace).includes(typed.value)) {
+    if (typed.value.length >= MIN_LENGTH && decodedTexts(value, false).includes(typed.value)) {
       accept(whole);
       continue;
     }
     if (parseJsonDocument(value)) {
       const escape = (piece) => encode(JSON.stringify(piece).slice(1, -1));
-      for (const edit of maskJson(value, typed, { at: inLeaf, encode: escape, free, plusIsSpace: false })) accept(edit);
+      for (const edit of maskJson(value, typed, { at: inLeaf, encode: escape, free })) accept(edit);
       continue;
     }
     const ranges = matchesIn(value, typed.value);
@@ -508,7 +550,7 @@ function maskJson(text, typed, { at, encode, free, field, repeatedKey, plusIsSpa
       index = end;
     }
     rest += value.slice(index);
-    if (spelledIn(rest, typed.value, plusIsSpace)) accept(whole);
+    if (spelledIn(rest, typed.value)) accept(whole);
     else for (const { start, end } of ranges) accept({ start: inLeaf(start), end: inLeaf(end), pieces: [marker] });
   }
   return edits;
@@ -539,7 +581,7 @@ function maskValue(raw, offset, typed, { plusIsSpace, field, repeatedKey, inside
       return text;
     };
     const at = (index) => offset + toRaw(levels, depth, index);
-    return maskJson(levels[depth].text, typed, { at, encode, free, field, repeatedKey, plusIsSpace: plusIsSpace && raw.includes("+") });
+    return maskJson(levels[depth].text, typed, { at, encode, free, field, repeatedKey });
   }
   for (let level = levels.length - 1; level > 0; level--) {
     const edits = matchesIn(levels[level].text, typed.value, { escapes: level < levels.length - 1 })
@@ -556,54 +598,60 @@ const MAX_READ_FACTOR = 64;
 const READ_MARGIN = 65536;
 
 /**
- * Every reading of `text` a site could decode, as `{ text, root, final, tokens }`: percent-decoded,
- * with + as a space where the part is form-encoded (`plusIsSpace`) and also where it isn't,
- * repeatedly; a JSON string literal's value; and the string values of a JSON document (its keys
- * are names, never typed values), each read the same way at any depth. `final`: decoding doesn't
+ * Every reading of `text` a site could decode, as `{ text, root, final, tokens }`: percent-decoded
+ * (each well-formed run, and as URLSearchParams does, an invalid byte read as U+FFFD), repeatedly;
+ * a JSON string literal's value; and the string values of a JSON document (its keys are names,
+ * never typed values), each read the same way at any depth. + is a space only in a form-encoded
+ * value: the value itself where `plusIsSpace` (a query or form value), and a query string decoded
+ * from it (`next=%2Fs%3Fq%3Dfoo%2Bbar`), never a JSON string or a path. `final`: decoding doesn't
  * change it, so it is what a site reads; `tokens`: it is a JSON document. Null when the readings
  * are too long in all to check (see MAX_READ_FACTOR).
  */
 function readingsOf(text, { inside, plusIsSpace }) {
-  const seen = new Set();
-  const queue = [{ text, plus: plusIsSpace, root: true }];
+  // The readings queued so far, by their text and whether + is a space in them.
+  const seen = [new Set(), new Set()];
+  const queue = [{ text, form: plusIsSpace, root: true }];
+  seen[Number(plusIsSpace)].add(text);
   const readings = [];
   let budget = MAX_READ_FACTOR * text.length + READ_MARGIN;
   for (let index = 0; index < queue.length; index++) {
-    const { text: reading, plus, root } = queue[index];
+    const { text: reading, form, root } = queue[index];
     budget -= reading.length;
     if (budget < 0) return null;
     const tokens = jsonTokens(reading);
     const next = [];
     let final = true;
     if (tokens) {
-      if (inside) for (const leaf of tokens.leaves) if (leaf.kind === "string") next.push(decodeJsonString(reading.slice(leaf.start, leaf.end)).value);
+      if (inside) for (const leaf of tokens.leaves) if (leaf.kind === "string") next.push({ text: decodeJsonString(reading.slice(leaf.start, leaf.end)).value, form: false });
     } else {
-      const decoded = decode(plus ? reading.replace(/\+/g, " ") : reading);
-      final = decoded === reading;
-      next.push(decoded);
-      if (!plus && reading.includes("+")) next.push(decode(reading.replace(/\+/g, " ")));
+      const source = form ? reading.replace(/\+/g, " ") : reading;
+      const lenient = decodeLeniently(source);
+      final = lenient === reading;
+      for (const decoded of [decode(source), lenient]) next.push({ text: decoded, form: form && decoded.includes("=") });
       if (/^\s*"/.test(reading)) {
         try {
           const quoted = JSON.parse(reading);
-          if (typeof quoted === "string") next.push(quoted);
+          if (typeof quoted === "string") next.push({ text: quoted, form: false });
         } catch {}
       }
     }
     readings.push({ text: reading, root, final, tokens });
     for (const item of next) {
-      if (seen.has(item)) continue;
-      seen.add(item);
-      queue.push({ text: item, plus: false, root: false });
+      const queued = seen[Number(item.form)];
+      if (queued.has(item.text)) continue;
+      queued.add(item.text);
+      queue.push({ ...item, root: false });
     }
   }
   return readings;
 }
 
-// The spans of surf's markers in `text`, which a check reads past.
-const MARKERS = new RegExp(PLACEHOLDER.source, "g");
-const markerSpans = (text) => (text.includes("<") ? [...text.matchAll(MARKERS)].map((match) => ({ start: match.index, end: match.index + match[0].length })) : []);
+// What the check reads in place of each marker surf wrote: a noncharacter, which no typed value
+// holds, so no match can reach into a marker, while page text that looks like one (or that decodes
+// to this character) is read as any other.
+const STAND_IN = "\uFDD0";
 
-// The first span of the sorted, non-overlapping `spans` that ends after `start`.
+// The first of the sorted, non-overlapping `spans` that ends after `start`.
 function firstAfter(spans, start) {
   let low = 0;
   let high = spans.length;
@@ -616,23 +664,19 @@ function firstAfter(spans, start) {
 }
 
 /**
- * The first of `typed` some reading of `text` (see readingsOf) still spells, outside surf's
- * markers: as a whole reading other than the text as captured (unless that is what a site reads),
- * inside a reading a site reads (see matchesIn), as a JSON number or literal, or across a JSON
- * document's tokens. With `inside: false` (a path segment, a plain fragment), only as a whole
- * reading. When the readings are too many to check, the first typed value.
+ * Whether some reading of `text` (see readingsOf; surf's markers in it are STAND_IN) still spells
+ * one of `typed`: as a whole reading other than the text as captured (unless that is what a site
+ * reads), inside a reading a site reads (see matchesIn), as a JSON number or literal, or across a
+ * JSON document's tokens. With `inside: false` (a path segment, a plain fragment), only as a whole
+ * reading. `{ status: "clean" }`, `{ status: "leak", item }` naming the first value it spells, or
+ * `{ status: "unread" }` when the readings are too many to check, which proves no value is there.
  */
 function leakIn(text, typed, { inside, plusIsSpace }) {
   const values = typed.filter(({ value }) => value.length >= MIN_LENGTH);
-  if (values.length === 0) return null;
+  if (values.length === 0) return { status: "clean" };
   const readings = readingsOf(text, { inside, plusIsSpace });
-  if (!readings) return values[0];
+  if (!readings) return { status: "unread" };
   for (const { text: reading, root, final, tokens } of readings) {
-    const markers = markerSpans(reading);
-    const outside = ({ start, end }) => {
-      const next = markers[firstAfter(markers, start)];
-      return !next || next.start >= end;
-    };
     let scalars = null;
     let spans = null;
     if (inside && tokens) {
@@ -645,19 +689,18 @@ function leakIn(text, typed, { inside, plusIsSpace }) {
       spans = [...tokens.leaves, ...tokens.keys].sort((a, b) => a.start - b.start);
     }
     for (const item of values) {
-      if ((final || !root) && reading === item.value && outside({ start: 0, end: reading.length })) return item;
+      if ((final || !root) && reading === item.value) return { status: "leak", item };
       if (!inside || !(final || tokens)) continue;
-      if (scalars?.has(item.value)) return item;
+      if (scalars?.has(item.value)) return { status: "leak", item };
       for (const match of matchesIn(reading, item.value)) {
-        if (!outside(match)) continue;
         // In JSON, a match inside one token is the token's to answer for; one across tokens leaks.
         const token = spans?.[firstAfter(spans, match.start)];
         if (spans && token && token.start <= match.start && token.end >= match.end) continue;
-        return item;
+        return { status: "leak", item };
       }
     }
   }
-  return null;
+  return { status: "clean" };
 }
 
 // Whether `masked` (`raw` with its edits) is still JSON wherever `raw` was: the same decoding of it
@@ -689,45 +732,66 @@ function jsonKept(raw, masked, plusIsSpace) {
   return true;
 }
 
-// The edits made so far, in order, and the markers an earlier pass listed among them. A span is
-// free when it overlaps no listed marker and holds whole any edit of this pass it overlaps (a leaf
-// masked whole for a later value, over an earlier value's match in it), which it then replaces.
+// The edits of one masking call: the markers an earlier pass listed (`listed`, sorted, each kept
+// as it is unless a value it sits in is masked whole) and the edits each value's maskEach keeps.
+// Each value's edits are its own, merged in one pass (see merged) and sorted into place once, at
+// the end.
 function editList(listed = []) {
-  const edits = [...listed];
-  const listedEdits = new Set(listed);
+  const added = [];
+  const dropped = new Set();
   return {
-    edits,
-    free: ({ start, end }) => {
-      for (let index = firstAfter(edits, start); index < edits.length && edits[index].start < end; index++) {
-        const edit = edits[index];
-        if (listedEdits.has(edit) || edit.start < start || edit.end > end) return false;
-      }
-      return true;
-    },
-    add(list) {
-      for (const edit of list) {
-        const { from, to } = this.within(edit.start, edit.end);
-        edits.splice(from, to - from, edit);
-      }
-    },
-    // The edits inside `start`..`end`, as an index range of `edits`.
-    within(start, end) {
-      const from = firstAfter(edits, start);
+    // The listed markers inside `start`..`end`, in order.
+    listedIn(start, end) {
+      const from = firstAfter(listed, start);
       let to = from;
-      while (to < edits.length && edits[to].start < end) to++;
-      return { from, to };
+      while (to < listed.length && listed[to].start < end) to++;
+      return listed.slice(from, to);
     },
+    // Keeps a value's final `edits`; `replaced`, the listed markers a whole-value marker covers.
+    keep(edits, replaced = []) {
+      for (const edit of replaced) dropped.add(edit);
+      for (const edit of edits) if (!edit.listed) added.push(edit);
+      return edits;
+    },
+    // Every edit kept, in order.
+    all: () => [...listed.filter((edit) => !dropped.has(edit)), ...added].sort((a, b) => a.start - b.start),
   };
 }
 
-// `raw` (at `offset` in the URL) with the edits in it applied.
-function applied(raw, offset, edits) {
+// Whether `span` overlaps none of the sorted `edits` but those it holds whole (a leaf masked whole
+// for a later value, over an earlier value's match in it), which it then replaces, and no listed
+// marker.
+function isFree(edits, { start, end }) {
+  for (let index = firstAfter(edits, start); index < edits.length && edits[index].start < end; index++) {
+    const edit = edits[index];
+    if (edit.listed || edit.start < start || edit.end > end) return false;
+  }
+  return true;
+}
+
+// The sorted `edits` with the sorted `batch` merged in, each of its edits in place of those it
+// holds (see isFree), in one pass over both.
+function merged(edits, batch) {
+  const result = [];
+  let index = 0;
+  for (const edit of batch) {
+    while (index < edits.length && edits[index].end <= edit.start) result.push(edits[index++]);
+    while (index < edits.length && edits[index].start < edit.end) index++;
+    result.push(edit);
+  }
+  while (index < edits.length) result.push(edits[index++]);
+  return result;
+}
+
+// `raw` (at `offset` in the URL) with the edits in it applied; with `standIn`, each marker surf
+// wrote (one this pass inserted, or one an earlier pass listed, with or without an id) as STAND_IN.
+function applied(raw, offset, edits, { standIn = false } = {}) {
   let text = "";
   let index = 0;
-  for (const { start, end, pieces } of edits) {
-    text += raw.slice(index, start - offset);
-    for (const piece of pieces) text += typeof piece === "string" ? piece : piece.marker;
-    index = end - offset;
+  for (const edit of edits) {
+    text += raw.slice(index, edit.start - offset);
+    for (const piece of edit.pieces) text += typeof piece === "string" ? piece : standIn ? STAND_IN : piece.marker;
+    index = edit.end - offset;
   }
   return text + raw.slice(index);
 }
@@ -736,26 +800,35 @@ function applied(raw, offset, edits) {
  * Masks each typed value in turn in one value, the longest first, so `dummy romeo` is found before
  * `romeo`; `found` collects the values it masked. Then checks the value as masked: when a reading
  * of it still spells a typed value (leakIn), or JSON it held no longer parses (jsonKept), the walk
- * missed a case, and the whole value becomes one marker with no type. `walk` is maskValue; a test
- * passes a faulty one to check the check.
+ * missed a case, and the whole value becomes one marker with no type: the leaked value's, which
+ * counts as found, or the walk's first. When the readings are too many to check, the whole value
+ * becomes the walk's first marker, or `<redacted>`, naming no typed value, as the check proved
+ * none. `walk` is maskValue; a test passes a faulty one to check the check. Returns the value's
+ * edits.
  */
 function maskEach(raw, offset, typed, options, context) {
   const { list, found, walk = maskValue } = context;
   const inside = options.inside !== false;
+  const listed = list.listedIn(offset, offset + raw.length);
+  let edits = listed;
+  const free = (span) => isFree(edits, span);
   for (const item of typed) {
-    const edits = walk(raw, offset, item, { ...options, free: list.free });
-    if (edits.length === 0) continue;
-    list.add(edits);
+    const batch = walk(raw, offset, item, { ...options, free });
+    if (batch.length === 0) continue;
+    edits = merged(edits, batch);
     found?.add(item.value);
   }
-  const { from, to } = list.within(offset, offset + raw.length);
-  const masked = applied(raw, offset, list.edits.slice(from, to));
-  const leak = leakIn(masked, typed, { inside, plusIsSpace: options.plusIsSpace });
-  if (!leak && (!inside || jsonKept(raw, masked, options.plusIsSpace))) return;
-  if (leak) found?.add(leak.value);
-  const first = list.edits.slice(from, to).flatMap(({ pieces }) => pieces).find((piece) => typeof piece !== "string");
-  const marker = leak ? markerFor(leak) : { marker: first.marker, ...(first.typedValue ? { typedValue: first.typedValue } : {}) };
-  list.edits.splice(from, to - from, { start: offset, end: offset + raw.length, pieces: [marker] });
+  const check = leakIn(applied(raw, offset, edits, { standIn: true }), typed, { inside, plusIsSpace: options.plusIsSpace });
+  if (check.status === "clean" && (!inside || jsonKept(raw, applied(raw, offset, edits), options.plusIsSpace))) return list.keep(edits);
+  let marker = { marker: "<redacted>" };
+  if (check.status === "leak") {
+    found?.add(check.item.value);
+    marker = markerFor(check.item);
+  } else {
+    const first = edits.flatMap(({ pieces }) => pieces).find((piece) => typeof piece !== "string");
+    if (first) marker = { marker: first.marker, ...(first.typedValue ? { typedValue: first.typedValue } : {}) };
+  }
+  return list.keep([{ start: offset, end: offset + raw.length, pieces: [marker] }], listed);
 }
 
 // `text` split at `separator`, each piece with where it starts in the URL.
@@ -819,7 +892,17 @@ const URL_PARTS = /^([a-zA-Z][a-zA-Z0-9+.-]*:\/\/[^/?#]*)?([^?#]*)(?:\?([^#]*))?
  * (/api/users?q=users). A plain fragment is masked only whole. Keys and the origin never change.
  * `walk` replaces maskValue, for tests of the check that follows it.
  */
-function maskTypedValuesInUrl(url, typed, { body, markers = [], walk } = {}) {
+function maskTypedValuesInUrl(url, typed, options = {}) {
+  const outer = insidePatterns;
+  insidePatterns = new Map();
+  try {
+    return maskUrl(url, typed, options);
+  } finally {
+    insidePatterns = outer;
+  }
+}
+
+function maskUrl(url, typed, { body, markers = [], walk }) {
   if (typeof url !== "string") return { url, markers };
   const match = url.match(URL_PARTS);
   if (!match || typed.length === 0) return { url, markers };
@@ -828,7 +911,7 @@ function maskTypedValuesInUrl(url, typed, { body, markers = [], walk } = {}) {
   const listed = [];
   for (const { start, end, ...info } of [...markers].sort((a, b) => a.start - b.start)) {
     if (start < (listed.at(-1)?.end ?? 0) || !REDACTED_MARKER.test(url.slice(start, end))) continue;
-    listed.push({ start, end, pieces: [{ marker: url.slice(start, end), ...info }] });
+    listed.push({ start, end, listed: true, pieces: [{ marker: url.slice(start, end), ...info }] });
   }
   const list = editList(listed);
   const values = typed.filter(({ value }) => value).sort((a, b) => b.value.length - a.value.length);
@@ -842,10 +925,9 @@ function maskTypedValuesInUrl(url, typed, { body, markers = [], walk } = {}) {
   let route = null;
   if (fragment !== undefined) {
     const fragmentStart = url.length - fragment.length;
-    maskEach(fragment, fragmentStart, values, { plusIsSpace: false, inside: false }, context);
-    const { from, to } = list.within(fragmentStart, url.length);
+    const edits = maskEach(fragment, fragmentStart, values, { plusIsSpace: false, inside: false }, context);
     const split = fragment.indexOf("?");
-    if (to - from === 1 && list.edits[from].start === fragmentStart && list.edits[from].end === url.length) held.push({ start: fragmentStart, end: url.length });
+    if (edits.length === 1 && edits[0].start === fragmentStart && edits[0].end === url.length) held.push({ start: fragmentStart, end: url.length });
     else if (split >= 0) {
       route = { text: fragment.slice(0, split), at: fragmentStart };
       maskPairs(fragment.slice(split + 1), fragmentStart + split + 1, values, context);
@@ -869,7 +951,7 @@ function maskTypedValuesInUrl(url, typed, { body, markers = [], walk } = {}) {
   let result = "";
   let index = 0;
   const inserted = [];
-  for (const edit of list.edits) {
+  for (const edit of list.all()) {
     result += url.slice(index, edit.start);
     for (const piece of edit.pieces) {
       if (typeof piece === "string") {

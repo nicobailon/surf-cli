@@ -3351,6 +3351,18 @@ describe("values typed during a record, in watch events", () => {
     ).toEqual(["https://example.test/get?q=<text>", "https://example.test/get?r=<text-2>"]);
   });
 
+  it("masks a route segment typed later, beside a value it couldn't read, which counts as no typed value", () => {
+    // Encoded more often than the check reads, so the first pass masks it whole as <redacted>.
+    const unreadable = `%${"25".repeat(1000)}41`;
+    expect(
+      watchTyping([
+        { text: "romeo" },
+        { url: `https://example.test/redacted?q=${unreadable}` },
+        { text: "redacted" },
+      ]),
+    ).toEqual(["https://example.test/<text-2>?q=<redacted>"]);
+  });
+
   it("replaces a whole fragment holding a slash in an event's URL", () => {
     expect(
       watchTyping([{ text: "dummy/slash" }, { url: "https://example.test/page#dummy/slash" }]),

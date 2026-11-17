@@ -1,6 +1,11 @@
 import { describe, expect, it } from "vitest";
 
+const { readFileSync } = require("node:fs");
+const Module = require("node:module");
+const { dirname } = require("node:path");
+
 const typedValues = require("../../native/record-typed-values.cjs");
+const { paramOp } = require("../../native/playbook-param.cjs");
 
 const redact = (url: string, ...values: string[]) =>
   typedValues.redactTypedValuesInUrl(
@@ -376,10 +381,11 @@ describe("typed values in a URL's JSON, matched by source span", () => {
     expect(
       mask(`https://example.test/g?v=${json('{"q":"foo%20bar","n":1}')}`, ["foo bar"]).url,
     ).toBe(`https://example.test/g?v=${json('{"q":"')}<text>${json('","n":1}')}`);
-    // A page that wrote + for a space in the query value wrote it inside the JSON too.
+    // In a JSON string, + is a +: the page writes + for a space only in the query value around it.
     const plus = "https://example.test/g?v=%7B%22q%22%3A%22foo%2Bbar%22%2C%22t%22%3A%22a+b%22%7D";
-    expect(mask(plus, ["foo bar"]).url).toBe(
-      "https://example.test/g?v=%7B%22q%22%3A%22<text>%22%2C%22t%22%3A%22a+b%22%7D",
+    expect(mask(plus, ["foo bar"]).url).toBe(plus);
+    expect(mask(plus, ["a b"]).url).toBe(
+      "https://example.test/g?v=%7B%22q%22%3A%22foo%2Bbar%22%2C%22t%22%3A%22<text>%22%7D",
     );
   });
 
@@ -610,5 +616,231 @@ describe("every spelling of a typed value, masked at any depth", () => {
       expect(numbers.ms).toBeLessThan(LIMIT);
       expect(numbers.result.markers).toHaveLength(count);
     }
+    // The work counts below prove linear growth; these only catch a gross slowdown.
+    const alternating = `[${Array.from({ length: 8000 }, (_, i) => (i % 2 ? "2025" : "2024")).join(",")}]`;
+    expect(
+      time(`https://example.test/g?v=${encodeURIComponent(alternating)}`, ["2024", "2025"]).ms,
+    ).toBeLessThan(LIMIT);
+    const nested = `${'{"x":0,"x":'.repeat(4000)}1${"}".repeat(4000)}`;
+    expect(
+      time(`https://example.test/g?v=${encodeURIComponent(nested)}`, ["2024"]).ms,
+    ).toBeLessThan(LIMIT);
+  });
+});
+
+describe("the check after masking: only a proven match counts, read as a site reads it", () => {
+  const typed = (value: string, marker = "<text>", id = "call-1.0") => ({ value, marker, id });
+  const encode = (text: string, times: number) => {
+    let encoded = text;
+    for (let time = 0; time < times; time++) {
+      encoded = encodeURIComponent(encoded);
+    }
+    return encoded;
+  };
+  // What a site reads from the query value `v`, decoded as many times as that changes it.
+  const read = (url: string) => {
+    let text = new URL(url).searchParams.get("v") as string;
+    for (let time = 0; time < 8; time++) {
+      text = new URLSearchParams(`q=${text}`).get("q") as string;
+    }
+    return text;
+  };
+  // Encoded more often than the check reads, so it can't read it in full.
+  const unreadable = `%${"25".repeat(1000)}41`;
+
+  it("masks a value it has too many readings to check whole, and counts no typed value as held", () => {
+    const query = typedValues.maskTypedValuesInUrl(`https://example.test/romeo?q=${unreadable}`, [
+      typed("romeo"),
+    ]);
+    expect(query).toEqual({
+      url: "https://example.test/<text>?q=<redacted>",
+      markers: [
+        { start: 21, end: 27, typedValue: "call-1.0" },
+        { start: 30, end: 40 },
+      ],
+    });
+    const body = typedValues.maskTypedValuesInUrl("https://example.test/romeo", [typed("romeo")], {
+      body: unreadable,
+    });
+    expect(body.url).toBe("https://example.test/<text>");
+  });
+
+  it("reads past every marker an earlier pass listed, but counts only one with an id as held", () => {
+    const url = `https://example.test/redacted?q=${unreadable}`;
+    const first = typedValues.maskTypedValuesInUrl(url, [typed("romeo")]);
+    expect(first.url).toBe("https://example.test/redacted?q=<redacted>");
+    const later = typedValues.maskTypedValuesInUrl(
+      first.url,
+      [typed("romeo"), typed("redacted", "<text-2>", "call-2.0")],
+      { markers: first.markers },
+    );
+    expect(later).toEqual({
+      url: "https://example.test/<text-2>?q=<redacted>",
+      markers: [
+        { start: 21, end: 29, typedValue: "call-2.0" },
+        { start: 32, end: 42 },
+      ],
+    });
+  });
+
+  it("reads + as a space only in a form-encoded value, never in JSON or a path", () => {
+    const path = `https://example.test/search/${encodeURIComponent("foo bar")}`;
+    expect(
+      typedValues.maskTypedValuesInUrl(path, [typed("foo bar")], { body: '{"q":"foo+bar"}' }).url,
+    ).toBe("https://example.test/search/<text>");
+    expect(
+      typedValues.maskTypedValuesInUrl(path, [typed("foo bar")], { body: "q=foo+bar" }).url,
+    ).toBe(path);
+    const raw = JSON.stringify({ q: "foo+bar", n: 2024 });
+    const result = typedValues.maskTypedValuesInUrl(
+      `https://example.test/g?v=${encodeURIComponent(raw)}`,
+      [typed("foo bar"), typed("2024", "<text-2>", "call-2.0")],
+    );
+    expect(JSON.parse(new URL(result.url).searchParams.get("v") as string)).toEqual({
+      q: "foo+bar",
+      n: "<text-2>",
+    });
+    const request = {
+      method: "GET",
+      url: "https://example.test/g",
+      query: { v: new URL(result.url).searchParams.get("v") },
+      headers: {},
+      redactedTypes: Object.fromEntries(
+        result.markers
+          .filter((item: { field?: string }) => item.field)
+          .map((item: { field: string; type: string }) => [item.field, item.type]),
+      ),
+    };
+    const named = paramOp(
+      { id: "search", args: {}, run: [{ using: "network", request }] },
+      { fields: ["query.v.n"], as: "n" },
+    );
+    expect(named.op.args.n.type).toBe("number");
+  });
+
+  it("checks page text that looks like a marker as any other text, at any depth", () => {
+    const inner = typedValues.maskTypedValuesInUrl(
+      `https://example.test/g?v=${encode("<redacted>", 5)}`,
+      [typed("redacted")],
+    );
+    expect(inner.url).toBe("https://example.test/g?v=<text>");
+    expect(inner.markers).toEqual([{ start: 25, end: 31, typedValue: "call-1.0" }]);
+    const whole = typedValues.maskTypedValuesInUrl(
+      `https://example.test/g?v=${encode("<text>", 5)}`,
+      [typed("<text>", "<text-2>")],
+    );
+    expect(whole.url).toBe("https://example.test/g?v=<text-2>");
+  });
+
+  it("reads malformed UTF-8 as URLSearchParams does, keeping the valid bytes beside it", () => {
+    const replaced = typedValues.maskTypedValuesInUrl("https://example.test/g?v=abc%FFdef", [
+      typed("abc\uFFFDdef"),
+    ]);
+    expect(replaced.url).toBe("https://example.test/g?v=<text>");
+    for (const times of [1, 4, 5, 8]) {
+      const deep = typedValues.maskTypedValuesInUrl(
+        `https://example.test/g?v=${encode("%72%6f%6d%65%6f%FF", times)}`,
+        [typed("romeo")],
+      );
+      expect(read(deep.url)).not.toContain("romeo");
+    }
+  });
+
+  // The module compiled from its own source with `change` made to it, to count the work it does.
+  const instrumented = (change: (source: string) => string) => {
+    const file = (require as any).resolve("../../native/record-typed-values.cjs");
+    const source = readFileSync(file, "utf8");
+    const changed = change(source);
+    if (changed === source) {
+      throw new Error("the change matched nothing in the source");
+    }
+    const loaded = new Module(file);
+    loaded.filename = file;
+    loaded.paths = Module._nodeModulePaths(dirname(file));
+    loaded._compile(changed, file);
+    return loaded.exports;
+  };
+  // How much more work each doubling of the input took than the one before: about 2 when linear.
+  const growth = (counts: number[]) =>
+    Math.max(...counts.slice(1).map((count, index) => count / counts[index]));
+
+  it("marks the values under a repeated JSON key once each, however deep they nest", () => {
+    const counter = { writes: 0 };
+    (globalThis as any).repeatedLeafWrites = counter;
+    const counted = instrumented((source) =>
+      source.replace(
+        "leaves[leaf].repeated = true",
+        "(globalThis.repeatedLeafWrites.writes++, (leaves[leaf].repeated = true))",
+      ),
+    );
+    const counts = [100, 200, 400, 800].map((count) => {
+      counter.writes = 0;
+      const json = `${'{"x":0,"x":'.repeat(count)}2024${"}".repeat(count)}`;
+      const { markers } = counted.maskTypedValuesInUrl(
+        `https://example.test/g?v=${encodeURIComponent(json)}`,
+        [typed("2024")],
+      );
+      expect(markers).toEqual([expect.objectContaining({ type: "number" })]);
+      expect(markers[0]).not.toHaveProperty("field");
+      return counter.writes;
+    });
+    (globalThis as any).repeatedLeafWrites = undefined;
+    expect(growth(counts)).toBeLessThanOrEqual(2.2);
+  });
+
+  it("merges each value's edits in one pass, wherever in the URL they fall", () => {
+    // The array entries pushed, and the entries splice inserts or moves, while `run` runs.
+    const moves = (run: () => void) => {
+      const { push, splice } = Array.prototype;
+      let count = 0;
+      Array.prototype.push = function (this: unknown[], ...items: unknown[]) {
+        count += items.length;
+        return push.apply(this, items);
+      };
+      Array.prototype.splice = function (this: unknown[], start: number, removed = 0, ...items) {
+        count += items.length + Math.max(0, this.length - start - removed);
+        return splice.call(this, start, removed, ...items);
+      } as typeof splice;
+      try {
+        run();
+      } finally {
+        Array.prototype.push = push;
+        Array.prototype.splice = splice;
+      }
+      return count;
+    };
+    const values = [typed("2024"), typed("2025", "<text-2>", "call-2.0")];
+    const sizes = [100, 200, 400, 800];
+    const alternating = sizes.map((count) => {
+      const json = `[${Array.from({ length: count }, (_, i) => (i % 2 ? "2025" : "2024")).join(",")}]`;
+      const url = `https://example.test/g?v=${encodeURIComponent(json)}`;
+      return moves(() =>
+        expect(typedValues.maskTypedValuesInUrl(url, values).markers).toHaveLength(count),
+      );
+    });
+    expect(growth(alternating)).toBeLessThanOrEqual(2.2);
+    // Path segments are masked after the query, ahead of its markers in the URL.
+    const spread = sizes.map((count) => {
+      const url = `https://example.test/${Array(count).fill("2025").join("/")}?${Array(count).fill("k=2024").join("&")}`;
+      return moves(() =>
+        expect(typedValues.maskTypedValuesInUrl(url, values).markers).toHaveLength(2 * count),
+      );
+    });
+    expect(growth(spread)).toBeLessThanOrEqual(2.2);
+  });
+
+  it("keeps no typed value once the masking call returns", () => {
+    const loaded = instrumented(
+      (source) => `${source}\nmodule.exports.insidePatternsNow = () => insidePatterns;`,
+    );
+    loaded.rememberTypedValues("rec-1", "type", { text: "private phrase" });
+    const { url } = loaded.maskTypedValuesInUrl(
+      "https://example.test/g?q=some%20private%20phrase%20here",
+      [{ value: "private phrase", marker: "<text>" }],
+    );
+    expect(url).toBe("https://example.test/g?q=some%20<text>%20here");
+    loaded.forgetTypedValues("rec-1");
+    expect(loaded.heldTypingCalls("rec-1")).toEqual([]);
+    expect(loaded.insidePatternsNow()?.has("private phrase") ?? false).toBe(false);
   });
 });
