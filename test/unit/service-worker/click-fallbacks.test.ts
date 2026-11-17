@@ -50,19 +50,20 @@ describe("ref clicks after the debugging bar was cancelled", () => {
 });
 
 // `click --selector` finds its match in the page, then clicks it the way a ref click does.
-async function clickSelector(clickPoint: Record<string, unknown>) {
+async function clickSelector(
+  clickPoint: Record<string, unknown>,
+  page: (message: { type: string }) => Promise<unknown> = async (message) =>
+    message.type === "LOCATE_SELECTOR" ? { ref: "e7", count: 2 } : { success: true },
+) {
   vi.resetModules();
   const chrome = createChromeMock();
   (globalThis as any).chrome = chrome;
-  chrome.tabs.sendMessage.mockImplementation(async (_tabId: number, message: { type: string }) => {
-    if (message.type === "LOCATE_SELECTOR") {
-      return { ref: "e7", count: 2 };
-    }
-    if (message.type === "CLICK_POINT") {
-      return clickPoint;
-    }
-    return { success: true };
-  });
+  chrome.tabs.sendMessage.mockImplementation((_tabId: number, message: { type: string }) =>
+    message.type === "CLICK_POINT" ? Promise.resolve(clickPoint) : page(message),
+  );
+  chrome.debugger.sendCommand.mockImplementation(async (_target: unknown, method: string) =>
+    method === "Runtime.evaluate" ? { result: { value: { x: 30, y: 40, count: 3 } } } : {},
+  );
   const { handleMessage } = await import("../../../src/service-worker/index");
   const pending = handleMessage(
     { type: "CLICK_SELECTOR", tabId: 5, selector: "form button", index: 1, button: "left" },
@@ -71,10 +72,14 @@ async function clickSelector(clickPoint: Record<string, unknown>) {
   await vi.advanceTimersByTimeAsync(6000);
   const result = await pending;
   const sent = chrome.tabs.sendMessage.mock.calls.map((call: any[]) => call[1]);
-  const mouse = chrome.debugger.sendCommand.mock.calls
+  const commands = chrome.debugger.sendCommand.mock.calls;
+  const mouse = commands
     .filter((call: any[]) => call[1] === "Input.dispatchMouseEvent")
     .map((call: any[]) => call[2]);
-  return { result, sent, mouse };
+  const evaluated = commands
+    .filter((call: any[]) => call[1] === "Runtime.evaluate")
+    .map((call: any[]) => call[2].expression as string);
+  return { result, sent, mouse, evaluated };
 }
 
 describe("selector clicks", () => {
@@ -103,5 +108,27 @@ describe("selector clicks", () => {
       error:
         'selector "form button" (index 1) is outside the visible page, so it was not clicked (waited 5s).',
     });
+  });
+
+  it("name the selector when its match is gone before the click", async () => {
+    const { result } = await clickSelector({
+      error: "Element e7 no longer exists. Run surf read to get current refs.",
+    });
+    expect(result.error).toBe(
+      'Element selector "form button" (index 1) no longer exists. Run surf read to get current refs.',
+    );
+  });
+
+  it("click through the debugger when no content script answers", async () => {
+    const { result, mouse, evaluated } = await clickSelector({}, async () => {
+      throw new Error("Could not establish connection. Receiving end does not exist.");
+    });
+    expect(evaluated).toHaveLength(1);
+    expect(evaluated[0]).toContain('scrollIntoView({ block: "center", behavior: "instant" })');
+    expect(mouse.length).toBeGreaterThan(0);
+    expect(mouse.every((event: { x: number; y: number }) => event.x === 30 && event.y === 40)).toBe(
+      true,
+    );
+    expect(result).toEqual({ success: true, selector: "form button", index: 1, matchCount: 3 });
   });
 });

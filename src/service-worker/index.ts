@@ -74,7 +74,10 @@ async function clickRef(tabId: number, frameId: number, ref: string, button: str
   let target: any;
   while (true) {
     target = await chrome.tabs.sendMessage(tabId, { type: "CLICK_POINT", ref, expectedIdentity }, { frameId });
-    if (target?.error) return { error: target.error, code: target.code };
+    if (target?.error) {
+      const error = label === ref ? target.error : target.error.replace(new RegExp(`\\b${ref}\\b`), label);
+      return { error, code: target.code };
+    }
     if (!target?.reason || Date.now() >= deadline) break;
     await sleep(100);
   }
@@ -100,6 +103,30 @@ async function clickRef(tabId: number, frameId: number, ref: string, button: str
   const clicks = button === "double" ? 2 : button === "triple" ? 3 : 1;
   await cdp.click(tabId, target.x, target.y, button === "right" ? "right" : "left", clicks);
   return { success: true };
+}
+
+// Clicks the centre of a selector's match through the debugger alone, after scrolling it into view.
+async function clickSelectorWithDebugger(tabId: number, selector: string, index: number): Promise<any> {
+  const script = `(() => {
+    const elements = document.querySelectorAll(${JSON.stringify(selector)});
+    if (elements.length === 0) return { error: "No elements match selector" };
+    if (${index} >= elements.length) return { error: "Index " + ${index} + " out of range (found " + elements.length + " elements)" };
+
+    const el = elements[${index}];
+    el.scrollIntoView({ block: "center", behavior: "instant" });
+    const rect = el.getBoundingClientRect();
+    return {
+      x: rect.left + rect.width / 2,
+      y: rect.top + rect.height / 2,
+      count: elements.length
+    };
+  })()`;
+  const result = await cdp.evaluateScript(tabId, script);
+  const coords = result.result?.value;
+  if (coords?.error) return { error: coords.error };
+  if (!coords) return { error: "Failed to get element coordinates" };
+  await cdp.click(tabId, coords.x, coords.y, "left", 1, 0);
+  return { success: true, selector, index, matchCount: coords.count };
 }
 
 async function validateRequestedFrame(tabId: number, value: unknown): Promise<void> {
@@ -3906,9 +3933,16 @@ export async function handleMessage(
       }
 
       const label = `selector ${JSON.stringify(selector)}${index ? ` (index ${index})` : ""}`;
+      let located: any;
       try {
-        const located = await chrome.tabs.sendMessage(tabId, { type: "LOCATE_SELECTOR", selector, index }, { frameId: 0 });
-        if (located?.error) return { error: located.error };
+        located = await chrome.tabs.sendMessage(tabId, { type: "LOCATE_SELECTOR", selector, index }, { frameId: 0 });
+      } catch {
+        located = undefined;
+      }
+      // No content script answers on data: and about:blank pages, or in a tab open across an extension reload.
+      if (!located) return clickSelectorWithDebugger(tabId, selector, index);
+      if (located.error) return { error: located.error };
+      try {
         const clicked = await clickRef(tabId, 0, located.ref, "left", undefined, label);
         if (clicked.error) return clicked;
         return { success: true, selector, index, matchCount: located.count, ...(clicked._hint ? { _hint: clicked._hint } : {}) };
