@@ -67,7 +67,7 @@ const {
 } = require("./playbook-records.cjs");
 const { visibleText } = require("./record-candidates.cjs");
 const { validateAssertions } = require("./playbook-assertions.cjs");
-const { authInputs, resolveArgs, runPlaybookOp, testPlaybookOp } = require("./playbook-runtime.cjs");
+const { authInputs, previewPlaybookOp, resolveArgs, runPlaybookOp, testPlaybookOp } = require("./playbook-runtime.cjs");
 const { envBackedHeaders, resolveOp } = require("./playbooks.cjs");
 const { replay, waitForResponse } = require("./api-harvest.cjs");
 const { runCollect } = require("./dom-collect.cjs");
@@ -1575,8 +1575,15 @@ async function runHostPlaybook(msg, request) {
   if (params.test === true && op.effect === "write" && params.write !== true) {
     throw new Error(`${playbook.id} ${op.id} is a write op; pb test runs it only with --write`);
   }
-  if (op.effect === "write" && op.safety.authorization === "explicit" && params.write !== true) {
-    throw new Error(`write op ${playbook.id} ${op.id} requires --write`);
+  const preview = () => previewPlaybookOp({ playbook, op, args: runArgs, secrets: params.secret || {}, ...(params.strategy !== undefined ? { strategy: params.strategy } : {}) });
+  if (op.effect === "write" && op.safety.authorization === "explicit" && params.write !== true && params.dryRun !== true) {
+    // Say what --write would agree to; a request that can't render yet fails on its own once --write is given.
+    let sends = "";
+    try {
+      const shown = preview();
+      if (shown.url !== undefined) sends = `; it sends ${shown.method} ${shown.url}`;
+    } catch {}
+    throw new Error(`write op ${playbook.id} ${op.id} requires --write${sends} (see it all with --dry-run)`);
   }
   const claim = {
     playbookId: playbook.id,
@@ -1589,6 +1596,18 @@ async function runHostPlaybook(msg, request) {
   };
   // A write is checked now and gets its receipt only when its request is dispatched, so a run
   // refused before sending (a bad input, a disallowed origin, a missing env var) leaves none.
+  if (params.dryRun === true) {
+    let receipt = "none: a read op keeps no receipt";
+    if (op.effect === "write") {
+      try {
+        checkReceipt(claim);
+        receipt = "clear: --write reserves one when the request is sent";
+      } catch (error) {
+        receipt = `blocked: ${error.message}`;
+      }
+    }
+    return { status: "dry-run", ...preview(), receipt };
+  }
   checkReceipt(claim);
   let receipt = null;
   const report = (event) => {

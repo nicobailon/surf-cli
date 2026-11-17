@@ -761,6 +761,108 @@ describe("CLI/native-host/fake-extension E2E contract", () => {
     }
   });
 
+  it("shows a write with --dry-run, sending nothing, and names it when --write is missing", async () => {
+    const socketPath = createSocketPath();
+    const project = fs.mkdtempSync(path.join(os.tmpdir(), "surf-playbook-dry-run-"));
+    tempDirs.push(project);
+    const opsDir = path.join(project, ".surf", "playbooks", "fixture", "ops");
+    fs.mkdirSync(opsDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(project, ".surf", "playbooks", "fixture", "playbook.json"),
+      JSON.stringify({ id: "fixture", version: "1.0.0", origins: ["https://fixture.test"] }),
+    );
+    fs.writeFileSync(
+      path.join(opsDir, "post.json"),
+      JSON.stringify({
+        id: "post",
+        effect: "write",
+        args: { action: { required: true } },
+        safety: { authorization: "explicit", duplicate: "transactional", key: ["action"] },
+        run: [
+          {
+            using: "network",
+            request: {
+              method: "POST",
+              url: "https://fixture.test/api",
+              body: { action: "{{action}}" },
+              authInputs: [{ env: "SURF_E2E_SITE_KEY", header: "X-Site-Key", required: true }],
+            },
+            extract: { jsonPath: "$.ok" },
+            expect: { truthy: true },
+          },
+        ],
+      }),
+    );
+    const host = startHost(socketPath);
+    const receipts = () => {
+      const root = path.join(host.stateDir, "playbook-receipts");
+      if (!fs.existsSync(root)) {
+        return [];
+      }
+      return fs
+        .readdirSync(root, { withFileTypes: true })
+        .filter((entry) => entry.isDirectory())
+        .flatMap((claim) =>
+          fs
+            .readdirSync(path.join(root, claim.name), { withFileTypes: true })
+            .filter((entry) => entry.name.endsWith(".json")),
+        );
+    };
+    const env = { SURF_E2E_SITE_KEY: "dummy-site-key" };
+    const use = (...flags: string[]) =>
+      runCli(socketPath, ["use", "fixture", "post", "--action", "same", ...flags], project, env);
+
+    try {
+      await host.waitForMessage((message) => message.type === "HOST_READY");
+      const before = host.messages.length;
+
+      const dryRun = await use("--dry-run");
+      expect(dryRun).toMatchObject({ code: 0, stderr: "" });
+      expect(dryRun.stdout).toContain("POST https://fixture.test/api");
+      expect(dryRun.stdout).toContain("X-Site-Key");
+      expect(dryRun.stdout).not.toContain("dummy-site-key");
+      const json = JSON.parse((await use("--dry-run", "--json")).stdout);
+      expect(json).toMatchObject({
+        status: "dry-run",
+        method: "POST",
+        url: "https://fixture.test/api",
+        headers: ["X-Site-Key"],
+        body: { action: "same" },
+        allowedOrigins: ["https://fixture.test"],
+      });
+      expect(host.messages.length).toBe(before);
+      expect(receipts()).toEqual([]);
+
+      // A value after --dry-run is refused, not read as "no dry run".
+      for (const flags of [
+        ["--dry-run", "true"],
+        ["--write", "--dry-run", "true"],
+      ]) {
+        const valued = await use(...flags);
+        expect(valued.code).toBe(1);
+        expect(valued.stderr).toContain("--dry-run takes no value");
+      }
+      expect(host.messages.length).toBe(before);
+      expect(receipts()).toEqual([]);
+
+      const unwritten = await use();
+      expect(unwritten.code).toBe(1);
+      expect(unwritten.stderr).toMatch(
+        /write op fixture post requires --write; it sends POST https:\/\/fixture\.test\/api/,
+      );
+      expect(host.messages.filter((message) => message.type === "EXECUTE_JAVASCRIPT")).toEqual([]);
+
+      const written = await use("--write");
+      expect(written).toMatchObject({ code: 0, stderr: "" });
+      expect(host.messages.filter((message) => message.type === "EXECUTE_JAVASCRIPT")).toHaveLength(
+        1,
+      );
+      expect(receipts()).toHaveLength(1);
+    } finally {
+      await host.dispose();
+    }
+  });
+
   it("saves a recorded op as the record made it, whatever its draft file says", async () => {
     const socketPath = createSocketPath();
     const project = fs.mkdtempSync(path.join(os.tmpdir(), "surf-record-save-"));

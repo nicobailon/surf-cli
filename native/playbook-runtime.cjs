@@ -206,6 +206,53 @@ function withServerIdempotency(request, idempotency, attemptId) {
   return next;
 }
 
+// What a network strategy sends: its inputs filled, its env headers set and a write's server
+// idempotency key added.
+function renderNetworkRequest(strategy, { args, authValues, escapes, serverIdempotency, attemptId }) {
+  const inputs = strategy.request.authInputs || [];
+  const rendered = renderRequest(sentRequest(strategy.request), args, { escapes });
+  for (const input of inputs) {
+    const value = authValues?.[input.env];
+    if (value) rendered.headers = { ...rendered.headers, [input.header]: value };
+  }
+  // Keep a response to a request carrying an env value out of the browser's disk cache.
+  if (inputs.length > 0) rendered.cache = "no-store";
+  return withServerIdempotency(rendered, serverIdempotency, attemptId);
+}
+
+// surf use --dry-run: what the op's first strategy would do, with nothing sent. Env header values
+// are <redacted> before rendering, and only header names are listed. A placeholder the record left
+// prints as stored, with the refusal the run would give.
+function previewPlaybookOp({ playbook, op, args: providedArgs = {}, secrets = {}, env = process.env, strategy: forced }) {
+  const args = resolveArgs(op, providedArgs, { playbookId: playbook.id });
+  const authValues = Object.fromEntries(Object.keys(resolveAuthValues(op, secrets, env)).map((name) => [name, "<redacted>"]));
+  const strategy = strategiesToRun(op, forced)[0];
+  const escapes = escapedOp(op);
+  const preview = { playbook: playbook.id, op: op.id, effect: op.effect, strategy: strategy.using };
+  const allowedOrigins = op.origins || playbook.origins || [];
+  if (strategy.using === "workflow") {
+    // The first step as the workflow runtime sends it: its args filled with the op's inputs and vars.
+    const [first] = escapes ? fillEscapedSteps(strategy.steps, args) : applyTemplate(strategy.steps, args);
+    const step = first?.args ? { ...first, args: substituteVars(first.args, args, { escapes, inputs: args }) } : first;
+    return { ...preview, step, allowedOrigins };
+  }
+  if (strategy.using !== "network") return { ...preview, allowedOrigins };
+  const placeholder = findRedactedPlaceholder(sentRequest(strategy.request));
+  const serverIdempotency = op.effect === "write" ? op.safety?.serverIdempotency : undefined;
+  const request = renderNetworkRequest(strategy, { args, authValues, escapes, serverIdempotency, attemptId: "<attempt-id>" });
+  const refused = placeholder ? placeholderError(placeholder, `${playbook.id} ${op.id}`).message : absoluteUrlRefusal(request.url, allowedOrigins);
+  return {
+    ...preview,
+    method: String(request.method || "GET").toUpperCase(),
+    url: request.url,
+    ...(request.query && Object.keys(request.query).length > 0 ? { query: request.query } : {}),
+    headers: Object.keys(request.headers || {}),
+    ...(request.body !== undefined ? { body: request.body } : {}),
+    allowedOrigins,
+    ...(refused ? { refused } : {}),
+  };
+}
+
 // The tab's script output is pretty-printed JSON cut at 50,000 characters
 // (src/service-worker/index.ts), so an extract runs in the tab and only its result comes back.
 const TAB_OUTPUT_LIMIT = 50000;
@@ -356,7 +403,25 @@ async function assertAllowedOrigin(url, { allowedOrigins = [], executeTool, sign
     if (page?.error) throw new Error(typeof page.error === "string" ? page.error : JSON.stringify(page.error));
     resolved = new URL(url, page?.output !== undefined ? JSON.parse(page.output) : page?.value);
   }
-  if (!allowedOrigins.includes(resolved.origin)) throw new Error(`playbook network origin is not allowed: ${resolved.origin}`);
+  const refusal = originRefusal(resolved.origin, allowedOrigins);
+  if (refusal) throw new Error(refusal);
+}
+
+function originRefusal(origin, allowedOrigins) {
+  if (allowedOrigins.length === 0 || allowedOrigins.includes(origin)) return undefined;
+  return `playbook network origin is not allowed: ${origin}`;
+}
+
+// The refusal the run gives an absolute URL off the op's origins. A relative URL resolves against
+// the tab's page, which a dry run doesn't read.
+function absoluteUrlRefusal(url, allowedOrigins) {
+  let origin;
+  try {
+    origin = new URL(url).origin;
+  } catch {
+    return undefined;
+  }
+  return originRefusal(origin, allowedOrigins);
 }
 
 async function runStrategy(strategy, context) {
@@ -421,23 +486,10 @@ async function runStrategy(strategy, context) {
     return { ...result, extracted: found?.extracted };
   }
   if (strategy.using === "network") {
-    const inputs = strategy.request.authInputs || [];
-    const template = sentRequest(strategy.request);
     // A draft's request can hold <text> where the record redacted a typed value: never send it.
-    const placeholder = findRedactedPlaceholder(template);
+    const placeholder = findRedactedPlaceholder(sentRequest(strategy.request));
     if (placeholder) throw placeholderError(placeholder, context.label);
-    const rendered = renderRequest(template, context.args, { escapes: context.escapes });
-    for (const input of inputs) {
-      const value = context.authValues?.[input.env];
-      if (value) rendered.headers[input.header] = value;
-    }
-    // Keep a response to a request carrying an env value out of the browser's disk cache.
-    if (inputs.length > 0) rendered.cache = "no-store";
-    const request = withServerIdempotency(
-      rendered,
-      context.serverIdempotency,
-      context.attemptId,
-    );
+    const request = renderNetworkRequest(strategy, context);
     await assertAllowedOrigin(request.url, context);
     // Without an in-tab extract the body comes from network capture: turn it on before sending.
     const inTab = extractsInTab(strategy.extract);
@@ -593,4 +645,4 @@ async function testPlaybookOp(options) {
   }
 }
 
-module.exports = { authInputs, resolveArgs, runPlaybookOp, testPlaybookOp };
+module.exports = { authInputs, previewPlaybookOp, resolveArgs, runPlaybookOp, testPlaybookOp };
