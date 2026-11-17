@@ -115,6 +115,7 @@ function saveExtract({ playbook, op: opId, extract, strategy, cwd, home }) {
     cwd,
     home,
     edit: (op) => {
+      if (op.chain) throw new Error(`op ${opId} is a chain op; pb extract edits the ops its steps run`);
       const usings = (op.run || []).map((entry) => entry.using);
       const wanted = strategy ? [strategy] : extract.html !== undefined ? HTML_STRATEGIES : ["network"];
       const targets = usings.flatMap((using, index) => (wanted.includes(using) ? [index] : []));

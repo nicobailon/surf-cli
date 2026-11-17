@@ -21,7 +21,7 @@ surf playbook save --from-record <rec-id>                # add --request-id r_�
 ```
 
 - **Load by URL when you have one.** A recorded `navigate` becomes the browser fallback, and `pb param` templates it along with the request. Recorded clicks keep their refs (`e154`), which are stale in any later session, so record a click as `locate.role <role> --name <text> --action click`, which finds the element again.
-- **Pick the request.** The top candidate is right when it is the page's Document (HTML) or a JSON response with records whose sample matches what the goal asks for. A banner or manifest JSON can sit just below it. Documents over the sample cap show `(no sample: per-body-cap)` and score lower (Lever: 4 to 6), but they are still picked when nothing else carries data. When a JSON response has the records the page shows, take it over the Document: pass its id with `--request-id`.
+- **Pick the request.** The top candidate is right when it is the page's Document (HTML) or a JSON response with records whose sample matches what the goal asks for. A banner or manifest JSON can sit just below it. Documents over the sample cap show `(no sample: per-body-cap)` and score lower, but they are still picked when nothing else carries data. When a JSON response has the records the page shows, take it over the Document: pass its id with `--request-id`.
 - `save` prints the origins it allows. Check that they are the site's.
 
 ## 2. Turn values into inputs
@@ -77,7 +77,7 @@ surf use <pb> <op> --<input> <B> --json            # .strategy is network, and t
 
 **JSON API vs HTML.** If the page calls a JSON endpoint (`Fetch`/`XHR` with records in the sample), take it: its fields are stable paths, and a Node client (`pb client export`) can return records. For an HTML Document, extract with selectors. `surf use` returns records, and a Node client prints the raw HTML.
 
-**List → detail.** Build two ops: `list_<things>` with an id or URL field, and `get_<thing>` taking that id as a required input (`path.2 --as posting_id`). Until ops can chain, the caller maps the field to the input by hand: books `url` `…/catalogue/<slug>/index.html` → `--book <slug>`, Lever `id` → `--posting_id`. Write that mapping in the decision log.
+**List → detail.** Build two ops: `list_<things>` with an id or URL field, and `get_<thing>` taking that id as a required input (`path.2 --as author`). Then run the detail op over the list with `--each-from` (`surf use <pb> get_<thing> --each-from list_<things>:url@path.2 --limit 3`), or save a chain op (the README's "Chain ops" section), instead of copying each id across by hand: books `url` `…/catalogue/<slug>/index.html` → `--book` (`:url@path.2`), quotes `author_url` `…/author/<slug>/` → `--author` (`:author_url@path.2`). Write that mapping in the decision log.
 
 **Data that appears after a click, search or scroll.** Start the record on the page, then do only the action that loads the data. Navigate or expand the UI before `record start`. Read `candidates` for the `Fetch`/`XHR` the action sent. If the data is in that request, the op is network-first, and its fallback replays the action. For a search, param the query with `--link text`. For infinite scroll, see `docs/threads-and-feeds.md` in the Surf repository (the `api` strategy follows cursors, and `collect` scrolls).
 

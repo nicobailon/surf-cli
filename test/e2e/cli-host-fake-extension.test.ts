@@ -3964,6 +3964,136 @@ describe("CLI/native-host/fake-extension E2E contract", () => {
     }
   });
 
+  // A chain op and --each-from run list → detail in the tab through surf use, step by step.
+  it("runs a chain op and the same list → detail with --each-from", async () => {
+    const socketPath = createSocketPath();
+    const project = fs.mkdtempSync(path.join(os.tmpdir(), "surf-chain-"));
+    tempDirs.push(project);
+    const vm = require("node:vm") as {
+      runInNewContext(code: string, context: Record<string, unknown>): unknown;
+    };
+    const sent: string[] = [];
+    const answer = (body: unknown, url: string) => ({
+      status: 200,
+      ok: true,
+      url,
+      redirected: false,
+      headers: new Map([["content-type", "application/json"]]),
+      text: async () => JSON.stringify(body),
+      arrayBuffer: async () => new ArrayBuffer(0),
+    });
+    const tab = {
+      URL,
+      location: { href: "https://jobs.test/" },
+      fetch: async (url: string) => {
+        const parsed = new URL(url);
+        sent.push(`${parsed.pathname}${parsed.search}`);
+        if (parsed.pathname === "/api/list") {
+          const items = ["a1", "a2", "a3", "a4"].map((posting) => ({
+            id: posting,
+            url: `https://jobs.test/acme/${posting}`,
+          }));
+          return answer({ items }, url);
+        }
+        const id = parsed.pathname.split("/").pop();
+        return answer({ data: { id, title: `Role ${id}` } }, url);
+      },
+    };
+    const host = startHost(socketPath, {
+      runScript: async (code) => ({
+        output: JSON.stringify(await vm.runInNewContext(code, { ...tab })),
+      }),
+    });
+    const directory = path.join(project, ".surf", "playbooks", "jobs");
+    fs.mkdirSync(path.join(directory, "ops"), { recursive: true });
+    const write = (name: string, value: unknown) =>
+      fs.writeFileSync(path.join(directory, name), JSON.stringify(value));
+    write("playbook.json", { id: "jobs", version: "1.0.0", origins: ["https://jobs.test"] });
+    write("ops/list_postings.json", {
+      id: "list_postings",
+      args: { company: { type: "string", required: true } },
+      run: [
+        {
+          using: "network",
+          request: { url: "https://jobs.test/api/list", query: { company: "{{company}}" } },
+          extract: { jsonPath: "$.items" },
+        },
+      ],
+    });
+    write("ops/get_posting.json", {
+      id: "get_posting",
+      args: { posting_id: { type: "string", required: true } },
+      run: [
+        {
+          using: "network",
+          request: { url: "https://jobs.test/api/detail/{{posting_id}}" },
+          extract: { jsonPath: "$.data" },
+        },
+      ],
+    });
+    write("ops/jobs_with_details.json", {
+      id: "jobs_with_details",
+      args: { company: { type: "string", required: true } },
+      chain: [
+        { id: "list", op: "list_postings", with: { company: "{{company}}" } },
+        {
+          id: "detail",
+          op: "get_posting",
+          each: { from: "list", limit: 3, delayMs: 10 },
+          with: { posting_id: { from: "item", path: "url", segment: 2 } },
+        },
+      ],
+      output: "detail",
+    });
+    const cli = (args: string[]) =>
+      runCli(socketPath, args, project, { SURF_STATE_DIR: host.stateDir });
+
+    try {
+      await host.waitForMessage((message) => message.type === "HOST_READY");
+      const chained = await cli([
+        "use",
+        "jobs",
+        "jobs_with_details",
+        "--company",
+        "acme",
+        "--json",
+      ]);
+      expect(chained).toMatchObject({ code: 0, stderr: "" });
+      const viaChain = JSON.parse(chained.stdout);
+      expect(viaChain).toMatchObject({ status: "completed", strategy: "chain" });
+      expect(viaChain.value).toEqual(["a1", "a2", "a3"].map((id) => ({ id, title: `Role ${id}` })));
+      expect(sent.splice(0)).toEqual([
+        "/api/list?company=acme",
+        "/api/detail/a1",
+        "/api/detail/a2",
+        "/api/detail/a3",
+      ]);
+
+      const flagged = await cli([
+        "use",
+        "jobs",
+        "get_posting",
+        "--company",
+        "acme",
+        "--each-from",
+        "list_postings:url@path.2",
+        "--limit",
+        "3",
+        "--delay-ms",
+        "10",
+        "--json",
+      ]);
+      expect(flagged).toMatchObject({ code: 0, stderr: "" });
+      expect(JSON.parse(flagged.stdout).value).toEqual(viaChain.value);
+
+      const dry = await cli(["use", "jobs", "jobs_with_details", "--company", "acme", "--dry-run"]);
+      expect(dry).toMatchObject({ code: 0, stderr: "" });
+      expect(dry.stdout).toContain("step detail: get_posting, each record of list");
+    } finally {
+      await host.dispose();
+    }
+  }, 60000);
+
   it("does not refresh idle activity during list/info validation", async () => {
     const socketPath = createSocketPath();
     const host = startHost(socketPath, { targetActive: false });

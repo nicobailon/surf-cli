@@ -10,7 +10,7 @@ const { commandMetadata } = require("./workflow-definition.cjs");
 const { mapStartingVars, startingVars } = require("./workflow-runtime.cjs");
 
 // `surf use` options that never reach an op, so no input can take these names.
-const RESERVED_RUN_OPTIONS = new Set(["json", "no-lock", "no-wait", "session", "tab-id", "write", "dry-run", "repeat", "retry-attempt", "override-in-doubt", "pin-built-in", "allow-script", "format"]);
+const RESERVED_RUN_OPTIONS = new Set(["json", "no-lock", "no-wait", "session", "tab-id", "write", "dry-run", "repeat", "retry-attempt", "override-in-doubt", "pin-built-in", "allow-script", "format", "each-from", "each-into"]);
 const NAME_PATTERN = /^[a-z0-9][a-z0-9._-]{0,63}$/;
 const ENV_PATTERN = /^[A-Za-z_][A-Za-z0-9_]*$/;
 const TEMPLATE_ONLY = /^\{\{[a-zA-Z0-9._-]+\}\}$/;
@@ -641,6 +641,7 @@ function paramOp(op, { fields, as: name, env, required = false, default: default
   if (!Array.isArray(fields) || fields.length === 0) throw new Error("pb param needs at least one field, such as query.q, path.2, body.page or headers.x-version");
   if ((name === undefined) === (env === undefined)) throw new Error("pb param needs --as <name> or --env <VAR>, not both");
   if (link !== undefined && name === undefined) throw new Error("--link goes with --as");
+  if (op.chain) throw new Error(`op ${op.id} is a chain op; pb param edits the ops its steps run`);
   const next = structuredClone(op);
   const strategy = next.run.find((candidate) => candidate.using === "network");
   if (!strategy?.request) throw new Error(`op ${op.id} has no network strategy to take inputs`);
