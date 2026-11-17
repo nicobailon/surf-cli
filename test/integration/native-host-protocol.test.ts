@@ -948,6 +948,120 @@ describe("native host protocol integration", () => {
     expect(used.stdout).not.toContain("dummy-lima");
   });
 
+  it("ignores an echo opt-in a playbook step sets in its own args", async () => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), "surf-host-echo-step-"));
+    tempDirs.push(home);
+    const ops = path.join(home, ".surf", "playbooks", "pw", "ops");
+    fs.mkdirSync(ops, { recursive: true });
+    fs.writeFileSync(
+      path.join(ops, "..", "playbook.json"),
+      JSON.stringify({ id: "pw", version: "1.0.0" }),
+    );
+    fs.writeFileSync(
+      path.join(ops, "pick.json"),
+      JSON.stringify({
+        id: "pick",
+        effect: "read",
+        args: { choice: { required: true } },
+        run: [
+          {
+            using: "workflow",
+            autoWait: false,
+            stepDelay: 0,
+            steps: [
+              {
+                tool: "select",
+                args: { selector: "#s", values: "{{choice}}", echoValue: true },
+                as: "chosen",
+              },
+              {
+                tool: "locate.label",
+                args: { label: "Name", action: "fill", value: "{{choice}}", "echo-value": true },
+                as: "filled",
+              },
+            ],
+          },
+        ],
+      }),
+    );
+    const host = await startHostHarness({ HOME: home });
+    const cli = runCli(["use", "pw", "pick", "--choice", "dummy-lima", "--json"], host.socketPath, {
+      HOME: home,
+    });
+    const select = await host.waitForMessage(
+      (message) => message.type === "SELECT_OPTION",
+      "SELECT_OPTION",
+    );
+    host.send({ id: select.id, selected: ["dummy-lima"] });
+    const locate = await host.waitForMessage(
+      (message) => message.type === "LOCATE_LABEL",
+      "LOCATE_LABEL",
+    );
+    expect(locate.echoValue).toBe(false);
+    host.send({ id: locate.id, success: true, action: "fill", ref: "e1", value: "dummy-lima" });
+    const used = await cli;
+    expect(used.code).toBe(0);
+    expect(used.stdout).toContain('"selectedCount": 1');
+    expect(used.stdout).not.toContain("dummy-lima");
+  });
+
+  it("refuses network.export as a playbook step, so its bodies can't skip redaction", async () => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), "surf-host-export-step-"));
+    tempDirs.push(home);
+    const ops = path.join(home, ".surf", "playbooks", "pw", "ops");
+    fs.mkdirSync(ops, { recursive: true });
+    fs.writeFileSync(
+      path.join(ops, "..", "playbook.json"),
+      JSON.stringify({ id: "pw", version: "1.0.0" }),
+    );
+    fs.writeFileSync(
+      path.join(ops, "dump.json"),
+      JSON.stringify({
+        id: "dump",
+        effect: "read",
+        run: [
+          {
+            using: "workflow",
+            autoWait: false,
+            stepDelay: 0,
+            steps: [
+              { tool: "network.export", args: { output: path.join(home, "x.json") }, as: "dump" },
+            ],
+          },
+        ],
+      }),
+    );
+    const host = await startHostHarness({ HOME: home });
+    const cli = runCli(["use", "pw", "dump", "--json"], host.socketPath, { HOME: home });
+    const first = await Promise.race([
+      cli,
+      host.waitForMessage(
+        (message) => message.type === "EXPORT_NETWORK_REQUESTS",
+        "EXPORT_NETWORK_REQUESTS",
+      ),
+    ]);
+    if ("type" in first) {
+      host.send({
+        id: first.id,
+        entries: [
+          {
+            id: "r1",
+            method: "POST",
+            url: "https://example.test/post",
+            requestHeaders: { "content-type": "application/x-www-form-urlencoded" },
+            requestBody: "user=dummy-mike&password=dummy-november",
+          },
+        ],
+        har: false,
+        jsonl: false,
+      });
+    }
+    const used = await cli;
+    expect(`${used.stdout}${used.stderr}`).not.toContain("dummy-november");
+    expect(used.code).not.toBe(0);
+    expect(used.stderr).toContain("network.export is not available inside a host-owned workflow");
+  });
+
   it("redacts values a playbook typed during a record from the URLs its trace captured", async () => {
     const home = fs.mkdtempSync(path.join(os.tmpdir(), "surf-host-typed-use-"));
     tempDirs.push(home);

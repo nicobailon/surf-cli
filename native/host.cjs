@@ -1524,7 +1524,12 @@ async function executeMappedHostTool(request, tool, args, tabId) {
   if (tool === "network.wait" || tool === "network.replay" || tool === "collect") {
     return { output: await runHarvestTool(tool, args || {}, { tabId }, request) };
   }
-  const extensionMsg = mapToolToMessage(tool, args, tabId);
+  // Its bodies are redacted only where the socket path writes the file.
+  if (tool === "network.export") throw new Error(`tool ${tool} is not available inside a host-owned workflow`);
+  // A step comes from a playbook, which may be a project's or an imported one, so it can't turn
+  // the echo of typed values on.
+  const { echoValue: _echoValue, "echo-value": _echoFlag, ...stepArgs } = args || {};
+  const extensionMsg = mapToolToMessage(tool, stepArgs, tabId);
   if (!extensionMsg) throw new Error(`Unknown tool: ${tool}`);
   if (request.target?.strict) extensionMsg.strictTarget = true;
   applyFrameContextToMessage(request, extensionMsg);
@@ -1538,7 +1543,7 @@ async function executeMappedHostTool(request, tool, args, tabId) {
     throw new Error(`tool ${tool} is not available inside a host-owned workflow`);
   }
   // A workflow step's result can be captured (`as`) and returned, so it hides typed values too.
-  return withoutTypedEcho(await requestExtensionOrThrow(request, tool, extensionMsg, resolveRequestDeadlineMs(tool, args)), args);
+  return withoutTypedEcho(await requestExtensionOrThrow(request, tool, extensionMsg, resolveRequestDeadlineMs(tool, args)), {});
 }
 
 async function executeNativePlaybook(request, handler, args, options = {}) {
