@@ -64,9 +64,11 @@ const {
   startRecord,
   stopRecord,
   traceEntriesForRecord,
+  typedValues,
   updateRecordContext,
 } = require("./playbook-records.cjs");
 const { visibleText } = require("./record-candidates.cjs");
+const { proposeChain } = require("./record-bindings.cjs");
 const { validateAssertions } = require("./playbook-assertions.cjs");
 const { authInputs, previewPlaybookOp, resolveArgs, runPlaybookOp, testPlaybookOp } = require("./playbook-runtime.cjs");
 const { eachFromChain, previewChainOp, runChainOp } = require("./chain-runtime.cjs");
@@ -1777,9 +1779,12 @@ async function handleRecordRequest(tool, args, msg, request) {
   }
   if (tool === "playbook.record.stop") {
     const record = requireRecordFor(target);
+    let chain = null;
     if (record.capture.network) {
+      let live;
       try {
-        const { entries, pageText, capture, truncated } = await readTrace(record);
+        live = await readTrace(record);
+        const { entries, pageText, capture, truncated } = live;
         attachNetworkTrace(record.id, entries, undefined, {
           capture,
           pageText,
@@ -1790,9 +1795,17 @@ async function handleRecordRequest(tool, args, msg, request) {
         await stopCapture(record);
         throw error;
       }
+      // Bindings are found in the response bodies, which only the live entries hold.
+      if (args.draft === true) {
+        try {
+          chain = proposeChain({ record, entries: live.entries, typed: typedValues(record) });
+        } catch (error) {
+          log(`record ${record.id}: no chain proposed: ${error.message}`);
+        }
+      }
     }
     // Capture stops only once the record has: a refused --read leaves both running, to stop again.
-    const stopped = stopRecord({ target, draft: args.draft === true, read: args.read === true, requestId: args.requestId, includeInputValues: args.includeInputValues === true });
+    const stopped = stopRecord({ target, draft: args.draft === true, read: args.read === true, requestId: args.requestId, includeInputValues: args.includeInputValues === true, chain });
     await stopCapture(record);
     return stopped;
   }

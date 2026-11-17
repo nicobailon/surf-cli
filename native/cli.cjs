@@ -1746,12 +1746,14 @@ const TOOLS = {
           "from-recent": "Use activity from this window (default: 1h)",
           "from-record": "Use this record id. Origins: the record's page and the replayed request's. A write draft that replays a write saves network-only unless its workflow is one page-write step. The draft is saved as edited, and each way it differs from what the record drafts (effect, safety, strategies, request, checks, steps, origins, inputs) is printed under differs. Run pb param after",
           "request-id": "With --from-record: replay this request (from pb record candidates) instead of the draft's",
+          chain: "With --from-record: save the chain pb record stop --draft proposed (draft/chain.json): each of its requests as a read op, its bound values as required inputs, and the chain op over them",
           project: "Save in ./.surf/playbooks instead of ~/.surf/playbooks",
         },
         examples: [
           { cmd: "pb save example --op read --from-recent 1h", desc: "From recent activity" },
           { cmd: "pb save --from-record <record-id>", desc: "From a record" },
           { cmd: "pb save --from-record <record-id> --request-id r_1794_12", desc: "From a record, replaying the request you chose" },
+          { cmd: "pb save --from-record <record-id> --chain", desc: "Save the list → detail chain the record showed" },
         ],
       },
       "playbook param": {
@@ -1787,7 +1789,7 @@ const TOOLS = {
         desc: "Stop recording",
         args: [],
         opts: {
-          draft: "Save a draft playbook from the record (a write if it clicked or typed)",
+          draft: "Save a draft playbook from the record (a write if it clicked or typed). When a later request sent a value an earlier response returned (a list's id or link in a detail URL), also propose a chain: one line per binding, saved with pb save --chain",
           read: "With --draft: draft a read, as you say; names each captured request that can change data and each step beyond the page",
           "request-id": "With --draft: replay this request (see pb record candidates) instead of the top-ranked one",
           "include-input-values": "Keep request bodies and captured URLs as captured, though the record started without it (or --raw)",
