@@ -4086,6 +4086,144 @@ describe("CLI/native-host/fake-extension E2E contract", () => {
     }
   }, 60000);
 
+  // A chain list → create: surf use needs --write for it, --dry-run lists the write step, and the
+  // write step's own receipt blocks the same inputs until --repeat.
+  it("runs a chain with a write step only with --write, once per inputs until --repeat", async () => {
+    const socketPath = createSocketPath();
+    const project = fs.mkdtempSync(path.join(os.tmpdir(), "surf-chain-write-"));
+    tempDirs.push(project);
+    const vm = require("node:vm") as {
+      runInNewContext(code: string, context: Record<string, unknown>): unknown;
+    };
+    const sent: string[] = [];
+    const tab = {
+      URL,
+      location: { href: "https://jobs.test/" },
+      fetch: async (url: string, init: { method?: string } = {}) => {
+        const parsed = new URL(url);
+        sent.push(`${init.method || "GET"} ${parsed.pathname}${parsed.search}`);
+        const body =
+          parsed.pathname === "/api/list" ? { items: [{ id: "a1" }, { id: "a2" }] } : { ok: true };
+        return {
+          status: 200,
+          ok: true,
+          url,
+          redirected: false,
+          headers: new Map([["content-type", "application/json"]]),
+          text: async () => JSON.stringify(body),
+          arrayBuffer: async () => new ArrayBuffer(0),
+        };
+      },
+    };
+    const host = startHost(socketPath, {
+      runScript: async (code) => ({
+        output: JSON.stringify(await vm.runInNewContext(code, { ...tab })),
+      }),
+    });
+    const directory = path.join(project, ".surf", "playbooks", "jobs");
+    fs.mkdirSync(path.join(directory, "ops"), { recursive: true });
+    const write = (name: string, value: unknown) =>
+      fs.writeFileSync(path.join(directory, name), JSON.stringify(value));
+    write("playbook.json", { id: "jobs", version: "1.0.0", origins: ["https://jobs.test"] });
+    write("ops/list_postings.json", {
+      id: "list_postings",
+      args: { company: { type: "string", required: true } },
+      run: [
+        {
+          using: "network",
+          request: { url: "https://jobs.test/api/list", query: { company: "{{company}}" } },
+          extract: { jsonPath: "$.items" },
+        },
+      ],
+    });
+    write("ops/create_note.json", {
+      id: "create_note",
+      effect: "write",
+      args: {
+        posting_id: { type: "string", required: true },
+        note: { type: "string", required: true },
+      },
+      safety: { duplicate: "transactional" },
+      run: [
+        {
+          using: "network",
+          request: {
+            method: "POST",
+            url: "https://jobs.test/api/notes",
+            body: { posting_id: "{{posting_id}}", note: "{{note}}" },
+          },
+          extract: { jsonPath: "$.ok" },
+          expect: { truthy: true },
+        },
+      ],
+    });
+    write("ops/note_first.json", {
+      id: "note_first",
+      effect: "write",
+      args: {
+        company: { type: "string", required: true },
+        note: { type: "string", required: true },
+      },
+      chain: [
+        { id: "list", op: "list_postings", with: { company: "{{company}}" } },
+        {
+          id: "create",
+          op: "create_note",
+          with: { posting_id: { from: "list", path: "$[0].id" }, note: "{{note}}" },
+        },
+      ],
+      output: "create",
+    });
+    const use = (...flags: string[]) =>
+      runCli(
+        socketPath,
+        ["use", "jobs", "note_first", "--company", "acme", "--note", "hi", ...flags],
+        project,
+        { SURF_STATE_DIR: host.stateDir },
+      );
+
+    try {
+      await host.waitForMessage((message) => message.type === "HOST_READY");
+      const unwritten = await use("--json");
+      expect(unwritten.code).toBe(1);
+      expect(unwritten.stderr).toMatch(
+        /write op jobs note_first requires --write; its write steps: create \(create_note\) sends POST https:\/\/jobs\.test\/api\/notes \(see it all with --dry-run\)/,
+      );
+      expect(sent).toEqual([]);
+
+      const dry = await use("--dry-run");
+      expect(dry).toMatchObject({ code: 0, stderr: "" });
+      expect(dry.stdout).toContain("Dry run of jobs note_first (write): nothing sent");
+      expect(dry.stdout).toContain(
+        "step create: create_note, a write: POST https://jobs.test/api/notes; receipt: checked when the step runs",
+      );
+      expect(dry.stdout).toContain("receipt: one per write step, reserved when the step is sent");
+      expect(sent).toEqual([]);
+
+      const written = await use("--write", "--json");
+      expect(written).toMatchObject({ code: 0, stderr: "" });
+      expect(JSON.parse(written.stdout)).toMatchObject({ status: "completed", value: true });
+      expect(sent.splice(0)).toEqual(["GET /api/list?company=acme", "POST /api/notes"]);
+
+      const again = await use("--write", "--json");
+      expect(again.code).toBe(1);
+      expect(again.stderr).toMatch(
+        /chain note_first step create \(create_note\) failed: write blocked: attempt \S+ was sent at .+ and succeeded\. Add --repeat to send it again\./,
+      );
+      expect(sent.splice(0)).toEqual(["GET /api/list?company=acme"]);
+
+      expect(await use("--write", "--repeat", "--json")).toMatchObject({ code: 0, stderr: "" });
+      expect(sent.splice(0)).toEqual(["GET /api/list?company=acme", "POST /api/notes"]);
+
+      const retried = await use("--write", "--retry-attempt", "6f1c2a3b-4d5e-4f60-8a7b-9c0d1e2f3a4b");
+      expect(retried.code).toBe(1);
+      expect(retried.stderr).toMatch(/--retry-attempt reuses one write's attempt/);
+      expect(sent).toEqual([]);
+    } finally {
+      await host.dispose();
+    }
+  }, 60000);
+
   // pb record stop --draft proposes the binding a list → detail record shows, without its value,
   // and pb save --chain saves both requests as ops and the chain over them.
   it("proposes a chain binding at record stop and saves a working chain with pb save --chain", async () => {

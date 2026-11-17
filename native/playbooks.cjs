@@ -159,7 +159,7 @@ const EACH_KEYS = ["from", "limit", "delayMs"];
 const PAGE_KEYS = ["into", "next", "max", "delayMs"];
 const NEXT_KEYS = ["path", "html", "segment"];
 const TEMPLATE = /\{\{([a-zA-Z0-9._-]+)\}\}/g;
-const WRITES_LATER = "chains with write steps come later";
+const BULK_WRITE = "a bulk write, which a chain doesn't run";
 
 const isObject = (value) => Boolean(value) && typeof value === "object" && !Array.isArray(value);
 
@@ -215,7 +215,6 @@ function checkPageNext(next, where) {
 function validateChainOp(value, id, effect) {
   const where = `chain ${id}`;
   if (value.run !== undefined) throw new Error(`op ${id} has both run and chain`);
-  if (effect !== "read") throw new Error(`${where}: ${WRITES_LATER}`);
   if (!Array.isArray(value.chain) || value.chain.length === 0) throw new Error(`${where} needs at least one step`);
   if (value.chain.length > CHAIN_LIMITS.steps) throw new Error(`${where} has ${value.chain.length} steps; a chain takes at most ${CHAIN_LIMITS.steps}`);
   const args = validateArgSpecs(value.args);
@@ -298,16 +297,24 @@ function validateChainOp(value, id, effect) {
 }
 
 /**
- * Checks each chain op against the playbook's ops: every step names one of them, passes only
- * inputs it takes and reads (chains with write steps come later), and no chain runs itself.
+ * Checks each chain op against the playbook's ops: every step names one of them and passes only
+ * inputs it takes, a chain is a write exactly when a step runs a write op, which runs once (no
+ * each or page: that would be a bulk write), and no chain runs itself.
  */
 function checkChainOps(ops, playbookId) {
   for (const op of ops.values()) {
     if (!op.chain) continue;
+    let writes = false;
     for (const step of op.chain) {
       const target = ops.get(step.op);
       if (!target) throw new Error(`chain ${op.id} step ${step.id} names op ${step.op}, which playbook ${playbookId} doesn't have`);
-      if (target.effect === "write") throw new Error(`chain ${op.id} step ${step.id} runs write op ${step.op}; ${WRITES_LATER}`);
+      if (target.effect === "write") {
+        const at = `chain ${op.id} step ${step.id}`;
+        if (step.each !== undefined) throw new Error(`${at} runs write op ${step.op} once per record of ${step.each.from}: ${BULK_WRITE}`);
+        if (step.page !== undefined) throw new Error(`${at} pages write op ${step.op}: ${BULK_WRITE}`);
+        if (op.effect !== "write") throw new Error(`${at} runs write op ${step.op}, so the chain writes: give it "effect": "write"`);
+        writes = true;
+      }
       for (const input of Object.keys(step.with || {})) {
         if (!Object.hasOwn(target.args || {}, input)) throw new Error(`chain ${op.id} step ${step.id} passes --${input}, which ${step.op} doesn't take`);
       }
@@ -317,6 +324,7 @@ function checkChainOps(ops, playbookId) {
         throw new Error(`chain ${op.id} step ${step.id} reads page.next from ${step.op}'s response, but ${step.op} is a chain; use "increment"`);
       }
     }
+    if (op.effect === "write" && !writes) throw new Error(`chain ${op.id} is a write, but none of its steps runs a write op; make it a read`);
   }
   const done = new Set();
   const visiting = [];

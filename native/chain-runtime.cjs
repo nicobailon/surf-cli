@@ -1,6 +1,8 @@
 // Runs a chain op: each step runs another op of the same playbook through runPlaybookOp, with
 // inputs bound from the chain's own inputs, an earlier step's result or, in an `each` step, the
 // record it runs for. The README's "Chain ops" section is the format's spec.
+const crypto = require("crypto");
+const { checkReceipt, reserveReceipt, updateReceipt } = require("./playbook-receipts.cjs");
 const { applyTemplate, resolveArgs, runPlaybookOp } = require("./playbook-runtime.cjs");
 const { CHAIN_LIMITS, checkChainOps, compileBindingPath, validateOp } = require("./playbooks.cjs");
 
@@ -154,14 +156,65 @@ async function runPages({ op, step, target, args, values, runOnce, pause }) {
   }
 }
 
+// What a write op sends, as saved ({{inputs}} unfilled: a chain binds them as it runs): its first
+// strategy's method and URL, or the commands its workflow runs.
+function writeSends(op) {
+  const [strategy] = op.run;
+  if (strategy.using === "network") return `${String(strategy.request.method || "GET").toUpperCase()} ${strategy.request.url}`;
+  if (strategy.using === "workflow") return `runs ${strategy.steps.map((step) => step.cmd).join(", ")}`;
+  return `runs its ${strategy.using} strategy`;
+}
+
+/** A chain's write steps, a nested chain's included (as `outer → inner`), each with its op and what it sends. */
+function chainWrites({ playbook, op }) {
+  return op.chain.flatMap((step) => {
+    const target = playbook.ops.get(step.op);
+    if (target.effect !== "write") return [];
+    if (target.chain) return chainWrites({ playbook, op: target }).map((write) => ({ ...write, step: `${step.id} → ${write.step}` }));
+    return [{ step: step.id, op: target.id, sends: writeSends(target) }];
+  });
+}
+
+const SENT_STATE = {
+  verified: "which succeeded",
+  indeterminate: "whose result is unknown (in doubt)",
+  dispatched: "which surf stopped before its answer came (in doubt)",
+};
+
+// A chain that fails after a write step was sent stops there and sends nothing again: the error
+// names each sent write and its receipt's state.
+function afterSentWrites(caught, sent) {
+  if (sent.length === 0) return caught;
+  const writes = sent.map(({ step, op, handle }) => {
+    const status = handle.receipt.status;
+    return `write step ${step} (${op}), attempt ${handle.attemptId}, ${SENT_STATE[status] ?? `whose receipt is ${status}`}`;
+  });
+  const message = caught?.message || String(caught);
+  const error = new Error(`${message}${message.endsWith(".") ? "" : "."} The chain stopped after it sent ${writes.join("; ")}. Check the site before you run it again; its sent writes need --repeat to send again.`);
+  if (caught?.attempts) error.attempts = caught.attempts;
+  return error;
+}
+
 /**
  * Runs `op.chain` step by step and returns the `output` step's value (an each step's results,
  * concatenated) as runPlaybookOp returns an op's. The first failing step stops the chain with an
- * error naming it. `options` are runPlaybookOp's: the tab, signal, sleep, events and secrets.
- * `budget` counts op runs across nested chains.
+ * error naming it, and naming each write step it sent before. `options` are runPlaybookOp's: the
+ * tab, signal, sleep, events and secrets; `repeat` (--repeat) lets a write step send inputs its
+ * receipt already holds.
  */
 async function runChainOp(options) {
-  const { playbook, op, args: provided = {}, budget = { runs: 0 } } = options;
+  const sent = [];
+  try {
+    return await runSteps({ ...options, sent });
+  } catch (caught) {
+    throw afterSentWrites(caught, sent);
+  }
+}
+
+// `budget` counts op runs across nested chains; `sent` collects the write steps they send, as
+// `at → step` inside a nested chain run by step `at`.
+async function runSteps(options) {
+  const { playbook, op, args: provided = {}, budget = { runs: 0 }, sent, at, repeat = false } = options;
   const { executeTool, executeStep, executeNative, signal, sleep, now, onEvent, secrets, env, allowScript } = options;
   const pause = sleep ?? wait;
   const args = resolveArgs(op, provided, { playbookId: playbook.id });
@@ -169,13 +222,30 @@ async function runChainOp(options) {
   const steps = [];
   for (const step of op.chain) {
     const target = playbook.ops.get(step.op);
+    const runOp = (stepArgs, more) => runPlaybookOp({ playbook, op: target, args: stepArgs, secrets, env, executeTool, executeStep, executeNative, signal, sleep, now, onEvent, allowScript, ...more });
+    // A write step gets its own receipt, keyed by its inputs after binding as a run of its op
+    // alone would be: checked first, reserved once its request is dispatched.
+    const runWrite = async (stepArgs) => {
+      const claim = { playbookId: playbook.id, op: target, args: resolveArgs(target, stepArgs, { playbookId: playbook.id }), repeat, attemptId: crypto.randomUUID() };
+      checkReceipt(claim);
+      const write = { step: at ? `${at} → ${step.id}` : step.id, op: target.id, handle: null };
+      return runOp(stepArgs, {
+        attemptId: claim.attemptId,
+        beforeDispatch: async () => {
+          write.handle = reserveReceipt(claim);
+          sent.push(write);
+          updateReceipt(write.handle, "dispatched");
+        },
+        afterDispatch: async ({ status, error }) => updateReceipt(write.handle, status, { error }),
+      });
+    };
     // One run of the step's op: `page` sets page.into and reads page.next from the response.
     const runOnce = async (stepArgs, pageNext) => {
       if (signal?.aborted) throw new Error("the run was cancelled");
       if (++budget.runs > CHAIN_LIMITS.runs) throw new Error(`a chain run calls at most ${CHAIN_LIMITS.runs} ops`);
-      return target.chain
-        ? runChainOp({ ...options, op: target, args: stepArgs, budget })
-        : runPlaybookOp({ playbook, op: target, args: stepArgs, secrets, env, executeTool, executeStep, executeNative, signal, sleep, now, onEvent, allowScript, ...(pageNext ? { pageNext } : {}) });
+      if (target.chain) return runSteps({ ...options, op: target, args: stepArgs, budget, at: at ? `${at} → ${step.id}` : step.id });
+      if (target.effect === "write") return runWrite(stepArgs);
+      return runOp(stepArgs, pageNext ? { pageNext } : {});
     };
     const runStep = async (item, label) => {
       try {
@@ -218,21 +288,45 @@ async function runChainOp(options) {
   return { status: "completed", playbook: playbook.id, op: op.id, strategy: "chain", value: values.get(op.output), provenance: playbook.provenance, steps };
 }
 
-/** surf use --dry-run of a chain: its steps, each with what it runs over; nothing is sent. */
-function previewChainOp({ playbook, op, args: provided = {} }) {
+// A write step in a dry run: what it sends and its receipt check, which needs its inputs: known
+// now only when none is bound from an earlier step.
+function previewWrite({ playbook, step, target, args, repeat }) {
+  if (target.chain) {
+    const sends = chainWrites({ playbook, op: target }).map((write) => `${write.step} (${write.op}) sends ${write.sends}`);
+    return { sends: `chain ${target.id}: ${sends.join("; ")}`, receipt: "checked as each of its write steps runs" };
+  }
+  const write = { sends: writeSends(target) };
+  if (Object.values(step.with || {}).some((binding) => binding && typeof binding === "object")) {
+    return { ...write, receipt: "checked when the step runs: its inputs come from earlier steps" };
+  }
+  try {
+    checkReceipt({ playbookId: playbook.id, op: target, args: resolveArgs(target, bindArgs(step, { args }), { playbookId: playbook.id }), repeat });
+    return { ...write, receipt: "clear: --write reserves one when the step is sent" };
+  } catch (error) {
+    return { ...write, receipt: `blocked: ${error.message}` };
+  }
+}
+
+/** surf use --dry-run of a chain: its steps, each with what it runs over and what a write step sends; nothing is sent. */
+function previewChainOp({ playbook, op, args: provided = {}, repeat = false }) {
   const args = resolveArgs(op, provided, { playbookId: playbook.id });
   return {
     playbook: playbook.id,
     op: op.id,
     effect: op.effect,
     strategy: "chain",
-    steps: op.chain.map((step) => ({
-      id: step.id,
-      op: step.op,
-      ...(step.each ? { each: { from: step.each.from, ...eachBounds(step, args) } } : {}),
-      ...(step.page ? { page: { into: step.page.into, next: step.page.next, ...pageBounds(step, args) } } : {}),
-    })),
+    steps: op.chain.map((step) => {
+      const target = playbook.ops.get(step.op);
+      return {
+        id: step.id,
+        op: step.op,
+        ...(step.each ? { each: { from: step.each.from, ...eachBounds(step, args) } } : {}),
+        ...(step.page ? { page: { into: step.page.into, next: step.page.next, ...pageBounds(step, args) } } : {}),
+        ...(target.effect === "write" ? { write: previewWrite({ playbook, step, target, args, repeat }) } : {}),
+      };
+    }),
     output: op.output,
+    receipt: op.effect === "write" ? "one per write step, reserved when the step is sent" : "none: a read op keeps no receipt",
   };
 }
 
@@ -261,6 +355,8 @@ function eachFromChain({ playbook, op, eachFrom, given = [] }) {
   const list = playbook.ops.get(listId);
   if (!list) throw new Error(`--each-from: playbook ${playbook.id} has no op ${listId}`);
   if (list.id === op.id) throw new Error(`--each-from names ${op.id} itself`);
+  // A write once per record is a bulk write.
+  for (const each of [list, op]) if (each.effect === "write") throw new Error(`--each-from runs read ops only; ${each.id} is a write`);
   const specs = op.args || {};
   const target = into ?? eachTarget(op, given);
   if (!Object.hasOwn(specs, target)) throw new Error(`--each-into ${target} is no input of ${op.id}`);
@@ -289,4 +385,4 @@ function eachFromChain({ playbook, op, eachFrom, given = [] }) {
   return chained;
 }
 
-module.exports = { eachFromChain, parseEachFrom, previewChainOp, runChainOp };
+module.exports = { chainWrites, eachFromChain, parseEachFrom, previewChainOp, runChainOp };
