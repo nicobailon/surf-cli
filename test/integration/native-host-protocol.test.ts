@@ -1337,6 +1337,78 @@ describe("native host protocol integration", () => {
     expect(trace).not.toContain("oscar");
   });
 
+  it("redacts values a batch typed during a record, and drops the opt-ins its actions set", async () => {
+    const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), "surf-host-batch-typed-"));
+    tempDirs.push(stateDir);
+    const records = require("../../native/playbook-records.cjs") as any;
+    const record = records.startRecord({
+      site: "s",
+      op: "search",
+      tabId: 1,
+      network: true,
+      origin: "https://example.test",
+      root: stateDir,
+    });
+    const host = await startHostHarness({ SURF_STATE_DIR: stateDir });
+    const actions = [
+      { type: "type", text: "dummy kilo words" },
+      {
+        type: "locate.label",
+        label: "City",
+        action: "fill",
+        value: "dummy-lima-town",
+        echoValue: true,
+      },
+    ];
+    const batch = runCli(["batch", "--actions", JSON.stringify(actions)], host.socketPath);
+    const typing = await host.waitForMessage(
+      (message) => message.type === "EXECUTE_TYPE",
+      "EXECUTE_TYPE",
+    );
+    host.send({ id: typing.id, success: true });
+    const fill = await host.waitForMessage(
+      (message) => message.type === "LOCATE_LABEL",
+      "LOCATE_LABEL",
+    );
+    expect(fill.echoValue).toBe(false);
+    host.send({ id: fill.id, success: true, action: "fill" });
+    expect((await batch).code).toBe(0);
+
+    const stop = runCli(["pb", "record", "stop", "--json"], host.socketPath);
+    const read = await host.waitForMessage(
+      (message) => message.type === "READ_NETWORK_REQUESTS",
+      "READ_NETWORK_REQUESTS",
+    );
+    host.send({
+      id: read.id,
+      entries: [
+        {
+          id: "r1",
+          method: "GET",
+          status: 200,
+          type: "XHR",
+          url: "https://example.test/api?q=dummy+kilo+words&city=dummy-lima-town",
+        },
+      ],
+      capture: { active: true, interruptions: [], dropped: 0 },
+    });
+    const stopCapture = await host.waitForMessage(
+      (message) => message.type === "STOP_NETWORK_CAPTURE",
+      "STOP_NETWORK_CAPTURE",
+    );
+    host.send({ id: stopCapture.id, success: true });
+    expect((await stop).code).toBe(0);
+    const trace = fs.readFileSync(
+      path.join(records.recordsRoot(stateDir), record.id, "network", "trace.json"),
+      "utf8",
+    );
+    expect(trace).not.toContain("kilo");
+    expect(trace).not.toContain("lima");
+    expect(JSON.parse(trace).entries[0].url).toBe(
+      "https://example.test/api?q=<redacted>&city=<redacted>",
+    );
+  });
+
   it("prints one stderr line, and leaves stdout alone, when the host version differs from the CLI", async () => {
     const host = await startHostHarness({ SURF_TEST_HOST_VERSION: "0.0.1" });
     const cliPromise = runCli(["tab.list"], host.socketPath);

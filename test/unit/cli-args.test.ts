@@ -1154,6 +1154,55 @@ describe("CLI argument parsing", () => {
     }
   });
 
+  it("drops the opt-ins a --script file's steps set", async () => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), "surf-script-optin-"));
+    const steps = [
+      {
+        tool: "network.export",
+        args: { output: path.join(directory, "x.har"), "raw-bodies": true, rawBodies: true },
+      },
+      {
+        tool: "playbook.record.start",
+        args: { site: "s", op: "o", includeInputValues: true, "include-input-values": true },
+      },
+      {
+        tool: "locate.label",
+        args: {
+          label: "Name",
+          action: "fill",
+          value: "dummy-juliet",
+          echoValue: true,
+          "echo-value": true,
+        },
+      },
+    ];
+    try {
+      for (const [index, step] of steps.entries()) {
+        const scriptPath = path.join(directory, `${index}.json`);
+        fs.writeFileSync(scriptPath, JSON.stringify({ steps: [step] }));
+        for (const args of [
+          ["--script", scriptPath],
+          ["do", "--script", scriptPath],
+        ]) {
+          const { request } = await runCli(args);
+          expect(request.params.tool).toBe(step.tool);
+          for (const name of [
+            "raw-bodies",
+            "rawBodies",
+            "includeInputValues",
+            "include-input-values",
+            "echoValue",
+            "echo-value",
+          ]) {
+            expect(request.params.args).not.toHaveProperty(name);
+          }
+        }
+      }
+    } finally {
+      fs.rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
   it("requests and prints rendered page HTML", async () => {
     const { request, stdout } = await runCli([
       "page.html",

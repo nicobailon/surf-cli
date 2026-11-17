@@ -211,13 +211,13 @@ async function executeStep(step, vars, options) {
     if (!Array.isArray(step.steps) || step.steps.length === 0) return { success: false, error: "repeat: steps array required", stepsExecuted: 0 };
     let stepsExecuted = 0;
     for (let index = 0; index < max; index++) {
-      const loopVars = { ...vars, _index: index, _iteration: index + 1 };
+      const { vars: loopVars, captured } = trackedVars({ ...vars, _index: index, _iteration: index + 1 });
       for (const nestedStep of step.steps) {
         const result = await executeStep(nestedStep, loopVars, options);
         stepsExecuted += result.stepsExecuted || 1;
         if (!result.success && onError === "stop") return { success: false, error: result.error, stepsExecuted };
       }
-      copyCapturedVars(step.steps, loopVars, vars);
+      copyCapturedVars(step.steps, loopVars, vars, captured);
       if (step.until) {
         const untilResult = await executeSingleStep(step.until, loopVars, options);
         stepsExecuted++;
@@ -236,23 +236,38 @@ async function executeStep(step, vars, options) {
     const itemVar = step.as || "item";
     let stepsExecuted = 0;
     for (let index = 0; index < Math.min(items.length, MAX_LOOP_ITERATIONS); index++) {
-      const loopVars = { ...vars, [itemVar]: items[index], _index: index, _iteration: index + 1 };
+      const { vars: loopVars, captured } = trackedVars({ ...vars, [itemVar]: items[index], _index: index, _iteration: index + 1 });
       for (const nestedStep of step.steps) {
         const result = await executeStep(nestedStep, loopVars, options);
         stepsExecuted += result.stepsExecuted || 1;
         if (!result.success && onError === "stop") return { success: false, error: result.error, stepsExecuted };
       }
-      copyCapturedVars(step.steps, loopVars, vars);
+      copyCapturedVars(step.steps, loopVars, vars, captured);
     }
     return { success: true, stepsExecuted };
   }
   return { ...(await executeSingleStep(step, vars, options)), stepsExecuted: 1 };
 }
 
-function copyCapturedVars(steps, source, target) {
+// Variables that record the names a step sets, so an input never passes for a capture.
+function trackedVars(initial) {
+  const captured = new Set();
+  const vars = new Proxy(initial, {
+    set(target, name, value) {
+      captured.add(name);
+      target[name] = value;
+      return true;
+    },
+  });
+  return { vars, captured };
+}
+
+// Copies out of a loop's variables only what its steps captured this iteration, never an input
+// a failed step left under its capture name.
+function copyCapturedVars(steps, source, target, captured) {
   for (const step of steps) {
     const isLoop = step.repeat !== undefined || step.each !== undefined;
-    if (!isLoop && step.as && source[step.as] !== undefined) target[step.as] = source[step.as];
+    if (!isLoop && step.as && captured.has(step.as) && source[step.as] !== undefined) target[step.as] = source[step.as];
   }
 }
 
@@ -276,14 +291,7 @@ async function executeWorkflow(steps, options = {}) {
   if (semanticEnabled && (options.onError || "stop") !== "stop") {
     return { status: "failed", completedSteps: 0, totalSteps: steps.length, results: [], error: "semantic workflows require onError='stop'", totalMs: 0 };
   }
-  const captured = new Set();
-  const vars = new Proxy({ ...(options.vars || {}), ...(options.context?.vars || {}) }, {
-    set(target, name, value) {
-      captured.add(name);
-      target[name] = value;
-      return true;
-    },
-  });
+  const { vars, captured } = trackedVars({ ...(options.vars || {}), ...(options.context?.vars || {}) });
   const semanticContext = semanticEnabled ? (options.createSemanticContext?.() || Object.create(null)) : undefined;
   const executionOptions = semanticEnabled ? { ...options, semanticContext } : options;
   const results = [];

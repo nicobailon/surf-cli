@@ -244,3 +244,37 @@ describe("a capture named like an input", () => {
     expect(JSON.stringify(result)).not.toContain("dummy-input-foxtrot");
   });
 });
+
+describe("a loop step's capture", () => {
+  it("never returns an input under a capture name the failed step didn't fill", async () => {
+    const tool = vi.fn(async (name: string) =>
+      name === "page.text" ? { value: "loop words" } : { error: "expected failure" },
+    );
+    const options = {
+      executeTool: tool,
+      onError: "continue",
+      sleep: vi.fn(),
+      stepDelay: 0,
+      vars: { missing: "dummy-input-hotel", content: "dummy-input-india" },
+    };
+    const repeat = await runtime.executeWorkflow(
+      [
+        {
+          repeat: 2,
+          steps: [
+            { cmd: "fail", args: {}, as: "missing" },
+            { cmd: "page.text", args: {}, as: "content" },
+          ],
+        },
+      ],
+      options,
+    );
+    expect(repeat.vars).toEqual({ content: "loop words" });
+    const each = await runtime.executeWorkflow(
+      [{ each: ["a"], as: "item", steps: [{ cmd: "fail", args: {}, as: "missing" }] }],
+      options,
+    );
+    expect(each).not.toHaveProperty("vars");
+    expect(JSON.stringify([repeat, each])).not.toContain("dummy-input");
+  });
+});

@@ -2902,7 +2902,10 @@ function executeBatch(actions, tabId, socket, originalId, requestContext = reque
     
     const action = actions[currentIndex];
     const toolName = mapBatchActionToTool(action);
-    const toolArgs = mapBatchActionToArgs(action);
+    // Actions can come from a file, so they can't turn an opt-in on.
+    const toolArgs = withoutOptIns(mapBatchActionToArgs(action));
+    // The batch's own event carries no typed values, so each action's reach the record here.
+    rememberRecordInput(toolName, toolArgs, { target: recordEventTarget(requestContext), evented: false });
     
     const extensionMsg = mapToolToMessage(toolName, toolArgs, tabId);
     if (requestContext.target?.strict && extensionMsg) extensionMsg.strictTarget = true;

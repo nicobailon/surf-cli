@@ -24,6 +24,7 @@ const {
   validateWorkflowFile,
   ECHO_COMMANDS,
   withEchoedValues,
+  withoutOptIns,
   withoutStepOptIns,
 } = require("./workflow-definition.cjs");
 const { executeDoSteps, semanticRequestContext, sendDoRequest } = require("./do-executor.cjs");
@@ -2780,7 +2781,8 @@ if (args.includes("--script")) {
       const step = script.steps[i];
       const stepNum = `[${i + 1}/${total}]`;
       const toolName = step.tool;
-      const toolArgs = step.args || {};
+      // A script file can't turn on what loosens a safe default; only the command line can.
+      const toolArgs = withoutOptIns(step.args);
 
       const argSummary = Object.entries(toolArgs)
         .map(([k, v]) => typeof v === "string" && v.length > 40 ? `${k}="${v.slice(0, 37)}..."` : `${k}=${JSON.stringify(v)}`)
