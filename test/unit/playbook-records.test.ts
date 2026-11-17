@@ -1386,11 +1386,13 @@ describe("activity and explicit record evidence", () => {
     ).not.toThrow();
   });
 
-  describe("a write draft whose workflow isn't one commit step", () => {
+  describe("a write draft whose workflow has several steps", () => {
     const typed = step("type", { text: "<text>", selector: "#seq" });
     const savedOp = (saved: { directory: string }) =>
       JSON.parse(fs.readFileSync(path.join(saved.directory, "ops", "search.json"), "utf8"));
 
+    // A write runs only its first strategy, so after a network strategy that replays the write
+    // its workflow would never run: the op replays the request alone, with the inputs it sends.
     it.each([
       ["a navigate (resy.com)", ["navigate"], "navigate"],
       ["a type and a click (NCBI BLAST)", [typed, "click"], "type + click"],
@@ -1404,7 +1406,7 @@ describe("activity and explicit record evidence", () => {
         home: path.dirname(root),
       });
       expect(saved.warnings).toEqual([
-        `saved network-only: a write op's workflow fallback must be one page-write step, and this draft's is ${shown}, so the op replays POST https://example.test/api/employees alone`,
+        `saved network-only: a write runs only its first strategy, and this draft's replays POST https://example.test/api/employees, so its workflow (${shown}) would never run; the op replays POST https://example.test/api/employees alone`,
       ]);
       const op = savedOp(saved);
       expect(op.run.map((strategy: { using: string }) => strategy.using)).toEqual(["network"]);
@@ -1415,6 +1417,22 @@ describe("activity and explicit record evidence", () => {
         duplicate: "repeatable-window",
         windowMs: 300_000,
       });
+    });
+
+    it("saves its whole workflow, typed input included, when the record captured no request", () => {
+      const { root, stopped } = recordFlow({ commands: [typed, "click"] });
+      const { record, draft } = stopped();
+      expect(draft.effect).toBe("write");
+      const saved = authoring.saveFromRecord({
+        recordId: record.id,
+        root,
+        home: path.dirname(root),
+      });
+      expect(saved.warnings).toBeUndefined();
+      const op = savedOp(saved);
+      expect(op.run.map((strategy: { using: string }) => strategy.using)).toEqual(["workflow"]);
+      expect(op.run[0].steps.map((entry: { cmd: string }) => entry.cmd)).toEqual(["type", "click"]);
+      expect(Object.keys(op.args)).toEqual(["text"]);
     });
 
     // Its inputs and duplicate key come from what it sends: a check naming {{text}} keeps neither.
@@ -1499,7 +1517,7 @@ describe("activity and explicit record evidence", () => {
       expect(savedOp(readSaved).origins).toEqual(["https://resy.test"]);
     });
 
-    it("refuses when it has no network strategy for the write", () => {
+    it("saves its workflow alone when it has no network strategy for the write", () => {
       const update = {
         ...create,
         id: "r_put",
@@ -1509,11 +1527,10 @@ describe("activity and explicit record evidence", () => {
       };
       const { root, stopped } = recordFlow({ commands: ["navigate"], trace: [update] });
       const { record } = stopped();
-      expect(() =>
+      const op = savedOp(
         authoring.saveFromRecord({ recordId: record.id, root, home: path.dirname(root) }),
-      ).toThrow(
-        "write op search can't be saved: a write op's workflow fallback must be one page-write step, and this draft's is navigate, and the draft has no network strategy to replay the write instead. Record the write as a single click, or start the record with --network so the draft can replay its request",
       );
+      expect(op.run.map((strategy: { using: string }) => strategy.using)).toEqual(["workflow"]);
     });
 
     describe("which write it replays", () => {
@@ -1563,28 +1580,67 @@ describe("activity and explicit record evidence", () => {
           "https://alice.github.io",
           "https://bob.github.io/api/save",
         ],
-        ["the site's api. subdomain", "https://example.test", "https://api.example.test/save"],
+        ["the site's api. subdomain", "https://shop.example", "https://api.shop.example/cart"],
       ])(
-        "replays a write on %s only when --request-id names it, at stop or at save",
+        "replays a lone write on %s without --request-id, and warns of its origin",
         (_case, origin, url) => {
           const write = { ...create, id: "r_other", url };
           const trace = [{ ...page, url: `${origin}/` }, write];
           const other = new URL(url).origin;
-          expect(() => recordFlow({ commands: ["navigate"], origin, trace }).stopped()).toThrow(
-            `the draft would replay POST ${url}, whose origin (${other}) isn't the record's page origin (${origin}); name it with --request-id r_other to replay it anyway`,
+          const flow = recordFlow({ commands: ["navigate"], origin, trace });
+          const { record, draft } = flow.stopped();
+          const network = draft.run.find(
+            (strategy: { using: string }) => strategy.using === "network",
           );
-          const flow = recordFlow({ commands: ["navigate"], origin, trace, stop: {} });
-          const { record } = flow.stopped();
-          expect(() => save(flow.root, record.id)).toThrow(
-            /whose origin .* isn't the record's page origin/,
-          );
-          const saved = save(flow.root, record.id, "r_other");
+          expect(network.request).toMatchObject({ method: "POST", url });
+          const saved = save(flow.root, record.id);
           expect(saved.origins).toEqual([origin, other]);
           expect(saved.warnings).toContain(
             `the op may also send to ${other}, the origin of the request it replays (POST ${url}), which isn't the origin of the record's page (${origin}); if that is the wrong request, save again with --request-id <r_…> from pb record candidates`,
           );
         },
       );
+
+      it("warns of a lone write's origin when the record had no page origin", () => {
+        // A record started on about:blank has no page origin to compare the write's with.
+        const url = "https://api.shop.example/cart";
+        const write = { ...create, id: "r_cart", url };
+        const flow = recordFlow({ commands: ["navigate"], origin: "", trace: [write] });
+        const { record } = flow.stopped();
+        const saved = save(flow.root, record.id);
+        expect(saved.origins).toEqual(["https://api.shop.example"]);
+        expect(saved.warnings).toContain(
+          `the op sends to https://api.shop.example, the origin of the request it replays (POST ${url}), and the record had no page origin to compare it with; if that is the wrong request, save again with --request-id <r_…> from pb record candidates`,
+        );
+      });
+
+      it("leaves a read saved from a record with no page origin without that warning", () => {
+        const flow = recordFlow({ origin: "", trace: [page] });
+        const { record, draft } = flow.stopped();
+        expect(draft.effect).toBe("read");
+        const saved = save(flow.root, record.id);
+        expect(saved.origins).toEqual(["https://example.test"]);
+        expect(saved.warnings ?? []).not.toContainEqual(
+          expect.stringContaining("no page origin to compare it with"),
+        );
+      });
+
+      it("refuses several writes on another origin until --request-id names one", () => {
+        const origin = "https://shop.example";
+        const cart = { ...create, id: "r_cart", url: "https://api.shop.example/cart" };
+        const order = { ...create, id: "r_order", url: "https://api.shop.example/order" };
+        const trace = [{ ...page, url: `${origin}/` }, cart, order];
+        const refused =
+          "the record captured 2 writes (r_cart POST https://api.shop.example/cart, r_order POST https://api.shop.example/order); name the one the op replays with --request-id <r_…>";
+        expect(() => recordFlow({ commands: ["navigate"], origin, trace }).stopped()).toThrow(
+          refused,
+        );
+        const flow = recordFlow({ commands: ["navigate"], origin, trace, stop: {} });
+        const { record } = flow.stopped();
+        expect(() => save(flow.root, record.id)).toThrow(refused);
+        const saved = save(flow.root, record.id, "r_order");
+        expect(saved.origins).toEqual([origin, "https://api.shop.example"]);
+      });
 
       it("saves the write named with --request-id at stop", () => {
         const atStop = recordFlow({
@@ -1595,20 +1651,26 @@ describe("activity and explicit record evidence", () => {
         const stoppedAt = atStop.stopped();
         expect(save(atStop.root, stoppedAt.record.id).warnings).toEqual([
           expect.stringMatching(
-            /so the op replays POST https:\/\/example\.test\/api\/notes alone$/,
+            /so its workflow \(navigate\) would never run; the op replays POST https:\/\/example\.test\/api\/notes alone$/,
           ),
         ]);
       });
     });
 
-    it("refuses when its network strategy replays a read, not the write", () => {
+    it("saves as drafted when its network strategy replays a read, warning its workflow never runs", () => {
       const { root, stopped } = recordFlow({ commands: [typed, "click"], trace: [page] });
       const { record, draft } = stopped();
       expect(draft.effect).toBe("write");
-      expect(() =>
-        authoring.saveFromRecord({ recordId: record.id, root, home: path.dirname(root) }),
-      ).toThrow(
-        "write op search can't be saved: a write op's workflow fallback must be one page-write step, and this draft's is type + click, and its network strategy replays GET https://example.test/search, a read, not the write",
+      const saved = authoring.saveFromRecord({
+        recordId: record.id,
+        root,
+        home: path.dirname(root),
+      });
+      expect(saved.warnings).toEqual([
+        "the op's workflow (type + click) never runs: a write runs only its first strategy, here its network strategy, GET https://example.test/search, a read; record with --network around the real submit, or name the write with --request-id <r_…>",
+      ]);
+      expect(savedOp(saved).run.map((strategy: { using: string }) => strategy.using)).toEqual(
+        draft.run.map((strategy: { using: string }) => strategy.using),
       );
     });
   });
@@ -1791,30 +1853,46 @@ describe("activity and explicit record evidence", () => {
     },
   );
 
-  it("does not save recent activity with a locate click as a read op", () => {
+  // A recent page write saves as a drafted write does: --write to run, every input its duplicate key.
+  const savedRecent = (root: string, opId: string) => {
+    const saved = authoring.saveFromRecent({
+      site: "fixture",
+      op: opId,
+      root,
+      home: path.dirname(root),
+    });
+    return JSON.parse(fs.readFileSync(path.join(saved.directory, "ops", `${opId}.json`), "utf8"));
+  };
+  const recentWrite = {
+    effect: "write",
+    safety: { duplicate: "repeatable-window", windowMs: 300_000 },
+  };
+
+  it.each([
+    ["click", { selector: "#submit" }],
+    ["locate.role", { role: "button", name: "Save", action: "click" }],
+  ])("saves recent %s as a write op with the drafted write's safety", (command, args) => {
     const root = tempRoot();
-    journal.journalCommand(
-      "locate.role",
-      { role: "button", name: "Save", action: "click" },
-      { root },
-    );
-    expect(() =>
-      authoring.saveFromRecent({ site: "fixture", op: "save", root, home: path.dirname(root) }),
-    ).toThrow(/write-capable/);
+    journal.journalCommand(command, args, { root });
+    const op = savedRecent(root, "submit");
+    expect(op).toMatchObject({ ...recentWrite, args: {} });
+    expect(op.safety.key).toBeUndefined();
+    expect(op.run).toEqual([{ using: "workflow", steps: [{ cmd: command, args }] }]);
   });
 
-  it("does not turn recent or recorded page writes into an unreviewed read op", () => {
+  it.each([
+    ["search", { term: "dummy" }],
+    ["scroll", { direction: "down" }],
+  ])("still saves recent read-only %s as a read op", (command, args) => {
     const root = tempRoot();
-    journal.journalCommand("click", { selector: "#submit" }, { root });
-    expect(() =>
-      authoring.saveFromRecent({
-        site: "fixture",
-        op: "submit",
-        root,
-        home: path.dirname(root),
-      }),
-    ).toThrow(/write-capable/);
+    journal.journalCommand(command, args, { root });
+    const op = savedRecent(root, "look");
+    expect(op.effect).toBe("read");
+    expect(op.safety).toBeUndefined();
+  });
 
+  it("does not turn recorded page writes into an unreviewed read op", () => {
+    const root = tempRoot();
     records.startRecord({ site: "fixture", op: "submit", tabId: 1, root });
     records.appendRecordEvent(
       {
@@ -1912,9 +1990,13 @@ describe("values typed with locate.* --action fill", () => {
     );
     const { draft } = records.stopRecord({ target: TAB, draft: true, root });
     authoring.saveFromRecord({ recordId: record.id, root, home });
-    expect(() => authoring.saveFromRecent({ site: "fixture", op: "recent", root, home })).toThrow(
-      /write-capable/,
+    // Recent activity with the fill saves as a write op whose value is an input.
+    const recent = authoring.saveFromRecent({ site: "fixture", op: "recent", root, home });
+    const recentOp = JSON.parse(
+      fs.readFileSync(path.join(recent.directory, "ops", "recent.json"), "utf8"),
     );
+    expect(recentOp.effect).toBe("write");
+    expect(recentOp.args.value).toMatchObject({ required: true });
 
     const workflow = draft.run.find((strategy: { using: string }) => strategy.using === "workflow");
     expect(workflow.steps[0].args.value).toBe("{{value}}");

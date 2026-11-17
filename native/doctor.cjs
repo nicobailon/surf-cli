@@ -469,6 +469,17 @@ async function checkSocket(socketPath, context) {
           : `Versions differ: CLI ${CLI_VERSION}, native host ${versions.host}, extension ${versions.extension ?? "unknown"}. Run \`surf update\`.`,
       });
     }
+    // A host older than this check doesn't report ffmpeg; version-skew already covers it.
+    if (connection.ffmpeg) {
+      const { path: ffmpegPath, searchedPath, pinned } = connection.ffmpeg;
+      checks.push(ffmpegPath
+        ? { id: "host-ffmpeg", status: "pass", message: `The native host finds ffmpeg at ${ffmpegPath}` }
+        : {
+          id: "host-ffmpeg",
+          status: "warn",
+          message: `The native host can't find ffmpeg ${pinned ? `at SURF_FFMPEG (${pinned}) or ` : ""}on its PATH (${searchedPath}), so \`surf video.start\` will fail. If ffmpeg is installed, rerun \`surf install\` or set SURF_FFMPEG in the host wrapper, then reload the Surf extension.`,
+        });
+    }
   }
   return { checks, versions };
 }
@@ -506,7 +517,7 @@ function connectSocket(socketPath, timeoutMs) {
         reply = JSON.parse(buffer.slice(0, newline));
       } catch {}
       const versions = reply?.type === "versions_response" ? { host: reply.host, extension: reply.extension ?? null } : null;
-      finish({ ok: true, message: "connected", versions });
+      finish({ ok: true, message: "connected", versions, ffmpeg: versions ? reply.ffmpeg ?? null : null });
     });
     socket.once("error", (error) => finish(connected
       ? { ok: true, message: "connected", versions: null }

@@ -1137,7 +1137,96 @@ describe("CLI/native-host/fake-extension E2E contract", () => {
     }
   }, 60000);
 
-  // A network-only write's inputs, and so its duplicate claim, come from what it sends, never from its checks.
+  // A recorded type and click save as a write op's whole workflow, which runs both. Its receipt
+  // starts at the click: a fill that fails leaves none, and a failure after the click is in doubt.
+  it("runs a recorded type and click write, its receipt starting at the click", async () => {
+    const socketPath = createSocketPath();
+    const project = fs.mkdtempSync(path.join(os.tmpdir(), "surf-record-steps-"));
+    tempDirs.push(project);
+    const host = startHost(socketPath, { recording: true });
+    const cli = (args: string[]) =>
+      runCli(socketPath, args, project, { SURF_STATE_DIR: host.stateDir });
+    const opsDir = path.join(project, ".surf", "playbooks", "fixture", "ops");
+    const receipts = (op: string) => {
+      const root = path.join(host.stateDir, "playbook-receipts");
+      if (!fs.existsSync(root)) {
+        return [];
+      }
+      return fs
+        .readdirSync(root, { withFileTypes: true })
+        .filter((entry) => entry.isDirectory())
+        .flatMap((claim) =>
+          fs
+            .readdirSync(path.join(root, claim.name), { withFileTypes: true })
+            .filter((entry) => entry.name.endsWith(".json"))
+            .map((entry) =>
+              JSON.parse(fs.readFileSync(path.join(root, claim.name, entry.name), "utf8")),
+            ),
+        )
+        .filter((receipt) => receipt.op === op)
+        .map((receipt) => receipt.status);
+    };
+    const steps = () =>
+      host.messages
+        .map((message) => String(message.type))
+        .filter((type) => ["SMART_TYPE", "CLICK_SELECTOR"].includes(type));
+    const use = (op: string, text: string) =>
+      cli(["use", "fixture", op, "--text", text, "--write", "--json"]);
+
+    try {
+      await host.waitForMessage((message) => message.type === "HOST_READY");
+      expect((await cli(["navigate", "https://fixture.test/form"])).code).toBe(0);
+      expect((await cli(["pb", "record", "start", "fixture", "--op", "comment"])).code).toBe(0);
+      expect((await cli(["type", "dummy text", "--selector", "#comment"])).code).toBe(0);
+      expect((await cli(["click", "--selector", "#send", "--no-screenshot"])).code).toBe(0);
+      const { record } = JSON.parse(
+        (await cli(["pb", "record", "stop", "--draft", "--json"])).stdout,
+      );
+      const saved = await cli(["pb", "save", "--from-record", record.id, "--project", "--json"]);
+      expect(saved.code).toBe(0);
+      expect(JSON.parse(saved.stdout).warnings).toBeUndefined();
+      const op = JSON.parse(fs.readFileSync(path.join(opsDir, "comment.json"), "utf8"));
+      expect(op.effect).toBe("write");
+      expect(op.run).toHaveLength(1);
+      expect(op.run[0].steps.map((step: { cmd: string }) => step.cmd)).toEqual(["type", "click"]);
+
+      const before = steps().length;
+      expect(await use("comment", "first")).toMatchObject({ code: 0, stderr: "" });
+      expect(steps().slice(before)).toEqual(["SMART_TYPE", "CLICK_SELECTOR"]);
+      expect(receipts("comment")).toEqual(["verified"]);
+      const again = await use("comment", "first");
+      expect(again.code).toBe(1);
+      expect(again.stderr).toMatch(/succeeded\. Add --repeat/);
+
+      // The same op with a fill the tab can't run first, and with a step it can't run after the click.
+      const withSteps = (id: string, run: Array<Record<string, unknown>>) =>
+        fs.writeFileSync(
+          path.join(opsDir, `${id}.json`),
+          JSON.stringify({ ...op, id, run: [{ ...op.run[0], steps: run }] }),
+        );
+      const [typed, click] = op.run[0].steps;
+      withSteps("fill-fails", [
+        { cmd: "form_input", args: { ref: "e9", value: "{{text}}" } },
+        click,
+      ]);
+      withSteps("after-click-fails", [typed, click, { cmd: "scroll.bottom", args: {} }]);
+      const fill = await use("fill-fails", "second");
+      expect(fill.code).toBe(1);
+      expect(receipts("fill-fails")).toEqual([]);
+      expect(await use("fill-fails", "second")).toMatchObject({ code: 1 });
+      expect(receipts("fill-fails")).toEqual([]);
+      const after = await use("after-click-fails", "third");
+      expect(after.code).toBe(1);
+      expect(receipts("after-click-fails")).toEqual(["indeterminate"]);
+      const blocked = await use("after-click-fails", "third");
+      expect(blocked.stderr).toMatch(/its result is unknown\. Check the site, then add --repeat/);
+    } finally {
+      await host.dispose();
+    }
+  }, 60000);
+
+  // A recorded type and click with a captured write save network-only (a write runs only its first
+  // strategy); its inputs, and so its duplicate claim, come from what it sends, never from its checks.
   it("keeps a recorded write's inputs when a draft's check names a step's input", async () => {
     const socketPath = createSocketPath();
     const project = fs.mkdtempSync(path.join(os.tmpdir(), "surf-record-key-"));
@@ -2241,6 +2330,8 @@ describe("CLI/native-host/fake-extension E2E contract", () => {
       expect((await cli(["navigate", "https://fixture.test/form"])).code).toBe(0);
       expect((await cli(["pb", "record", "start", "fixture", "--op", "type"])).code).toBe(0);
       expect((await cli(["type", "dummy text", "--selector", "#field"])).code).toBe(0);
+      // The click is the step that commits, where the write's receipt starts.
+      expect((await cli(["click", "--selector", "#send", "--no-screenshot"])).code).toBe(0);
       const stopped = await cli(["pb", "record", "stop", "--draft", "--json"]);
       expect(stopped.code).toBe(0);
       const { record } = JSON.parse(stopped.stdout);
@@ -2305,6 +2396,125 @@ describe("CLI/native-host/fake-extension E2E contract", () => {
         });
       }
       expect(searched().slice(before)).toEqual(values);
+    } finally {
+      await host.dispose();
+    }
+  }, 60000);
+
+  it("saves a recent click as a write op that runs once with --write", async () => {
+    const socketPath = createSocketPath();
+    const project = fs.mkdtempSync(path.join(os.tmpdir(), "surf-recent-write-"));
+    tempDirs.push(project);
+    const host = startHost(socketPath, { recording: true });
+    const cli = (args: string[]) =>
+      runCli(socketPath, args, project, { SURF_STATE_DIR: host.stateDir });
+    const clicks = () => host.messages.filter((message) => message.type === "CLICK_SELECTOR");
+
+    try {
+      await host.waitForMessage((message) => message.type === "HOST_READY");
+      expect((await cli(["click", "--selector", "#submit", "--no-screenshot"])).code).toBe(0);
+      const saved = await cli([
+        "pb",
+        "save",
+        "recent",
+        "--op",
+        "submit",
+        "--from-recent",
+        "--project",
+        "--json",
+      ]);
+      expect(saved).toMatchObject({ code: 0, stderr: "" });
+      const op = JSON.parse(
+        fs.readFileSync(
+          path.join(project, ".surf", "playbooks", "recent", "ops", "submit.json"),
+          "utf8",
+        ),
+      );
+      expect(op).toMatchObject({
+        effect: "write",
+        safety: { duplicate: "repeatable-window", windowMs: 300000 },
+      });
+
+      const unwritten = await cli(["use", "recent", "submit"]);
+      expect(unwritten.code).toBe(1);
+      expect(unwritten.stderr).toMatch(/write op recent submit requires --write; it runs click/);
+      expect(clicks()).toHaveLength(1);
+      expect(await cli(["use", "recent", "submit", "--write", "--json"])).toMatchObject({
+        code: 0,
+        stderr: "",
+      });
+      expect(clicks().slice(1)).toEqual([expect.objectContaining({ selector: "#submit" })]);
+      const again = await cli(["use", "recent", "submit", "--write", "--json"]);
+      expect(again.code).toBe(1);
+      expect(again.stderr).toMatch(
+        /write blocked: attempt \S+ was sent at .+ and succeeded\. Add --repeat to send it again\./,
+      );
+      expect(clicks()).toHaveLength(2);
+    } finally {
+      await host.dispose();
+    }
+  }, 60000);
+
+  it("saves a recent type and click as a write op that types and clicks once with --write", async () => {
+    const socketPath = createSocketPath();
+    const project = fs.mkdtempSync(path.join(os.tmpdir(), "surf-recent-type-click-"));
+    tempDirs.push(project);
+    const host = startHost(socketPath, { recording: true });
+    const cli = (args: string[]) =>
+      runCli(socketPath, args, project, { SURF_STATE_DIR: host.stateDir });
+    const steps = () =>
+      host.messages.filter((message) =>
+        ["SMART_TYPE", "CLICK_SELECTOR"].includes(String(message.type)),
+      );
+
+    try {
+      await host.waitForMessage((message) => message.type === "HOST_READY");
+      expect((await cli(["type", "dummy text", "--selector", "#comment"])).code).toBe(0);
+      expect((await cli(["click", "--selector", "#send", "--no-screenshot"])).code).toBe(0);
+      const saved = await cli([
+        "pb",
+        "save",
+        "recent",
+        "--op",
+        "comment",
+        "--from-recent",
+        "--project",
+        "--json",
+      ]);
+      expect(saved).toMatchObject({ code: 0, stderr: "" });
+      const op = JSON.parse(
+        fs.readFileSync(
+          path.join(project, ".surf", "playbooks", "recent", "ops", "comment.json"),
+          "utf8",
+        ),
+      );
+      expect(op).toMatchObject({
+        effect: "write",
+        safety: { duplicate: "repeatable-window", windowMs: 300000 },
+        args: { text: { required: true } },
+      });
+      expect(op.safety.key).toBeUndefined();
+      expect(op.run[0].steps.map((step: { cmd: string }) => step.cmd)).toEqual(["type", "click"]);
+
+      const before = steps().length;
+      const unwritten = await cli(["use", "recent", "comment", "--text", "first"]);
+      expect(unwritten.code).toBe(1);
+      expect(unwritten.stderr).toMatch(
+        /write op recent comment requires --write; it runs type, click/,
+      );
+      expect(steps()).toHaveLength(before);
+      const use = () => cli(["use", "recent", "comment", "--text", "first", "--write", "--json"]);
+      expect(await use()).toMatchObject({ code: 0, stderr: "" });
+      expect(steps().slice(before)).toEqual([
+        expect.objectContaining({ type: "SMART_TYPE", text: "first" }),
+        expect.objectContaining({ type: "CLICK_SELECTOR", selector: "#send" }),
+      ]);
+      const again = await use();
+      expect(again.code).toBe(1);
+      expect(again.stderr).toMatch(
+        /write blocked: attempt \S+ was sent at .+ and succeeded\. Add --repeat to send it again\./,
+      );
+      expect(steps()).toHaveLength(before + 2);
     } finally {
       await host.dispose();
     }
@@ -2786,6 +2996,58 @@ describe("CLI/native-host/fake-extension E2E contract", () => {
     },
     60000,
   );
+
+  // A lone write on another origin than the page, such as the site's api. host, drafts and saves
+  // without --request-id: the save warns of that origin, and surf use --write sends to it.
+  it("saves a lone write on another origin with a warning and replays it with surf use --write", async () => {
+    const socketPath = createSocketPath();
+    const project = fs.mkdtempSync(path.join(os.tmpdir(), "surf-record-origin-"));
+    tempDirs.push(project);
+    const api = "https://api.fixture.test";
+    const body = JSON.stringify({ note: ["dummy", "origin", "words"].join(" ") });
+    const page = {
+      url: `${api}/items`,
+      requestHeaders: { "content-type": "application/json" },
+      requestBody: body,
+    };
+    const host = startHost(socketPath, { recording: true, scriptResponse: page });
+    const scripts = () =>
+      host.messages
+        .filter((message) => message.type === "EXECUTE_JAVASCRIPT")
+        .map((message) => String(message.code));
+    const cli = (args: string[]) =>
+      runCli(socketPath, args, project, { SURF_STATE_DIR: host.stateDir });
+
+    try {
+      await host.waitForMessage((message) => message.type === "HOST_READY");
+      expect((await cli(["navigate", "https://fixture.test/form"])).code).toBe(0);
+      const start = ["pb", "record", "start", "fixture", "--op", "submit", "--network"];
+      expect((await cli([...start, "--include-input-values"])).code).toBe(0);
+      expect((await cli(["js", `fetch("${api}/items", { method: "POST" })`])).code).toBe(0);
+      const stopped = await cli(["pb", "record", "stop", "--draft", "--json"]);
+      expect(stopped).toMatchObject({ code: 0, stderr: "" });
+      const { record } = JSON.parse(stopped.stdout);
+
+      const saved = await cli(["pb", "save", "--from-record", record.id, "--project", "--json"]);
+      expect(saved).toMatchObject({ code: 0, stderr: "" });
+      const result = JSON.parse(saved.stdout);
+      expect(result.origins).toEqual(["https://fixture.test", api]);
+      expect(result.warnings.join("\n")).toContain(`the op may also send to ${api}`);
+      // The tab answers the op's send from the write's own origin.
+      host.setScriptOutput({ url: `${api}/items` });
+      const before = scripts().length;
+      const used = await cli(["use", "fixture", "submit", "--write", "--json"]);
+      expect(used).toMatchObject({ code: 0, stderr: "" });
+      expect(JSON.parse(used.stdout)).toMatchObject({ strategy: "network" });
+      // The one script surf use ran posts to the write's own origin.
+      const sent = scripts().slice(before);
+      expect(sent).toHaveLength(1);
+      expect(sent[0]).toContain(`${api}/items`);
+      expect(sent[0]).toContain('method: "POST"');
+    } finally {
+      await host.dispose();
+    }
+  }, 60000);
 
   // includeInputValues in the user's own ~/surf.json sets pb record start's default; the same key
   // in the project's surf.json, where surf runs, changes nothing.

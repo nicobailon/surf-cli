@@ -337,8 +337,9 @@ function neverReplayed(entry, origin) {
 // draft whose trace holds a write replays its top-ranked write, the request its effect comes from,
 // and never a read: when it can't replay that write it gets no network strategy. Without
 // --request-id, a draft that would replay a write is refused when the record captured several
-// (Surf won't guess which one), or when the write is on another origin than the record's page. A
-// read draft never replays a write. Telemetry, page assets and preflights are never replayed.
+// (Surf won't guess which one). A lone write is replayed on any origin; the saver warns when that
+// origin isn't the page's. A read draft never replays a write. Telemetry, page assets and
+// preflights are never replayed.
 function pickRequest({ record, trace, effect, requestId, warnings }) {
   const entries = trace?.entries || [];
   const writes = effect === "write" ? entries.filter((entry) => requestEffect(entry) === "write" && !isTelemetryRequest(entry, record.origin)) : [];
@@ -367,14 +368,6 @@ function pickRequest({ record, trace, effect, requestId, warnings }) {
   if (writes.length > 1) {
     const listed = writes.map((entry) => `${entry.id} ${shownUrl(entry)}`).join(", ");
     throw new Error(`the record captured ${writes.length} writes (${listed}); name the one the op replays with --request-id <r_…>`);
-  }
-  if (capturedWrite) {
-    // Origins are compared exactly: alice.github.io and bob.github.io are different sites.
-    const pageOrigin = originOf(record.origin || top.entry.tabUrl);
-    const origin = originOf(top.entry.url);
-    if (origin !== pageOrigin) {
-      throw new Error(`the draft would replay ${shownUrl(top.entry)}, whose origin (${origin}) isn't the record's page origin (${pageOrigin || "unknown"}); name it with --request-id ${top.entry.id} to replay it anyway`);
-    }
   }
   const choose = `run surf pb record candidates ${record.id} and choose with --request-id`;
   // A document over the capture cap can't be compared with the page, so a JSON with records may hold
@@ -434,8 +427,8 @@ function requestFromEntry(entry, warnings = []) {
   };
 }
 
-// How long a drafted write blocks the same inputs after it succeeded.
-const DRAFT_WINDOW_MS = 300_000;
+// A drafted write runs only with --write and blocks the same inputs for 5 minutes after it succeeded.
+const DRAFT_SAFETY = Object.freeze({ authorization: "explicit", duplicate: "repeatable-window", windowMs: 300_000 });
 
 // The steps a record ran that a draft replays: its completed recordable commands, in order. Their
 // arguments are escaped, so text like `{{action}}` in a recorded selector or URL is sent as
@@ -465,7 +458,7 @@ function buildDraft(record, { read = false, requestId, warnings = [], root = get
   }
   if (strategies.length === 0) throw new Error("record has no executable evidence");
   // A drafted write has no key: its duplicate claim covers every input, for 5 minutes once verified.
-  const safety = effect === "write" ? { authorization: "explicit", duplicate: "repeatable-window", windowMs: DRAFT_WINDOW_MS } : undefined;
+  const safety = effect === "write" ? { ...DRAFT_SAFETY } : undefined;
   const provenance = { recordId: record.id, ...(requestId ? { requestId } : {}) };
   const op = { id: record.op, description: `Drafted from ${record.id}`, effect, args, ...(safety ? { safety } : {}), run: strategies, provenance };
   return { op, because };
@@ -611,6 +604,7 @@ module.exports = {
   appendRecordEvent,
   attachNetworkTrace,
   buildDraft,
+  DRAFT_SAFETY,
   discardRecord,
   draftFromRecord,
   findCandidatesRecord,
