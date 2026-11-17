@@ -615,6 +615,7 @@ module.exports = {
   draftFromRecord,
   findCandidatesRecord,
   isActive,
+  listRecords,
   markRecord,
   neverReplayed,
   pauseRecord: (options) => updateStatus("paused", options),
