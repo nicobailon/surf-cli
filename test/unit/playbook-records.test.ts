@@ -794,7 +794,7 @@ describe("choosing the draft's request", () => {
     const update = {
       id: "r_put",
       method: "PUT",
-      status: 200,
+      status: 500,
       type: "XHR",
       url: "https://example.test/api/employees/7",
     };
@@ -803,7 +803,7 @@ describe("choosing the draft's request", () => {
     expect(draft.effect).toBe("write");
     expect(draft.run.map((strategy: { using: string }) => strategy.using)).toEqual(["workflow"]);
     expect(warnings).toEqual([
-      "the draft has no network strategy: it is a write because of PUT https://example.test/api/employees/7, which is a PUT (a draft replays only GET, HEAD and POST), and a write draft never replays a read in its place",
+      "the draft has no network strategy: it is a write because of PUT https://example.test/api/employees/7, which is a PUT answered with status 500, and a write draft never replays a read in its place",
     ]);
     const chooseRead = recordFlow({
       commands: ["click"],
@@ -819,7 +819,7 @@ describe("choosing the draft's request", () => {
       stop: { draft: true, requestId: "r_put" },
     });
     expect(choosePut.stopped).toThrow(
-      "request r_put (PUT https://example.test/api/employees/7) is a PUT (a draft replays only GET, HEAD and POST); a draft never replays it",
+      "request r_put (PUT https://example.test/api/employees/7) is a PUT answered with status 500; a draft never replays it",
     );
   });
 
@@ -1416,6 +1416,7 @@ describe("activity and explicit record evidence", () => {
         ...create,
         id: "r_put",
         method: "PUT",
+        status: 500,
         url: "https://example.test/api/employees/7",
       };
       const { root, stopped } = recordFlow({ commands: ["navigate"], trace: [update] });
@@ -1432,6 +1433,7 @@ describe("activity and explicit record evidence", () => {
         ...create,
         id: "r_put",
         method: "PUT",
+        status: 500,
         url: "https://example.test/api/employees/7",
       };
       const heartbeat = {
@@ -1922,11 +1924,11 @@ describe("activity and explicit record evidence", () => {
     });
 
     it("refuses a write the draft builder never replays, though the record captured it", () => {
-      const put = { ...preview, id: "r_put", method: "PUT", url: `${origin}/items/7` };
+      const webdav = { ...preview, id: "r_webdav", method: "PROPPATCH", url: `${origin}/items/7` };
       const recorded = recordFlow({
         commands: ["navigate"],
         origin,
-        trace: [{ ...page, url: `${origin}/` }, put],
+        trace: [{ ...page, url: `${origin}/` }, webdav],
       });
       const { record, draft } = recorded.stopped();
       expect(draft.run.map((strategy: Strategy) => strategy.using)).toEqual(["workflow"]);
@@ -1935,7 +1937,7 @@ describe("activity and explicit record evidence", () => {
         file,
         JSON.stringify({
           ...draft,
-          run: [{ using: "network", request: { method: "PUT", url: `${origin}/items/7` } }],
+          run: [{ using: "network", request: { method: "PROPPATCH", url: `${origin}/items/7` } }],
         }),
       );
       expect(() =>
@@ -1945,7 +1947,7 @@ describe("activity and explicit record evidence", () => {
           home: path.dirname(recorded.root),
         }),
       ).toThrow(
-        `write op search can't be saved network-only: it would replay PUT ${origin}/items/7, a PUT (a draft replays only GET, HEAD and POST)`,
+        `write op search can't be saved network-only: it would replay PROPPATCH ${origin}/items/7, a PROPPATCH (a draft replays only GET, HEAD, POST, PUT, PATCH and DELETE)`,
       );
     });
 

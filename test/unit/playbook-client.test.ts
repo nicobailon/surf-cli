@@ -833,6 +833,31 @@ describe("pb client derive and export --write", () => {
     expect(fs.existsSync(path.join(out, "client.mjs"))).toBe(true);
   });
 
+  // pb client derive picks from the requests a draft replays, so a captured PATCH derives too.
+  it("derives a client from a captured PATCH only with --write", async () => {
+    const cwd = sandbox();
+    const { out, derive } = capture(cwd, {
+      method: "PATCH",
+      url: "https://example.test/items/7",
+      requestHeaders: { "content-type": "application/json" },
+      requestBody: JSON.stringify({ note: "dummy" }),
+    });
+    await expect(derive()).rejects.toThrow(
+      "op send is a write request (PATCH https://example.test/items/7); add --write to make a client for it",
+    );
+    expect(fs.existsSync(out)).toBe(false);
+    const { value } = await derive("--write");
+    expect(value.manifest).toMatchObject({
+      effect: "write",
+      endpoint: {
+        method: "PATCH",
+        url: "https://example.test/items/7",
+        body: JSON.stringify({ note: "dummy" }),
+      },
+    });
+    expect(fs.existsSync(path.join(out, "client.mjs"))).toBe(true);
+  });
+
   it("derives a client from a captured GET without --write", async () => {
     const cwd = sandbox();
     const { out, derive } = capture(cwd, {
