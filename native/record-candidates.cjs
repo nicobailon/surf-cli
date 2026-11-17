@@ -309,6 +309,7 @@ module.exports = {
   pageWords,
   rankCandidates,
   scoreEntries,
+  siteOf,
   summarizeResponse,
   visibleText,
 };

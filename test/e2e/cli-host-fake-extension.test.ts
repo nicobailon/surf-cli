@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 declare const process: {
   cwd(): string;
@@ -75,8 +75,13 @@ type FakeHostOptions = {
 // What the extension answers for a playbook record, a click and typing, with `recording` on.
 function recordingResponse(message: NativeMessage, currentUrl: string) {
   switch (message.type) {
+    // As the extension does, only an http(s) page has an origin (about:blank has none).
     case "GET_PLAYBOOK_RECORD_CONTEXT":
-      return { id: message.id, origin: new URL(currentUrl).origin, _resolvedTabId: 42 };
+      return {
+        id: message.id,
+        origin: /^https?:/.test(currentUrl) ? new URL(currentUrl).origin : undefined,
+        _resolvedTabId: 42,
+      };
     case "START_NETWORK_CAPTURE":
     case "STOP_NETWORK_CAPTURE":
       return {
@@ -220,6 +225,8 @@ function buildExtensionResponse(
           '[e1] heading "Contract Fixture"\n[e2] button "Continue"\nText: fake extension page content',
         text: "Contract fixture page text from the fake extension.",
       };
+    case "WAIT_FOR_READY":
+      return { id: message.id, state: "ready", href: currentUrl, polls: 1, waited: 0 };
     case "EXECUTE_SCREENSHOT":
       return {
         id: message.id,
@@ -310,7 +317,7 @@ function startHost(socketPath: string, options: FakeHostOptions = {}) {
 
   // What network capture records for a navigation or a script's request.
   const captureTraffic = (message: NativeMessage) => {
-    if (message.type === "EXECUTE_NAVIGATE") {
+    if (message.type === "EXECUTE_NAVIGATE" && message.url !== "about:blank") {
       for (const request of options.navigationTraffic ?? []) {
         captured.push({ ...request, id: `${request.id}_${captured.length + 1}`, ts: Date.now() });
       }
@@ -4113,4 +4120,476 @@ describe("CLI/native-host/fake-extension E2E contract", () => {
       await host.dispose();
     }
   });
+});
+
+// surf parse records a page through the fake extension; robots.txt comes from a local server, and
+// the tab's scripts run in a VM whose fetch answers from the fixture bodies and whose DOMParser
+// reads HTML with htmlparser2 and parse-infer's selector matcher.
+describe("surf parse", () => {
+  type Served = {
+    origin: string;
+    text: string;
+    robotsRequests: number;
+    robotsAt: number;
+    close(): Promise<void>;
+  };
+  type DomNode = { attribs?: Record<string, string> };
+  const http = require("node:http") as {
+    createServer(
+      handler: (
+        request: { url: string },
+        response: { statusCode: number; end(body?: string): void },
+      ) => void,
+    ): {
+      listen(port: number, host: string, done: () => void): void;
+      address(): { port: number };
+      close(done: () => void): void;
+    };
+  };
+  const vm = require("node:vm") as {
+    runInNewContext(code: string, context: Record<string, unknown>): unknown;
+  };
+  const { DomUtils, parseDocument } = require("htmlparser2") as {
+    DomUtils: { textContent(node: unknown): string };
+    parseDocument(html: string): DomNode;
+  };
+  const { selectAll } = require("../../native/parse-infer.cjs") as {
+    selectAll(root: unknown, selector: string): DomNode[];
+  };
+
+  async function serveRobots(text: string): Promise<Served> {
+    const robots = { text, robotsRequests: 0, robotsAt: 0 } as Served;
+    const server = http.createServer((request, response) => {
+      if (request.url === "/robots.txt") {
+        robots.robotsRequests += 1;
+        robots.robotsAt = Date.now();
+        response.end(robots.text);
+      } else {
+        response.statusCode = 404;
+        response.end();
+      }
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    robots.origin = `http://127.0.0.1:${server.address().port}`;
+    robots.close = () => new Promise<void>((resolve) => server.close(() => resolve()));
+    return robots;
+  }
+
+  function element(node: DomNode | undefined): Record<string, unknown> | null {
+    if (!node) {
+      return null;
+    }
+    return {
+      textContent: DomUtils.textContent(node),
+      getAttribute: (name: string) => node.attribs?.[name] ?? null,
+      setAttribute: () => undefined,
+      querySelector: (selector: string) => element(selectAll(node, selector)[0]),
+      querySelectorAll: (selector: string) => selectAll(node, selector).map(element),
+    };
+  }
+
+  class DOMParser {
+    parseFromString(html: string) {
+      const doc = parseDocument(html);
+      return {
+        ...element(doc),
+        head: { prepend: () => undefined },
+        createElement: () => ({ setAttribute: () => undefined }),
+        querySelector: (selector: string) =>
+          selector === "base[href]" ? null : element(selectAll(doc, selector)[0]),
+      };
+    }
+  }
+
+  const fetched = (url: string, body: string, type: string, extra: [string, string][] = []) => ({
+    status: 200,
+    ok: true,
+    url,
+    redirected: false,
+    headers: new Map([["content-type", type], ...extra]),
+    text: async () => body,
+    arrayBuffer: async () => new ArrayBuffer(0),
+  });
+
+  const captured = (
+    id: string,
+    url: string,
+    body: string,
+    extra: Record<string, unknown> = {},
+  ) => ({
+    id,
+    method: "GET",
+    url,
+    status: 200,
+    type: body.startsWith("<") ? "Document" : "XHR",
+    mimeType: body.startsWith("<") ? "text/html" : "application/json",
+    responseHeaders: {},
+    responseBody: body,
+    flags: [],
+    _loadingFinished: true,
+    ...extra,
+  });
+
+  // A host whose page loads `traffic`, and whose replayed request answers with `replayed`.
+  function parseFixture(
+    traffic: ReturnType<typeof captured>[],
+    replayed: ReturnType<typeof captured>,
+    headers: [string, string][] = [],
+  ) {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), "surf-parse-home-"));
+    tempDirs.push(home);
+    const tab = {
+      URL,
+      location: { href: replayed.url },
+      fetch: async (url: string) =>
+        fetched(url, String(replayed.responseBody), String(replayed.mimeType), headers),
+      DOMParser,
+    };
+    const host = startHost(socketPath, {
+      recording: true,
+      env: { HOME: home },
+      navigationTraffic: traffic,
+      scriptResponse: { url: replayed.url, responseBody: replayed.responseBody },
+      runScript: async (code) => {
+        try {
+          return { output: JSON.stringify(await vm.runInNewContext(code, { ...tab })) };
+        } catch (error) {
+          return { error: error instanceof Error ? error.message : String(error) };
+        }
+      },
+    });
+    const cli = (args: string[]) =>
+      runCli(socketPath, ["parse", ...args], home, {
+        HOME: home,
+        SURF_STATE_DIR: host.stateDir,
+        SURF_PARSE_DELAY_MS: "0",
+      });
+    const opFile = (playbook: string, op: string) =>
+      path.join(home, ".surf", "playbooks", playbook, "ops", `${op}.json`);
+    const navigations = () =>
+      host.messages.filter((message) => message.type === "EXECUTE_NAVIGATE").length;
+    return { home, host, cli, opFile, navigations };
+  }
+
+  let socketPath: string;
+  let served: Served;
+  beforeEach(async () => {
+    socketPath = createSocketPath();
+    served = await serveRobots("User-agent: *\nDisallow: /private\n");
+  });
+  afterEach(async () => {
+    await served.close();
+  });
+
+  it("saves a JSON API's records with an optional page input and a shape test", async () => {
+    const items = Array.from({ length: 5 }, (_, i) => ({
+      id: `job-${i}`,
+      title: `Dummy role ${i}`,
+      url: `/jobs/job-${i}`,
+      team: i % 2 ? "Eng" : "Ops",
+    }));
+    const api = captured(
+      "r_api",
+      `${served.origin}/api/jobs?page=1`,
+      JSON.stringify({ data: { items } }),
+    );
+    const page = captured(
+      "r_doc",
+      `${served.origin}/jobs`,
+      `<html><body><div id="app">${"Jobs at Acme. ".repeat(6)}</div></body></html>`,
+    );
+    const { host, cli, opFile } = parseFixture([page, api], api);
+    try {
+      await host.waitForMessage((message) => message.type === "HOST_READY");
+      const parsed = await cli([`${served.origin}/jobs`, "--goal", "acme job postings"]);
+      expect(parsed.stderr).toBe("");
+      expect(parsed.code).toBe(0);
+      expect(parsed.stdout).toContain(
+        "extract records $.data.items → id, title, url, team   5 records",
+      );
+      expect(parsed.stdout).toContain("run     surf use local get_acme_job_postings --json");
+      expect(parsed.stdout).toContain(
+        `refine  surf parse ${served.origin}/jobs --goal 'acme job postings' --op get_acme_job_postings --request-id r_api_2 --input page=query.page`,
+      );
+      expect(parsed.stdout).toContain(
+        "surf pb param local get_acme_job_postings query.page --as page",
+      );
+      expect(parsed.stdout).toContain(
+        "surf pb extract local get_acme_job_postings --records '$.data.items' --field id=id",
+      );
+      const op = JSON.parse(fs.readFileSync(opFile("local", "get_acme_job_postings"), "utf8"));
+      expect(op.effect).toBe("read");
+      expect(op.args.page).toMatchObject({ default: "1" });
+      expect(op.run[0]).toMatchObject({
+        using: "network",
+        request: { query: { page: "{{page}}" } },
+        extract: {
+          records: "$.data.items",
+          fields: { id: "id", title: "title", url: "url", team: "team" },
+        },
+      });
+      expect(op.on.success.expect.assert).toEqual([
+        { path: "$", op: "array_min_len", value: 1 },
+        { path: "$[0].title", op: "not_null" },
+        { path: "$[0].id", op: "not_null" },
+      ]);
+    } finally {
+      await host.dispose();
+    }
+  }, 60000);
+
+  it("saves an HTML listing's repeated linked item as records, its page number an input", async () => {
+    const books = Array.from(
+      { length: 4 },
+      (_, i) => `<li class="col-xs-6"><article class="product_pod">
+  <p class="star-rating ${["One", "Two"][i % 2]}"></p>
+  <h3><a href="book-${i}_${100 + i}/index.html" title="Dummy Book ${i}">Dummy Book ${i}</a></h3>
+  <p class="price_color">£${10 + i}.00</p><p class="instock">In stock</p></article></li>`,
+    ).join("\n");
+    const html = `<html><body><ul class="nav"><li><a href="/c/1">One</a></li><li><a href="/c/2">Two</a></li></ul><ol class="row">${books}</ol></body></html>`;
+    const page = captured("r_doc", `${served.origin}/catalogue/page-2.html`, html);
+    const css = captured("r_css", `${served.origin}/static/site.css`, "body{}", {
+      type: "Stylesheet",
+      mimeType: "text/css",
+    });
+    const { host, cli, opFile } = parseFixture([page, css], page);
+    try {
+      await host.waitForMessage((message) => message.type === "HOST_READY");
+      const parsed = await cli([
+        `${served.origin}/catalogue/page-2.html`,
+        "--goal",
+        "all books with price",
+        "--op",
+        "list_books",
+      ]);
+      expect(parsed.stderr).toBe("");
+      expect(parsed.code).toBe(0);
+      expect(parsed.stdout).toContain("inputs  --page (path.2, default 2)");
+      expect(parsed.stdout).toContain("PASS local list_books: network answered, 4 records");
+      const op = JSON.parse(fs.readFileSync(opFile("local", "list_books"), "utf8"));
+      expect(op.run[0].request.url).toBe(`${served.origin}/catalogue/page-{{page}}.html`);
+      expect(op.run[0].extract.html).toEqual({
+        item: "article.product_pod",
+        fields: {
+          title: "a@title",
+          url: "a@href",
+          star_rating: ".star-rating@class",
+          price_color: ".price_color",
+        },
+      });
+    } finally {
+      await host.dispose();
+    }
+  }, 60000);
+
+  it("saves a detail page's meta tags with its id as a required input", async () => {
+    const html = `<html><head><meta name="citation_title" content="A Dummy Paper">
+<meta name="citation_author" content="One, Author"><meta name="citation_author" content="Two, Author">
+</head><body><h1>Title: A Dummy Paper</h1></body></html>`;
+    const page = captured("r_doc", `${served.origin}/abs/2101.10010`, html);
+    const { host, cli, opFile } = parseFixture([page], page);
+    try {
+      await host.waitForMessage((message) => message.type === "HOST_READY");
+      const parsed = await cli([
+        `${served.origin}/abs/2101.10010`,
+        "--goal",
+        "arxiv paper details",
+        "--json",
+      ]);
+      expect(parsed.code).toBe(0);
+      const result = JSON.parse(parsed.stdout);
+      expect(result).toMatchObject({
+        ok: true,
+        playbook: "local",
+        op: "get_arxiv_paper_details",
+        inputs: [{ name: "paper_id", field: "path.2", required: true, recorded: "2101.10010" }],
+        extract: { mode: "detail", count: 1 },
+        run: "surf use local get_arxiv_paper_details --paper_id 2101.10010 --json",
+        test: { ok: true, records: 1 },
+      });
+      const op = JSON.parse(fs.readFileSync(opFile("local", "get_arxiv_paper_details"), "utf8"));
+      expect(op.args.paper_id).toMatchObject({ required: true });
+      expect(op.run[0].extract.html).toEqual({
+        item: "html",
+        fields: {
+          title: 'meta[name="citation_title"]@content',
+          author: 'meta[name="citation_author"]@content[]',
+          heading: "h1",
+        },
+      });
+    } finally {
+      await host.dispose();
+    }
+  }, 60000);
+
+  it("exits 2 with the candidates on a tied pick, and saves from the same record with --request-id", async () => {
+    const records = (name: string) =>
+      JSON.stringify({
+        items: Array.from({ length: 3 }, (_, i) => ({ id: i, name: `${name} ${i}` })),
+      });
+    const a = captured("r_a", `${served.origin}/api/a`, records("alpha"));
+    const b = captured("r_b", `${served.origin}/api/b`, records("bravo"));
+    const { host, cli, opFile, navigations } = parseFixture([a, b], a);
+    try {
+      await host.waitForMessage((message) => message.type === "HOST_READY");
+      const goal = ["--goal", "dummy feed items"];
+      const tied = await cli([`${served.origin}/feed`, ...goal, "--json"]);
+      expect(tied.code).toBe(2);
+      const result = JSON.parse(tied.stdout);
+      expect(result.reason).toMatch(/too close to pick one/);
+      expect(result.candidates.map((candidate: { url: string }) => candidate.url).sort()).toEqual([
+        `${served.origin}/api/a`,
+        `${served.origin}/api/b`,
+      ]);
+      expect(fs.existsSync(opFile("local", "get_dummy_feed_items"))).toBe(false);
+      expect(result.rerun).toContain(`--request-id ${result.candidates[0].id}`);
+      const chosen = result.candidates.find((candidate: { url: string }) =>
+        candidate.url.endsWith("/api/a"),
+      ).id;
+
+      const loaded = navigations();
+      const saved = await cli([`${served.origin}/feed`, ...goal, "--request-id", chosen]);
+      expect(saved.stderr).toBe("");
+      expect(saved.code).toBe(0);
+      expect(navigations()).toBe(loaded);
+      const op = JSON.parse(fs.readFileSync(opFile("local", "get_dummy_feed_items"), "utf8"));
+      expect(op.run[0].request.url).toBe(`${served.origin}/api/a`);
+      expect(op.run[0].extract).toEqual({ records: "$.items", fields: { id: "id", name: "name" } });
+    } finally {
+      await host.dispose();
+    }
+  }, 60000);
+
+  it("refuses a path robots.txt disallows before loading it", async () => {
+    const { host, cli, home, navigations } = parseFixture(
+      [],
+      captured("r_doc", `${served.origin}/private/x`, "<html></html>"),
+    );
+    try {
+      await host.waitForMessage((message) => message.type === "HOST_READY");
+      const parsed = await cli([`${served.origin}/private/list`, "--goal", "private items"]);
+      expect(parsed.code).toBe(1);
+      expect(parsed.stderr).toContain(
+        `${served.origin}/robots.txt disallows /private/list (Disallow: /private)`,
+      );
+      expect(served.robotsRequests).toBe(1);
+      expect(navigations()).toBe(0);
+      expect(fs.existsSync(path.join(home, ".surf", "playbooks"))).toBe(false);
+    } finally {
+      await host.dispose();
+    }
+  }, 60000);
+
+  it("refuses a replayed request robots.txt disallows, though the page is allowed", async () => {
+    served.text = "User-agent: *\nDisallow: /api/\n";
+    const items = Array.from({ length: 3 }, (_, i) => ({ id: i, title: `Dummy role ${i}` }));
+    const api = captured("r_api", `${served.origin}/api/jobs?page=1`, JSON.stringify({ items }));
+    const page = captured("r_doc", `${served.origin}/jobs`, "<html><body>Jobs</body></html>");
+    const { host, cli, home } = parseFixture([page, api], api);
+    try {
+      await host.waitForMessage((message) => message.type === "HOST_READY");
+      const parsed = await cli([`${served.origin}/jobs`, "--goal", "acme job postings"]);
+      expect(parsed.code).toBe(1);
+      expect(parsed.stderr).toContain(
+        `${served.origin}/robots.txt disallows /api/jobs (Disallow: /api/), the request that carries the data`,
+      );
+      expect(fs.existsSync(path.join(home, ".surf", "playbooks"))).toBe(false);
+      expect(host.messages.some((message) => /fetch\(/.test(String(message.code)))).toBe(false);
+    } finally {
+      await host.dispose();
+    }
+  }, 60000);
+
+  it("waits the Crawl-delay between reading robots.txt and loading the page", async () => {
+    served.text = "User-agent: *\nCrawl-delay: 0.5\n";
+    const html = `<html><head><meta name="citation_title" content="A Dummy Paper"></head><body><h1>A Dummy Paper</h1></body></html>`;
+    const page = captured("r_doc", `${served.origin}/abs/2101.10010`, html);
+    const { host, cli } = parseFixture([page], page);
+    try {
+      await host.waitForMessage((message) => message.type === "HOST_READY");
+      const loaded = host
+        .waitForMessage(
+          (message) => message.type === "EXECUTE_NAVIGATE" && message.url === page.url,
+          20000,
+        )
+        .then(() => Date.now());
+      const parsed = await cli([page.url, "--goal", "arxiv paper details"]);
+      expect(parsed.stderr).toBe("");
+      expect(parsed.code).toBe(0);
+      expect((await loaded) - served.robotsAt).toBeGreaterThanOrEqual(450);
+    } finally {
+      await host.dispose();
+    }
+  }, 60000);
+
+  it("saves a listing whose class names hold colons (Tailwind)", async () => {
+    const cards = Array.from(
+      { length: 5 },
+      (_, i) =>
+        `<div id="post:${i}" class="hover:shadow p-4"><a href="/p/${i}">Item ${i}</a><p class="price sm:text-lg">$${i}</p></div>`,
+    ).join("");
+    const page = captured(
+      "r_doc",
+      `${served.origin}/shop`,
+      `<html><body><div class="lg:grid gap-4">${cards}</div></body></html>`,
+    );
+    const { host, cli, opFile } = parseFixture([page], page);
+    try {
+      await host.waitForMessage((message) => message.type === "HOST_READY");
+      const parsed = await cli([page.url, "--goal", "shop items with price"]);
+      expect(parsed.stderr).toBe("");
+      expect(parsed.code).toBe(0);
+      const op = JSON.parse(fs.readFileSync(opFile("local", "get_shop_items_with"), "utf8"));
+      expect(op.run[0].extract.html.item).toBe("div.p-4");
+      expect(op.on.success.expect.assert).toHaveLength(3);
+    } finally {
+      await host.dispose();
+    }
+  }, 60000);
+
+  it("fits the records under the cap left by the response's own headers", async () => {
+    // About 42,000 characters of records: under the fixed margin, over what a 10,000-character
+    // header leaves of the tab's 50,000.
+    const items = Array.from({ length: 320 }, (_, i) => ({
+      id: i,
+      title: `Dummy role ${i}`,
+      note: `note ${i} `.repeat(6),
+    }));
+    expect(JSON.stringify({ extracted: items }, null, 2).length).toBeGreaterThan(40000);
+    expect(JSON.stringify({ extracted: items }, null, 2).length).toBeLessThan(45000);
+    const api = captured("r_api", `${served.origin}/api/jobs`, JSON.stringify({ items }));
+    const page = captured("r_doc", `${served.origin}/jobs`, "<html><body>Jobs</body></html>");
+    const { host, cli, opFile } = parseFixture([page, api], api, [["x-dummy", "d".repeat(10000)]]);
+    try {
+      await host.waitForMessage((message) => message.type === "HOST_READY");
+      const parsed = await cli([`${served.origin}/jobs`, "--goal", "acme job postings", "--json"]);
+      expect(parsed.code).toBe(0);
+      expect(JSON.parse(parsed.stdout)).toMatchObject({ ok: true, extract: { dropped: ["note"] } });
+      const op = JSON.parse(fs.readFileSync(opFile("local", "get_acme_job_postings"), "utf8"));
+      expect(op.run[0].extract.fields).toEqual({ id: "id", title: "title" });
+    } finally {
+      await host.dispose();
+    }
+  }, 60000);
+
+  it("sends a write goal to the recipe without loading anything or saving", async () => {
+    const { host, cli, home, navigations } = parseFixture(
+      [],
+      captured("r_doc", `${served.origin}/t/1`, "<html></html>"),
+    );
+    try {
+      await host.waitForMessage((message) => message.type === "HOST_READY");
+      const parsed = await cli([`${served.origin}/t/1`, "--goal", "post a comment on the thread"]);
+      expect(parsed.code).toBe(1);
+      expect(parsed.stderr).toMatch(
+        /the goal asks for a write \("post"\); surf parse saves reads only; follow the parse recipe/,
+      );
+      expect(served.robotsRequests).toBe(0);
+      expect(navigations()).toBe(0);
+      expect(host.messages.some((message) => message.type === "START_NETWORK_CAPTURE")).toBe(false);
+      expect(fs.existsSync(path.join(home, ".surf", "playbooks"))).toBe(false);
+    } finally {
+      await host.dispose();
+    }
+  }, 60000);
 });
