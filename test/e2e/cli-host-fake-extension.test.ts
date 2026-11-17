@@ -2303,6 +2303,60 @@ describe("CLI/native-host/fake-extension E2E contract", () => {
     }
   }, 60000);
 
+  it("saves a recent click as a write op that runs once with --write", async () => {
+    const socketPath = createSocketPath();
+    const project = fs.mkdtempSync(path.join(os.tmpdir(), "surf-recent-write-"));
+    tempDirs.push(project);
+    const host = startHost(socketPath, { recording: true });
+    const cli = (args: string[]) =>
+      runCli(socketPath, args, project, { SURF_STATE_DIR: host.stateDir });
+    const clicks = () => host.messages.filter((message) => message.type === "CLICK_SELECTOR");
+
+    try {
+      await host.waitForMessage((message) => message.type === "HOST_READY");
+      expect((await cli(["click", "--selector", "#submit", "--no-screenshot"])).code).toBe(0);
+      const saved = await cli([
+        "pb",
+        "save",
+        "recent",
+        "--op",
+        "submit",
+        "--from-recent",
+        "--project",
+        "--json",
+      ]);
+      expect(saved).toMatchObject({ code: 0, stderr: "" });
+      const op = JSON.parse(
+        fs.readFileSync(
+          path.join(project, ".surf", "playbooks", "recent", "ops", "submit.json"),
+          "utf8",
+        ),
+      );
+      expect(op).toMatchObject({
+        effect: "write",
+        safety: { duplicate: "repeatable-window", windowMs: 300000 },
+      });
+
+      const unwritten = await cli(["use", "recent", "submit"]);
+      expect(unwritten.code).toBe(1);
+      expect(unwritten.stderr).toMatch(/write op recent submit requires --write; it runs click/);
+      expect(clicks()).toHaveLength(1);
+      expect(await cli(["use", "recent", "submit", "--write", "--json"])).toMatchObject({
+        code: 0,
+        stderr: "",
+      });
+      expect(clicks().slice(1)).toEqual([expect.objectContaining({ selector: "#submit" })]);
+      const again = await cli(["use", "recent", "submit", "--write", "--json"]);
+      expect(again.code).toBe(1);
+      expect(again.stderr).toMatch(
+        /write blocked: attempt \S+ was sent at .+ and succeeded\. Add --repeat to send it again\./,
+      );
+      expect(clicks()).toHaveLength(2);
+    } finally {
+      await host.dispose();
+    }
+  }, 60000);
+
   // A saved op (pb save, provenance.escaped) whose workflow runs the given steps for each op id;
   // `run` returns the terms the steps searched for.
   async function startSavedOps(

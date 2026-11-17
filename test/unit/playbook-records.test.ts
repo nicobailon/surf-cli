@@ -1791,30 +1791,46 @@ describe("activity and explicit record evidence", () => {
     },
   );
 
-  it("does not save recent activity with a locate click as a read op", () => {
+  // A recent page write saves as a drafted write does: --write to run, every input its duplicate key.
+  const savedRecent = (root: string, opId: string) => {
+    const saved = authoring.saveFromRecent({
+      site: "fixture",
+      op: opId,
+      root,
+      home: path.dirname(root),
+    });
+    return JSON.parse(fs.readFileSync(path.join(saved.directory, "ops", `${opId}.json`), "utf8"));
+  };
+  const recentWrite = {
+    effect: "write",
+    safety: { duplicate: "repeatable-window", windowMs: 300_000 },
+  };
+
+  it.each([
+    ["click", { selector: "#submit" }],
+    ["locate.role", { role: "button", name: "Save", action: "click" }],
+  ])("saves recent %s as a write op with the drafted write's safety", (command, args) => {
     const root = tempRoot();
-    journal.journalCommand(
-      "locate.role",
-      { role: "button", name: "Save", action: "click" },
-      { root },
-    );
-    expect(() =>
-      authoring.saveFromRecent({ site: "fixture", op: "save", root, home: path.dirname(root) }),
-    ).toThrow(/write-capable/);
+    journal.journalCommand(command, args, { root });
+    const op = savedRecent(root, "submit");
+    expect(op).toMatchObject({ ...recentWrite, args: {} });
+    expect(op.safety.key).toBeUndefined();
+    expect(op.run).toEqual([{ using: "workflow", steps: [{ cmd: command, args }] }]);
   });
 
-  it("does not turn recent or recorded page writes into an unreviewed read op", () => {
+  it.each([
+    ["search", { term: "dummy" }],
+    ["scroll", { direction: "down" }],
+  ])("still saves recent read-only %s as a read op", (command, args) => {
     const root = tempRoot();
-    journal.journalCommand("click", { selector: "#submit" }, { root });
-    expect(() =>
-      authoring.saveFromRecent({
-        site: "fixture",
-        op: "submit",
-        root,
-        home: path.dirname(root),
-      }),
-    ).toThrow(/write-capable/);
+    journal.journalCommand(command, args, { root });
+    const op = savedRecent(root, "look");
+    expect(op.effect).toBe("read");
+    expect(op.safety).toBeUndefined();
+  });
 
+  it("does not turn recorded page writes into an unreviewed read op", () => {
+    const root = tempRoot();
     records.startRecord({ site: "fixture", op: "submit", tabId: 1, root });
     records.appendRecordEvent(
       {
@@ -1912,9 +1928,13 @@ describe("values typed with locate.* --action fill", () => {
     );
     const { draft } = records.stopRecord({ target: TAB, draft: true, root });
     authoring.saveFromRecord({ recordId: record.id, root, home });
-    expect(() => authoring.saveFromRecent({ site: "fixture", op: "recent", root, home })).toThrow(
-      /write-capable/,
+    // Recent activity with the fill saves as a write op whose value is an input.
+    const recent = authoring.saveFromRecent({ site: "fixture", op: "recent", root, home });
+    const recentOp = JSON.parse(
+      fs.readFileSync(path.join(recent.directory, "ops", "recent.json"), "utf8"),
     );
+    expect(recentOp.effect).toBe("write");
+    expect(recentOp.args.value).toMatchObject({ required: true });
 
     const workflow = draft.run.find((strategy: { using: string }) => strategy.using === "workflow");
     expect(workflow.steps[0].args.value).toBe("{{value}}");

@@ -1600,6 +1600,7 @@ async function runHostPlaybook(msg, request) {
     try {
       const shown = preview();
       if (shown.url !== undefined) sends = `; it sends ${shown.method} ${shown.url}`;
+      else if (shown.step) sends = `; it runs ${op.run.find((strategy) => strategy.using === "workflow").steps.map((step) => step.cmd).join(", ")}`;
     } catch {}
     throw new Error(`write op ${playbook.id} ${op.id} requires --write${sends} (see it all with --dry-run)`);
   }
