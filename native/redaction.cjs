@@ -82,8 +82,8 @@ function echoSecrets(values) {
 // Echoes of secret values (see echoSecrets) are redacted without changing what holds them. A long
 // secret goes wherever it appears; a short one only as a whole value (a whole JSON string, or a whole
 // query or form value), never inside a number or the structure around it, and in other text only as
-// a token between spaces. A key goes only when it is a whole key-length secret. So a JSON text stays
-// valid JSON, a URL keeps its form and markup its tags.
+// a whole word. A key goes only when it is a whole key-length secret. So a JSON text stays valid
+// JSON, a URL keeps its form and markup its tags.
 function echoRules({ long = [], short = [], keys = [] } = {}) {
   return {
     empty: long.length + short.length === 0,
@@ -183,35 +183,56 @@ function redactEchoQuery(query, rules) {
   }).join("&");
 }
 
-// A tag: `<` and a letter, `/`, `!` or `?`, to its `>`, a quoted attribute value (after `=`) read
-// whole; any other quote is a character of the name or value it is in, as HTML reads it.
-const TAG_PATTERN = /<[A-Za-z/!?](?:=\s*"[^"]*"|=\s*'[^']*'|[^<>])*>/g;
+// Text that holds markup: a `<` followed by a letter, `/`, `!` or `?`.
+const MARKUP_PATTERN = /<[A-Za-z/!?]/;
+// Whether a character code is whitespace, as `\s` reads it.
+const isSpaceCode = (code) => code === 32 || (code >= 9 && code <= 13) || (code > 127 && /\s/.test(String.fromCharCode(code)));
+const [LT, GT, DOUBLE_QUOTE, SINGLE_QUOTE] = ["<", ">", '"', "'"].map((char) => char.charCodeAt(0));
 
-// Free text: each long value replaced wherever it appears, each short one only as a token between
-// spaces, tags or the text's ends, so it can't rewrite a word around it. Inside a tag a short one
-// goes only as a whole quoted attribute value (`value="…"`), so tag and attribute names, unquoted
-// values and longer quoted ones stay as written. In text that holds a tag the marker is
-// `&lt;redacted&gt;`, which reads as <redacted> and adds no tag.
+// Free text: each long value replaced wherever it appears, each short one only as a whole word, so
+// it can't rewrite a word around it. A word has on each side whitespace or an end of the text, `>`
+// before it or `<` after it (text between tags), or a matching quote on both sides (a whole quoted
+// value); it is never part of a longer run. Words are found in one pass over the text, with no
+// markup parsing: in text that holds markup the marker is `&lt;redacted&gt;`, which reads as
+// <redacted> and has no `<`, `>`, quote, `=`, `/` or space, so where a word stood it can only stand
+// as a word, an attribute name or a value, and can't open or close a tag, a comment or a script.
 function redactEchoWords(text, rules) {
-  const marker = new RegExp(TAG_PATTERN.source).test(text) ? "&lt;redacted&gt;" : "<redacted>";
-  const byLength = (list) => [...list].sort((a, b) => b.length - a.length);
-  const source = byLength(rules.long).reduce((result, value) => result.split(value).join(marker), text);
-  const short = byLength(rules.short);
-  const words = (part) => short.reduce(
-    (result, value) => result.replace(new RegExp(`(?<!\\S)${value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(?!\\S)`, "g"), marker),
-    part,
-  );
-  const tag = (part) => part.replace(/(=\s*)(?:"([^"]*)"|'([^']*)')/g, (match, equals, double, single) => {
-    const quote = double === undefined ? "'" : '"';
-    return rules.whole.has(double ?? single) ? `${equals}${quote}${marker}${quote}` : match;
-  });
-  let result = "";
+  const marker = MARKUP_PATTERN.test(text) ? "&lt;redacted&gt;" : "<redacted>";
+  const byLength = (list) => [...list].filter(Boolean).sort((a, b) => b.length - a.length);
+  const source = byLength(rules.long).reduce((result, value) => (result.includes(value) ? result.split(value).join(marker) : result), text);
+  // NaN past either end of the text.
+  const isWord = (start, end) => {
+    const before = source.charCodeAt(start - 1);
+    const after = source.charCodeAt(end);
+    const opens = Number.isNaN(before) || before === GT || isSpaceCode(before);
+    const closes = Number.isNaN(after) || after === LT || isSpaceCode(after);
+    return (opens && closes) || ((before === DOUBLE_QUOTE || before === SINGLE_QUOTE) && before === after);
+  };
+  // Where each short value stands as a word, in order, longest value first.
+  const found = byLength(rules.short).map((value) => {
+    const starts = [];
+    for (let at = source.indexOf(value); at >= 0; at = source.indexOf(value, at + 1)) {
+      if (isWord(at, at + value.length)) starts.push(at);
+    }
+    return { length: value.length, starts, next: 0 };
+  }).filter(({ starts }) => starts.length > 0);
+  if (found.length === 0) return source;
+  // Merged by start, the longest word at a start winning, so no two replacements overlap.
+  const parts = [];
   let last = 0;
-  for (const match of source.matchAll(TAG_PATTERN)) {
-    result += words(source.slice(last, match.index)) + tag(match[0]);
-    last = match.index + match[0].length;
+  for (;;) {
+    let first = null;
+    for (const words of found) {
+      while (words.next < words.starts.length && words.starts[words.next] < last) words.next++;
+      if (words.next < words.starts.length && (!first || words.starts[words.next] < first.starts[first.next])) first = words;
+    }
+    if (!first) break;
+    const start = first.starts[first.next];
+    parts.push(source.slice(last, start), marker);
+    last = start + first.length;
   }
-  return result + words(source.slice(last));
+  parts.push(source.slice(last));
+  return parts.join("");
 }
 
 // A URL: its query by redactEchoQuery, and long values anywhere else in it.

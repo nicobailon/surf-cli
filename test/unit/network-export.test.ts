@@ -724,7 +724,7 @@ describe("echo redaction by each secret's own length", () => {
     expect(JSON.parse(body)).toEqual({ note: `x ${encoded} y`, "<redacted>": 1, v: "<redacted>" });
   });
 
-  it("replaces a short secret in other text only as a token between spaces or tags, never inside a tag", () => {
+  it("replaces a short secret in other text only as a whole word, never a tag name or part of a word", () => {
     const kept = exporter.publicEntry({
       id: "r-m",
       url: "https://example.test/api",
@@ -757,17 +757,6 @@ describe("echo redaction that keeps every structure parseable", () => {
   const resy = `ResyAPI api_key="${SHOP}", realm="${TRUE}"`;
   const entry = (requestHeaders: Record<string, string>, fields: Record<string, unknown> = {}) =>
     exporter.publicEntry({ id: "r-s", url: "https://example.test/api", requestHeaders, ...fields });
-
-  // The tag names and attribute names of markup, in order, so a test can tell its structure changed.
-  const tagStructure = (html: string) =>
-    [...html.matchAll(/<\/?([A-Za-z][\w-]*)((?:[^<>"']|"[^"]*"|'[^']*')*)>/g)].map(
-      ([, tag, attributes]) => [
-        tag,
-        ...[...attributes.matchAll(/([^\s"'=<>/]+)(?:\s*=\s*(?:"[^"]*"|'[^']*'|[^\s>]+))?/g)].map(
-          ([, name]) => name,
-        ),
-      ],
-    );
 
   it.each([
     ["1", { "x-csrf-token": "1" }],
@@ -867,25 +856,54 @@ describe("echo redaction that keeps every structure parseable", () => {
     });
   });
 
-  it("never replaces a short secret inside a tag, only text between tags and a whole quoted value", () => {
+  // The tag names of markup, in order, so a test can tell a tag opened or closed.
+  const tagNames = (html: string) =>
+    [...html.matchAll(/<\/?([A-Za-z][\w-]*)/g)].map(([, tag]) => tag);
+  const MARK = "&lt;redacted&gt;";
+
+  it("replaces a short secret in markup only as a whole word, with a marker that opens no tag", () => {
     const cases: [Record<string, string>, string, string][] = [
-      [{ "x-csrf-token": "a" }, "<a a >link</a>", "<a a >link</a>"],
-      [{ Authorization: resy }, `<input value= ${TRUE} >`, `<input value= ${TRUE} >`],
-      [
-        { "x-csrf-token": "a" },
-        "<p>a</p> a <b> a </b>",
-        "<p>&lt;redacted&gt;</p> &lt;redacted&gt; <b> &lt;redacted&gt; </b>",
-      ],
+      // An attribute name or an unquoted value that is the secret, as a whole word, goes.
+      [{ "x-csrf-token": "a" }, "<a a >link</a>", `<a ${MARK} >link</a>`],
+      [{ Authorization: resy }, `<input value= ${TRUE} >`, `<input value= ${MARK} >`],
+      [{ "x-csrf-token": "a" }, "<p>a</p> a <b> a </b>", `<p>${MARK}</p> ${MARK} <b> ${MARK} </b>`],
       [
         { Authorization: resy },
         `<input value="${SHOP}" title='${SHOP}' alt="${SHOP} x">`,
-        `<input value="&lt;redacted&gt;" title='&lt;redacted&gt;' alt="${SHOP} x">`,
+        `<input value="${MARK}" title='${MARK}' alt="${SHOP} x">`,
       ],
+      // A comment, a script and a stray quote hide nothing.
+      [{ Authorization: resy }, `<!-- ${SHOP} -->`, `<!-- ${MARK} -->`],
+      [
+        { Authorization: resy },
+        `<script>if (n<max && ${SHOP} > 0) run()</script>`,
+        `<script>if (n<max && ${MARK} > 0) run()</script>`,
+      ],
+      [{ Authorization: resy }, `<div data=x=" > ${SHOP} > ">`, `<div data=x=" > ${MARK} > ">`],
+      [{ Authorization: resy }, `<p a="x" ${SHOP}`, `<p a="x" ${MARK}`],
+      // Never part of a run: a tag name, a word around it, an unquoted value after `=`.
+      [{ "x-csrf-token": "a" }, "<a>lang=en</a>", "<a>lang=en</a>"],
+      [{ Authorization: resy }, `<b>${SHOP}-x</b> <i ${SHOP}=1>`, `<b>${SHOP}-x</b> <i ${SHOP}=1>`],
     ];
     for (const [headers, body, expected] of cases) {
       const kept = entry(headers, { responseBody: body }).responseBody;
       expect(kept).toBe(expected);
-      expect(tagStructure(kept)).toEqual(tagStructure(body));
+      expect(tagNames(kept)).toEqual(tagNames(body));
+    }
+  });
+
+  it("finds words in one linear pass, so an unfinished tag or a large page can't stall it", () => {
+    const secrets = { Authorization: resy };
+    const unfinished = `<p ${'a="x" '.repeat(10_000)} ${SHOP}`;
+    const page = `<html>${`<p class="row">${SHOP} item <b>${TRUE}</b></p>\n`.repeat(26_000)}</html>`;
+    expect(page.length).toBeGreaterThan(1_000_000);
+    for (const body of [unfinished, page]) {
+      // Warmed up first, so the time measured is the pass's, not the compiler's.
+      entry(secrets, { responseBody: body.slice(0, 100_000) });
+      const started = performance.now();
+      const kept = entry(secrets, { responseBody: body }).responseBody;
+      expect(performance.now() - started).toBeLessThan(50);
+      expect(kept).not.toMatch(new RegExp(`(^|[\\s>])${SHOP}($|[\\s<])`));
     }
   });
 });
