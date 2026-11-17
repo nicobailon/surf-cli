@@ -122,7 +122,7 @@ describe("bounded regex in a tab", () => {
     await expect(
       tabMatches(inTab(), [
         ["(\\d)", "1"],
-        ["(a?){500}b", "aaaa"],
+        ["(a?){500}b", "a".repeat(30)],
       ]),
     ).rejects.toThrow(timedOut);
     expect(Date.now() - started).toBeLessThan(600);
@@ -158,7 +158,7 @@ describe("bounded regex in a tab", () => {
         value: [["42", "42"], null],
       });
     }
-    const slow = await tabMatches(inTab({ worker: null }), [["(a?){500}b", "aaaa"]]);
+    const slow = await tabMatches(inTab({ worker: null }), [["(a?){500}b", "a".repeat(30)]]);
     const budget = bounded.createRegexBudget({ ms: 1000, scope: "extract" });
     const started = Date.now();
     await expect(bounded.finishTabExtract({ result: slow, budget, runScript })).rejects.toThrow(

@@ -342,7 +342,7 @@ describe("a JSON extract runs in the tab", () => {
     for (const tabWorker of [PageWorker, null]) {
       const started = Date.now();
       await expect(
-        runJson('{"t":"aaaa"}', never, undefined, { worker: tabWorker }).run,
+        runJson(JSON.stringify({ t: "a".repeat(30) }), never, undefined, { worker: tabWorker }).run,
       ).rejects.toThrow("fields.t.match pattern took too long (over 100 ms); simplify it");
       expect(Date.now() - started).toBeLessThan(600);
     }

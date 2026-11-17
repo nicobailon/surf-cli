@@ -231,10 +231,11 @@ describe("field match patterns in the tab", () => {
   });
 
   it("stop a run that never ends after 100 ms", async () => {
-    // (a?){500}b on 4 a's outlived a 1 s kill on the page's own thread; the worker is terminated.
+    // (a?){500}b on 30 a's never ends: on the page's own thread it outlived a 1 s kill, so the
+    // worker is terminated.
     const slow = { item: "li", fields: { id: { selector: "h2", match: "(a?){500}b" } } };
     const started = Date.now();
-    await expect(runHtmlExtract(slow, ["aaaa"])).rejects.toThrow(
+    await expect(runHtmlExtract(slow, ["a".repeat(30)])).rejects.toThrow(
       "field id match pattern took too long (over 100 ms); simplify it",
     );
     expect(Date.now() - started).toBeLessThan(600);
@@ -244,7 +245,7 @@ describe("field match patterns in the tab", () => {
     const started = Date.now();
     await expect(
       collect.runCollect({
-        executeTool: rowsTab(3, { text: () => "aaaa" }),
+        executeTool: rowsTab(3, { text: () => "a".repeat(30) }),
         sleep: async () => undefined,
         spec: rowSpec("(a?){500}b"),
       }),
@@ -367,7 +368,7 @@ return (doc) => boundedRegex.tabExtract({
     const started = Date.now();
     await expect(
       collect.runCollect({
-        executeTool: rowsTab(3, { worker: null, text: () => "aaaa" }),
+        executeTool: rowsTab(3, { worker: null, text: () => "a".repeat(30) }),
         sleep: async () => undefined,
         spec: rowSpec("(a?){500}b"),
       }),

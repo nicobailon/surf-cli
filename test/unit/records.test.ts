@@ -168,16 +168,16 @@ describe("records", () => {
   });
 
   it("stops a field match that backtracks too long instead of hanging the host", () => {
-    // (a+)+b on 24 a's backtracks for over a second without a bound.
+    // (a+)+b on 60 a's backtracks for 2^60 steps without a bound: no machine finishes it.
     const slow = { path: "t", match: "(a+)+b" };
     let started = Date.now();
-    expect(() => records.extractRecords({ t: "a".repeat(24) }, { fields: { t: slow } })).toThrow(
+    expect(() => records.extractRecords({ t: "a".repeat(60) }, { fields: { t: slow } })).toThrow(
       "fields.t.match pattern took too long (over 100 ms); simplify it",
     );
     expect(Date.now() - started).toBeLessThan(500);
     const set = records.createRecordSet({ find: { exists: ["t"] }, key: "t", fields: { t: slow } });
     started = Date.now();
-    expect(() => set.add({ t: "a".repeat(24) })).toThrow(
+    expect(() => set.add({ t: "a".repeat(60) })).toThrow(
       "records.fields.t.match pattern took too long (over 100 ms); simplify it",
     );
     expect(Date.now() - started).toBeLessThan(500);
