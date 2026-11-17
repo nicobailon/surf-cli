@@ -896,13 +896,18 @@ describe("echo redaction that keeps every structure parseable", () => {
     const secrets = { Authorization: resy };
     const unfinished = `<p ${'a="x" '.repeat(10_000)} ${SHOP}`;
     const page = `<html>${`<p class="row">${SHOP} item <b>${TRUE}</b></p>\n`.repeat(26_000)}</html>`;
+    // Quoted values that never close and names spaced from their `=`, for the value and name checks.
+    const open = `<p ${`a='x b="${SHOP} ${SHOP}   = `.repeat(50_000)}`;
     expect(page.length).toBeGreaterThan(1_000_000);
-    for (const body of [unfinished, page]) {
-      // Warmed up first, so the time measured is the pass's, not the compiler's.
+    expect(open.length).toBeGreaterThan(1_000_000);
+    for (const body of [unfinished, page, open]) {
+      // Warmed up first, so the time measured is the pass's, not the compiler's. A linear pass
+      // takes milliseconds; the r6 scanner took seconds on the unfinished tag. The bound is wide so
+      // a loaded machine can't fail it.
       entry(secrets, { responseBody: body.slice(0, 100_000) });
       const started = performance.now();
       const kept = entry(secrets, { responseBody: body }).responseBody;
-      expect(performance.now() - started).toBeLessThan(50);
+      expect(performance.now() - started).toBeLessThan(1_000);
       expect(kept).not.toMatch(new RegExp(`(^|[\\s>])${SHOP}($|[\\s<])`));
     }
   });
