@@ -1779,15 +1779,15 @@ const TOOLS = {
       "playbook client derive": {
         desc: "Generate a standalone client from an observed request",
         args: ["playbook"],
-        opts: { op: "Operation name", "from-record": "Record id", "request-id": "Request id in the record", out: "Output directory" },
+        opts: { op: "Operation name", "from-record": "Record id", "request-id": "Request id in the record", out: "Output directory", write: "Allow a captured POST (a write); the client sends it with no receipt, and its body as captured, input values the record kept included (make a field an input with pb param to leave it out)" },
       },
       "playbook client export": {
         desc: "Export a client for a playbook op; client.mjs takes the op's inputs as --name value or --name=value (\"\" for an empty one; a bare --name only for a boolean)",
         args: ["playbook"],
-        opts: { op: "Operation name", out: "Output directory" },
+        opts: { op: "Operation name", out: "Output directory", write: "Allow a write op; the client sends it with no receipt, and a captured body as captured, input values the record kept included (make a field an input with pb param to leave it out)" },
         examples: [{ cmd: "pb client export papers --op search --out ./papers && node papers/client.mjs --query graphs --author \"\"", desc: "Run it with an empty filter" }],
       },
-      "playbook client verify": { desc: "Verify a generated client", args: ["dir"], opts: { live: "Also call the live endpoint" } },
+      "playbook client verify": { desc: "Verify a generated client", args: ["dir"], opts: { live: "Also call the live endpoint", write: "Allow --live to send a write client's request" } },
       "playbook test": {
         desc: "Run an op as surf use does and check assertions on its result; exits 1 when one fails or no strategy answers",
         args: ["playbook", "op"],

@@ -260,7 +260,9 @@ describe("playbook client projection", () => {
         root,
         recordId: record.id,
       }),
-    ).toThrow(/pb client derive and export refuse write requests for now/);
+    ).toThrow(
+      /op search is a write request \(POST https:\/\/example.test\/search\); add --write to make a client for it/,
+    );
     expect(fs.existsSync(path.join(parent, "refused"))).toBe(false);
     const result = clients.deriveClient("fixture", "search", path.join(parent, "client"), {
       root,
@@ -739,5 +741,228 @@ describe("clients from parameterised ops", () => {
     await expect(clients.verifyClient(out, { live: false })).resolves.toMatchObject({
       valid: true,
     });
+  });
+});
+
+// The CLI reaches allowWrite only through --write; without it nothing is written.
+describe("pb client derive and export --write", () => {
+  const { handlePlaybookCli } = require("../../native/playbook-cli.cjs");
+  const saved = {
+    HOME: process.env.HOME,
+    SURF_STATE_DIR: process.env.SURF_STATE_DIR,
+    SURF_CLIENT_ORIGIN: process.env.SURF_CLIENT_ORIGIN,
+  };
+
+  afterEach(() => {
+    for (const [name, value] of Object.entries(saved)) {
+      if (value === undefined) {
+        delete process.env[name];
+      } else {
+        process.env[name] = value;
+      }
+    }
+  });
+
+  // A home, state folder and project of the test's own, so no real ~/.surf is read.
+  function sandbox() {
+    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "surf-client-write-"));
+    directories.push(cwd);
+    process.env.HOME = path.join(cwd, "home");
+    process.env.SURF_STATE_DIR = path.join(cwd, "state");
+    return cwd;
+  }
+
+  function capture(cwd: string, entry: Record<string, unknown>) {
+    const root = process.env.SURF_STATE_DIR;
+    const record = records.startRecord({
+      site: "fixture",
+      op: "send",
+      includeInputValues: true,
+      tabId: 1,
+      root,
+    });
+    records.attachNetworkTrace(
+      record.id,
+      [{ id: "r-1", status: 200, type: "XHR", ...entry }],
+      root,
+    );
+    const out = path.join(cwd, "client");
+    const derive = (...flags: string[]) =>
+      handlePlaybookCli(
+        [
+          "pb",
+          "client",
+          "derive",
+          "fixture",
+          "--op",
+          "send",
+          "--from-record",
+          record.id,
+          "--request-id",
+          "r-1",
+          ...flags,
+          "--out",
+          out,
+        ],
+        { cwd },
+      );
+    return { out, derive };
+  }
+
+  it("derives a client from a captured POST only with --write", async () => {
+    const cwd = sandbox();
+    const { out, derive } = capture(cwd, {
+      method: "POST",
+      url: "https://example.test/anything",
+      requestHeaders: { "content-type": "application/json" },
+      requestBody: JSON.stringify({ note: "dummy" }),
+    });
+    await expect(derive()).rejects.toThrow(
+      "op send is a write request (POST https://example.test/anything); add --write to make a client for it",
+    );
+    expect(fs.existsSync(out)).toBe(false);
+    const { value } = await derive("--write");
+    expect(value.manifest).toMatchObject({
+      effect: "write",
+      endpoint: {
+        method: "POST",
+        url: "https://example.test/anything",
+        body: JSON.stringify({ note: "dummy" }),
+      },
+    });
+    expect(fs.existsSync(path.join(out, "client.mjs"))).toBe(true);
+  });
+
+  it("derives a client from a captured GET without --write", async () => {
+    const cwd = sandbox();
+    const { out, derive } = capture(cwd, {
+      method: "GET",
+      url: "https://example.test/get?q=shoes",
+    });
+    const { value } = await derive();
+    expect(value.manifest).toMatchObject({
+      effect: "read",
+      endpoint: { method: "GET", url: "https://example.test/get" },
+      noEmbeddedSecrets: true,
+    });
+    expect(value.warnings).toEqual([]);
+    expect(fs.existsSync(path.join(out, "client.mjs"))).toBe(true);
+  });
+
+  // The user's opt-in keeps their own values: a write's body is sent as captured, so the manifest
+  // doesn't claim it holds none.
+  it("marks a write client whose body is as captured, and still verifies it", async () => {
+    const cwd = sandbox();
+    const password = ["dummy", "pass", "9"].join("-");
+    const { out, derive } = capture(cwd, {
+      method: "POST",
+      url: "https://example.test/login",
+      requestHeaders: { "content-type": "application/x-www-form-urlencoded" },
+      requestBody: `user=someone&password=${password}`,
+    });
+    const { value } = await derive("--write");
+    expect(value.manifest.noEmbeddedSecrets).toBe(false);
+    expect(value.warnings).toEqual([
+      "the request body is sent as captured, so values the record kept are in surf-client.json; make a field an input with surf pb param to leave it out",
+    ]);
+    await expect(clients.verifyClient(out, { live: false })).resolves.toMatchObject({
+      valid: true,
+      execution: { requests: 1 },
+    });
+  });
+
+  it("sends a write client live from pb client verify only with --write", async () => {
+    const cwd = sandbox();
+    const { out, derive } = capture(cwd, {
+      method: "POST",
+      url: "https://example.test/anything",
+      requestBody: "note=dummy",
+    });
+    await derive("--write");
+    const verify = (...flags: string[]) =>
+      handlePlaybookCli(["pb", "client", "verify", out, "--live", ...flags], { cwd });
+    const http = require("node:http");
+    const sent: string[] = [];
+    const server = http.createServer((request: any, response: any) => {
+      sent.push(`${request.method} ${request.url}`);
+      response.writeHead(200, { "content-type": "application/json" });
+      response.end('{"ok":true}');
+    });
+    await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+    try {
+      process.env.SURF_CLIENT_ORIGIN = `http://127.0.0.1:${server.address().port}`;
+      await expect(verify()).rejects.toThrow(
+        "op send is a write request (POST https://example.test/anything); add --write to send it live",
+      );
+      expect(sent).toEqual([]);
+      await expect(verify("--write")).resolves.toMatchObject({ value: { valid: true } });
+      expect(sent).toEqual(["POST /anything"]);
+    } finally {
+      await new Promise((resolve) => server.close(resolve));
+    }
+  });
+
+  it.each([
+    ["derive", ["--write", "true"]],
+    ["derive", ["--write=true"]],
+    ["verify", ["--write", "true"]],
+    ["verify", ["--write=true"]],
+  ])("refuses %s %s: --write takes no value", async (action, flags) => {
+    const cwd = sandbox();
+    const { out, derive } = capture(cwd, {
+      method: "POST",
+      url: "https://example.test/anything",
+      requestBody: "note=dummy",
+    });
+    if (action === "derive") {
+      await expect(derive(...flags)).rejects.toThrow("--write takes no value");
+      expect(fs.existsSync(out)).toBe(false);
+    } else {
+      await derive("--write");
+      await expect(
+        handlePlaybookCli(["pb", "client", "verify", out, "--live", ...flags], { cwd }),
+      ).rejects.toThrow("--write takes no value");
+    }
+  });
+
+  it("exports a client of a write op only with --write", async () => {
+    const cwd = sandbox();
+    const directory = path.join(cwd, ".surf", "playbooks", "books");
+    fs.mkdirSync(path.join(directory, "ops"), { recursive: true });
+    fs.writeFileSync(
+      path.join(directory, "playbook.json"),
+      JSON.stringify({ id: "books", version: "1.0.0", origins: ["https://books.test"] }),
+    );
+    fs.writeFileSync(
+      path.join(directory, "ops", "rename.json"),
+      JSON.stringify({
+        id: "rename",
+        effect: "write",
+        args: { name: { type: "string", default: "dummy" } },
+        safety: { duplicate: "repeatable-window", windowMs: 1000, key: ["name"] },
+        run: [
+          {
+            using: "network",
+            request: { method: "PATCH", url: "https://books.test/shelf/1", body: "name={{name}}" },
+          },
+        ],
+      }),
+    );
+    const out = path.join(cwd, "client");
+    const exportClient = (...flags: string[]) =>
+      handlePlaybookCli(
+        ["pb", "client", "export", "books", "--op", "rename", ...flags, "--out", out],
+        { cwd },
+      );
+    await expect(exportClient()).rejects.toThrow(
+      "op rename is a write request (PATCH https://books.test/shelf/1); add --write to make a client for it",
+    );
+    expect(fs.existsSync(out)).toBe(false);
+    const { value } = await exportClient("--write");
+    expect(value.manifest).toMatchObject({
+      effect: "write",
+      endpoint: { method: "PATCH", url: "https://books.test/shelf/1" },
+    });
+    expect(fs.existsSync(path.join(out, "client.mjs"))).toBe(true);
   });
 });

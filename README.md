@@ -1049,7 +1049,7 @@ A record belongs to the session that started it (or its tab, without a session):
 
 Records, traces, receipts, and recent-use journals live under private Surf state. Input values and authentication headers are redacted by default; `--include-input-values` is an explicit recording choice.
 
-Generate a standalone client only from an observed or validated read endpoint:
+Generate a standalone client only from an observed or validated endpoint:
 
 ```bash
 surf pb client derive example --op read --from-record <record-id> --request-id <request-id> --out ./client
@@ -1057,7 +1057,7 @@ surf pb client export example --op read --out ./client
 surf pb client verify ./client
 ```
 
-Generated manifests declare provenance and authentication environment inputs. Surf excludes cookies, bearer tokens, and captured credentials and does not export write-capable clients. For now `client derive` refuses any request other than GET, HEAD, or OPTIONS, POST reads included.
+Generated manifests declare provenance and authentication environment inputs. Surf leaves out cookies, bearer tokens, and secret headers. A client of a write needs `--write`: `client derive` of a captured POST (POST reads included) or `client export` of a write op. It sends with no receipt, and its body is as captured: a record that kept input values (`--include-input-values`) puts them, passwords included, in `surf-client.json`, whose `noEmbeddedSecrets` is then `false`. Make a body field an input with `pb param` first to leave it out. `client verify --live` of a write client needs `--write` too.
 
 ### Threads and Feeds
 

@@ -254,17 +254,20 @@ async function handlePlaybookCli(argv, { endpoint, cwd = process.cwd(), session,
   if (command === "client") {
     const action = parsed.positional[0];
     let value;
-    if (action === "derive") value = deriveClient(parsed.positional[1], parsed.options.op, parsed.options.out, { recordId: parsed.options["from-record"], requestId: parsed.options["request-id"], cwd });
+    // `--write true` would read as "no write": a flag with a value is refused, as --dry-run's is.
+    if ((parsed.options.write !== undefined && parsed.options.write !== true) || Object.keys(parsed.options).some((name) => name.startsWith("write="))) throw new Error("--write takes no value");
+    const allowWrite = parsed.options.write === true;
+    if (action === "derive") value = deriveClient(parsed.positional[1], parsed.options.op, parsed.options.out, { recordId: parsed.options["from-record"], requestId: parsed.options["request-id"], allowWrite, cwd });
     else if (action === "export") {
       const playbook = parsed.positional[1];
       const resolved = resolvePlaybook(playbook, { cwd });
-      value = exportClient(playbook, parsed.options.op || [...resolved.ops.keys()][0], parsed.options.out, { cwd });
+      value = exportClient(playbook, parsed.options.op || [...resolved.ops.keys()][0], parsed.options.out, { allowWrite, cwd });
     }
     if (value) {
       for (const warning of value.warnings) console.error(`Warning: ${warning}`);
       return { handled: true, value, json: parsed.options.json === true };
     }
-    if (action === "verify") return { handled: true, value: await verifyClient(parsed.positional[1], { live: parsed.options.live === true ? true : undefined }), json: parsed.options.json === true };
+    if (action === "verify") return { handled: true, value: await verifyClient(parsed.positional[1], { live: parsed.options.live === true ? true : undefined, allowWrite }), json: parsed.options.json === true };
     throw new Error("Unknown client command");
   }
   if (command === "trace" && parsed.positional[0] === "export") {
