@@ -3,7 +3,7 @@ const os = require("os");
 const path = require("path");
 const { atomicWriteJson } = require("./private-state.cjs");
 const { validateApiSpec } = require("./api-harvest.cjs");
-const { validateCollectSpec } = require("./dom-collect.cjs");
+const { parseHtmlExtract, validateCollectSpec } = require("./dom-collect.cjs");
 const { ASSERTION_LIMIT, validateAssertions } = require("./playbook-assertions.cjs");
 const { validateExtract } = require("./playbook-extract.cjs");
 const { validateMarkdownSpec } = require("./record-format.cjs");
@@ -150,11 +150,14 @@ function validateStrategy(strategy, effect, opId) {
 }
 
 // A chain op's bounds. `each` runs a step once per record of an earlier step: at most `eachMax`
-// records (`eachLimit` when unset), `delayMs` apart. One chain run calls at most `runs` ops.
-const CHAIN_LIMITS = Object.freeze({ steps: 10, eachLimit: 5, eachMax: 50, delayMs: 2000, delayMax: 60000, runs: 100 });
-const CHAIN_STEP_KEYS = ["id", "op", "with", "each"];
+// records (`eachLimit` when unset), `delayMs` apart. `page` runs a step again for its next page: at
+// most `pageMax` pages (`pageLimit` when unset), `delayMs` apart. One chain run calls at most `runs` ops.
+const CHAIN_LIMITS = Object.freeze({ steps: 10, eachLimit: 5, eachMax: 50, pageLimit: 3, pageMax: 20, delayMs: 2000, delayMax: 60000, runs: 100 });
+const CHAIN_STEP_KEYS = ["id", "op", "with", "each", "page"];
 const BINDING_KEYS = ["from", "path", "segment"];
 const EACH_KEYS = ["from", "limit", "delayMs"];
+const PAGE_KEYS = ["into", "next", "max", "delayMs"];
+const NEXT_KEYS = ["path", "html", "segment"];
 const TEMPLATE = /\{\{([a-zA-Z0-9._-]+)\}\}/g;
 const WRITES_LATER = "chains with write steps come later";
 
@@ -171,10 +174,38 @@ function compileBindingPath(path) {
   return path.startsWith("$") ? compileJsonPath(path, "binding path") : (value) => getPath(value, path);
 }
 
-// An each bound: an integer in [min, max], or a `{{input}}` the run fills.
-function checkEachBound(value, { min, max, name, where }) {
+// An each or page bound (`name`, such as each.limit): an integer in [min, max], or a `{{input}}` the run fills.
+function checkBound(value, { min, max, name, where }) {
   if (typeof value === "string" && /^\{\{[a-zA-Z0-9._-]+\}\}$/.test(value)) return;
-  if (!Number.isInteger(value) || value < min || value > max) throw new Error(`${where} each.${name} must be an integer from ${min} to ${max}, or {{input}}`);
+  if (!Number.isInteger(value) || value < min || value > max) throw new Error(`${where} ${name} must be an integer from ${min} to ${max}, or {{input}}`);
+}
+
+// A step's page.next: "increment", or where in each page's response the next value is.
+function checkPageNext(next, where) {
+  const usage = `${where} page.next must be "increment", { path } or { html }`;
+  if (next === "increment") return;
+  if (!isObject(next)) throw new Error(usage);
+  checkKeys(next, NEXT_KEYS, `${where} page.next`);
+  if (next.path !== undefined && next.html !== undefined) throw new Error(`${where} page.next takes path or html, not both`);
+  if (next.path !== undefined) {
+    if (typeof next.path !== "string" || !next.path) throw new Error(`${where} page.next path must be a string`);
+    try {
+      compileBindingPath(next.path);
+    } catch (error) {
+      throw new Error(`${where} page.next: ${error.message}`);
+    }
+  } else if (next.html !== undefined) {
+    const html = `${where} page.next html must be one selector[@attribute], such as li.next a@href`;
+    if (typeof next.html !== "string" || next.html.endsWith("[]")) throw new Error(html);
+    try {
+      parseHtmlExtract({ value: next.html });
+    } catch (error) {
+      throw new Error(`${html}: ${error.message}`);
+    }
+  } else throw new Error(usage);
+  if (next.segment !== undefined && (!Number.isInteger(next.segment) || next.segment < 1)) {
+    throw new Error(`${where} page.next segment must be a URL path segment number from 1`);
+  }
 }
 
 /**
@@ -214,9 +245,20 @@ function validateChainOp(value, id, effect) {
       checkKeys(step.each, EACH_KEYS, `${where} step ${stepId} each`);
       if (step.each.from === "item") throw new Error(`${where} step ${stepId} each.from must be an earlier step`);
       source(step.each.from, stepId, "runs each over");
-      if (step.each.limit !== undefined) checkEachBound(step.each.limit, { min: 1, max: CHAIN_LIMITS.eachMax, name: "limit", where: `${where} step ${stepId}` });
-      if (step.each.delayMs !== undefined) checkEachBound(step.each.delayMs, { min: 0, max: CHAIN_LIMITS.delayMax, name: "delayMs", where: `${where} step ${stepId}` });
+      if (step.each.limit !== undefined) checkBound(step.each.limit, { min: 1, max: CHAIN_LIMITS.eachMax, name: "each.limit", where: `${where} step ${stepId}` });
+      if (step.each.delayMs !== undefined) checkBound(step.each.delayMs, { min: 0, max: CHAIN_LIMITS.delayMax, name: "each.delayMs", where: `${where} step ${stepId}` });
       for (const bound of [step.each.limit, step.each.delayMs]) if (typeof bound === "string") templates(bound, stepId);
+    }
+    if (step.page !== undefined) {
+      const at = `${where} step ${stepId}`;
+      if (step.each !== undefined) throw new Error(`${at} takes each or page, not both`);
+      if (!isObject(step.page)) throw new Error(`${at} page must be an object`);
+      checkKeys(step.page, PAGE_KEYS, `${at} page`);
+      if (typeof step.page.into !== "string" || !step.page.into) throw new Error(`${at} page.into must be an input name of ${step.op}`);
+      checkPageNext(step.page.next, at);
+      if (step.page.max !== undefined) checkBound(step.page.max, { min: 1, max: CHAIN_LIMITS.pageMax, name: "page.max", where: at });
+      if (step.page.delayMs !== undefined) checkBound(step.page.delayMs, { min: 0, max: CHAIN_LIMITS.delayMax, name: "page.delayMs", where: at });
+      for (const bound of [step.page.max, step.page.delayMs]) if (typeof bound === "string") templates(bound, stepId);
     }
     if (step.with !== undefined && !isObject(step.with)) throw new Error(`${where} step ${stepId} with must be an object`);
     for (const [input, binding] of Object.entries(step.with || {})) {
@@ -268,6 +310,11 @@ function checkChainOps(ops, playbookId) {
       if (target.effect === "write") throw new Error(`chain ${op.id} step ${step.id} runs write op ${step.op}; ${WRITES_LATER}`);
       for (const input of Object.keys(step.with || {})) {
         if (!Object.hasOwn(target.args || {}, input)) throw new Error(`chain ${op.id} step ${step.id} passes --${input}, which ${step.op} doesn't take`);
+      }
+      if (step.page === undefined) continue;
+      if (!Object.hasOwn(target.args || {}, step.page.into)) throw new Error(`chain ${op.id} step ${step.id} pages into --${step.page.into}, which ${step.op} doesn't take`);
+      if (target.chain && step.page.next !== "increment") {
+        throw new Error(`chain ${op.id} step ${step.id} reads page.next from ${step.op}'s response, but ${step.op} is a chain; use "increment"`);
       }
     }
   }

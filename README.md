@@ -1090,9 +1090,35 @@ Here `list_quotes` reads `https://quotes.toscrape.com/page/{{page}}/` and return
   - `path` (optional): where in that value, as `$.data.id` or as a record path (`author_url`, `links[0].href`); a path that finds nothing fails the step;
   - `segment` (optional): take the nth URL path segment (from 1) of the value, so `https://quotes.toscrape.com/author/Albert-Einstein/` gives `author` for 1 and `Albert-Einstein` for 2.
 - `each` (optional): run the step once per record of an earlier step, whose result must be a list. `from` names that step; `limit` caps the records (default 5, at most 50); `delayMs` is the wait before each record's run (default 2000, at most 60000). Both can be `{{input}}`. The step's result is the list of each run's results, a run that returns a list adding its records.
+- `page` (optional, not with `each`): run the step again for each next page and concatenate the pages' records. `into` names the step op's input that takes the page; `next` says where the next value comes from:
+  - `"increment"`: one more than the last page's value; the first page takes the step's own value for `into`, else that input's default, else 1;
+  - `{ "path": "$.next" }`: a `$`-JSON path or record path into the page's JSON response (the whole response, not only the records the op extracts); the op's network strategy must extract JSON;
+  - `{ "html": "li.next a@href" }`: one value from the page's HTML, as `selector` or `selector@attribute`; the op must extract HTML (`extract.html`, on a network or workflow strategy);
+  - `segment` (optional, with `path` or `html`): take the nth URL path segment of the value, so `/page/3/` gives `3` for 2.
+
+  Paging stops when the next value is missing, empty, only whitespace or `false`, a page returns no records, a value `into` already had comes again, or `max` pages ran (default 3, at most 20). `delayMs` is the wait between pages (default 2000, at most 60000); both can be `{{input}}`. Each page's result must be a list. `path` and `html` read the step op's own response, so they can't be used on a step that runs a chain; `increment` can. A next value of `.` or `..`, or a URL on another origin than the page it came from, stops the chain with an error. Set the playbook's (or op's) `origins` when paging into an input that holds a whole URL, so the op can only fetch from those origins.
 - `output`: the step whose result the chain returns.
 
-A step's result is what `surf use` returns for its op as `value` (its extracted records, say). The first step that fails stops the chain, with an error naming the step (and the record, in an `each`). One chain run calls at most 100 ops. A playbook won't load while a chain names an op it doesn't have, passes an input that op doesn't take, binds from a later step or from no step, uses `item` outside `each`, or runs itself through another chain.
+Every quote on the first pages of quotes.toscrape.com, following each page's Next link (`/page/2/`) into `list_quotes`'s `page` input:
+
+```json
+{
+  "id": "all_quotes",
+  "args": { "pages": { "type": "number", "default": 3 } },
+  "chain": [
+    {
+      "id": "quotes",
+      "op": "list_quotes",
+      "page": { "into": "page", "next": { "html": "li.next a@href", "segment": 2 }, "max": "{{pages}}", "delayMs": 3000 }
+    }
+  ],
+  "output": "quotes"
+}
+```
+
+With `"next": "increment"`, the same step reads pages 1, 2 and 3 without the link; books.toscrape.com's `list_books` (`/catalogue/page-{{page}}.html`) pages the same way.
+
+A step's result is what `surf use` returns for its op as `value` (its extracted records, say; a `page` step's is all its pages' records). The first step that fails stops the chain, with an error naming the step (and the record, in an `each`, or the page). One chain run calls at most 100 ops, each page counting as one. A playbook won't load while a chain names an op it doesn't have, passes an input that op doesn't take, binds from a later step or from no step, uses `item` outside `each`, pages into an input the op doesn't take, or runs itself through another chain.
 
 Chains read only for now: a chain op can't be a write, and a chain whose steps include a write op is refused (chains with write steps come later). `pb param`, `pb extract`, `pb test` and `pb client` work on the ops a chain runs, not on the chain.
 

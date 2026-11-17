@@ -306,19 +306,42 @@ async function runTabExtract(context, script) {
   return result;
 }
 
-function jsonExtractSource(extract) {
-  if (extract.jsonPath) return `${getJsonPath.toString()}\nreturn getJsonPath(json, ${JSON.stringify(extract.jsonPath)});`;
-  const { records, fields, filter } = extract;
-  return `const module = { exports: {} };
+// Page source of an expression that is records.cjs's exports, in a script that defines `boundedRegex`.
+const recordsModuleSource = () => `(() => {
+const module = { exports: {} };
 const require = (name) => name === "./bounded-regex.cjs" ? boundedRegex : { isDeepStrictEqual: () => { throw new Error("isDeepStrictEqual is not available in the tab"); } };
 (function (module, exports, require) {
 ${RECORDS_SOURCE}
 })(module, module.exports, require);
-return module.exports.extractRecords(json, ${JSON.stringify({ records, fields, filter })});`;
+return module.exports;
+})()`;
+
+function jsonExtractSource(extract) {
+  if (extract.jsonPath) return `${getJsonPath.toString()}\nreturn getJsonPath(json, ${JSON.stringify(extract.jsonPath)});`;
+  const { records, fields, filter } = extract;
+  return `return ${recordsModuleSource()}.extractRecords(json, ${JSON.stringify({ records, fields, filter })});`;
 }
 
-function networkScript(request, allowedOrigins = [], extract, regexBudget = boundedRegex.createFieldRegexBudget()) {
+// Page source of `(json) => value` or `(doc) => value`: a chain step's page.next, read from the
+// response beside the op's extract (see pageNextRefusal for which responses can give it).
+function pageNextSource(next) {
+  if (next.html !== undefined) return `((doc) => { const picked = ${htmlExtractFunction({ value: next.html })}(doc); return picked.extract(picked.read()); })`;
+  // `$.next` or a record path (`links.next`), as compileBindingPath reads a binding's path.
+  const read = next.path.startsWith("$") ? `compileJsonPath(${JSON.stringify(next.path)}, "page.next path")(json)` : `getPath(json, ${JSON.stringify(next.path)})`;
+  return `((json) => { const { compileJsonPath, getPath } = ${recordsModuleSource()}; return ${read}; })`;
+}
+
+/** Why `strategy` can't give a chain step's page.next (`{ path }` or `{ html }`), or undefined when it can. */
+function pageNextRefusal(strategy, next) {
+  if (next.html !== undefined) return strategy.extract?.html ? undefined : "page.next html needs an op that extracts HTML (extract.html)";
+  if (strategy.using === "network" && isJsonExtract(strategy.extract)) return undefined;
+  return "page.next path needs an op whose network strategy extracts JSON (extract.records or extract.jsonPath)";
+}
+
+function networkScript(request, allowedOrigins = [], extract, regexBudget = boundedRegex.createFieldRegexBudget(), pageNext) {
   const html = extract?.html;
+  // A chain step's page.next is read from the same response, into head.pageNext with the URL it came from.
+  const readNext = (from) => (pageNext ? `head.pageNext = { value: ${pageNextSource(pageNext)}(${from}) ?? null, from: response.url || url.toString() };\n` : "");
   const headers = request.headers || {};
   const query = request.query || {};
   const body = request.body;
@@ -340,7 +363,7 @@ try {
     doc.head.prepend(element);
   }
   prepared = ${htmlExtractFunction(html)}(doc);
-} catch (error) {
+  ${readNext("doc")}} catch (error) {
   return { ...head, extractError: \`the response couldn't be prepared for its extract: \${error.message}\` };
 }
 return finish(head, prepared, "--item/--field");`;
@@ -348,11 +371,13 @@ return finish(head, prepared, "--item/--field");`;
     tail = `${finishSource(regexBudget)}
 return finish(head, {
   read: () => {
+    let json;
     try {
-      return JSON.parse(text);
+      json = JSON.parse(text);
     } catch {
       throw new Error(\`the response is not JSON (\${response.headers.get("content-type") || "no content type"})\`);
     }
+    ${readNext("json")}return json;
   },
   extract: (json) => {
     ${jsonExtractSource(extract)}
@@ -475,9 +500,10 @@ async function runStrategy(strategy, context) {
     if (result.status !== "completed") throw new Error(result.error || "workflow strategy failed");
     if (!strategy.extract?.html) return result;
     // The same extraction as the network strategy, on the page the workflow ended on.
-    const found = await runTabExtract(context, (budget) => `(async () => {\n${finishSource(budget)}\nreturn finish({}, ${htmlExtractFunction(strategy.extract.html)}(document), "--item/--field");\n})()`);
+    const readNext = context.pageNext ? `head.pageNext = { value: ${pageNextSource(context.pageNext)}(document) ?? null, from: location.href };\n` : "";
+    const found = await runTabExtract(context, (budget) => `(async () => {\n${finishSource(budget)}\nconst head = {};\n${readNext}return finish(head, ${htmlExtractFunction(strategy.extract.html)}(document), "--item/--field");\n})()`);
     if (found?.extractError) throw new Error(found.extractError);
-    return { ...result, extracted: found?.extracted };
+    return { ...result, extracted: found?.extracted, ...(context.pageNext ? { pageNext: found?.pageNext } : {}) };
   }
   if (strategy.using === "network") {
     // A draft's request can hold <text> where the record redacted a typed value: never send it.
@@ -489,7 +515,7 @@ async function runStrategy(strategy, context) {
     const inTab = extractsInTab(strategy.extract);
     const capture = inTab ? undefined : await watchCapture({ executeTool: context.executeTool, sleep: context.sleep });
     await context.markDispatched?.();
-    const { requestUrl, sentAt, doneAt, redirected, ...result } = await runTabExtract(context, (budget) => networkScript(request, context.allowedOrigins, strategy.extract, budget));
+    const { requestUrl, sentAt, doneAt, redirected, ...result } = await runTabExtract(context, (budget) => networkScript(request, context.allowedOrigins, strategy.extract, budget, context.pageNext));
     if (!result?.ok && (strategy.acceptStatus || []).includes(result?.status) === false) throw new Error(`network strategy returned ${result?.status || "an unknown status"}`);
     if (result.extractError) throw new Error(result.extractError);
     if (inTab) return result;
@@ -530,7 +556,7 @@ async function runStrategy(strategy, context) {
 // `assertions` replaces the op's saved on.success.expect.assert for this run (pb test --assert).
 // `strategy` runs only the strategies of that kind (pb test --strategy). `now` is the host's clock
 // for timing the tab's pattern calls.
-async function runPlaybookOp({ playbook, op, args: providedArgs = {}, secrets = {}, env = process.env, attemptId, executeTool, executeStep = executeTool, executeNative, signal, sleep, now = () => performance.now(), onEvent = () => {}, beforeDispatch = async () => {}, afterDispatch = async () => {}, allowScript = false, assertions, strategy: forced }) {
+async function runPlaybookOp({ playbook, op, args: providedArgs = {}, secrets = {}, env = process.env, attemptId, executeTool, executeStep = executeTool, executeNative, signal, sleep, now = () => performance.now(), onEvent = () => {}, beforeDispatch = async () => {}, afterDispatch = async () => {}, allowScript = false, assertions, strategy: forced, pageNext }) {
   const args = resolveArgs(op, providedArgs, { playbookId: playbook.id });
   const authValues = resolveAuthValues(op, secrets, env);
   const run = strategiesToRun(op, forced);
@@ -555,7 +581,9 @@ async function runPlaybookOp({ playbook, op, args: providedArgs = {}, secrets = 
     };
     onEvent({ type: "strategy.started", playbook: playbook.id, op: op.id, using: strategy.using, index, startedAt: new Date().toISOString() });
     try {
-      const raw = await runStrategy(strategy, {
+      const refusal = pageNext && pageNextRefusal(strategy, pageNext);
+      if (refusal) throw new Error(refusal);
+      let raw = await runStrategy(strategy, {
         args,
         attemptId,
         executeTool,
@@ -573,7 +601,12 @@ async function runPlaybookOp({ playbook, op, args: providedArgs = {}, secrets = 
         escapes,
         serverIdempotency: op.effect === "write" ? op.safety?.serverIdempotency : undefined,
         allowScript,
+        pageNext,
       });
+      // A strategy that read a chain step's page.next hands it over beside the response, with the
+      // URL of the page it came from.
+      let next = { value: null };
+      if (pageNext) ({ pageNext: next = { value: null }, ...raw } = raw);
       const value = extractResult(raw, strategy.extract, fieldRegexBudget);
       const expect = strategy.verify || strategy.expect || op.on?.success?.expect;
       // Saved assertions hold for every strategy, even one with its own verify.
@@ -581,7 +614,8 @@ async function runPlaybookOp({ playbook, op, args: providedArgs = {}, secrets = 
       if (op.effect === "write") await afterDispatch({ status: "verified", strategy, index });
       onEvent({ type: "strategy.completed", playbook: playbook.id, op: op.id, using: strategy.using, index, endedAt: new Date().toISOString() });
       // Its parts are redacted one by one; redactResult reads them next to surf's own fields.
-      return redactResult({ status: "completed", playbook: playbook.id, op: op.id, strategy: strategy.using, value: redactSecrets(value, authValues), provenance: playbook.provenance, attempts, ...(checked ? { assertions: checked } : {}) }, Object.values(authValues));
+      // A chain step's page.next comes back as `next`: its value (null when the response has none) and `from`, the page's URL.
+      return redactResult({ status: "completed", playbook: playbook.id, op: op.id, strategy: strategy.using, value: redactSecrets(value, authValues), provenance: playbook.provenance, attempts, ...(checked ? { assertions: checked } : {}), ...(pageNext ? { next: { value: redactSecrets(next.value ?? null, authValues), ...(typeof next.from === "string" ? { from: next.from } : {}) } } : {}) }, Object.values(authValues));
     } catch (caught) {
       const message = redactSecrets(caught?.message || String(caught), authValues);
       const error = message === caught?.message ? caught : new Error(message);

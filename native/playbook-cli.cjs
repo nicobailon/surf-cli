@@ -307,6 +307,12 @@ async function handlePlaybookCli(argv, { endpoint, cwd = process.cwd(), session,
   throw new Error(`Unknown playbook command: ${command}`);
 }
 
+// A chain step's page in a dry run: `, pages into page via li.next a@href (at most 3, 3000 ms apart)`.
+function pagesText({ into, next, max, delayMs }) {
+  const via = next === "increment" ? "increment" : `${next.path ?? next.html}${next.segment === undefined ? "" : `, path segment ${next.segment}`}`;
+  return `, pages into ${into} via ${via} (at most ${max}, ${delayMs} ms apart)`;
+}
+
 function formatDryRun(preview) {
   const show = (value) => (typeof value === "string" ? value : JSON.stringify(value));
   const lines = [`Dry run of ${preview.playbook} ${preview.op} (${preview.effect}): nothing sent`, `strategy: ${preview.strategy}`];
@@ -317,7 +323,7 @@ function formatDryRun(preview) {
   if (preview.step) lines.push(`first step: ${show(preview.step)}`);
   for (const step of preview.steps || []) {
     const each = step.each ? `, each record of ${step.each.from} (at most ${step.each.limit}, ${step.each.delayMs} ms apart)` : "";
-    lines.push(`step ${step.id}: ${step.op}${each}`);
+    lines.push(`step ${step.id}: ${step.op}${each}${step.page ? pagesText(step.page) : ""}`);
   }
   if (preview.output) lines.push(`output: ${preview.output}`);
   if (preview.allowedOrigins) lines.push(`allowed origins: ${preview.allowedOrigins.join(", ") || "any"}`);
@@ -331,4 +337,4 @@ function formatPlaybookOutput(value, json = false) {
   return value;
 }
 
-module.exports = { formatPlaybookOutput, handlePlaybookCli, playbookCommandNeedsBrowser, requestHost };
+module.exports = { formatDryRun, formatPlaybookOutput, handlePlaybookCli, playbookCommandNeedsBrowser, requestHost };
