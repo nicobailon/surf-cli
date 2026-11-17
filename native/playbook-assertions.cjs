@@ -417,6 +417,14 @@ function holdsWhole(texts, spellings, spend) {
   });
 }
 
+// Each value with its regex syntax escaped, as a pattern's author writes it to match it as it is.
+const regexEscaped = (values) => values.map((value) => String(value).replace(/[.*+?^${}()|[\]\\]/g, "\\$&"));
+
+// Where `texts` hold a whole value once their JSON escapes are decoded, any hex case and depth
+// (secretIn with `anywhere`, spending `work`): the spellings holdsWhole reads are only some of the
+// ways JSON writes a value. Searched as one, BREAK between them.
+const decodedHoldsWhole = (texts, values, work) => secretIn(texts.join(BREAK), values, { budget: work, anywhere: true });
+
 // How many characters in a row a pattern's text may share with a spelling of a value.
 const SHARED_RUN = 6;
 
@@ -472,6 +480,11 @@ function patternSecretIn(pattern, values, { budget = createRegexBudget(), work =
     const spellings = patternSpellings(values);
     const every = [...new Set([...texts, ...read.setAside, ...inPlace.setAside])];
     if (holdsWhole(every, spellings, spend)) return "found";
+    // The pattern as written: a value with regex syntax pasted as it is reads as other characters
+    // once parsed.
+    if (holdsWhole([pattern], [...spellings, ...regexEscaped(values)], spend)) return "found";
+    const decoded = decodedHoldsWhole([...every, pattern], values, work);
+    if (decoded) return decoded;
     const filter = patternTexts(pattern, { work, breaks: true });
     for (const spelling of spellings) {
       if (filter.exact && !couldMatch(filter, spelling, spend)) continue;
@@ -501,19 +514,40 @@ function patternSecretIn(pattern, values, { budget = createRegexBudget(), work =
   }
 }
 
+// The status that wins among secretIn results: "found", then "too deep", then "too costly".
+const firstStatus = (found) => ["found", "too deep", "too costly"].find((status) => found.includes(status)) ?? null;
+
 // Where secretIn finds one of `values` in a JSON value: in a key or leaf, or in the value as JSON,
 // compact or indented (as the op file stores it), where a value spanning keys and values shows.
 // That form escapes each string once more, so it is read to 9 levels. The calls share one budget,
-// sized by the value as JSON. "found" wins over "too deep", and that over "too costly".
-function jsonSecretIn(value, values, budget = decodeBudget(JSON.stringify(value)?.length ?? 0)) {
+// sized by the value as JSON. "found" wins over "too deep", and that over "too costly". With
+// `anywhere`, a value under 8 characters is found wherever it stands too (see secretIn).
+function jsonSecretIn(value, values, { budget = decodeBudget(JSON.stringify(value)?.length ?? 0), anywhere = false } = {}) {
   if (value === undefined) return null;
   const forms = [JSON.stringify(value), JSON.stringify(value, null, 2)];
-  const found = [...valueTexts(value).map((text) => secretIn(text, values, { budget })), ...forms.map((form) => secretIn(form, values, { levels: 9, budget }))];
-  return ["found", "too deep", "too costly"].find((status) => found.includes(status)) ?? null;
+  const found = [...valueTexts(value).map((text) => secretIn(text, values, { budget, anywhere })), ...forms.map((form) => secretIn(form, values, { levels: 9, budget, anywhere }))];
+  return firstStatus(found);
 }
 
-// Whether saving an assertion could store one of the run's env values: secretIn finds one in the
-// assertion as a whole (see jsonSecretIn), so in its path, its expected value or across them;
+// Where both --save checks find one of `values` in an assertion: jsonSecretIn on the assertion as
+// the op file stores it, and in its path, its op and its value (each key and leaf, and the value
+// as JSON), a value under 8 characters also next to other characters: output redaction masks a
+// short value only where it stands alone, so as not to break up the words around it, but a saved
+// assertion must hold no copy at all. surf's own keys (path, op, value) are not searched that way.
+// The calls share one budget, sized by the assertion as JSON.
+function assertionSecretIn(assertion, values) {
+  const hasValue = Object.hasOwn(assertion, "value");
+  const stored = { path: assertion.path, op: assertion.op, ...(hasValue ? { value: assertion.value } : {}) };
+  const budget = decodeBudget(JSON.stringify(stored).length);
+  return firstStatus([
+    jsonSecretIn(stored, values, { budget }),
+    ...[assertion.path, assertion.op].map((text) => secretIn(String(text), values, { budget, anywhere: true })),
+    ...(hasValue ? [jsonSecretIn(assertion.value, values, { budget, anywhere: true })] : []),
+  ]);
+}
+
+// Whether saving an assertion could store one of the run's env values: assertionSecretIn finds one
+// in the assertion, so in its path, its op, its expected value or across them;
 // its matches pattern could store or match one (patternSecretIn); or, for equals and matches (whose stored value is compared with the content), secretIn
 // finds one in the full, untruncated actual value. Only the run knows every value, the browser
 // host's own included; callers get the boolean alone. A pattern that runs too long against a
@@ -521,7 +555,7 @@ function jsonSecretIn(value, values, budget = decodeBudget(JSON.stringify(value)
 // which a run would test only the start of.
 function touchesSecret(assertion, found, secrets, budget) {
   if (secrets.length === 0) return false;
-  if (jsonSecretIn({ path: assertion.path, op: assertion.op, ...(Object.hasOwn(assertion, "value") ? { value: assertion.value } : {}) }, secrets)) return true;
+  if (assertionSecretIn(assertion, secrets)) return true;
   if ((assertion.op === "equals" || assertion.op === "matches") && jsonSecretIn(found, secrets)) return true;
   if (assertion.op !== "matches") return false;
   if (secrets.some((secret) => String(secret).length > MATCH_INPUT_LIMIT)) return true;
@@ -559,4 +593,4 @@ function checkAssertions(value, list, secrets = [], budget = createRegexBudget()
 }
 
 // MATCH_INPUT_LIMIT is bounded-regex.cjs's, exported here too for callers of boundedMatch.
-module.exports = { ASSERTION_LIMIT, MATCH_INPUT_LIMIT, MATCH_SKIPPED, MATCH_TIMED_OUT, boundedMatch, checkAssertions, createRegexBudget, jsonSecretIn, patternSecretIn, patternTexts, patternWork, spellsMost, validateAssertions, valueTexts };
+module.exports = { ASSERTION_LIMIT, MATCH_INPUT_LIMIT, MATCH_SKIPPED, MATCH_TIMED_OUT, assertionSecretIn, boundedMatch, checkAssertions, createRegexBudget, jsonSecretIn, patternSecretIn, patternTexts, patternWork, spellsMost, validateAssertions, valueTexts };

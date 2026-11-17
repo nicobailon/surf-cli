@@ -1,6 +1,6 @@
 // surf pb test: run an op the way `surf use` does and check assertions on its result.
 
-const { MATCH_INPUT_LIMIT, MATCH_SKIPPED, MATCH_TIMED_OUT, createRegexBudget, jsonSecretIn, patternSecretIn, validateAssertions } = require("./playbook-assertions.cjs");
+const { MATCH_INPUT_LIMIT, MATCH_SKIPPED, MATCH_TIMED_OUT, assertionSecretIn, createRegexBudget, patternSecretIn, validateAssertions } = require("./playbook-assertions.cjs");
 const { assertionLine, decodeBudget, maskResult, redactResult, secretIn, spanningValues } = require("./redaction.cjs");
 const { authInputs, resolveArgs } = require("./playbook-runtime.cjs");
 const { editSavedOp, resolveEditablePlaybook, resolveOp } = require("./playbooks.cjs");
@@ -88,8 +88,9 @@ function localOp(playbook, op, { cwd, home }) {
 }
 
 // pb test --save writes assertions to the op file, which must never hold an env header's value.
-// Before the run: refuse when secretIn finds one in the assertion (its path, any key or leaf of
-// its value, or the assertion as JSON, compact or indented as the op file stores it), or when a
+// Before the run: refuse when assertionSecretIn finds one in the assertion (its path, op, any key
+// or leaf of its value, or the assertion as JSON, compact or indented as the op file stores it; a
+// short value next to other characters too, unlike output redaction), or when a
 // matches pattern could store or match one (patternSecretIn: a text the pattern can match holds
 // one, the pattern matches one, which also refuses broad patterns such as .*, it has a
 // backreference, it spells most of one around a class or ., or it shares 6 characters in a row
@@ -109,7 +110,7 @@ function refuseSecretAssertions(assertions, secret) {
       "too costly": (name) => `${position} is too large to check for ${name}; assert on something else`,
     };
     for (const [name, raw] of Object.entries(secret)) {
-      const found = jsonSecretIn(assertion, [raw]);
+      const found = assertionSecretIn(assertion, [raw]);
       if (found) throw new Error(`--save refused: ${refusals[found](name)}`);
     }
     if (assertion.op !== "matches") return;

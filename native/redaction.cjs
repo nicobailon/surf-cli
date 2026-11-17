@@ -399,20 +399,21 @@ function decodeBudget(size) {
 // (\" \\ \/ \uXXXX \n...) are decoded, up to `levels` times; "too deep" when it still holds escapes
 // after that; "too costly" when `budget` runs out first; null otherwise. A value is searched for
 // as it is spelled, one under 8 characters where it stands alone, as redactValues replaces it
-// (with `anyLength`, one under 4, as redactValues replaces an env value), so presence never
-// depends on what redaction writes in its place. Decoding the whole text, not only its JSON
-// strings, reads every string of JSON held in a JSON string at any depth, and a value spanning keys
-// and values there, without parsing; it can only find more. Each level is one pass that copies
-// only the text between escapes, and decoding never makes text longer, so the work is at most
-// levels + 1 passes over it. An unset or empty value is no value. Self-contained but for
-// decodeBudget: generated clients embed it.
-function secretIn(text, values, { levels = 8, budget = decodeBudget(String(text).length), anyLength = false } = {}) {
+// (with `anyLength`, one under 4, as redactValues replaces an env value; with `anywhere`, any
+// value wherever it stands, as --save's checks read it), so presence never depends on what
+// redaction writes in its place. Decoding the whole text, not only its JSON strings, reads every
+// string of JSON held in a JSON string at any depth, and a value spanning keys and values there,
+// without parsing; it can only find more. Each level is one pass that copies only the text between
+// escapes, and decoding never makes text longer, so the work is at most levels + 1 passes over it.
+// An unset or empty value is no value. Self-contained but for decodeBudget: generated clients
+// embed it.
+function secretIn(text, values, { levels = 8, budget = decodeBudget(String(text).length), anywhere = false, anyLength = false } = {}) {
   const secrets = [...values].filter((value) => value !== undefined && value !== null).map(String).filter(Boolean);
   if (secrets.length === 0) return null;
   const shortest = anyLength ? 4 : 8;
-  const long = secrets.filter((secret) => secret.length >= shortest);
+  const long = secrets.filter((secret) => anywhere || secret.length >= shortest);
   const short = secrets
-    .filter((secret) => secret.length < shortest)
+    .filter((secret) => !anywhere && secret.length < shortest)
     .map((secret) => new RegExp(`(?<![A-Za-z0-9])${secret.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(?![A-Za-z0-9])`));
   const holds = (reading) => long.some((secret) => reading.includes(secret)) || short.some((pattern) => pattern.test(reading));
   const hex = (code) => (code >= 48 && code <= 57 ? code - 48 : code >= 65 && code <= 70 ? code - 55 : code >= 97 && code <= 102 ? code - 87 : -1);
@@ -734,12 +735,12 @@ function assertUrlHasNoEmbeddedSecrets(url) {
 }
 
 module.exports = {
+  assertionLine,
   assertNoEmbeddedSecrets,
   assertUrlHasNoEmbeddedSecrets,
   bodyContentType,
-  echoSecrets,
-  assertionLine,
   decodeBudget,
+  echoSecrets,
   isSecretHeader,
   isSensitiveName,
   isEchoedJson,
@@ -752,11 +753,11 @@ module.exports = {
   redactEchoUrl,
   redactJson,
   redactObject,
-  redactSecretValues,
   redactResult,
+  redactSecretValues,
   redactSensitiveFields,
-  redactUrlIfSecret,
   redactText,
+  redactUrlIfSecret,
   redactUrlSecrets,
   redactUrlsInText,
   redactValues,

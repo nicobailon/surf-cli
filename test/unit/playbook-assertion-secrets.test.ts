@@ -1078,20 +1078,24 @@ describe("an env value in any JSON spelling the decoder reads", () => {
     expect(redaction.secretIn(text, [UNICODE], { budget: spent() })).toBe("too costly");
     expect(redaction.redactText(text, [UNICODE], spent())).toBe("<redacted>");
     expect(redaction.redactJson({ text }, [UNICODE], spent())).toBe("<redacted>");
-    expect(assertions.jsonSecretIn(text, [UNICODE], spent())).toBe("too costly");
+    expect(assertions.jsonSecretIn(text, [UNICODE], { budget: spent() })).toBe("too costly");
   });
 
   // A pb test --save of `$.bodyJson.text matches <pattern>` against a response of `ok`, with the
   // value in the caller's shell and then only on the browser host: each refusal's message (or
   // "saved"), whether the run started before the caller's refusal, and whether the file is as it was.
   async function bothSaves(secret: string, pattern: string) {
+    return bothSavesOf(secret, ["--assert", "$.bodyJson.text", "matches", pattern]);
+  }
+  /** --save of `asserts` with `secret` in the shell, then on the host alone, answered with `body`. */
+  async function bothSavesOf(secret: string, asserts: string[], body: unknown = { text: "ok" }) {
     const { cwd, file } = tempShop(rawOp);
     const before = fs.readFileSync(file, "utf8");
-    const hosted = hostedRun(secret, JSON.stringify({ text: "ok" }));
-    const asserts = ["--assert", "$.bodyJson.text", "matches", pattern];
+    const hosted = hostedRun(secret, JSON.stringify(body));
     const outcome = (env: Record<string, string>) =>
       save(cwd, asserts, env, hosted).then(
-        () => "saved",
+        (report: { saved: string | null; notSaved?: string }) =>
+          report.saved ? "saved" : report.notSaved,
         (error: Error) => error.message,
       );
     const caller = await outcome({ [ENV]: secret });
@@ -1395,23 +1399,25 @@ describe("an env value in any JSON spelling the decoder reads", () => {
     const unicode = (text: string) =>
       [...text].map((char) => `\\\\u${char.charCodeAt(0).toString(16).padStart(4, "0")}`).join("");
     const words = "(?:red|green|blue|orange){6}!";
+    // Where the pattern as written holds it, the check of the assertion's value finds it first.
+    const value = "assertion 1";
     const refused = [
       // The reviewer's cases: a{1,300} and the {6} group overflow the listing.
-      { secret: three, pattern: `^(?:ok|a{1,300}${three}X)$` },
-      { secret: five, pattern: `^(?:ok|${five}X|${words})$` },
-      { secret: five, pattern: `^(?:ok|${hex(five)}X|${words})$` },
+      { secret: three, pattern: `^(?:ok|a{1,300}${three}X)$`, where: value },
+      { secret: five, pattern: `^(?:ok|${five}X|${words})$`, where: value },
+      { secret: five, pattern: `^(?:ok|${hex(five)}X|${words})$`, where: "assertion 1's pattern" },
       // Without an overflow, and in the JSON-escaped, \/ and \uXXXX spellings.
-      { secret: three, pattern: `^(?:ok|${three}X)$` },
-      { secret: join("q", '"', "7"), pattern: '^(?:ok|q\\\\"7X)$' },
-      { secret: join("q", "/", "7"), pattern: "^(?:ok|q\\\\\\/7X)$" },
-      { secret: three, pattern: `^(?:ok|${unicode(three)}X)$` },
+      { secret: three, pattern: `^(?:ok|${three}X)$`, where: value },
+      { secret: join("q", '"', "7"), pattern: '^(?:ok|q\\\\"7X)$', where: value },
+      { secret: join("q", "/", "7"), pattern: "^(?:ok|q\\\\\\/7X)$", where: value },
+      { secret: three, pattern: `^(?:ok|${unicode(three)}X)$`, where: value },
     ];
-    for (const { secret, pattern } of refused) {
+    for (const { secret, pattern, where } of refused) {
       expect(new RegExp(pattern).test("ok"), pattern).toBe(true);
       expect(assertions.patternSecretIn(pattern, [secret]), pattern).toBe("found");
       const saves = await bothSaves(secret, pattern);
       expect(saves.caller, pattern).toBe(
-        "--save refused: assertion 1's pattern contains the value of SURF_TEST_ITEMS_KEY, which is never stored; assert on something else",
+        `--save refused: ${where} contains the value of SURF_TEST_ITEMS_KEY, which is never stored; assert on something else`,
       );
       expect(saves, pattern).toMatchObject({ ranBeforeCaller: false, unchanged: true });
       expect(saves.host, pattern).toMatch(HOST_REFUSAL);
@@ -1425,6 +1431,97 @@ describe("an env value in any JSON spelling the decoder reads", () => {
       expect(assertions.patternSecretIn(pattern, [secret]), pattern).toBeNull();
       expect((await bothSaves(secret, pattern)).caller, pattern).toBe("saved");
     }
+  });
+
+  it("refuses a pattern whose source or decoded text holds a whole short value", async () => {
+    // A value with regex syntax, pasted as it is, reads as other characters once parsed; and a
+    // JSON escape may use either case of hex, at any depth.
+    const back = "\\";
+    const lt = String.fromCharCode(0x3c);
+    // The assertion's value holds the pattern as written, so both checks read it there first.
+    const refused = [
+      { secret: join("n", ".", "Q"), pattern: "^(?:ok|n.QX)$" },
+      { secret: join("n", "?", "Q"), pattern: "^(?:ok|n?QX)$" },
+      { secret: join("n", "|", "Q"), pattern: "^(?:ok|n|QX)$" },
+      { secret: join("n", "(Q)"), pattern: "^(?:ok|n(Q)X)$" },
+      { secret: join("n", "{3}"), pattern: "^(?:ok|n{3}X)$" },
+      { secret: join("n", back, back, "Q"), pattern: join("^(?:ok|n", back, back, "QX)$") },
+      // \u003C as JSON in the pattern's text: uppercase, mixed with \u0037, two levels deep, optional.
+      { secret: join(lt, "Q7"), pattern: join("^(?:ok|", back, back, "u003CQ7X)$") },
+      {
+        secret: join(lt, "Q7"),
+        pattern: join("^(?:ok|", back, back, "u003CQ", back, back, "u0037X)$"),
+      },
+      { secret: join(lt, "Q7"), pattern: join("^(?:ok|", back.repeat(4), "u003CQ7X)$") },
+      // Both at once: only the source, decoded, holds it.
+      { secret: join(lt, ".Q"), pattern: join("^(?:ok|", back, back, "u003C.QX)$") },
+    ].map((test) => ({ ...test, where: "assertion 1" }));
+    // Only the pattern's texts, decoded, hold it: \x5c is a backslash, and (?:<)? spells < too.
+    for (const pattern of [
+      join("^(?:ok|", back, "x5cu003CQ7X)$"),
+      join("^(?:ok|(?:", back, back, "u003C)?Q?7?X)$"),
+    ]) {
+      refused.push({ secret: join(lt, "Q7"), pattern, where: "assertion 1's pattern" });
+    }
+    for (const { secret, pattern, where } of refused) {
+      expect(new RegExp(pattern).test("ok"), pattern).toBe(true);
+      expect(assertions.patternSecretIn(pattern, [secret]), pattern).toBe("found");
+      const saves = await bothSaves(secret, pattern);
+      expect(saves.caller, pattern).toBe(
+        `--save refused: ${where} contains the value of SURF_TEST_ITEMS_KEY, which is never stored; assert on something else`,
+      );
+      expect(saves, pattern).toMatchObject({ ranBeforeCaller: false, unchanged: true });
+      expect(saves.host, pattern).toMatch(HOST_REFUSAL);
+    }
+    // Part of the value, in the source or decoded, is not a whole copy.
+    const kept = [
+      { secret: join("n", ".", "Q"), pattern: "^(?:ok|n.X)$" },
+      { secret: join("n", back, back, "Q"), pattern: join("^(?:ok|n", back, back, "X)$") },
+      { secret: join(lt, "Q7"), pattern: join("^(?:ok|", back, back, "u003CQX)$") },
+    ];
+    for (const { secret, pattern } of kept) {
+      expect(assertions.patternSecretIn(pattern, [secret]), pattern).toBeNull();
+      expect((await bothSaves(secret, pattern)).caller, pattern).toBe("saved");
+    }
+  });
+
+  it("refuses any assertion whose path, op or value holds a short value next to other characters", async () => {
+    // Output redaction masks a short value only where it stands alone; --save refuses any copy.
+    const secret = join("z", "9");
+    // Each passes, so the host would save it but for the check.
+    const escaped = join("X", "\\", "u007a9X");
+    const refused = [
+      { asserts: ["--assert", "$.bodyJson.text", "equals", '"Xz9X"'], body: { text: "Xz9X" } },
+      { asserts: ["--assert", "$.bodyJson.Xz9X", "exists"], body: { Xz9X: 1 } },
+      {
+        asserts: ["--assert", "$.bodyJson.text", "equals", '{"Xz9X":1}'],
+        body: { text: { Xz9X: 1 } },
+      },
+      {
+        asserts: ["--assert", "$.bodyJson.text", "equals", JSON.stringify(escaped)],
+        body: { text: escaped },
+      },
+    ];
+    for (const { asserts, body } of refused) {
+      const saves = await bothSavesOf(secret, asserts, body);
+      expect(saves.caller, asserts.join(" ")).toBe(
+        "--save refused: assertion 1 contains the value of SURF_TEST_ITEMS_KEY, which is never stored; assert on something else",
+      );
+      expect(saves, asserts.join(" ")).toMatchObject({ ranBeforeCaller: false, unchanged: true });
+      expect(saves.host, asserts.join(" ")).toMatch(HOST_REFUSAL);
+    }
+    // An assertion that doesn't hold it saves, on both paths; so does a response holding it.
+    const kept = [
+      { asserts: ["--assert", "$.bodyJson.text", "exists"], body: { text: "Xz9X" } },
+      { asserts: ["--assert", "$.bodyJson.text", "not_null"], body: { text: "Xz9X" } },
+      { asserts: ["--assert", "$.bodyJson.text", "equals", '"Xz8X"'], body: { text: "Xz8X" } },
+    ];
+    for (const { asserts, body } of kept) {
+      const saves = await bothSavesOf(secret, asserts, body);
+      expect(saves, asserts.join(" ")).toMatchObject({ caller: "saved", host: "saved" });
+    }
+    // Printed results still mask a short value only where it stands alone.
+    expect(redaction.redactText("Xz9X", [secret])).toBe("Xz9X");
   });
 
   it("saves a pattern whose readings overflow the listing, checking what it lists", async () => {
