@@ -681,20 +681,28 @@ function fragmentShape(fragment) {
   return { kind: fragment.includes("=") ? "pairs" : "whole" };
 }
 
-// A URL a value holds, absolute or relative: an origin, or a query or fragment after an empty path
-// (`?q`, `#f`), an absolute one (`/s?q`, `/s#f`, `//host/s?q`) or a `./` or `../` one.
+// Masking may guess; held may not. A typed value is masked wherever any reading of a value spells
+// it, guesses included: a text read as a URL whenever it has a `?` or `#` (`s?q=…` too, see
+// urlParts), a value decoded again and read as a URL, a `k=v` text read as a form (readingsOf).
+// Over-masking a value costs little; leaving a spelling visible leaks it. A value counts as held,
+// which keeps a path segment holding it unmasked as a route piece, only on a certain reading (see
+// heldIn): each part decoded once by its own rules, as a site's parser reads it, and split only on
+// separators written at its own level, never on ones a percent-decode of the same text produced.
+
+// A URL a value certainly holds, absolute or relative: an origin, or a query or fragment after an
+// empty path (`?q`, `#f`), an absolute one (`/s?q`, `/s#f`, `//host/s?q`) or a `./` or `../` one.
 const RELATIVE_PATH = /^(?:$|\/|\.\.?(?:\/|$))/;
 
-// The parts a URL-shaped reading sends, split on its own `?`, `#`, `&` and `=` as written and each
-// read by its own rules as the top-level URL's are: its path, query keys and fragment route as
+// The parts a reading sends read as a URL, split on its own `?`, `#`, `&` and `=` as written and
+// each read by its own rules as the top-level URL's are: its path, query keys and fragment route as
 // written, its query values (and a fragment's `k=v` pairs, see fragmentShape) form-encoded. Only
-// those values can be read as a URL or pairs again (`split`). None when it isn't URL-shaped.
+// those values can be read as a URL or pairs again (`split`). Any text with a `?`, `#` or `://` is
+// read so, a bare relative one (`s?q=…`) included; none other is.
 function urlParts(reading) {
   const { text } = reading;
   if (!text.includes("?") && !text.includes("#") && !text.includes("://")) return null;
   const [, origin = "", pathname, query, fragment] = text.match(URL_PARTS) || [];
-  if (pathname === undefined) return null;
-  if (!origin && !((query !== undefined || fragment !== undefined) && RELATIVE_PATH.test(pathname))) return null;
+  if (pathname === undefined || (!origin && query === undefined && fragment === undefined)) return null;
   const named = (start, end) => ({ ...sliced(reading, start, end), form: false, split: false });
   const pairs = (start, end) => pairsIn(reading, start, end).map((part) => ({ ...part, split: part.form }));
   const parts = [named(origin.length, origin.length + pathname.length)];
@@ -947,16 +955,15 @@ function applied(raw, offset, edits) {
 
 /**
  * Masks each typed value in turn in one value, the longest first, so `dummy romeo` is found before
- * `romeo`; `found` collects the values it masked. Then checks the value as masked: when a reading
- * of it still spells a typed value (leakIn), or JSON it held no longer parses (jsonKept), the walk
- * missed a case, and the whole value becomes one marker with no type: the leaked value's, which
- * counts as found, or the walk's first. When the readings are too many to check, the whole value
- * becomes the walk's first marker, or `<redacted>`, naming no typed value, as the check proved
- * none. `walk` is maskValue; a test passes a faulty one to check the check. Returns the value's
- * edits.
+ * `romeo`. Then checks the value as masked: when a reading of it still spells a typed value
+ * (leakIn), or JSON it held no longer parses (jsonKept), the walk missed a case, and the whole
+ * value becomes one marker with no type: the leaked value's, or the walk's first. When the
+ * readings are too many to check, the whole value becomes the walk's first marker, or
+ * `<redacted>`, naming no typed value. What it masks never counts a value as held (see heldIn).
+ * `walk` is maskValue; a test passes a faulty one to check the check. Returns the value's edits.
  */
 function maskEach(raw, offset, typed, options, context) {
-  const { list, found, walk = maskValue } = context;
+  const { list, walk = maskValue } = context;
   const inside = options.inside !== false;
   const listed = list.listedIn(offset, offset + raw.length);
   let edits = listed;
@@ -965,16 +972,13 @@ function maskEach(raw, offset, typed, options, context) {
     const batch = walk(raw, offset, item, { ...options, free });
     if (batch.length === 0) continue;
     edits = merged(edits, batch);
-    found?.add(item.value);
   }
   const masked = applied(raw, offset, edits);
   const check = leakIn(masked, typed, { inside, plusIsSpace: options.plusIsSpace });
   if (check.status === "clean" && (!inside || jsonKept(raw, masked.text, options.plusIsSpace))) return list.keep(edits);
   let marker = { marker: "<redacted>" };
-  if (check.status === "leak") {
-    found?.add(check.item.value);
-    marker = markerFor(check.item);
-  } else {
+  if (check.status === "leak") marker = markerFor(check.item);
+  else {
     const first = edits.flatMap(({ pieces }) => pieces).find((piece) => typeof piece !== "string");
     if (first) marker = { marker: first.marker, ...(first.typedValue ? { typedValue: first.typedValue } : {}) };
   }
@@ -1015,13 +1019,78 @@ const maskSegments = (text, offset, typed, context) => {
   for (const { piece, at } of pieces(text, offset, "/")) maskEach(piece, at, typed, { plusIsSpace: false, inside: false }, context);
 };
 
-// Which typed values a request body sends, read as JSON, a form or text, the way a URL value is.
-// The body isn't rewritten, so its edits are dropped.
-function bodyHolds(body, typed, found) {
-  if (typeof body !== "string" || !body) return;
-  const context = { list: editList(), found };
-  if (!parseJsonDocument(body) && /^[^=&]+=/.test(body)) maskPairs(body, 0, typed, context);
-  else maskEach(body, 0, typed, { plusIsSpace: false }, context);
+// The values of `k=v&…` text (or a pair with no =), as heldIn reads them.
+const pairValues = (text) => text.split("&").map((pair) => ({ text: pair.slice(pair.indexOf("=") + 1), decode: "form", split: true }));
+
+// A fragment's parts as heldIn reads them (see fragmentShape): its pair values; in a URL a value
+// holds, its route as well, and a plain fragment as any text, where the top-level URL's route is a
+// route piece and its plain fragment counts only whole.
+function fragmentParts(fragment, { top }) {
+  const shape = fragmentShape(fragment);
+  const route = (text) => (top ? [] : [{ text, decode: "percent", split: false }]);
+  if (shape.kind === "route+pairs") return [...route(fragment.slice(0, shape.split)), ...pairValues(fragment.slice(shape.split + 1))];
+  if (shape.kind === "pairs") return pairValues(fragment);
+  if (shape.kind === "route") return route(fragment);
+  return [{ text: fragment, decode: "percent", split: false, whole: top }];
+}
+
+// The parts of `text` a site's URL parser reads, when it is a URL as written (see RELATIVE_PATH):
+// its path, its query values and its fragment's parts. None when it isn't one.
+function certainUrlParts(text) {
+  const [, origin = "", pathname, query, fragment] = text.match(URL_PARTS) || [];
+  if (pathname === undefined || !(origin || ((query !== undefined || fragment !== undefined) && RELATIVE_PATH.test(pathname)))) return [];
+  return [
+    { text: pathname, decode: "percent", split: false },
+    ...(query === undefined ? [] : pairValues(query)),
+    ...(fragment === undefined ? [] : fragmentParts(fragment, { top: false })),
+  ];
+}
+
+// A request body's parts as heldIn reads them: a JSON document, a form's values, or text as sent.
+function bodyParts(body) {
+  if (typeof body !== "string" || !body) return [];
+  if (parseJsonDocument(body)) return [{ text: body, decode: "none", split: true }];
+  if (/^[^=&]+=/.test(body)) return pairValues(body);
+  return [{ text: body, decode: "none", split: false }];
+}
+
+/**
+ * Adds to `held` the typed values a certain reading of `parts` sends (see "Masking may guess"
+ * above). Each part is `{ text, decode, split, whole? }`: its text as captured; the one decoding
+ * its own syntax applies (`form`, + a space and then percent, as URLSearchParams reads a value;
+ * `percent`, a path's; `none`, a JSON string's value or a body as sent), never more; whether the
+ * decoded text may be read again (`split`: a value may, a path, route or text may not); and
+ * `whole` when only the whole text counts. A decoded text holds a value it is, or holds between
+ * characters that are not letters or digits (matchesIn); read again, a JSON document holds one only
+ * in its scalars (as written or as read) and its string values, each a part of its own, and a URL
+ * as written (certainUrlParts) in its parts; a `k=v` text is never read as a form. Too much text
+ * to read (see MAX_READ_FACTOR) holds nothing proven.
+ */
+function heldIn(parts, values, held) {
+  const wanted = values.filter(({ value }) => value.length >= MIN_LENGTH && !held.has(value));
+  if (wanted.length === 0 || parts.length === 0) return;
+  const found = new Set();
+  const queue = [...parts];
+  let budget = MAX_READ_FACTOR * parts.reduce((sum, { text }) => sum + text.length, 0) + READ_MARGIN;
+  for (let index = 0; index < queue.length && found.size < wanted.length; index++) {
+    const { text: raw, decode, split, whole } = queue[index];
+    budget -= raw.length;
+    if (budget < 0) return;
+    const text = decode === "form" ? decodeLeniently(raw.replace(/\+/g, " ")) : decode === "percent" ? decodeLeniently(raw) : raw;
+    const tokens = split ? jsonTokens(text) : null;
+    for (const { value } of wanted) if (whole || tokens ? text === value : matchesIn(text, value).length > 0) found.add(value);
+    if (!split) continue;
+    if (!tokens) {
+      queue.push(...certainUrlParts(text));
+      continue;
+    }
+    for (const leaf of tokens.leaves) {
+      const source = text.slice(leaf.start, leaf.end);
+      if (leaf.kind === "string") queue.push({ text: JSON.parse(source), decode: "none", split: true });
+      else for (const { value } of wanted) if (source === value || String(JSON.parse(source)) === value) found.add(value);
+    }
+  }
+  for (const value of found) held.add(value);
 }
 
 const URL_PARTS = /^([a-zA-Z][a-zA-Z0-9+.-]*:\/\/[^/?#]*)?([^?#]*)(?:\?([^#]*))?(?:#(.*))?$/s;
@@ -1038,8 +1107,8 @@ const URL_PARTS = /^([a-zA-Z][a-zA-Z0-9+.-]*:\/\/[^/?#]*)?([^?#]*)(?:\?([^#]*))?
  *
  * Query values (and a fragment's `?k=v` or `k=v` pairs) are form-decoded and matched whole or
  * inside, a JSON value only in its values. A path segment, or a `#/route`'s, is masked only when it
- * is a typed value no query, fragment or `body` value holds: there it is a fixed route piece
- * (/api/users?q=users). A plain fragment is masked only whole. Keys and the origin never change.
+ * is a typed value no query, fragment or `body` value certainly holds (see heldIn): there it is a
+ * fixed route piece (/api/users?q=users). A plain fragment is masked only whole. Keys and the origin never change.
  * `walk` replaces maskValue, for tests of the check that follows it.
  */
 function maskTypedValuesInUrl(url, typed, options = {}) {
@@ -1065,9 +1134,7 @@ function maskUrl(url, typed, { body, markers = [], walk }) {
   }
   const list = editList(listed);
   const values = typed.filter(({ value }) => value).sort((a, b) => b.value.length - a.value.length);
-  const found = new Set();
-  const context = { list, found, walk };
-  bodyHolds(body, values, found);
+  const context = { list, walk };
   const queryStart = origin.length + pathname.length + 1;
   if (query !== undefined) maskPairs(query, queryStart, values, context, { query: true });
   // Where the query and fragment hold values (not a #/route), for the markers listed there.
@@ -1088,6 +1155,26 @@ function maskUrl(url, typed, { body, markers = [], walk }) {
       held.push({ start: fragmentStart, end: url.length });
     }
   }
+  // The values the query, fragment or body certainly sends (see heldIn): a path segment holding one
+  // is a route piece. Each marker listed in the URL reads as one U+FFFF, beside which a letter or
+  // digit still ends a match, and which no typed value holding one is ever counted past; a listed
+  // marker counts by the id it names, below.
+  const found = new Set();
+  let sent = "";
+  let copied = 0;
+  for (const { start, end } of listed) {
+    sent += `${url.slice(copied, start)}\uffff`;
+    copied = end;
+  }
+  const [, , , sentQuery, sentFragment] = (sent + url.slice(copied)).match(URL_PARTS);
+  const parts = [...(sentQuery === undefined ? [] : pairValues(sentQuery)), ...(sentFragment === undefined ? [] : fragmentParts(sentFragment, { top: true })), ...bodyParts(body)];
+  // Only a value a path or route segment spells needs reading for (one no segment spells is
+  // masked nowhere in the path, held or not).
+  const spelled = new Set();
+  for (const text of [pathname, route?.text ?? ""]) {
+    for (const segment of text.split("/")) for (const reading of [...decodedTexts(segment, false), decodeLeniently(segment)]) spelled.add(reading);
+  }
+  heldIn(parts, values.filter(({ value }) => spelled.has(value) && !value.includes("\uffff")), found);
   const byId = new Map(values.filter(({ id }) => id).map((item) => [item.id, item]));
   for (const { start, end, pieces: [{ typedValue }] } of listed) {
     if (!held.some((part) => start >= part.start && end <= part.end)) continue;

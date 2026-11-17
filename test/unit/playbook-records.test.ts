@@ -3369,3 +3369,116 @@ describe("values typed during a record, in watch events", () => {
     ).toEqual(["https://example.test/page#<text>"]);
   });
 });
+
+describe("a typed value a URL holds only on a guessed reading, through every artifact", () => {
+  const { redactCommandArgs } = require("../../native/workflow-definition.cjs");
+  const { serializeNetworkExport } = require("../../native/network-export.cjs");
+  const TYPED = "dummy kilo words";
+  const ROUTE = `https://example.test/${encodeURIComponent(TYPED)}`;
+  const spelled = TYPED.replace(/ /g, "+");
+  const typeArgs = { selector: "#q", text: TYPED };
+  const everyFile = (directory: string) =>
+    fs
+      .readdirSync(directory, { recursive: true, withFileTypes: true })
+      .filter((entry: { isFile: () => boolean }) => entry.isFile())
+      .map((entry: { parentPath: string; name: string }) =>
+        path.join(entry.parentPath, entry.name),
+      );
+
+  // Records typing TYPED, a navigation to `url` and one request to it, then drafts, saves and exports.
+  function pipeline(url: string, request: Entry = {}) {
+    const root = tempRoot();
+    const home = path.join(path.dirname(root), "home");
+    fs.mkdirSync(home);
+    const record = records.startRecord({
+      site: "fixture",
+      op: "search",
+      tabId: 1,
+      origin: "https://example.test",
+      network: true,
+      watch: true,
+      root,
+    });
+    records.appendRecordEvent(
+      {
+        type: "tool.completed",
+        command: "type",
+        argsRedacted: redactCommandArgs("type", typeArgs),
+        startedAt: new Date().toISOString(),
+      },
+      { target: TAB, root, args: typeArgs },
+    );
+    records.appendRecordEvent(
+      {
+        type: "browser.event",
+        event: "navigation",
+        url,
+        tabId: 1,
+        timestamp: new Date().toISOString(),
+      },
+      { target: { tabId: 1, page: true }, root },
+    );
+    const entry = {
+      id: "r_1",
+      method: "GET",
+      status: 200,
+      type: "XHR",
+      url,
+      requestHeaders: { accept: "application/json" },
+      responseHeaders: { "content-type": "application/json" },
+      ...request,
+    };
+    records.attachNetworkTrace(record.id, [entry], root, { capture: COMPLETE });
+    const { draft } = records.stopRecord({ target: TAB, draft: true, root });
+    authoring.saveFromRecord({ recordId: record.id, root, home });
+    authoring.exportRecordHar(record.id, path.join(home, "trace.har"), root);
+    const folder = path.join(records.recordsRoot(root), record.id);
+    const trace = JSON.parse(fs.readFileSync(path.join(folder, "network", "trace.json"), "utf8"));
+    fs.writeFileSync(path.join(home, "export.json"), serializeNetworkExport(trace.entries, "json"));
+    const events = records
+      .readEvents(record.id, root)
+      .filter((e: Entry) => e.type === "browser.event");
+    const files = [...everyFile(home), ...everyFile(folder)];
+    return { draft, trace, events, files, home, folder };
+  }
+
+  for (const next of ["/s%23q%3Dfoo%2Bbar", "./s%3Fq%3Dfoo%2Bbar", "s?q=foo+bar"].map((shape) =>
+    shape.replace("foo%2Bbar", encodeURIComponent(spelled)).replace("foo+bar", spelled),
+  )) {
+    it(`masks the JSON value and the route in the trace, watch events, draft, op, HAR and export: ${next}`, () => {
+      const url = `${ROUTE}?v=${encodeURIComponent(JSON.stringify({ next }))}`;
+      const { draft, trace, events, files } = pipeline(url);
+      expect(trace.entries[0].url).toBe("https://example.test/<text>?v=<text>");
+      expect(events.map((e: Entry) => e.url)).toEqual(["https://example.test/<text>?v=<text>"]);
+      const network = draft.run.find((strategy: { using: string }) => strategy.using === "network");
+      expect(network.request.url).toBe("https://example.test/%3Ctext%3E");
+      expect(network.request.query).toEqual({ v: "<text>" });
+      expect(files.map((file: string) => path.basename(file))).toEqual(
+        expect.arrayContaining([
+          "search.json",
+          "trace.har",
+          "export.json",
+          "op.json",
+          "events.jsonl",
+          "trace.json",
+        ]),
+      );
+      for (const file of files) {
+        expect(fs.readFileSync(file, "utf8")).not.toContain("kilo");
+      }
+    });
+  }
+
+  it("masks the route when only a guessed URL in the JSON request body holds the typed value", () => {
+    const next = `/s%23q%3D${encodeURIComponent(spelled)}`;
+    const { trace, files } = pipeline(ROUTE, {
+      method: "POST",
+      requestHeaders: { "content-type": "application/json" },
+      requestBody: JSON.stringify({ next }),
+    });
+    expect(trace.entries[0].url).toBe("https://example.test/<text>");
+    for (const file of files) {
+      expect(fs.readFileSync(file, "utf8")).not.toContain("kilo");
+    }
+  });
+});

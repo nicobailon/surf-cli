@@ -945,6 +945,108 @@ describe("the check after masking: only a proven match counts, read as a site re
     });
   }
 
+  // Masking may guess; held may not. Each of these is read as a URL only by a guess (separators
+  // decoded from %23 or %3F, a path with no / or ., or a second percent-decode), so the value is
+  // masked, yet nothing certainly sends foo bar: the route piece is masked too.
+  const route = `/${encodeURIComponent("foo bar")}`;
+  const jsonOf = (next: string) => encodeURIComponent(JSON.stringify({ next }));
+  for (const next of [
+    "/s%23q%3Dfoo%2Bbar",
+    "./s%3Fq%3Dfoo%2Bbar",
+    "/s%3Fq%3Dfoo%2Bbar",
+    "s?q=foo+bar",
+    "s#q=foo+bar",
+  ]) {
+    it(`masks a guessed URL in a JSON value, and the route, which nothing certainly holds: ${next}`, () => {
+      const { url } = typedValues.maskTypedValuesInUrl(
+        `https://example.test${route}?v=${jsonOf(next)}`,
+        [typed("foo bar")],
+      );
+      expect(url).toBe("https://example.test/<text>?v=<text>");
+    });
+
+    it(`counts a guessed URL in a JSON request body as no typed value sent: ${next}`, () => {
+      const { url } = typedValues.maskTypedValuesInUrl(
+        `https://example.test${route}`,
+        [typed("foo bar")],
+        { body: JSON.stringify({ next }) },
+      );
+      expect(url).toBe("https://example.test/<text>");
+    });
+  }
+
+  // The r11 review's cases: an encoded # or ? in a path-only relative URL, and a bare relative URL.
+  for (const next of ["/s%23q%3Dfoo%2Bbar", "./s%3Fq%3Dfoo%2Bbar"]) {
+    it(`reads encoded path punctuation as no separator when counting a value held: ${next}`, () => {
+      const parsed = new URL(next, "https://e.test");
+      expect(parsed.search).toBe("");
+      expect(parsed.hash).toBe("");
+      const input = `https://e.test/${encodeURIComponent("foo bar")}?v=${jsonOf(next)}`;
+      expect(typedValues.maskTypedValuesInUrl(input, [typed("foo bar")]).url).toBe(
+        "https://e.test/<text>?v=<text>",
+      );
+    });
+  }
+
+  it("counts no value held for an encoded separator inside a body URL's path", () => {
+    const input = `https://e.test/${encodeURIComponent("foo bar")}`;
+    const body = JSON.stringify({ next: "/s%23q%3Dfoo%2Bbar" });
+    expect(typedValues.maskTypedValuesInUrl(input, [typed("foo bar")], { body }).url).toBe(
+      "https://e.test/<text>",
+    );
+  });
+
+  it("masks the query values of a bare relative URL in a JSON string", () => {
+    const input = `https://e.test/g?v=${jsonOf("s?q=foo+bar")}`;
+    const got = new URL(
+      typedValues.maskTypedValuesInUrl(input, [typed("foo bar")]).url,
+    ).searchParams.get("v") as string;
+    if (!got.startsWith("<")) {
+      expect(new URL(JSON.parse(got).next, "https://e.test/").searchParams.get("q")).not.toBe(
+        "foo bar",
+      );
+    }
+    expect(got).toBe("<text>");
+  });
+
+  it("masks a query value read as a URL only by a guess, and the route as well", () => {
+    for (const next of ["s?q=foo+bar", encodeURIComponent("/s?q=foo+bar"), "a=foo+bar"]) {
+      const { url } = typedValues.maskTypedValuesInUrl(
+        `https://example.test${route}?next=${encodeURIComponent(next)}`,
+        [typed("foo bar")],
+      );
+      expect(url).toBe("https://example.test/<text>?next=<text>");
+    }
+  });
+
+  it("keeps the route when a standard parse of a value at its own level sends the typed value", () => {
+    const kept = (url: string, options = {}) =>
+      typedValues.maskTypedValuesInUrl(url, [typed("foo bar")], options).url.split("?")[0];
+    for (const next of ["/s?q=foo+bar", "./s#q=foo+bar", "https://e.test/s#/r?q=foo+bar"]) {
+      expect(kept(`https://example.test${route}?v=${jsonOf(next)}`)).toBe(
+        `https://example.test${route}`,
+      );
+      expect(
+        kept(`https://example.test${route}`, {
+          body: JSON.stringify({ next }),
+        }),
+      ).toBe(`https://example.test${route}`);
+      expect(kept(`https://example.test${route}?next=${encodeURIComponent(next)}`)).toBe(
+        `https://example.test${route}`,
+      );
+    }
+    // A JSON value, a form body and a fragment pair, each as written.
+    expect(kept(`https://example.test${route}?v=${jsonOf("foo bar")}`)).toBe(
+      `https://example.test${route}`,
+    );
+    expect(kept(`https://example.test${route}`, { body: "q=foo+bar" })).toBe(
+      `https://example.test${route}`,
+    );
+    expect(kept(`https://example.test${route}#q=foo+bar`)).toBe(
+      `https://example.test${route}#q=<text>`,
+    );
+  });
+
   it("names the field of a JSON scalar only to a bounded depth, in work linear in the depth", () => {
     const counter = { steps: 0 };
     (globalThis as any).fieldPathSteps = counter;
