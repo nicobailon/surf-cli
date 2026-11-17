@@ -157,12 +157,13 @@ async function runCli(
   args: string[],
   socketPath: string,
   env: Record<string, string> = {},
+  cwd: string = process.cwd(),
 ): Promise<CliResult> {
   const cliPath = path.join(process.cwd(), "native", "cli.cjs");
 
   return await new Promise<CliResult>((resolve, reject) => {
     const child = spawn(process.execPath, [cliPath, ...args], {
-      cwd: process.cwd(),
+      cwd,
       env: { ...process.env, SURF_SOCKET: socketPath, ...env },
       stdio: ["ignore", "pipe", "pipe"],
     });
@@ -1003,6 +1004,109 @@ describe("native host protocol integration", () => {
     expect(used.code).toBe(0);
     expect(used.stdout).toContain('"selectedCount": 1');
     expect(used.stdout).not.toContain("dummy-lima");
+  });
+
+  it("ignores opt-ins a project workflow's steps set; surf do --echo-value still echoes", async () => {
+    const project = fs.mkdtempSync(path.join(os.tmpdir(), "surf-host-do-optin-"));
+    tempDirs.push(project);
+    const home = path.join(project, "home");
+    const stateDir = path.join(project, "state");
+    const workflows = path.join(project, ".surf", "workflows");
+    fs.mkdirSync(workflows, { recursive: true });
+    fs.mkdirSync(home, { recursive: true });
+    const output = path.join(project, "x.har");
+    const select = {
+      tool: "select",
+      args: { selector: "#s", values: "{{choice}}", echoValue: true, "echo-value": true },
+      as: "chosen",
+    };
+    fs.writeFileSync(
+      path.join(workflows, "pick.json"),
+      JSON.stringify({
+        args: { choice: { required: true } },
+        steps: [
+          select,
+          {
+            tool: "network.export",
+            args: { har: true, output, "raw-bodies": true, rawBodies: true },
+          },
+          {
+            tool: "playbook.record.start",
+            args: {
+              site: "s",
+              op: "o",
+              watch: true,
+              includeInputValues: true,
+              "include-input-values": true,
+            },
+          },
+        ],
+      }),
+    );
+    fs.writeFileSync(
+      path.join(workflows, "pick-only.json"),
+      JSON.stringify({ args: { choice: { required: true } }, steps: [select] }),
+    );
+    const host = await startHostHarness({ HOME: home, SURF_STATE_DIR: stateDir });
+    const env = { HOME: home, SURF_STATE_DIR: stateDir };
+    const doFlags = ["--choice", "dummy-lima", "--json", "--no-auto-wait", "--step-delay", "0"];
+    const answerSelect = async () => {
+      const request = await host.waitForMessage(
+        (message) => message.type === "SELECT_OPTION",
+        "SELECT_OPTION",
+      );
+      host.send({ id: request.id, selected: ["dummy-lima"] });
+    };
+
+    const ran = runCli(["do", "pick", ...doFlags], host.socketPath, env, project);
+    await answerSelect();
+    const exported = await host.waitForMessage(
+      (message) => message.type === "EXPORT_NETWORK_REQUESTS",
+      "EXPORT_NETWORK_REQUESTS",
+    );
+    host.send({
+      id: exported.id,
+      har: true,
+      jsonl: false,
+      entries: [
+        {
+          id: "r1",
+          method: "POST",
+          url: "https://example.test/post",
+          requestHeaders: { "content-type": "application/x-www-form-urlencoded" },
+          requestBody: "user=dummy-mike&password=dummy-november",
+        },
+      ],
+    });
+    const context = await host.waitForMessage(
+      (message) => message.type === "GET_PLAYBOOK_RECORD_CONTEXT",
+      "GET_PLAYBOOK_RECORD_CONTEXT",
+    );
+    host.send({ id: context.id, origin: "https://example.test" });
+    const watch = await host.waitForMessage(
+      (message) => message.type === "START_PLAYBOOK_WATCH",
+      "START_PLAYBOOK_WATCH",
+    );
+    expect(watch.includeInputValues).toBe(false);
+    host.send({ id: watch.id, success: true });
+    const result = await ran;
+    expect(result.code).toBe(0);
+    expect(result.stdout).toContain('"chosen": "Selected 1 option"');
+    expect(result.stdout).not.toContain("dummy-lima");
+    const har = fs.readFileSync(output, "utf8");
+    expect(har).toContain("password=<redacted>");
+    expect(har).not.toContain("dummy-november");
+
+    const echoed = runCli(
+      ["do", "pick-only", ...doFlags, "--echo-value"],
+      host.socketPath,
+      env,
+      project,
+    );
+    await answerSelect();
+    const shown = await echoed;
+    expect(shown.code).toBe(0);
+    expect(shown.stdout).toContain("dummy-lima");
   });
 
   it("refuses network.export as a playbook step, so its bodies can't skip redaction", async () => {

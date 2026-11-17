@@ -72,7 +72,7 @@ const { resolveOp } = require("./playbooks.cjs");
 const { replay, waitForResponse } = require("./api-harvest.cjs");
 const { runCollect } = require("./dom-collect.cjs");
 const { formatRecords } = require("./record-format.cjs");
-const { commandMetadata, redactCommandArgs } = require("./workflow-definition.cjs");
+const { commandMetadata, redactCommandArgs, withoutOptIns } = require("./workflow-definition.cjs");
 const { BrowserScheduler } = require("./browser-scheduler.cjs");
 const { BrowserSessionStore, parseDurationMs, validateSessionName } = require("./browser-session-store.cjs");
 const { applySocketPermissions, resolveSocketPermissions } = require("./socket-permissions.cjs");
@@ -1527,8 +1527,8 @@ async function executeMappedHostTool(request, tool, args, tabId) {
   // Its bodies are redacted only where the socket path writes the file.
   if (tool === "network.export") throw new Error(`tool ${tool} is not available inside a host-owned workflow`);
   // A step comes from a playbook, which may be a project's or an imported one, so it can't turn
-  // the echo of typed values on.
-  const { echoValue: _echoValue, "echo-value": _echoFlag, ...stepArgs } = args || {};
+  // the echo of typed values (or any other opt-in) on.
+  const stepArgs = withoutOptIns(args);
   const extensionMsg = mapToolToMessage(tool, stepArgs, tabId);
   if (!extensionMsg) throw new Error(`Unknown tool: ${tool}`);
   if (request.target?.strict) extensionMsg.strictTarget = true;

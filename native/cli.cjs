@@ -22,6 +22,9 @@ const {
   resolveWorkflow,
   validateWorkflowArgs,
   validateWorkflowFile,
+  ECHO_COMMANDS,
+  withEchoedValues,
+  withoutStepOptIns,
 } = require("./workflow-definition.cjs");
 const { executeDoSteps, semanticRequestContext, sendDoRequest } = require("./do-executor.cjs");
 const { runExtraction, renderExtractionMarkdown } = require("./extract.cjs");
@@ -1491,6 +1494,7 @@ const TOOLS = {
           "allow-semantic": "Allow bounded semantic model decisions (model: SURF_SEMANTIC_MODEL, default jev-1.13.0); extract steps always use clairic (Cloudflare)",
           "allow-write": "Allow declared semantic fill/check/click steps",
           "inputs-stdin": "Read bounded private input slots as one JSON object from stdin",
+          "echo-value": "Show typed values and chosen options in step results (a saved workflow's steps can't turn this on)",
         },
         examples: [
           { cmd: 'do \'go "https://example.com" | read | click e5 | screenshot\'', desc: "Inline workflow" },
@@ -2855,9 +2859,10 @@ if (args[0] === "do") {
   let allowSemantic = false;
   let allowWrite = false;
   let inputsStdin = false;
+  let echoValue = false;
 
   // Reserved flags that aren't workflow args
-  const reservedFlags = ['file', 'f', 'dry-run', 'on-error', 'no-auto-wait', 'step-delay', 'json', 'tab-id', 'window-id', 'session', 'no-lock', 'no-wait', 'allow-semantic', 'allow-write', 'inputs-stdin'];
+  const reservedFlags = ['file', 'f', 'dry-run', 'on-error', 'no-auto-wait', 'step-delay', 'json', 'tab-id', 'window-id', 'session', 'no-lock', 'no-wait', 'allow-semantic', 'allow-write', 'inputs-stdin', 'echo-value'];
 
   // Workflow-specific args (collected for variable substitution)
   const workflowArgs = {};
@@ -2903,6 +2908,8 @@ if (args[0] === "do") {
       allowWrite = true;
     } else if (arg === "--inputs-stdin") {
       inputsStdin = true;
+    } else if (arg === "--echo-value") {
+      echoValue = true;
     } else if (arg.startsWith("--")) {
       // Workflow-specific arg (e.g., --email, --password)
       const key = arg.slice(2);
@@ -3013,6 +3020,8 @@ if (args[0] === "do") {
         process.exit(1);
       }
 
+      // A saved workflow may be a project's: its steps can't turn on what loosens a safe default.
+      workflow = { ...workflow, steps: withoutStepOptIns(workflow.steps) };
       steps = workflow.steps;
     }
   } catch (e) {
@@ -3024,6 +3033,8 @@ if (args[0] === "do") {
     console.error("Error: No commands found in workflow");
     process.exit(1);
   }
+  // Typed values and chosen options show only with --echo-value or echoValue in ~/surf.json.
+  if (echoValue || loadUserConfig().echoValue === true) steps = withEchoedValues(steps);
 
   // Apply arg defaults
   const vars = workflow ? applyArgDefaults(workflow, workflowArgs) : workflowArgs;
@@ -3550,7 +3561,7 @@ if (options["full-page"] === true) {
 const config = loadConfig();
 // Fill and select results show the value typed or the options chosen only when asked: per call,
 // or in the user's own ~/surf.json (never a project's).
-if (loadUserConfig().echoValue === true && ["locate.role", "locate.text", "locate.label", "select", "type", "smart_type", "form_input", "form.fill"].includes(tool)) options["echo-value"] = true;
+if (loadUserConfig().echoValue === true && ECHO_COMMANDS.has(tool)) options["echo-value"] = true;
 const autoSaveEnabled = config.autoSaveScreenshots !== false && !options["no-save"];
 if (tool === "screenshot" && !options.output && !options.savePath && firstArg === undefined && autoSaveEnabled) {
   options.savePath = path.join(SURF_TMP, `surf-snap-${Date.now()}.png`);

@@ -544,8 +544,35 @@ function formatStep(step, indent = 0) {
   return `${pad}${tool}${argStr ? ` ${argStr}` : ""}${step.as ? ` → ${step.as}` : ""}`;
 }
 
+// Args that loosen a safe default. They count only from the command line or the user's own
+// ~/surf.json, never from a step that a saved workflow, a project's or an imported playbook holds.
+const OPT_IN_ARGS = new Set(["echoValue", "echo-value", "rawBodies", "raw-bodies", "includeInputValues", "include-input-values"]);
+// The commands whose result or page diff can show a value typed or an option chosen.
+const ECHO_COMMANDS = new Set(["locate.role", "locate.text", "locate.label", "select", "type", "smart_type", "form_input", "form.fill"]);
+
+function withoutOptIns(args) {
+  return Object.fromEntries(Object.entries(args || {}).filter(([name]) => !OPT_IN_ARGS.has(name)));
+}
+
+// Applies `change` to every command step of normalized steps, loops and their `until` included.
+function mapCommandSteps(steps, change) {
+  return steps.map((step) => {
+    if (!Array.isArray(step.steps)) return change(step);
+    return { ...step, steps: mapCommandSteps(step.steps, change), ...(step.until ? { until: mapCommandSteps([step.until], change)[0] } : {}) };
+  });
+}
+
+function withoutStepOptIns(steps) {
+  return mapCommandSteps(steps, (step) => ({ ...step, args: withoutOptIns(step.args) }));
+}
+
+function withEchoedValues(steps) {
+  return mapCommandSteps(steps, (step) => (ECHO_COMMANDS.has(step.cmd) ? { ...step, args: { ...step.args, "echo-value": true } } : step));
+}
+
 module.exports = {
   ALIASES,
+  ECHO_COMMANDS,
   PRIMARY_ARG_MAP,
   applyArgDefaults,
   commandMetadata,
@@ -563,4 +590,7 @@ module.exports = {
   tokenize,
   validateWorkflowArgs,
   validateWorkflowFile,
+  withEchoedValues,
+  withoutOptIns,
+  withoutStepOptIns,
 };

@@ -788,6 +788,7 @@ surf do 'go "url" | read | click e5 | screenshot' --dry-run
 - `--allow-semantic` - Opt in to bounded model decisions for a semantic workflow (model from `SURF_SEMANTIC_MODEL`, default `jev-1.13.0`; `extract` steps always use `clairic` with Cloudflare credentials)
 - `--allow-write` - Additionally authorize declared `fill`, `ensureChecked`, and `click` steps
 - `--inputs-stdin` - Read one bounded JSON object of private local input slots from stdin
+- `--echo-value` - Show typed values and chosen options in step results. A saved workflow's steps (`--file` or a named one, a project's included) can't set `echo-value`, `raw-bodies` or `include-input-values` themselves; only this flag or `echoValue: true` in `~/surf.json` turns echoing on
 - `--<arg> <value>` - Pass arguments to workflow (e.g., `--url "..."`)
 
 **Auto-waits:** Commands that trigger page changes automatically wait for completion:
