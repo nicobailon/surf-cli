@@ -747,7 +747,11 @@ describe("clients from parameterised ops", () => {
 // The CLI reaches allowWrite only through --write; without it nothing is written.
 describe("pb client derive and export --write", () => {
   const { handlePlaybookCli } = require("../../native/playbook-cli.cjs");
-  const saved = { HOME: process.env.HOME, SURF_STATE_DIR: process.env.SURF_STATE_DIR };
+  const saved = {
+    HOME: process.env.HOME,
+    SURF_STATE_DIR: process.env.SURF_STATE_DIR,
+    SURF_CLIENT_ORIGIN: process.env.SURF_CLIENT_ORIGIN,
+  };
 
   afterEach(() => {
     for (const [name, value] of Object.entries(saved)) {
@@ -839,8 +843,86 @@ describe("pb client derive and export --write", () => {
     expect(value.manifest).toMatchObject({
       effect: "read",
       endpoint: { method: "GET", url: "https://example.test/get" },
+      noEmbeddedSecrets: true,
     });
+    expect(value.warnings).toEqual([]);
     expect(fs.existsSync(path.join(out, "client.mjs"))).toBe(true);
+  });
+
+  // The user's opt-in keeps their own values: a write's body is sent as captured, so the manifest
+  // doesn't claim it holds none.
+  it("marks a write client whose body is as captured, and still verifies it", async () => {
+    const cwd = sandbox();
+    const password = ["dummy", "pass", "9"].join("-");
+    const { out, derive } = capture(cwd, {
+      method: "POST",
+      url: "https://example.test/login",
+      requestHeaders: { "content-type": "application/x-www-form-urlencoded" },
+      requestBody: `user=someone&password=${password}`,
+    });
+    const { value } = await derive("--write");
+    expect(value.manifest.noEmbeddedSecrets).toBe(false);
+    expect(value.warnings).toEqual([
+      "the request body is sent as captured, so values the record kept are in surf-client.json; make a field an input with surf pb param to leave it out",
+    ]);
+    await expect(clients.verifyClient(out, { live: false })).resolves.toMatchObject({
+      valid: true,
+      execution: { requests: 1 },
+    });
+  });
+
+  it("sends a write client live from pb client verify only with --write", async () => {
+    const cwd = sandbox();
+    const { out, derive } = capture(cwd, {
+      method: "POST",
+      url: "https://example.test/anything",
+      requestBody: "note=dummy",
+    });
+    await derive("--write");
+    const verify = (...flags: string[]) =>
+      handlePlaybookCli(["pb", "client", "verify", out, "--live", ...flags], { cwd });
+    const http = require("node:http");
+    const sent: string[] = [];
+    const server = http.createServer((request: any, response: any) => {
+      sent.push(`${request.method} ${request.url}`);
+      response.writeHead(200, { "content-type": "application/json" });
+      response.end('{"ok":true}');
+    });
+    await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+    try {
+      process.env.SURF_CLIENT_ORIGIN = `http://127.0.0.1:${server.address().port}`;
+      await expect(verify()).rejects.toThrow(
+        "op send is a write request (POST https://example.test/anything); add --write to send it live",
+      );
+      expect(sent).toEqual([]);
+      await expect(verify("--write")).resolves.toMatchObject({ value: { valid: true } });
+      expect(sent).toEqual(["POST /anything"]);
+    } finally {
+      await new Promise((resolve) => server.close(resolve));
+    }
+  });
+
+  it.each([
+    ["derive", ["--write", "true"]],
+    ["derive", ["--write=true"]],
+    ["verify", ["--write", "true"]],
+    ["verify", ["--write=true"]],
+  ])("refuses %s %s: --write takes no value", async (action, flags) => {
+    const cwd = sandbox();
+    const { out, derive } = capture(cwd, {
+      method: "POST",
+      url: "https://example.test/anything",
+      requestBody: "note=dummy",
+    });
+    if (action === "derive") {
+      await expect(derive(...flags)).rejects.toThrow("--write takes no value");
+      expect(fs.existsSync(out)).toBe(false);
+    } else {
+      await derive("--write");
+      await expect(
+        handlePlaybookCli(["pb", "client", "verify", out, "--live", ...flags], { cwd }),
+      ).rejects.toThrow("--write takes no value");
+    }
   });
 
   it("exports a client of a write op only with --write", async () => {

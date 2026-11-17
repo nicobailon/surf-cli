@@ -151,9 +151,13 @@ function endpointArgs(op, endpoint, escapes) {
 
 // `escapes`: the request holds escaped text (pb save's, or a record's), whose `{{!}}` the client
 // sends as `{{`.
+function writeRefusal({ op, method, url, action }) {
+  return new Error(`op ${op} is a write request (${method || "GET"} ${url}); add --write to ${action}`);
+}
+
 function generateClient({ playbookId, op, strategy, provenance, out, allowWrite = false, origins = [], escapes = false }) {
   const request = strategy.request;
-  if (op.effect === "write" && !allowWrite) throw new Error(`op ${op.id} is a write request (${request.method || "GET"} ${request.url}); add --write to make a client for it`);
+  if (op.effect === "write" && !allowWrite) throw writeRefusal({ op: op.id, method: request.method, url: request.url, action: "make a client for it" });
   if (typeof out !== "string" || !out) throw new Error("client projection requires --out <directory>");
   const directory = path.resolve(out);
   const placeholder = findRedactedPlaceholder(request);
@@ -169,6 +173,9 @@ function generateClient({ playbookId, op, strategy, provenance, out, allowWrite 
   assertUrlHasNoEmbeddedSecrets(endpoint.url);
   if (fs.existsSync(directory) && fs.lstatSync(directory).isSymbolicLink()) throw new Error(`refusing symbolic link: ${directory}`);
   const warnings = [];
+  // The user's opt-in keeps their own values: a write's string body is sent as captured.
+  const capturedBody = op.effect === "write" && typeof endpoint.body === "string";
+  if (capturedBody) warnings.push("the request body is sent as captured, so values the record kept are in surf-client.json; make a field an input with surf pb param to leave it out");
   let extract = strategy.extract || null;
   const extractHtml = extract?.html;
   if (extractHtml) {
@@ -192,7 +199,7 @@ function generateClient({ playbookId, op, strategy, provenance, out, allowWrite 
     authInputs: Array.isArray(request.authInputs) ? request.authInputs.map((input) => ({ env: input.env, header: input.header, required: input.required !== false })) : [],
     verification: strategy.verify || null,
     verificationCommand: "surf pb client verify .",
-    noEmbeddedSecrets: true,
+    noEmbeddedSecrets: !capturedBody,
   };
   atomicWriteJson(path.join(directory, "surf-client.json"), manifest, { root: directory });
   atomicWriteFile(path.join(directory, "client.mjs"), clientSource(), { root: directory, encoding: "utf8" });
@@ -369,14 +376,16 @@ async function verifyWithLocalServer(resolved, manifest, source) {
   }
 }
 
-async function verifyClient(directory, { live } = {}) {
+async function verifyClient(directory, { live, allowWrite = false } = {}) {
   const resolved = path.resolve(directory);
   const manifest = JSON.parse(fs.readFileSync(path.join(resolved, "surf-client.json"), "utf8"));
   const source = fs.readFileSync(path.join(resolved, "client.mjs"), "utf8");
   const serialized = `${JSON.stringify(manifest)}\n${source}`.toLowerCase();
-  if (!manifest.noEmbeddedSecrets || /bearer [a-z0-9._-]+|cookie:\s*[^<]|authorization\s*[:=]\s*["'][^<]/i.test(serialized)) throw new Error("generated client contains embedded credentials");
+  const capturedBody = manifest.effect === "write" && manifest.noEmbeddedSecrets === false && typeof manifest.endpoint?.body === "string";
+  if ((!manifest.noEmbeddedSecrets && !capturedBody) || /bearer [a-z0-9._-]+|cookie:\s*[^<]|authorization\s*[:=]\s*["'][^<]/i.test(serialized)) throw new Error("generated client contains embedded credentials");
   if (!manifest.endpoint?.method || !manifest.endpoint?.url) throw new Error("generated client endpoint is incomplete");
   absoluteEndpointUrl(manifest.endpoint.url, [], { escapes: manifest.escapes === true });
+  if (live && manifest.effect !== "read" && !allowWrite) throw writeRefusal({ op: manifest.op, method: manifest.endpoint.method, url: manifest.endpoint.url, action: "send it live" });
   const execution = live ? { stdout: (await runClient(resolved, manifest, source, { live: true })).trim() } : await verifyWithLocalServer(resolved, manifest, source);
   return { valid: true, playbook: manifest.playbook, op: manifest.op, endpoint: manifest.endpoint, execution };
 }
