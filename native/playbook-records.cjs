@@ -11,7 +11,7 @@ const {
   readPrivateFile,
   readPrivateJson,
 } = require("./private-state.cjs");
-const { redactEchoBody, redactEchoText, redactEchoUrl, redactSensitiveFields, redactUrlSecrets, safeHeaders, secretHeaderEchoes } = require("./redaction.cjs");
+const { bodyContentType, redactEchoBody, redactEchoText, redactEchoUrl, redactSensitiveFields, redactUrlSecrets, safeHeaders, secretHeaderEchoes } = require("./redaction.cjs");
 const { draftedEvents, forgetTypedValues, heldTypingCalls, maskTypedValuesInUrl, numberRedactedMarkers, redactTypedValuesInUrl, rememberTypedValues, typedValuesForTrace } = require("./record-typed-values.cjs");
 const { commandMetadata, promoteRedactedStepArgs } = require("./workflow-definition.cjs");
 const { escapeStepArgs, escapeTemplates } = require("./playbook-template.cjs");
@@ -234,7 +234,7 @@ function sanitizeTraceEntry(entry, includeInputValues = false, typed = []) {
     requestHeaders: keptHeaders(entry.requestHeaders),
     responseHeaders: keptHeaders(entry.responseHeaders),
     responseBody: entry.responseBody === undefined ? undefined : "<response-body>",
-    requestBody: entry.requestBody === undefined ? undefined : includeInputValues ? (typeof entry.requestBody === "string" ? redactEchoBody(entry.requestBody, secrets) : entry.requestBody) : "<request-body>",
+    requestBody: entry.requestBody === undefined ? undefined : includeInputValues ? (typeof entry.requestBody === "string" ? redactEchoBody(entry.requestBody, secrets, { contentType: bodyContentType(entry.requestHeaders) }) : entry.requestBody) : "<request-body>",
   };
 }
 

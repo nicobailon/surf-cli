@@ -1,7 +1,7 @@
 const fs = require("fs");
 const networkFormatters = require("./formatters/network.cjs");
 const { publicEntry } = require("./network-export.cjs");
-const { redactEchoBody, redactEchoJson, redactEchoUrl, redactUrlIfSecret, redactValues, secretHeaderEchoes } = require("./redaction.cjs");
+const { bodyContentType, redactEchoBody, redactEchoJson, redactEchoUrl, redactUrlIfSecret, redactValues, secretHeaderEchoes } = require("./redaction.cjs");
 const { recoveryFor } = require("./surf-error.cjs");
 
 function buildProviderUploadMessage(provider, tabId, filePaths, id) {
@@ -84,7 +84,7 @@ function publicResponse(response, entries) {
   const secrets = secretHeaderEchoes(entries.filter(isEntry).flatMap((entry) => [entry.requestHeaders, entry.responseHeaders]));
   const view = { ...response };
   if (typeof view.url === "string") view.url = redactEchoUrl(redactUrlIfSecret(view.url), secrets);
-  if (typeof view.body === "string" && view.base64Encoded !== true) view.body = redactEchoBody(view.body, secrets);
+  if (typeof view.body === "string" && view.base64Encoded !== true) view.body = redactEchoBody(view.body, secrets, { contentType: bodyContentType(view.headers, view.mimeType) });
   if (view.json !== undefined) view.json = redactEchoJson(view.json, secrets);
   return view;
 }

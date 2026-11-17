@@ -3,7 +3,7 @@ const path = require("path");
 const { version: PACKAGE_VERSION } = require("../package.json");
 const { redactSecretBodyFields } = require("./body-redaction.cjs");
 const { atomicWriteFile } = require("./private-state.cjs");
-const { isSecretHeader, redactEchoBody, redactEchoText, redactEchoUrl, redactUrlIfSecret, secretHeaderEchoes } = require("./redaction.cjs");
+const { bodyContentType, isSecretHeader, redactEchoBody, redactEchoText, redactEchoUrl, redactUrlIfSecret, secretHeaderEchoes } = require("./redaction.cjs");
 
 const MAX_NETWORK_EXPORT_FILE_BYTES = 256 * 1024 * 1024;
 const INTERNAL_FIELDS = new Set(["_requestId", "_responseReceived", "_loadingFinished"]);
@@ -41,7 +41,8 @@ function publicEntry(entry, { secretHeaders = [], rawBodies = false } = {}) {
     if (HEADER_FIELDS.has(key)) result[key] = redactHeaders(value, named, secrets);
     else if (URL_FIELDS.has(key)) result[key] = redactEchoUrl(redactUrlIfSecret(value), secrets);
     else if (BODY_FIELDS.has(key) && typeof value === "string" && !(key === "responseBody" && entry.responseBodyEncoding === "base64")) {
-      result[key] = redactEchoBody(value, secrets);
+      const contentType = key === "requestBody" ? bodyContentType(entry.requestHeaders) : bodyContentType(entry.responseHeaders, entry.mimeType);
+      result[key] = redactEchoBody(value, secrets, { contentType });
     } else result[key] = value;
   }
   if (!rawBodies) {

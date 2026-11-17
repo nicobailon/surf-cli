@@ -864,8 +864,8 @@ describe("echo redaction that keeps every structure parseable", () => {
 
   it("replaces a short secret in markup only as a whole word, with a marker that opens no tag", () => {
     const cases: [Record<string, string>, string, string][] = [
-      // An attribute name or an unquoted value that is the secret, as a whole word, goes.
-      [{ "x-csrf-token": "a" }, "<a a >link</a>", `<a ${MARK} >link</a>`],
+      // A value that is the secret goes; a name only when the secret has 4 characters or more.
+      [{ "x-csrf-token": "a" }, "<a a >link</a>", "<a a >link</a>"],
       [{ Authorization: resy }, `<input value= ${TRUE} >`, `<input value= ${MARK} >`],
       [{ "x-csrf-token": "a" }, "<p>a</p> a <b> a </b>", `<p>${MARK}</p> ${MARK} <b> ${MARK} </b>`],
       [
@@ -873,23 +873,29 @@ describe("echo redaction that keeps every structure parseable", () => {
         `<input value="${SHOP}" title='${SHOP}' alt="${SHOP} x">`,
         `<input value="${MARK}" title='${MARK}' alt="${SHOP} x">`,
       ],
-      // A comment, a script and a stray quote hide nothing.
-      [{ Authorization: resy }, `<!-- ${SHOP} -->`, `<!-- ${MARK} -->`],
+      // A comment, a script and a stray quote hide nothing; where entities aren't read, the marker
+      // is <redacted>, which can't end them.
+      [{ Authorization: resy }, `<!-- ${SHOP} -->`, "<!-- <redacted> -->"],
       [
         { Authorization: resy },
         `<script>if (n<max && ${SHOP} > 0) run()</script>`,
-        `<script>if (n<max && ${MARK} > 0) run()</script>`,
+        "<script>if (n<max && <redacted> > 0) run()</script>",
       ],
       [{ Authorization: resy }, `<div data=x=" > ${SHOP} > ">`, `<div data=x=" > ${MARK} > ">`],
-      [{ Authorization: resy }, `<p a="x" ${SHOP}`, `<p a="x" ${MARK}`],
+      [{ Authorization: resy }, `<p a="x" ${SHOP}`, '<p a="x" redacted'],
       // Never part of a run: a tag name, a word around it, an unquoted value after `=`.
       [{ "x-csrf-token": "a" }, "<a>lang=en</a>", "<a>lang=en</a>"],
-      [{ Authorization: resy }, `<b>${SHOP}-x</b> <i ${SHOP}=1>`, `<b>${SHOP}-x</b> <i ${SHOP}=1>`],
+      [
+        { Authorization: resy },
+        `<b>${SHOP}-x</b> <i ${SHOP}=1>`,
+        `<b>${SHOP}-x</b> <i redacted=1>`,
+      ],
     ];
     for (const [headers, body, expected] of cases) {
       const kept = entry(headers, { responseBody: body }).responseBody;
       expect(kept).toBe(expected);
-      expect(tagNames(kept)).toEqual(tagNames(body));
+      // The plain marker in a comment or script reads as a tag to this pattern, not to a parser.
+      expect(tagNames(kept.replaceAll("<redacted>", ""))).toEqual(tagNames(body));
     }
   });
 
@@ -901,15 +907,23 @@ describe("echo redaction that keeps every structure parseable", () => {
     const open = `<p ${`a='x b="${SHOP} ${SHOP}   = `.repeat(50_000)}`;
     expect(page.length).toBeGreaterThan(1_000_000);
     expect(open.length).toBeGreaterThan(1_000_000);
-    for (const body of [unfinished, page, open]) {
-      // Warmed up first, so the time measured is the pass's, not the compiler's. A linear pass
-      // takes milliseconds; the r6 scanner took seconds on the unfinished tag. The bound is wide so
-      // a loaded machine can't fail it.
+    for (const [body, words] of [
+      [unfinished, true],
+      [page, true],
+      // Its secrets stand inside longer quoted values, which keep them.
+      [open, false],
+    ] as const) {
+      // Warmed up first, so the time measured is the pass's, not the compiler's. Tokenizing a 1 MB
+      // page and checking the result takes a few hundred milliseconds of CPU on a loaded machine;
+      // the r6 scanner took over a minute on the unfinished tag. The bound is wide so load can't
+      // fail it; markup-redaction.test.ts counts the steps for linear growth.
       entry(secrets, { responseBody: body.slice(0, 100_000) });
       const started = performance.now();
       const kept = entry(secrets, { responseBody: body }).responseBody;
-      expect(performance.now() - started).toBeLessThan(1_000);
-      expect(kept).not.toMatch(new RegExp(`(^|[\\s>])${SHOP}($|[\\s<])`));
+      expect(performance.now() - started).toBeLessThan(3_000);
+      if (words) {
+        expect(kept).not.toMatch(new RegExp(`(^|[\\s>])${SHOP}($|[\\s<])`));
+      }
     }
   });
 
@@ -947,21 +961,25 @@ describe("echo redaction that keeps every structure parseable", () => {
     return JSON.parse(result.stdout);
   };
 
-  it("keeps a short secret that holds a markup character in markup, so no delimiter goes", () => {
-    const cases: [string, string][] = [
-      [['x"', ">y"].join(""), '<r a=" x">y </r>'],
-      [["--", ">x"].join(""), "<r><!-- -->x <q/></r>"],
-      [["]]", ">x"].join(""), "<r><![CDATA[ ]]>x <q/></r>"],
-      [["x<q", "/>y"].join(""), "<r> x<q/>y </r>"],
-      [["a'", "b"].join(""), "<r> a'b </r>"],
+  it("masks the text a short secret that holds a markup character touches, so no delimiter goes", () => {
+    const cases: [string, string, string][] = [
+      [['x"', ">y"].join(""), '<r a=" x">y </r>', `<r a=" x">${MARK}</r>`],
+      [["--", ">x"].join(""), "<r><!-- -->x <q/></r>", `<r><!-- -->${MARK}<q/></r>`],
+      [["]]", ">x"].join(""), "<r><![CDATA[ ]]>x <q/></r>", `<r><![CDATA[ ]]>${MARK}<q/></r>`],
+      [["x<q", "/>y"].join(""), "<r> x<q/>y </r>", `<r>${MARK}<q/>${MARK}</r>`],
+      [["a'", "b"].join(""), "<r> a'b </r>", `<r> ${MARK} </r>`],
     ];
     const kept = cases.map(
       ([secret, body]) => entry({ "x-csrf-token": secret }, { responseBody: body }).responseBody,
     );
-    expect(kept).toEqual(cases.map(([, body]) => body));
+    expect(kept).toEqual(cases.map(([, , expected]) => expected));
+    const tags = (parsed: { html: unknown[] }[]) =>
+      parsed.map(({ html: events }) =>
+        (events as unknown[][]).map(([kind, name]) => [kind, kind === "comment" ? "" : name]),
+      );
     const [inputs, outputs] = [parseMarkup(cases.map(([, body]) => body)), parseMarkup(kept)];
     expect(outputs.map(({ xml }) => xml)).toEqual(cases.map(() => "valid"));
-    expect(outputs).toEqual(inputs);
+    expect(tags(outputs)).toEqual(tags(inputs));
     // Text with no markup still loses it, as it has no structure to break.
     const [crossing] = cases[0];
     expect(
@@ -982,11 +1000,14 @@ describe("echo redaction that keeps every structure parseable", () => {
       { Authorization: resy },
       { responseBody: `<r ${SHOP} = "x">y</r>` },
     ).responseBody;
-    expect(named).toBe(`<r ${MARK} = "x">y</r>`);
-    expect(parseMarkup([named])[0].html).toEqual([
-      ["start", "r", [[MARK, "x"]]],
-      ["end", "r"],
-    ]);
+    expect(named).toBe('<r redacted = "x">y</r>');
+    expect(parseMarkup([named])[0]).toEqual({
+      xml: "valid",
+      html: [
+        ["start", "r", [["redacted", "x"]]],
+        ["end", "r"],
+      ],
+    });
   });
 
   it("replaces an unquoted value, a CDATA section and an entity-encoded quoted value that is a secret whole", () => {
@@ -1004,7 +1025,7 @@ describe("echo redaction that keeps every structure parseable", () => {
     const amp = ["a", "&", "b"].join("");
     const long = ["alpha", "&", "beta"].join("");
     const xml: [Record<string, string>, string, string][] = [
-      [{ Authorization: resy }, `<r><![CDATA[${SHOP}]]></r>`, `<r><![CDATA[${MARK}]]></r>`],
+      [{ Authorization: resy }, `<r><![CDATA[${SHOP}]]></r>`, "<r><![CDATA[<redacted>]]></r>"],
       [{ "x-csrf-token": amp }, '<r value="a&amp;b"/>', `<r value="${MARK}"/>`],
       [{ Authorization: resy }, "<r value='sh&#111;p'/>", `<r value='${MARK}'/>`],
       [{ Authorization: resy }, '<r value = "sh&#x6F;p"/>', `<r value = "${MARK}"/>`],

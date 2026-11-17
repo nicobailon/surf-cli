@@ -10,6 +10,8 @@ const SECRET_HEADERS = new Set([
 
 const SECRET_NAME_PATTERN = /(?:^|[-_.])(authorization|cookie|password|passwd|secret|session|token|api[-_]?key|access[-_]?token|refresh[-_]?token|id[-_]?token|csrf|xsrf)(?:$|[-_.])/i;
 const TEMPLATE_PATTERN = /\{\{[a-zA-Z0-9._-]+\}\}/;
+const { MARKUP_WHOLE_MARKER, isXmlBody, redactMarkup } = require("./markup-redaction.cjs");
+
 const CREDENTIAL_LITERAL_PATTERN = /\bbearer\s+[a-z0-9._~-]+|\bsk-[a-z0-9_-]{12,}|\bgh[pousr]_[a-z0-9_]{12,}|\beyj[a-z0-9_-]+\.[a-z0-9_-]+\.[a-z0-9_-]+/i;
 
 // Replaces each of `values` in `text` with <redacted>, longest first. A value under 8 characters is
@@ -198,88 +200,32 @@ function redactEchoQuery(query, rules) {
 const MARKUP_PATTERN = /<[A-Za-z/!?]/;
 // Whether a character code is whitespace, as `\s` reads it.
 const isSpaceCode = (code) => code === 32 || (code >= 9 && code <= 13) || (code > 127 && /\s/.test(String.fromCharCode(code)));
-const [LT, GT, DOUBLE_QUOTE, SINGLE_QUOTE, EQUALS] = ["<", ">", '"', "'", "="].map((char) => char.charCodeAt(0));
-// A character that can open or close a tag, a value, an entity, a comment or a CDATA section.
-const MARKUP_CHAR = /[<>"'&]/;
-// A whole quoted value after `=`, up to its closing quote, holding no `<`.
-const QUOTED_VALUE = /=(\s*)(?:"([^"<]*)"|'([^'<]*)')/g;
-const ENTITY = /&(?:#(\d{1,7})|#[xX]([0-9a-fA-F]{1,6})|(amp|lt|gt|quot|apos));/g;
-const NAMED_ENTITIES = { amp: "&", lt: "<", gt: ">", quot: '"', apos: "'" };
-
-// `text` with its numeric entities and the five XML named ones (`&amp;`, `&lt;`, `&gt;`, `&quot;`,
-// `&apos;`) decoded; any other `&` as it is.
-function decodeEntities(text) {
-  return text.replace(ENTITY, (entity, decimal, hex, name) => {
-    if (name) return NAMED_ENTITIES[name];
-    const code = decimal ? Number(decimal) : Number.parseInt(hex, 16);
-    return code > 0 && code <= 0x10ffff ? String.fromCodePoint(code) : entity;
-  });
-}
+const [LT, GT, DOUBLE_QUOTE, SINGLE_QUOTE] = ["<", ">", '"', "'"].map((char) => char.charCodeAt(0));
 
 // Free text: each long value replaced wherever it appears, each short one only as a whole word, so
 // it can't rewrite a word around it. A word has on each side whitespace or an end of the text, `>`
-// before it or `<` after it (text between tags), or a matching quote on both sides (a whole quoted
-// value); it is never part of a longer run. Words are found in one pass over the text, with no
-// markup parsing: in text that holds markup the marker is `&lt;redacted&gt;`, which reads as
-// <redacted> and has no `<`, `>`, quote, `=`, `/` or space, so where a word stood it can only stand
-// as a word, an attribute name or a value, and can't open or close a tag, a comment or a script.
-// In markup, also:
-// - `=` before a word and `>`, `/>` or `]]>` after it count, as do `<![CDATA[` before it, so an
-//   unquoted value (`value=shop>`) and a CDATA section's text (`<![CDATA[shop]]>`) go;
-// - a word followed by `=`, after any whitespace, is an attribute name, and goes only for a secret of
-//   4 characters or more, as a JSON key does;
-// - a short spelling holding `<`, `>`, a quote or `&` is never replaced, as removing it could remove
-//   a delimiter it shares with the markup (`x">y` in `a=" x">y`);
-// - a whole quoted value after `=` goes when, with its entities decoded, it is a secret (`a&amp;b` for
-//   `a&b`, `sh&#111;p` for `shop`): inside its quotes the marker can't break the structure.
-function redactEchoWords(text, rules) {
-  const markup = MARKUP_PATTERN.test(text);
-  const marker = markup ? "&lt;redacted&gt;" : "<redacted>";
+// before it or `<` after it, or a matching quote on both sides (a whole quoted value); it is never
+// part of a longer run. Words are found in one pass over the text. Text that holds markup goes by
+// its tokens instead (see markup-redaction.cjs), in XML mode when `xml`.
+function redactEchoWords(text, rules, { xml = false } = {}) {
+  if (MARKUP_PATTERN.test(text)) return redactMarkup(text, rules, { xml });
+  const marker = "<redacted>";
   const byLength = (list) => [...list].filter(Boolean).sort((a, b) => b.length - a.length);
-  let source = byLength(rules.long).reduce((result, value) => (result.includes(value) ? result.split(value).join(marker) : result), text);
-  if (markup) {
-    source = source.replace(QUOTED_VALUE, (whole, space, double, single) => {
-      const value = double ?? single;
-      if (!value || !rules.whole.has(decodeEntities(value))) return whole;
-      const quote = double === undefined ? "'" : '"';
-      return `=${space}${quote}${marker}${quote}`;
-    });
-  }
-  // The whitespace run last skipped, so a run is read once however many words end at it.
-  let spaceFrom = -1;
-  let spaceTo = -1;
-  const isName = (end) => {
-    if (end < spaceFrom || end > spaceTo) {
-      spaceFrom = end;
-      spaceTo = end;
-      while (isSpaceCode(source.charCodeAt(spaceTo))) spaceTo++;
-    }
-    return source.charCodeAt(spaceTo) === EQUALS;
-  };
+  const source = byLength(rules.long).reduce((result, value) => (result.includes(value) ? result.split(value).join(marker) : result), text);
   // NaN past either end of the text.
-  const isWord = (start, end, value) => {
+  const isWord = (start, end) => {
     const before = source.charCodeAt(start - 1);
     const after = source.charCodeAt(end);
     if ((before === DOUBLE_QUOTE || before === SINGLE_QUOTE) && before === after) return true;
-    const opens =
-      Number.isNaN(before) ||
-      before === GT ||
-      isSpaceCode(before) ||
-      (markup && (before === EQUALS || (start >= 9 && source.startsWith("<![CDATA[", start - 9))));
-    const closes =
-      Number.isNaN(after) ||
-      after === LT ||
-      isSpaceCode(after) ||
-      (markup && (after === GT || source.startsWith("/>", end) || source.startsWith("]]>", end)));
-    if (!opens || !closes) return false;
-    return !markup || !isSpaceCode(after) || rules.keys.has(value) || !isName(end);
+    const opens = Number.isNaN(before) || before === GT || isSpaceCode(before);
+    const closes = Number.isNaN(after) || after === LT || isSpaceCode(after);
+    return opens && closes;
   };
   // Where each short value stands as a word, in order, longest value first.
-  const short = byLength(rules.short).filter((value) => !markup || !MARKUP_CHAR.test(value));
-  const found = short.map((value) => {
+  const found = byLength(rules.short).map((value) => {
     const starts = [];
     for (let at = source.indexOf(value); at >= 0; at = source.indexOf(value, at + 1)) {
-      if (isWord(at, at + value.length, value)) starts.push(at);
+      if (isWord(at, at + value.length)) starts.push(at);
     }
     return { length: value.length, starts, next: 0 };
   }).filter(({ starts }) => starts.length > 0);
@@ -357,12 +303,13 @@ const FORM_PATTERN = /^[^=&\s<>]+=[^&\s<>]*(?:&[^=&\s<>]+=[^&\s<>]*)*$/;
 // and any other text by redactEchoWords. A bare number, boolean or null (a header's `true`) has no
 // structure to keep, so it counts as text and goes when it is a secret whole; a body that must stay
 // JSON goes through redactEchoBody. A text that is a secret whole, as written, goes whole, though
-// it parses as JSON that holds something else (`"a"` for the secret `"a"`).
-function redactEchoText(text, secrets) {
+// it parses as JSON that holds something else (`"a"` for the secret `"a"`), as `<redacted/>` when
+// it holds markup. `contentType` (the body's) tells XML from HTML; so does an XML declaration.
+function redactEchoText(text, secrets, { contentType = "" } = {}) {
   const rules = echoRules(secrets);
   const source = String(text);
   if (rules.empty) return source;
-  if (rules.whole.has(source.trim())) return "<redacted>";
+  if (rules.whole.has(source.trim())) return MARKUP_PATTERN.test(source) ? MARKUP_WHOLE_MARKER : "<redacted>";
   let json = false;
   try {
     const parsed = JSON.parse(source);
@@ -370,14 +317,20 @@ function redactEchoText(text, secrets) {
   } catch {}
   if (json) return redactEchoJsonText(source, rules);
   if (FORM_PATTERN.test(source)) return redactEchoQuery(source, rules);
-  return redactEchoWords(source, rules);
+  return redactEchoWords(source, rules, { xml: isXmlBody(source, contentType) });
+}
+
+// A body's content type: its `content-type` header, else the `mimeType` capture gave it.
+function bodyContentType(headers, mimeType = "") {
+  const found = headers && typeof headers === "object" ? Object.entries(headers).find(([name]) => name.toLowerCase() === "content-type") : undefined;
+  return String(found ? found[1] : mimeType || "");
 }
 
 // A request or response body by redactEchoText, except that one that parses as JSON still does: a
 // bare number, boolean or null that holds a secret becomes the JSON string "<redacted>".
-function redactEchoBody(text, secrets) {
+function redactEchoBody(text, secrets, options = {}) {
   const source = String(text);
-  const redacted = redactEchoText(source, secrets);
+  const redacted = redactEchoText(source, secrets, options);
   if (redacted === source) return source;
   try {
     JSON.parse(source);
@@ -555,6 +508,7 @@ function assertUrlHasNoEmbeddedSecrets(url) {
 module.exports = {
   assertNoEmbeddedSecrets,
   assertUrlHasNoEmbeddedSecrets,
+  bodyContentType,
   echoSecrets,
   isSecretHeader,
   isSensitiveName,
