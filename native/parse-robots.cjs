@@ -46,18 +46,26 @@ function robotsAllows({ rules }, path) {
 }
 
 // A 4xx means no rules; a 5xx or no answer means the whole site is off limits.
-async function checkRobots(url, { fetch = globalThis.fetch, timeoutMs = 10000 } = {}) {
-  const target = new URL(url);
-  const robotsUrl = `${target.origin}/robots.txt`;
+async function fetchRobots(robotsUrl, { fetch, timeoutMs }) {
   let response;
   try {
     response = await fetch(robotsUrl, { redirect: "follow", signal: AbortSignal.timeout(timeoutMs), headers: { "user-agent": AGENT } });
   } catch (error) {
-    return { allowed: false, robotsUrl, rule: `robots.txt unreachable (${error.message})` };
+    return { denied: `robots.txt unreachable (${error.message})` };
   }
-  if (response.status >= 500) return { allowed: false, robotsUrl, rule: `robots.txt answered ${response.status}` };
-  if (response.status >= 400) return { allowed: true, robotsUrl };
-  const parsed = parseRobots(await response.text());
+  if (response.status >= 500) return { denied: `robots.txt answered ${response.status}` };
+  if (response.status >= 400) return { parsed: { rules: [] } };
+  return { parsed: parseRobots(await response.text()) };
+}
+
+/** `cache` (a Map) keeps each origin's robots.txt for the run, so a second URL there reads it once. */
+async function checkRobots(url, { fetch = globalThis.fetch, timeoutMs = 10000, cache } = {}) {
+  const target = new URL(url);
+  const robotsUrl = `${target.origin}/robots.txt`;
+  const read = cache?.get(target.origin) ?? fetchRobots(robotsUrl, { fetch, timeoutMs });
+  cache?.set(target.origin, read);
+  const { denied, parsed } = await read;
+  if (denied) return { allowed: false, robotsUrl, rule: denied };
   return { ...robotsAllows(parsed, `${target.pathname}${target.search}`), robotsUrl, ...(parsed.crawlDelay !== undefined ? { crawlDelay: parsed.crawlDelay } : {}) };
 }
 

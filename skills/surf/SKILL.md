@@ -26,7 +26,7 @@ It is one tab in its own background window, and its commands run in order. Sessi
 
 **API before scroll.** For feeds and threads, read the site's own API: `use x thread`, or `network.wait` then `network.replay --set`. Replay runs in the tab, so it fails, naming the origin to `go` back to, once the tab has left the page that sent the request. `collect` scrolls the page when there is no API and needs a visible tab (`session.ensure <name> <url> --window --focused`).
 
-**A site into an op: `surf parse` first.** `surf parse <url> --goal "<what you want>"` saves a tested read op and prints its `surf use` line. Exit 0: rename weak inputs or fields with the `refine` lines it prints, then stop. Exit 1 or 2, data that shows only after a click, search or scroll, writes and chains: follow [references/parse-recipe.md](references/parse-recipe.md).
+**A site into an op: `surf parse` first.** `surf parse <url> --goal "<what you want>"` saves a tested read op and prints its `surf use` line. Exit 0: rename weak inputs (its `surf parse … --input` line) or fields (its `pb extract` line, then re-save the test), then stop. Exit 1 or 2, data that shows only after a click, search or scroll, writes and chains: follow [references/parse-recipe.md](references/parse-recipe.md).
 
 **Values, not pages.** To read a few values (a total, a date, a count), use `semantic.extract`: it returns typed values without a full page read.
 

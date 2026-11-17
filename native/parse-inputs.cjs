@@ -64,7 +64,8 @@ function goalThing(goal, values) {
  */
 function planInputs({ request, goal, overrides = [] }) {
   const url = new URL(request.url);
-  const segments = url.pathname.split("/").filter(Boolean).map((segment) => decodeURIComponent(segment));
+  const decode = (segment) => { try { return decodeURIComponent(segment); } catch { return segment; } };
+  const segments = url.pathname.split("/").filter(Boolean).map(decode);
   const recordedAt = (field) => {
     const [kind, key] = [field.slice(0, field.indexOf(".")), field.slice(field.indexOf(".") + 1)];
     return kind === "path" ? segments[Number(key) - 1] : kind === "query" ? request.query?.[key] : undefined;

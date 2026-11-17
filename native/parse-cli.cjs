@@ -60,14 +60,17 @@ function parseArgs(argv) {
 
 // Whether the pick can be trusted: the top read is a first-party JSON or HTML document and no other
 // such request comes within the margin (a JSON with records beats a document too large to sample).
-// A low score is fine when nothing competes.
+// A low score is fine when nothing competes. `fail` when there is nothing to pick: the page answered
+// an error, or no request can be replayed.
 function judgePick(candidates, url) {
   const site = siteOf(new URL(url).hostname);
   const hostOf = (link) => { try { return new URL(link).hostname; } catch { return ""; } };
   const isData = (candidate) => candidate.status >= 200 && candidate.status < 300 && siteOf(hostOf(candidate.url)) === site && candidate.reasons.some((reason) => reason === "JSON" || reason === "HTML document");
+  const page = candidates.find((candidate) => candidate.type === "Document" && candidate.url === url) || candidates.find((candidate) => candidate.type === "Document");
+  if (page?.status >= 400) return { fail: `the page answered ${page.status}` };
   const reads = candidates.filter((candidate) => candidate.eligible && candidate.effect === "read");
   const [top] = reads;
-  if (!top) return { why: "the record holds no request a read op can replay" };
+  if (!top) return { fail: "the record holds no request a read op can replay" };
   if (!isData(top)) return { why: `the top request, ${top.method} ${top.url} (score ${top.score}), isn't a first-party JSON or HTML document` };
   const records = (candidate) => candidate.reasons.some((reason) => /^\d+ records$/.test(reason));
   const rival = reads.slice(1).find((candidate) => isData(candidate) && (top.score - candidate.score < WINNER_MARGIN || (top.unsampled && top.type === "Document" && records(candidate))));
@@ -88,10 +91,12 @@ function reusableRecord({ site, op, requestId }) {
   return undefined;
 }
 
-async function record({ spec, site, op, host }) {
+async function record({ spec, site, op, host, gapMs }) {
   await host("navigate", { url: "about:blank" });
   const started = await host("playbook.record.start", { site, op, network: true, watch: false, includeInputValues: false });
   try {
+    // robots.txt was the last request to the site.
+    await sleep(gapMs);
     await host("navigate", { url: spec.url });
     await host("wait.ready", { timeout: 20000 });
     let requestId = spec["request-id"];
@@ -102,6 +107,7 @@ async function record({ spec, site, op, host }) {
       if (named.effect === "write") throw new Error(`request ${requestId} is a ${named.method}, which can change data; surf parse saves reads only, so ${RECIPE}`);
     } else {
       const verdict = judgePick(live.candidates, spec.url);
+      if (verdict.fail) throw new Error(`${verdict.fail}; ${RECIPE}`);
       if (!verdict.pick) {
         await host("playbook.record.stop", { draft: true, read: true });
         return { weak: verdict.why, recordId: started.id, live };
@@ -109,7 +115,7 @@ async function record({ spec, site, op, host }) {
       requestId = verdict.pick.id;
     }
     await host("playbook.record.stop", { draft: true, read: true, requestId });
-    return { recordId: started.id, requestId, live };
+    return { recordId: started.id, requestId, url: live.candidates.find((candidate) => candidate.id === requestId)?.url, live };
   } catch (error) {
     await host("playbook.record.discard", {}).catch(() => {});
     throw error;
@@ -136,21 +142,41 @@ async function handleParseCli(argv, { endpoint, cwd = process.cwd(), session, se
   if (endpoint?.kind === "remote") throw new Error("surf parse is local-only: it saves the op on this machine from a record on the browser host");
   const site = siteName(spec.url);
   const op = spec.op || opName(spec.goal);
-  const robots = await checkRobots(spec.url, fetch ? { fetch } : {});
+  const robotsCache = new Map();
+  const robots = await checkRobots(spec.url, { cache: robotsCache, ...(fetch ? { fetch } : {}) });
   if (!robots.allowed) throw new Error(`${robots.robotsUrl} disallows ${new URL(spec.url).pathname} (${robots.rule}); surf parse won't load it`);
-  const gapMs = Math.max(Number(env.SURF_PARSE_DELAY_MS ?? DEFAULT_GAP_MS), (robots.crawlDelay ?? 0) * 1000);
+  const setGap = Number(env.SURF_PARSE_DELAY_MS);
+  const baseGapMs = env.SURF_PARSE_DELAY_MS !== undefined && env.SURF_PARSE_DELAY_MS !== "" && Number.isFinite(setGap) && setGap >= 0 ? setGap : DEFAULT_GAP_MS;
+  let gapMs = Math.max(baseGapMs, (robots.crawlDelay ?? 0) * 1000);
   const target = { tabId: spec["tab-id"] === undefined ? undefined : Number(spec["tab-id"]), session: spec.session || session, sessionSource: spec.session ? "explicit" : sessionSource, admission: spec["no-wait"] ? { wait: false } : admission };
   const host = (tool, args) => requestHost(endpoint, tool, args, { ...target, timeoutMs: resolveRequestDeadlineMs(tool, args) });
 
   const reused = spec["request-id"] ? reusableRecord({ site, op, requestId: spec["request-id"] }) : undefined;
   if (reused && requestEffect(reused.entry) === "write") throw new Error(`request ${spec["request-id"]} is a ${reused.entry.method}, which can change data; surf parse saves reads only, so ${RECIPE}`);
-  const recorded = reused ? { recordId: reused.record.id, requestId: spec["request-id"] } : await record({ spec, site, op, host });
+  const recorded = reused ? { recordId: reused.record.id, requestId: spec["request-id"], url: reused.entry.url } : await record({ spec, site, op, host, gapMs });
   if (recorded.weak) return weakResult({ spec, site, op, recorded });
 
+  // The op replays the picked request, on every surf use: its own host's robots.txt must allow it.
+  if (recorded.url) {
+    const replayed = new URL(recorded.url, spec.url);
+    const allowed = await checkRobots(replayed.href, { cache: robotsCache, ...(fetch ? { fetch } : {}) });
+    if (!allowed.allowed) throw new Error(`${allowed.robotsUrl} disallows ${replayed.pathname} (${allowed.rule}), the request that carries the data (${replayed.href}); surf parse won't replay it, so nothing was saved`);
+    gapMs = Math.max(gapMs, (allowed.crawlDelay ?? 0) * 1000);
+  }
+
   const saved = saveFromRecord({ recordId: recorded.recordId, requestId: recorded.requestId, cwd });
+  try {
+    return await finish({ spec, site, op, recorded, saved, cwd, gapMs, host, endpoint, target });
+  } catch (error) {
+    // The op is saved by now, without its inputs, extract or test.
+    throw new Error(`saved ${site} ${op} (${path.join(saved.directory, "ops", `${op}.json`)}), but parse stopped: ${error.message}. The op has no extract or test yet: finish it with the recipe (surf skill, references/parse-recipe.md), or delete that file`);
+  }
+}
+
+async function finish({ spec, site, op, recorded, saved, cwd, gapMs, host, endpoint, target }) {
   const warnings = [...(saved.warnings || [])];
   const request = resolveOp(site, op, { cwd }).op.run.find((strategy) => strategy.using === "network")?.request;
-  if (!request) throw new Error(`the saved op ${site} ${op} has no network strategy to replay; ${RECIPE}`);
+  if (!request) throw new Error("it has no network strategy to replay");
 
   // Inputs: the recorded value stays each one's test value.
   const { detail, inputs: planned } = planInputs({ request, goal: spec.goal, overrides: spec.inputs });
@@ -174,10 +200,10 @@ async function handleParseCli(argv, { endpoint, cwd = process.cwd(), session, se
   await sleep(gapMs);
   const probeArgs = { playbook: site, op, args, projectDir: cwd, test: true, strategy: "network", write: false };
   const probe = await host("playbook.run", probeArgs);
-  if (probe?.status !== "completed") throw new Error(`saved ${site} ${op}, but replaying its request failed: ${probe?.error || "no answer"}; ${RECIPE}`);
+  if (probe?.status !== "completed") throw new Error(`replaying its request failed: ${probe?.error || "no answer"}`);
   const response = probe.value || {};
   const found = response.bodyJson !== undefined ? inferJson(response.bodyJson) : typeof response.body === "string" ? inferHtml(response.body, { baseUrl: response.url || spec.url, detail }) : undefined;
-  if (!found) throw new Error(`saved ${site} ${op}, but found no records or fields to extract from its response; ${RECIPE}`);
+  if (!found) throw new Error("found no records or fields to extract from its response");
   saveExtract({ playbook: site, op, extract: found.extract, cwd });
   commands.push(extractCommand(site, op, found.extract));
 

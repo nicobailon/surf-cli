@@ -7,7 +7,8 @@
 
 const { DomUtils, parseDocument } = require("htmlparser2");
 
-// What the tab sends back stops at 50,000 characters; the records alone stay under this.
+// What the tab sends back stops at 50,000 characters, measured as { ...head, extracted } pretty-printed;
+// the records, measured inside { extracted }, stay under this, leaving the rest for the head.
 const RECORDS_LIMIT = 45000;
 const MIN_ITEMS = 3;
 const MAX_CLASS_FIELDS = 6;
@@ -15,7 +16,10 @@ const SKIP_TAGS = new Set(["html", "head", "body", "script", "style", "meta", "l
 // A JSON key a path and a field name can both take.
 const KEY = /^(?!(?:__proto__|constructor|prototype)$)[A-Za-z_$][A-Za-z0-9_$]*$/;
 
-const classesOf = (el) => (el.attribs?.class || "").split(/\s+/).filter(Boolean);
+// A class, id or attribute name a selector can take as written (not `hover:shadow` or `post:0`).
+const NAME = /^[A-Za-z_][\w-]*$/;
+const classesOf = (el) => (el.attribs?.class || "").split(/\s+/).filter((name) => NAME.test(name));
+const idOf = (el) => (NAME.test(el.attribs?.id || "") ? el.attribs.id : undefined);
 const textOf = (el) => DomUtils.textContent(el).replace(/\s+/g, " ").trim();
 const ownText = (el) => (el.children || []).filter((child) => child.type === "text").map((child) => child.data).join("").trim();
 const elementChildren = (el) => (el.children || []).filter((child) => child.type === "tag");
@@ -87,13 +91,14 @@ function readField(item, spec, baseUrl) {
   return all ? (values.length ? values : undefined) : values[0];
 }
 
+const measure = (records) => JSON.stringify({ extracted: records }, null, 2).length;
 const recordOf = (item, fields, baseUrl) => Object.fromEntries(Object.entries(fields).map(([name, spec]) => [name, readField(item, spec, baseUrl)]).filter(([, value]) => value !== undefined && value !== ""));
 
 // Drops the longest field, then the next, until the records fit; title and id go last.
 function fitRecords(fields, recordsFor, limit) {
   const dropped = [];
   let records = recordsFor(fields);
-  let chars = JSON.stringify(records, null, 2).length;
+  let chars = measure(records);
   while (chars > limit && Object.keys(fields).length > 1) {
     const names = Object.keys(fields);
     const droppable = names.filter((name) => !["title", "id"].includes(name));
@@ -103,7 +108,7 @@ function fitRecords(fields, recordsFor, limit) {
     fields = kept;
     dropped.push(longest);
     records = recordsFor(fields);
-    chars = JSON.stringify(records, null, 2).length;
+    chars = measure(records);
   }
   return { fields, records, chars, dropped };
 }
@@ -132,7 +137,7 @@ const rank = (key) => { const at = FIELD_ORDER.findIndex((pattern) => pattern.te
 function inferJson(value, { limit = RECORDS_LIMIT } = {}) {
   const found = largestRecords(value);
   if (!found) {
-    const chars = JSON.stringify(value, null, 2)?.length ?? 0;
+    const chars = measure(value);
     return chars <= limit ? { mode: "value", extract: { jsonPath: "$" }, records: null, chars, dropped: [] } : undefined;
   }
   const keys = [];
@@ -143,28 +148,28 @@ function inferJson(value, { limit = RECORDS_LIMIT } = {}) {
   }
   const ordered = keys.map((key, index) => [key, index]).sort((a, b) => rank(a[0]) - rank(b[0]) || a[1] - b[1]).map(([key]) => key).slice(0, 8);
   const project = (fields) => found.items.map((item) => Object.fromEntries(Object.entries(fields).map(([name, key]) => [name, item[key]])));
-  const fit = ordered.length ? fitRecords(Object.fromEntries(ordered.map((key) => [key, key])), project, limit) : { fields: {}, records: found.items, chars: JSON.stringify(found.items, null, 2).length, dropped: [] };
+  const fit = ordered.length ? fitRecords(Object.fromEntries(ordered.map((key) => [key, key])), project, limit) : { fields: {}, records: found.items, chars: measure(found.items), dropped: [] };
   const extract = { records: found.path, ...(Object.keys(fit.fields).length ? { fields: fit.fields } : {}) };
   return { mode: "records", extract, records: found.items.length, chars: fit.chars, dropped: fit.dropped, sample: fit.records[0] };
 }
 
 // --- HTML lists
 
-const holdsKey = (el) => (el.name === "a" && el.attribs.href) || el.attribs.id || Object.keys(el.attribs).some((name) => /^data-.*id$/.test(name)) || selectAll(el, "a[href]").length > 0;
+const holdsKey = (el) => (el.name === "a" && el.attribs.href) || idOf(el) || Object.keys(el.attribs).some((name) => /^data-.*id$/.test(name)) || selectAll(el, "a[href]").length > 0;
 const richness = (el) => Math.min(12, DomUtils.findAll((node) => ownText(node) !== "", [el]).length);
 
 function keyOf(el) {
   const classes = classesOf(el).sort();
   if (classes.length) return `${el.name}.${classes.join(".")}`;
   const parent = el.parent?.type === "tag" ? el.parent : undefined;
-  const above = !parent ? "" : parent.attribs.id ? `${parent.name}#${parent.attribs.id}` : classesOf(parent).length ? `${parent.name}.${classesOf(parent)[0]}` : parent.name;
+  const above = !parent ? "" : idOf(parent) ? `${parent.name}#${idOf(parent)}` : classesOf(parent).length ? `${parent.name}.${classesOf(parent)[0]}` : parent.name;
   return `${above} > ${el.name}`;
 }
 
 // The selector that matches exactly these elements in the document.
 function groupSelector(doc, els, key) {
   const [first] = els;
-  const options = [...(first.attribs.id ? [`${first.name}#${first.attribs.id}`] : []), ...classesOf(first).map((name) => `${first.name}.${name}`), ...(classesOf(first).length ? [`${first.name}.${classesOf(first).join(".")}`] : [key])];
+  const options = [...(idOf(first) ? [`${first.name}#${idOf(first)}`] : []), ...classesOf(first).map((name) => `${first.name}.${name}`), ...(classesOf(first).length ? [`${first.name}.${classesOf(first).join(".")}`] : [key])];
   return options.find((selector) => { const found = selectAll(doc, selector); return found.length === els.length && els.every((el) => found.includes(el)); });
 }
 
@@ -212,9 +217,22 @@ function relativeSelector(el, root, check, classed = false) {
   const heading = [...ancestors(el, root)].find(isHeading);
   if (heading && !classed) options.push(`${heading.name} ${el.name}`);
   for (const [name, value] of classed ? [] : Object.entries(el.attribs)) {
-    if (!["href", "src", "id", "class", "style"].includes(name) && value && value.length < 40 && !value.includes('"')) options.push(`${el.name}[${name}="${value}"]`);
+    if (NAME.test(name) && !["href", "src", "id", "class", "style"].includes(name) && value && value.length < 40 && !/["\\]/.test(value)) options.push(`${el.name}[${name}="${value}"]`);
   }
   return options.find((selector) => selectAll(root, selector)[0] === el && check(selector));
+}
+
+// Whether the link's title attribute holds the link's text, cut or whole, in most items: then it
+// is the title the page shortens (books.toscrape.com's "A Light in the ...").
+function titled(items, inner, selector) {
+  if (!selector) return false;
+  const holds = items.filter((item) => {
+    const link = selectAll(item, selector)[0];
+    const title = (link?.attribs.title || "").replace(/\s+/g, " ").trim().toLowerCase();
+    const text = link ? textOf(link).replace(/(\.\.\.|…)$/, "").trim().toLowerCase() : "";
+    return title !== "" && text !== "" && title.startsWith(text);
+  });
+  return Boolean(inner.attribs.title) && holds.length * 5 >= items.length * 4;
 }
 
 function fieldName(className, itemClasses) {
@@ -245,9 +263,10 @@ function itemFields(items, { check, prefix = "", all = "" }) {
   const link = links.find((a) => (heading && (a === heading.parent || [...ancestors(a, first)].includes(heading) || selectAll(a, heading.name).includes(heading)))) || links.reduce((best, a) => (!best || textOf(a).length > textOf(best).length ? a : best), undefined);
   if (heading) {
     const inner = selectAll(heading, "a[title]")[0];
-    const cut = inner && /(\.\.\.|…)$/.test(textOf(inner));
-    const selector = relative(cut ? inner : heading);
-    if (selector) add("title", heading, selector, cut ? "title" : "");
+    const innerSelector = inner && relative(inner);
+    const useTitle = Boolean(inner) && titled(items, inner, innerSelector);
+    const selector = useTitle ? innerSelector : relative(heading);
+    if (selector) add("title", heading, selector, useTitle ? "title" : "");
   }
   if (link) {
     const selector = link === first ? ":scope" : relative(link);
@@ -327,20 +346,24 @@ function detailFields(doc) {
   for (const [field, attr, value] of [["title", "property", "og:title"], ["description", "property", "og:description"], ["description", "name", "description"]]) {
     if (!fields[field] && first(`meta[${attr}="${value}"]`)) fields[field] = `meta[${attr}="${value}"]@content`;
   }
-  const h1 = first("h1");
-  if (h1 && textOf(h1)) {
-    fields[fields.title ? "heading" : "title"] = "h1";
-    // Short classed text beside the heading (a price), under the parent's rarest class.
-    const parentClass = classesOf(h1.parent).sort((a, b) => selectAll(doc, `.${a}`).length - selectAll(doc, `.${b}`).length || b.length - a.length)[0];
+  const main = mainHeading(doc);
+  if (main) {
+    fields[fields.title ? "heading" : "title"] = main.selector;
+    // Short classed text beside the heading (a price, a location), each under the parent's rarest
+    // class and its own class that finds it first.
+    const { el: heading } = main;
+    const rarest = (el) => classesOf(el).sort((a, b) => selectAll(doc, `.${a}`).length - selectAll(doc, `.${b}`).length || b.length - a.length);
+    const [parentClass] = rarest(heading.parent);
     if (parentClass) {
       let added = 0;
-      for (const el of DomUtils.findAll((node) => classesOf(node).length > 0 && node !== h1, h1.parent.children)) {
+      for (const el of DomUtils.findAll((node) => classesOf(node).length > 0 && node !== heading, heading.parent.children)) {
         const text = textOf(el);
         if (added >= 4 || !text || text.length > 120) continue;
-        const selector = `.${parentClass} .${classesOf(el)[0]}`;
-        const name = snake(classesOf(el)[0]);
-        if (name && !fields[name] && first(selector) === el) {
-          fields[name] = selector;
+        if (DomUtils.findAll((node) => classesOf(node).length > 0 && textOf(node) !== "", el.children).length >= 3) continue;
+        const own = rarest(el).find((name) => first(`.${parentClass} .${name}`) === el);
+        const name = own && snake(own);
+        if (name && !fields[name]) {
+          fields[name] = `.${parentClass} .${own}`;
           added++;
         }
       }
@@ -350,7 +373,7 @@ function detailFields(doc) {
   const table = selectAll(doc, "table").find((candidate) => selectAll(candidate, "tr").some((row) => elementChildren(row)[0]?.name === "th" && elementChildren(row)[1]?.name === "td"));
   if (table) {
     const tableClass = classesOf(table).sort((a, b) => b.length - a.length)[0];
-    const tableSelector = table.attribs.id ? `table#${table.attribs.id}` : tableClass ? `table.${tableClass}` : "table";
+    const tableSelector = idOf(table) ? `table#${idOf(table)}` : tableClass ? `table.${tableClass}` : "table";
     for (const row of selectAll(table, "tr").slice(0, 8)) {
       const [label, cell] = elementChildren(row);
       const name = label?.name === "th" && cell?.name === "td" ? snake(textOf(label)) : "";
@@ -359,6 +382,26 @@ function detailFields(doc) {
     }
   }
   return fields;
+}
+
+// Breadcrumbs, site headers and navigation: never the page's own heading.
+const CHROME = /(^|[-_\s])(header|breadcrumbs?|nav|navbar|masthead|banner)([-_\s]|$)/i;
+const inChrome = (el) => [el, ...ancestors(el)].some((node) => ["header", "nav"].includes(node.name) || CHROME.test(node.attribs.id || "") || CHROME.test(node.attribs.class || ""));
+
+// The page's own heading: an h1 (one whose class says title first), else an h2, outside the site's
+// header, breadcrumbs and navigation and not a run of links; with a selector whose first match it is.
+function mainHeading(doc) {
+  for (const tag of ["h1", "h2"]) {
+    const headings = selectAll(doc, tag).filter((el) => textOf(el) && !inChrome(el) && selectAll(el, "a[href]").length < 2);
+    const titled = headings.find((el) => classesOf(el).some((name) => /title/i.test(name)));
+    for (const el of titled ? [titled, ...headings] : headings) {
+      const ancestorId = [...ancestors(el)].map(idOf).find(Boolean);
+      const options = [tag, ...classesOf(el).map((name) => `${tag}.${name}`), ...(ancestorId ? [`#${ancestorId} ${tag}`] : [])];
+      const selector = options.find((option) => selectAll(doc, option)[0] === el);
+      if (selector) return { el, selector };
+    }
+  }
+  return undefined;
 }
 
 /** An extract for an HTML body; `detail` when the URL names one item. Undefined when none fits. */
