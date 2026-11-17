@@ -339,3 +339,109 @@ describe("typed values in a URL's parsed parts", () => {
     );
   });
 });
+
+describe("typed values in a URL's JSON, matched by source span", () => {
+  const typed = (...values: string[]) =>
+    values.map((value, index) => ({
+      value,
+      marker: index === 0 ? "<text>" : `<text-${index + 1}>`,
+    }));
+  const mask = (url: string, values: string[], options = {}) =>
+    typedValues.maskTypedValuesInUrl(url, typed(...values), options);
+  const json = (text: string) => encodeURIComponent(text);
+
+  it("masks a JSON number or literal typed as its source spells it, or as its value", () => {
+    const spelled = mask(`https://example.test/g?v=${json('{"q":2024.0}')}`, ["2024.0"]);
+    expect(spelled.url).toBe(`https://example.test/g?v=${json('{"q":"')}<text>${json('"}')}`);
+    expect(spelled.markers).toEqual([
+      expect.objectContaining({ type: "number", field: "query.v.q" }),
+    ]);
+    for (const [source, value] of [
+      ["1e3", "1e3"],
+      ["1e3", "1000"],
+      ["-0.50", "-0.50"],
+      ["null", "null"],
+    ]) {
+      expect(mask(`https://example.test/g?v=${json(`{"q":${source}}`)}`, [value]).url).toBe(
+        `https://example.test/g?v=${json('{"q":"')}<text>${json('"}')}`,
+      );
+    }
+    // null has no type to give an input, so it records none.
+    expect(mask(`https://example.test/g?v=${json('{"q":null}')}`, ["null"]).markers).toEqual([
+      { start: 41, end: 47 },
+    ]);
+  });
+
+  it("masks a JSON string leaf that holds the typed value once decoded again, as a whole leaf", () => {
+    expect(
+      mask(`https://example.test/g?v=${json('{"q":"foo%20bar","n":1}')}`, ["foo bar"]).url,
+    ).toBe(`https://example.test/g?v=${json('{"q":"')}<text>${json('","n":1}')}`);
+    // A page that wrote + for a space in the query value wrote it inside the JSON too.
+    const plus = "https://example.test/g?v=%7B%22q%22%3A%22foo%2Bbar%22%2C%22t%22%3A%22a+b%22%7D";
+    expect(mask(plus, ["foo bar"]).url).toBe(
+      "https://example.test/g?v=%7B%22q%22%3A%22<text>%22%2C%22t%22%3A%22a+b%22%7D",
+    );
+  });
+
+  it("keeps every byte outside a masked leaf as captured", () => {
+    const big = `{"q":"romeo","id":9007199254740993,"f":1.50}`;
+    expect(mask(`https://example.test/g?v=${json(big)}`, ["romeo"]).url).toBe(
+      `https://example.test/g?v=${json('{"q":"')}<text>${json('","id":9007199254740993,"f":1.50}')}`,
+    );
+    expect(
+      mask('https://example.test/g?v={"q" : "romeo" ,"e":"\\u00e9","s":"\\/"}', ["romeo"]).url,
+    ).toBe('https://example.test/g?v={"q" : "<text>" ,"e":"\\u00e9","s":"\\/"}');
+    // Inside a string, only the matched characters change; an escape beside them stays.
+    expect(mask('https://example.test/g?v={"q":"dummy romeo \\u0021"}', ["dummy romeo"]).url).toBe(
+      'https://example.test/g?v={"q":"<text> \\u0021"}',
+    );
+  });
+
+  it("counts as markers only the spans it lists, never characters of the URL", () => {
+    const values = [
+      { value: "romeo", marker: "<text>" },
+      { value: "\uE000 abcd", marker: "<text-2>" },
+    ];
+    const url = "https://example.test/%EE%80%80%20abcd?q=romeo+abcd&both=%EF%80%80";
+    const expected = "https://example.test/<text-2>?q=<text>+abcd&both=%EF%80%80";
+    expect(typedValues.maskTypedValuesInUrl(url, values).url).toBe(expected);
+    const first = typedValues.maskTypedValuesInUrl(url, values.slice(0, 1));
+    const again = typedValues.maskTypedValuesInUrl(first.url, values, { markers: first.markers });
+    expect(again.url).toBe(expected);
+    expect(again.markers).toEqual([
+      { start: 21, end: 29 },
+      { start: 32, end: 38 },
+    ]);
+  });
+
+  it("keeps a route segment on a later pass, when the query's marker is the value's", () => {
+    const first = mask("https://example.test/api/users?q=users", ["users"]);
+    expect(first.url).toBe("https://example.test/api/users?q=<text>");
+    expect(mask(first.url, ["users"], { markers: first.markers })).toEqual(first);
+  });
+
+  it("gives a masked JSON scalar no field when its query key repeats", () => {
+    const url = `https://example.test/g?v=${json('{"year":2024}')}&v=${json('{"year":"<genuine>"}')}`;
+    const { markers } = mask(url, ["2024"]);
+    expect(markers).toEqual([expect.objectContaining({ type: "number", repeatedKey: "v" })]);
+    expect(markers[0]).not.toHaveProperty("field");
+  });
+
+  it("walks JSON held in a JSON string the same way, keeping its keys and escapes", () => {
+    const inner = JSON.stringify({ romeo: "romeo", year: 2024, say: 'say "hi"', id: 2 });
+    const url = `https://example.test/g?v=${json(JSON.stringify({ payload: inner }))}`;
+    const masked = mask(url, ["romeo", "2024", 'say "hi"']);
+    const outer = JSON.parse(new URL(masked.url).searchParams.get("v") as string);
+    expect(JSON.parse(outer.payload)).toEqual({
+      romeo: "<text>",
+      year: "<text-2>",
+      say: "<text-3>",
+      id: 2,
+    });
+    expect(masked.markers.map((item: { type?: string }) => item.type ?? null)).toEqual([
+      null,
+      "number",
+      null,
+    ]);
+  });
+});

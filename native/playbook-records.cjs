@@ -371,15 +371,19 @@ function pickRequest({ record, trace, effect, requestId, warnings }) {
 // headers without secrets, and its body as captured (`<request-body>` without input values). Text
 // that reads like an input (`{{action}}`) is escaped, so it is sent as captured. A typed number or
 // boolean the record masked in a JSON query value is kept as redactedTypes: pb param gives its
-// input that type.
+// input that type. One masked under a query key sent more than once has no type, and its key is
+// kept in repeatedQuery: the request keeps only the last pair.
 function requestFromEntry(entry) {
   const url = new URL(entry.url);
   const query = Object.fromEntries(url.searchParams.entries());
   url.search = "";
-  const redactedTypes = Object.fromEntries((entry.urlMarkers || []).filter((marker) => marker.field && marker.type).map((marker) => [marker.field, marker.type]));
+  const typedMarkers = (entry.urlMarkers || []).filter((marker) => marker.type);
+  const redactedTypes = Object.fromEntries(typedMarkers.filter((marker) => marker.field).map((marker) => [marker.field, marker.type]));
+  const repeatedQuery = [...new Set(typedMarkers.filter((marker) => marker.repeatedKey).map((marker) => marker.repeatedKey))];
   return {
     ...escapeTemplates({ method: entry.method, url: url.toString(), query, headers: safeHeaders(entry.requestHeaders), ...(entry.requestBody !== undefined ? { body: entry.requestBody } : {}) }),
     ...(Object.keys(redactedTypes).length ? { redactedTypes } : {}),
+    ...(repeatedQuery.length ? { repeatedQuery } : {}),
   };
 }
 

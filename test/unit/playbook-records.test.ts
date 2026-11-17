@@ -3088,6 +3088,31 @@ describe("values typed during a record, in captured URLs", () => {
     expect(sent.searchParams.get("variables")).toBe('{"year":2031}');
   });
 
+  it("records no type for a query key the URL sends twice, and pb param says so", () => {
+    const pair = (year: string) => `v=${encodeURIComponent(`{"year":${year}}`)}`;
+    const { draft, trace } = draftTyping(
+      ["2024"],
+      `https://example.test/g?${pair("2024")}&${pair('"2024"')}`,
+    );
+    // The draft keeps the last pair, whose 2024 was a string; the first pair's number says nothing of it.
+    expect(trace.entries[0].urlMarkers).toHaveLength(2);
+    expect(networkOf(draft).query).toEqual({ v: '{"year":"<text>"}' });
+    expect(networkOf(draft)).not.toHaveProperty("redactedTypes");
+    expect(networkOf(draft).repeatedQuery).toEqual(["v"]);
+    const { op, notes } = paramOp(draft, { fields: ["query.v.year"], as: "year" });
+    expect(op.args.year).toEqual({ type: "string", required: true });
+    expect(notes.join("\n")).toMatch(/query\.v was sent more than once.*keeps the last.*no type/);
+    expect(renderRequest(networkOf(op), { year: "2031" }).query).toEqual({ v: '{"year":"2031"}' });
+  });
+
+  it("masks a JSON string leaf encoded once more in the trace and the draft", () => {
+    const url = `https://example.test/g?v=${encodeURIComponent('{"q":"foo%20bar"}')}`;
+    const { draft, trace } = draftTyping(["foo bar"], url);
+    expect(trace.entries[0].url).toBe("https://example.test/g?v=%7B%22q%22%3A%22<text>%22%7D");
+    expect(networkOf(draft).query).toEqual({ v: '{"q":"<text>"}' });
+    expect(JSON.stringify(trace)).not.toMatch(/foo(%20|%2520| )bar/);
+  });
+
   it("masks two path segments holding a typed value; pb param templates both with one input", () => {
     const { draft } = draftTyping(["users"], "https://example.test/users/users");
     expect(networkOf(draft).url).toBe("https://example.test/%3Ctext%3E/%3Ctext%3E");

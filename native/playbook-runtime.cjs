@@ -399,8 +399,8 @@ async function runStrategy(strategy, context) {
     return { ...result, extracted: found?.extracted };
   }
   if (strategy.using === "network") {
-    // redactedTypes only tells pb param the type of a value the record masked; it is never sent.
-    const { authInputs: inputs = [], redactedTypes: _types, ...template } = strategy.request;
+    // redactedTypes and repeatedQuery only tell pb param about values the record masked; they are never sent.
+    const { authInputs: inputs = [], redactedTypes: _types, repeatedQuery: _repeated, ...template } = strategy.request;
     // A draft's request can hold <text> where the record redacted a typed value: never send it.
     const placeholder = findRedactedPlaceholder(template);
     if (placeholder) throw placeholderError(placeholder, context.label);
