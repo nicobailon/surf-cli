@@ -149,11 +149,20 @@ function shellQuote(value) {
   return `'${value.replace(/'/g, "'\\''")}'`;
 }
 
+// The SURF_FFMPEG an earlier install wrote, when it still runs, so a refresh from a shell
+// that doesn't find ffmpeg (an updater with a bare PATH) keeps it.
+function previousFfmpeg(shPath) {
+  let previous;
+  try { previous = fs.readFileSync(shPath, "utf8"); } catch { return null; }
+  const quoted = /^export SURF_FFMPEG='((?:[^']|'\\'')*)'$/m.exec(previous)?.[1];
+  return quoted === undefined ? null : findFfmpeg({ SURF_FFMPEG: quoted.replace(/'\\''/g, "'") });
+}
+
 // A browser launched from the Dock starts the host with PATH=/usr/bin:/bin:/usr/sbin:/sbin,
 // so the wrapper adds node's and Homebrew's bin folders and the ffmpeg this shell finds.
-function macosEnvironment(nodePath) {
+function macosEnvironment(nodePath, shPath) {
   const dirs = [...new Set([path.dirname(nodePath), "/opt/homebrew/bin", "/usr/local/bin"])];
-  const ffmpeg = findFfmpeg(process.env);
+  const ffmpeg = findFfmpeg(process.env) || previousFfmpeg(shPath);
   return `export PATH=${dirs.map(shellQuote).join(":")}\${PATH:+:"$PATH"}\n${ffmpeg ? `export SURF_FFMPEG=${shellQuote(ffmpeg)}\n` : ""}`;
 }
 
@@ -184,7 +193,7 @@ function createWrapper(wrapperDir, nodePath, hostPath, target = process.platform
   ].join("");
   const content = `#!/usr/bin/env bash
 cd "${hostDir}"
-${target === "darwin" ? macosEnvironment(nodePath) : ""}${listen ? `: "\${SURF_LISTEN:=${listen}}"\nexport SURF_LISTEN\n` : ""}${socketEnvironment}exec "${nodePath}" "${hostPath}" "$@"
+${target === "darwin" ? macosEnvironment(nodePath, shPath) : ""}${listen ? `: "\${SURF_LISTEN:=${listen}}"\nexport SURF_LISTEN\n` : ""}${socketEnvironment}exec "${nodePath}" "${hostPath}" "$@"
 `;
   fs.writeFileSync(shPath, content);
   fs.chmodSync(shPath, "755");

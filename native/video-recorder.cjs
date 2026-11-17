@@ -119,9 +119,9 @@ function isExecutable(filePath) {
 }
 
 // The ffmpeg the host would run with this environment, or null when there is none:
-// SURF_FFMPEG when set, else the first ffmpeg on PATH.
+// SURF_FFMPEG when it is executable, else the first ffmpeg on PATH.
 function findFfmpeg(env = process.env) {
-  if (env.SURF_FFMPEG) return isExecutable(env.SURF_FFMPEG) ? env.SURF_FFMPEG : null;
+  if (env.SURF_FFMPEG && isExecutable(env.SURF_FFMPEG)) return env.SURF_FFMPEG;
   const name = process.platform === "win32" ? "ffmpeg.exe" : "ffmpeg";
   for (const dir of (env.PATH || "").split(path.delimiter)) {
     if (dir && isExecutable(path.join(dir, name))) return path.join(dir, name);
@@ -135,9 +135,10 @@ function normalizeChildError(error, env = process.env) {
   if (error?.code === "ENOENT") {
     // A browser starts the host with its own PATH (on macOS /usr/bin:/bin:/usr/sbin:/sbin),
     // so an ffmpeg the user's shell finds can still be missing here.
+    const notOnPath = `ffmpeg was not found on the native host's PATH (${env.PATH || ""})`;
     return new VideoRecorderError("ffmpeg_missing", env.SURF_FFMPEG
-      ? `SURF_FFMPEG (${env.SURF_FFMPEG}) does not exist. Rerun \`surf install\` or point SURF_FFMPEG at ffmpeg.`
-      : `ffmpeg was not found on the native host's PATH (${env.PATH || ""}). If it's installed, rerun \`surf install\` or set SURF_FFMPEG to its path.`);
+      ? `SURF_FFMPEG (${env.SURF_FFMPEG}) does not exist and ${notOnPath}. Rerun \`surf install\` or point SURF_FFMPEG at ffmpeg.`
+      : `${notOnPath}. If it's installed, rerun \`surf install\` or set SURF_FFMPEG to its path.`);
   }
   return new VideoRecorderError("ffmpeg_failed", message);
 }
@@ -217,7 +218,9 @@ class VideoRecorder {
     this.startedAt = this.now();
     let child;
     try {
-      child = this.spawnImpl(this.env.SURF_FFMPEG || "ffmpeg", buildFfmpegArgs(this.output, this.fps), {
+      // A stale SURF_FFMPEG (ffmpeg moved since `surf install`) falls back to ffmpeg on PATH.
+      const pinned = this.env.SURF_FFMPEG && isExecutable(this.env.SURF_FFMPEG) ? this.env.SURF_FFMPEG : null;
+      child = this.spawnImpl(pinned || "ffmpeg", buildFfmpegArgs(this.output, this.fps), {
         stdio: ["pipe", "ignore", "pipe"],
         windowsHide: true,
       });

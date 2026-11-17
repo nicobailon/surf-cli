@@ -108,25 +108,30 @@ describe("local WebM video recorder", () => {
     expect(fs.existsSync(path.dirname(output))).toBe(true);
   });
 
-  it("spawns SURF_FFMPEG when it is set", async () => {
+  it("spawns SURF_FFMPEG when it is set, and ffmpeg on PATH when the pin is stale", async () => {
     const directory = fs.mkdtempSync(path.join(os.tmpdir(), "surf-video-test-"));
     temporaryDirectories.push(directory);
-    const spawnImpl = vi.fn(() => fakeChild());
-    const recorder = new VideoRecorder({
-      output: path.join(directory, "take.webm"),
-      spawnImpl,
-      startupGraceMs: 0,
-      env: { PATH: "/usr/bin:/bin", SURF_FFMPEG: "/opt/homebrew/bin/ffmpeg" },
-      setIntervalImpl: (() => 1) as any,
-      clearIntervalImpl: vi.fn(),
-    });
-    await recorder.start();
-    expect(spawnImpl).toHaveBeenCalledWith(
-      "/opt/homebrew/bin/ffmpeg",
-      expect.any(Array),
-      expect.any(Object),
-    );
-    await recorder.stop();
+    const pinnedPath = path.join(directory, "ffmpeg");
+    fs.writeFileSync(pinnedPath, "#!/bin/sh\nexit 0\n");
+    fs.chmodSync(pinnedPath, 0o755);
+    const commandFor = async (env: Record<string, string>) => {
+      const spawnImpl = vi.fn(() => fakeChild());
+      const recorder = new VideoRecorder({
+        output: path.join(directory, "take.webm"),
+        spawnImpl,
+        startupGraceMs: 0,
+        env,
+        setIntervalImpl: (() => 1) as any,
+        clearIntervalImpl: vi.fn(),
+      });
+      await recorder.start();
+      await recorder.stop();
+      return (spawnImpl.mock.calls[0] as any[])[0];
+    };
+    expect(await commandFor({ PATH: "/usr/bin:/bin", SURF_FFMPEG: pinnedPath })).toBe(pinnedPath);
+    expect(
+      await commandFor({ PATH: "/usr/bin:/bin", SURF_FFMPEG: path.join(directory, "gone") }),
+    ).toBe("ffmpeg");
   });
 
   it("names the PATH the host searched when ffmpeg is missing", async () => {
@@ -160,6 +165,7 @@ describe("local WebM video recorder", () => {
     const pinnedError = await pinned.start().catch((caught: any) => caught);
     expect(pinnedError.code).toBe("ffmpeg_missing");
     expect(pinnedError.message).toContain("SURF_FFMPEG (/gone/ffmpeg)");
+    expect(pinnedError.message).toContain("native host's PATH (/usr/bin:/bin)");
   });
 
   it("finds ffmpeg the way the host would", () => {
@@ -172,7 +178,10 @@ describe("local WebM video recorder", () => {
     expect(findFfmpeg({ PATH: `${empty}${path.delimiter}${directory}` })).toBe(ffmpegPath);
     expect(findFfmpeg({ PATH: empty })).toBeNull();
     expect(findFfmpeg({ PATH: empty, SURF_FFMPEG: ffmpegPath })).toBe(ffmpegPath);
-    expect(findFfmpeg({ PATH: directory, SURF_FFMPEG: path.join(empty, "ffmpeg") })).toBeNull();
+    expect(findFfmpeg({ PATH: directory, SURF_FFMPEG: path.join(empty, "ffmpeg") })).toBe(
+      ffmpegPath,
+    );
+    expect(findFfmpeg({ PATH: empty, SURF_FFMPEG: path.join(empty, "ffmpeg") })).toBeNull();
   });
 
   it("reports a bounded finalization timeout", async () => {

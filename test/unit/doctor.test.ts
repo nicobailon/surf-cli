@@ -295,7 +295,7 @@ describe("surf doctor", () => {
       pinned: "/gone/ffmpeg",
     });
     expect(pinned.checks.find((item: any) => item.id === "host-ffmpeg").message).toContain(
-      "at SURF_FFMPEG (/gone/ffmpeg)",
+      "at SURF_FFMPEG (/gone/ffmpeg) or on its PATH (/usr/bin)",
     );
 
     const older = await doctorWithHostFfmpeg(undefined);

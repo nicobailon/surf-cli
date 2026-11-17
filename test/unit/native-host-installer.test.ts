@@ -789,7 +789,13 @@ describe("native host installer", () => {
       });
 
       process.env.PATH = path.join(tempDir, "empty");
-      const missing = createWrapper(tempDir, process.execPath, hostPath, "darwin");
+      // A fresh install location: an earlier wrapper's working pin would be kept.
+      const missing = createWrapper(
+        path.join(tempDir, "fresh"),
+        process.execPath,
+        hostPath,
+        "darwin",
+      );
       expect(fs.readFileSync(missing, "utf8")).toContain("export PATH=");
       expect(fs.readFileSync(missing, "utf8")).not.toContain("SURF_FFMPEG");
       expect(runFromGui(missing).ffmpeg).toBeNull();
@@ -1031,6 +1037,38 @@ describe("native host installer", () => {
     expect(fs.readlinkSync(path.join(home, ".claude/skills/surf"))).toBe(
       path.resolve("skills/surf"),
     );
+  });
+
+  it("--refresh with a bare PATH keeps a working SURF_FFMPEG and drops a stale one", ({ skip }) => {
+    if (process.platform !== "darwin") {
+      skip();
+      return;
+    }
+    const home = makeTempDir();
+    const binDir = path.join(home, "opt/local/it's bin");
+    fs.mkdirSync(binDir, { recursive: true });
+    const ffmpegPath = path.join(binDir, "ffmpeg");
+    fs.writeFileSync(ffmpegPath, "#!/bin/sh\nexit 0\n");
+    fs.chmodSync(ffmpegPath, 0o755);
+    const pinLine = `export SURF_FFMPEG='${ffmpegPath.replace(/'/g, "'\\''")}'\n`;
+    const run = (pathValue: string, ...args: string[]) =>
+      spawnSync(process.execPath, ["scripts/install-native-host.cjs", ...args], {
+        encoding: "utf8",
+        env: { ...installEnv(home), PATH: pathValue, SURF_FFMPEG: undefined },
+      });
+    const wrapperPath = path.join(home, "Library/Application Support/surf-cli/host-wrapper.sh");
+
+    expect(run(`${binDir}:/usr/bin:/bin`, extensionA).status).toBe(0);
+    expect(fs.readFileSync(wrapperPath, "utf8")).toContain(pinLine);
+
+    const refreshed = run("/usr/bin:/bin:/usr/sbin:/sbin", "--refresh");
+    expect(refreshed.stderr).toBe("");
+    expect(refreshed.status).toBe(0);
+    expect(fs.readFileSync(wrapperPath, "utf8")).toContain(pinLine);
+
+    fs.rmSync(ffmpegPath);
+    expect(run("/usr/bin:/bin:/usr/sbin:/sbin", "--refresh").status).toBe(0);
+    expect(fs.readFileSync(wrapperPath, "utf8")).not.toContain("SURF_FFMPEG");
   });
 
   describe("agent skill links", () => {
