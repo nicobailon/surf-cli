@@ -246,12 +246,17 @@ function deriveClient(site, opId, out, options = {}) {
   const record = options.recordId ? readRecord(options.recordId, root) : findRecord(site, opId, root);
   if (!record) throw new Error(`no record found for ${site} ${opId}`);
   const trace = readPrivateJson(path.join(recordsRoot(root), record.id, "network", "trace.json"), null, { root });
-  const candidates = (trace?.entries || []).filter(isReplayCandidate);
+  // Without --write or --request-id, a record's reads are ranked alone when it has any, so a GET
+  // beside a captured PUT, PATCH or DELETE still derives.
+  const replayable = (trace?.entries || []).filter(isReplayCandidate);
+  const reads = replayable.filter((candidate) => requestEffect(candidate) === "read");
+  const candidates = options.allowWrite || options.requestId || reads.length === 0 ? replayable : reads;
+  const endpoint = candidates.every((candidate) => requestEffect(candidate) === "read") ? "read endpoint" : "endpoint";
   const entry = options.requestId
     ? candidates.find((candidate) => candidate.id === options.requestId || candidate._requestId === options.requestId)
     : candidates.length === 1 ? candidates[0] : clearWinner(candidates, record);
-  if (!options.requestId && candidates.length > 1 && !entry) throw new Error(`record ${record.id} has several read endpoints and no clear winner; run surf pb record candidates ${record.id} and pass --request-id`);
-  if (!entry) throw new Error(`record ${record.id} has no validated read endpoint`);
+  if (!options.requestId && candidates.length > 1 && !entry) throw new Error(`record ${record.id} has several ${endpoint}s and no clear winner; run surf pb record candidates ${record.id} and pass --request-id`);
+  if (!entry) throw new Error(`record ${record.id} has no validated ${endpoint}`);
   const op = { id: opId, effect: requestEffect(entry), run: [] };
   const extract = savedExtract(site, opId, options);
   // Escaped as pb save escapes it, so captured text like {{x}} is sent as captured, not an input.
