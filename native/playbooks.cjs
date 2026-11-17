@@ -257,6 +257,33 @@ function listPlaybooks(options = {}) {
   return [...found.values()];
 }
 
+// The headers, in lower case, that any saved op reads from the environment (request.authInputs),
+// so an export can redact them. Reads op files as they are: an op that wouldn't load still counts.
+function envBackedHeaders(options = {}) {
+  const headers = new Set();
+  for (const entry of playbookDirs(options)) {
+    if (!fs.existsSync(entry.path)) continue;
+    for (const name of fs.readdirSync(entry.path)) {
+      const opsDir = path.join(entry.path, name, "ops");
+      if (!fs.existsSync(opsDir)) continue;
+      for (const file of fs.readdirSync(opsDir).filter((file) => file.endsWith(".json"))) {
+        let op;
+        try {
+          op = JSON.parse(fs.readFileSync(path.join(opsDir, file), "utf8"));
+        } catch {
+          continue;
+        }
+        for (const strategy of Array.isArray(op?.run) ? op.run : []) {
+          for (const input of Array.isArray(strategy?.request?.authInputs) ? strategy.request.authInputs : []) {
+            if (typeof input?.header === "string") headers.add(input.header.toLowerCase());
+          }
+        }
+      }
+    }
+  }
+  return [...headers];
+}
+
 function resolveOp(playbookId, opId, options = {}) {
   const playbook = resolvePlaybook(playbookId, options);
   const op = playbook.ops.get(opId);
@@ -335,6 +362,7 @@ function importPlaybookDirectory(source, { scope = "user", cwd = process.cwd(), 
 
 module.exports = {
   editSavedOp,
+  envBackedHeaders,
   exportPlaybookDirectory,
   importPlaybookDirectory,
   isCommitWorkflow,

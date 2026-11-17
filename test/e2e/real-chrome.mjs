@@ -989,8 +989,13 @@ setInterval(() => {}, 60_000);
   const ambiguousDelete = await runSurfExpectingFailure(
     "locate.role", "button", "--name", "Delete", "--action", "click", "--tab-id", locateTabId, "--no-screenshot",
   );
-  const deleteRefs = [...ambiguousDelete.stderr.matchAll(/^ {2}(e\d+) button "Delete"$/gm)].map((match) => match[1]);
-  if (!ambiguousDelete.stderr.includes('2 elements match role "button" and name "Delete", so nothing was done') || deleteRefs.length !== 2) {
+  const deleteMatches = [...ambiguousDelete.stderr.matchAll(/^ {2}(e\d+) button(?: "([^"]*)")?$/gm)];
+  const deleteRefs = deleteMatches.map((match) => match[1]);
+  if (
+    !ambiguousDelete.stderr.includes('2 elements match role "button" and the given name, so nothing was done')
+    || deleteRefs.length !== 2
+    || deleteMatches.some((match) => match[2] !== "Delete")
+  ) {
     throw new Error(`ambiguous locate did not list both candidates: ${JSON.stringify(ambiguousDelete)}`);
   }
   if ((await locateLog()) !== "save") throw new Error(`ambiguous locate acted anyway (log=${await locateLog()})`);
@@ -1000,7 +1005,7 @@ setInterval(() => {}, 60_000);
     "locate.label", "Email", "--action", "fill", "--value", "x@example.com", "--tab-id", locateTabId, "--no-screenshot",
   );
   const emailValues = await locatePage.evaluate(() => [...document.querySelectorAll("input")].map((input) => input.value));
-  if (!ambiguousLabel.stderr.includes('2 elements match label "Email"') || emailValues.some(Boolean)) {
+  if (!ambiguousLabel.stderr.includes('2 elements match the given label') || emailValues.some(Boolean)) {
     throw new Error(`ambiguous locate.label filled a field: ${JSON.stringify({ ambiguousLabel, emailValues })}`);
   }
   await runSurf("tab.close", "--id", locateTabId, "--json");

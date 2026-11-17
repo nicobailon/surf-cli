@@ -11,7 +11,7 @@ const {
   readPrivateFile,
   readPrivateJson,
 } = require("./private-state.cjs");
-const { redactSensitiveFields, redactUrlSecrets, safeHeaders } = require("./redaction.cjs");
+const { bodyContentType, redactEchoBody, redactEchoText, redactEchoUrl, redactSensitiveFields, redactUrlSecrets, safeHeaders, secretHeaderEchoes } = require("./redaction.cjs");
 const { draftedEvents, forgetTypedValues, heldTypingCalls, maskTypedValuesInUrl, numberRedactedMarkers, redactTypedValuesInUrl, rememberTypedValues, typedValuesForTrace } = require("./record-typed-values.cjs");
 const { commandMetadata, promoteRedactedStepArgs } = require("./workflow-definition.cjs");
 const { escapeStepArgs, escapeTemplates } = require("./playbook-template.cjs");
@@ -215,19 +215,26 @@ function redactTypedHeaders(headers, typed) {
   return Object.fromEntries(Object.entries(headers).map(([name, value]) => [name, /^(referer|location)$/i.test(name) ? redactTypedValuesInUrl(String(value), typed) : value]));
 }
 
-// `typed` lists the values the record's steps typed; each becomes its marker in the entry's URLs.
-// `urlMarkers` lists the markers in the entry's URL, with the JSON type of a number or boolean one.
+// The trace drops secret headers, so the values they held are known only here: the URL, a header or
+// a request body kept in the trace that echoes one has it replaced with <redacted> before it is saved.
+// A short value goes only where it is a whole value, so a draft keeps its query names and a valid
+// JSON body (see redactEchoText and redactEchoBody). `typed` lists the values the record's steps
+// typed; each becomes its marker in the entry's URLs, after the echoes go, so the markers' offsets
+// hold. `urlMarkers` lists the markers in the entry's URL, with the JSON type of a number or boolean one.
 function sanitizeTraceEntry(entry, includeInputValues = false, typed = []) {
-  const { url, markers } = maskTypedValuesInUrl(redactUrlSecrets(entry.url), typed, { body: entry.requestBody });
+  const secrets = secretHeaderEchoes([entry.requestHeaders, entry.responseHeaders]);
+  const scrub = (value) => (typeof value === "string" ? redactEchoText(value, secrets) : value);
+  const keptHeaders = (headers) => redactTypedHeaders(Object.fromEntries(Object.entries(safeHeaders(headers)).map(([name, value]) => [name, scrub(value)])), typed);
+  const { url, markers } = maskTypedValuesInUrl(redactEchoUrl(redactUrlSecrets(entry.url), secrets), typed, { body: entry.requestBody });
   return {
     ...redactSensitiveFields(entry),
     url,
     ...(markers.length ? { urlMarkers: markers } : {}),
-    ...(entry.tabUrl !== undefined ? { tabUrl: redactTypedValuesInUrl(redactUrlSecrets(entry.tabUrl), typed) } : {}),
-    requestHeaders: redactTypedHeaders(safeHeaders(entry.requestHeaders), typed),
-    responseHeaders: redactTypedHeaders(safeHeaders(entry.responseHeaders), typed),
+    ...(entry.tabUrl !== undefined ? { tabUrl: redactTypedValuesInUrl(redactEchoUrl(redactUrlSecrets(entry.tabUrl), secrets), typed) } : {}),
+    requestHeaders: keptHeaders(entry.requestHeaders),
+    responseHeaders: keptHeaders(entry.responseHeaders),
     responseBody: entry.responseBody === undefined ? undefined : "<response-body>",
-    ...(includeInputValues ? {} : { requestBody: entry.requestBody === undefined ? undefined : "<request-body>" }),
+    requestBody: entry.requestBody === undefined ? undefined : includeInputValues ? (typeof entry.requestBody === "string" ? redactEchoBody(entry.requestBody, secrets, { contentType: bodyContentType(entry.requestHeaders) }) : entry.requestBody) : "<request-body>",
   };
 }
 
@@ -244,12 +251,12 @@ function traceEntriesForRecord(record, entries) {
 // instead (see summarizeResponse), so pb record candidates can rank it. `pageText` is the page's
 // visible text, used for the overlap score and never stored. `sample` adds a short sample, for
 // live ranking only: entries with samples are never written.
-function sanitizeTraceEntries(record, entries, pageText, { sample = false, root = getPrivateStateRoot() } = {}) {
+function sanitizeTraceEntries(record, entries, pageText, { sample = false, redact = [], root = getPrivateStateRoot() } = {}) {
   const page = pageWords(pageText);
   const keepValues = record.redaction?.includeInputValues === true;
   const typed = keepValues ? [] : typedValuesForTrace(readEvents(record.id, root), heldTypingCalls(record.id)).typed;
   return entries.map((entry) => {
-    const responseSummary = summarizeResponse(entry, page, { sample });
+    const responseSummary = summarizeResponse(entry, page, { sample, redact });
     return sanitizeTraceEntry(responseSummary ? { ...entry, responseSummary } : entry, keepValues, typed);
   });
 }
@@ -367,16 +374,32 @@ function pickRequest({ record, trace, effect, requestId, warnings }) {
   return top.entry;
 }
 
-// The request a network strategy sends to replay a captured trace entry: its query apart, its
-// headers without secrets, and its body as captured (`<request-body>` without input values). Text
-// that reads like an input (`{{action}}`) is escaped, so it is sent as captured. A typed number or
-// boolean the record masked in a JSON query value is kept as redactedTypes: pb param gives its
-// input that type. One masked under a query key sent more than once has no type, and its key is
-// kept in repeatedQuery: the request keeps only the last pair.
-function requestFromEntry(entry) {
-  const url = new URL(entry.url);
-  const query = Object.fromEntries(url.searchParams.entries());
-  url.search = "";
+// The request's URL and its query as inputs. The query format holds one value a name, so a name
+// that repeats (`?tag=1&tag=2`) stays in the URL as captured, with a warning, and goes out with
+// every value.
+function draftQuery(captured, warnings) {
+  const url = new URL(captured);
+  const counts = new Map();
+  for (const name of url.searchParams.keys()) counts.set(name, (counts.get(name) || 0) + 1);
+  const repeated = new Set([...counts].filter(([, count]) => count > 1).map(([name]) => name));
+  const query = Object.fromEntries([...url.searchParams].filter(([name]) => !repeated.has(name)));
+  const nameOf = (part) => new URLSearchParams(part).keys().next().value ?? "";
+  url.search = url.search.slice(1).split("&").filter((part) => part && repeated.has(nameOf(part))).join("&");
+  for (const name of repeated) {
+    warnings.push(`query param "${name}" repeats (${counts.get(name)} values), so the draft keeps it in the request URL, where pb param can't make it an input`);
+  }
+  return { url, query };
+}
+
+// The request a network strategy sends to replay a captured trace entry: its query apart (see
+// draftQuery), its headers without secrets, and its body as captured (`<request-body>` without
+// input values). Text that reads like an input (`{{action}}`) is escaped, so it is sent as
+// captured. A typed number or boolean the record masked in a JSON query value is kept as
+// redactedTypes: pb param gives its input that type. One masked under a query key sent more than
+// once has no type, and its key is kept in repeatedQuery, a note that is never sent: the key stays
+// in the URL with every value. `warnings` collects why the request keeps a query name in its URL.
+function requestFromEntry(entry, warnings = []) {
+  const { url, query } = draftQuery(entry.url, warnings);
   const typedMarkers = (entry.urlMarkers || []).filter((marker) => marker.type);
   const redactedTypes = Object.fromEntries(typedMarkers.filter((marker) => marker.field).map((marker) => [marker.field, marker.type]));
   const repeatedQuery = [...new Set(typedMarkers.filter((marker) => marker.repeatedKey).map((marker) => marker.repeatedKey))];
@@ -409,7 +432,7 @@ function buildDraft(record, { read = false, requestId, warnings = [], root = get
   if (warning) warnings.push(warning);
   const strategies = [];
   const observed = pickRequest({ record, trace, effect, requestId, warnings });
-  if (observed) strategies.push({ using: "network", request: requestFromEntry(observed) });
+  if (observed) strategies.push({ using: "network", request: requestFromEntry(observed, warnings) });
   let args = {};
   if (steps.length > 0) {
     const promoted = promoteRedactedStepArgs(steps);
@@ -489,6 +512,35 @@ function findCandidatesRecord({ recordId, target, root = getPrivateStateRoot() }
 
 const isActive = (record) => ["recording", "paused"].includes(record.status);
 
+// The text a record's steps and page inputs typed, so a live sample can leave it out. `known` is
+// false when the record typed something it didn't keep (a record without --include-input-values,
+// or a password field), so the text can't be found to redact.
+function typedInputs(record, root) {
+  const values = [];
+  const collect = (value) => {
+    if (typeof value === "string" || typeof value === "number") values.push(String(value));
+    else if (value && typeof value === "object") Object.values(value).forEach(collect);
+  };
+  let known = true;
+  for (const event of readEvents(record.id, root)) {
+    if (event.type === "browser.event" && event.event === "input") {
+      if (typeof event.value !== "string" || event.value === "<input>") known = false;
+      else values.push(event.value);
+      continue;
+    }
+    if (typeof event.command !== "string" || !event.argsRedacted) continue;
+    // A key step's named key (Enter) was kept as no one's data; `<key>` was a typed character.
+    const typing = commandMetadata(event.command, event.argsRedacted).sensitiveArgs;
+    for (const name of commandMetadata(event.command).sensitiveArgs) {
+      const value = event.argsRedacted[name];
+      if (value === undefined) continue;
+      if (value === `<${name}>`) known = false;
+      else if (typing.includes(name)) collect(value);
+    }
+  }
+  return { known, values: values.filter(Boolean) };
+}
+
 // Ranks a record's requests, best first. An active record has no trace yet, so the host reads its
 // requests from the tab and passes them as `live` ({ entries, pageText }); only then does the
 // result carry response samples, held in memory and printed, never saved.
@@ -496,8 +548,11 @@ function recordCandidates(record, { root = getPrivateStateRoot(), limit = 10, li
   if (!Number.isInteger(limit) || limit < 1) throw new Error("--limit must be a positive integer");
   let entries;
   let warnings = [];
-  if (live) entries = sanitizeTraceEntries(record, live.entries, live.pageText, { sample: true, root });
-  else {
+  if (live) {
+    const typed = typedInputs(record, root);
+    entries = sanitizeTraceEntries(record, live.entries, live.pageText, { sample: typed.known, redact: typed.values, root });
+    if (!typed.known) warnings = ["no response samples: the record typed text it didn't keep, which a response could show"];
+  } else {
     const trace = readPrivateJson(path.join(recordDirectory(record.id, root), "network", "trace.json"), null, { root });
     if (!trace) throw new Error(`record ${record.id} has no network trace; start a record with --network to rank its requests`);
     entries = trace.entries;

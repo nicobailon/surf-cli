@@ -6,7 +6,7 @@ const { writeNetworkExport } = require("./network-export.cjs");
 const { getPrivateStateRoot, readPrivateJson } = require("./private-state.cjs");
 const { REVIEW_KEY_ARG, buildDraft, draftFromRecord, neverReplayed, readRecord, recordedSteps, recordsRoot, requestFromEntry } = require("./playbook-records.cjs");
 const { escapeStepArgs, requestInputs, sentRequest } = require("./playbook-template.cjs");
-const { isCommitWorkflow, savePlaybook, validateOp } = require("./playbooks.cjs");
+const { envBackedHeaders, isCommitWorkflow, savePlaybook, validateOp } = require("./playbooks.cjs");
 const { isTelemetryRequest, requestEffect, shownUrl } = require("./request-kinds.cjs");
 const { commandMetadata, normalizeStep, promoteRedactedStepArgs } = require("./workflow-definition.cjs");
 
@@ -315,10 +315,11 @@ function saveFromRecord({ recordId, requestId, scope = "user", cwd, home, root =
   return { ...saved, origins, ...(warnings.length > 0 ? { warnings } : {}) };
 }
 
-function exportRecordHar(recordId, output, root = getPrivateStateRoot()) {
+// `cwd` and `home` find the saved ops whose env-backed headers the HAR redacts.
+function exportRecordHar(recordId, output, root = getPrivateStateRoot(), { cwd, home } = {}) {
   const trace = readPrivateJson(path.join(recordsRoot(root), recordId, "network", "trace.json"), null, { root });
   if (!trace) throw new Error(`record ${recordId} has no network trace`);
-  return writeNetworkExport(path.resolve(output), trace.entries, "har");
+  return writeNetworkExport(path.resolve(output), trace.entries, "har", { secretHeaders: envBackedHeaders({ cwd, home }) });
 }
 
 module.exports = { exportRecordHar, saveFromRecent, saveFromRecord, suggestions };

@@ -3,7 +3,7 @@
 
 const os = require("os");
 const { editSavedOp, validateOp } = require("./playbooks.cjs");
-const { isSecretHeader, isSensitiveName } = require("./redaction.cjs");
+const { isSecretHeader, isSensitiveName, redactSecretValues } = require("./redaction.cjs");
 const { LITERAL_OPEN, escapeTemplates, escapedOp, requestInputs, sentRequest, templateInputs, unescapeTemplates } = require("./playbook-template.cjs");
 const { lineDiff } = require("./text-diff.cjs");
 const { commandMetadata } = require("./workflow-definition.cjs");
@@ -25,6 +25,16 @@ const decodeForm = (text) => decodePath(text.replace(/\+/g, " "));
 function headerValue(headers, name) {
   return Object.entries(headers || {}).find(([key]) => key.toLowerCase() === name.toLowerCase());
 }
+
+// What pb param prints with a value it took out of the op: the value in every spelling the op file
+// can store it (as is, JSON-escaped once or twice, URL- or form-encoded) replaced with <redacted>.
+// `anyLength` for a secret.
+function removedValueRedactor(values, { anyLength = false } = {}) {
+  const texts = values.map(String);
+  return (text) => (texts.length ? redactSecretValues(text, texts, { anyLength }) : text);
+}
+
+const keepText = (text) => text;
 
 function listOf(keys) {
   return keys.length ? keys.join(", ") : "none";
@@ -194,10 +204,22 @@ function movedPath(from, to, parts, renamesOf) {
   return moved.join(".");
 }
 
+// The names in a URL's query, decoded as form names, one for each time a name appears.
+function urlQueryNames(url) {
+  const { rest } = splitUrl(url);
+  const query = rest.split("#")[0].replace(/^\?/, "");
+  return query ? query.split("&").filter(Boolean).map((pair) => decodeForm(pair.split("=")[0])) : [];
+}
+
 function querySlot(request, field, [param, ...jsonPath], escapes) {
   if (!param) throw new Error(`${field}: name the query param, as in query.q`);
   const query = request.query || {};
-  if (!Object.hasOwn(query, param)) throw new Error(`${field}: no query param "${param}" (has: ${listOf(Object.keys(query))})`);
+  if (!Object.hasOwn(query, param)) {
+    // A draft keeps a name that repeats (`?tag=1&tag=2`) in the request URL, with every value.
+    const repeats = urlQueryNames(request.url).filter((name) => name === param).length;
+    if (repeats > 1) throw new Error(`${field}: query param "${param}" repeats (${repeats} values), so it stays in the request URL as captured and can't be an input`);
+    throw new Error(`${field}: no query param "${param}" (has: ${listOf(Object.keys(query))})`);
+  }
   const current = query[param];
   const setParam = (value) => { request.query = { ...query, [param]: value }; };
   if (jsonPath.length === 0) {
@@ -594,7 +616,7 @@ function envHeader(op, request, fields, env) {
   const existing = inputs.find((input) => input.header.toLowerCase() === header.toLowerCase());
   if (existing) {
     if (existing.env !== env) throw new Error(`${fields[0]} already reads ${existing.env}`);
-    return { notes: [] };
+    return { notes: [], redact: keepText };
   }
   const literal = headerValue(request.headers, header);
   if (literal) {
@@ -602,11 +624,15 @@ function envHeader(op, request, fields, env) {
     request.headers = headers;
   }
   request.authInputs = [...inputs, { env, header: literal?.[0] || header, required: true }];
-  return { notes: literal ? [`removed the recorded ${literal[0]} header value`] : [] };
+  return {
+    notes: literal ? [`removed the recorded ${literal[0]} header value`] : [],
+    redact: literal ? removedValueRedactor([literal[1]], { anyLength: true }) : keepText,
+  };
 }
 
 /**
- * Returns `{ op, changed, notes }` without touching `op`. With `as`, each field gets `{{as}}` and the
+ * Returns `{ op, changed, notes, redact }` without touching `op`; `redact` takes the value a
+ * required, secret-looking or env-backed field held out of text about the edit (its diff). With `as`, each field gets `{{as}}` and the
  * op an `args.<as>` entry (typed from the value; defaulting to the recorded value unless `required`
  * or `default`). With `env`, the one `headers.<name>` field comes from that environment variable.
  */
@@ -621,8 +647,8 @@ function paramOp(op, { fields, as: name, env, required = false, default: default
     if (required || defaultValue !== undefined || desc !== undefined || literal !== undefined) {
       throw new Error("--env takes no --required, --default, --desc or --value: the header's whole value comes from the variable");
     }
-    const { notes } = envHeader(next, strategy.request, fields, env);
-    return { op: next, changed: JSON.stringify(next) !== JSON.stringify(op), notes };
+    const { notes, redact } = envHeader(next, strategy.request, fields, env);
+    return { op: next, changed: JSON.stringify(next) !== JSON.stringify(op), notes, redact };
   }
   if (typeof name !== "string" || !NAME_PATTERN.test(name)) throw new Error("--as must use lowercase letters, numbers, dot, underscore, or hyphen");
   if (RESERVED_RUN_OPTIONS.has(name)) throw new Error(`--as ${name} is reserved: surf use takes --${name} as its own option`);
@@ -669,11 +695,15 @@ function paramOp(op, { fields, as: name, env, required = false, default: default
   }
   next.args = { ...(next.args || {}), [name]: { ...(existing || {}), ...spec } };
 
+  // A required or secret-looking input's recorded value isn't kept, so nothing pb param prints shows it.
+  // A marker the record wrote in place of a typed value (<text>) is no value, so it stays.
+  const removed = literals.filter((value) => !REDACTED_VALUE.test(value));
+  const redact = required || sensitive ? removedValueRedactor(removed, { anyLength: Boolean(sensitive) }) : keepText;
   const notes = redacted && fallback === undefined ? [`the record redacted the value it typed here (${redacted[0]}), so --${name} is required`] : [];
   // A query key the recorded URL sent more than once: the record kept no type for what it masked there.
   for (const key of request.repeatedQuery || []) {
     if (!fields.some((field) => field === `query.${key}` || field.startsWith(`query.${key}.`))) continue;
-    notes.push(`query.${key} was sent more than once in the recorded URL; the draft keeps the last, and the record keeps no type for a number or boolean it masked under a repeated key, so --${name} is a ${type}`);
+    notes.push(`query.${key} was sent more than once in the recorded URL, and the record keeps no type for a number or boolean it masked under a repeated key, so --${name} is a ${type}`);
   }
   // The record masks every path segment that is the typed value; one of them may be a fixed route piece.
   if (redacted) {
@@ -711,7 +741,7 @@ function paramOp(op, { fields, as: name, env, required = false, default: default
     if (next.safety?.key?.includes(replaced)) next.safety = { ...next.safety, key: [...new Set(next.safety.key.map((key) => (key === replaced ? name : key)))] };
     notes.push(`input ${replaced} is now ${name}`);
   }
-  return { op: next, changed: JSON.stringify(next) !== JSON.stringify(op), notes };
+  return { op: next, changed: JSON.stringify(next) !== JSON.stringify(op), notes: notes.map(redact), redact };
 }
 
 /** Applies `paramOp` to a saved op and saves it in the scope it came from. */
@@ -730,7 +760,7 @@ function applyParam({ playbook: playbookId, op: opId, cwd = process.cwd(), home 
   const summary = { playbook: edited.playbook, op: opId, scope: edited.scope, file: edited.path, changed: result.changed, notes: result.notes };
   if (!result.changed) return { ...summary, diff: "" };
   const after = JSON.parse(edited.after);
-  return { ...summary, ...(spec.as ? { input: { [spec.as]: after.args[spec.as] } } : {}), diff: lineDiff(edited.before, edited.after) };
+  return { ...summary, ...(spec.as ? { input: { [spec.as]: after.args[spec.as] } } : {}), diff: result.redact(lineDiff(edited.before, edited.after)) };
 }
 
 function formatParamResult(result) {

@@ -1,6 +1,8 @@
 // @ts-expect-error - CommonJS module without type definitions
 import * as helpers from "../../native/host-helpers.cjs";
 
+const harvest = require("../../native/api-harvest.cjs");
+
 describe("buildProviderUploadMessage", () => {
   it("builds provider-aware ChatGPT upload messages", () => {
     expect(helpers.buildProviderUploadMessage("chatgpt", 123, ["/tmp/file.txt"], 7)).toEqual({
@@ -1134,5 +1136,139 @@ describe("page changes after typing", () => {
       helpers.withoutTypedPageChanges(diff, "locate.label", { ...fill, "echo-value": true }),
     ).toBe(diff);
     expect(helpers.withoutTypedPageChanges(diff, "click", { ref: "e1" })).toBe(diff);
+  });
+});
+
+describe("publicResponse", () => {
+  // Dummy values, built from parts so no literal here reads as a credential.
+  const SHOP = ["sh", "op"].join("");
+  const LONG = ["dummy", "long", "key", "23"].join("-");
+
+  it("redacts a secret header's value echoed in the response URL, as an export does", () => {
+    const view = helpers.publicResponse(
+      {
+        url: `https://example.test/anything/${LONG}?${SHOP}=first&q=${SHOP}`,
+        body: JSON.stringify({ q: SHOP }),
+        json: { q: SHOP },
+      },
+      [{ requestHeaders: { Authorization: `ResyAPI api_key="${SHOP}", token="${LONG}"` } }],
+    );
+    expect(view.url).toBe("https://example.test/anything/<redacted>?<redacted>=first&q=<redacted>");
+    expect(JSON.parse(view.body)).toEqual({ q: "<redacted>" });
+    expect(view.json).toEqual({ q: "<redacted>" });
+  });
+
+  it("keeps a bare JSON scalar body that is a secret valid JSON, in network.get --json and a read body", () => {
+    const TRUE = ["tr", "ue"].join("");
+    const requestHeaders = { Authorization: `ResyAPI api_key="${SHOP}", realm="${TRUE}"` };
+    const got = helpers.publicNetworkResult("network.get", {
+      entry: {
+        id: "r_1",
+        url: "https://example.test/api",
+        requestHeaders,
+        requestBody: TRUE,
+        responseBody: TRUE,
+      },
+    });
+    expect(JSON.parse(got.entry.requestBody)).toBe("<redacted>");
+    expect(JSON.parse(got.entry.responseBody)).toBe("<redacted>");
+    const view = helpers.publicResponse(
+      { url: "https://example.test/api", body: TRUE, json: true },
+      [{ requestHeaders }],
+    );
+    expect(JSON.parse(view.body)).toBe("<redacted>");
+    expect(view.json).toBe("<redacted>");
+  });
+
+  it.each([
+    ["[1]", "[ 1 ]"],
+    ['{"x":1}', '{"x":1}'],
+  ])(
+    "redacts the parsed JSON of a response that is the secret %s whole, as network.wait prints it",
+    async (secret, body) => {
+      const entry = {
+        id: "r_1",
+        url: "https://example.test/api",
+        method: "GET",
+        status: 200,
+        type: "Fetch",
+        requestHeaders: { "x-csrf-token": secret },
+        _loadingFinished: true,
+        flags: [],
+      };
+      let listed = 0;
+      const executeTool = async (tool: string) => {
+        if (tool === "network") {
+          return { entries: listed++ === 0 ? [] : [entry] };
+        }
+        if (tool === "network.body") {
+          return { body };
+        }
+        throw new Error(`unexpected tool ${tool}`);
+      };
+      const sleep = async () => undefined;
+      const response = await harvest.waitForResponse({ executeTool, sleep, match: "/api" });
+      expect(response).toMatchObject({ json: JSON.parse(body) });
+      const view = helpers.publicResponse(response, [entry]);
+      expect(view.json).toBe("<redacted>");
+      expect(JSON.stringify(view)).not.toContain(JSON.stringify(JSON.parse(secret)));
+    },
+  );
+
+  it("redacts the parsed JSON of an HTML or XML response as markup, as its body is", async () => {
+    const encoded = `sh&#${"111"};p`;
+    for (const [type, body] of [
+      ["text/html", JSON.stringify(encoded)],
+      ["text/html; charset=utf-8", JSON.stringify({ x: encoded })],
+      ["application/xml", JSON.stringify([encoded])],
+    ]) {
+      const entry = {
+        id: "r_1",
+        url: "https://example.test/api",
+        method: "GET",
+        status: 200,
+        type: "Fetch",
+        requestHeaders: { "x-csrf-token": SHOP },
+        responseHeaders: { "content-type": type },
+        _loadingFinished: true,
+        flags: [],
+      };
+      let listed = 0;
+      const executeTool = async (tool: string) => {
+        if (tool === "network") {
+          return { entries: listed++ === 0 ? [] : [entry] };
+        }
+        if (tool === "network.body") {
+          return { body };
+        }
+        throw new Error(`unexpected tool ${tool}`);
+      };
+      const response = await harvest.waitForResponse({
+        executeTool,
+        sleep: async () => undefined,
+        match: "/api",
+      });
+      expect(response).toMatchObject({ json: JSON.parse(body) });
+      expect(helpers.publicResponse(response, [entry]).json).toBe("<redacted>");
+    }
+    // JSON served as JSON keeps its parsed view as JSON redaction has it.
+    const plain = helpers.publicResponse(
+      { url: "https://example.test/api", json: { x: encoded } },
+      [
+        {
+          requestHeaders: { "x-csrf-token": SHOP },
+          responseHeaders: { "content-type": "application/json" },
+        },
+      ],
+    );
+    expect(plain.json).toEqual({ x: encoded });
+  });
+
+  it("keeps the parsed JSON that only holds the secret inside it, as the body keeps it", () => {
+    const requestHeaders = { "x-csrf-token": "[1]" };
+    const view = helpers.publicResponse({ url: "https://example.test/api", json: { v: [1] } }, [
+      { requestHeaders },
+    ]);
+    expect(view.json).toEqual({ v: [1] });
   });
 });

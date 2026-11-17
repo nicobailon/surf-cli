@@ -2680,6 +2680,133 @@ describe("CLI/native-host/fake-extension E2E contract", () => {
     }
   });
 
+  it.each([
+    ["plain", ["dummy", "resy", "key", "18"].join("-")],
+    ["quoted", ["dummy", 'quo"ted', "va\\lue", "18"].join("-")],
+  ])(
+    "hides an echoed auth parameter and cookie value in network.body, network.wait and network.replay (%s)",
+    async (_label, key) => {
+      const socketPath = createSocketPath();
+      const scratch = fs.mkdtempSync(path.join(os.tmpdir(), "surf-network-param-echo-"));
+      tempDirs.push(scratch);
+      const env = { HOME: path.join(scratch, "home"), SURF_TMP: path.join(scratch, "tmp") };
+      for (const directory of [env.HOME, env.SURF_TMP]) {
+        fs.mkdirSync(directory, { recursive: true });
+      }
+      const sid = ["dummy", "sid", "value", "18"].join("-");
+      // The value echoed on its own, as a JSON string and inside a URL, never as the whole header.
+      const echo = {
+        mimeType: "application/json",
+        responseBody: JSON.stringify({
+          key,
+          sid,
+          url: `https://fixture.test/?k=${encodeURIComponent(key)}`,
+        }),
+      };
+      const sentWithAuth = {
+        id: "r_echo",
+        ts: Date.now() - 60_000,
+        method: "GET",
+        url: "https://fixture.test/headers",
+        type: "Fetch",
+        requestHeaders: {
+          Authorization: `ResyAPI api_key="${key.replace(/["\\]/g, "\\$&")}"`,
+          Cookie: `lang=en; sid=${sid}`,
+          Accept: "application/json",
+        },
+        status: 200,
+        responseHeaders: { "content-type": "application/json" },
+        ...echo,
+        flags: [],
+        _loadingFinished: true,
+      };
+      const host = startHost(socketPath, {
+        env,
+        pageTraffic: [sentWithAuth],
+        navigationTraffic: [sentWithAuth],
+        scriptResponse: echo,
+      });
+      try {
+        await host.waitForMessage((message) => message.type === "HOST_READY");
+        const views = [
+          ["network.body", "r_echo"],
+          ["network.wait", "/headers", "--open", "https://fixture.test/", "--json"],
+          ["network.wait", "/headers", "--open", "https://fixture.test/"],
+          ["network.replay", "r_echo", "--json"],
+          ["network.replay", "r_echo"],
+        ];
+        for (const args of views) {
+          const view = await runCli(socketPath, args, scratch, env);
+          expect(view.code, `${args.join(" ")}: ${view.stderr}`).toBe(0);
+          expect(view.stdout, args.join(" ")).toContain("<redacted>");
+          expect(view.stdout, args.join(" ")).not.toContain("dummy");
+          if (args.includes("--json")) {
+            const printed = JSON.parse(view.stdout);
+            const response = printed.result ?? printed;
+            const json = response.json ?? JSON.parse(response.body);
+            expect(json, args.join(" ")).toMatchObject({ key: "<redacted>", sid: "<redacted>" });
+          }
+        }
+      } finally {
+        await host.dispose();
+      }
+    },
+  );
+
+  it("redacts a body key that is a long or a quoted secret in network.get --json and network.body", async () => {
+    const socketPath = createSocketPath();
+    const scratch = fs.mkdtempSync(path.join(os.tmpdir(), "surf-network-key-echo-"));
+    tempDirs.push(scratch);
+    const env = { HOME: path.join(scratch, "home"), SURF_TMP: path.join(scratch, "tmp") };
+    for (const directory of [env.HOME, env.SURF_TMP]) {
+      fs.mkdirSync(directory, { recursive: true });
+    }
+    // Dummy values, built from parts so no literal here reads as a credential.
+    const long = ["dummy", "long", "key", "23"].join("-");
+    const quoted = ["dummy", 'quo"ted', "va\\lue", "23"].join("-");
+    const body = JSON.stringify({ [long]: "ok", [quoted]: "ok", n: 1 });
+    const host = startHost(socketPath, {
+      env,
+      pageTraffic: [
+        {
+          id: "r_key",
+          ts: Date.now() - 60_000,
+          method: "POST",
+          url: "https://fixture.test/anything",
+          type: "Fetch",
+          requestHeaders: {
+            Authorization: `ResyAPI api_key="${quoted.replace(/["\\]/g, "\\$&")}"`,
+            "x-api-key": long,
+          },
+          requestBody: body,
+          status: 200,
+          mimeType: "application/json",
+          responseHeaders: { "content-type": "application/json" },
+          responseBody: body,
+          flags: [],
+          _loadingFinished: true,
+        },
+      ],
+    });
+    try {
+      await host.waitForMessage((message) => message.type === "HOST_READY");
+      const expected = { "<redacted>": "ok", "<redacted-2>": "ok", n: 1 };
+      const get = await runCli(socketPath, ["network.get", "r_key", "--json"], scratch, env);
+      expect(get.code, get.stderr).toBe(0);
+      expect(get.stdout).not.toContain("dummy");
+      const printed = JSON.parse(get.stdout);
+      const entry = printed.entry ?? printed.result?.entry ?? printed;
+      expect(JSON.parse(entry.requestBody)).toEqual(expected);
+      expect(JSON.parse(entry.responseBody)).toEqual(expected);
+      const read = await runCli(socketPath, ["network.body", "r_key"], scratch, env);
+      expect(read.code, read.stderr).toBe(0);
+      expect(read.stdout).toContain("<redacted-2>");
+      expect(read.stdout).not.toContain("dummy");
+    } finally {
+      await host.dispose();
+    }
+  });
+
   it("keeps the page's other captured requests off disk when surf use and network.replay read capture", async () => {
     const socketPath = createSocketPath();
     const scratch = fs.mkdtempSync(path.join(os.tmpdir(), "surf-capture-disk-"));

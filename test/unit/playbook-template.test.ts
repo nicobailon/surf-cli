@@ -587,7 +587,7 @@ describe("env-supplied headers", () => {
     expect(JSON.stringify(events)).not.toContain("shell-secret-value");
   });
 
-  it("redacts the value from results and errors, short values where they stand alone", async () => {
+  it("redacts the value from results and errors, one under 4 characters where it stands alone", async () => {
     const echo = captureTab({
       reply: () => ({
         body: JSON.stringify({

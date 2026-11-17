@@ -4,7 +4,7 @@
 const { createRecordSet, readCursor } = require("./records.cjs");
 const { hiddenTabError } = require("./dom-collect.cjs");
 const { PATTERN_LIMIT } = require("./bounded-regex.cjs");
-const { redactValues } = require("./redaction.cjs");
+const { bodyContentType, redactValues } = require("./redaction.cjs");
 
 const POLL_MS = 500;
 const DEFAULT_TIMEOUT_MS = 30000;
@@ -221,6 +221,8 @@ async function findEntry(ctx, filter, test, timeoutMs) {
   }
 }
 
+// A response's body: { json } when it parses, else { body }, with the content type its capture
+// gives, which tells an XML body from HTML when its echoes of secrets are redacted.
 async function readBody(ctx, entry) {
   const result = await ctx.executeTool("network.body", { id: entry.id });
   if (typeof result?.body !== "string") throw new Error(`network.body returned no body for ${entry.id}`);
@@ -228,7 +230,8 @@ async function readBody(ctx, entry) {
   try {
     return { json: JSON.parse(text) };
   } catch {
-    return { body: text };
+    const contentType = bodyContentType(entry.responseHeaders, entry.mimeType);
+    return contentType ? { body: text, contentType } : { body: text };
   }
 }
 
@@ -396,7 +399,7 @@ async function waitWith(ctx, { match, open, timeoutMs = DEFAULT_TIMEOUT_MS }) {
   return { entry, response: { id: entry.id, url: entry.url, status: entry.status, ...(await readBody(ctx, entry)) } };
 }
 
-/** Waits for the next finished response whose URL matches `match`; returns { id, url, status, json | body }. */
+/** Waits for the next finished response whose URL matches `match`; returns { id, url, status, json | body, contentType? }. */
 async function waitForResponse(options) {
   return (await waitWith(context(options), options)).response;
 }
@@ -505,7 +508,7 @@ return { status: response.status, url: response.url };
   }
 }
 
-/** Re-sends a captured request from inside its tab with `set` edits; returns { status, url, json | body }. */
+/** Re-sends a captured request from inside its tab with `set` edits; returns { status, url, json | body, contentType? }. */
 async function replay(options) {
   const ctx = context(options);
   const loaded = await ctx.executeTool("network.get", { id: options.id });

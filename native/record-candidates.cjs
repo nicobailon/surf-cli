@@ -1,7 +1,7 @@
 // Ranks a record's captured requests by how likely each is the one that carries the page's data.
 // Scores are integers from fixed rules, so the same trace always ranks the same way.
 
-const { redactCredentialLiterals, redactSensitiveFields } = require("./redaction.cjs");
+const { echoSecrets, isEchoedJson, redactCredentialLiterals, redactEchoJson, redactEchoText, redactSensitiveFields, redactValues, secretHeaderEchoes, valueSpellings } = require("./redaction.cjs");
 const { ASSET_TYPES, hostname, isReplayCandidate, isTelemetryRequest, requestEffect } = require("./request-kinds.cjs");
 
 const SAMPLE_CHARS = 200;
@@ -91,14 +91,14 @@ const MAX_FIELDS = 20;
 // The fields of a JSON body's top level, or for a top-level list, of its first record. Keys can be
 // data (a map keyed by username or account), so what is saved is only how many fields there are
 // and how many of each type; `names` adds the names with their types, for live ranking only.
-function fieldsOf(value, { names = false } = {}) {
+function fieldsOf(value, { names = false, hide = () => false } = {}) {
   const shape = Array.isArray(value) ? value.find((item) => item && typeof item === "object" && !Array.isArray(item)) : value;
   if (!shape || typeof shape !== "object" || Array.isArray(shape)) return {};
   const entries = Object.entries(shape);
   if (entries.length === 0) return {};
   const types = {};
   for (const type of entries.map(([, item]) => typeOf(item)).sort()) types[type] = (types[type] || 0) + 1;
-  const named = entries.filter(([name]) => FIELD_NAME.test(name)).slice(0, MAX_FIELDS);
+  const named = entries.filter(([name]) => FIELD_NAME.test(name) && !hide(name)).slice(0, MAX_FIELDS);
   return {
     fields: entries.length,
     types,
@@ -110,9 +110,12 @@ function fieldsOf(value, { names = false } = {}) {
 // holds, how many fields it has of each type, and what share of the page's words it contains. No
 // values, text or field names, so a trace on disk holds nothing the response said. `sample` (live
 // ranking only, never saved) adds the field names and a short redacted sample of JSON or of an
-// HTML page's visible text.
+// HTML page's visible text. The sample never holds a value in `redact` (what the record typed), and
+// holds a secret header value of the exchange only as network.get would show it (see
+// secretHeaderEchoes), as a response can reflect either; the field names leave out a name that holds
+// one.
 // `page` is pageWords() of the page's visible text. Page assets get none.
-function summarizeResponse(entry, page, { sample: withSample = false } = {}) {
+function summarizeResponse(entry, page, { sample: withSample = false, redact = [] } = {}) {
   if (ASSET_TYPES.has(entry.type)) return undefined;
   const body = typeof entry.responseBody === "string" && entry.responseBodyEncoding !== "base64" ? entry.responseBody : undefined;
   const capture = entry.bodyCapture || {};
@@ -122,15 +125,27 @@ function summarizeResponse(entry, page, { sample: withSample = false } = {}) {
   if (body === undefined) return capture.reason ? { ...summary, unsampled: capture.reason } : summary;
   let text = body;
   let sample = "";
+  // What a response can reflect: the record's typed text and the exchange's secret header values.
+  const typed = withSample ? redact.flatMap(valueSpellings) : [];
+  const headers = secretHeaderEchoes(withSample ? [entry.requestHeaders, entry.responseHeaders] : []);
+  const hide = (name) => headers.keys.includes(name) || redactValues(name, [...typed, ...headers.long]) !== name;
+  // A JSON body is judged against both, so one that is a typed value whole goes whole too.
+  const echoed = echoSecrets(withSample ? redact : []);
+  const secrets = Object.fromEntries(["long", "short", "keys"].map((key) => [key, [...headers[key], ...echoed[key]]]));
   const parsed = kind === "json" ? parseJson(body) : null;
   if (parsed) {
     const records = recordCount(parsed.value);
     if (records > 0) summary.records = records;
-    Object.assign(summary, fieldsOf(parsed.value, { names: withSample }));
-    sample = JSON.stringify(redactSensitiveFields(parsed.value));
+    // A body that is a secret or typed value whole lists no field names, as its sample shows none. It
+    // is judged as sent, before its secret-named fields are redacted, so `{"token":"shop"}` still counts.
+    const whole = withSample && isEchoedJson(parsed.value, secrets);
+    Object.assign(summary, fieldsOf(parsed.value, { names: withSample && !whole, hide }));
+    if (whole) sample = JSON.stringify("<redacted>");
+    // By its content type too, so a JSON body served as XML is read as markup.
+    else if (withSample) sample = JSON.stringify(redactEchoJson(redactSensitiveFields(parsed.value), secrets, { contentType: mimeOf(entry) }));
   } else if (kind === "html") {
     text = visibleText(body);
-    sample = text;
+    if (withSample) sample = redactEchoText(text, secrets);
   }
   if (page.size >= MIN_PAGE_WORDS) {
     const found = words(text);
@@ -138,8 +153,10 @@ function summarizeResponse(entry, page, { sample: withSample = false } = {}) {
     for (const word of page) if (found.has(word)) shared++;
     summary.overlap = Math.round((shared / page.size) * 100) / 100;
   }
-  sample = redactCredentialLiterals(sample).slice(0, SAMPLE_CHARS);
-  if (withSample && sample) summary.sample = sample;
+  if (withSample && sample) {
+    sample = redactCredentialLiterals(redactValues(sample, typed)).slice(0, SAMPLE_CHARS);
+    if (sample) summary.sample = sample;
+  }
   return summary;
 }
 

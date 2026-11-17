@@ -45,6 +45,70 @@ describe("summarizeResponse", () => {
     expect(summary).not.toHaveProperty("responseBody");
   });
 
+  it("samples a JSON body that is a secret header's value whole as <redacted>, with no field names", () => {
+    const secret = JSON.stringify({ [["k", "ey"].join("")]: 1 });
+    const summary = candidates.summarizeResponse(
+      get("r_1", "XHR", `${ORIGIN}/api/books`, {
+        mimeType: "application/json",
+        requestHeaders: { "x-csrf-token": secret },
+        responseBody: secret,
+      }),
+      candidates.pageWords(PAGE_TEXT),
+      { sample: true },
+    );
+    expect(summary.sample).toBe(JSON.stringify("<redacted>"));
+    expect(summary).not.toHaveProperty("fieldNames");
+  });
+
+  it("samples a JSON body served as XML by the markup rules, which decode its entities", () => {
+    const SHOP = ["sh", "op"].join("");
+    const encoded = `sh&#${"111"};p`;
+    const sample = (mimeType: string) =>
+      candidates.summarizeResponse(
+        get("r_1", "XHR", `${ORIGIN}/api/books`, {
+          mimeType,
+          requestHeaders: { "x-csrf-token": SHOP },
+          responseBody: JSON.stringify({ note: encoded, title: "Sharp Objects" }),
+        }),
+        candidates.pageWords(PAGE_TEXT),
+        { sample: true },
+      ).sample;
+    expect(sample("application/xml")).toBe(JSON.stringify("<redacted>"));
+    expect(sample("application/json")).toBe(
+      JSON.stringify({ note: encoded, title: "Sharp Objects" }),
+    );
+  });
+
+  it("samples a whole-secret JSON body as <redacted> though it holds a secret-named field", () => {
+    const secret = JSON.stringify({ [["to", "ken"].join("")]: ["sh", "op"].join("") });
+    const summary = candidates.summarizeResponse(
+      get("r_1", "XHR", `${ORIGIN}/api/books`, {
+        mimeType: "application/json",
+        requestHeaders: { "x-csrf-token": secret },
+        responseBody: secret,
+      }),
+      candidates.pageWords(PAGE_TEXT),
+      { sample: true },
+    );
+    expect(summary.sample).toBe(JSON.stringify("<redacted>"));
+  });
+
+  it("samples a JSON body that is a typed redact value whole as <redacted>, with no field names", () => {
+    const key = ["k", "ey"].join("");
+    for (const secret of [`{ "${key}": 1 }`, `{"${key}":1}`]) {
+      const summary = candidates.summarizeResponse(
+        get("r_1", "XHR", `${ORIGIN}/api/books`, {
+          mimeType: "application/json",
+          responseBody: secret,
+        }),
+        candidates.pageWords(PAGE_TEXT),
+        { sample: true, redact: [secret] },
+      );
+      expect(summary.sample).toBe(JSON.stringify("<redacted>"));
+      expect(summary).not.toHaveProperty("fieldNames");
+    }
+  });
+
   it("samples an HTML page's visible text, not its scripts or tags", () => {
     const body =
       "<html><head><title>All products | Books</title><script>var secret = 1;</script><style>p{}</style></head><body><h1>All products</h1><p>Sharp &amp; Objects</p></body></html>";
@@ -557,5 +621,65 @@ describe("formatCandidates for an active record", () => {
         "Choose one: surf pb record stop --draft --request-id <id>",
       ].join("\n"),
     );
+  });
+});
+
+describe("a live sample's field names", () => {
+  // Dummy values, built from parts so no literal here reads as a credential.
+  const TYPED = ["dummy", "typed", "15"].join("-");
+  const AUTH = ["dummy", "auth", "15"].join("-");
+
+  it("leave out a name that is text the record typed or a secret header's value", () => {
+    const body = JSON.stringify({ [TYPED]: { hits: 2 }, [AUTH]: true, title: "Sharp Objects" });
+    const summary = candidates.summarizeResponse(
+      get("r_1", "XHR", "https://books.example/api", {
+        mimeType: "application/json",
+        requestHeaders: { Authorization: `Bearer ${AUTH}` },
+        responseBody: body,
+      }),
+      candidates.pageWords(""),
+      { sample: true, redact: [TYPED] },
+    );
+    expect(summary.fieldNames).toEqual({ title: "string" });
+    expect(JSON.stringify(summary)).not.toContain("dummy");
+  });
+});
+
+describe("a live sample, when the request carries a short auth parameter or cookie value", () => {
+  // Short dummy values, built from parts so no literal here reads as a credential.
+  const SHOP = ["sh", "op"].join("");
+  const SID = ["ab", "c"].join("");
+  const headers = { Authorization: `ResyAPI api_key="${SHOP}"`, Cookie: `sid=${SID}` };
+
+  it("redacts them as whole JSON strings and hides a field named by one", () => {
+    const summary = candidates.summarizeResponse(
+      get("r_1", "XHR", "https://books.example/api", {
+        mimeType: "application/json",
+        requestHeaders: headers,
+        responseBody: JSON.stringify({ echo: SHOP, sid: SID, [SHOP]: 1, title: "Sharp Objects" }),
+      }),
+      candidates.pageWords(""),
+      { sample: true },
+    );
+    expect(JSON.parse(summary.sample)).toEqual({
+      echo: "<redacted>",
+      sid: "<redacted>",
+      "<redacted>": 1,
+      title: "Sharp Objects",
+    });
+    expect(summary.fieldNames).toEqual({ echo: "string", sid: "string", title: "string" });
+  });
+
+  it("redacts them as whole words of an HTML page's text", () => {
+    const summary = candidates.summarizeResponse(
+      get("r_2", "Document", "https://books.example/", {
+        mimeType: "text/html",
+        requestHeaders: headers,
+        responseBody: `<html><body><p>${SHOP} and ${SID}</p></body></html>`,
+      }),
+      candidates.pageWords(""),
+      { sample: true },
+    );
+    expect(summary.sample).toBe("<redacted> and <redacted>");
   });
 });

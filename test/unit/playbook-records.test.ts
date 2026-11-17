@@ -32,6 +32,16 @@ function tempRoot() {
   return root;
 }
 
+// Every file under `directory`, joined, so a test can search all of it for a value.
+const everyFile = (directory: string): string =>
+  fs
+    .readdirSync(directory, { recursive: true, withFileTypes: true })
+    .filter((entry: { isFile: () => boolean }) => entry.isFile())
+    .map((entry: { parentPath: string; name: string }) =>
+      fs.readFileSync(path.join(entry.parentPath, entry.name), "utf8"),
+    )
+    .join("\n");
+
 // A step is a command name, or [name, args] for a command whose effect depends on its arguments.
 type Step = string | [string, Entry];
 const step = (command: string, args: Entry): Step => [command, args];
@@ -994,6 +1004,89 @@ describe("pb record candidates", () => {
       )
       .join("\n");
     expect(written).not.toContain("Jane Placeholder");
+  });
+
+  describe("a live sample of a response that reflects what was sent", () => {
+    // Dummy values, built from parts so no literal here reads as a credential.
+    const TYPED = ["dummy", "typed", "6"].join("-");
+    const AUTH = ["dummy", "auth", "6", 'with"quote'].join("-");
+    const reflecting = (extra: Entry = {}) => ({
+      id: "r_p",
+      method: "GET",
+      status: 200,
+      type: "XHR",
+      mimeType: "application/json",
+      url: "https://a.test/p",
+      responseBody: JSON.stringify({
+        people: [{ name: "Jane Placeholder", searched: TYPED, auth: `got ${AUTH}` }],
+      }),
+      ...extra,
+    });
+    const typedEvent = (value: string) => ({
+      type: "browser.event",
+      event: "input",
+      selector: "#q",
+      value,
+      timestamp: new Date().toISOString(),
+    });
+    const sampleOf = (record: Entry, root: string, entry: Entry) =>
+      records.recordCandidates(record, { root, live: { entries: [entry], pageText: "" } });
+
+    it("redacts the text the record typed, when the record kept it", () => {
+      const root = tempRoot();
+      const record = records.startRecord({
+        site: "a",
+        op: "one",
+        tabId: 11,
+        network: true,
+        includeInputValues: true,
+        root,
+      });
+      records.appendRecordEvent(typedEvent(TYPED), { target: { tabId: 11 }, root });
+      const result = sampleOf(record, root, reflecting());
+      expect(result.candidates[0].sample).toContain("Jane Placeholder");
+      expect(result.candidates[0].sample).toContain("<redacted>");
+      expect(JSON.stringify(result)).not.toContain(TYPED);
+    });
+
+    it("leaves the sample out when the record typed text it didn't keep", () => {
+      const root = tempRoot();
+      const record = records.startRecord({ site: "a", op: "one", tabId: 11, network: true, root });
+      records.appendRecordEvent(typedEvent("<input>"), { target: { tabId: 11 }, root });
+      const result = sampleOf(record, root, reflecting());
+      expect(result.candidates[0]).not.toHaveProperty("sample");
+      expect(result.warnings?.join("\n")).toMatch(/typed/);
+      expect(JSON.stringify(result)).not.toContain(TYPED);
+    });
+
+    it.each([
+      [{ key: "Enter" }, true],
+      [{ key: "<key>" }, false],
+    ])("after key %j, keeps the page's words and a sample (%s)", (argsRedacted, sampled) => {
+      const root = tempRoot();
+      const record = records.startRecord({ site: "a", op: "one", tabId: 11, network: true, root });
+      records.appendRecordEvent(completed(["key", argsRedacted]), { target: { tabId: 11 }, root });
+      const result = sampleOf(record, root, reflecting({ responseBody: '{"hint":"Press Enter"}' }));
+      if (sampled) {
+        expect(result.candidates[0].sample).toContain("Press Enter");
+      } else {
+        expect(result.candidates[0]).not.toHaveProperty("sample");
+      }
+    });
+
+    it("redacts the secret header values the request carried, JSON-escaped too", () => {
+      const root = tempRoot();
+      const record = records.startRecord({ site: "a", op: "one", tabId: 11, network: true, root });
+      const result = sampleOf(
+        record,
+        root,
+        reflecting({ requestHeaders: { Authorization: AUTH } }),
+      );
+      const { sample } = result.candidates[0];
+      expect(sample).toContain("Jane Placeholder");
+      expect(sample).not.toContain(JSON.stringify(AUTH).slice(1, -1));
+      expect(sample).not.toContain("dummy-auth-6");
+    });
   });
 
   it("explains a record without a network trace", () => {
@@ -2263,16 +2356,6 @@ describe("values typed with locate.* --action fill", () => {
     endedAt: new Date().toISOString(),
     resultSummary: "success",
   });
-  // Every file under `directory`, joined, so a test can search all of it for a value.
-  const everyFile = (directory: string): string =>
-    fs
-      .readdirSync(directory, { recursive: true, withFileTypes: true })
-      .filter((entry: { isFile: () => boolean }) => entry.isFile())
-      .map((entry: { parentPath: string; name: string }) =>
-        fs.readFileSync(path.join(entry.parentPath, entry.name), "utf8"),
-      )
-      .join("\n");
-
   it.each(Object.entries(fill))("redacts the value %s fills", (command, args) => {
     const redacted = redactCommandArgs(command, args);
     expect(JSON.stringify(redacted)).not.toContain("hunter2-S3cret!");
@@ -2289,7 +2372,7 @@ describe("values typed with locate.* --action fill", () => {
     expect(JSON.stringify(redacted)).not.toContain("hunter2-S3cret!");
   });
 
-  it.each(["click", "hover"])("leaves locate.role --action %s unchanged", (action) => {
+  it.each(["click", "hover"])("keeps locate.role --action %s as recorded", (action) => {
     const args = { role: "button", name: "Save", action };
     expect(redactCommandArgs("locate.role", args)).toEqual(args);
   });
@@ -2878,7 +2961,10 @@ describe("what a hand-edited draft can't change", () => {
 
 describe("values typed during a record, in captured URLs", () => {
   const { redactCommandArgs } = require("../../native/workflow-definition.cjs");
-  const { findRedactedPlaceholder } = require("../../native/record-typed-values.cjs");
+  const {
+    findRedactedPlaceholder,
+    placeholderError,
+  } = require("../../native/record-typed-values.cjs");
   const runtime = require("../../native/playbook-runtime.cjs");
   const TYPED = "dummy echo words";
   const FILLED = "dummyfoxtrot";
@@ -2903,15 +2989,6 @@ describe("values typed during a record, in captured URLs", () => {
     },
     responseHeaders: { "content-type": "application/json" },
   };
-  const everyFile = (directory: string): string =>
-    fs
-      .readdirSync(directory, { recursive: true, withFileTypes: true })
-      .filter((entry: { isFile: () => boolean }) => entry.isFile())
-      .map((entry: { parentPath: string; name: string }) =>
-        fs.readFileSync(path.join(entry.parentPath, entry.name), "utf8"),
-      )
-      .join("\n");
-
   function recordSearch(includeInputValues: boolean) {
     const root = tempRoot();
     const home = path.dirname(root);
@@ -3150,21 +3227,32 @@ describe("values typed during a record, in captured URLs", () => {
     expect(workflow.steps.map((item: { args: Entry }) => item.args.text)).toEqual(["{{year}}"]);
   });
 
-  it("records no type for a query key the URL sends twice, and pb param says so", () => {
+  it("keeps a query key the URL sends twice in the URL, masked, with no type, and never sends it", () => {
     const pair = (year: string) => `v=${encodeURIComponent(`{"year":${year}}`)}`;
     const { draft, trace } = draftTyping(
       ["2024"],
       `https://example.test/g?${pair("2024")}&${pair('"2024"')}`,
     );
-    // The draft keeps the last pair, whose 2024 was a string; the first pair's number says nothing of it.
+    // Both pairs stay in the URL as the record masked them; the first pair's number says nothing
+    // of the second's string, so the key gets no type.
     expect(trace.entries[0].urlMarkers).toHaveLength(2);
-    expect(networkOf(draft).query).toEqual({ v: '{"year":"<text>"}' });
-    expect(networkOf(draft)).not.toHaveProperty("redactedTypes");
-    expect(networkOf(draft).repeatedQuery).toEqual(["v"]);
-    const { op, notes } = paramOp(draft, { fields: ["query.v.year"], as: "year" });
-    expect(op.args.year).toEqual({ type: "string", required: true });
-    expect(notes.join("\n")).toMatch(/query\.v was sent more than once.*keeps the last.*no type/);
-    expect(renderRequest(networkOf(op), { year: "2031" }).query).toEqual({ v: '{"year":"2031"}' });
+    const request = networkOf(draft);
+    expect(request.query).toEqual({});
+    expect(new URL(request.url).searchParams.getAll("v")).toEqual([
+      '{"year":"<text>"}',
+      '{"year":"<text>"}',
+    ]);
+    expect(request).not.toHaveProperty("redactedTypes");
+    expect(request.repeatedQuery).toEqual(["v"]);
+    expect(JSON.stringify(draft)).not.toContain("2024");
+    const placeholder = findRedactedPlaceholder(request);
+    expect(placeholder).toEqual({ field: "query.v", placeholder: "<text>", inUrl: true });
+    expect(placeholderError(placeholder).message).toMatch(
+      /query\.v holds <text> in the request URL.*include-input-values/,
+    );
+    expect(() => paramOp(draft, { fields: ["query.v.year"], as: "year" })).toThrow(
+      'query.v.year: query param "v" repeats (2 values), so it stays in the request URL as captured and can\'t be an input',
+    );
   });
 
   it("masks a JSON string leaf encoded once more in the trace and the draft", () => {
@@ -3439,7 +3527,7 @@ describe("a typed value a URL holds only on a guessed reading, through every art
   const ROUTE = `https://example.test/${encodeURIComponent(TYPED)}`;
   const spelled = TYPED.replace(/ /g, "+");
   const typeArgs = { selector: "#q", text: TYPED };
-  const everyFile = (directory: string) =>
+  const everyPath = (directory: string) =>
     fs
       .readdirSync(directory, { recursive: true, withFileTypes: true })
       .filter((entry: { isFile: () => boolean }) => entry.isFile())
@@ -3500,7 +3588,7 @@ describe("a typed value a URL holds only on a guessed reading, through every art
     const events = records
       .readEvents(record.id, root)
       .filter((e: Entry) => e.type === "browser.event");
-    const files = [...everyFile(home), ...everyFile(folder)];
+    const files = [...everyPath(home), ...everyPath(folder)];
     return { draft, trace, events, files, home, folder };
   }
 
@@ -3542,5 +3630,299 @@ describe("a typed value a URL holds only on a guessed reading, through every art
     for (const file of files) {
       expect(fs.readFileSync(file, "utf8")).not.toContain("kilo");
     }
+  });
+});
+
+describe("values key and network.replay --set carry", () => {
+  const { redactCommandArgs } = require("../../native/workflow-definition.cjs");
+  // A dummy value, built from parts so no literal here reads as a credential.
+  const TYPED = ["dummy", "typed", "3"].join("-");
+  const commands: Array<[string, Entry, string]> = [
+    ["key", { key: "q" }, "key"],
+    ["key", { key: "Enter", text: TYPED }, "text"],
+    ["key", { key: "Enter", text: TYPED }, "key"],
+    ["network.replay", { id: "r_1", set: { "query.q": TYPED } }, "set"],
+  ];
+  it.each(commands)("redacts %s %j", (command, args, name) => {
+    expect(redactCommandArgs(command, args)[name]).toBe(`<${name}>`);
+    expect(redactCommandArgs(command, args, true)[name]).toEqual(args[name]);
+  });
+
+  it.each(commands)("writes %s %j to no journal, record or draft file", (command, args) => {
+    const root = tempRoot();
+    journal.journalCommand(command, args, { root });
+    records.startRecord({ site: "fixture", op: "flow", tabId: 1, root });
+    records.appendRecordEvent(
+      {
+        type: "tool.completed",
+        command,
+        argsRedacted: redactCommandArgs(command, args),
+        startedAt: new Date().toISOString(),
+        endedAt: new Date().toISOString(),
+      },
+      { target: TAB, root },
+    );
+    records.stopRecord({ target: TAB, draft: true, root });
+    const written = everyFile(root);
+    expect(written).toContain('"flow"');
+    expect(written).not.toContain(TYPED);
+  });
+});
+
+describe("named keys and lookup text a record keeps", () => {
+  const { redactCommandArgs } = require("../../native/workflow-definition.cjs");
+  // Records `commands` as the host journals them, and stops with a draft.
+  function draftOf(commands: Array<[string, Entry]>) {
+    const root = tempRoot();
+    records.startRecord({ site: "fixture", op: "search", tabId: 1, root });
+    for (const [command, args] of commands) {
+      records.appendRecordEvent(
+        { ...completed([command, redactCommandArgs(command, args)]), type: "tool.completed" },
+        { target: TAB, root },
+      );
+    }
+    const { draft } = records.stopRecord({ target: TAB, draft: true, root });
+    return draft;
+  }
+
+  it.each(["Enter", "Tab", "Escape", "ArrowDown", "Control+a", "F5"])(
+    "keeps key %s literal after a typed value",
+    (key) => {
+      const draft = draftOf([
+        ["type", { text: "x" }],
+        ["key", { key }],
+      ]);
+      expect(Object.keys(draft.args)).toEqual(["text"]);
+      const steps = draft.run.find((strategy: Entry) => strategy.using === "workflow").steps;
+      expect(steps[1]).toMatchObject({ tool: "key", args: { key } });
+    },
+  );
+
+  it.each([" ", "S", "7", "é"])("redacts key %j, one printable character", (key) => {
+    expect(redactCommandArgs("key", { key })).toEqual({ key: "<key>" });
+  });
+
+  it.each([
+    ["locate.role", { role: "button", name: "Search", action: "click" }],
+    ["locate.text", { text: "Search", action: "click" }],
+    ["locate.label", { label: "Search", action: "click" }],
+  ] as Array<[string, Entry]>)("keeps the lookup text of %s literal", (command, args) => {
+    const draft = draftOf([[command, args]]);
+    expect(
+      Object.keys(draft.args).filter((name) => ["name", "text", "label"].includes(name)),
+    ).toEqual([]);
+    const steps = draft.run.find((strategy: Entry) => strategy.using === "workflow").steps;
+    expect(steps[0]).toMatchObject({ tool: command, args });
+  });
+});
+
+describe("a record's trace, when a secret header holds a short value", () => {
+  // Records `entry` with --include-input-values and stops with a draft; returns the trace entry the
+  // record kept and the request its draft replays.
+  function traceAndDraft(entry: Entry) {
+    const root = tempRoot();
+    const record = records.startRecord({
+      site: "fixture",
+      op: "search",
+      tabId: 1,
+      origin: "https://example.test",
+      network: true,
+      includeInputValues: true,
+      root,
+    });
+    records.attachNetworkTrace(record.id, [entry], root, { capture: COMPLETE });
+    const kept = JSON.parse(
+      fs.readFileSync(path.join(root, "records", record.id, "network", "trace.json"), "utf8"),
+    ).entries[0];
+    const { draft } = records.stopRecord({ target: TAB, draft: true, root });
+    return { kept, request: draft.run.find((s: Entry) => s.using === "network").request };
+  }
+  const sent = (headers: Entry, url: string, body: unknown): Entry => ({
+    id: "r_1",
+    method: "POST",
+    status: 200,
+    type: "Fetch",
+    mimeType: "application/json",
+    url,
+    requestHeaders: { "content-type": "application/json", ...headers },
+    requestBody: JSON.stringify(body),
+  });
+
+  it("redacts a whole query value that equals a one-character x-csrf-token, and keeps a JSON number", () => {
+    const url = "https://example.test/api/search?page=1&q=x&n=12";
+    const { kept, request } = traceAndDraft(
+      sent({ "x-csrf-token": "1" }, url, { page: 1, q: "x", token: "1" }),
+    );
+    expect(kept.url).toBe("https://example.test/api/search?page=<redacted>&q=x&n=12");
+    expect(JSON.parse(kept.requestBody)).toEqual({ page: 1, q: "x", token: "<redacted>" });
+    expect(request.query).toEqual({ page: "<redacted>", q: "x", n: "12" });
+    expect(JSON.parse(request.body)).toEqual({ page: 1, q: "x", token: "<redacted>" });
+  });
+
+  it("redacts a whole query value that equals a numeric x-csrf-token, and keeps page=1", () => {
+    const code = ["123", "4567"].join("");
+    const { kept, request } = traceAndDraft(
+      sent({ "x-csrf-token": code }, `https://example.test/api/verify?code=${code}&page=1`, {}),
+    );
+    expect(kept.url).toBe("https://example.test/api/verify?code=<redacted>&page=1");
+    expect(request.query).toEqual({ code: "<redacted>", page: "1" });
+  });
+
+  it.each(["v", "id", "true"])(
+    "redacts a short quoted auth parameter (%s) from the trace and draft, which still parse",
+    (value) => {
+      const { kept, request } = traceAndDraft(
+        sent(
+          { Authorization: `ResyAPI api_key="${value}"` },
+          `https://example.test/api/search?key=${value}&q=x`,
+          { key: value, q: "x", ok: true },
+        ),
+      );
+      expect(kept.url).toBe("https://example.test/api/search?key=<redacted>&q=x");
+      expect(JSON.parse(kept.requestBody)).toEqual({ key: "<redacted>", q: "x", ok: true });
+      expect(request.query).toEqual({ key: "<redacted>", q: "x" });
+      expect(JSON.parse(request.body)).toEqual({ key: "<redacted>", q: "x", ok: true });
+    },
+  );
+
+  it("never rewrites a key that equals the token, only a whole string value", () => {
+    const { kept, request } = traceAndDraft(
+      sent({ "x-csrf-token": "id" }, "https://example.test/api/items?id=7&kind=id", { id: "id" }),
+    );
+    expect(kept.url).toBe("https://example.test/api/items?id=7&kind=<redacted>");
+    expect(JSON.parse(kept.requestBody)).toEqual({ id: "<redacted>" });
+    expect(request.query).toEqual({ id: "7", kind: "<redacted>" });
+    expect(JSON.parse(request.body)).toEqual({ id: "<redacted>" });
+  });
+
+  it("redacts a short cookie value as a whole query or JSON value, keeping the query name", () => {
+    const url = "https://example.test/api/search?lang=en&q=x";
+    const { kept, request } = traceAndDraft(sent({ Cookie: "lang=en" }, url, { lang: "en" }));
+    expect(kept.url).toBe("https://example.test/api/search?lang=<redacted>&q=x");
+    expect(JSON.parse(kept.requestBody)).toEqual({ lang: "<redacted>" });
+    expect(request.query).toEqual({ lang: "<redacted>", q: "x" });
+  });
+
+  it("keeps both query parameters whose names are short auth parameters, numbered", () => {
+    const shop = ["sh", "op"].join("");
+    const realm = ["tr", "ue"].join("");
+    const { kept, request } = traceAndDraft(
+      sent(
+        { Authorization: `ResyAPI api_key="${shop}", realm="${realm}"` },
+        `https://example.test/anything?${shop}=first&${realm}=second`,
+        { q: "x" },
+      ),
+    );
+    expect(kept.url).toBe("https://example.test/anything?<redacted>=first&<redacted-2>=second");
+    expect(request.query).toEqual({ "<redacted>": "first", "<redacted-2>": "second" });
+  });
+
+  it("keeps a query name without a value and a bare JSON scalar body in the draft, which still parses", () => {
+    const shop = ["sh", "op"].join("");
+    const realm = ["tr", "ue"].join("");
+    const { kept, request } = traceAndDraft(
+      sent(
+        { Authorization: `ResyAPI api_key="${shop}", realm="${realm}"` },
+        `https://example.test/anything?${shop}&${realm}=two`,
+        true,
+      ),
+    );
+    expect(kept.url).toBe("https://example.test/anything?<redacted>&<redacted-2>=two");
+    expect(request.query).toEqual({ "<redacted>": "", "<redacted-2>": "two" });
+    expect(JSON.parse(kept.requestBody)).toBe("<redacted>");
+    expect(JSON.parse(request.body)).toBe("<redacted>");
+  });
+});
+
+describe("a draft of a request whose query repeats a name", () => {
+  function draftOf(url: string) {
+    const root = tempRoot();
+    const record = records.startRecord({
+      site: "fixture",
+      op: "search",
+      tabId: 1,
+      origin: "https://example.test",
+      network: true,
+      root,
+    });
+    records.attachNetworkTrace(
+      record.id,
+      [{ id: "r_1", method: "GET", status: 200, type: "Fetch", mimeType: "application/json", url }],
+      root,
+      { capture: COMPLETE },
+    );
+    const { draft, warnings } = records.stopRecord({ target: TAB, draft: true, root });
+    return {
+      request: draft.run.find((s: Entry) => s.using === "network").request,
+      warnings: warnings || [],
+    };
+  }
+
+  it("keeps every value of a repeated name in the URL, and the other names as query inputs", () => {
+    const { request, warnings } = draftOf("https://example.test/api/search?tag=1&q=x&tag=2&tag");
+    const sent = new URL(request.url);
+    for (const [name, value] of Object.entries(request.query)) {
+      sent.searchParams.set(name, String(value));
+    }
+    expect([...sent.searchParams.entries()].sort()).toEqual([
+      ["q", "x"],
+      ["tag", ""],
+      ["tag", "1"],
+      ["tag", "2"],
+    ]);
+    expect(request.query).toEqual({ q: "x" });
+    expect(warnings.join("\n")).toContain('query param "tag" repeats');
+  });
+
+  it("keeps the query as before when no name repeats", () => {
+    const { request, warnings } = draftOf("https://example.test/api/search?a=1&b=2");
+    expect(request.url).toBe("https://example.test/api/search");
+    expect(request.query).toEqual({ a: "1", b: "2" });
+    expect(warnings.join("\n")).not.toContain("repeats");
+  });
+});
+
+describe("a record's trace, when a body key is a secret header's value", () => {
+  // Dummy values, built from parts so no literal here reads as a credential.
+  const LONG = ["dummy", "long", "key", "22"].join("-");
+  const QUOTED = ["dummy", 'quo"ted', "va\\lue", "22"].join("-");
+
+  it("keeps a long and a quoted secret key out of the trace and draft, which still parse", () => {
+    const root = tempRoot();
+    const record = records.startRecord({
+      site: "fixture",
+      op: "search",
+      tabId: 1,
+      origin: "https://example.test",
+      network: true,
+      includeInputValues: true,
+      root,
+    });
+    records.attachNetworkTrace(
+      record.id,
+      [
+        {
+          id: "r_1",
+          method: "POST",
+          status: 200,
+          type: "Fetch",
+          mimeType: "application/json",
+          url: "https://example.test/api/search",
+          requestHeaders: {
+            "content-type": "application/json",
+            Authorization: `Bearer ${LONG}`,
+            "x-api-key": QUOTED,
+          },
+          requestBody: JSON.stringify({ [LONG]: "ok", [QUOTED]: "ok", q: "x" }),
+        },
+      ],
+      root,
+      { capture: COMPLETE },
+    );
+    const { draft } = records.stopRecord({ target: TAB, draft: true, root });
+    const request = draft.run.find((s: Entry) => s.using === "network").request;
+    expect(JSON.parse(request.body)).toEqual({ "<redacted>": "ok", "<redacted-2>": "ok", q: "x" });
+    const written = everyFile(root);
+    expect(written).not.toContain("dummy");
   });
 });

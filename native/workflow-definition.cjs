@@ -1,7 +1,7 @@
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
-const { isSensitiveName, redactSensitiveFields, redactUrlSecrets } = require("./redaction.cjs");
+const { isSensitiveName, redactSecretValues, redactSensitiveFields, redactUrlSecrets } = require("./redaction.cjs");
 const { SEMANTIC_POLICY, extractionFieldName, fieldsJsonField } = require("./semantic-core.cjs");
 
 const COMMANDS = {
@@ -22,7 +22,9 @@ const COMMANDS = {
   click: { effect: "page-write", argKinds: { ref: "element-ref", selector: "selector", x: "number", y: "number" } },
   check: { primaryArg: "ref", effect: "page-write", argKinds: { ref: "element-ref" } },
   uncheck: { primaryArg: "ref", effect: "page-write", argKinds: { ref: "element-ref" } },
-  key: { primaryArg: "key", effect: "page-write", argKinds: { key: "key" } },
+  // A key step can type text (key "S", --text), so that is redacted like type's text; a named key
+  // (Enter, Tab, Control+a) stays literal (see argumentSensitiveArgs).
+  key: { primaryArg: "key", effect: "page-write", argKinds: { key: "key", text: "key" }, sensitiveArgs: ["key", "text"] },
   submit: { effect: "page-write" },
   hover: { effect: "read", argKinds: { ref: "element-ref", selector: "selector" } },
   scroll: { effect: "page-write", argKinds: { direction: "name", scroll_pixels: "number" } },
@@ -65,7 +67,8 @@ const COMMANDS = {
   "network.curl": { primaryArg: "id", effect: "read", argKinds: { id: "request-id" } },
   "network.path": { primaryArg: "id", effect: "read", argKinds: { id: "request-id" } },
   "network.wait": { primaryArg: "match", effect: "read", argKinds: { match: "url-pattern", open: "url" } },
-  "network.replay": { primaryArg: "id", effect: "read", argKinds: { id: "request-id" } },
+  // --set path=value can carry a token or a typed query.
+  "network.replay": { primaryArg: "id", effect: "read", argKinds: { id: "request-id", set: "user-input" }, sensitiveArgs: ["set"] },
   collect: { effect: "read", argKinds: { item: "selector", expand: "selector", open: "url" } },
   "page.read": { effect: "read" },
   "page.text": { effect: "read" },
@@ -78,10 +81,11 @@ const COMMANDS = {
   "window.new": { primaryArg: "url", effect: "navigation", argKinds: { url: "url" } },
   "window.focus": { primaryArg: "id", effect: "navigation", argKinds: { id: "window-id" } },
   "window.close": { primaryArg: "id", effect: "page-write", argKinds: { id: "window-id" } },
-  // `value` is what --action fill types, so it is redacted like type's text.
-  "locate.role": { primaryArg: "role", effect: "read", argKinds: { role: "role", value: "user-input" }, sensitiveArgs: ["value"] },
-  "locate.text": { primaryArg: "text", effect: "read", argKinds: { text: "user-input", value: "user-input" }, sensitiveArgs: ["text", "value"] },
-  "locate.label": { primaryArg: "label", effect: "read", argKinds: { label: "user-input", value: "user-input" }, sensitiveArgs: ["label", "value"] },
+  // `value` is what --action fill types, so it is redacted like type's text. The lookup text (--name,
+  // the text, the label) is the page's own wording, so it stays literal.
+  "locate.role": { primaryArg: "role", effect: "read", argKinds: { role: "role", name: "user-input", value: "user-input" }, sensitiveArgs: ["value"] },
+  "locate.text": { primaryArg: "text", effect: "read", argKinds: { text: "user-input", value: "user-input" }, sensitiveArgs: ["value"] },
+  "locate.label": { primaryArg: "label", effect: "read", argKinds: { label: "user-input", value: "user-input" }, sensitiveArgs: ["value"] },
   "emulate.device": { primaryArg: "device", effect: "page-write", argKinds: { device: "name" } },
   "frame.js": { primaryArg: "code", effect: "unknown", recordable: false, argKinds: { code: "code" }, sensitiveArgs: ["code"] },
   "element.styles": { primaryArg: "selector", effect: "read", argKinds: { selector: "selector" } },
@@ -115,6 +119,14 @@ function argumentEffect(name, args = {}) {
   return undefined;
 }
 
+// A key step types text when its key is one printable character or it sets --text; otherwise its
+// key is a named key, which is no one's data. Without args, every argument that can be sensitive.
+function argumentSensitiveArgs(name, sensitiveArgs, args) {
+  if (name !== "key" || !args || args.text !== undefined) return sensitiveArgs;
+  const key = String(args.key ?? "");
+  return [...key].length === 1 && /^\P{C}$/u.test(key) ? sensitiveArgs : sensitiveArgs.filter((arg) => arg !== "key");
+}
+
 function commandMetadata(command, args) {
   const name = ALIASES[command] || command;
   const metadata = COMMANDS[name];
@@ -124,12 +136,12 @@ function commandMetadata(command, args) {
     effect: argumentEffect(name, args) || metadata?.effect || "unknown",
     recordable: Boolean(metadata) && metadata.recordable !== false,
     argKinds: metadata?.argKinds || {},
-    sensitiveArgs: metadata?.sensitiveArgs || [],
+    sensitiveArgs: argumentSensitiveArgs(name, metadata?.sensitiveArgs || [], args),
   };
 }
 
 function redactCommandArgs(command, args, includeInputValues = false) {
-  const metadata = commandMetadata(command);
+  const metadata = commandMetadata(command, args);
   const redacted = redactSensitiveFields({ ...(args || {}) });
   for (const name of metadata.sensitiveArgs) {
     if (!includeInputValues && Object.hasOwn(redacted, name)) redacted[name] = `<${name}>`;
@@ -141,6 +153,25 @@ function redactCommandArgs(command, args, includeInputValues = false) {
     if (isSensitiveName(name)) redacted[name] = "<redacted>";
   }
   return redacted;
+}
+
+// `text` (a step's error) with the text of the step's sensitive arguments (what `type` types, a
+// form's values, at any depth) replaced with <redacted>, in every spelling (see valueSpellings).
+function redactArgValues(command, args, text) {
+  const values = [];
+  const collect = (value) => {
+    if (typeof value === "string" || typeof value === "number") values.push(String(value));
+    else if (value && typeof value === "object") Object.values(value).forEach(collect);
+  };
+  for (const name of commandMetadata(command, args).sensitiveArgs) collect(args?.[name]);
+  return values.length ? redactSecretValues(text, values) : text;
+}
+
+// A step's arguments for a progress line: redacted as the journal has them, long text cut short.
+function summarizeArgs(command, args) {
+  return Object.entries(redactCommandArgs(command, args || {}))
+    .map(([key, value]) => (typeof value === "string" && value.length > 40 ? `${key}="${value.slice(0, 37)}..."` : `${key}=${JSON.stringify(value)}`))
+    .join(" ");
 }
 
 function templateRedactedArgs(value, args = {}) {
@@ -540,7 +571,7 @@ function formatStep(step, indent = 0) {
     return lines.join("\n");
   }
   const tool = step.tool || step.cmd;
-  const argStr = Object.entries(step.args || {}).map(([key, value]) => `${key}=${JSON.stringify(value)}`).join(" ");
+  const argStr = Object.entries(redactCommandArgs(tool, step.args || {})).map(([key, value]) => `${key}=${JSON.stringify(value)}`).join(" ");
   return `${pad}${tool}${argStr ? ` ${argStr}` : ""}${step.as ? ` → ${step.as}` : ""}`;
 }
 
@@ -585,7 +616,9 @@ module.exports = {
   parseCommandLine,
   parseDoCommands,
   promoteRedactedStepArgs,
+  redactArgValues,
   redactCommandArgs,
+  summarizeArgs,
   resolveWorkflow,
   tokenize,
   validateWorkflowArgs,

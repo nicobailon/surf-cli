@@ -1,4 +1,4 @@
-const { redactCommandArgs } = require("./workflow-definition.cjs");
+const { redactArgValues, redactCommandArgs } = require("./workflow-definition.cjs");
 
 const MAX_LOOP_ITERATIONS = 100;
 const AUTO_WAIT_COMMANDS = ["go", "navigate", "click", "key", "form.fill", "submit", "tab.switch", "tab.new", "back", "forward"];
@@ -163,13 +163,15 @@ async function executeSingleStep(step, vars, options) {
   const args = substituteVars(step.args || {}, vars, { escapes, inputs });
   const startedAt = new Date().toISOString();
   const baseEvent = { command: step.cmd, argsRedacted: redactCommandArgs(step.cmd, args, includeInputValues), startedAt };
+  // An error that quotes what the step typed keeps it out of the step's events and result.
+  const redactInputs = (text) => (includeInputValues ? text : redactArgValues(step.cmd, args, text));
   onEvent({ type: "tool.started", ...baseEvent });
   try {
     assertNotAborted(signal);
     const response = await executeTool(step.cmd, args, { signal });
     assertNotAborted(signal);
     if (response?.error) {
-      const error = response.error.content?.[0]?.text || (typeof response.error === "string" ? response.error : JSON.stringify(response.error));
+      const error = redactInputs(response.error.content?.[0]?.text || (typeof response.error === "string" ? response.error : JSON.stringify(response.error)));
       onEvent({ type: "tool.failed", ...baseEvent, endedAt: new Date().toISOString(), resultSummary: error });
       return { success: false, error };
     }
@@ -191,7 +193,7 @@ async function executeSingleStep(step, vars, options) {
     onEvent({ type: "tool.completed", ...baseEvent, endedAt: new Date().toISOString(), resultSummary: "success" });
     return { success: true, ...(step.as ? { output: vars[step.as] } : {}) };
   } catch (error) {
-    const message = error?.message || String(error);
+    const message = redactInputs(error?.message || String(error));
     onEvent({ type: "tool.failed", ...baseEvent, endedAt: new Date().toISOString(), resultSummary: message });
     return { success: false, error: message };
   }

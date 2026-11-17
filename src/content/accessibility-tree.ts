@@ -946,6 +946,24 @@ function registerLocatedRef(el: Element): string {
   return ref;
 }
 
+// Inputs whose value the page sets, not the user: their value is their name, so it stays listed.
+const PAGE_VALUE_INPUT_TYPES = new Set(["checkbox", "radio", "submit", "button", "reset", "image"]);
+
+// A match as an ambiguity lists it: its ref, role and name. An unlabeled field is named by what was
+// typed or chosen in it (getName), so a name drawn from the field's value is left out.
+function listedMatch(el: Element): string {
+  const name = getName(el).replace(/\s+/g, " ");
+  const tag = el.tagName.toLowerCase();
+  const select = el as HTMLSelectElement;
+  const userValue = tag === "textarea" ||
+    (tag === "input" && !PAGE_VALUE_INPUT_TYPES.has((el.getAttribute("type") || "").toLowerCase()));
+  const typed = userValue ? (el as HTMLInputElement).value
+    : tag === "select" ? (select.selectedIndex >= 0 ? select.options[select.selectedIndex]?.textContent : "")
+    : (el as HTMLElement).isContentEditable ? el.textContent : "";
+  const fromValue = Boolean(typed?.trim()) && typed!.replace(/\s+/g, " ").includes(name.replace(/\.\.\.$/, ""));
+  return `${registerLocatedRef(el)} ${getResolvedRole(el)}${name && !fromValue ? ` ${JSON.stringify(name)}` : ""}`;
+}
+
 // Exact matches outrank partial ones. When the caller is about to act, two or more remaining
 // matches are refused instead of acting on whichever came first in the document.
 function narrowLocated(
@@ -959,8 +977,7 @@ function narrowLocated(
   const elements = exact.length ? exact : matches;
   if (elements.length === 0) return notFound;
   if (!unique || elements.length < 2) return elements;
-  const listed = elements.slice(0, 10).map((el) =>
-    `  ${registerLocatedRef(el)} ${getResolvedRole(el)} ${JSON.stringify(getName(el).replace(/\s+/g, " "))}`);
+  const listed = elements.slice(0, 10).map((el) => `  ${listedMatch(el)}`);
   if (elements.length > 10) listed.push(`  ...and ${elements.length - 10} more`);
   return `${elements.length} elements match ${query}, so nothing was done. ` +
     `Act on one of them by ref (for example surf click <ref>), or narrow the query:\n${listed.join("\n")}`;
@@ -2410,7 +2427,8 @@ function handleContentMessage(
           ].some(field => normalizeLocatorText(field).includes(query)));
         }
 
-        const described = `role "${role}"${name ? ` and name "${name}"` : ''}`;
+        // The name can be text the caller typed: errors name the field, not its value.
+        const described = `role "${role}"${name ? " and the given name" : ''}`;
         const narrowed = narrowLocated(
           matches,
           el => query !== "" && normalizeLocatorText(getName(el)) === query,
@@ -2457,8 +2475,8 @@ function handleContentMessage(
           sorted,
           el => normalizeLocatorText(el.textContent) === query,
           unique,
-          `text "${text}"`,
-          `No element found with text "${text}"`,
+          "the given text",
+          "No element found with the given text",
         );
         if (typeof narrowed === "string") {
           sendResponse({ error: narrowed });
@@ -2505,8 +2523,8 @@ function handleContentMessage(
           [...fields],
           field => exactFields.has(field),
           unique,
-          `label "${label}"`,
-          `No form field found with label "${label}"`,
+          "the given label",
+          "No form field found with the given label",
         );
         if (typeof narrowed === "string") {
           sendResponse({ error: narrowed });

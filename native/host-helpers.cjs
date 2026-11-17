@@ -1,7 +1,7 @@
 const fs = require("fs");
 const networkFormatters = require("./formatters/network.cjs");
-const { publicEntry } = require("./network-export.cjs");
-const { isSecretHeader, redactObject, redactValues } = require("./redaction.cjs");
+const { publicEntry, redactHeaders } = require("./network-export.cjs");
+const { bodyContentType, redactEchoBody, redactEchoJson, redactEchoUrl, redactUrlIfSecret, redactValues, secretHeaderEchoes } = require("./redaction.cjs");
 const { recoveryFor } = require("./surf-error.cjs");
 
 function buildProviderUploadMessage(provider, tabId, filePaths, id) {
@@ -75,19 +75,29 @@ function publicNetworkResult(tool, result) {
   return view;
 }
 
-// A response the host read from capture for network.wait, network.replay or network.body: its URL
-// by the export rules, and a body or JSON echoing a secret header value of `entries` (the request
-// it answers) with <redacted> in its place, as network.get shows it.
+// A response the host read from capture for network.wait, network.replay or network.body: its URL,
+// body, JSON or content type echoing a secret header value of `entries` (the request it answers) with <redacted>
+// in its place, as network.get shows it: the whole value, an auth parameter's or cookie's value, in
+// every spelling (see secretHeaderEchoes); the URL also without credentials, as an export has it.
+// The body is read by its own content type, else by the one its request's capture gave the response
+// (network.body sends the body alone), so an XML body isn't read as HTML.
 function publicResponse(response, entries) {
   if (!isEntry(response)) return response;
-  const secrets = entries.filter(isEntry).flatMap((entry) =>
-    [entry.requestHeaders, entry.responseHeaders].filter(isEntry).flatMap((headers) =>
-      Object.entries(headers).filter(([name]) => isSecretHeader(name)).map(([, value]) => String(value))));
+  const captured = entries.filter(isEntry);
+  const secrets = secretHeaderEchoes(captured.flatMap((entry) => [entry.requestHeaders, entry.responseHeaders]));
   const view = { ...response };
-  if (typeof view.url === "string") view.url = publicEntry({ url: view.url }).url;
-  if (secrets.length === 0) return view;
-  if (typeof view.body === "string" && view.base64Encoded !== true) view.body = redactValues(view.body, secrets);
-  if (view.json !== undefined) view.json = redactObject(view.json, secrets);
+  if (typeof view.url === "string") view.url = redactEchoUrl(redactUrlIfSecret(view.url), secrets);
+  const contentType =
+    bodyContentType(view.headers, view.mimeType || view.contentType) ||
+    captured.map((entry) => bodyContentType(entry.responseHeaders, entry.mimeType)).find(Boolean) ||
+    "";
+  if (typeof view.body === "string" && view.base64Encoded !== true) view.body = redactEchoBody(view.body, secrets, { contentType });
+  // A parsed body (network.wait, network.replay) by the same content type, so an HTML or XML one
+  // that parses as JSON is read as markup too.
+  if (view.json !== undefined) view.json = redactEchoJson(view.json, secrets, { contentType });
+  // The content type printed with it (network.wait, network.replay), redacted as network.get
+  // shows the header, after the body was read by it as captured.
+  if (typeof view.contentType === "string") view.contentType = redactHeaders({ "content-type": view.contentType }, new Set(), secrets)["content-type"];
   return view;
 }
 

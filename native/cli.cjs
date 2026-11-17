@@ -19,7 +19,9 @@ const {
   listWorkflows,
   normalizeWorkflow,
   parseDoCommands,
+  redactArgValues,
   resolveWorkflow,
+  summarizeArgs,
   validateWorkflowArgs,
   validateWorkflowFile,
   ECHO_COMMANDS,
@@ -52,7 +54,7 @@ const { resolveRequestDeadlineMs } = require("./host-sessions.cjs");
 const toolScope = require("./tool-scope.cjs");
 const { classifyTool } = toolScope;
 const { parseVideoFps, validateVideoOutputPath } = require("./video-recorder.cjs");
-const { AUTO_SCREENSHOT_TOOLS, MAX_SETTLE_MS, PAGE_CHANGES_TOOLS, isSettleMs, prepareRemoteTool, validateLocalToolPaths } = require("./file-transfer.cjs");
+const { AUTO_SCREENSHOT_TOOLS, MAX_SETTLE_MS, PAGE_CHANGES_TOOLS, isSettleMs, prepareToolRequest } = require("./file-transfer.cjs");
 const { authorizeClient, listClients, revokeClient, getStateDir } = require("./remote-auth.cjs");
 if (IS_WIN) { try { fs.mkdirSync(SURF_TMP, { recursive: true }); } catch {} }
 
@@ -1495,7 +1497,7 @@ const TOOLS = {
           "allow-semantic": "Allow bounded semantic model decisions (model: SURF_SEMANTIC_MODEL, default jev-1.13.0); extract steps always use clairic (Cloudflare)",
           "allow-write": "Allow declared semantic fill/check/click steps",
           "inputs-stdin": "Read bounded private input slots as one JSON object from stdin",
-          "echo-value": "Show typed values and chosen options in step results (a saved workflow's steps can't turn this on)",
+          "echo-value": "Show typed values and chosen options in step results, and variable values with --dry-run (a saved workflow's steps can't turn this on)",
         },
         examples: [
           { cmd: 'do \'go "https://example.com" | read | click e5 | screenshot\'', desc: "Inline workflow" },
@@ -2761,7 +2763,7 @@ if (args.includes("--script")) {
       req.sessionSource = scriptTarget.sessionSource;
     }
     if (scriptTarget.admission) req.admission = scriptTarget.admission;
-    const prepared = endpoint.kind === "remote" ? prepareRemoteTool(toolName, toolArgs) : (() => { const args = validateLocalToolPaths(toolName, toolArgs); return { args, uploads: [], downloads: [] }; })();
+    const prepared = prepareToolRequest(endpoint, toolName, toolArgs);
     req.params.args = prepared.args;
     return scriptTransport.request(req, resolveRequestDeadlineMs(toolName, prepared.args), prepared);
   };
@@ -2784,9 +2786,7 @@ if (args.includes("--script")) {
       // A script file can't turn on what loosens a safe default; only the command line can.
       const toolArgs = withoutOptIns(step.args);
 
-      const argSummary = Object.entries(toolArgs)
-        .map(([k, v]) => typeof v === "string" && v.length > 40 ? `${k}="${v.slice(0, 37)}..."` : `${k}=${JSON.stringify(v)}`)
-        .join(" ");
+      const argSummary = summarizeArgs(toolName, toolArgs);
       const desc = argSummary ? `${toolName} ${argSummary}` : toolName;
 
       if (dryRun) {
@@ -2800,7 +2800,8 @@ if (args.includes("--script")) {
       try {
         const resp = await sendScriptRequest(toolName, toolArgs);
         if (resp.error) {
-          const errText = resp.error.content?.[0]?.text || JSON.stringify(resp.error);
+          // An error that quotes what the step typed prints <redacted> in its place.
+          const errText = redactArgValues(toolName, toolArgs, resp.error.content?.[0]?.text || JSON.stringify(resp.error));
           console.log(`FAIL`);
           console.log(`     Error: ${errText}`);
           results.push({ step: i + 1, tool: toolName, status: "fail", error: errText });
@@ -2811,9 +2812,10 @@ if (args.includes("--script")) {
           results.push({ step: i + 1, tool: toolName, status: "ok" });
         }
       } catch (e) {
+        const message = redactArgValues(toolName, toolArgs, e.message);
         console.log(`FAIL`);
-        console.log(`     Error: ${e.message}`);
-        results.push({ step: i + 1, tool: toolName, status: "fail", error: e.message });
+        console.log(`     Error: ${message}`);
+        results.push({ step: i + 1, tool: toolName, status: "fail", error: message });
         failed++;
         if (stopOnError) break;
       }
@@ -3035,8 +3037,10 @@ if (args[0] === "do") {
     console.error("Error: No commands found in workflow");
     process.exit(1);
   }
-  // Typed values and chosen options show only with --echo-value or echoValue in ~/surf.json.
-  if (echoValue || loadUserConfig().echoValue === true) steps = withEchoedValues(steps);
+  // Typed values, chosen options and --dry-run's variable values show only with --echo-value or
+  // echoValue in ~/surf.json.
+  const echoed = echoValue || loadUserConfig().echoValue === true;
+  if (echoed) steps = withEchoedValues(steps);
 
   // Apply arg defaults
   const vars = workflow ? applyArgDefaults(workflow, workflowArgs) : workflowArgs;
@@ -3072,10 +3076,11 @@ if (args[0] === "do") {
     steps.forEach((s, i) => {
       console.log(`  ${i + 1}. ${formatStep(s)}`);
     });
+    // Names only unless echoed: a variable can hold a password or other typed input.
     if (Object.keys(vars).length > 0) {
       console.log(`\nVariables:`);
       for (const [k, v] of Object.entries(vars)) {
-        console.log(`  ${k} = ${JSON.stringify(v)}`);
+        console.log(`  ${k} = ${echoed ? JSON.stringify(v) : "<redacted>"}`);
       }
     }
     process.exit(0);
@@ -4133,7 +4138,7 @@ if (streamMode && (tool === "console" || tool === "network")) {
 
 let transferPlan;
 try {
-  transferPlan = endpoint.kind === "remote" ? prepareRemoteTool(finalTool, toolArgs) : (() => { const args = validateLocalToolPaths(finalTool, toolArgs); return { args, uploads: [], downloads: [] }; })();
+  transferPlan = prepareToolRequest(endpoint, finalTool, toolArgs);
 } catch (error) {
   const message = finalTool === "record" && endpoint.kind === "remote"
     ? `record is not supported with remote endpoint ${endpoint.display}`
@@ -4153,7 +4158,7 @@ const request = {
 const sendRequest = async (toolName, toolArgs = {}, timeoutMs = 5000) => {
   const transport = await openClientTransport(endpoint, { requestTimeoutMs: timeoutMs });
   try {
-    const prepared = endpoint.kind === "remote" ? prepareRemoteTool(toolName, toolArgs) : (() => { const args = validateLocalToolPaths(toolName, toolArgs); return { args, uploads: [], downloads: [] }; })();
+    const prepared = prepareToolRequest(endpoint, toolName, toolArgs);
     return await transport.request({
       type: "tool_request",
       method: "execute_tool",

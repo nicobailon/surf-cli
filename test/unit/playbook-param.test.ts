@@ -615,6 +615,19 @@ describe("pb param: validation", () => {
     );
   });
 
+  it("says a repeated query name stays in the request URL and can't be an input", () => {
+    const repeated = networkOp({
+      url: "https://shop.test/search?tag=a&tag=b",
+      query: { q: "laptop" },
+    });
+    expect(() => paramOp(repeated, { fields: ["query.tag"], as: "tag" })).toThrow(
+      'query.tag: query param "tag" repeats (2 values), so it stays in the request URL as captured and can\'t be an input',
+    );
+    expect(() => paramOp(repeated, { fields: ["query.missing"], as: "q" })).toThrow(
+      /query.missing: no query param "missing" \(has: q\)/,
+    );
+  });
+
   it("changes nothing when the same param is applied twice", () => {
     const first = paramOp(op, { fields: ["query.q"], as: "q", desc: "Search text" });
     const second = paramOp(first.op, { fields: ["query.q"], as: "q", desc: "Search text" });
@@ -1081,5 +1094,64 @@ describe("pb param: saving", () => {
     await expect(
       handlePlaybookCli(["pb", "param", "shop", "search", "path.2"], { cwd }),
     ).rejects.toThrow(/--as <name> or --env <VAR>/);
+  });
+});
+
+describe("pb param: what it prints about the value it removed", () => {
+  // Dummy values, built from parts so no literal here reads as a credential.
+  const VALUE = ["dummy", "q", "8"].join("-");
+  const HEADER_VALUE = ["dummy", "site", "key", "8"].join("-");
+
+  const printed = async (cwd: string, args: string[]) => {
+    const text = await handlePlaybookCli(["pb", "param", "shop", "search", ...args], { cwd });
+    return String(text.value);
+  };
+
+  it("keeps a --required input's recorded value out of the diff, notes and JSON result", async () => {
+    const request = { url: "https://shop.test/search", query: { q: VALUE } };
+    const op = networkOp(request);
+    op.run.push({ using: "workflow", steps: [{ cmd: "click", args: { ref: "e9" } }] } as never);
+    const { cwd } = project(op);
+    const text = await printed(cwd, ["query.q", "--as", "q", "--required"]);
+    expect(text).toMatch(/^- .*<redacted>/m);
+    expect(text).toContain("workflow strategy unchanged");
+    expect(text).not.toContain(VALUE);
+
+    const again = project(op);
+    const json = await handlePlaybookCli(
+      ["pb", "param", "shop", "search", "query.q", "--as", "q", "--required", "--json"],
+      { cwd: again.cwd },
+    );
+    expect(JSON.stringify(json.value)).not.toContain(VALUE);
+  });
+
+  it("keeps a nested JSON literal out of the diff, double-escaped in the op file", async () => {
+    // A quote and a backslash, so the op file holds it escaped twice (JSON inside a JSON string).
+    const quoted = ["dummy", 'quo"ted', "va\\lue", "14"].join("-");
+    const variables = JSON.stringify({ token: quoted, page: 2 });
+    const { cwd, file } = project(
+      networkOp({ url: "https://shop.test/graphql", query: { variables } }),
+    );
+    expect(fs.readFileSync(file, "utf8")).toContain(
+      JSON.stringify(JSON.stringify(quoted).slice(1, -1)).slice(1, -1),
+    );
+    const text = await printed(cwd, ["query.variables.token", "--as", "token", "--required"]);
+    expect(text).toMatch(/^- .*<redacted>/m);
+    expect(text).not.toContain("dummy");
+    expect(text).not.toContain("lue-14");
+  });
+
+  it("keeps an --env header's recorded value out of the diff", async () => {
+    const { cwd } = project(
+      networkOp({ url: "https://shop.test/search", headers: { "X-Site-Key": HEADER_VALUE } }),
+    );
+    const text = await printed(cwd, ["headers.X-Site-Key", "--env", "SHOP_SITE_KEY"]);
+    expect(text).toMatch(/^- .*"X-Site-Key": "<redacted>"/m);
+    expect(text).not.toContain(HEADER_VALUE);
+  });
+
+  it("still shows a value that becomes a default", async () => {
+    const { cwd } = project(networkOp({ url: "https://shop.test/search", query: { q: VALUE } }));
+    expect(await printed(cwd, ["query.q", "--as", "q"])).toContain(VALUE);
   });
 });

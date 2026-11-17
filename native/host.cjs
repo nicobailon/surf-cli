@@ -44,7 +44,7 @@ const { RequestPendingMap } = require("./request-pending.cjs");
 const { PAGE_CHANGES_TOOLS, cleanupFilePaths, createStagingDirectory, createTransferState, materializeRemoteTool, rewriteTransferPaths, streamFileDownload, transferError } = require("./file-transfer.cjs");
 const { writeNetworkExport } = require("./network-export.cjs");
 const networkStore = require("./network-store.cjs");
-const { redactUrlSecrets } = require("./redaction.cjs");
+const { redactUrlSecrets, redactUrlsInText } = require("./redaction.cjs");
 const { appendActivity, journalCommand } = require("./activity-journal.cjs");
 const { checkReceipt, reserveReceipt, updateReceipt } = require("./playbook-receipts.cjs");
 const {
@@ -68,7 +68,7 @@ const {
 const { visibleText } = require("./record-candidates.cjs");
 const { validateAssertions } = require("./playbook-assertions.cjs");
 const { resolveArgs, runPlaybookOp, testPlaybookOp } = require("./playbook-runtime.cjs");
-const { resolveOp } = require("./playbooks.cjs");
+const { envBackedHeaders, resolveOp } = require("./playbooks.cjs");
 const { replay, waitForResponse } = require("./api-harvest.cjs");
 const { runCollect } = require("./dom-collect.cjs");
 const { formatRecords } = require("./record-format.cjs");
@@ -412,8 +412,9 @@ async function handleApiRequest(msg, sendResponse) {
   }
 }
 
+// A URL in a log line loses its user, password and secret-named query values.
 const log = (msg) => {
-  fs.appendFileSync(LOG_FILE, `${new Date().toISOString()} ${msg}\n`);
+  fs.appendFileSync(LOG_FILE, `${new Date().toISOString()} ${redactUrlsInText(msg)}\n`);
 };
 
 if (require.main === module) {
@@ -2867,6 +2868,8 @@ function handleToolRequest(msg, socket, requestContext = requestStorage.getStore
     networkExport: extensionMsg.type === "EXPORT_NETWORK_REQUESTS",
     persistNetwork: extensionMsg.type === "READ_NETWORK_REQUESTS" && extensionMsg.full && args?.["no-save"] !== true,
     networkExportPath: args?.output,
+    // The caller's project, whose saved ops' env-backed headers the export redacts too.
+    networkExportProjectDir: requestContext?.context?.isRemote ? undefined : args?.projectDir,
     networkPath: args?.["network-path"],
     networkExportFormat: extensionMsg.har ? "har" : extensionMsg.jsonl ? "jsonl" : "json",
     networkExportRawBodies: args?.["raw-bodies"] === true || args?.rawBodies === true,
@@ -3131,7 +3134,8 @@ function processInput() {
           
           if (pending.networkExport && Array.isArray(msg.entries)) {
             try {
-              const exportResult = writeNetworkExport(pending.networkExportPath, msg.entries, pending.networkExportFormat, { rawBodies: pending.networkExportRawBodies });
+              const secretHeaders = envBackedHeaders(pending.networkExportProjectDir ? { cwd: pending.networkExportProjectDir } : {});
+              const exportResult = writeNetworkExport(pending.networkExportPath, msg.entries, pending.networkExportFormat, { secretHeaders, rawBodies: pending.networkExportRawBodies });
               sendToolResponse(socket, originalId, exportResult, null);
             } catch (error) {
               sendToolResponse(socket, originalId, null, `Failed to export network requests: ${error.message}`);

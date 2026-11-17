@@ -6,7 +6,7 @@ const { formatSocketError } = require("./socket-path.cjs");
 const { selectEndpoint } = require("./endpoint.cjs");
 const { openClientTransport } = require("./client-transport.cjs");
 const { resolveRequestDeadlineMs } = require("./host-sessions.cjs");
-const { prepareRemoteTool, validateLocalToolPaths } = require("./file-transfer.cjs");
+const { prepareToolRequest } = require("./file-transfer.cjs");
 
 const TOOL_SCHEMAS = {
   navigate: {
@@ -367,11 +367,11 @@ const TOOL_SCHEMAS = {
   }
 };
 
-async function sendSocketRequest(tool, args = {}, endpoint = selectEndpoint([]).endpoint) {
-  const requestTimeoutMs = resolveRequestDeadlineMs(tool, args);
+async function sendSocketRequest(tool, toolArgs = {}, endpoint = selectEndpoint([]).endpoint) {
+  const requestTimeoutMs = resolveRequestDeadlineMs(tool, toolArgs);
   const transport = await openClientTransport(endpoint, { requestTimeoutMs });
   try {
-    const prepared = endpoint.kind === "remote" ? prepareRemoteTool(tool, args) : (() => { const normalized = validateLocalToolPaths(tool, args); return { args: normalized, uploads: [], downloads: [] }; })();
+    const prepared = prepareToolRequest(endpoint, tool, toolArgs);
     return await transport.request({
       type: "tool_request",
       method: "execute_tool",

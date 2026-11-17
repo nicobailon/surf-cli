@@ -3,7 +3,7 @@ const path = require("path");
 const { version: PACKAGE_VERSION } = require("../package.json");
 const { redactSecretBodyFields } = require("./body-redaction.cjs");
 const { atomicWriteFile } = require("./private-state.cjs");
-const { isSecretHeader, isSensitiveName, redactUrlSecrets, redactValues } = require("./redaction.cjs");
+const { bodyContentType, isSecretHeader, redactEchoBody, redactEchoText, redactEchoUrl, redactUrlIfSecret, secretHeaderEchoes } = require("./redaction.cjs");
 
 const MAX_NETWORK_EXPORT_FILE_BYTES = 256 * 1024 * 1024;
 const INTERNAL_FIELDS = new Set(["_requestId", "_responseReceived", "_loadingFinished"]);
@@ -11,52 +11,38 @@ const INTERNAL_FIELDS = new Set(["_requestId", "_responseReceived", "_loadingFin
 const HEADER_FIELDS = new Set(["requestHeaders", "responseHeaders"]);
 const URL_FIELDS = new Set(["url", "tabUrl"]);
 
-// Secret headers (auth, cookies, API keys) keep their name with a <redacted> value.
-function redactHeaders(headers) {
+// Secret headers (auth, cookies, API keys, and the `secretHeaders` ops read from the environment)
+// keep their name with a <redacted> value; any other header that echoes a secret's value loses it.
+function redactHeaders(headers, secretHeaders, secrets) {
   if (!headers || typeof headers !== "object" || Array.isArray(headers)) return headers;
-  return Object.fromEntries(Object.entries(headers).map(([name, value]) => [name, isSecretHeader(name) ? "<redacted>" : value]));
-}
-
-// Drops user:password and redacts secret-named query params; any other URL is kept as captured.
-function redactUrl(url) {
-  if (typeof url !== "string") return url;
-  let parsed;
-  try {
-    parsed = new URL(url);
-  } catch {
-    return url;
-  }
-  const secretParam = [...parsed.searchParams.keys()].some(isSensitiveName);
-  if (!parsed.username && !parsed.password && !secretParam) return url;
-  parsed.username = "";
-  parsed.password = "";
-  return redactUrlSecrets(parsed.toString());
+  return Object.fromEntries(Object.entries(headers).map(([name, value]) => {
+    if (isSecretHeader(name) || secretHeaders.has(name.toLowerCase())) return [name, "<redacted>"];
+    return [name, typeof value === "string" ? redactEchoText(value, secrets) : value];
+  }));
 }
 
 const BODY_FIELDS = new Set(["requestBody", "responseBody"]);
 const TEXT_BODY_TYPE = /json|x-www-form-urlencoded|multipart\/form-data|^text\/|xml|javascript/i;
 
-function secretHeaderValues(entry) {
-  return [entry.requestHeaders, entry.responseHeaders].flatMap((headers) =>
-    headers && typeof headers === "object" ? Object.entries(headers).filter(([name]) => isSecretHeader(name)).map(([, value]) => String(value)) : [],
-  );
-}
-
 // What an export may contain: no internal fields, secret headers or URL credentials, and no echo
-// of a secret header's value in a text body (a page that reflects its Authorization header).
-// Secret-named body fields (password=, "token":) read <redacted> unless `rawBodies` (--raw-bodies).
-function publicEntry(entry, { rawBodies = false } = {}) {
+// of a secret header's value in a text body, the URL or another header (a page that reflects its
+// Authorization header), in any spelling (see secretHeaderEchoes). `secretHeaders` names, in lower case, the headers
+// saved ops read from the environment (see envBackedHeaders). Secret-named body fields (password=,
+// "token":) read <redacted> unless `rawBodies` (--raw-bodies).
+function publicEntry(entry, { secretHeaders = [], rawBodies = false } = {}) {
   if (!entry || typeof entry !== "object" || Array.isArray(entry)) {
     throw new Error("network export entries must be objects");
   }
-  const secrets = secretHeaderValues(entry);
+  const named = new Set(secretHeaders.map((name) => String(name).toLowerCase()));
+  const secrets = secretHeaderEchoes([entry.requestHeaders, entry.responseHeaders], secretHeaders);
   const result = Object.create(null);
   for (const [key, value] of Object.entries(entry)) {
     if (INTERNAL_FIELDS.has(key)) continue;
-    if (HEADER_FIELDS.has(key)) result[key] = redactHeaders(value);
-    else if (URL_FIELDS.has(key)) result[key] = redactUrl(value);
-    else if (BODY_FIELDS.has(key) && typeof value === "string" && secrets.length > 0 && !(key === "responseBody" && entry.responseBodyEncoding === "base64")) {
-      result[key] = redactValues(value, secrets);
+    if (HEADER_FIELDS.has(key)) result[key] = redactHeaders(value, named, secrets);
+    else if (URL_FIELDS.has(key)) result[key] = redactEchoUrl(redactUrlIfSecret(value), secrets);
+    else if (BODY_FIELDS.has(key) && typeof value === "string" && !(key === "responseBody" && entry.responseBodyEncoding === "base64")) {
+      const contentType = key === "requestBody" ? bodyContentType(entry.requestHeaders) : bodyContentType(entry.responseHeaders, entry.mimeType);
+      result[key] = redactEchoBody(value, secrets, { contentType });
     } else result[key] = value;
   }
   if (!rawBodies) {
@@ -138,10 +124,10 @@ function harEntry(entry) {
   };
 }
 
-function serializeNetworkExport(entries, format = "json", { rawBodies = false } = {}) {
+function serializeNetworkExport(entries, format = "json", options = {}) {
   if (!Array.isArray(entries)) throw new Error("network export entries must be an array");
   if (format !== "json" && format !== "jsonl" && format !== "har") throw new Error(`unsupported network export format: ${format}`);
-  const publicEntries = entries.map((entry) => publicEntry(entry, { rawBodies }));
+  const publicEntries = entries.map((entry) => publicEntry(entry, options));
   if (format === "jsonl") return `${publicEntries.map((entry) => JSON.stringify(entry)).join("\n")}\n`;
   if (format === "har") {
     return JSON.stringify({
@@ -155,9 +141,9 @@ function serializeNetworkExport(entries, format = "json", { rawBodies = false } 
   return JSON.stringify(publicEntries, null, 2);
 }
 
-function writeNetworkExport(outputPath, entries, format = "json", { rawBodies = false } = {}) {
+function writeNetworkExport(outputPath, entries, format = "json", options = {}) {
   if (typeof outputPath !== "string" || !path.isAbsolute(outputPath)) throw new Error("network export output must be an absolute path");
-  const content = serializeNetworkExport(entries, format, { rawBodies });
+  const content = serializeNetworkExport(entries, format, options);
   const bytes = Buffer.byteLength(content);
   if (bytes > MAX_NETWORK_EXPORT_FILE_BYTES) throw new Error("network export exceeds the 256 MiB file limit");
   fs.mkdirSync(path.dirname(outputPath), { recursive: true });
@@ -169,6 +155,7 @@ module.exports = {
   INTERNAL_FIELDS,
   MAX_NETWORK_EXPORT_FILE_BYTES,
   publicEntry,
+  redactHeaders,
   serializeNetworkExport,
   writeNetworkExport,
 };
