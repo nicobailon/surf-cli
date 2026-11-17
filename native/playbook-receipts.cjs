@@ -40,9 +40,12 @@ function loadSalt(root) {
   return Buffer.from(readPrivateFile(saltPath, { root, encoding: "utf8" }).trim(), "hex");
 }
 
+// The claim covers the inputs a declared safety.key names, else every resolved input, so a new
+// value of any of them (one pb param added included) is a new claim.
 function semanticClaimKey({ playbookId, op, args, root = getPrivateStateRoot() }) {
   const semantic = {};
-  for (const name of op.safety.key) {
+  const names = op.safety.key ?? Object.keys(args).sort().filter((name) => args[name] !== undefined);
+  for (const name of names) {
     if (args[name] === undefined) throw new Error(`semantic safety argument is missing: ${name}`);
     semantic[name] = args[name];
   }

@@ -221,6 +221,100 @@ describe("playbook write receipts", () => {
     });
   });
 
+  describe("an op without a safety key", () => {
+    // As a record drafts a write: every input is the key, and a repeat waits 5 minutes.
+    const op = {
+      id: "mutate",
+      effect: "write",
+      safety: { duplicate: "repeatable-window", windowMs: 300_000 },
+    };
+    const now = new Date(2026, 10, 17, 14, 2, 30).getTime();
+    const setup = () => {
+      const root = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "surf-receipts-")), "state");
+      roots.push(path.dirname(root));
+      return { playbookId: "fixture", op, root };
+    };
+    const verified = (claim: ReturnType<typeof setup>, args: Record<string, string>) => {
+      const first = receipts.reserveReceipt({ ...claim, args, attemptId: ATTEMPT_ONE, now });
+      receipts.updateReceipt(first, "verified", {}, claim.root);
+      // updateReceipt stamps the real time; the window counts from the attempt's own.
+      const stored = JSON.parse(fs.readFileSync(first.path, "utf8"));
+      fs.writeFileSync(
+        first.path,
+        JSON.stringify({ ...stored, updatedAt: new Date(now).toISOString() }),
+      );
+    };
+
+    it("claims a write with no inputs, and blocks the same inputs for 5 minutes", () => {
+      const claim = setup();
+      verified(claim, {});
+      const blocked = `write blocked: attempt ${ATTEMPT_ONE} was sent at 14:02 and succeeded. Add --repeat to send it again.`;
+      expect(() => receipts.checkReceipt({ ...claim, args: {}, now: now + 299_000 })).toThrow(
+        blocked,
+      );
+      expect(() =>
+        receipts.checkReceipt({ ...claim, args: {}, now: now + 299_000, repeat: true }),
+      ).not.toThrow();
+      expect(() => receipts.checkReceipt({ ...claim, args: {}, now: now + 300_000 })).not.toThrow();
+    });
+
+    it("covers every input: a new value of any of them is a new claim", () => {
+      const claim = setup();
+      verified(claim, { action: "save", note: "one" });
+      const later = now + 60_000;
+      expect(() =>
+        receipts.checkReceipt({ ...claim, args: { note: "one", action: "save" }, now: later }),
+      ).toThrow(/succeeded/);
+      expect(() =>
+        receipts.checkReceipt({ ...claim, args: { action: "save", note: "two" }, now: later }),
+      ).not.toThrow();
+      // An input pb param added later is part of the claim too.
+      expect(() =>
+        receipts.checkReceipt({
+          ...claim,
+          args: { action: "save", note: "one", tag: "t" },
+          now: later,
+        }),
+      ).not.toThrow();
+    });
+
+    it("never lets an in-doubt attempt expire", () => {
+      const claim = setup();
+      const first = receipts.reserveReceipt({ ...claim, args: {}, attemptId: ATTEMPT_ONE, now });
+      receipts.updateReceipt(first, "indeterminate", {}, claim.root);
+      expect(() =>
+        receipts.checkReceipt({ ...claim, args: {}, now: Date.now() + 86_400_000 }),
+      ).toThrow(/its result is unknown/);
+    });
+
+    it("keeps a declared key and transactional policy as written", () => {
+      const root = setup().root;
+      const keyed = { ...op, safety: { duplicate: "transactional", key: ["review_key"] } };
+      const claim = { playbookId: "fixture", op: keyed, root };
+      const first = receipts.reserveReceipt({
+        ...claim,
+        args: { review_key: "k", note: "one" },
+        attemptId: ATTEMPT_ONE,
+        now,
+      });
+      receipts.updateReceipt(first, "verified", {}, root);
+      // The key alone decides, and transactional never expires.
+      expect(() =>
+        receipts.checkReceipt({
+          ...claim,
+          args: { review_key: "k", note: "two" },
+          now: now + 86_400_000,
+        }),
+      ).toThrow(/succeeded/);
+      expect(() =>
+        receipts.checkReceipt({ ...claim, args: { review_key: "k2", note: "one" }, now }),
+      ).not.toThrow();
+      expect(() => receipts.checkReceipt({ ...claim, args: { note: "one" }, now })).toThrow(
+        "semantic safety argument is missing: review_key",
+      );
+    });
+  });
+
   describe("attempt ids", () => {
     const op = {
       id: "mutate",

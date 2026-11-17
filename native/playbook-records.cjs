@@ -434,11 +434,11 @@ function requestFromEntry(entry, warnings = []) {
   };
 }
 
-// The input a write op without other inputs takes as its semantic safety key.
-const REVIEW_KEY_ARG = { required: true, desc: "Semantic key for reviewed write replay" };
+// How long a drafted write blocks the same inputs after it succeeded.
+const DRAFT_WINDOW_MS = 300_000;
 
 // The steps a record ran that a draft replays: its completed recordable commands, in order. Their
-// arguments are escaped, so text like `{{review_key}}` in a recorded selector or URL is sent as
+// arguments are escaped, so text like `{{action}}` in a recorded selector or URL is sent as
 // recorded; a redacted value (`<text>`) still becomes an input, each typing step's its own
 // (<text>, <text-2>), as the trace's URLs name them.
 function recordedSteps(recordId, root = getPrivateStateRoot()) {
@@ -464,8 +464,8 @@ function buildDraft(record, { read = false, requestId, warnings = [], root = get
     strategies.push({ using: "workflow", steps: promoted.steps });
   }
   if (strategies.length === 0) throw new Error("record has no executable evidence");
-  const safety = effect === "write" ? { authorization: "explicit", duplicate: "transactional", key: Object.keys(args).length ? Object.keys(args) : ["review_key"] } : undefined;
-  if (effect === "write" && !args.review_key && safety.key.includes("review_key")) args.review_key = REVIEW_KEY_ARG;
+  // A drafted write has no key: its duplicate claim covers every input, for 5 minutes once verified.
+  const safety = effect === "write" ? { authorization: "explicit", duplicate: "repeatable-window", windowMs: DRAFT_WINDOW_MS } : undefined;
   const provenance = { recordId: record.id, ...(requestId ? { requestId } : {}) };
   const op = { id: record.op, description: `Drafted from ${record.id}`, effect, args, ...(safety ? { safety } : {}), run: strategies, provenance };
   return { op, because };
@@ -607,7 +607,6 @@ function discardRecord({ target, root = getPrivateStateRoot() } = {}) {
 }
 
 module.exports = {
-  REVIEW_KEY_ARG,
   activeRecords,
   appendRecordEvent,
   attachNetworkTrace,
