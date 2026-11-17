@@ -413,14 +413,17 @@ describe("pb param: field locations", () => {
     );
   });
 
-  // JSON.parse reads any depth; so does pb param.
-  it("templates a field of a stored JSON param nested 5,000 levels deep", () => {
+  // JSON.parse reads any depth; so do pb param and renderRequest.
+  it("templates and sends a field of a stored JSON param nested 5,000 levels deep", () => {
     const depth = 5000;
     const raw = `{"n":"seed","deep":${'{"x":'.repeat(depth)}0${"}".repeat(depth)}}`;
     const saved = savedJsonOp(raw, "query");
     const { op } = paramOp(saved, { fields: ["query.v.n"], as: "n" });
     expect(op.args.n).toEqual({ type: "string", default: "seed" });
     expect(requestOf(op).query.v.n).toBe("{{n}}");
+    // renderRequest reads any depth too.
+    const sent = renderRequest(requestOf(op), { n: "next" }, { escapes: true });
+    expect(sent.query.v).toBe(raw.replace('"seed"', '"next"'));
   });
 
   // A hand-written op never held the escape: its {{!}} is text, as it always was.

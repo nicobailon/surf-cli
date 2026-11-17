@@ -38,22 +38,42 @@ function renderRequest(request, args, { escapes = false } = {}) {
     if (args[name] === undefined) throw new Error(`missing template argument: ${name}`);
     return encode(String(args[name]));
   });
+  const fillText = (value, encode = keep) => {
+    if (typeof value !== "string") return value;
+    const exact = value.match(EXACT);
+    return exact ? args[exact[1]] : embed(value, encode);
+  };
+  // Without recursion, so JSON nested any depth renders.
   const fill = (value, encode = keep) => {
-    if (typeof value === "string") {
-      const exact = value.match(EXACT);
-      return exact ? args[exact[1]] : embed(value, encode);
-    }
-    if (Array.isArray(value)) return value.map((item) => fill(item));
-    if (value && typeof value === "object") {
-      const entries = Object.entries(value).map(([key, item]) => [escapes ? embed(key, keep) : key, fill(item)]);
+    if (!value || typeof value !== "object") return fillText(value, encode);
+    const open = (node) => ({ node, keys: Object.keys(node), at: 0, entries: [] });
+    const close = ({ node, entries }) => {
+      if (Array.isArray(node)) return entries.map(([, item]) => item);
       const keys = new Set();
       for (const [key] of entries) {
         if (keys.has(key)) throw new Error(`an input fills a JSON key that is already there: ${JSON.stringify(key)}`);
         keys.add(key);
       }
       return Object.fromEntries(entries);
+    };
+    const stack = [open(value)];
+    for (;;) {
+      const top = stack[stack.length - 1];
+      if (top.at === top.keys.length) {
+        const done = close(stack.pop());
+        if (stack.length === 0) return done;
+        const parent = stack[stack.length - 1];
+        parent.entries[parent.entries.length - 1][1] = done;
+        continue;
+      }
+      const key = top.keys[top.at++];
+      const item = top.node[key];
+      const name = escapes && !Array.isArray(top.node) ? embed(key, keep) : key;
+      if (item && typeof item === "object") {
+        top.entries.push([name, null]);
+        stack.push(open(item));
+      } else top.entries.push([name, fillText(item)]);
     }
-    return value;
   };
   const headers = {};
   for (const [name, value] of Object.entries(request.headers || {})) {
