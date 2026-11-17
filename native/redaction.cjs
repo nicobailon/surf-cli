@@ -18,10 +18,11 @@ const CREDENTIAL_LITERAL_PATTERN = /\bbearer\s+[a-z0-9._~-]+|\bsk-[a-z0-9_-]{12,
 // replaced only where it stands alone, so a short value can't break up the words around it. With
 // `anyLength`, for values known to be secrets (env values), every occurrence of one of 4 characters
 // or more goes; a shorter one (`a`, `1`) still only where it stands alone, so it can't rewrite the
-// text around it. Self-contained: generated clients embed its source.
+// text around it. An unset (undefined or null) or empty value is no value. Self-contained:
+// generated clients embed its source.
 function redactValues(text, values, { anyLength = false } = {}) {
   let result = String(text);
-  const sorted = [...values].map(String).filter(Boolean).sort((a, b) => b.length - a.length);
+  const sorted = [...values].filter((value) => value !== undefined && value !== null).map(String).filter(Boolean).sort((a, b) => b.length - a.length);
   for (const value of sorted) {
     if (value.length >= 8 || (anyLength && value.length >= 4)) result = result.split(value).join("<redacted>");
     else result = result.replace(new RegExp(`(?<![A-Za-z0-9])${value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(?![A-Za-z0-9])`, "g"), "<redacted>");
@@ -403,9 +404,10 @@ function decodeBudget(size) {
 // strings, reads every string of JSON held in a JSON string at any depth, and a value spanning keys
 // and values there, without parsing; it can only find more. Each level is one pass that copies
 // only the text between escapes, and decoding never makes text longer, so the work is at most
-// levels + 1 passes over it. Self-contained but for decodeBudget: generated clients embed it.
+// levels + 1 passes over it. An unset or empty value is no value. Self-contained but for
+// decodeBudget: generated clients embed it.
 function secretIn(text, values, { levels = 8, budget = decodeBudget(String(text).length), anyLength = false } = {}) {
-  const secrets = [...values].map(String).filter(Boolean);
+  const secrets = [...values].filter((value) => value !== undefined && value !== null).map(String).filter(Boolean);
   if (secrets.length === 0) return null;
   const shortest = anyLength ? 4 : 8;
   const long = secrets.filter((secret) => secret.length >= shortest);
@@ -517,35 +519,58 @@ function redactJson(value, values, budget = decodeBudget(JSON.stringify(value)?.
   return forms.some((form) => secretIn(form, spanning, { levels: 9, budget, anyLength: true })) ? "<redacted>" : redacted;
 }
 
+// The line pb test prints for a checked assertion: pass or FAIL, its path, op and expected value,
+// and its actual value (or why its pattern didn't run).
+function assertionLine(checked) {
+  const actual = checked.error ?? (typeof checked.actual === "string" ? checked.actual : JSON.stringify(checked.actual));
+  const expected = checked.value === undefined ? [] : [JSON.stringify(checked.value)];
+  return `${checked.pass ? "pass" : "FAIL"}  ${[checked.path, checked.op, ...expected].join(" ")} (${actual})`;
+}
+
+// The lines pb test prints from a run's result: each checked assertion's (assertionLine), the
+// run's and each attempt's, and each failed attempt's `using: error`.
+function printedLines(result) {
+  const attempts = Array.isArray(result.attempts) ? result.attempts : [];
+  const checked = [result, ...attempts].flatMap((part) => (Array.isArray(part.assertions) ? part.assertions : []));
+  return [...checked.map(assertionLine), ...attempts.map((attempt) => `${attempt.using}: ${attempt.error}`)];
+}
+
+// A result (or pb test's report) with what the response could have put next to surf's own text
+// masked: its error, each attempt's error and each assertion's path, value and actual, marked
+// secretSensitive so --save refuses them.
+function maskResult(result) {
+  const assertion = (checked) => ({ ...checked, path: "<redacted>", ...(Object.hasOwn(checked, "value") ? { value: "<redacted>" } : {}), actual: "<redacted>", secretSensitive: true });
+  return {
+    ...result,
+    ...(typeof result.error === "string" ? { error: "<redacted>" } : {}),
+    ...(Array.isArray(result.attempts)
+      ? { attempts: result.attempts.map((attempt) => ({ ...attempt, error: "<redacted>", ...(Array.isArray(attempt.assertions) ? { assertions: attempt.assertions.map(assertion) } : {}) })) }
+      : {}),
+    ...(Array.isArray(result.assertions) ? { assertions: result.assertions.map(assertion) } : {}),
+  };
+}
+
 // A run's result as surf prints and sends it. redactJson redacts its parts one by one, but in
 // the result's JSON they sit next to surf's own fields, so a value can span the two: an env value
-// `network","value":"…` spans the strategy and the value. When secretIn finds one in the result
-// as JSON, compact or indented, or in a failed attempt's printed line (`network: <error>`), the
-// value is masked whole; if one is still found, so are the error, each attempt's error and each
-// assertion's path, value and actual (marked secretSensitive, so --save refuses them). What is
-// left is surf's own fields and the op's. Only a value that can span two parts is looked for
-// (spanningValues): any other lies inside one part, redacted already, or in surf's own fields and
-// keys, which keep their names.
+// `network","value":"…` spans the strategy and the value, and one reading `equals "ok" (…)` spans
+// the op and expected value pb test prints for an assertion and its actual. When secretIn finds
+// one in the result as JSON, compact or indented, or in the lines pb test prints from it
+// (printedLines), each and together, the value is masked whole; if one is still found, so is the
+// rest (maskResult). What is left is surf's own fields and the op's. Only a value that can span
+// two parts is looked for (spanningValues): any other lies inside one part, redacted already, or in
+// surf's own fields and keys, which keep their names. Unset and empty values are skipped.
 function redactResult(result, values) {
   const secrets = spanningValues(values);
   if (secrets.length === 0 || !result || typeof result !== "object") return result;
-  const budget = decodeBudget(JSON.stringify(result).length);
-  const holds = (candidate) => {
-    const lines = (Array.isArray(candidate.attempts) ? candidate.attempts : []).map((attempt) => `${attempt.using}: ${attempt.error}`);
-    return [JSON.stringify(candidate), JSON.stringify(candidate, null, 2), ...lines].some((form) => secretIn(form, secrets, { levels: 9, budget, anyLength: true }));
+  const forms = (candidate) => {
+    const lines = printedLines(candidate);
+    return [JSON.stringify(candidate), JSON.stringify(candidate, null, 2), lines.join("\n"), ...lines];
   };
+  const budget = decodeBudget(forms(result).reduce((sum, form) => sum + form.length, 0));
+  const holds = (candidate) => forms(candidate).some((form) => secretIn(form, secrets, { levels: 9, budget, anyLength: true }));
   if (!holds(result)) return result;
   const masked = Object.hasOwn(result, "value") ? { ...result, value: "<redacted>" } : result;
-  if (!holds(masked)) return masked;
-  const assertion = (checked) => ({ ...checked, path: "<redacted>", ...(Object.hasOwn(checked, "value") ? { value: "<redacted>" } : {}), actual: "<redacted>", secretSensitive: true });
-  return {
-    ...masked,
-    ...(typeof masked.error === "string" ? { error: "<redacted>" } : {}),
-    ...(Array.isArray(masked.attempts)
-      ? { attempts: masked.attempts.map((attempt) => ({ ...attempt, error: "<redacted>", ...(Array.isArray(attempt.assertions) ? { assertions: attempt.assertions.map(assertion) } : {}) })) }
-      : {}),
-    ...(Array.isArray(masked.assertions) ? { assertions: masked.assertions.map(assertion) } : {}),
-  };
+  return holds(masked) ? maskResult(masked) : masked;
 }
 
 function isTemplate(value) {
@@ -713,11 +738,13 @@ module.exports = {
   assertUrlHasNoEmbeddedSecrets,
   bodyContentType,
   echoSecrets,
+  assertionLine,
   decodeBudget,
   isSecretHeader,
   isSensitiveName,
   isEchoedJson,
   isTemplate,
+  maskResult,
   redactCredentialLiterals,
   redactEchoBody,
   redactEchoJson,

@@ -119,48 +119,69 @@ function valueTexts(value, out = []) {
   return out;
 }
 
-// How many texts patternTexts lists for one part of a pattern, and how many characters of a part
-// it writes as a gap it keeps to check on their own.
+// How many texts patternTexts lists for one part of a pattern; past it, texts go to setAside.
 const PATTERN_TEXT_LIMIT = 256;
-const SET_ASIDE_LIMIT = 4 * MATCH_INPUT_LIMIT;
 // What patternTexts writes for a part that matches one of several characters, each kind its own
 // private-use character, which no header value holds.
 const GAPS = ["a character class", "the wildcard .", "a class escape", "a part with more alternatives or repeats than can be listed"];
 const gapOf = (kind) => String.fromCharCode(0xe000 + GAPS.indexOf(kind));
 const gapKind = (char) => GAPS[char.charCodeAt(0) - 0xe000];
+// In `breaks` texts, what an unbounded repeat leaves after its text: any further copies.
+const BREAK = String.fromCharCode(0xe00f);
+// Gaps and BREAK: what splits a text into the runs of characters the filter looks for.
+const MARKS = /[\ue000-\ue00f]/;
+// Thrown when the pattern check's work budget runs out.
+const TOO_COSTLY = Symbol("too costly");
+// Spends `steps` from a pattern check's work budget, or throws TOO_COSTLY when they don't fit,
+// before the work is done.
+function spendWork(work, steps) {
+  if (work.steps + steps > work.limit) throw TOO_COSTLY;
+  work.steps += steps;
+}
 
-// What a matches pattern can match, normalized to texts: { texts, setAside, backreference }. Regex
-// escapes (\xNN, \uNNNN, \cX, \0, \t, \/, \. ...) become the characters they stand for, a class of
-// one character ([d], [\x64]) becomes that character, groups and | are expanded, ^, $, \b, \B and
-// lookarounds match no characters, and a repeat is written out its fewest times, with ? and *
-// also as none and {n,m} at each count. A part that matches one of several characters (a class,
-// ., \d) becomes a gap character (GAPS). A part with too many texts becomes a gap too, its texts
-// kept in setAside, as are each lookaround's. Patterns run without flags, so this follows that
-// grammar (\u{...} is a repeated u). A backreference repeats text the pattern can't list, so it is
-// reported instead.
-function patternTexts(pattern) {
+// What a matches pattern can match, normalized to texts: { texts, setAside, backreference, exact }.
+// Regex escapes (\xNN, \uNNNN, \cX, \0, \t, \/, \. ...) become the characters they stand for, a
+// class of one character ([d], [\x64]) becomes that character, groups and | are expanded, ^, $,
+// \b, \B and lookarounds match no characters, and a repeat is written out its fewest times, with
+// ?, * and {0,n} also as none and {n,m} at each count. A part that matches one of several
+// characters (a class, ., \d) becomes a gap character (GAPS). In each list "" comes last, so a
+// list's first text is its fullest reading: a character under ?, * or {0,n} still spells it. A
+// part with too many texts to list keeps every text of each side next to the other side's first
+// (so the pattern's fullest reading stays listed), the rest going to setAside, as
+// do each lookaround's texts. Every text written is charged to `work` (a decodeBudget, by default
+// one sized by the pattern); past its limit this throws TOO_COSTLY. With `breaks`, an unbounded
+// repeat (+, *, {n,}) is followed by BREAK, for the spelling test's filter; `exact` is then false
+// when the texts don't list every reading (a part too large to list, a backreference, a
+// case-insensitive group). Patterns run without flags, so this follows that grammar (\u{...} is a
+// repeated u). A backreference repeats text the pattern can't list, so it is reported instead.
+function patternTexts(pattern, { work = decodeBudget(pattern.length), breaks = false } = {}) {
   let at = 0;
   let backreference = false;
+  let exact = true;
   const setAside = [];
-  let setAsideSize = 0;
+  const spend = (texts) => spendWork(work, texts.reduce((sum, text) => sum + text.length + 1, 0));
   const keep = (texts) => {
-    for (const text of texts) {
-      if (setAsideSize + text.length > SET_ASIDE_LIMIT) return;
-      setAside.push(text);
-      setAsideSize += text.length;
-    }
+    spend(texts);
+    setAside.push(...texts);
   };
-  const listed = (texts) => {
-    if (texts.length <= PATTERN_TEXT_LIMIT && texts.every((text) => text.length <= MATCH_INPUT_LIMIT)) return texts;
-    keep(texts.slice(0, PATTERN_TEXT_LIMIT));
-    return [gapOf(GAPS[3])];
+  const emptyLast = (texts) => (texts.includes("") ? [...texts.filter((text) => text !== ""), ""] : texts);
+  const listed = (written) => {
+    spend(written);
+    let texts = [...new Set(written)];
+    if (texts.some((text) => text.length > MATCH_INPUT_LIMIT)) {
+      exact = false;
+      keep(texts.filter((text) => text.length > MATCH_INPUT_LIMIT));
+      texts = texts.map((text) => (text.length > MATCH_INPUT_LIMIT ? gapOf(GAPS[3]) : text));
+    }
+    if (texts.length <= PATTERN_TEXT_LIMIT) return texts;
+    exact = false;
+    keep(texts.slice(PATTERN_TEXT_LIMIT));
+    return texts.slice(0, PATTERN_TEXT_LIMIT);
   };
   const product = (left, right) => {
-    if (left.length * right.length > PATTERN_TEXT_LIMIT) {
-      keep([...left, ...right]);
-      return [gapOf(GAPS[3])];
-    }
-    return listed(left.flatMap((first) => right.map((second) => first + second)));
+    if (left.length * right.length <= PATTERN_TEXT_LIMIT) return listed(left.flatMap((first) => right.map((second) => first + second)));
+    exact = false;
+    return listed([...left.map((first) => first + right[0]), ...right.slice(1).map((second) => left[0] + second)]);
   };
   const hex = (count) => {
     const digits = pattern.slice(at, at + count);
@@ -185,6 +206,7 @@ function patternTexts(pattern) {
     if (!inClass && (/[1-9]/.test(char) || (char === "k" && pattern[at] === "<"))) {
       if (char === "k") at = pattern.indexOf(">", at) + 1;
       backreference = true;
+      exact = false;
       return {};
     }
     if (char === "c") {
@@ -235,9 +257,11 @@ function patternTexts(pattern) {
     if (char === "(") {
       let lookaround = false;
       if (pattern[at] === "?") {
-        const head = /^\?(?:<(?![=!])[^>]*>|[a-z]*(?:-[a-z]*)?:|(<?[=!]))/.exec(pattern.slice(at));
+        const head = /^\?(?:<(?![=!])[^>]*>|([a-z]*)(?:-[a-z]*)?:|(<?[=!]))/.exec(pattern.slice(at));
         at += head[0].length;
-        lookaround = head[1] !== undefined;
+        // (?i:...) matches either case of the letters it lists.
+        if (head[1]?.includes("i")) exact = false;
+        lookaround = head[2] !== undefined;
       }
       const texts = alternatives();
       at++;
@@ -251,22 +275,32 @@ function patternTexts(pattern) {
     const quantifier = /^(?:([*+?])|\{(\d+)(?:(,)(\d*))?\})\??/.exec(pattern.slice(at));
     if (!quantifier) return texts;
     at += quantifier[0].length;
-    if (quantifier[1] === "+") return texts;
-    if (quantifier[1]) return listed(["", ...texts]);
+    const unbounded = quantifier[1] === "+" || quantifier[1] === "*" || quantifier[4] === "";
+    const more = (list) => (breaks && unbounded ? listed(list.map((text) => text + BREAK)) : list);
+    if (quantifier[1] === "+") return more(texts);
+    if (quantifier[1]) return listed([...more(texts), ""]);
     const min = Number(quantifier[2]);
-    const max = quantifier[3] && quantifier[4] !== "" ? Number(quantifier[4]) : min;
+    // {n,} is written out n times, and once more when n is 0.
+    const max = unbounded ? Math.max(min, 1) : quantifier[3] ? Number(quantifier[4]) : min;
     if (min * Math.max(1, ...texts.map((text) => text.length)) > MATCH_INPUT_LIMIT || max - min > PATTERN_TEXT_LIMIT) {
+      exact = false;
       keep(texts);
-      return [gapOf(GAPS[3])];
+      return listed([...texts.map((text) => text + gapOf(GAPS[3])), ...(min === 0 ? [""] : [])]);
     }
+    // min copies, by doubling: a long run costs its length, not its square.
     let times = [""];
-    for (let count = 0; count < min; count++) times = product(times, texts);
+    for (let count = min, copies = texts; count > 0; count = Math.floor(count / 2)) {
+      if (count % 2 === 1) times = product(times, copies);
+      if (count > 1) copies = product(copies, copies);
+    }
     const all = [...times];
     for (let count = min; count < max && all.length <= PATTERN_TEXT_LIMIT; count++) {
       times = product(times, texts);
       all.push(...times);
     }
-    return listed(all);
+    if (all.length > PATTERN_TEXT_LIMIT) exact = false;
+    // The most copies first, so the fullest reading leads.
+    return listed(emptyLast(unbounded ? more(all.reverse()) : all.reverse()));
   };
   const sequence = () => {
     let texts = [""];
@@ -279,15 +313,17 @@ function patternTexts(pattern) {
     return texts;
   };
   const alternatives = () => {
-    let texts = sequence();
+    const each = [sequence()];
     while (pattern[at] === "|") {
       at++;
-      texts = listed([...texts, ...sequence()]);
+      each.push(sequence());
     }
-    return texts;
+    if (each.length === 1) return each[0];
+    // Each alternative's first text first, so a cut keeps every alternative's fullest reading.
+    return listed(emptyLast([...each.map((texts) => texts[0]).filter((text) => text !== undefined), ...each.flatMap((texts) => texts.slice(1))]));
   };
   const texts = alternatives();
-  return { texts: [...new Set(texts)], setAside, backreference };
+  return { texts: [...new Set(texts)], setAside, backreference, exact };
 }
 
 // Whether `text`, a patternTexts text, spells most of `spelling` around its gaps: its characters,
@@ -315,66 +351,99 @@ function spellsMost(text, spelling) {
   return false;
 }
 
-// How much of an escaped spelling a pattern is tested against: a broad pattern such as .*ok.*
-// takes time in the square of the text (a few ms on 2 KB), and a long value escaped 8 times runs
-// to 64 KB.
-const ESCAPED_SPELLING_LIMIT = 2048;
-
-// Each value as it is (its first MATCH_INPUT_LIMIT characters, all a run tests), and JSON-escaped
-// up to 8 times, the levels secretIn reads: plain, with \/ for each slash, and with every
-// character as \uXXXX (those two forms count as the first level). Each escaped spelling is cut to
-// its first ESCAPED_SPELLING_LIMIT characters; escaping is character by character, so the cut
-// changes none of them. A pattern that spells a value past the cut is found by patternTexts.
+// Each value as it is, and JSON-escaped up to 8 times, the levels secretIn reads: plain, with \/
+// for each slash, and with every character as \uXXXX (those two forms count as the first level).
+// A run tests at most MATCH_INPUT_LIMIT characters of a text, so a form stops at the first level
+// longer than that (each level is at least as long as the one before); no spelling is cut short.
 function patternSpellings(values) {
   const spellings = new Set();
-  const cut = (text) => text.slice(0, ESCAPED_SPELLING_LIMIT);
   for (const value of values) {
-    const text = String(value).slice(0, MATCH_INPUT_LIMIT);
+    const text = String(value);
     spellings.add(text);
-    const short = cut(text);
-    const firstLevel = [JSON.stringify(short).slice(1, -1), short.replaceAll("/", "\\/"), [...short].map((char) => `\\u${char.charCodeAt(0).toString(16).padStart(4, "0")}`).join("")];
-    for (let form of firstLevel.map(cut)) {
-      for (let level = 1; level <= 8 && !spellings.has(form); level++) {
+    const firstLevel = [JSON.stringify(text).slice(1, -1), text.replaceAll("/", "\\/"), [...text].map((char) => `\\u${char.charCodeAt(0).toString(16).padStart(4, "0")}`).join("")];
+    for (let form of firstLevel) {
+      for (let level = 1; level <= 8 && form.length <= MATCH_INPUT_LIMIT && !spellings.has(form); level++) {
         spellings.add(form);
-        form = cut(JSON.stringify(form).slice(1, -1));
+        form = JSON.stringify(form).slice(1, -1);
       }
     }
   }
   return [...spellings];
 }
 
-// Whether a matches pattern could store or match one of `values`, for both --save checks:
-// "found", "too deep" or "too costly" when secretIn finds one in a text the pattern can match or
-// set aside (patternTexts); "matches" when it matches a spelling of one (patternSpellings), which
-// also catches broad patterns such as .*; MATCH_TIMED_OUT or MATCH_SKIPPED when that test is cut
-// short (from bounded-regex.cjs); "backreference" for a pattern with one; { around } when a text
-// spells most of a spelling around a gap (spellsMost), `around` naming the gap's kind; else null.
-// Ordinary patterns (^\d+$, .*ok.*, ^[A-Z]{3}$, (?:ok|done)) spell no value, and pass.
-function patternSecretIn(pattern, values, budget) {
-  if (values.length === 0) return null;
-  const read = patternTexts(pattern);
-  const texts = [...read.texts, ...read.setAside];
-  const decoded = decodeBudget(texts.reduce((sum, text) => sum + text.length, 0));
-  const found = texts.map((text) => secretIn(text, values, { budget: decoded }));
-  const status = ["found", "too deep", "too costly"].find((candidate) => found.includes(candidate));
-  if (status) return status;
-  const spellings = patternSpellings(values);
-  for (const spelling of spellings) {
-    try {
-      if (boundedMatch(pattern, spelling, budget)) return "matches";
-    } catch (error) {
-      if (isBoundedOut(error)) return error.code;
-      throw error;
+/**
+ * The work budget of one pattern check (patternSecretIn): a decodeBudget sized by the pattern
+ * and the spellings it is tested against, so it grows with them and not with what the pattern
+ * expands to.
+ */
+function patternWork(pattern, values) {
+  return decodeBudget(String(pattern).length + patternSpellings(values).reduce((sum, spelling) => sum + spelling.length, 0));
+}
+
+// Whether `pattern` could match `spelling`, by the texts every match holds: some `breaks` text
+// all of whose runs (between gaps and breaks) the spelling holds. Only for `exact` texts, which
+// list every reading; each run's search is charged to `spend`.
+function couldMatch(read, spelling, spend) {
+  const holds = new Map();
+  const has = (run) => {
+    if (!holds.has(run)) {
+      spend(spelling.length);
+      holds.set(run, spelling.includes(run));
     }
+    return holds.get(run);
+  };
+  return read.texts.some((text) => text.split(MARKS).every((run) => run === "" || has(run)));
+}
+
+// Whether a matches pattern could store or match one of `values`, for both --save checks:
+// "found" or "too deep" when secretIn finds one in a text the pattern can match or set aside
+// (patternTexts); "matches" when it matches a spelling of one (patternSpellings), which also
+// catches broad patterns such as .*; MATCH_TIMED_OUT or MATCH_SKIPPED when that test is cut short
+// (from bounded-regex.cjs, spending `budget`); "backreference" for a pattern with one; { around }
+// when a text spells most of a spelling around a gap (spellsMost), `around` naming the gap's
+// kind; else null. Ordinary patterns (^\d+$, .*ok.*, ^[A-Z]{3}$, (?:ok|done)) spell no value, and
+// pass. Writing the texts, decoding them, the spelling tests (each a pass over its spelling) and
+// spellsMost all spend from `work` (patternWork): "too costly" when it runs out, or when a value
+// is over MATCH_INPUT_LIMIT, longer than a run tests. A spelling test is skipped when the
+// spelling lacks a text every match of the pattern holds (couldMatch), so a broad pattern such as
+// .*ok.* never runs on a long spelling it can't match.
+function patternSecretIn(pattern, values, { budget = createRegexBudget(), work = patternWork(pattern, values) } = {}) {
+  if (values.length === 0) return null;
+  if (values.some((value) => String(value).length > MATCH_INPUT_LIMIT)) return "too costly";
+  const spend = (steps) => spendWork(work, steps);
+  try {
+    const read = patternTexts(pattern, { work });
+    const found = [...read.texts, ...read.setAside].map((text) => secretIn(text, values, { budget: work }));
+    const status = ["found", "too deep", "too costly"].find((candidate) => found.includes(candidate));
+    if (status) return status;
+    const filter = patternTexts(pattern, { work, breaks: true });
+    const spellings = patternSpellings(values);
+    for (const spelling of spellings) {
+      if (filter.exact && !couldMatch(filter, spelling, spend)) continue;
+      spend(spelling.length);
+      try {
+        if (boundedMatch(pattern, spelling, budget)) return "matches";
+      } catch (error) {
+        if (isBoundedOut(error)) return error.code;
+        throw error;
+      }
+    }
+    if (read.backreference) return "backreference";
+    for (const text of read.texts) {
+      const gap = [...text].find(gapKind);
+      if (gap === undefined) continue;
+      // A text can spell at most its own characters' worth.
+      const characters = [...text].filter((char) => !gapKind(char)).length;
+      for (const spelling of spellings.filter((candidate) => candidate.length <= (4 / 3) * characters)) {
+        spend(text.length * (spelling.length + 1));
+        if (spellsMost(text, spelling)) return { around: gapKind(gap) };
+      }
+    }
+    return null;
+  } catch (error) {
+    if (error === TOO_COSTLY) return "too costly";
+    throw error;
   }
-  if (read.backreference) return "backreference";
-  // Only short texts and spellings: a text can spell at most its own length's worth.
-  for (const text of read.texts.filter((candidate) => candidate.length <= 4096 && [...candidate].some(gapKind))) {
-    const characters = [...text].filter((char) => !gapKind(char)).length;
-    const gap = [...text].find(gapKind);
-    if (spellings.some((spelling) => spelling.length <= Math.min(4096, (4 / 3) * characters) && spellsMost(text, spelling))) return { around: gapKind(gap) };
-  }
-  return null;
 }
 
 // Where secretIn finds one of `values` in a JSON value: in a key or leaf, or in the value as JSON,
@@ -401,7 +470,7 @@ function touchesSecret(assertion, found, secrets, budget) {
   if ((assertion.op === "equals" || assertion.op === "matches") && jsonSecretIn(found, secrets)) return true;
   if (assertion.op !== "matches") return false;
   if (secrets.some((secret) => String(secret).length > MATCH_INPUT_LIMIT)) return true;
-  return patternSecretIn(assertion.value, secrets, budget) !== null;
+  return patternSecretIn(assertion.value, secrets, { budget }) !== null;
 }
 
 /**
@@ -434,9 +503,5 @@ function checkAssertions(value, list, secrets = [], budget = createRegexBudget()
   });
 }
 
-function describeAssertion({ path, op, value }) {
-  return [path, op, ...(value === undefined ? [] : [JSON.stringify(value)])].join(" ");
-}
-
 // MATCH_INPUT_LIMIT is bounded-regex.cjs's, exported here too for callers of boundedMatch.
-module.exports = { ASSERTION_LIMIT, MATCH_INPUT_LIMIT, MATCH_SKIPPED, MATCH_TIMED_OUT, boundedMatch, checkAssertions, createRegexBudget, describeAssertion, jsonSecretIn, patternSecretIn, patternTexts, spellsMost, validateAssertions, valueTexts };
+module.exports = { ASSERTION_LIMIT, MATCH_INPUT_LIMIT, MATCH_SKIPPED, MATCH_TIMED_OUT, boundedMatch, checkAssertions, createRegexBudget, jsonSecretIn, patternSecretIn, patternTexts, patternWork, spellsMost, validateAssertions, valueTexts };

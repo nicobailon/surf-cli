@@ -423,7 +423,8 @@ describe("pb test --save and env values", () => {
     const started = Date.now();
     await expect(
       pbTest.runPlaybookTest({
-        argv: ["shop", "items", "--assert", "$[0].echo", "matches", "(a+)+b", "--save"],
+        // [bc]: a run of a's holds every text a match needs, so the pattern runs on it.
+        argv: ["shop", "items", "--assert", "$[0].echo", "matches", "(a+)+[bc]", "--save"],
         cwd,
         home: cwd,
         env: { SURF_TEST_ITEMS_KEY: "a".repeat(60) },

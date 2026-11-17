@@ -587,7 +587,7 @@ async function testPlaybookOp(options) {
   try {
     return await runPlaybookOp(options);
   } catch (error) {
-    const values = authInputs(op).map((input) => options.secrets?.[input.env] ?? (options.env ?? process.env)[input.env]);
+    const values = authInputs(op).map((input) => options.secrets?.[input.env] ?? (options.env ?? process.env)[input.env]).filter(Boolean);
     return redactResult({ status: "failed", playbook: playbook.id, op: op.id, error: error.message, attempts: error.attempts || [] }, values);
   }
 }

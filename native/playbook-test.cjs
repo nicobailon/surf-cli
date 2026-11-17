@@ -1,7 +1,7 @@
 // surf pb test: run an op the way `surf use` does and check assertions on its result.
 
-const { MATCH_INPUT_LIMIT, MATCH_SKIPPED, MATCH_TIMED_OUT, createRegexBudget, describeAssertion, jsonSecretIn, patternSecretIn, validateAssertions } = require("./playbook-assertions.cjs");
-const { redactResult } = require("./redaction.cjs");
+const { MATCH_INPUT_LIMIT, MATCH_SKIPPED, MATCH_TIMED_OUT, createRegexBudget, jsonSecretIn, patternSecretIn, validateAssertions } = require("./playbook-assertions.cjs");
+const { assertionLine, decodeBudget, maskResult, redactResult, secretIn, spanningValues } = require("./redaction.cjs");
 const { authInputs, resolveArgs } = require("./playbook-runtime.cjs");
 const { editSavedOp, resolveEditablePlaybook, resolveOp } = require("./playbooks.cjs");
 
@@ -92,11 +92,12 @@ function localOp(playbook, op, { cwd, home }) {
 // its value, or the assertion as JSON, compact or indented as the op file stores it), or when a
 // matches pattern could store or match one (patternSecretIn: a text the pattern can match holds
 // one, the pattern matches one, which also refuses broad patterns such as .*, it has a
-// backreference, or it spells most of one around a class or .). secretIn decodes JSON escapes, so a value escaped any number of times, or
-// written with \/ or \uXXXX, is found; text escaped past its 8 levels is refused as too deep to
-// check, and text too costly to decode as too large. A value over MATCH_INPUT_LIMIT is refused
-// for any pattern: a run tests only its start. Errors name the assertion's position and the
-// variable, never the value.
+// backreference, or it spells most of one around a class or .), or when that check runs out of
+// work. secretIn decodes JSON escapes, so a value escaped any number of times, or written with \/
+// or \uXXXX, is found; text escaped past its 8 levels is refused as too deep to check, and text
+// too costly to decode as too large. A value over MATCH_INPUT_LIMIT is refused for any pattern: a
+// run tests only its start. Errors name the assertion's position and the variable, never the
+// value.
 function refuseSecretAssertions(assertions, secret) {
   const budget = createRegexBudget();
   assertions.forEach((assertion, index) => {
@@ -115,8 +116,10 @@ function refuseSecretAssertions(assertions, secret) {
       if (raw.length > MATCH_INPUT_LIMIT) {
         throw new Error(`--save refused: the value of ${name} is over ${MATCH_INPUT_LIMIT / 1024} KB, too long to check ${position}'s pattern against; assert on something else`);
       }
-      const found = patternSecretIn(assertion.value, [raw], budget);
+      const found = patternSecretIn(assertion.value, [raw], { budget });
       if (found === null) continue;
+      // Unchecked, the pattern could spell the value.
+      if (found === "too costly") throw new Error(`--save refused: checking ${position}'s pattern against the value of ${name} takes more work than the check allows (the pattern can match too many or too long texts); simplify it`);
       if (Object.hasOwn(refusals, found)) throw new Error(`--save refused: ${refusals[found](name).replace(position, `${position}'s pattern`)}`);
       if (found === MATCH_SKIPPED) throw new Error(`--save refused: the 1 s regex budget was spent before ${position}'s pattern was checked against ${name}; use fewer or simpler patterns`);
       if (found === MATCH_TIMED_OUT) throw new Error(`--save refused: ${position}'s pattern took too long (over 100 ms) on the value of ${name}; simplify it`);
@@ -185,7 +188,7 @@ async function runPlaybookTest({ argv, cwd = process.cwd(), home, env = process.
   const ok = result.status === "completed";
   const attempts = result.attempts || [];
   const lastChecked = [...attempts].reverse().find((attempt) => attempt.assertions);
-  const report = {
+  let report = {
     ok,
     playbook: spec.playbook,
     op: spec.op,
@@ -199,6 +202,7 @@ async function runPlaybookTest({ argv, cwd = process.cwd(), home, env = process.
     ...(ok ? {} : { error: result.error }),
     saved: null,
   };
+  report = redactReport(report, Object.values(secret));
   if (options.save && ok) {
     refuseSecretSensitive(report.assertions);
     const edited = editSavedOp({
@@ -216,14 +220,23 @@ async function runPlaybookTest({ argv, cwd = process.cwd(), home, env = process.
   return report;
 }
 
+// What pb test prints and --json sends, checked whole against this shell's values that can span
+// two of its parts (spanningValues, as redactResult reads them): its header names the playbook, op
+// and strategy next to the run's lines. On a hit the run's parts are masked (maskResult), so
+// --save refuses them.
+function redactReport(report, values) {
+  const spanning = spanningValues(values);
+  if (spanning.length === 0) return report;
+  const forms = [formatTestReport(report), JSON.stringify(report), JSON.stringify(report, null, 2)];
+  const budget = decodeBudget(forms.reduce((sum, form) => sum + form.length, 0));
+  return forms.some((form) => secretIn(form, spanning, { levels: 9, budget, anyLength: true })) ? maskResult(report) : report;
+}
+
 function formatTestReport(report) {
   const answered = report.strategy ? `${report.strategy} answered` : "no strategy answered";
   const records = report.records === null ? "" : `, ${report.records} record${report.records === 1 ? "" : "s"}`;
   const lines = [`${report.ok ? "PASS" : "FAIL"} ${report.playbook} ${report.op}: ${answered}${records}, ${report.durationMs} ms`];
-  for (const assertion of report.assertions) {
-    const actual = assertion.error ?? (typeof assertion.actual === "string" ? assertion.actual : JSON.stringify(assertion.actual));
-    lines.push(`  ${assertion.pass ? "pass" : "FAIL"}  ${describeAssertion(assertion)} (${actual})`);
-  }
+  for (const assertion of report.assertions) lines.push(`  ${assertionLine(assertion)}`);
   if (!report.ok) {
     for (const attempt of report.attempts) lines.push(`  ${attempt.using}: ${attempt.error}`);
     if (report.attempts.length === 0 && report.error) lines.push(`  ${report.error}`);

@@ -1624,7 +1624,7 @@ async function runHostPlaybook(msg, request) {
   });
   if (params.format === undefined) return result;
   // The run's result went through redactResult; rendered records sit next to surf's own fields anew.
-  const values = authInputs(op).map((input) => params.secret?.[input.env] ?? process.env[input.env]);
+  const values = authInputs(op).map((input) => params.secret?.[input.env] ?? process.env[input.env]).filter(Boolean);
   return redactResult({ ...result, value: formatRecords(result.value, params.format, { markdown: op.markdown, args: runArgs }) }, values);
 }
 

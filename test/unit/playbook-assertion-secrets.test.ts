@@ -1079,4 +1079,187 @@ describe("an env value in any JSON spelling the decoder reads", () => {
     expect(redaction.redactJson({ text }, [UNICODE], spent())).toBe("<redacted>");
     expect(assertions.jsonSecretIn(text, [UNICODE], spent())).toBe("too costly");
   });
+
+  // A pb test --save of `$.bodyJson.text matches <pattern>` against a response of `ok`, with the
+  // value in the caller's shell and then only on the browser host: each refusal's message (or
+  // "saved"), whether the run started before the caller's refusal, and whether the file is as it was.
+  async function bothSaves(secret: string, pattern: string) {
+    const { cwd, file } = tempShop(rawOp);
+    const before = fs.readFileSync(file, "utf8");
+    const hosted = hostedRun(secret, JSON.stringify({ text: "ok" }));
+    const asserts = ["--assert", "$.bodyJson.text", "matches", pattern];
+    const outcome = (env: Record<string, string>) =>
+      save(cwd, asserts, env, hosted).then(
+        () => "saved",
+        (error: Error) => error.message,
+      );
+    const caller = await outcome({ [ENV]: secret });
+    const ranBeforeCaller = hosted.mock.calls.length > 0;
+    const host = await outcome({});
+    return { caller, host, ranBeforeCaller, unchanged: fs.readFileSync(file, "utf8") === before };
+  }
+  const HOST_REFUSAL = /--save refused: assertion 1's value passed through env-header redaction/;
+
+  it("checks a pattern on one work budget, and refuses one it can't cover", async () => {
+    // The reviewer's shape: 64 alternatives, each a long run then a class, against a long value.
+    const shape = (size: number) => `^(?:ok|(?:a|b|c|d|e|f|g|h){2}x{${size}}.)$`;
+    const steps = [1000, 2000, 4000, 8000].map((size) => {
+      const pattern = shape(size);
+      const secret = "z".repeat(size);
+      const work = assertions.patternWork(pattern, [secret]);
+      expect(assertions.patternSecretIn(pattern, [secret], { work }), String(size)).toBe(
+        "too costly",
+      );
+      expect(work.steps).toBeGreaterThan(0);
+      expect(work.steps).toBeLessThanOrEqual(work.limit);
+      return work.steps;
+    });
+    // Each doubling at most doubles the work, give or take: nothing grows with its square.
+    for (let index = 1; index < steps.length; index++) {
+      expect(steps[index] / steps[index - 1]).toBeLessThan(2.5);
+    }
+    // The run marks it, and --save refuses it with its own message.
+    const secret = "z".repeat(2000);
+    const [checked] = assertions.checkAssertions(
+      { text: "ok" },
+      [{ path: "$.text", op: "matches", value: shape(2000) }],
+      [secret],
+    );
+    expect(checked.pass).toBe(true);
+    expect(checked.secretSensitive).toBe(true);
+    const saves = await bothSaves(secret, shape(2000));
+    expect(saves.caller).toContain(
+      "--save refused: checking assertion 1's pattern against the value of SURF_TEST_ITEMS_KEY takes more work than the check allows",
+    );
+    expect(saves).toMatchObject({ ranBeforeCaller: false, unchanged: true });
+    expect(saves.host).toMatch(HOST_REFUSAL);
+  });
+
+  it("refuses a pattern whose characters are each optional, however it marks them", async () => {
+    const secret = ["review", "unique", "env", "value"].join("-");
+    const forms = [
+      (char: string) => `${char}?`,
+      (char: string) => `${char}*`,
+      (char: string) => `${char}{0,1}`,
+      (char: string) => `[${char}]?`,
+      (char: string) => `(?:|${char})`,
+    ];
+    for (const form of forms) {
+      const pattern = `^(?:ok|${[...secret].map(form).join("")}X)$`;
+      // Stripping the marks gives the value: the pattern stores it.
+      expect(new RegExp(pattern).test(`${secret}X`), pattern).toBe(true);
+      expect(new RegExp(pattern).test("ok"), pattern).toBe(true);
+      const saves = await bothSaves(secret, pattern);
+      expect(saves.caller, pattern).toContain(
+        "--save refused: assertion 1's pattern contains the value of SURF_TEST_ITEMS_KEY",
+      );
+      expect(saves, pattern).toMatchObject({ ranBeforeCaller: false, unchanged: true });
+      expect(saves.host, pattern).toMatch(HOST_REFUSAL);
+    }
+  });
+
+  it("tests a pattern against each spelling whole, never against its start alone", async () => {
+    // Its first 2 KB match ^(?:ok|A+)$; the whole value doesn't.
+    const secret = `${"A".repeat(2048)}-B`;
+    const pattern = "^(?:ok|A+)$";
+    expect(new RegExp(pattern).test(secret)).toBe(false);
+    expect(assertions.patternSecretIn(pattern, [secret])).toBeNull();
+    const body = JSON.stringify({ text: "ok" });
+    const asserts = ["--assert", "$.bodyJson.text", "matches", pattern];
+    const { cwd, file } = tempShop(rawOp);
+    expect((await save(cwd, asserts, { [ENV]: secret }, hostedRun(secret, body))).saved).toBe(file);
+    const hosted = tempShop(rawOp);
+    expect((await save(hosted.cwd, asserts, {}, hostedRun(secret, body))).saved).toBe(hosted.file);
+  });
+
+  it("runs no regex on a spelling that lacks the text every match of the pattern holds", () => {
+    // A spent regex budget fails any run, so null means none ran: `ok`, `done` and `ok` again are
+    // in no spelling of the value, escaped or not.
+    const spent = () => assertions.createRegexBudget(0);
+    for (const pattern of [".*ok.*", "(?:ok|done)", "^\\w+ok\\b"]) {
+      expect(
+        assertions.patternSecretIn(pattern, [QUOTED], { budget: spent() }),
+        pattern,
+      ).toBeNull();
+    }
+    // A pattern without such text, or whose text the value holds, still runs.
+    expect(assertions.patternSecretIn("^\\d+$", [QUOTED], { budget: spent() })).toBe(
+      assertions.MATCH_SKIPPED,
+    );
+    expect(assertions.patternSecretIn("quoted", [QUOTED], { budget: spent() })).toBe(
+      assertions.MATCH_SKIPPED,
+    );
+  });
+
+  it("masks pb test's printed report where its assertion line spells an env value", async () => {
+    // The line reads `FAIL  $ equals "ok" (<actual>)`: op, expected value and actual spell it.
+    const secret = join('equals "ok" (', TAIL, ")");
+    const extractOp = tailOp("$.tail");
+    const asserts = ["--assert", "$", "equals", '"ok"'];
+    for (const env of [{ [ENV]: secret }, {}]) {
+      const { cwd } = tempShop(extractOp);
+      const hosted = hostedRun(secret, JSON.stringify({ tail: TAIL }), extractOp);
+      const report = await pbTest.runPlaybookTest({
+        argv: ["shop", "items", ...asserts],
+        cwd,
+        home: cwd,
+        env,
+        runOp: hosted,
+      });
+      expect(report.ok).toBe(false);
+      const shown = pbTest.formatTestReport(report);
+      expect(shown).toContain("FAIL  <redacted> equals");
+      for (const text of [shown, ...printed(report)]) {
+        expect(text).not.toContain(secret);
+      }
+    }
+    // A runOp that hands back the assertions as checked: the caller's own check masks them.
+    const { cwd } = tempShop(extractOp);
+    const raw = {
+      status: "failed",
+      error: "All strategies failed",
+      attempts: [
+        {
+          using: "network",
+          error: "assertion failed: $ equals",
+          assertions: [{ path: "$", op: "equals", value: "ok", pass: false, actual: TAIL }],
+        },
+      ],
+    };
+    const report = await pbTest.runPlaybookTest({
+      argv: ["shop", "items", ...asserts],
+      cwd,
+      home: cwd,
+      env: { [ENV]: secret },
+      runOp: async () => raw,
+    });
+    expect(pbTest.formatTestReport(report)).not.toContain(secret);
+  });
+
+  it("treats an unset or empty env value as no value, not as the text undefined", async () => {
+    const optional = {
+      ...op,
+      run: [
+        {
+          ...op.run[0],
+          request: {
+            ...op.run[0].request,
+            authInputs: [{ env: ENV, header: "X-Api-Key", required: false }],
+          },
+        },
+      ],
+    };
+    const failed = await runtime.testPlaybookOp({
+      playbook,
+      op: optional,
+      env: {},
+      executeTool: async () => ({ error: "server said undefined" }),
+    });
+    expect(failed.error).toContain("server said undefined");
+    expect(failed.attempts[0].error).toContain("server said undefined");
+    const result = { status: "completed", value: "the server returned undefined", attempts: [] };
+    expect(redaction.redactResult(result, [undefined, ""])).toEqual(result);
+    expect(redaction.secretIn("undefined", [undefined, null, ""])).toBeNull();
+    expect(redaction.redactValues("undefined null", [undefined, null])).toBe("undefined null");
+  });
 });

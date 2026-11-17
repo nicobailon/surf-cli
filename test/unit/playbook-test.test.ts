@@ -112,8 +112,10 @@ describe("assertions", () => {
       results.filter((result: { error?: string }) => result.error?.startsWith("skipped")).length,
     ).toBeGreaterThan(5);
     // The host's secret checks spend the same budget; a skipped one counts as touching the secret.
+    // [bc]: a run of a's holds every text a match needs, so each pattern runs on the value.
+    const slowOnValue = slow.map((assertion) => ({ ...assertion, value: "(a+)+[bc]" }));
     started = Date.now();
-    const checked = assertions.checkAssertions("x", slow, ["a".repeat(60)]);
+    const checked = assertions.checkAssertions("x", slowOnValue, ["a".repeat(60)]);
     expect(Date.now() - started).toBeLessThan(1200);
     expect(
       checked.every((result: { secretSensitive?: boolean }) => result.secretSensitive === true),
@@ -148,7 +150,7 @@ describe("assertions", () => {
     const started = Date.now();
     const [result] = assertions.checkAssertions(
       "x",
-      [{ path: "$", op: "matches", value: "(a+)+b" }],
+      [{ path: "$", op: "matches", value: "(a+)+[bc]" }],
       ["a".repeat(60)],
     );
     expect(Date.now() - started).toBeLessThan(500);
