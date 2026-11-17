@@ -4,7 +4,7 @@ const path = require("path");
 const { atomicWriteJson } = require("./private-state.cjs");
 const { validateApiSpec } = require("./api-harvest.cjs");
 const { validateCollectSpec } = require("./dom-collect.cjs");
-const { validateAssertions } = require("./playbook-assertions.cjs");
+const { ASSERTION_LIMIT, validateAssertions } = require("./playbook-assertions.cjs");
 const { validateExtract } = require("./playbook-extract.cjs");
 const { validateMarkdownSpec } = require("./record-format.cjs");
 const { assertNoEmbeddedSecrets, assertUrlHasNoEmbeddedSecrets } = require("./redaction.cjs");
@@ -193,12 +193,22 @@ function validateOp(value, manifest) {
       throw new Error(`op ${id} ${error.message}`);
     }
   }
-  if (value.on?.success?.expect?.assert !== undefined) {
+  // Assertions run from on.success.expect.assert and from a strategy's own verify.assert or
+  // expect.assert. Each list is checked, and an op holds at most ASSERTION_LIMIT across them all.
+  const assertionLists = [
+    [`op ${id} on.success.expect.assert`, value.on?.success?.expect?.assert],
+    ...value.run.flatMap((strategy) => ["verify", "expect"].map((key) => [`op ${id} ${strategy?.using} strategy ${key}.assert`, strategy?.[key]?.assert])),
+  ].filter(([, list]) => list !== undefined);
+  for (const [where, list] of assertionLists) {
     try {
-      validateAssertions(value.on.success.expect.assert);
+      validateAssertions(list);
     } catch (error) {
-      throw new Error(`op ${id} on.success.expect.assert: ${error.message}`);
+      throw new Error(`${where}: ${error.message}`);
     }
+  }
+  const assertionCount = assertionLists.reduce((sum, [, list]) => sum + list.length, 0);
+  if (assertionCount > ASSERTION_LIMIT) {
+    throw new Error(`op ${id}: at most ${ASSERTION_LIMIT} assertions per op across all its strategies and on.success (got ${assertionCount})`);
   }
   const origins = validateOrigins(auth.origins || value.origins || manifest.origins);
   return {

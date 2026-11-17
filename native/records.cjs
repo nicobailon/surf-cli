@@ -280,6 +280,24 @@ function compileJsonPath(source, where) {
   return path ? compilePath(path) : (value) => value;
 }
 
+/**
+ * For each character of a $-path compileJsonPath accepts, what it is: "syntax" for the leading $,
+ * each . (fromJsonPath, parseAlternative), the brackets and * of each [n] or [*] (SEGMENT), and
+ * each ?? with the space trimmed around it (compilePath); "index" for the digits of an [n], which
+ * the path's author wrote; else "key". SEGMENT keeps [, ], ?, * and space out of keys, so outside
+ * an index those are syntax wherever they stand; anything else outside an index is key text,
+ * quotes, digits and a $ after the first included.
+ */
+function jsonPathSyntax(source) {
+  let index = false;
+  return Array.from(source.split(""), (char, at) => {
+    if (char === "[") index = true;
+    const kind = at === 0 ? "syntax" : index ? (/\d/.test(char) ? "index" : "syntax") : /[.?*\s]/.test(char) ? "syntax" : "key";
+    if (char === "]") index = false;
+    return kind;
+  });
+}
+
 function extractBudget(scope = "extract") {
   return createRegexBudget({ ms: EXTRACT_REGEX_BUDGET_MS, scope });
 }
@@ -322,4 +340,4 @@ function extractRecords(doc, spec, options) {
   return compileJsonExtract(spec)(doc, options);
 }
 
-module.exports = { assertFieldName, compileJsonExtract, compileJsonPath, createRecordSet, extractRecords, filterRecords, findObjects, getPath, readCursor };
+module.exports = { assertFieldName, compileJsonExtract, compileJsonPath, createRecordSet, extractRecords, filterRecords, findObjects, getPath, jsonPathSyntax, readCursor };

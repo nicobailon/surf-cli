@@ -8,7 +8,7 @@ const { findRedactedPlaceholder, placeholderError } = require("./record-typed-va
 const { resolveOp } = require("./playbooks.cjs");
 const { isReplayCandidate, readRecord, recordsRoot, requestEffect, requestFromEntry } = require("./playbook-records.cjs");
 const { WINNER_MARGIN, isWeak, scoreEntries } = require("./record-candidates.cjs");
-const { assertNoEmbeddedSecrets, assertUrlHasNoEmbeddedSecrets, redactObject, redactValues, safeHeaders, valueSpellings } = require("./redaction.cjs");
+const { assertNoEmbeddedSecrets, assertUrlHasNoEmbeddedSecrets, decodeBudget, redactJson, redactObject, redactText, redactValues, safeHeaders, secretIn, secretSpellings, spanningValues, valueSpellings } = require("./redaction.cjs");
 const { version: PACKAGE_VERSION } = require("../package.json");
 
 // URL parsing would percent-encode `{{name}}` in a path, so placeholders (and, in escaped text, the
@@ -89,7 +89,14 @@ const secretValues = [];
 ${redactValues.toString()}
 ${redactObject.toString()}
 ${valueSpellings.toString()}
-const redact = (text) => redactValues(text, secretValues, { anyLength: true });
+${secretSpellings.toString()}
+${decodeBudget.toString()}
+${secretIn.toString()}
+${redactText.toString()}
+${spanningValues.toString()}
+${redactJson.toString()}
+// A raw JSON body can hold a value escaped once or more: redactText and redactJson decode it.
+const redact = (text) => redactText(text, secretValues);
 process.on("uncaughtException", (error) => {
   process.stderr.write(\`\${redact(error?.stack || error)}\\n\`);
   process.exit(1);
@@ -99,7 +106,7 @@ for (const input of manifest.authInputs || []) {
   if (input.required && !value) throw new Error(\`missing auth environment variable \${input.env}\`);
   if (value && input.header) {
     headers[input.header] = value;
-    secretValues.push(...valueSpellings(value));
+    secretValues.push(value);
   }
 }
 const response = await fetch(url, {
@@ -108,7 +115,8 @@ const response = await fetch(url, {
   ...(endpoint.body === undefined ? {} : { body: typeof endpoint.body === "string" ? endpoint.body : JSON.stringify(endpoint.body) }),
 });
 const text = await response.text();
-if (!response.ok) throw new Error(\`HTTP \${response.status}: \${text.slice(0, 500)}\`);
+// Redacted in full before it is cut, so the cut can't keep the start of an env value.
+if (!response.ok) throw new Error(\`HTTP \${response.status}: \${redact(text).slice(0, 500)}\`);
 let bodyJson;
 try { bodyJson = JSON.parse(text); } catch {}
 let output = manifest.extract ? {
@@ -130,7 +138,7 @@ if (manifest.extract && (manifest.extract.records !== undefined || manifest.extr
   output = extractRecords(bodyJson ?? output, manifest.extract);
 }
 // Objects are redacted before they become text, so a secret used as a key can't merge two keys.
-process.stdout.write(output === undefined ? "" : typeof output === "string" ? redact(output) : JSON.stringify(redactObject(output, secretValues, { anyLength: true }), null, 2));
+process.stdout.write(output === undefined ? "" : typeof output === "string" ? redact(output) : JSON.stringify(redactJson(output, secretValues), null, 2));
 process.stdout.write("\\n");
 `;
 }

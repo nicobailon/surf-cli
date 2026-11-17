@@ -1,6 +1,7 @@
 // surf pb test: run an op the way `surf use` does and check assertions on its result.
 
-const { MATCH_SKIPPED, MATCH_TIMED_OUT, boundedMatch, createRegexBudget, describeAssertion, validateAssertions, valueTexts } = require("./playbook-assertions.cjs");
+const { MATCH_INPUT_LIMIT, MATCH_SKIPPED, MATCH_TIMED_OUT, assertionSecretIn, createRegexBudget, patternSecretIn, validateAssertions } = require("./playbook-assertions.cjs");
+const { assertionLine, decodeBudget, maskResult, redactResult, secretIn, spanningValues } = require("./redaction.cjs");
 const { authInputs, resolveArgs } = require("./playbook-runtime.cjs");
 const { editSavedOp, resolveEditablePlaybook, resolveOp } = require("./playbooks.cjs");
 
@@ -87,30 +88,48 @@ function localOp(playbook, op, { cwd, home }) {
 }
 
 // pb test --save writes assertions to the op file, which must never hold an env header's value.
-// Before the run: refuse when the path, any key or leaf of the value, or a matches pattern's source
-// contains one, or when the pattern matches one (which also refuses broad patterns such as .*).
-// Errors name the assertion's position and the variable, never the value.
+// Before the run: refuse when assertionSecretIn finds one in the assertion (its path, op, any key
+// or leaf of its value, or the assertion as JSON, compact or indented as the op file stores it; a
+// short value next to other characters too in the path's keys, its indexes' digits and the value, unlike output
+// redaction), or when a
+// matches pattern could store or match one (patternSecretIn: a text the pattern can match holds
+// one, the pattern matches one, which also refuses broad patterns such as .*, it has a
+// backreference, it spells most of one around a class or ., or it shares 6 characters in a row
+// with one, its lookarounds read in place), or when that check runs out of work. These catch an
+// accidental copy of a value, not a pattern's author encoding one on purpose. secretIn decodes JSON escapes, so a value escaped any number of times, or written with \/
+// or \uXXXX, is found; text escaped past its 8 levels is refused as too deep to check, and text
+// too costly to decode as too large. A value over MATCH_INPUT_LIMIT is refused for any pattern: a
+// run tests only its start. Errors name the assertion's position and the variable, never the
+// value.
 function refuseSecretAssertions(assertions, secret) {
   const budget = createRegexBudget();
   assertions.forEach((assertion, index) => {
     const position = `assertion ${index + 1}`;
-    const texts = [assertion.path, ...valueTexts(assertion.value)];
-    for (const [name, value] of Object.entries(secret)) {
-      if (texts.some((text) => text.includes(value))) {
-        throw new Error(`--save refused: ${position} contains the value of ${name}, which is never stored; assert on something else`);
+    const refusals = {
+      found: (name) => `${position} contains the value of ${name}, which is never stored; assert on something else`,
+      "too deep": (name) => `${position} holds JSON escaped more than 8 times, too deep to check for ${name}; assert on something else`,
+      "too costly": (name) => `${position} is too large to check for ${name}; assert on something else`,
+    };
+    for (const [name, raw] of Object.entries(secret)) {
+      const found = assertionSecretIn(assertion, [raw]);
+      if (found) throw new Error(`--save refused: ${refusals[found](name)}`);
+    }
+    if (assertion.op !== "matches") return;
+    for (const [name, raw] of Object.entries(secret)) {
+      if (raw.length > MATCH_INPUT_LIMIT) {
+        throw new Error(`--save refused: the value of ${name} is over ${MATCH_INPUT_LIMIT / 1024} KB, too long to check ${position}'s pattern against; assert on something else`);
       }
-      if (assertion.op !== "matches") continue;
-      let matched;
-      try {
-        matched = boundedMatch(assertion.value, value, budget);
-      } catch (error) {
-        if (error.code !== MATCH_TIMED_OUT && error.code !== MATCH_SKIPPED) throw error;
-        if (error.code === MATCH_SKIPPED) throw new Error(`--save refused: the 1 s regex budget was spent before assertion ${index + 1}'s pattern was checked against ${name}; use fewer or simpler patterns`);
-        throw new Error(`--save refused: ${position}'s pattern took too long (over 100 ms) on the value of ${name}; simplify it`);
-      }
-      if (matched) {
-        throw new Error(`--save refused: ${position}'s pattern matches the value of ${name}, which is never stored; use a narrower pattern`);
-      }
+      const found = patternSecretIn(assertion.value, [raw], { budget });
+      if (found === null) continue;
+      // Unchecked, the pattern could spell the value.
+      if (found === "too costly") throw new Error(`--save refused: checking ${position}'s pattern against the value of ${name} takes more work than the check allows (the pattern can match too many or too long texts); simplify it`);
+      if (Object.hasOwn(refusals, found)) throw new Error(`--save refused: ${refusals[found](name).replace(position, `${position}'s pattern`)}`);
+      if (found === MATCH_SKIPPED) throw new Error(`--save refused: the 1 s regex budget was spent before ${position}'s pattern was checked against ${name}; use fewer or simpler patterns`);
+      if (found === MATCH_TIMED_OUT) throw new Error(`--save refused: ${position}'s pattern took too long (over 100 ms) on the value of ${name}; simplify it`);
+      if (found === "matches") throw new Error(`--save refused: ${position}'s pattern matches the value of ${name}, which is never stored; use a narrower pattern`);
+      if (found === "shares") throw new Error(`--save refused: ${position}'s pattern shares 6 or more characters in a row with the value of ${name}; assert on something else`);
+      if (found === "backreference") throw new Error(`--save refused: ${position}'s pattern uses a backreference, which could repeat part of the value of ${name}; while env values are set, save a pattern without one`);
+      throw new Error(`--save refused: ${position}'s pattern spells most of the value of ${name} around ${found.around}; assert on something else`);
     }
   });
 }
@@ -167,11 +186,13 @@ async function runPlaybookTest({ argv, cwd = process.cwd(), home, env = process.
   } catch (error) {
     result = { status: "failed", error: error.message, attempts: [] };
   }
+  // The host masked what its values touch; this masks what this shell's values touch.
+  result = redactResult(result, Object.values(secret));
   const durationMs = now() - started;
   const ok = result.status === "completed";
   const attempts = result.attempts || [];
   const lastChecked = [...attempts].reverse().find((attempt) => attempt.assertions);
-  const report = {
+  let report = {
     ok,
     playbook: spec.playbook,
     op: spec.op,
@@ -185,6 +206,7 @@ async function runPlaybookTest({ argv, cwd = process.cwd(), home, env = process.
     ...(ok ? {} : { error: result.error }),
     saved: null,
   };
+  report = redactReport(report, Object.values(secret));
   if (options.save && ok) {
     refuseSecretSensitive(report.assertions);
     const edited = editSavedOp({
@@ -202,14 +224,23 @@ async function runPlaybookTest({ argv, cwd = process.cwd(), home, env = process.
   return report;
 }
 
+// What pb test prints and --json sends, checked whole against this shell's values that can span
+// two of its parts (spanningValues, as redactResult reads them): its header names the playbook, op
+// and strategy next to the run's lines. On a hit the run's parts are masked (maskResult), so
+// --save refuses them.
+function redactReport(report, values) {
+  const spanning = spanningValues(values);
+  if (spanning.length === 0) return report;
+  const forms = [formatTestReport(report), JSON.stringify(report), JSON.stringify(report, null, 2)];
+  const budget = decodeBudget(forms.reduce((sum, form) => sum + form.length, 0));
+  return forms.some((form) => secretIn(form, spanning, { levels: 9, budget, anyLength: true })) ? maskResult(report) : report;
+}
+
 function formatTestReport(report) {
   const answered = report.strategy ? `${report.strategy} answered` : "no strategy answered";
   const records = report.records === null ? "" : `, ${report.records} record${report.records === 1 ? "" : "s"}`;
   const lines = [`${report.ok ? "PASS" : "FAIL"} ${report.playbook} ${report.op}: ${answered}${records}, ${report.durationMs} ms`];
-  for (const assertion of report.assertions) {
-    const actual = assertion.error ?? (typeof assertion.actual === "string" ? assertion.actual : JSON.stringify(assertion.actual));
-    lines.push(`  ${assertion.pass ? "pass" : "FAIL"}  ${describeAssertion(assertion)} (${actual})`);
-  }
+  for (const assertion of report.assertions) lines.push(`  ${assertionLine(assertion)}`);
   if (!report.ok) {
     for (const attempt of report.attempts) lines.push(`  ${attempt.using}: ${attempt.error}`);
     if (report.attempts.length === 0 && report.error) lines.push(`  ${report.error}`);

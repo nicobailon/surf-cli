@@ -44,7 +44,7 @@ const { RequestPendingMap } = require("./request-pending.cjs");
 const { PAGE_CHANGES_TOOLS, cleanupFilePaths, createStagingDirectory, createTransferState, materializeRemoteTool, rewriteTransferPaths, streamFileDownload, transferError } = require("./file-transfer.cjs");
 const { writeNetworkExport } = require("./network-export.cjs");
 const networkStore = require("./network-store.cjs");
-const { redactUrlSecrets, redactUrlsInText } = require("./redaction.cjs");
+const { redactResult, redactUrlSecrets, redactUrlsInText } = require("./redaction.cjs");
 const { appendActivity, journalCommand } = require("./activity-journal.cjs");
 const { checkReceipt, reserveReceipt, updateReceipt } = require("./playbook-receipts.cjs");
 const {
@@ -67,7 +67,7 @@ const {
 } = require("./playbook-records.cjs");
 const { visibleText } = require("./record-candidates.cjs");
 const { validateAssertions } = require("./playbook-assertions.cjs");
-const { resolveArgs, runPlaybookOp, testPlaybookOp } = require("./playbook-runtime.cjs");
+const { authInputs, resolveArgs, runPlaybookOp, testPlaybookOp } = require("./playbook-runtime.cjs");
 const { envBackedHeaders, resolveOp } = require("./playbooks.cjs");
 const { replay, waitForResponse } = require("./api-harvest.cjs");
 const { runCollect } = require("./dom-collect.cjs");
@@ -1623,7 +1623,9 @@ async function runHostPlaybook(msg, request) {
     allowScript: params.allowScript === true,
   });
   if (params.format === undefined) return result;
-  return { ...result, value: formatRecords(result.value, params.format, { markdown: op.markdown, args: runArgs }) };
+  // The run's result went through redactResult; rendered records sit next to surf's own fields anew.
+  const values = authInputs(op).map((input) => params.secret?.[input.env] ?? process.env[input.env]).filter(Boolean);
+  return redactResult({ ...result, value: formatRecords(result.value, params.format, { markdown: op.markdown, args: runArgs }) }, values);
 }
 
 // network.wait, network.replay, collect: composed host tools over the mapped extension tools.

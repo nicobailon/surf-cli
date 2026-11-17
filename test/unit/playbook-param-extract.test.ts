@@ -399,7 +399,11 @@ describe("pb test --save and env values", () => {
         contains(1),
         'x"q\\uote-key-1',
       ],
-      [["--assert", "$[0].echo", "matches", hexEscaped(KEY)], matches(1)],
+      // The pattern's escapes read as the key itself.
+      [
+        ["--assert", "$[0].echo", "matches", hexEscaped(KEY)],
+        /--save refused: assertion 1's pattern contains the value of SURF_TEST_ITEMS_KEY/,
+      ],
       [["--assert", "$[0].echo", "matches", ".*"], matches(1)],
     ];
     for (const [asserts, expected, key] of cases) {
@@ -419,7 +423,8 @@ describe("pb test --save and env values", () => {
     const started = Date.now();
     await expect(
       pbTest.runPlaybookTest({
-        argv: ["shop", "items", "--assert", "$[0].echo", "matches", "(a+)+b", "--save"],
+        // [bc]: a run of a's holds every text a match needs, so the pattern runs on it.
+        argv: ["shop", "items", "--assert", "$[0].echo", "matches", "(a+)+[bc]", "--save"],
         cwd,
         home: cwd,
         env: { SURF_TEST_ITEMS_KEY: "a".repeat(60) },

@@ -112,8 +112,10 @@ describe("assertions", () => {
       results.filter((result: { error?: string }) => result.error?.startsWith("skipped")).length,
     ).toBeGreaterThan(5);
     // The host's secret checks spend the same budget; a skipped one counts as touching the secret.
+    // [bc]: a run of a's holds every text a match needs, so each pattern runs on the value.
+    const slowOnValue = slow.map((assertion) => ({ ...assertion, value: "(a+)+[bc]" }));
     started = Date.now();
-    const checked = assertions.checkAssertions("x", slow, ["a".repeat(60)]);
+    const checked = assertions.checkAssertions("x", slowOnValue, ["a".repeat(60)]);
     expect(Date.now() - started).toBeLessThan(1200);
     expect(
       checked.every((result: { secretSensitive?: boolean }) => result.secretSensitive === true),
@@ -148,7 +150,7 @@ describe("assertions", () => {
     const started = Date.now();
     const [result] = assertions.checkAssertions(
       "x",
-      [{ path: "$", op: "matches", value: "(a+)+b" }],
+      [{ path: "$", op: "matches", value: "(a+)+[bc]" }],
       ["a".repeat(60)],
     );
     expect(Date.now() - started).toBeLessThan(500);
@@ -244,7 +246,7 @@ describe("running an op with assertions", () => {
     ]);
     expect(result.attempts[0]).toMatchObject({
       using: "network",
-      error: "assertion failed: $ array_min_len 1 (got array(0))",
+      error: "assertion failed: $ array_min_len; run surf pb test books get_books to see the value",
       assertions: [{ path: "$", op: "array_min_len", value: 1, pass: false, actual: "array(0)" }],
     });
   });
@@ -277,6 +279,7 @@ describe("running an op with assertions", () => {
 
   it("never retries a write on the next strategy after a failed assertion, and leaves it in doubt", async () => {
     const statuses: string[] = [];
+    const errors: string[] = [];
     // A raw-body op: the body is read from network capture.
     const { executeTool } = captureTab({
       reply: () => ({ body: JSON.stringify({ created: false }) }),
@@ -301,11 +304,81 @@ describe("running an op with assertions", () => {
         },
         executeTool,
         beforeDispatch: async () => statuses.push("dispatched"),
-        afterDispatch: async ({ status }: { status: string }) => statuses.push(status),
+        afterDispatch: async ({ status, error }: { status: string; error?: string }) => {
+          statuses.push(status);
+          if (error) {
+            errors.push(error);
+          }
+        },
       }),
-    ).rejects.toThrow(/assertion failed: \$\.bodyJson\.created equals true/);
+    ).rejects.toThrow(
+      /^assertion failed: \$\.bodyJson\.created equals; run surf pb test hr create to see the value$/,
+    );
+    // The receipt records the failure without the value the response held.
+    expect(errors).toEqual([
+      "assertion failed: $.bodyJson.created equals; run surf pb test hr create to see the value",
+    ]);
     expect(executeTool.mock.calls.filter(([tool]) => tool === "javascript_tool")).toHaveLength(1);
     expect(statuses).toEqual(["dispatched", "indeterminate"]);
+  });
+
+  it("keeps a failed write's attempts and assertions for pb test, and its errors short", async () => {
+    const errors: string[] = [];
+    const createOp = {
+      id: "create",
+      effect: "write",
+      args: {},
+      safety: { duplicate: "transactional", key: ["name"] },
+      run: [{ using: "network", request: { method: "POST", url: "https://hr.test/a" } }],
+    };
+    const hostRun = (params: Record<string, any>) =>
+      runtime.testPlaybookOp({
+        playbook: { id: "hr", provenance: { scope: "test" } },
+        op: createOp,
+        assertions: params.assert,
+        executeTool: captureTab({ reply: () => ({ body: JSON.stringify({ n: 2 }) }) }).executeTool,
+        afterDispatch: async ({ error }: { error?: string }) => {
+          if (error) {
+            errors.push(error);
+          }
+        },
+      });
+    const failing = { path: "$.bodyJson.n", op: "equals", value: 1, pass: false, actual: 2 };
+    const failed = await hostRun({ assert: [{ path: "$.bodyJson.n", op: "equals", value: 1 }] });
+    expect(failed).toMatchObject({
+      status: "failed",
+      error: "assertion failed: $.bodyJson.n equals; run surf pb test hr create to see the value",
+      attempts: [
+        {
+          using: "network",
+          error:
+            "assertion failed: $.bodyJson.n equals; run surf pb test hr create to see the value",
+          assertions: [failing],
+        },
+      ],
+    });
+    expect(errors).toEqual([
+      "assertion failed: $.bodyJson.n equals; run surf pb test hr create to see the value",
+    ]);
+    // pb test reports it, as it does for a read.
+    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "surf-pbtest-"));
+    tempDirs.push(cwd);
+    const directory = path.join(cwd, ".surf", "playbooks", "hr");
+    fs.mkdirSync(path.join(directory, "ops"), { recursive: true });
+    fs.writeFileSync(
+      path.join(directory, "playbook.json"),
+      JSON.stringify({ id: "hr", version: "1.0.0", origins: ["https://hr.test"] }),
+    );
+    fs.writeFileSync(path.join(directory, "ops", "create.json"), JSON.stringify(createOp));
+    const report = await pbTest.runPlaybookTest({
+      argv: ["hr", "create", "--assert", "$.bodyJson.n", "equals", "1", "--write"],
+      cwd,
+      home: cwd,
+      env: {},
+      runOp: hostRun,
+    });
+    expect(report).toMatchObject({ ok: false, assertions: [failing] });
+    expect(report.attempts).toHaveLength(1);
   });
 
   it("validates saved assertions when it loads an op", () => {
@@ -318,6 +391,85 @@ describe("running an op with assertions", () => {
       /op get_books on.success.expect.assert: assertion 1: op must be one of/,
     );
     expect(() => validate({})).toThrow(/must be an array/);
+  });
+
+  it("validates a strategy's own verify.assert and expect.assert, and caps all of an op's at 50", () => {
+    const many = (count: number) =>
+      Array.from({ length: count }, () => ({ path: "$", op: "exists" }));
+    const validate = (strategy: Record<string, unknown>, extra: Record<string, unknown> = {}) =>
+      playbooks.validateOp(op([{ ...network, ...strategy }], extra), { origins: [] });
+    for (const key of ["verify", "expect"]) {
+      const where = `op get_books network strategy ${key}\\.assert`;
+      const check = (assert: unknown) => () => validate({ [key]: { assert } });
+      expect(check(many(50))).not.toThrow();
+      expect(check(many(51))).toThrow(
+        new RegExp(`${where}: at most 50 assertions per op \\(got 51\\)`),
+      );
+      expect(check([{ path: "records", op: "exists" }])).toThrow(
+        new RegExp(`${where}: assertion 1: path must be`),
+      );
+      expect(check([{ path: "$", op: "matches", value: "(" }])).toThrow(
+        new RegExp(`${where}: assertion 1: matches needs a valid regex`),
+      );
+      expect(check([{ path: "$", op: "matches", value: "a".repeat(501) }])).toThrow(
+        new RegExp(`${where}: assertion 1: matches pattern is 501 characters`),
+      );
+    }
+    // Every location counts toward the op's 50.
+    expect(() =>
+      validate(
+        { verify: { assert: many(20) }, expect: { assert: many(20) } },
+        { on: { success: { expect: { assert: many(11) } } } },
+      ),
+    ).toThrow(
+      /op get_books: at most 50 assertions per op across all its strategies and on\.success \(got 51\)/,
+    );
+    expect(() =>
+      validate(
+        { verify: { assert: many(20) }, expect: { assert: many(20) } },
+        { on: { success: { expect: { assert: many(10) } } } },
+      ),
+    ).not.toThrow();
+  });
+
+  it("keeps the actual value out of a failed assertion's error, which is journaled", async () => {
+    const echoed = "dummy-echoed-input";
+    const events: Array<Record<string, unknown>> = [];
+    const failed = await runtime.testPlaybookOp({
+      playbook: { id: "books", provenance: { scope: "test" } },
+      op: op([{ ...network, extract: { jsonPath: "$" } }]),
+      assertions: [{ path: "$.note", op: "equals", value: "expected" }],
+      executeTool: tab({ note: echoed }),
+      onEvent: (event: Record<string, unknown>) => events.push(event),
+    });
+    expect(failed.attempts[0]).toEqual({
+      using: "network",
+      error: "assertion failed: $.note equals; run surf pb test books get_books to see the value",
+      // pb test's own report still shows it.
+      assertions: [
+        { path: "$.note", op: "equals", value: "expected", pass: false, actual: echoed },
+      ],
+    });
+    expect(failed.error).not.toContain(echoed);
+    expect(events.find((event) => event.type === "strategy.failed")).toMatchObject({
+      error: "assertion failed: $.note equals; run surf pb test books get_books to see the value",
+    });
+    expect(JSON.stringify(events)).not.toContain(echoed);
+  });
+
+  it("points surf use's failed assertion at pb test for the value it keeps out", async () => {
+    const echoed = "dummy-echoed-input";
+    const run = runtime.runPlaybookOp({
+      playbook: { id: "books", provenance: { scope: "test" } },
+      op: op([{ ...network, extract: { jsonPath: "$" } }]),
+      assertions: [{ path: "$.note", op: "equals", value: "expected" }],
+      executeTool: tab({ note: echoed }),
+    });
+    const error = await run.catch((caught: Error) => caught);
+    expect(error.message).toBe(
+      "All strategies failed (network: assertion failed: $.note equals; run surf pb test books get_books to see the value)",
+    );
+    expect(error.message).not.toContain(echoed);
   });
 });
 
@@ -469,7 +621,7 @@ describe("surf pb test", () => {
         attempts: [
           {
             using: "network",
-            error: 'assertion failed: $[0].title equals "x"',
+            error: "assertion failed: $[0].title equals",
             assertions: [failing],
           },
           { using: "workflow", error: "navigate failed" },

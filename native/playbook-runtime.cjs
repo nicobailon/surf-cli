@@ -8,8 +8,8 @@ const { editDistance } = require("./edit-distance.cjs");
 const { GLOBAL_OPTIONS } = require("./global-options.cjs");
 const { LITERAL_OPEN, escapedOp, renderRequest, resolveArgValues, sentRequest } = require("./playbook-template.cjs");
 const { findRedactedPlaceholder, placeholderError } = require("./record-typed-values.cjs");
-const { checkAssertions, createRegexBudget, describeAssertion } = require("./playbook-assertions.cjs");
-const { redactObject, redactSecretValues, valueSpellings } = require("./redaction.cjs");
+const { checkAssertions, createRegexBudget } = require("./playbook-assertions.cjs");
+const { redactJson, redactResult, redactSecretValues, spanningValues } = require("./redaction.cjs");
 const boundedRegex = require("./bounded-regex.cjs");
 const { extractRecords } = require("./records.cjs");
 
@@ -114,26 +114,12 @@ function resolveAuthValues(op, secrets = {}, env = process.env) {
 }
 
 // Env-supplied values never leave a run: a response that echoes one in a value (or an error that
-// quotes it) comes back with <redacted> in its place, however short the value. A key is a field's
-// name and changes only when it holds a value of 4 characters or more (see redactObject).
+// quotes it) comes back with <redacted> in its place, however short the value and however JSON
+// escapes it. A key is a field's name and changes only when it holds a value of 4 characters or
+// more (redaction.cjs's redactJson and redactObject).
 function redactSecrets(value, secrets) {
   const values = Object.values(secrets);
-  return values.length === 0 ? value : redactObject(value, values.flatMap(valueSpellings), { anyLength: true });
-}
-
-// An assertion's result keeps surf's own fields (`path`, `op`, `pass`...) and their names; only
-// what came from the caller or the response is redacted: its path, its expected value, the value
-// found and an error.
-const ASSERTION_DATA_FIELDS = ["path", "value", "actual", "error"];
-function redactAssertions(results, secrets) {
-  if (Object.keys(secrets).length === 0) return results;
-  return results.map((result) => {
-    const redacted = { ...result };
-    for (const field of ASSERTION_DATA_FIELDS) {
-      if (Object.hasOwn(result, field)) redacted[field] = redactSecrets(result[field], secrets);
-    }
-    return redacted;
-  });
+  return values.length === 0 ? value : redactJson(value, values);
 }
 
 // The free text of a strategy's event (an error, a step's result) without the run's env values.
@@ -176,8 +162,13 @@ function extractResult(result, extract, regexBudget) {
   return result;
 }
 
-/** Throws on the first failed check; returns the assertion results (expect.assert), if any. */
-function verifyResult(value, expect = {}, raw = value, secrets = [], budget = undefined) {
+/**
+ * Throws on the first failed check; returns the assertion results (expect.assert), if any. The
+ * results are redacted against `secrets`. A failure's message goes to the journal and receipts, so
+ * it names the assertion's path and op only, never a value: the error's `assertions` hold the rest,
+ * which `surf pb test <label>` (the playbook and op) shows.
+ */
+function verifyResult(value, expect = {}, raw = value, secrets = [], budget = undefined, label) {
   if (expect.status !== undefined && raw?.status !== expect.status) throw new Error(`expected status ${expect.status}`);
   if (expect.minItems !== undefined && (!Array.isArray(value) || value.length < expect.minItems)) throw new Error(`expected at least ${expect.minItems} items`);
   if (expect.truthy && !value) throw new Error("expected a truthy result");
@@ -185,8 +176,7 @@ function verifyResult(value, expect = {}, raw = value, secrets = [], budget = un
   const results = checkAssertions(value, expect.assert, secrets, budget);
   const failed = results.find((result) => !result.pass);
   if (failed) {
-    const got = failed.error ?? `got ${typeof failed.actual === "string" ? failed.actual : JSON.stringify(failed.actual)}`;
-    const error = new Error(`assertion failed: ${describeAssertion(failed)} (${got})`);
+    const error = new Error(`assertion failed: ${failed.path} ${failed.op}${failed.error ? ` (${failed.error})` : ""}; run surf pb test ${label} to see the value`);
     error.assertions = results;
     throw error;
   }
@@ -260,8 +250,10 @@ async function runTabExtract(context, script, { onAnswered = () => {} } = {}) {
     budget: context.fieldRegexBudget,
     script,
     now: context.now,
+    // An error object is redacted before it becomes text: as JSON, a value inside it is escaped.
     execute: async (code) => {
       const response = await context.executeTool("javascript_tool", { code }, { signal: context.signal });
+      if (response?.error && typeof response.error === "object") return { ...response, error: redactSecrets(response.error, context.authValues || {}) };
       if (!response?.error) onAnswered();
       return response;
     },
@@ -551,22 +543,25 @@ async function runPlaybookOp({ playbook, op, args: providedArgs = {}, secrets = 
         value = extractResult(raw, strategy.extract, fieldRegexBudget);
         const expect = strategy.verify || strategy.expect || op.on?.success?.expect;
         // Saved assertions hold for every strategy, even one with its own verify.
-        checked = verifyResult(value, assert ? { ...expect, assert } : expect, raw, Object.values(authValues), regexBudget);
+        checked = verifyResult(value, assert ? { ...expect, assert } : expect, raw, Object.values(authValues), regexBudget, `${playbook.id} ${op.id}`);
       } catch (error) {
         throw checkFailure(error);
       }
       if (op.effect === "write") await afterDispatch({ status: "verified", strategy, index });
       onEvent({ type: "strategy.completed", playbook: playbook.id, op: op.id, using: strategy.using, index, endedAt: new Date().toISOString() });
-      return { status: "completed", playbook: playbook.id, op: op.id, strategy: strategy.using, value: redactSecrets(value, authValues), provenance: playbook.provenance, attempts, ...(checked ? { assertions: redactAssertions(checked, authValues) } : {}) };
+      // Its parts are redacted one by one; redactResult reads them next to surf's own fields.
+      return redactResult({ status: "completed", playbook: playbook.id, op: op.id, strategy: strategy.using, value: redactSecrets(value, authValues), provenance: playbook.provenance, attempts, ...(checked ? { assertions: checked } : {}) }, Object.values(authValues));
     } catch (caught) {
       const message = redactSecrets(caught?.message || String(caught), authValues);
       const error = message === caught?.message ? caught : new Error(message);
-      // An assertion's `actual` is a value from the response, so it is redacted like the result.
-      const checks = caught?.assertions ? redactAssertions(caught.assertions, authValues) : undefined;
+      // checkAssertions redacted the assertions (an `actual` is a value from the response).
+      const checks = caught?.assertions;
       attempts.push({ using: strategy.using, error: message, ...(checks ? { assertions: checks } : {}) });
       onEvent({ type: "strategy.failed", playbook: playbook.id, op: op.id, using: strategy.using, index, error: message, endedAt: new Date().toISOString() });
       if (op.effect === "write") {
         await afterDispatch({ status: dispatched ? "indeterminate" : "not_dispatched", strategy, index, error: message });
+        // pb test reports the attempt (its assertions already redacted); the message stays short.
+        error.attempts = attempts;
         throw error;
       }
       if (fromRecord && caught?.[CHECK_FAILED]) {
@@ -578,7 +573,11 @@ async function runPlaybookOp({ playbook, op, args: providedArgs = {}, secrets = 
     }
   }
   const detail = attempts.map((attempt) => `${attempt.using}: ${attempt.error}`).join("; ");
-  const error = new Error(`All strategies failed${detail ? ` (${detail})` : ""}`);
+  // Each attempt's error is redacted; a value that can span them and surf's words is looked for in
+  // the whole line, and surf's words stay as written for any other.
+  const summary = `All strategies failed${detail ? ` (${detail})` : ""}`;
+  const spanning = spanningValues(Object.values(authValues));
+  const error = new Error(spanning.length === 0 ? summary : redactJson(summary, spanning));
   error.attempts = attempts;
   throw error;
 }
@@ -589,7 +588,8 @@ async function testPlaybookOp(options) {
   try {
     return await runPlaybookOp(options);
   } catch (error) {
-    return { status: "failed", playbook: playbook.id, op: op.id, error: error.message, attempts: error.attempts || [] };
+    const values = authInputs(op).map((input) => options.secrets?.[input.env] ?? (options.env ?? process.env)[input.env]).filter(Boolean);
+    return redactResult({ status: "failed", playbook: playbook.id, op: op.id, error: error.message, attempts: error.attempts || [] }, values);
   }
 }
 

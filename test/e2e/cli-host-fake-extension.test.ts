@@ -2928,6 +2928,48 @@ describe("CLI/native-host/fake-extension E2E contract", () => {
     }
   });
 
+  it("masks a host-only env value that surf's own fields and the response spell together", async () => {
+    const socketPath = createSocketPath();
+    const project = fs.mkdtempSync(path.join(os.tmpdir(), "surf-host-envelope-"));
+    tempDirs.push(project);
+    const opsDir = path.join(project, ".surf", "playbooks", "api", "ops");
+    fs.mkdirSync(opsDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(project, ".surf", "playbooks", "api", "playbook.json"),
+      JSON.stringify({ id: "api", version: "1.0.0", origins: ["https://fixture.test"] }),
+    );
+    fs.writeFileSync(
+      path.join(opsDir, "url.json"),
+      JSON.stringify({
+        id: "url",
+        effect: "read",
+        run: [
+          {
+            using: "network",
+            request: {
+              method: "GET",
+              url: "https://fixture.test/api",
+              authInputs: [{ env: "SURF_E2E_HOST_ONLY_KEY", header: "X-Site-Key" }],
+            },
+            extract: { field: "url" },
+          },
+        ],
+      }),
+    );
+    // The printed result's `"value": "<the response's url>"`, from the key on.
+    const secret = ['value": "', "https://fixture.test/api"].join("");
+    const host = startHost(socketPath, { env: { SURF_E2E_HOST_ONLY_KEY: secret } });
+    try {
+      await host.waitForMessage((message) => message.type === "HOST_READY");
+      const run = await runCli(socketPath, ["use", "api", "url", "--json"], project);
+      expect(run.code).toBe(0);
+      expect(JSON.parse(run.stdout)).toMatchObject({ status: "completed", value: "<redacted>" });
+      expect(run.stdout).not.toContain(secret);
+    } finally {
+      await host.dispose();
+    }
+  });
+
   it("removes an old live Surf-created session and its target", async () => {
     const socketPath = createSocketPath();
     const host = startHost(socketPath, { targetActive: false });
