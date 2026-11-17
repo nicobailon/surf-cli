@@ -124,7 +124,7 @@ describe("playbook client projection", () => {
     expect(result.manifest.endpoint.url).toBe("https://example.test/api/search");
   });
 
-  it.each(["{{x}}", "prefix {{x}}", "{{_open}}", "{{", "{{{x}}}"])(
+  it.each(["{{x}}", "prefix {{x}}", "{{_open}}", "{{!}}", "{{", "{{{x}}}"])(
     "derives a client that sends a captured %s as captured, not as an input",
     (literal) => {
       const parent = fs.mkdtempSync(path.join(os.tmpdir(), "surf-client-"));

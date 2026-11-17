@@ -99,16 +99,17 @@ describe("request templates", () => {
     const captured = {
       method: "POST",
       url: "https://api.test/save#{{q}}",
-      query: { note: "{{q}}", whole: "{{_open}}", nested: "{{{{q}}}}", open: "{{" },
+      query: { note: "{{q}}", whole: "{{!}}", nested: "{{{{q}}}}", open: "{{", named: "{{_open}}" },
       headers: { "x-note": "{{q}} and {{q" },
       body: '{"q":"{{q}}","n":"{{n}}"}',
     };
     const escaped = escapeTemplates(captured);
     expect(escaped.query).toEqual({
-      note: "{{_open}}q}}",
-      whole: "{{_open}}_open}}",
-      nested: "{{{{_open}}q}}}}",
+      note: "{{!}}q}}",
+      whole: "{{!}}!}}",
+      nested: "{{{{!}}q}}}}",
       open: "{{",
+      named: "{{!}}_open}}",
     });
     expect(unescapeTemplates(escaped.body)).toBe(captured.body);
     expect(renderRequest(escaped, { q: "filled" })).toMatchObject(captured);
@@ -142,9 +143,12 @@ describe("request templates", () => {
     "%{",
     "%",
     "_open",
+    "!",
     "q",
     "{{_open}}",
     "%{_open}",
+    "{{!}}",
+    "%{!}",
     "{{q}}",
     "%{q}",
   ];
@@ -188,6 +192,36 @@ describe("request templates", () => {
       sleep: async () => undefined,
     });
     expect(calls.map((args) => args.text)).toEqual(literals);
+  });
+});
+
+// `{{!}}` and `%{!}` are the escapes: `!` is outside both name grammars, so every name either
+// template takes, `_open` included, is filled as before.
+describe("the escape token and template names", () => {
+  const workflowRuntime = require("../../native/workflow-runtime.cjs");
+
+  it("fills {{_open}} and %{_open} from an input or var of that name", () => {
+    expect(
+      renderRequest({ url: "https://api.test/{{_open}}", body: "a {{_open}} b" }, { _open: "V" }),
+    ).toMatchObject({
+      url: "https://api.test/V",
+      body: "a V b",
+    });
+    expect(workflowRuntime.resolveVar("%{_open}", { _open: "INTENDED" })).toBe("INTENDED");
+    expect(workflowRuntime.resolveVar("pre%{_open}post", { _open: "INTENDED" })).toBe(
+      "preINTENDEDpost",
+    );
+  });
+
+  it("sends {{!}} as {{ and %{!} as %{, which no name can be", () => {
+    expect(renderRequest({ url: "https://api.test/", body: "{{!}}q}} {{!}}" }, {}).body).toBe(
+      "{{q}} {{",
+    );
+    expect(workflowRuntime.resolveVar("%{!}q} %{!}", { q: "filled" })).toBe("%{q} %{");
+    expect(workflowRuntime.resolveVar("%{!}", { "!": "filled" })).toBe("%{");
+    expect(escapeStepArgs("%{_open} {{_open}} %{!} {{!}}")).toBe(
+      "%{!}_open} {{!}}_open}} %{!}!} {{!}}!}}",
+    );
   });
 });
 

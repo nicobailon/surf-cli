@@ -5,6 +5,7 @@ const { readRecent } = require("./activity-journal.cjs");
 const { writeNetworkExport } = require("./network-export.cjs");
 const { getPrivateStateRoot, readPrivateJson } = require("./private-state.cjs");
 const { REVIEW_KEY_ARG, buildDraft, draftFromRecord, neverReplayed, readRecord, recordedSteps, recordsRoot, requestFromEntry } = require("./playbook-records.cjs");
+const { escapeStepArgs } = require("./playbook-template.cjs");
 const { isCommitWorkflow, savePlaybook, validateOp } = require("./playbooks.cjs");
 const { isTelemetryRequest, requestEffect, shownUrl } = require("./request-kinds.cjs");
 const { commandMetadata, normalizeStep, promoteRedactedStepArgs } = require("./workflow-definition.cjs");
@@ -22,7 +23,8 @@ function saveFromRecent({ site, op: opId, since = "1h", scope = "user", cwd, hom
   if (events.some((event) => ["page-write", "unknown"].includes(commandMetadata(event.command, event.argsRedacted).effect))) {
     throw new Error("recent activity includes write-capable commands; use an explicit record (with --network, so its requests show whether the flow writes) and review its draft before saving");
   }
-  const promoted = promoteRedactedStepArgs(events.map((event) => ({ tool: event.command, args: event.argsRedacted || {} })));
+  // Escaped as a record's steps are, so a literal like `%{term}` in a selector isn't filled from an input.
+  const promoted = promoteRedactedStepArgs(events.map((event) => ({ tool: event.command, args: escapeStepArgs(event.argsRedacted || {}) })));
   const op = { id: opId, description: "Drafted from recent Surf activity", effect: "read", args: promoted.args, run: [{ using: "workflow", steps: promoted.steps }], provenance: { recentSince: since } };
   validateOp(op, { origins: [] });
   return savePlaybook({ manifest: { id: site, name: site, version: "1.0.0", origins: [] }, op, scope, cwd, home });
@@ -141,6 +143,18 @@ function holdEffect(op, { reference, because, record }) {
     return { using: "network", request: replayed, ...keptFields(strategy) };
   });
   return { ...op, run };
+}
+
+// The record decides which strategies run, in what order and how many: a draft that put the click
+// first would send it instead of the captured request, and one that ran the request twice would
+// send it again when a check failed. Held after the other checks, so a strategy they refuse is
+// named first; fitWriteWorkflow may drop the workflow afterwards, as it would the record's own.
+function holdStrategies(op, reference) {
+  const kinds = (strategies) => strategies.map((strategy) => strategy?.using).join(", then ");
+  if (kinds(op.run) !== kinds(reference.run)) {
+    throw new Error(`${op.effect === "write" ? "write op" : "op"} ${op.id} can't be saved: its strategies are ${kinds(op.run)}, and the record drafts ${kinds(reference.run)}; a draft can't change which strategies run, their order or how many there are`);
+  }
+  return op;
 }
 
 // The origins an op saved from a record sends to are the record's (allowedOrigins); a draft may
@@ -284,7 +298,8 @@ function saveFromRecord({ recordId, requestId, scope = "user", cwd, home, root =
   const trace = readPrivateJson(path.join(recordsRoot(root), recordId, "network", "trace.json"), null, { root });
   const held = holdToRecord(holdEffect(drafted, { reference, because, record }), { steps: recordedSteps(recordId, root) });
   const provenance = { recordId: record.id, ...(chosen ? { requestId: chosen } : {}) };
-  const op = fitWriteWorkflow(held.rebuild(rebuildWrites({ ...held.op, provenance }, { record, trace, chosen })), warnings);
+  const rebuilt = held.rebuild(rebuildWrites({ ...held.op, provenance }, { record, trace, chosen }));
+  const op = fitWriteWorkflow(holdStrategies(rebuilt, reference), warnings);
   const origins = allowedOrigins(record, op, warnings);
   holdOrigins(op, origins);
   validateOp(op, { origins });

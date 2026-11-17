@@ -209,7 +209,7 @@ describe("pb param: field locations", () => {
     const second = paramOp(op, { fields: ["query.note"], as: "u", value: "b" }).op;
     expect(renderRequest(requestOf(second), { v: "Z", u: "U" }).query.note).toBe("a Z U {{y}}");
     expect(() => paramOp(op, { fields: ["query.note"], as: "t", value: "v}} b" })).toThrow(
-      'query.note: "v}} b" overlaps an input in "a {{v}} b {{_open}}y}}"',
+      'query.note: "v}} b" overlaps an input in "a {{v}} b {{!}}y}}"',
     );
   });
 

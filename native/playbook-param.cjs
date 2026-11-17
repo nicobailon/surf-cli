@@ -237,7 +237,7 @@ function templatePieces(stored) {
     pieces.push({ ...piece, start: at, end: at + length });
     at += length;
   };
-  for (const match of stored.matchAll(/\{\{[a-zA-Z0-9._-]+\}\}/g)) {
+  for (const match of stored.matchAll(/\{\{(?:[a-zA-Z0-9._-]+|!)\}\}/g)) {
     const before = stored.slice(last, match.index);
     add({ text: before }, before.length);
     if (match[0] === LITERAL_OPEN) add({ text: "{{" }, 2);

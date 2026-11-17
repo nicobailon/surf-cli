@@ -12,12 +12,12 @@ const { redactObject } = require("./redaction.cjs");
 const boundedRegex = require("./bounded-regex.cjs");
 const { extractRecords } = require("./records.cjs");
 
-// Fills an op's inputs into its workflow steps. `{{_open}}` is sent as `{{` (see escapeStepArgs).
+// Fills an op's inputs into its workflow steps. `{{!}}` is sent as `{{` (see escapeStepArgs).
 function applyTemplate(value, args) {
   if (typeof value === "string") {
     const exact = value.match(/^\{\{([a-zA-Z0-9._-]+)\}\}$/);
-    if (exact && value !== LITERAL_OPEN) return args[exact[1]];
-    return value.replace(/\{\{([a-zA-Z0-9._-]+)\}\}/g, (match, name) => {
+    if (exact) return args[exact[1]];
+    return value.replace(/\{\{([a-zA-Z0-9._-]+|!)\}\}/g, (match, name) => {
       if (match === LITERAL_OPEN) return "{{";
       if (args[name] === undefined) throw new Error(`missing template argument: ${name}`);
       return String(args[name]);
@@ -191,7 +191,11 @@ async function runTabExtract(context, script) {
     budget: context.fieldRegexBudget,
     script,
     now: context.now,
-    execute: (code) => context.executeTool("javascript_tool", { code }, { signal: context.signal }),
+    execute: async (code) => {
+      const response = await context.executeTool("javascript_tool", { code }, { signal: context.signal });
+      if (!response?.error) context.markRan?.();
+      return response;
+    },
     unreadable: (size) => new Error(`the tab's output could not be read (${size} characters; the tab cuts it at ${TAB_OUTPUT_LIMIT})`),
   });
   return result;
@@ -317,6 +321,7 @@ async function runStrategy(strategy, context) {
       autoWait: strategy.autoWait !== false,
       executeTool: async (tool, args, options) => {
         await context.markDispatched?.();
+        context.markRan?.();
         return context.executeTool(tool, args, options);
       },
       onError: strategy.onError || "stop",
@@ -401,8 +406,13 @@ async function runPlaybookOp({ playbook, op, args: providedArgs = {}, secrets = 
   const regexBudget = createRegexBudget();
   const fieldRegexBudget = boundedRegex.createFieldRegexBudget();
   const attempts = [];
+  // An op saved from a record tries its next strategy only when one couldn't run: its request never
+  // got an answer (an input or origin refused, a fetch that failed), or no workflow step ran. Once
+  // one has, a failure (a draft's check included) is the op's, so a check never sends more.
+  const fromRecord = op.provenance?.recordId !== undefined;
   for (let index = 0; index < run.length; index++) {
     const strategy = run[index];
+    let ran = false;
     let dispatched = false;
     const markDispatched = async () => {
       if (dispatched) return;
@@ -424,6 +434,9 @@ async function runPlaybookOp({ playbook, op, args: providedArgs = {}, secrets = 
         fieldRegexBudget,
         now,
         markDispatched: op.effect === "write" ? markDispatched : undefined,
+        markRan: () => {
+          ran = true;
+        },
         serverIdempotency: op.effect === "write" ? op.safety?.serverIdempotency : undefined,
         allowScript,
       });
@@ -444,6 +457,12 @@ async function runPlaybookOp({ playbook, op, args: providedArgs = {}, secrets = 
       if (op.effect === "write") {
         await afterDispatch({ status: dispatched ? "indeterminate" : "not_dispatched", strategy, index, error: message });
         throw error;
+      }
+      if (fromRecord && ran) {
+        const answered = strategy.using === "network" ? "its request was answered" : "it ran";
+        const final = new Error(`${strategy.using} strategy failed after ${answered}: ${message}; an op saved from a record doesn't try its next strategy then`);
+        final.attempts = attempts;
+        throw final;
       }
     }
   }

@@ -70,7 +70,7 @@ type FakeHostOptions = {
   recording?: boolean;
 };
 
-// What the extension answers for a playbook record and a click, with `recording` on.
+// What the extension answers for a playbook record, a click and typing, with `recording` on.
 function recordingResponse(message: NativeMessage, currentUrl: string) {
   switch (message.type) {
     case "GET_PLAYBOOK_RECORD_CONTEXT":
@@ -85,6 +85,7 @@ function recordingResponse(message: NativeMessage, currentUrl: string) {
         interruptions: [],
       };
     case "CLICK_SELECTOR":
+    case "SMART_TYPE":
       return { id: message.id, success: true, output: "{}", _resolvedTabId: 42 };
     default:
       return null;
@@ -780,6 +781,168 @@ describe("CLI/native-host/fake-extension E2E contract", () => {
       ]);
       expect(run).toMatchObject({ code: 0, stderr: "" });
       expect(clicks().slice(1)).toEqual([expect.objectContaining({ selector })]);
+    } finally {
+      await host.dispose();
+    }
+  }, 60000);
+
+  // The record, not the draft file, decides the strategies and their order; a draft's check can
+  // make the op fail, never send more.
+  it("replays a recorded one-click write in the record's order, and stops at a failed check", async () => {
+    const socketPath = createSocketPath();
+    const project = fs.mkdtempSync(path.join(os.tmpdir(), "surf-record-order-"));
+    tempDirs.push(project);
+    const host = startHost(socketPath, { recording: true });
+    const cli = (args: string[]) =>
+      runCli(socketPath, args, project, { SURF_STATE_DIR: host.stateDir });
+    const sent = () =>
+      host.messages
+        .filter((message) =>
+          ["EXECUTE_JAVASCRIPT", "CLICK_SELECTOR"].includes(String(message.type)),
+        )
+        .map((message) => message.type);
+
+    try {
+      await host.waitForMessage((message) => message.type === "HOST_READY");
+      expect((await cli(["navigate", "https://fixture.test/form"])).code).toBe(0);
+      expect(
+        (await cli(["pb", "record", "start", "fixture", "--op", "save", "--network"])).code,
+      ).toBe(0);
+      // The page's own POST, captured while the record runs, then the click that made it.
+      expect((await cli(["js", 'fetch("/api", { method: "POST" })'])).code).toBe(0);
+      expect((await cli(["click", "--selector", "#submit", "--no-screenshot"])).code).toBe(0);
+      const stopped = await cli(["pb", "record", "stop", "--draft", "--json"]);
+      expect(stopped.code).toBe(0);
+      const { record, draft } = JSON.parse(stopped.stdout);
+      expect(draft.run.map((strategy: { using: string }) => strategy.using)).toEqual([
+        "network",
+        "workflow",
+      ]);
+      const file = path.join(host.stateDir, "records", record.id, "draft", "op.json");
+      const original = fs.readFileSync(file, "utf8");
+      type Draft = { run: Array<Record<string, unknown>> };
+      const save = (change: (op: Draft) => void) => {
+        const op = JSON.parse(original);
+        change(op);
+        fs.writeFileSync(file, JSON.stringify(op));
+        return cli(["pb", "save", "--from-record", record.id, "--project", "--json"]);
+      };
+      const before = sent().length;
+
+      const reversed = await save((op) => op.run.reverse());
+      expect(reversed.code).toBe(1);
+      expect(reversed.stderr).toContain(
+        "its strategies are workflow, then network, and the record drafts network, then workflow",
+      );
+      const twice = await save((op) => op.run.splice(1, 0, structuredClone(op.run[0])));
+      expect(twice.code).toBe(1);
+      expect(twice.stderr).toContain("its strategies are network, then network, then workflow");
+      expect(
+        (await cli(["use", "fixture", "save", "--review_key", "k-1", "--write"])).stderr,
+      ).toMatch(/Playbook not found: fixture/);
+      expect(sent()).toHaveLength(before);
+
+      // Saved as recorded with a check its answer fails: the POST is sent once, the click never.
+      const checked = await save((op) => (op.run[0].verify = { status: 201 }));
+      expect(checked.code).toBe(0);
+      const run = await cli(["use", "fixture", "save", "--review_key", "k-1", "--write", "--json"]);
+      expect(run.code).toBe(1);
+      expect(run.stderr).toContain("expected status 201");
+      expect(sent().slice(before)).toEqual(["EXECUTE_JAVASCRIPT"]);
+    } finally {
+      await host.dispose();
+    }
+  }, 60000);
+
+  it("stops a recorded read at a failed check instead of running its recorded steps", async () => {
+    const socketPath = createSocketPath();
+    const project = fs.mkdtempSync(path.join(os.tmpdir(), "surf-record-check-"));
+    tempDirs.push(project);
+    const api = {
+      id: "r_api",
+      method: "GET",
+      url: "https://fixture.test/api",
+      status: 200,
+      type: "XHR",
+      responseHeaders: {},
+      flags: [],
+      _loadingFinished: true,
+    };
+    const host = startHost(socketPath, { recording: true, navigationTraffic: [api] });
+    const cli = (args: string[]) =>
+      runCli(socketPath, args, project, { SURF_STATE_DIR: host.stateDir });
+    const sent = () =>
+      host.messages
+        .filter((message) =>
+          ["EXECUTE_JAVASCRIPT", "EXECUTE_NAVIGATE"].includes(String(message.type)),
+        )
+        .map((message) => message.type);
+
+    try {
+      await host.waitForMessage((message) => message.type === "HOST_READY");
+      expect((await cli(["navigate", "https://fixture.test/form"])).code).toBe(0);
+      expect(
+        (await cli(["pb", "record", "start", "fixture", "--op", "search", "--network"])).code,
+      ).toBe(0);
+      expect((await cli(["navigate", "https://fixture.test/extra"])).code).toBe(0);
+      const stopped = await cli(["pb", "record", "stop", "--draft", "--json"]);
+      expect(stopped.code).toBe(0);
+      const { record, draft } = JSON.parse(stopped.stdout);
+      expect(draft).toMatchObject({ effect: "read" });
+      expect(draft.run.map((strategy: { using: string }) => strategy.using)).toEqual([
+        "network",
+        "workflow",
+      ]);
+      const file = path.join(host.stateDir, "records", record.id, "draft", "op.json");
+      const op = JSON.parse(fs.readFileSync(file, "utf8"));
+      op.run[0].verify = { status: 201 };
+      fs.writeFileSync(file, JSON.stringify(op));
+      expect(
+        (await cli(["pb", "save", "--from-record", record.id, "--project", "--json"])).code,
+      ).toBe(0);
+      const before = sent().length;
+      const run = await cli(["use", "fixture", "search", "--json"]);
+      expect(run.code).toBe(1);
+      expect(run.stderr).toContain(
+        "network strategy failed after its request was answered: expected status 201",
+      );
+      expect(sent().slice(before)).toEqual(["EXECUTE_JAVASCRIPT"]);
+    } finally {
+      await host.dispose();
+    }
+  }, 60000);
+
+  // `%{!}` is the escape for `%{`: `!` can't be in a var name, so a var named _open is filled.
+  it("fills a surf do var named _open and types %{!} as %{", async () => {
+    const socketPath = createSocketPath();
+    const project = fs.mkdtempSync(path.join(os.tmpdir(), "surf-do-escape-"));
+    tempDirs.push(project);
+    const host = startHost(socketPath, { recording: true });
+    const typed = () =>
+      host.messages
+        .filter((message) => message.type === "SMART_TYPE")
+        .map((message) => message.text);
+
+    try {
+      await host.waitForMessage((message) => message.type === "HOST_READY");
+      for (const text of ["%{_open}", "pre%{_open}post", "{{_open}}", "%{!}", "%{!}_open}"]) {
+        const result = await runCli(
+          socketPath,
+          [
+            "do",
+            `type "${text}" --selector #field`,
+            "--_open",
+            "INTENDED",
+            "--no-auto-wait",
+            "--step-delay",
+            "0",
+            "--json",
+          ],
+          project,
+        );
+        expect(result.code).toBe(0);
+      }
+      expect(typed()).toEqual(["INTENDED", "preINTENDEDpost", "{{_open}}", "%{", "%{_open}"]);
     } finally {
       await host.dispose();
     }

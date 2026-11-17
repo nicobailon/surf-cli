@@ -1735,14 +1735,19 @@ describe("activity and explicit record evidence", () => {
         expect(() => save((op) => op.run.splice(1, 0, second))).toThrow(`${prefix}: ${why}`);
       });
 
-      it("rebuilds a second network write that stands for the captured one", () => {
-        const saved = flow(commands).save((op) => {
-          const copy = structuredClone(networkOf(op));
-          (copy.request as Request).query = { action: "deleteAll" };
-          op.run.splice(1, 0, copy);
-        });
-        const writes = savedRun(saved).filter((strategy) => strategy.using === "network");
-        expect(writes.map((strategy) => strategy.request)).toEqual([captured, captured]);
+      it("refuses a second network write, even one that stands for the captured one", () => {
+        const { draft, save } = flow(commands);
+        const drafted = draft.run.map((strategy: Strategy) => strategy.using);
+        const given = [drafted[0], ...drafted].join(", then ");
+        expect(() =>
+          save((op) => {
+            const copy = structuredClone(networkOf(op));
+            (copy.request as Request).query = { action: "deleteAll" };
+            op.run.splice(1, 0, copy);
+          }),
+        ).toThrow(
+          `write op search can't be saved: its strategies are ${given}, and the record drafts ${drafted.join(", then ")}; a draft can't change which strategies run, their order or how many there are`,
+        );
       });
 
       it("refuses a {{…}} placeholder in a write, which pb param adds after save", () => {
@@ -2127,6 +2132,36 @@ describe("activity and explicit record evidence", () => {
       });
     });
   });
+
+  it.each(["%{term}", "#q{{term}}", "{{term}}", "%{_open}", "{{!}}", "%{!}"])(
+    "saves recent activity with a recorded literal %s that is sent as recorded, not filled",
+    async (selector) => {
+      const root = tempRoot();
+      const home = path.dirname(root);
+      journal.journalCommand("search", { term: "dummy" }, { root });
+      journal.journalCommand("hover", { selector }, { root });
+      const saved = authoring.saveFromRecent({ site: "fixture", op: "recent", root, home });
+      const op = JSON.parse(
+        fs.readFileSync(path.join(saved.directory, "ops", "recent.json"), "utf8"),
+      );
+      expect(op.args).toEqual({ term: { required: true, desc: "Recorded term" } });
+      const sent: Array<{ tool: string; args: Record<string, unknown> }> = [];
+      await require("../../native/playbook-runtime.cjs").runPlaybookOp({
+        playbook: { id: "fixture", origins: [] },
+        op,
+        args: { term: "#OTHER" },
+        executeTool: async (tool: string, args: Record<string, unknown>) => {
+          sent.push({ tool, args });
+          return { output: "{}" };
+        },
+        sleep: async () => undefined,
+      });
+      expect(sent).toEqual([
+        { tool: "search", args: { term: "#OTHER" } },
+        { tool: "hover", args: { selector } },
+      ]);
+    },
+  );
 
   it("does not save recent activity with a locate click as a read op", () => {
     const root = tempRoot();
@@ -2605,6 +2640,148 @@ describe("what a hand-edited draft can't change", () => {
     });
   });
 
+  // The record decides which strategies run, in what order and how many: a draft can't put the
+  // click before the captured request, or run a strategy twice.
+  describe("the strategies", () => {
+    const writeClick = () => flow({ commands: ["click"], trace: [home, write] });
+    const readFlow = () =>
+      flow({ commands: [step("navigate", { url: `${origin}/extra` })], trace: [read] });
+    const refusal = (prefix: string, given: string) =>
+      `${prefix}: its strategies are ${given}, and the record drafts network, then workflow; a draft can't change which strategies run, their order or how many there are`;
+
+    it.each([
+      ["reversed", (op: Op) => op.run.reverse(), "workflow, then network"],
+      [
+        "with the network strategy twice",
+        (op: Op) => op.run.splice(1, 0, structuredClone(op.run[0])),
+        "network, then network, then workflow",
+      ],
+      ["without the workflow", (op: Op) => op.run.pop(), "network"],
+    ])("refuses a write draft's strategies %s", (_case, change, given) => {
+      expect(writeClick().draft.run.map((strategy) => strategy.using)).toEqual([
+        "network",
+        "workflow",
+      ]);
+      expect(() => writeClick().save(change)).toThrow(
+        refusal("write op search can't be saved", given),
+      );
+    });
+
+    it("refuses a write draft's workflow twice", () => {
+      expect(() => writeClick().save((op) => op.run.push(structuredClone(op.run[1])))).toThrow(
+        "write op search can't be saved: it has 2 workflow strategies, and a record drafts one",
+      );
+    });
+
+    it("refuses a read draft's strategies reversed, or its network strategy twice", () => {
+      expect(() => readFlow().save((op) => op.run.reverse())).toThrow(
+        refusal("op search can't be saved", "workflow, then network"),
+      );
+      expect(() =>
+        readFlow().save((op) => {
+          (op.run[0] as Entry).verify = { status: 201 };
+          op.run.splice(1, 0, { using: "network", request: op.run[0].request });
+        }),
+      ).toThrow(refusal("op search can't be saved", "network, then network, then workflow"));
+    });
+
+    it("saves the record's order with the draft's checks", () => {
+      const saved = writeClick().saved((op) => ((op.run[0] as Entry).verify = { status: 200 }));
+      expect(saved.run.map((strategy) => strategy.using)).toEqual(["network", "workflow"]);
+      expect(saved.run[0].verify).toEqual({ status: 200 });
+    });
+  });
+
+  // A draft's checks may make an op saved from a record fail, never send more: once a strategy's
+  // request is answered (or a workflow step has run), a failure is the op's.
+  describe("a failed check", () => {
+    const readFlow = () =>
+      flow({ commands: [step("navigate", { url: `${origin}/extra` })], trace: [read] });
+    const answered = `${origin}/answered`;
+    // A tab whose requests come back 200 and show in network capture, or fail before reaching the
+    // server (`unreached`). It notes each tool that sends something: capture reads send nothing.
+    const fakeTab = (unreached: boolean) => {
+      const calls: string[] = [];
+      const captured: Entry[] = [];
+      const send = (code: unknown) => {
+        if (unreached) {
+          return { error: "TypeError: Failed to fetch" };
+        }
+        const method = /method: "([A-Z]+)"/.exec(String(code))?.[1];
+        const now = Date.now();
+        captured.push({
+          id: "c_1",
+          method,
+          url: answered,
+          status: 200,
+          ts: now,
+          flags: [],
+          _loadingFinished: true,
+        });
+        const head = { status: 200, ok: true, requestUrl: answered, url: answered, headers: {} };
+        return { output: JSON.stringify({ ...head, sentAt: now, doneAt: now }) };
+      };
+      const reads: Record<string, () => unknown> = {
+        network: () => ({ entries: captured }),
+        "network.body": () => ({ body: '{"ok":true}' }),
+      };
+      const executeTool = async (tool: string, toolArgs: Entry) => {
+        const capture = reads[tool];
+        if (capture) {
+          return capture();
+        }
+        if (!tool.startsWith("wait")) {
+          calls.push(tool);
+        }
+        return tool === "javascript_tool" ? send(toolArgs.code) : { output: "{}" };
+      };
+      return { calls, executeTool };
+    };
+    const run = async (saved: Op, args: Entry = {}, unreached = false) => {
+      const tab = fakeTab(unreached);
+      let error = "";
+      await runtime
+        .runPlaybookOp({
+          playbook: { id: "fixture", origins: [origin] },
+          op: saved,
+          args,
+          executeTool: tab.executeTool,
+          sleep: async () => undefined,
+        })
+        .catch((caught: Error) => {
+          error = caught.message;
+        });
+      return { calls: tab.calls, error };
+    };
+
+    it.each([
+      ["verify", (op: Op) => ((op.run[0] as Entry).verify = { status: 201 })],
+      ["expect", (op: Op) => ((op.run[0] as Entry).expect = { status: 201 })],
+      ["on.success.expect", (op: Op) => (op.on = { success: { expect: { status: 201 } } })],
+    ])("in a read's %s is final: the recorded workflow doesn't run", async (_case, change) => {
+      const { calls, error } = await run(readFlow().saved(change));
+      expect(calls).toEqual(["javascript_tool"]);
+      expect(error).toMatch(/^network strategy failed after its request was answered: /);
+    });
+
+    it("in a write is final: the click doesn't run after the POST", async () => {
+      const saved = flow({ commands: ["click"], trace: [home, write] }).saved(
+        (op) => ((op.run[0] as Entry).verify = { status: 201 }),
+      );
+      const { calls, error } = await run(saved, { review_key: "k" });
+      expect(calls).toEqual(["javascript_tool"]);
+      expect(error).toBe("expected status 201");
+    });
+
+    it("still lets a read whose request never reached the server run the recorded workflow", async () => {
+      const saved = readFlow().saved((op) => ((op.run[0] as Entry).verify = { status: 201 }));
+      expect(await run(saved, {}, true)).toEqual({
+        calls: ["javascript_tool", "navigate"],
+        error: "",
+      });
+    });
+  });
+
   describe("recorded step arguments", () => {
     it("are sent as recorded, a selector holding {{review_key}} or %{review_key} too", async () => {
       const selector = '[data-x="{{review_key}}"] .a-%{review_key}';
@@ -2617,7 +2794,7 @@ describe("what a hand-edited draft can't change", () => {
     });
 
     it("are sent as recorded in a URL and a locate name", async () => {
-      const url = `${origin}/p?q={{x}}&r=%{x}&s={{_open}}`;
+      const url = `${origin}/p?q={{x}}&r=%{x}&s={{_open}}&t={{!}}&u=%{!}&v=%{_open}`;
       const reading = flow({
         commands: [step("navigate", { url }), step("locate.role", { role: "link", name: "{{x}}" })],
       });
