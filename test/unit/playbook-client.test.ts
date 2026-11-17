@@ -228,6 +228,11 @@ describe("playbook client projection", () => {
     expect(derive([api, { ...api, id: "r-api-2", url: "https://example.test/api/other" }])).toThrow(
       /has several read endpoints and no clear winner; run surf pb record candidates rec-[^ ]+ and pass --request-id/,
     );
+    // A POST that leads a weak GET is the winner: without --write it is refused, naming the flag.
+    const search = { ...api, id: "r-gql", method: "POST", url: "https://example.test/graphql" };
+    expect(derive([search, beacon])).toThrow(
+      "op search is a write request (POST https://example.test/graphql); add --write to make a client for it",
+    );
   });
 
   it("refuses to derive a client from a POST, keeping its query and body shape when allowed", () => {

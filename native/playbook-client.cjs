@@ -246,11 +246,12 @@ function deriveClient(site, opId, out, options = {}) {
   const record = options.recordId ? readRecord(options.recordId, root) : findRecord(site, opId, root);
   if (!record) throw new Error(`no record found for ${site} ${opId}`);
   const trace = readPrivateJson(path.join(recordsRoot(root), record.id, "network", "trace.json"), null, { root });
-  // Without --write or --request-id, a record's reads are ranked alone when it has any, so a GET
-  // beside a captured PUT, PATCH or DELETE still derives.
+  // Without --write or --request-id, a captured PUT, PATCH or DELETE is ranked only when the record
+  // has nothing else, so a GET beside one still derives. A POST is ranked with the reads, so one that
+  // leads is refused, naming --write.
   const replayable = (trace?.entries || []).filter(isReplayCandidate);
-  const reads = replayable.filter((candidate) => requestEffect(candidate) === "read");
-  const candidates = options.allowWrite || options.requestId || reads.length === 0 ? replayable : reads;
+  const ranked = replayable.filter((candidate) => !["PUT", "PATCH", "DELETE"].includes(candidate.method));
+  const candidates = options.allowWrite || options.requestId || ranked.length === 0 ? replayable : ranked;
   const endpoint = candidates.every((candidate) => requestEffect(candidate) === "read") ? "read endpoint" : "endpoint";
   const entry = options.requestId
     ? candidates.find((candidate) => candidate.id === options.requestId || candidate._requestId === options.requestId)
