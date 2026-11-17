@@ -52,9 +52,10 @@ describe("redactValues", () => {
     expect(redaction.redactValues("prefixabcdSuffix abcd", ["abcd"], { anyLength: true })).toBe(
       "prefix<redacted>Suffix <redacted>",
     );
+    // A key is a field's name: only a key that is the whole value is redacted.
     expect(
-      redaction.redactObject({ prefixabcdKey: "xabcdx" }, ["abcd"], { anyLength: true }),
-    ).toEqual({ "prefix<redacted>Key": "x<redacted>x" });
+      redaction.redactObject({ prefixabcdKey: "xabcdx", abcd: 1 }, ["abcd"], { anyLength: true }),
+    ).toEqual({ prefixabcdKey: "x<redacted>x", "<redacted>": 1 });
   });
 
   it.each(["a", "1"])(
@@ -120,7 +121,7 @@ describe("a short env value inside a longer string", () => {
       },
     ],
   };
-  const echo = (key: string) => ({ note: `prefix${key}Suffix`, [`k${key}k`]: 1 });
+  const echo = (key: string) => ({ note: `prefix${key}Suffix`, [key]: 1 });
 
   it("is redacted from a playbook run's result", async () => {
     const executeTool = async (_tool: string, args: { code: string }) => {
@@ -144,7 +145,7 @@ describe("a short env value inside a longer string", () => {
       executeTool,
     });
     expect(JSON.stringify(result.value)).not.toContain(SHORT);
-    expect(result.value).toEqual({ note: "prefix<redacted>Suffix", "k<redacted>k": 1 });
+    expect(result.value).toEqual({ note: "prefix<redacted>Suffix", "<redacted>": 1 });
   });
 
   it("is redacted from a generated client's output", async () => {
@@ -178,7 +179,7 @@ describe("a short env value inside a longer string", () => {
           ),
         );
         expect(stdout).not.toContain(SHORT);
-        expect(JSON.parse(stdout)).toEqual({ note: "prefix<redacted>Suffix", "k<redacted>k": 1 });
+        expect(JSON.parse(stdout)).toEqual({ note: "prefix<redacted>Suffix", "<redacted>": 1 });
       } finally {
         await new Promise((resolve) => server.close(resolve));
       }
@@ -206,5 +207,138 @@ describe("redactUrlsInText", () => {
     expect(redaction.redactUrlsInText(line)).toBe(
       "API_REQUEST: GET https://example.test/a?token=%3Credacted%3E streamId=7",
     );
+  });
+});
+
+describe("a short env value that names a field", () => {
+  const fs = require("node:fs");
+  const http = require("node:http");
+  const os = require("node:os");
+  const path = require("node:path");
+  const { execFile } = require("node:child_process");
+  const runtime = require("../../native/playbook-runtime.cjs");
+  const clients = require("../../native/playbook-client.cjs");
+  const { formatTestReport } = require("../../native/playbook-test.cjs");
+  const op = {
+    id: "items",
+    effect: "read",
+    args: {},
+    run: [
+      {
+        using: "network",
+        request: {
+          method: "GET",
+          url: "https://api.test/items",
+          authInputs: [{ env: "SURF_TEST_FIELD_KEY", header: "X-Site-Key" }],
+        },
+        extract: { jsonPath: "$" },
+      },
+    ],
+  };
+  // Runs the op on a page whose fetch answers `body`.
+  const run = (value: string, body: unknown, assertions?: unknown[]) =>
+    runtime.runPlaybookOp({
+      playbook: { id: "shop", provenance: { scope: "test" } },
+      op,
+      secrets: { SURF_TEST_FIELD_KEY: value },
+      env: {},
+      ...(assertions ? { assertions } : {}),
+      executeTool: async (_tool: string, args: { code: string }) => {
+        const fetchImpl = async (url: string) => ({
+          status: 200,
+          ok: true,
+          url,
+          headers: new Headers({ "content-type": "application/json" }),
+          text: async () => JSON.stringify(body),
+        });
+        const result = await new Function("fetch", "location", `return ${args.code}`)(fetchImpl, {
+          href: "https://api.test/",
+        });
+        return { output: JSON.stringify(result) };
+      },
+    });
+  const data = { id: 7, trueCount: 3, items: [{ id: 1, path: 2, pass: 3 }] };
+
+  it.each(["id", "true", "path", "pass"])(
+    "leaves result keys and assertion fields as named with env %s, and pb test passes",
+    async (value) => {
+      const assertion = { path: "$.trueCount", op: "equals", value: 3 };
+      const result = await run(value, value.length >= 4 ? { trueCount: 3 } : data, [assertion]);
+      expect(result.status).toBe("completed");
+      if (value.length < 4) {
+        expect(result.value).toEqual(data);
+      } else {
+        expect(Object.keys(result.value)).toEqual(["trueCount"]);
+      }
+      // secretSensitive marks a path that holds the value (`$.trueCount` holds `true`).
+      expect(Object.keys(result.assertions[0])).toEqual(
+        expect.arrayContaining(["actual", "op", "pass", "path", "value"]),
+      );
+      expect(JSON.stringify(Object.keys(result.assertions[0]))).not.toContain("redacted");
+      expect(result.assertions[0]).toMatchObject({ op: "equals", value: 3, pass: true, actual: 3 });
+      const report = formatTestReport({
+        ok: true,
+        playbook: "shop",
+        op: "items",
+        strategy: result.strategy,
+        records: null,
+        durationMs: 1,
+        assertions: result.assertions,
+        attempts: [],
+        saved: null,
+      });
+      expect(report).toMatch(/^PASS shop items/);
+      expect(report).toMatch(/\n {2}pass {2}\S+ equals 3 \(3\)$/);
+    },
+  );
+
+  it("still redacts a key that is the whole env value, of 4 characters or more", async () => {
+    const value = ["q", "z", "x", "w"].join("");
+    const result = await run(value, { [value]: 1, [`${value}Count`]: 2 });
+    expect(result.value).toEqual({ "<redacted>": 1, [`${value}Count`]: 2 });
+  });
+
+  it("is redacted from a generated client's text output in every spelling", async () => {
+    // A dummy value with a quote and a backslash, so its JSON-escaped spelling differs from it.
+    const value = ["dummy", 'quo"ted', "va\\lue", "16"].join("-");
+    const out = fs.mkdtempSync(path.join(os.tmpdir(), "surf-client-spellings-"));
+    try {
+      clients.generateClient({
+        playbookId: "shop",
+        op,
+        strategy: { ...op.run[0], extract: undefined },
+        provenance: { type: "playbook", id: "shop" },
+        out: path.join(out, "client"),
+      });
+      const server = http.createServer((req: any, res: any) => {
+        res.writeHead(200, { "content-type": "text/plain" });
+        res.end(
+          `echo ${JSON.stringify(req.headers["x-site-key"])} and ${encodeURIComponent(req.headers["x-site-key"])}`,
+        );
+      });
+      await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+      try {
+        const stdout = await new Promise<string>((resolve, reject) =>
+          execFile(
+            process.execPath,
+            [path.join(out, "client", "client.mjs")],
+            {
+              env: {
+                ...process.env,
+                SURF_TEST_FIELD_KEY: value,
+                SURF_CLIENT_ORIGIN: `http://127.0.0.1:${server.address().port}`,
+              },
+            },
+            (error: Error | null, output: string) => (error ? reject(error) : resolve(output)),
+          ),
+        );
+        expect(stdout).toContain("echo ");
+        expect(stdout).not.toContain("dummy");
+      } finally {
+        await new Promise((resolve) => server.close(resolve));
+      }
+    } finally {
+      fs.rmSync(out, { recursive: true, force: true });
+    }
   });
 });

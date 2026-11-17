@@ -113,11 +113,27 @@ function resolveAuthValues(op, secrets = {}, env = process.env) {
   return values;
 }
 
-// Env-supplied values never leave a run: a response that echoes one, in a value or an object key
-// (or an error that quotes it), comes back with <redacted> in its place, however short the value.
+// Env-supplied values never leave a run: a response that echoes one in a value (or an error that
+// quotes it) comes back with <redacted> in its place, however short the value. A key is a field's
+// name and changes only when it holds a value of 4 characters or more (see redactObject).
 function redactSecrets(value, secrets) {
   const values = Object.values(secrets);
   return values.length === 0 ? value : redactObject(value, values.flatMap(valueSpellings), { anyLength: true });
+}
+
+// An assertion's result keeps surf's own fields (`path`, `op`, `pass`...) and their names; only
+// what came from the caller or the response is redacted: its path, its expected value, the value
+// found and an error.
+const ASSERTION_DATA_FIELDS = ["path", "value", "actual", "error"];
+function redactAssertions(results, secrets) {
+  if (Object.keys(secrets).length === 0) return results;
+  return results.map((result) => {
+    const redacted = { ...result };
+    for (const field of ASSERTION_DATA_FIELDS) {
+      if (Object.hasOwn(result, field)) redacted[field] = redactSecrets(result[field], secrets);
+    }
+    return redacted;
+  });
 }
 
 // The free text of a strategy's event (an error, a step's result) without the run's env values.
@@ -541,12 +557,12 @@ async function runPlaybookOp({ playbook, op, args: providedArgs = {}, secrets = 
       }
       if (op.effect === "write") await afterDispatch({ status: "verified", strategy, index });
       onEvent({ type: "strategy.completed", playbook: playbook.id, op: op.id, using: strategy.using, index, endedAt: new Date().toISOString() });
-      return { status: "completed", playbook: playbook.id, op: op.id, strategy: strategy.using, value: redactSecrets(value, authValues), provenance: playbook.provenance, attempts, ...(checked ? { assertions: redactSecrets(checked, authValues) } : {}) };
+      return { status: "completed", playbook: playbook.id, op: op.id, strategy: strategy.using, value: redactSecrets(value, authValues), provenance: playbook.provenance, attempts, ...(checked ? { assertions: redactAssertions(checked, authValues) } : {}) };
     } catch (caught) {
       const message = redactSecrets(caught?.message || String(caught), authValues);
       const error = message === caught?.message ? caught : new Error(message);
       // An assertion's `actual` is a value from the response, so it is redacted like the result.
-      const checks = caught?.assertions ? redactSecrets(caught.assertions, authValues) : undefined;
+      const checks = caught?.assertions ? redactAssertions(caught.assertions, authValues) : undefined;
       attempts.push({ using: strategy.using, error: message, ...(checks ? { assertions: checks } : {}) });
       onEvent({ type: "strategy.failed", playbook: playbook.id, op: op.id, using: strategy.using, index, error: message, endedAt: new Date().toISOString() });
       if (op.effect === "write") {

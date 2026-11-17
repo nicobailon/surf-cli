@@ -8,7 +8,7 @@ const { findRedactedPlaceholder, placeholderError } = require("./record-typed-va
 const { resolveOp } = require("./playbooks.cjs");
 const { isReplayCandidate, readRecord, recordsRoot, requestEffect, requestFromEntry } = require("./playbook-records.cjs");
 const { WINNER_MARGIN, isWeak, scoreEntries } = require("./record-candidates.cjs");
-const { assertNoEmbeddedSecrets, assertUrlHasNoEmbeddedSecrets, redactObject, redactValues, safeHeaders } = require("./redaction.cjs");
+const { assertNoEmbeddedSecrets, assertUrlHasNoEmbeddedSecrets, redactObject, redactValues, safeHeaders, valueSpellings } = require("./redaction.cjs");
 const { version: PACKAGE_VERSION } = require("../package.json");
 
 // URL parsing would percent-encode `{{name}}` in a path, so placeholders (and, in escaped text, the
@@ -83,10 +83,12 @@ if (process.env.SURF_CLIENT_ORIGIN) url = new URL(\`\${url.pathname}\${url.searc
 else if (process.env.SURF_CLIENT_ENDPOINT_URL) url = new URL(process.env.SURF_CLIENT_ENDPOINT_URL);
 for (const [name, value] of Object.entries(endpoint.query)) url.searchParams.set(name, value);
 const headers = { ...endpoint.headers };
-// Env-supplied values are redacted from what the client prints, output and errors alike.
+// Env-supplied values are redacted from what the client prints, output and errors alike, in every
+// spelling a response can hold them (JSON-escaped, URL-encoded).
 const secretValues = [];
 ${redactValues.toString()}
 ${redactObject.toString()}
+${valueSpellings.toString()}
 const redact = (text) => redactValues(text, secretValues, { anyLength: true });
 process.on("uncaughtException", (error) => {
   process.stderr.write(\`\${redact(error?.stack || error)}\\n\`);
@@ -97,7 +99,7 @@ for (const input of manifest.authInputs || []) {
   if (input.required && !value) throw new Error(\`missing auth environment variable \${input.env}\`);
   if (value && input.header) {
     headers[input.header] = value;
-    secretValues.push(value);
+    secretValues.push(...valueSpellings(value));
   }
 }
 const response = await fetch(url, {

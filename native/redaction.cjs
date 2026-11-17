@@ -27,15 +27,19 @@ function redactValues(text, values, { anyLength = false } = {}) {
   return result;
 }
 
-// redactValues over a JSON value: strings, and object keys too, at any depth. A key that redacts to
-// one already present (another redacted key, or a key that reads <redacted>) takes <redacted-2>,
-// <redacted-3>... so no entry is lost. Keys left unchanged keep their names. Self-contained but for
-// redactValues: generated clients embed both.
+// redactValues over a JSON value's strings, at any depth. A key is a field's name, so a value
+// rewrites one only when it is a secret by any measure: a value of 8 characters or more wherever it
+// appears in the key, one of 4 to 7 only as the whole key, a shorter one never. A key that redacts
+// to one already present takes <redacted-2>, <redacted-3>... so no entry is lost. Self-contained but
+// for redactValues: generated clients embed both.
 function redactObject(value, values, options = {}) {
   if (typeof value === "string") return redactValues(value, values, options);
   if (Array.isArray(value)) return value.map((item) => redactObject(item, values, options));
   if (!value || typeof value !== "object") return value;
-  const entries = Object.entries(value).map(([key, item]) => [key, redactValues(key, values, options), redactObject(item, values, options)]);
+  const texts = values.map(String);
+  const long = texts.filter((text) => text.length >= 8);
+  const redactKey = (key) => (texts.some((text) => text.length >= 4 && text === key) ? "<redacted>" : redactValues(key, long));
+  const entries = Object.entries(value).map(([key, item]) => [key, redactKey(key), redactObject(item, values, options)]);
   const taken = new Set(entries.filter(([key, redacted]) => key === redacted).map(([key]) => key));
   return Object.fromEntries(entries.map(([key, redacted, item]) => {
     if (key === redacted) return [key, item];
