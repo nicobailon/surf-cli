@@ -20,10 +20,13 @@ const TYPED_ARGS = {
 
 // A shorter value (a page number, a one-letter filter) matches too much to be redacted.
 const MIN_LENGTH = 3;
+// Inside a longer value (`{"rawQuery":"…"}`, `pizza near me`), a value must be longer still.
+const MIN_INSIDE_LENGTH = 4;
 // Enough for a value encoded twice over and its form-encoded spaces.
 const MAX_DECODES = 4;
 // The placeholders a draft or trace can hold where a value was redacted.
 const PLACEHOLDER = /<(?:text|value|values|data|redacted|request-body)(?:-\d+)?>/;
+const WHOLE_PLACEHOLDER = new RegExp(`^${PLACEHOLDER.source}$`);
 const REDACTED_MARKER = /^<([a-z0-9._-]+)>$/;
 
 const held = new Map();
@@ -124,23 +127,32 @@ function typedValuesForTrace(events, calls) {
   return { typed, unheld: typing.length - paired };
 }
 
+// Decodes each well-formed run of %XX, so a stray `%` (`romeo%`) doesn't stop the rest decoding.
 const decode = (text) => {
   try {
     return decodeURIComponent(text);
   } catch {
-    return text;
+    return text.replace(/(?:%[0-9a-fA-F]{2})+/g, (run) => {
+      try {
+        return decodeURIComponent(run);
+      } catch {
+        return run;
+      }
+    });
   }
 };
 
-// Every reading of a URL part: as is, percent-decoded and form-decoded (+ for space), repeatedly.
+// Every reading of a URL part, shallowest first: as is, percent-decoded and form-decoded (+ for
+// space), repeatedly. `depth` counts the decodes that gave it.
 function decodings(raw) {
   const seen = new Set([raw]);
+  const readings = [{ text: raw, depth: 0 }];
   let current = [raw];
-  for (let round = 0; round < MAX_DECODES && current.length > 0; round++) {
-    current = current.flatMap((text) => [decode(text), decode(text.replace(/\+/g, " "))]).filter((text) => !seen.has(text));
-    for (const text of current) seen.add(text);
+  for (let depth = 1; depth <= MAX_DECODES && current.length > 0; depth++) {
+    current = current.flatMap((text) => [decode(text), decode(text.replace(/\+/g, " "))]).filter((text) => !seen.has(text) && seen.add(text));
+    readings.push(...current.map((text) => ({ text, depth })));
   }
-  return seen;
+  return readings;
 }
 
 // The forms a typed value takes in a URL: as typed, percent-encoded, and form-encoded (+ for space).
@@ -149,50 +161,93 @@ function encodedForms(value) {
   return [...new Set([value, encoded, encoded.replace(/%20/g, "+"), value.replace(/ /g, "+")])];
 }
 
-function markerFor(raw, typed) {
-  if (!raw) return undefined;
+const escapeRegExp = (text) => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
+/**
+ * One URL part with the typed values in it replaced: the whole part becomes the marker when it
+ * is a value; otherwise a value of 4 or more characters inside it, between non-alphanumeric
+ * characters (`"rawQuery":"…"`, but not `name` in `username`), becomes the marker, in the
+ * shallowest reading that holds one, encoded again as many times as it was decoded.
+ */
+function redactPart(raw, typed) {
+  if (!raw) return raw;
   const readings = decodings(raw);
-  return typed.find(({ value }) => value.length >= MIN_LENGTH && readings.has(value))?.marker;
+  const whole = typed.find(({ value }) => value.length >= MIN_LENGTH && readings.some(({ text }) => text === value));
+  if (whole) return whole.marker;
+  const inside = typed.filter(({ value }) => value.length >= MIN_INSIDE_LENGTH).sort((a, b) => b.value.length - a.value.length);
+  for (const { text, depth } of readings) {
+    const replaced = inside.reduce((current, { value, marker }) => current.replace(new RegExp(`(?<![\\p{L}\\p{N}])${escapeRegExp(value)}(?![\\p{L}\\p{N}])`, "gu"), marker), text);
+    if (replaced === text) continue;
+    let encoded = replaced;
+    for (let round = 0; round < depth; round++) encoded = encodeURIComponent(encoded);
+    return encoded;
+  }
+  return raw;
 }
 
 // Pairs (key=value) keep their keys; a part without `=` is a value.
 function redactPairs(text, typed) {
   return text.split("&").map((pair) => {
     const split = pair.indexOf("=");
-    if (split < 0) return markerFor(pair, typed) || pair;
-    const value = pair.slice(split + 1);
-    return `${pair.slice(0, split + 1)}${markerFor(value, typed) || value}`;
+    if (split < 0) return redactPart(pair, typed);
+    return `${pair.slice(0, split + 1)}${redactPart(pair.slice(split + 1), typed)}`;
   }).join("&");
 }
 
 /**
- * Replaces each typed value in `url` with its marker where a whole query value, path segment,
- * fragment or fragment value is that value, however many times it was encoded. Keys, the origin
- * and parts of longer values are never changed.
+ * Replaces each typed value in `url` with its marker in query values, path segments, the
+ * fragment and fragment values, however many times it was encoded: a whole value, or one of 4 or
+ * more characters inside a longer value at word boundaries. Keys and the origin are never changed.
  */
 function redactTypedValuesInUrl(url, typed) {
   if (typeof url !== "string" || typed.length === 0) return url;
   const match = url.match(/^([a-zA-Z][a-zA-Z0-9+.-]*:\/\/[^/?#]*)?([^?#]*)(\?[^#]*)?(#.*)?$/s);
   if (!match) return url;
   const [, origin = "", pathname, query, fragment] = match;
-  const path = pathname.split("/").map((segment) => markerFor(segment, typed) || segment).join("/");
+  const path = pathname.split("/").map((segment) => redactPart(segment, typed)).join("/");
   const search = query === undefined ? "" : `?${redactPairs(query.slice(1), typed)}`;
   let hash = "";
   if (fragment !== undefined) {
     const body = fragment.slice(1);
-    hash = `#${body.includes("=") ? redactPairs(body, typed) : markerFor(body, typed) || body}`;
+    hash = `#${body.includes("=") ? redactPairs(body, typed) : redactPart(body, typed)}`;
   }
   return `${origin}${path}${search}${hash}`;
+}
+
+// A placeholder a body holds as the whole body or a whole field value: a JSON string or a
+// urlencoded value. Markup such as XML-RPC's <value> is part of a longer value, so isn't one.
+function bodyPlaceholder(body) {
+  if (body && typeof body === "object") {
+    for (const item of Object.values(body)) {
+      const placeholder = bodyPlaceholder(item);
+      if (placeholder) return placeholder;
+    }
+    return null;
+  }
+  if (typeof body !== "string") return null;
+  const whole = decodings(body).find(({ text }) => WHOLE_PLACEHOLDER.test(text));
+  if (whole) return whole.text;
+  try {
+    const parsed = JSON.parse(body);
+    if (parsed && typeof parsed === "object") return bodyPlaceholder(parsed);
+  } catch {}
+  if (!body.includes("=")) return null;
+  for (const pair of body.split("&")) {
+    const placeholder = pair.includes("=") && bodyPlaceholder(pair.slice(pair.indexOf("=") + 1));
+    if (placeholder) return placeholder;
+  }
+  return null;
 }
 
 /**
  * The first place a network request (url, query, headers, body) still holds a redacted
  * placeholder, as `{ field, placeholder }`, or null. Sending one would send `<text>` to the site.
+ * In the URL and headers a placeholder can sit inside a longer value (`{"rawQuery":"<text>"}`).
  */
 function findRedactedPlaceholder(request) {
   const found = (field, value) => {
     const text = typeof value === "string" ? value : value && typeof value === "object" ? JSON.stringify(value) : "";
-    const placeholder = (text.match(PLACEHOLDER) || decode(text).match(PLACEHOLDER))?.[0];
+    const placeholder = decodings(text).map(({ text: reading }) => reading.match(PLACEHOLDER)?.[0]).find(Boolean);
     return placeholder ? { field, placeholder } : null;
   };
   const segments = String(request?.url || "").replace(/^[a-zA-Z][a-zA-Z0-9+.-]*:\/\/[^/?#]*/, "").split(/[?#]/)[0].split("/").slice(1);
@@ -208,7 +263,8 @@ function findRedactedPlaceholder(request) {
     const hit = found(`headers.${name}`, value);
     if (hit) return hit;
   }
-  return request?.body === undefined ? null : found("body", request.body);
+  const placeholder = request?.body === undefined ? null : bodyPlaceholder(request.body);
+  return placeholder ? { field: "body", placeholder } : null;
 }
 
 /** The error for a request that holds a placeholder, naming the pb param command that fixes it. */
