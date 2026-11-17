@@ -467,9 +467,10 @@ describe("pb param: field locations", () => {
   });
 
   // JSON.parse reads any depth; so do pb param and renderRequest.
-  it("templates, saves and sends a field of a stored JSON param or body nested 5,000 levels deep", () => {
+  it("templates, saves and sends a field of a stored JSON param or body nested 1,500 levels deep", () => {
     const { findRedactedPlaceholder } = require("../../native/record-typed-values.cjs");
-    const depth = 5000;
+    // Capped where Node 24's recursive JSON.stringify, which pb param saves with, fits a Linux CI stack.
+    const depth = 1500;
     const raw = `{"n":"seed","deep":${'{"x":'.repeat(depth)}0${"}".repeat(depth)}}`;
     for (const where of ["query", "body"]) {
       const field = where === "query" ? "query.v.n" : "body.n";

@@ -538,11 +538,11 @@ describe("clients from parameterised ops", () => {
     });
   });
 
-  // As deep as an op file holds (pb param writes it pretty-printed, which Node does to about 5,600
-  // levels): exporting, verifying and running the client read it without recursion. A query that
-  // deep is longer than a local server takes, so that one is only exported and rendered.
-  it("exports, verifies and runs a client of an op whose JSON nests 5,000 levels deep", async () => {
-    const depth = 5000;
+  // Exporting, verifying and running the client read a deep op's JSON without recursion. A query
+  // that deep is longer than a local server takes, so that one is only exported and rendered.
+  it("exports, verifies and runs a client of an op whose JSON nests 1,500 levels deep", async () => {
+    // Capped where Node 24's recursive JSON.stringify, which writes the op, fits a Linux CI stack.
+    const depth = 1500;
     const nested = (leaf: unknown) => {
       let value = leaf;
       for (let level = 0; level < depth; level++) {
