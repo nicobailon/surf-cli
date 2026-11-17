@@ -50,16 +50,27 @@ function jsonSlot(field, root, parts, onStore) {
   throw new Error(`${field}: name a field inside it`);
 }
 
-function parseJson(text) {
+// A JSON param or body stored as text. In an escaped op that text was escaped whole, its keys
+// with it; parsed, it is stored as an object, whose keys are sent as they are (renderRequest fills
+// values only). So its keys are unescaped here, once, and a field names a key by its captured text,
+// as redactedTypes does; its values stay escaped text, which templateSlot reads.
+function parseJson(text, escapes) {
   try {
     const value = JSON.parse(text);
-    return value && typeof value === "object" ? value : null;
+    if (!value || typeof value !== "object") return null;
+    return escapes ? unescapeKeys(value) : value;
   } catch {
     return null;
   }
 }
 
-function querySlot(request, field, [param, ...jsonPath]) {
+function unescapeKeys(value) {
+  if (Array.isArray(value)) return value.map(unescapeKeys);
+  if (value && typeof value === "object") return Object.fromEntries(Object.entries(value).map(([key, item]) => [unescapeTemplates(key), unescapeKeys(item)]));
+  return value;
+}
+
+function querySlot(request, field, [param, ...jsonPath], escapes) {
   if (!param) throw new Error(`${field}: name the query param, as in query.q`);
   const query = request.query || {};
   if (!Object.hasOwn(query, param)) throw new Error(`${field}: no query param "${param}" (has: ${listOf(Object.keys(query))})`);
@@ -69,7 +80,7 @@ function querySlot(request, field, [param, ...jsonPath]) {
     if (current && typeof current === "object") throw new Error(`${field}: holds JSON; name a field inside it, as in ${field}.<path>`);
     return { field, value: String(current), json: false, sensitive: isSensitiveName(param), encode: keep, store: setParam };
   }
-  const doc = current && typeof current === "object" ? current : parseJson(String(current));
+  const doc = current && typeof current === "object" ? current : parseJson(String(current), escapes);
   if (!doc) throw new Error(`${field}: query param "${param}" is not JSON`);
   return jsonSlot(field, doc, jsonPath, setParam);
 }
@@ -162,13 +173,13 @@ function formSlot(request, field, name, body) {
   };
 }
 
-function bodySlot(request, field, parts) {
+function bodySlot(request, field, parts, escapes) {
   const body = request.body;
   if (body === undefined || body === null || body === "") throw new Error(`${field}: the request has no body`);
   if (body === REDACTED_BODY) throw new Error(`${field}: the recorded body was redacted; record again with pb record start --include-input-values to keep it`);
   if (parts.length === 0) throw new Error(`${field}: name a field inside the body, as in body.<name>`);
   if (typeof body === "object") return jsonSlot(field, body, parts, (root) => { request.body = root; });
-  const doc = parseJson(body);
+  const doc = parseJson(body, escapes);
   if (doc) return jsonSlot(field, doc, parts, (root) => { request.body = root; });
   const type = String(headerValue(request.headers, "content-type")?.[1] || "");
   const name = parts.join(".");
@@ -195,11 +206,12 @@ function headerSlot(request, field, name) {
   };
 }
 
-function resolveSlot(request, field) {
+// `escapes`: the op holds escaped text (escapedOp).
+function resolveSlot(request, field, escapes) {
   const [target, ...parts] = field.split(".");
-  if (target === "query") return querySlot(request, field, parts);
+  if (target === "query") return querySlot(request, field, parts, escapes);
   if (target === "path") return pathSlot(request, field, parts);
-  if (target === "body") return bodySlot(request, field, parts);
+  if (target === "body") return bodySlot(request, field, parts, escapes);
   if (target === "headers") return headerSlot(request, field, parts.join("."));
   throw new Error(`${field}: a field starts with query., path., body. or headers.`);
 }
@@ -450,14 +462,15 @@ function paramOp(op, { fields, as: name, env, required = false, default: default
 
   const request = strategy.request;
   const originalUrl = splitUrl(request.url);
+  const escapes = escapedOp(op);
   const results = fields.map((field) => {
-    const slot = resolveSlot(request, field);
+    const slot = resolveSlot(request, field, escapes);
     // A secret-looking field, or one inside a secret-looking param or key, is templated whole:
     // a partial template would leave the rest of the credential in the op.
     const sensitive = slot.sensitive || field.split(".").slice(1).some(isSensitiveName);
     const partial = literal !== undefined && String(slot.value) !== literal && !String(slot.value).includes(`{{${name}}}`);
     if (sensitive && partial) throw new Error(`${field} looks secret: template it whole (leave out --value), so no part of it is stored`);
-    return { ...slot, sensitive, ...templateSlot(slot, { name, literal, escapes: escapedOp(op) }) };
+    return { ...slot, sensitive, ...templateSlot(slot, { name, literal, escapes }) };
   });
   const templated = results.filter((result) => result.status === "templated");
   const literals = [...new Set(templated.map((result) => String(result.literal)))];

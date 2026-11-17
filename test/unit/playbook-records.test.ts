@@ -3036,7 +3036,7 @@ describe("values typed during a record, in captured URLs", () => {
         "utf8",
       ),
     );
-    return { draft, trace };
+    return { draft, trace, record, root };
   }
   const networkOf = (op: { run: Array<{ using: string; request?: Entry }> }) =>
     op.run.find((strategy) => strategy.using === "network")?.request as Record<string, any>;
@@ -3086,6 +3086,42 @@ describe("values typed during a record, in captured URLs", () => {
     expect(result.value.bodyJson).toEqual({ year: 2031 });
     const sent = new URL(tab.fetchImpl.mock.calls[0][0]);
     expect(sent.searchParams.get("variables")).toBe('{"year":2031}');
+  });
+
+  // The JSON param is stored escaped as one string, so its keys read {{!}}field}} there; the record
+  // names the masked values by their captured keys. pb param does too, and keeps their types.
+  it("replays a masked number and boolean under JSON keys that read like inputs with their types", () => {
+    const variables = JSON.stringify({ "{{field}}": 2024, "{{flag}}": true, "{{!}}kept": "seed" });
+    const { record, root } = draftTyping(
+      ["2024", "true"],
+      `https://example.test/g?v=${encodeURIComponent(variables)}`,
+    );
+    const { directory } = authoring.saveFromRecord({
+      recordId: record.id,
+      root,
+      home: path.dirname(root),
+    });
+    const saved = JSON.parse(fs.readFileSync(path.join(directory, "ops", "search.json"), "utf8"));
+    expect(networkOf(saved).redactedTypes).toEqual({
+      "query.v.{{field}}": "number",
+      "query.v.{{flag}}": "boolean",
+    });
+    const year = paramOp(saved, { fields: ["query.v.{{field}}"], as: "year" }).op;
+    const { op } = paramOp(year, { fields: ["query.v.{{flag}}"], as: "live" });
+    expect(op.args.year).toEqual({ type: "number", required: true });
+    expect(op.args.live).toEqual({ type: "boolean", required: true });
+    expect(networkOf(op)).not.toHaveProperty("redactedTypes");
+    const args = resolveArgValues(op.args, { year: "2031", live: "false" });
+    const rendered = renderRequest(networkOf(op), args, { escapes: escapedOp(op) });
+    expect(JSON.parse(rendered.query.v)).toEqual({
+      "{{field}}": 2031,
+      "{{flag}}": false,
+      "{{!}}kept": "seed",
+    });
+    // The stored spelling isn't a captured key.
+    expect(() => paramOp(saved, { fields: ["query.v.{{!}}field}}"], as: "year" })).toThrow(
+      'query.v.{{!}}field}}: no "{{!}}field}}" at the top level (has: {{field}}, {{flag}}, {{!}}kept)',
+    );
   });
 
   it("records no type for a query key the URL sends twice, and pb param says so", () => {

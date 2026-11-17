@@ -524,6 +524,42 @@ function sessionAccessTime(stateDir: string) {
   return state.browsers["contract-browser"].sessions.old.lastAccessedAt;
 }
 
+// Records a write whose captured POST is at `page.url` (the host's scriptResponse): each of `typed`
+// is typed into the page first, so the record masks it there, and the op is saved from the record.
+// Then capture holds each later request at the fixture API's URL, the one the fake extension
+// answers, so an op's own send is found.
+async function saveRecordedWrite({
+  cli,
+  page,
+  typed,
+}: {
+  cli: (args: string[]) => Promise<CliResult>;
+  page: { url: string };
+  typed: string[];
+}) {
+  const run = async (args: string[]) => {
+    const result = await cli(args);
+    if (result.code !== 0) {
+      throw new Error(`surf ${args.join(" ")} failed: ${result.stderr}`);
+    }
+    return result;
+  };
+  await run(["navigate", "https://fixture.test/form"]);
+  await run(["pb", "record", "start", "fixture", "--op", "submit", "--network"]);
+  for (const [index, text] of typed.entries()) {
+    await run(["type", text, "--selector", `#field-${index}`]);
+  }
+  await run(["js", 'fetch("/api", { method: "POST" })']);
+  await run(["click", "--selector", "#commit", "--no-screenshot"]);
+  const { record } = JSON.parse((await run(["pb", "record", "stop", "--draft", "--json"])).stdout);
+  page.url = "https://fixture.test/api";
+  await run(["pb", "save", "--from-record", record.id, "--project", "--json"]);
+}
+
+function jsonQueryUrl(variables: Record<string, unknown>) {
+  return `https://fixture.test/api?variables=${encodeURIComponent(JSON.stringify(variables))}`;
+}
+
 describe("CLI/native-host/fake-extension E2E contract", () => {
   it("runs browser-like navigation, page text, and screenshot flows without Chrome", async () => {
     const socketPath = createSocketPath();
@@ -938,6 +974,115 @@ describe("CLI/native-host/fake-extension E2E contract", () => {
       const byText = await cli(["use", "fixture", "submit", "--text", "two", "--write"]);
       expect(byText.stderr).toMatch(/Unknown input --text/);
       expect(posts().length - before).toBe(1);
+    } finally {
+      await host.dispose();
+    }
+  }, 60000);
+
+  // A JSON query param is stored escaped as one string, its keys with it. pb param names a key by
+  // the text it was captured as, so a masked number there keeps its type, and every key goes out
+  // as captured; an input's value is sent as given, {{!}} and %{!} included. (The CLI types `true`
+  // as a boolean, which the record doesn't mask; playbook-records.test.ts has the masked boolean.)
+  it("templates a recorded JSON key that reads like an input, and sends it and each input as given", async () => {
+    const socketPath = createSocketPath();
+    const project = fs.mkdtempSync(path.join(os.tmpdir(), "surf-record-json-key-"));
+    tempDirs.push(project);
+    const vm = require("node:vm") as {
+      runInNewContext(code: string, context: Record<string, unknown>): unknown;
+    };
+    const sent: string[] = [];
+    const tab = {
+      URL,
+      location: { href: "https://fixture.test/form" },
+      fetch: async (url: string) => {
+        sent.push(url);
+        return {
+          status: 200,
+          ok: true,
+          url,
+          redirected: false,
+          headers: new Map([["content-type", "application/json"]]),
+          text: async () => '{"ok":true}',
+          arrayBuffer: async () => new ArrayBuffer(0),
+        };
+      },
+    };
+    let running = false;
+    const page = {
+      url: jsonQueryUrl({ "{{field}}": 2024, "{{flag}}": true, note: "seed", "{{!}}kept": 1 }),
+    };
+    const host = startHost(socketPath, {
+      recording: true,
+      scriptResponse: page,
+      // The tab runs the request to see what it sends; the answer is the fake extension's, so
+      // network capture finds the request it recorded.
+      runScript: async (code) => {
+        if (running) {
+          await vm.runInNewContext(code, { ...tab });
+        }
+        const at = Date.now();
+        return {
+          output: JSON.stringify({
+            status: 200,
+            ok: true,
+            url: "https://fixture.test/api",
+            headers: {},
+            sentAt: at,
+            doneAt: at,
+          }),
+        };
+      },
+    });
+    const cli = (args: string[]) =>
+      runCli(socketPath, args, project, { SURF_STATE_DIR: host.stateDir });
+    const param = (field: string, input: string) =>
+      cli(["pb", "param", "fixture", "submit", field, "--as", input, "--json"]);
+
+    try {
+      await host.waitForMessage((message) => message.type === "HOST_READY");
+      await saveRecordedWrite({ cli, page, typed: ["2024"] });
+      expect(await param("query.variables.{{field}}", "year")).toMatchObject({
+        code: 0,
+        stderr: "",
+      });
+      expect(await param("query.variables.note", "note")).toMatchObject({ code: 0, stderr: "" });
+      const op = JSON.parse(
+        fs.readFileSync(
+          path.join(project, ".surf", "playbooks", "fixture", "ops", "submit.json"),
+          "utf8",
+        ),
+      );
+      expect(op.args.year).toMatchObject({ type: "number", required: true });
+      expect(op.run[0].request).not.toHaveProperty("redactedTypes");
+
+      running = true;
+      const notes = ["{{!}}x%{!}", "{{field}}", "%{note}"];
+      for (const [index, note] of notes.entries()) {
+        const ran = await cli([
+          "use",
+          "fixture",
+          "submit",
+          "--year",
+          String(2031 + index),
+          "--note",
+          note,
+          "--review_key",
+          `k${index}`,
+          "--write",
+          "--json",
+        ]);
+        expect(ran).toMatchObject({ code: 0, stderr: "" });
+      }
+      expect(
+        sent.map((url) => JSON.parse(new URL(url).searchParams.get("variables") ?? "")),
+      ).toEqual(
+        notes.map((note, index) => ({
+          "{{field}}": 2031 + index,
+          "{{flag}}": true,
+          note,
+          "{{!}}kept": 1,
+        })),
+      );
     } finally {
       await host.dispose();
     }
