@@ -1,7 +1,7 @@
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
-const { isSensitiveName, redactSecretValues, redactSensitiveFields, redactUrlSecrets } = require("./redaction.cjs");
+const { isSensitiveName, redactSensitiveFields, redactUrlSecrets } = require("./redaction.cjs");
 const { SEMANTIC_POLICY, extractionFieldName, fieldsJsonField } = require("./semantic-core.cjs");
 
 const COMMANDS = {
@@ -22,14 +22,12 @@ const COMMANDS = {
   click: { effect: "page-write", argKinds: { ref: "element-ref", selector: "selector", x: "number", y: "number" } },
   check: { primaryArg: "ref", effect: "page-write", argKinds: { ref: "element-ref" } },
   uncheck: { primaryArg: "ref", effect: "page-write", argKinds: { ref: "element-ref" } },
-  // A key step can type text (key "S", --text), so that is redacted like type's text; a named key
-  // (Enter, Tab, Control+a) stays literal (see argumentSensitiveArgs).
-  key: { primaryArg: "key", effect: "page-write", argKinds: { key: "key", text: "key" }, sensitiveArgs: ["key", "text"] },
+  key: { primaryArg: "key", effect: "page-write", argKinds: { key: "key" } },
   submit: { effect: "page-write" },
   hover: { effect: "read", argKinds: { ref: "element-ref", selector: "selector" } },
-  scroll: { effect: "read", argKinds: { direction: "name", scroll_pixels: "number" } },
-  "scroll.top": { effect: "read", argKinds: { selector: "selector" } },
-  "scroll.bottom": { effect: "read", argKinds: { selector: "selector" } },
+  scroll: { effect: "page-write", argKinds: { direction: "name", scroll_pixels: "number" } },
+  "scroll.top": { effect: "page-write", argKinds: { selector: "selector" } },
+  "scroll.bottom": { effect: "page-write", argKinds: { selector: "selector" } },
   "scroll.info": { effect: "read", argKinds: { selector: "selector" } },
   wait: { primaryArg: "duration", effect: "read", recordable: false, argKinds: { duration: "duration" } },
   health: { primaryArg: "url", effect: "read", argKinds: { url: "url" } },
@@ -49,7 +47,7 @@ const COMMANDS = {
   "session.close": { primaryArg: "name", effect: "page-write", recordable: false, argKinds: { name: "name" } },
   "session.rebind": { primaryArg: "name", effect: "page-write", recordable: false, argKinds: { name: "name", tabId: "tab-id" } },
   "session.reopen": { primaryArg: "name", effect: "navigation", recordable: false, argKinds: { name: "name", url: "url" } },
-  scroll_to_position: { primaryArg: "position", effect: "read", argKinds: { position: "position" } },
+  scroll_to_position: { primaryArg: "position", effect: "page-write", argKinds: { position: "position" } },
   type: { primaryArg: "text", effect: "page-write", argKinds: { selector: "selector", text: "user-input" }, sensitiveArgs: ["text"] },
   smart_type: { primaryArg: "text", effect: "page-write", argKinds: { selector: "selector", text: "user-input" }, sensitiveArgs: ["text"] },
   find_and_type: { effect: "page-write", argKinds: { text: "user-input" }, sensitiveArgs: ["text"] },
@@ -60,18 +58,14 @@ const COMMANDS = {
   search: { primaryArg: "term", effect: "read", argKinds: { term: "user-input" }, sensitiveArgs: ["term"] },
   "wait.element": { primaryArg: "selector", effect: "read", recordable: false, argKinds: { selector: "selector" } },
   "wait.url": { primaryArg: "pattern", effect: "read", recordable: false, argKinds: { pattern: "url-pattern" } },
-  // The waits a workflow runs after a click, key, submit or navigation (workflow-runtime AUTO_WAIT_MAP).
-  "wait.dom": { effect: "read", recordable: false },
-  "wait.load": { effect: "read", recordable: false },
-  zoom: { primaryArg: "level", effect: "read", argKinds: { level: "number" } },
+  zoom: { primaryArg: "level", effect: "page-write", argKinds: { level: "number" } },
   "history.search": { primaryArg: "query", effect: "read", argKinds: { query: "user-input" }, sensitiveArgs: ["query"] },
   "network.get": { primaryArg: "id", effect: "read", argKinds: { id: "request-id" } },
   "network.body": { primaryArg: "id", effect: "read", argKinds: { id: "request-id" } },
   "network.curl": { primaryArg: "id", effect: "read", argKinds: { id: "request-id" } },
   "network.path": { primaryArg: "id", effect: "read", argKinds: { id: "request-id" } },
   "network.wait": { primaryArg: "match", effect: "read", argKinds: { match: "url-pattern", open: "url" } },
-  // --set path=value can carry a token or a typed query.
-  "network.replay": { primaryArg: "id", effect: "read", argKinds: { id: "request-id", set: "user-input" }, sensitiveArgs: ["set"] },
+  "network.replay": { primaryArg: "id", effect: "read", argKinds: { id: "request-id" } },
   collect: { effect: "read", argKinds: { item: "selector", expand: "selector", open: "url" } },
   "page.read": { effect: "read" },
   "page.text": { effect: "read" },
@@ -84,11 +78,9 @@ const COMMANDS = {
   "window.new": { primaryArg: "url", effect: "navigation", argKinds: { url: "url" } },
   "window.focus": { primaryArg: "id", effect: "navigation", argKinds: { id: "window-id" } },
   "window.close": { primaryArg: "id", effect: "page-write", argKinds: { id: "window-id" } },
-  // `value` is what --action fill types, so it is redacted like type's text. The lookup text (--name,
-  // the text, the label) is the page's own wording, so it stays literal.
-  "locate.role": { primaryArg: "role", effect: "read", argKinds: { role: "role", name: "user-input", value: "user-input" }, sensitiveArgs: ["value"] },
-  "locate.text": { primaryArg: "text", effect: "read", argKinds: { text: "user-input", value: "user-input" }, sensitiveArgs: ["value"] },
-  "locate.label": { primaryArg: "label", effect: "read", argKinds: { label: "user-input", value: "user-input" }, sensitiveArgs: ["value"] },
+  "locate.role": { primaryArg: "role", effect: "read", argKinds: { role: "role" } },
+  "locate.text": { primaryArg: "text", effect: "read", argKinds: { text: "user-input" }, sensitiveArgs: ["text"] },
+  "locate.label": { primaryArg: "label", effect: "read", argKinds: { label: "user-input" }, sensitiveArgs: ["label"] },
   "emulate.device": { primaryArg: "device", effect: "page-write", argKinds: { device: "name" } },
   "frame.js": { primaryArg: "code", effect: "unknown", recordable: false, argKinds: { code: "code" }, sensitiveArgs: ["code"] },
   "element.styles": { primaryArg: "selector", effect: "read", argKinds: { selector: "selector" } },
@@ -114,51 +106,21 @@ const PRIMARY_ARG_MAP = Object.fromEntries(
 PRIMARY_ARG_MAP.go = "url";
 PRIMARY_ARG_MAP.find = "term";
 
-// Effects that depend on a command's arguments: a locate.* with --action click or fill acts on the
-// page, and network.replay --allow-post re-sends a request that can write.
-function argumentEffect(name, args = {}) {
-  if (name.startsWith("locate.") && ["click", "fill"].includes(args.action)) return "page-write";
-  if (name === "network.replay" && (args["allow-post"] === true || args.allowPost === true)) return "page-write";
-  return undefined;
-}
-
-// A key step types text when its key is one printable character or it sets --text; otherwise its
-// key is a named key, which is no one's data. Without args, every argument that can be sensitive.
-function argumentSensitiveArgs(name, sensitiveArgs, args) {
-  if (name !== "key" || !args || args.text !== undefined) return sensitiveArgs;
-  const key = String(args.key ?? "");
-  return [...key].length === 1 && /^\P{C}$/u.test(key) ? sensitiveArgs : sensitiveArgs.filter((arg) => arg !== "key");
-}
-
-function commandMetadata(command, args) {
+function commandMetadata(command) {
   const name = ALIASES[command] || command;
   const metadata = COMMANDS[name];
   return {
     name,
     primaryArg: metadata?.primaryArg,
-    effect: argumentEffect(name, args) || metadata?.effect || "unknown",
+    effect: metadata?.effect || "unknown",
     recordable: Boolean(metadata) && metadata.recordable !== false,
     argKinds: metadata?.argKinds || {},
-    sensitiveArgs: argumentSensitiveArgs(name, metadata?.sensitiveArgs || [], args),
+    sensitiveArgs: metadata?.sensitiveArgs || [],
   };
 }
 
-// Page writes that only fill a field: a write op's receipt starts after them, at the first step
-// that can commit.
-const FILL_STEPS = new Set(["type", "smart_type", "form_input", "form.fill", "select"]);
-
-// Whether a step can send a write op's change: any page-write or unknown step but a fill. A type or
-// smart_type presses Enter when it has --submit (any truthy value, as the host reads it) or its
-// text holds a line break, so it can. Navigation and reads can't.
-function canCommit(command, args = {}) {
-  const { name, effect } = commandMetadata(command, args);
-  if (effect !== "page-write" && effect !== "unknown") return false;
-  if (!FILL_STEPS.has(name)) return true;
-  return (name === "type" || name === "smart_type") && (Boolean(args.submit) || /[\r\n]/.test(String(args.text ?? "")));
-}
-
 function redactCommandArgs(command, args, includeInputValues = false) {
-  const metadata = commandMetadata(command, args);
+  const metadata = commandMetadata(command);
   const redacted = redactSensitiveFields({ ...(args || {}) });
   for (const name of metadata.sensitiveArgs) {
     if (!includeInputValues && Object.hasOwn(redacted, name)) redacted[name] = `<${name}>`;
@@ -170,25 +132,6 @@ function redactCommandArgs(command, args, includeInputValues = false) {
     if (isSensitiveName(name)) redacted[name] = "<redacted>";
   }
   return redacted;
-}
-
-// `text` (a step's error) with the text of the step's sensitive arguments (what `type` types, a
-// form's values, at any depth) replaced with <redacted>, in every spelling (see valueSpellings).
-function redactArgValues(command, args, text) {
-  const values = [];
-  const collect = (value) => {
-    if (typeof value === "string" || typeof value === "number") values.push(String(value));
-    else if (value && typeof value === "object") Object.values(value).forEach(collect);
-  };
-  for (const name of commandMetadata(command, args).sensitiveArgs) collect(args?.[name]);
-  return values.length ? redactSecretValues(text, values) : text;
-}
-
-// A step's arguments for a progress line: redacted as the journal has them, long text cut short.
-function summarizeArgs(command, args) {
-  return Object.entries(redactCommandArgs(command, args || {}))
-    .map(([key, value]) => (typeof value === "string" && value.length > 40 ? `${key}="${value.slice(0, 37)}..."` : `${key}=${JSON.stringify(value)}`))
-    .join(" ");
 }
 
 function templateRedactedArgs(value, args = {}) {
@@ -588,42 +531,14 @@ function formatStep(step, indent = 0) {
     return lines.join("\n");
   }
   const tool = step.tool || step.cmd;
-  const argStr = Object.entries(redactCommandArgs(tool, step.args || {})).map(([key, value]) => `${key}=${JSON.stringify(value)}`).join(" ");
+  const argStr = Object.entries(step.args || {}).map(([key, value]) => `${key}=${JSON.stringify(value)}`).join(" ");
   return `${pad}${tool}${argStr ? ` ${argStr}` : ""}${step.as ? ` → ${step.as}` : ""}`;
-}
-
-// Args that loosen a safe default. They count only from the command line or the user's own
-// ~/surf.json, never from a step that a saved workflow, a project's or an imported playbook holds.
-const OPT_IN_ARGS = new Set(["raw", "echoValue", "echo-value", "rawBodies", "raw-bodies", "includeInputValues", "include-input-values"]);
-// The commands whose result or page diff can show a value typed or an option chosen.
-const ECHO_COMMANDS = new Set(["locate.role", "locate.text", "locate.label", "select", "type", "smart_type", "form_input", "form.fill"]);
-
-function withoutOptIns(args) {
-  return Object.fromEntries(Object.entries(args || {}).filter(([name]) => !OPT_IN_ARGS.has(name)));
-}
-
-// Applies `change` to every command step of normalized steps, loops and their `until` included.
-function mapCommandSteps(steps, change) {
-  return steps.map((step) => {
-    if (!Array.isArray(step.steps)) return change(step);
-    return { ...step, steps: mapCommandSteps(step.steps, change), ...(step.until ? { until: mapCommandSteps([step.until], change)[0] } : {}) };
-  });
-}
-
-function withoutStepOptIns(steps) {
-  return mapCommandSteps(steps, (step) => ({ ...step, args: withoutOptIns(step.args) }));
-}
-
-function withEchoedValues(steps) {
-  return mapCommandSteps(steps, (step) => (ECHO_COMMANDS.has(step.cmd) ? { ...step, args: { ...step.args, "echo-value": true } } : step));
 }
 
 module.exports = {
   ALIASES,
-  ECHO_COMMANDS,
   PRIMARY_ARG_MAP,
   applyArgDefaults,
-  canCommit,
   commandMetadata,
   formatStep,
   getWorkflowDirs,
@@ -634,14 +549,9 @@ module.exports = {
   parseCommandLine,
   parseDoCommands,
   promoteRedactedStepArgs,
-  redactArgValues,
   redactCommandArgs,
-  summarizeArgs,
   resolveWorkflow,
   tokenize,
   validateWorkflowArgs,
   validateWorkflowFile,
-  withEchoedValues,
-  withoutOptIns,
-  withoutStepOptIns,
 };

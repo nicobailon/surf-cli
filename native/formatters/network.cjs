@@ -138,10 +138,7 @@ function formatUrls(entries) {
 function formatCurl(entry) {
   if (!entry) return '';
   
-  // -g: send [] and {} in the URL as is. -I: with -X HEAD curl waits for a body.
-  const method = entry.method || 'GET';
-  const request = method === 'HEAD' ? '-I' : `-X ${method}`;
-  let cmd = `curl -g ${request} '${String(entry.url).replace(/'/g, "'\\''")}'`;
+  let cmd = `curl -X ${entry.method || 'GET'} '${entry.url}'`;
   
   const headers = entry.requestHeaders || {};
   const skipHeaders = ['host', 'content-length', 'connection', 'accept-encoding'];
@@ -155,8 +152,7 @@ function formatCurl(entry) {
   
   if (entry.requestBody) {
     const escapedBody = entry.requestBody.replace(/'/g, "'\\''");
-    // --data-raw: a body starting with @ is text, not a file to read.
-    cmd += ` \\\n  --data-raw '${escapedBody}'`;
+    cmd += ` \\\n  -d '${escapedBody}'`;
   }
   
   return cmd;
@@ -175,9 +171,9 @@ function formatCurlBatch(entries) {
 /**
  * Full JSON output
  */
-function formatRaw(entries, capture) {
+function formatRaw(entries) {
   // Return as object with entries key so CLI can detect it
-  return JSON.stringify({ entries, ...(capture ? { capture } : {}), _format: 'raw' }, null, 2);
+  return JSON.stringify({ entries, _format: 'raw' }, null, 2);
 }
 
 /**
@@ -389,32 +385,7 @@ function formatBody(body, maxLen = 2048) {
   return truncated.join('\n');
 }
 
-/**
- * Explain each time network capture stopped. `atStop` also flags capture that was off when a
- * record stopped without a seen interruption (the extension restarted, for example), and requests
- * dropped to keep the per-tab limit.
- */
-function describeCaptureGaps(capture, { atStop = false } = {}) {
-  const lines = (capture?.interruptions || []).map(({ reason, at, resumedAt }) => {
-    const from = `network capture was interrupted at ${new Date(at).toISOString()} (debugger detached: ${reason})`;
-    return resumedAt
-      ? `${from} until ${new Date(resumedAt).toISOString()}; requests in between were not captured`
-      : `${from} and had not resumed when read; later requests were not captured`;
-  });
-  if (atStop && capture && !capture.active && lines.length === 0) {
-    lines.push("network capture was not running when the record stopped (the extension may have restarted); requests may be missing");
-  }
-  if (atStop && capture?.clearedAt) {
-    lines.push(`the captured requests were cleared at ${new Date(capture.clearedAt).toISOString()} (network.clear or --clear), so the trace is missing the ones before`);
-  }
-  if (atStop && capture?.dropped > 0) {
-    lines.push(`network capture dropped the ${capture.dropped} oldest requests (it keeps about 500 per tab), so the trace is missing them`);
-  }
-  return lines;
-}
-
 module.exports = { 
-  describeCaptureGaps,
   formatCompact, 
   formatUrls, 
   formatCurl, 

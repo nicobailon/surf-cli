@@ -992,13 +992,8 @@ setInterval(() => {}, 60_000);
   const ambiguousDelete = await runSurfExpectingFailure(
     "locate.role", "button", "--name", "Delete", "--action", "click", "--tab-id", locateTabId, "--no-screenshot",
   );
-  const deleteMatches = [...ambiguousDelete.stderr.matchAll(/^ {2}(e\d+) button(?: "([^"]*)")?$/gm)];
-  const deleteRefs = deleteMatches.map((match) => match[1]);
-  if (
-    !ambiguousDelete.stderr.includes('2 elements match role "button" and the given name, so nothing was done')
-    || deleteRefs.length !== 2
-    || deleteMatches.some((match) => match[2] !== "Delete")
-  ) {
+  const deleteRefs = [...ambiguousDelete.stderr.matchAll(/^ {2}(e\d+) button "Delete"$/gm)].map((match) => match[1]);
+  if (!ambiguousDelete.stderr.includes('2 elements match role "button" and name "Delete", so nothing was done') || deleteRefs.length !== 2) {
     throw new Error(`ambiguous locate did not list both candidates: ${JSON.stringify(ambiguousDelete)}`);
   }
   if ((await locateLog()) !== "save") throw new Error(`ambiguous locate acted anyway (log=${await locateLog()})`);
@@ -1008,7 +1003,7 @@ setInterval(() => {}, 60_000);
     "locate.label", "Email", "--action", "fill", "--value", "x@example.com", "--tab-id", locateTabId, "--no-screenshot",
   );
   const emailValues = await locatePage.evaluate(() => [...document.querySelectorAll("input")].map((input) => input.value));
-  if (!ambiguousLabel.stderr.includes('2 elements match the given label') || emailValues.some(Boolean)) {
+  if (!ambiguousLabel.stderr.includes('2 elements match label "Email"') || emailValues.some(Boolean)) {
     throw new Error(`ambiguous locate.label filled a field: ${JSON.stringify({ ambiguousLabel, emailValues })}`);
   }
   await runSurf("tab.close", "--id", locateTabId, "--json");
@@ -1265,7 +1260,7 @@ setInterval(() => {}, 60_000);
     termsState: document.querySelector("#terms-state").textContent,
   }));
   if (termsAccepted !== "accepted" || !alreadyChecked.includes("was already checked; nothing clicked") || !alreadyUnchecked.includes("was already unchecked; nothing clicked")
-    || !radioUncheck.stderr.includes("is a radio button") || !missingOption.stderr.includes("has no option matching the given value") || missingOption.stderr.includes("nowhere")
+    || !radioUncheck.stderr.includes("is a radio button") || !missingOption.stderr.includes('no option matching "nowhere"')
     || JSON.stringify(checkState) !== JSON.stringify({ news: true, terms: false, small: true, country: "us", log: "terms:true|terms:true", termsState: "not accepted" })) {
     throw new Error(`check/uncheck/select did not set the requested state: ${JSON.stringify({ termsAccepted, alreadyChecked, alreadyUnchecked, radioUncheck, missingOption, checkState })}`);
   }

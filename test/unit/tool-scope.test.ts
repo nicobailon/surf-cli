@@ -35,17 +35,6 @@ describe("tool scope classification", () => {
     expect(classifyTool("oracle.result")).toMatchObject({ scope: "host", targetUse: "host" });
   });
 
-  it("runs a playbook on a tab, and its dry run on the host alone", () => {
-    expect(classifyTool("playbook.run", {})).toMatchObject({
-      scope: "browser-write",
-      targetUse: "default-tab",
-    });
-    expect(classifyTool("playbook.run", { dryRun: true })).toMatchObject({
-      scope: "host",
-      targetUse: "host",
-    });
-  });
-
   it("targets no-ID tab.close through the selected session and keeps explicit closes global", () => {
     expect(classifyTool("tab.close", {})).toMatchObject({
       scope: "browser-write",

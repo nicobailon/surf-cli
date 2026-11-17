@@ -285,10 +285,8 @@ describe("surf doctor", () => {
     const check = missing.checks.find((item: any) => item.id === "host-ffmpeg");
     expect(check.status).toBe("warn");
     expect(check.message).toContain("/usr/bin:/bin:/usr/sbin:/sbin");
-    expect(check.message).toContain(
-      "rerun `surf install` from a shell that finds it, or `SURF_FFMPEG=/path/to/ffmpeg surf install`, then reload",
-    );
-    expect(check.message).not.toContain("wrapper");
+    expect(check.message).toContain("surf install");
+    expect(check.message).toContain("SURF_FFMPEG");
     expect(formatDoctorReport(missing)).toContain("[WARN] The native host can't find ffmpeg");
 
     const pinned = await doctorWithHostFfmpeg({

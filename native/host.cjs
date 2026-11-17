@@ -28,7 +28,7 @@ const grokClient = require("./grok-client.cjs");
 const kimiClient = require("./kimi-client.cjs");
 const aistudioClient = require("./aistudio-client.cjs");
 const aistudioBuild = require("./aistudio-build.cjs");
-const { mapToolToMessage, mapComputerAction, formatToolContent, withoutTypedEcho, withoutTypedPageChanges, formatToolError, publicNetworkResult, publicResponse, buildProviderUploadMessage, applySemanticExpectedIdentity, truncatePageText } = require("./host-helpers.cjs");
+const { mapToolToMessage, mapComputerAction, formatToolContent, formatToolError, buildProviderUploadMessage, applySemanticExpectedIdentity, truncatePageText } = require("./host-helpers.cjs");
 const { createOracleHost } = require("./oracle-host.cjs");
 
 const IS_WIN = process.platform === "win32";
@@ -45,38 +45,27 @@ const { RequestPendingMap } = require("./request-pending.cjs");
 const { PAGE_CHANGES_TOOLS, cleanupFilePaths, createStagingDirectory, createTransferState, materializeRemoteTool, rewriteTransferPaths, streamFileDownload, transferError } = require("./file-transfer.cjs");
 const { writeNetworkExport } = require("./network-export.cjs");
 const networkStore = require("./network-store.cjs");
-const { redactResult, redactUrlSecrets, redactUrlsInText } = require("./redaction.cjs");
+const { redactUrlSecrets } = require("./redaction.cjs");
 const { appendActivity, journalCommand } = require("./activity-journal.cjs");
-const { checkReceipt, reserveReceipt, updateReceipt } = require("./playbook-receipts.cjs");
+const { reserveReceipt, updateReceipt } = require("./playbook-receipts.cjs");
 const {
+  activeRecord,
   appendRecordEvent,
   attachNetworkTrace,
-  rememberRecordInput,
   discardRecord,
-  findCandidatesRecord,
-  isActive,
   markRecord,
   pauseRecord,
-  recordCandidates,
-  recordStatus,
-  requireRecordFor,
   resumeRecord,
   startRecord,
   stopRecord,
-  traceEntriesForRecord,
-  typedValues,
   updateRecordContext,
 } = require("./playbook-records.cjs");
-const { visibleText } = require("./record-candidates.cjs");
-const { proposeChain } = require("./record-bindings.cjs");
-const { validateAssertions } = require("./playbook-assertions.cjs");
-const { authInputs, previewPlaybookOp, resolveArgs, runPlaybookOp, testPlaybookOp } = require("./playbook-runtime.cjs");
-const { eachFromChain, previewChainOp, runChainOp } = require("./chain-runtime.cjs");
-const { envBackedHeaders, resolveOp } = require("./playbooks.cjs");
+const { resolveArgs, runPlaybookOp } = require("./playbook-runtime.cjs");
+const { resolveOp } = require("./playbooks.cjs");
 const { replay, waitForResponse } = require("./api-harvest.cjs");
 const { runCollect } = require("./dom-collect.cjs");
 const { formatRecords } = require("./record-format.cjs");
-const { commandMetadata, redactCommandArgs, withoutOptIns } = require("./workflow-definition.cjs");
+const { commandMetadata, redactCommandArgs } = require("./workflow-definition.cjs");
 const { BrowserScheduler } = require("./browser-scheduler.cjs");
 const { BrowserSessionStore, parseDurationMs, validateSessionName } = require("./browser-session-store.cjs");
 const { applySocketPermissions, resolveSocketPermissions } = require("./socket-permissions.cjs");
@@ -417,9 +406,8 @@ async function handleApiRequest(msg, sendResponse) {
   }
 }
 
-// A URL in a log line loses its user, password and secret-named query values.
 const log = (msg) => {
-  appendLog(`${new Date().toISOString()} ${redactUrlsInText(msg)}\n`);
+  appendLog(`${new Date().toISOString()} ${msg}\n`);
 };
 
 if (require.main === module) {
@@ -1114,7 +1102,6 @@ async function prepareToolRequest(msg, request) {
   const { identity, target } = await resolveRequestTarget(msg, request, classification);
   request.browserIdentity = identity;
   request.target = target;
-  request.callerSession = msg.target?.session || msg.session || msg.recordSession;
   request.laneKey = target?.tabId ? targetLaneKey(identity, target.tabId) : undefined;
   if (classification.scope === "provider") {
     request.notice = `${request.tool} uses exclusive browser access; other Surf sessions will queue until it finishes.`;
@@ -1527,15 +1514,10 @@ async function handleNamedTabCommand(tool, args, request) {
 }
 
 async function executeMappedHostTool(request, tool, args, tabId) {
-  // A step comes from a playbook, which may be a project's or an imported one, so it can't turn
-  // the echo of typed values, --raw or any other opt-in on.
-  const stepArgs = withoutOptIns(args);
   if (tool === "network.wait" || tool === "network.replay" || tool === "collect") {
-    return { output: await runHarvestTool(tool, stepArgs, { tabId }, request) };
+    return { output: await runHarvestTool(tool, args || {}, { tabId }, request) };
   }
-  // Its bodies are redacted only where the socket path writes the file.
-  if (tool === "network.export") throw new Error(`tool ${tool} is not available inside a host-owned workflow`);
-  const extensionMsg = mapToolToMessage(tool, stepArgs, tabId);
+  const extensionMsg = mapToolToMessage(tool, args, tabId);
   if (!extensionMsg) throw new Error(`Unknown tool: ${tool}`);
   if (request.target?.strict) extensionMsg.strictTarget = true;
   applyFrameContextToMessage(request, extensionMsg);
@@ -1548,26 +1530,7 @@ async function executeMappedHostTool(request, tool, args, tabId) {
   if (extensionMsg.type === "BATCH_EXECUTE" || extensionMsg.type.endsWith("_QUERY")) {
     throw new Error(`tool ${tool} is not available inside a host-owned workflow`);
   }
-  // A workflow step's result can be captured (`as`) and returned, so it hides typed values too.
-  return withoutTypedEcho(await requestExtensionOrThrow(request, tool, extensionMsg, resolveRequestDeadlineMs(tool, args)), {});
-}
-
-// network.body as it prints: echoes of its request's secret headers redacted unless `raw`. The body
-// can come from Chrome when capture has no entry for it; then no secret values are known. Its id is
-// read as mapToolToMessage reads it: `id`, else the first positional arg.
-async function publicNetworkBody(request, args, tabId, { raw = false } = {}) {
-  const [body, loaded] = await Promise.all([
-    executeMappedHostTool(request, "network.body", args, tabId),
-    executeMappedHostTool(request, "network.get", { id: args.id || args[0] }, tabId).catch(() => null),
-  ]);
-  return publicResponse(body, [loaded?.entry], { raw });
-}
-
-// A playbook step's network view, as the command prints it without --raw (a step can't set it).
-// network.wait and network.replay redact their own; the strategies read capture unredacted.
-async function executePlaybookStep(request, tool, args, tabId) {
-  if (tool === "network.body") return publicNetworkBody(request, args || {}, tabId);
-  return publicNetworkResult(tool, await executeMappedHostTool(request, tool, args, tabId));
+  return requestExtensionOrThrow(request, tool, extensionMsg, resolveRequestDeadlineMs(tool, args));
 }
 
 async function executeNativePlaybook(request, handler, args, options = {}) {
@@ -1590,224 +1553,115 @@ async function executeNativePlaybook(request, handler, args, options = {}) {
 
 async function runHostPlaybook(msg, request) {
   const params = msg.params?.args || {};
-  const resolved = resolveOp(params.playbook, params.op, {
+  const { playbook, op } = resolveOp(params.playbook, params.op, {
     cwd: request.context?.isRemote ? process.cwd() : params.projectDir || process.cwd(),
     pinBuiltIn: params.pinBuiltIn === true,
   });
-  const { playbook } = resolved;
-  // surf use <op> --each-from <list-op>:<path> runs op once per list record, as a chain made here.
-  const op = params.eachFrom === undefined ? resolved.op : eachFromChain({ playbook, op: resolved.op, eachFrom: params.eachFrom, given: Object.keys(params.args || {}) });
-  if (params.test === true && op.chain) throw new Error(`${playbook.id} ${op.id} is a chain op; pb test runs single ops, so test each step's op`);
-  const runArgs = resolveArgs(op, params.args || {}, { playbookId: playbook.id });
-  if (params.test === true && op.effect === "write" && params.write !== true) {
-    throw new Error(`${playbook.id} ${op.id} is a write op; pb test runs it only with --write`);
+  const runArgs = resolveArgs(op, params.args || {});
+  if (op.effect === "write" && op.safety.authorization === "explicit" && params.write !== true) {
+    throw new Error(`write op ${playbook.id} ${op.id} requires --write`);
   }
-  const preview = () => op.chain
-    ? previewChainOp({ playbook, op, args: runArgs })
-    : previewPlaybookOp({ playbook, op, args: runArgs, secrets: params.secret || {}, ...(params.strategy !== undefined ? { strategy: params.strategy } : {}) });
-  if (op.effect === "write" && op.safety.authorization === "explicit" && params.write !== true && params.dryRun !== true) {
-    // Say what --write would agree to; a request that can't render yet fails on its own once --write is given.
-    let sends = "";
-    try {
-      const shown = preview();
-      if (shown.url !== undefined) sends = `; it sends ${shown.method} ${shown.url}`;
-      else if (shown.step) sends = `; it runs ${op.run.find((strategy) => strategy.using === "workflow").steps.map((step) => step.cmd).join(", ")}`;
-    } catch {}
-    throw new Error(`write op ${playbook.id} ${op.id} requires --write${sends} (see it all with --dry-run)`);
-  }
-  const claim = {
+  const receipt = reserveReceipt({
     playbookId: playbook.id,
     op,
     args: runArgs,
-    // overrideInDoubt is --override-in-doubt from a CLI older than this host.
-    repeat: params.repeat === true || params.overrideInDoubt === true,
+    repeat: params.repeat === true,
     retryAttempt: params.retryAttempt,
-    attemptId: params.retryAttempt || crypto.randomUUID(),
-  };
-  // A write is checked now and gets its receipt only when its request is dispatched, so a run
-  // refused before sending (a bad input, a disallowed origin, a missing env var) leaves none.
-  if (params.dryRun === true) {
-    let receipt = "none: a read op keeps no receipt";
-    if (op.effect === "write") {
-      try {
-        checkReceipt(claim);
-        receipt = "clear: --write reserves one when the request is sent";
-      } catch (error) {
-        receipt = `blocked: ${error.message}`;
-      }
-    }
-    return { status: "dry-run", ...preview(), receipt };
-  }
-  checkReceipt(claim);
-  let receipt = null;
+    overrideInDoubt: params.overrideInDoubt === true,
+  });
   const report = (event) => {
     appendActivity(event);
-    appendRecordEvent(event, { target: recordEventTarget(request) });
+    appendRecordEvent(event);
   };
-  // pb test: the same run, but a failed one comes back as a result with each attempt's assertions.
-  // A chain runs its steps' ops through runPlaybookOp, in this tab, one after another.
-  const run = op.chain ? runChainOp : params.test === true ? testPlaybookOp : runPlaybookOp;
-  const result = await run({
+  const result = await runPlaybookOp({
     playbook,
     op,
     args: runArgs,
-    // Values of env-supplied headers, read from the caller's shell by surf use; never stored.
-    secrets: params.secret || {},
-    ...(params.assert !== undefined ? { assertions: validateAssertions(params.assert) } : {}),
-    ...(params.strategy !== undefined ? { strategy: params.strategy } : {}),
-    attemptId: op.effect === "write" ? claim.attemptId : undefined,
+    attemptId: receipt?.attemptId,
     signal: request.signal,
-    // The workflow's own events carry no arguments, so the values it types reach the record here.
-    executeTool: (tool, args) => {
-      rememberRecordInput(tool, args, { target: recordEventTarget(request) });
-      return executeMappedHostTool(request, tool, args, msg.tabId);
-    },
-    executeStep: (tool, args) => {
-      rememberRecordInput(tool, args, { target: recordEventTarget(request) });
-      return executePlaybookStep(request, tool, args, msg.tabId);
-    },
+    executeTool: (tool, args) => executeMappedHostTool(request, tool, args, msg.tabId),
     executeNative: (handler, args, options) => executeNativePlaybook(request, handler, args, options),
     sleep: (ms) => abortableDelay(ms, request.signal),
     onEvent: report,
-    beforeDispatch: async () => {
-      receipt = reserveReceipt(claim);
-      updateReceipt(receipt, "dispatched");
-    },
+    beforeDispatch: async () => updateReceipt(receipt, "dispatched"),
     afterDispatch: async ({ status, error }) => updateReceipt(receipt, status, { error }),
     allowScript: params.allowScript === true,
   });
   if (params.format === undefined) return result;
-  // The run's result went through redactResult; rendered records sit next to surf's own fields anew.
-  const values = authInputs(op, playbook).map((input) => params.secret?.[input.env] ?? process.env[input.env]).filter(Boolean);
-  return redactResult({ ...result, value: formatRecords(result.value, params.format, { markdown: op.markdown, args: runArgs }) }, values);
+  return { ...result, value: formatRecords(result.value, params.format, { markdown: op.markdown, args: runArgs }) };
 }
 
 // network.wait, network.replay, collect: composed host tools over the mapped extension tools.
 async function runHarvestTool(tool, args, msg, request) {
   const executeTool = (name, toolArgs) => executeMappedHostTool(request, name, toolArgs, msg.tabId);
   const sleep = (ms) => abortableDelay(ms, request.signal);
-  // What they print hides echoes of the request's secret headers; the replay itself sends them.
-  const capturedEntry = async (id) => (await executeTool("network.get", { id }))?.entry;
   if (tool === "network.wait") {
     const seconds = args.timeout === undefined ? 30 : Number(args.timeout);
     if (!Number.isFinite(seconds) || seconds <= 0) throw new Error("--timeout must be a positive number of seconds");
-    const response = await waitForResponse({ executeTool, sleep, match: args.match, open: args.open, timeoutMs: seconds * 1000 });
-    return JSON.stringify(publicResponse(response, [await capturedEntry(response.id)], { raw: args.raw === true }));
+    return JSON.stringify(await waitForResponse({ executeTool, sleep, match: args.match, open: args.open, timeoutMs: seconds * 1000 }));
   }
   if (tool === "network.replay") {
     if (typeof args.id !== "string" || !args.id) throw new Error("network.replay requires a request id");
     const allowPost = args["allow-post"] === true || args.allowPost === true;
-    // Read before sending, so a sent replay never fails for want of its entry.
-    const entry = await capturedEntry(args.id);
-    return JSON.stringify(publicResponse(await replay({ executeTool, sleep, id: args.id, set: args.set, allowPost }), [entry], { raw: args.raw === true }));
+    return JSON.stringify(await replay({ executeTool, sleep, id: args.id, set: args.set, allowPost }));
   }
   const spec = { item: args.item, key: args.key, fields: args.fields, open: args.open, maxItems: args.max, idleRounds: args.idle, expand: args.expand };
   const records = await runCollect({ executeTool, sleep, spec: Object.fromEntries(Object.entries(spec).filter(([, value]) => value !== undefined)) });
   return formatRecords(records, args.format ?? "json");
 }
 
-const RECORD_TRACE_LIMIT = 500;
-
-// Who a command's events belong to. Tab and window commands resolve no tab target, so they go by
-// the caller's session.
-function recordEventTarget(request) {
-  if (request.target) return { session: request.target.session, tabId: request.target.tabId };
-  return { browser: true, session: request.callerSession };
-}
-
-// Each record belongs to the session (or, without one, the tab) that started it.
 async function handleRecordRequest(tool, args, msg, request) {
-  const target = { session: request.target?.session, tabId: request.target?.tabId ?? msg.tabId };
-  const stopCapture = (record) => Promise.all([
-    record.capture.network && requestCallExtension(request, tool, { type: "STOP_NETWORK_CAPTURE", tabId: record.tabId }, 30000, true).catch(() => {}),
-    record.capture.watch && requestCallExtension(request, tool, { type: "STOP_PLAYBOOK_WATCH", tabId: record.tabId }, 30000, true).catch(() => {}),
-  ]);
   if (tool === "playbook.record.start") {
-    let record = startRecord({ ...args, tabId: target.tabId, session: target.session });
+    let record = startRecord({ ...args, tabId: msg.tabId });
     try {
       const context = await requestCallExtension(request, tool, {
         type: "GET_PLAYBOOK_RECORD_CONTEXT",
-        tabId: record.tabId,
+        tabId: msg.tabId,
       });
-      record = updateRecordContext(record.id, {
-        tabId: context._resolvedTabId || record.tabId,
+      record = updateRecordContext({
+        tabId: context._resolvedTabId || msg.tabId,
         origin: context.origin,
       });
       if (record.capture.network) {
         const result = await requestCallExtension(request, tool, { type: "START_NETWORK_CAPTURE", tabId: record.tabId, bodyMode: "text" });
-        record = updateRecordContext(record.id, { tabId: result._resolvedTabId || record.tabId });
+        record = updateRecordContext({ tabId: result._resolvedTabId || record.tabId });
       }
       if (record.capture.watch) {
-        const result = await requestCallExtension(request, tool, { type: "START_PLAYBOOK_WATCH", tabId: record.tabId, includeInputValues: record.redaction.includeInputValues });
-        record = updateRecordContext(record.id, { tabId: result._resolvedTabId || record.tabId });
+        const result = await requestCallExtension(request, tool, { type: "START_PLAYBOOK_WATCH", tabId: record.tabId || msg.tabId, includeInputValues: record.redaction.includeInputValues });
+        record = updateRecordContext({ tabId: result._resolvedTabId || record.tabId || msg.tabId });
       }
       return record;
     } catch (error) {
-      await stopCapture(record);
-      discardRecord({ target: { session: record.session, tabId: record.tabId } });
+      if (record?.capture.network) await requestCallExtension(request, tool, { type: "STOP_NETWORK_CAPTURE", tabId: record.tabId }, 30000, true).catch(() => {});
+      if (record?.capture.watch) await requestCallExtension(request, tool, { type: "STOP_PLAYBOOK_WATCH", tabId: record.tabId }, 30000, true).catch(() => {});
+      discardRecord();
       throw error;
     }
   }
-  if (tool === "playbook.record.status") return recordStatus({ target });
-  if (tool === "playbook.record.mark") return markRecord(args.label, { target });
-  if (tool === "playbook.record.pause") return pauseRecord({ target });
-  if (tool === "playbook.record.resume") return resumeRecord({ target });
+  if (tool === "playbook.record.status") return activeRecord() || { status: "idle" };
+  if (tool === "playbook.record.mark") return markRecord(args.label);
+  if (tool === "playbook.record.pause") return pauseRecord();
+  if (tool === "playbook.record.resume") return resumeRecord();
   if (tool === "playbook.record.discard") {
-    await stopCapture(requireRecordFor(target));
-    return discardRecord({ target });
-  }
-  // The record's requests as captured so far, with the page's visible text for the overlap score.
-  // The page is read only when a request kept a body to compare it with. page.text reads only the
-  // first <article> or <main>, which on a listing is one item, so this takes the body's HTML.
-  const readTrace = async (record) => {
-    const result = await requestCallExtension(request, tool, { type: "READ_NETWORK_REQUESTS", tabId: record.tabId, full: true, includeStatic: true, limit: RECORD_TRACE_LIMIT });
-    const read = result.entries || [];
-    const entries = traceEntriesForRecord(record, read);
-    let pageText = "";
-    if (entries.some((entry) => typeof entry.responseBody === "string")) {
-      pageText = await requestCallExtension(request, tool, { type: "GET_PAGE_HTML", tabId: record.tabId, selector: "body", stripScripts: true }, 10000)
-        .then((page) => (typeof page?.html === "string" ? visibleText(page.html) : ""), () => "");
-    }
-    return { entries, pageText, capture: result.capture, truncated: read.length >= RECORD_TRACE_LIMIT };
-  };
-  if (tool === "playbook.record.candidates") {
-    const record = findCandidatesRecord({ recordId: args.recordId, target });
-    const limit = args.limit ?? 10;
-    if (!isActive(record) || !record.capture.network) return recordCandidates(record, { limit });
-    const { entries, pageText } = await readTrace(record);
-    return recordCandidates(record, { limit, live: { entries, pageText } });
+    const record = activeRecord();
+    if (record?.capture.network) await requestCallExtension(request, tool, { type: "STOP_NETWORK_CAPTURE", tabId: record.tabId }, 30000, true).catch(() => {});
+    if (record?.capture.watch) await requestCallExtension(request, tool, { type: "STOP_PLAYBOOK_WATCH", tabId: record.tabId }, 30000, true).catch(() => {});
+    return discardRecord();
   }
   if (tool === "playbook.record.stop") {
-    const record = requireRecordFor(target);
-    let chain = null;
+    const record = activeRecord();
+    if (!record) throw new Error("no active playbook record");
     if (record.capture.network) {
-      let live;
       try {
-        live = await readTrace(record);
-        const { entries, pageText, capture, truncated } = live;
-        attachNetworkTrace(record.id, entries, undefined, {
-          capture,
-          pageText,
-          includeInputValues: args.includeInputValues === true,
-          ...(truncated ? { truncatedAt: RECORD_TRACE_LIMIT } : {}),
-        });
-      } catch (error) {
-        await stopCapture(record);
-        throw error;
-      }
-      // Bindings are found in the response bodies, which only the live entries hold.
-      if (args.draft === true) {
-        try {
-          chain = proposeChain({ record, entries: live.entries, typed: typedValues(record) });
-        } catch (error) {
-          log(`record ${record.id}: no chain proposed: ${error.message}`);
-        }
+        const result = await requestCallExtension(request, tool, { type: "READ_NETWORK_REQUESTS", tabId: record.tabId, full: true, limit: 500 });
+        const cutoff = Date.parse(record.startedAt);
+        attachNetworkTrace(record.id, (result.entries || []).filter((entry) => entry.ts >= cutoff));
+      } finally {
+        await requestCallExtension(request, tool, { type: "STOP_NETWORK_CAPTURE", tabId: record.tabId }, 30000, true).catch(() => {});
       }
     }
-    // Capture stops only once the record has: a refused --read leaves both running, to stop again.
-    const stopped = stopRecord({ target, draft: args.draft === true, read: args.read === true, requestId: args.requestId, includeInputValues: args.includeInputValues === true, chain });
-    await stopCapture(record);
-    return stopped;
+    if (record.capture.watch) await requestCallExtension(request, tool, { type: "STOP_PLAYBOOK_WATCH", tabId: record.tabId }, 30000, true).catch(() => {});
+    return stopRecord({ draft: args.draft === true });
   }
   throw new Error(`Unknown record command: ${tool}`);
 }
@@ -1944,7 +1798,6 @@ function sendToolResponse(socket, id, result, error) {
       if (!error) output = await sendRequestDownloads(context, request, result);
       if (!error) output = await truncatePageRead(context, request, output);
       if (!error) output = await truncatePageTextResult(context, request, output);
-      if (!error) output = publicNetworkResult(request?.tool, output, { raw: request?.args?.raw === true });
       if (!error && output?.semanticObservation?.identity && request?.target) {
         output.semanticObservation.identity.browserEpoch = request.target.browserEpoch;
       }
@@ -1954,7 +1807,6 @@ function sendToolResponse(socket, id, result, error) {
     const formattedError = finalError ? formatToolError(finalError) : null;
     let pageChanges;
     if (!formattedError && output?.pageChanges) ({ pageChanges, ...output } = output);
-    pageChanges = withoutTypedPageChanges(pageChanges, request?.tool, request?.args);
     if (formattedError && request) {
       const rewrittenMessage = rewriteTransferPaths(
         formattedError.content[0].text,
@@ -1975,7 +1827,7 @@ function sendToolResponse(socket, id, result, error) {
           resultSummary: finalError ? "failed" : "success",
         };
         appendActivity(event);
-        appendRecordEvent(event, { target: recordEventTarget(request), args: request.args });
+        appendRecordEvent(event);
       }
     }
     await cleanupRequestTransfers(request);
@@ -2004,7 +1856,7 @@ function sendToolResponse(socket, id, result, error) {
     if (pageChanges) response.pageChanges = pageChanges;
     if (formattedError) response.error = formattedError;
     else {
-      response.result = { content: formatToolContent(withoutTypedEcho(output, request?.args), log) };
+      response.result = { content: formatToolContent(output, log) };
       if (output?.truncated) response.truncated = output.truncated;
       if (request?.tool === "tab.new" && Number.isInteger(output?.tabId) && output.tabId > 0) {
         response.result.tabId = output.tabId;
@@ -2132,12 +1984,6 @@ function handleToolRequest(msg, socket, requestContext = requestStorage.getStore
   if (tool === "network.wait" || tool === "network.replay" || tool === "collect") {
     runHarvestTool(tool, args || {}, msg, requestContext)
       .then((output) => sendToolResponse(socket, originalId, { output }, null))
-      .catch((error) => sendToolResponse(socket, originalId, null, error));
-    return;
-  }
-  if (tool === "network.body") {
-    publicNetworkBody(requestContext, args || {}, tabId, { raw: args?.raw === true })
-      .then((body) => sendToolResponse(socket, originalId, body, null))
       .catch((error) => sendToolResponse(socket, originalId, null, error));
     return;
   }
@@ -2934,12 +2780,8 @@ function handleToolRequest(msg, socket, requestContext = requestStorage.getStore
     networkExport: extensionMsg.type === "EXPORT_NETWORK_REQUESTS",
     persistNetwork: extensionMsg.type === "READ_NETWORK_REQUESTS" && extensionMsg.full && args?.["no-save"] !== true,
     networkExportPath: args?.output,
-    // The caller's project, whose saved ops' env-backed headers the export redacts too.
-    networkExportProjectDir: requestContext?.context?.isRemote ? undefined : args?.projectDir,
     networkPath: args?.["network-path"],
     networkExportFormat: extensionMsg.har ? "har" : extensionMsg.jsonl ? "jsonl" : "json",
-    networkExportRawBodies: args?.["raw-bodies"] === true || args?.rawBodies === true,
-    networkExportRaw: args?.raw === true,
     fullRes: extensionMsg.fullRes || args?.fullRes,
     maxSize: extensionMsg.maxSize || args?.maxSize,
     tabId: extensionMsg.tabId || tabId
@@ -2972,10 +2814,7 @@ function executeBatch(actions, tabId, socket, originalId, requestContext = reque
     
     const action = actions[currentIndex];
     const toolName = mapBatchActionToTool(action);
-    // Actions can come from a file, so they can't turn an opt-in on.
-    const toolArgs = withoutOptIns(mapBatchActionToArgs(action));
-    // The batch's own event carries no typed values, so each action's reach the record here.
-    rememberRecordInput(toolName, toolArgs, { target: recordEventTarget(requestContext), evented: false });
+    const toolArgs = mapBatchActionToArgs(action);
     
     const extensionMsg = mapToolToMessage(toolName, toolArgs, tabId);
     if (requestContext.target?.strict && extensionMsg) extensionMsg.strictTarget = true;
@@ -3128,7 +2967,7 @@ function processInput() {
           url: redactUrlSecrets(msg.url),
           tabId: msg.tabId,
           timestamp: msg.timestamp || new Date().toISOString(),
-        }, { target: { tabId: msg.tabId, page: true } });
+        });
         continue;
       }
 
@@ -3201,8 +3040,7 @@ function processInput() {
           
           if (pending.networkExport && Array.isArray(msg.entries)) {
             try {
-              const secretHeaders = envBackedHeaders(pending.networkExportProjectDir ? { cwd: pending.networkExportProjectDir } : {});
-              const exportResult = writeNetworkExport(pending.networkExportPath, msg.entries, pending.networkExportFormat, { secretHeaders, rawBodies: pending.networkExportRawBodies, raw: pending.networkExportRaw });
+              const exportResult = writeNetworkExport(pending.networkExportPath, msg.entries, pending.networkExportFormat);
               sendToolResponse(socket, originalId, exportResult, null);
             } catch (error) {
               sendToolResponse(socket, originalId, null, `Failed to export network requests: ${error.message}`);

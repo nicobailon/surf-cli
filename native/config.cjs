@@ -74,19 +74,6 @@ function loadConfig() {
   }
 }
 
-// The user's own surf.json in their home folder, never a project's: settings that loosen a
-// safe default (echoValue) must not come from whatever folder surf runs in.
-function loadUserConfig(home = os.homedir()) {
-  const configPath = path.join(home, CONFIG_NAME);
-  if (!fs.existsSync(configPath)) return {};
-  try {
-    return JSON.parse(fs.readFileSync(configPath, "utf-8"));
-  } catch (err) {
-    console.error(`Warning: Failed to parse ${configPath}: ${err.message}`);
-    return {};
-  }
-}
-
 function getConfigPath() {
   if (cachedConfig === null) {
     loadConfig();
@@ -114,7 +101,6 @@ function clearCache() {
 
 module.exports = {
   loadConfig,
-  loadUserConfig,
   getConfigPath,
   createStarterConfig,
   clearCache,

@@ -946,24 +946,6 @@ function registerLocatedRef(el: Element): string {
   return ref;
 }
 
-// Inputs whose value the page sets, not the user: their value is their name, so it stays listed.
-const PAGE_VALUE_INPUT_TYPES = new Set(["checkbox", "radio", "submit", "button", "reset", "image"]);
-
-// A match as an ambiguity lists it: its ref, role and name. An unlabeled field is named by what was
-// typed or chosen in it (getName), so a name drawn from the field's value is left out.
-function listedMatch(el: Element): string {
-  const name = getName(el).replace(/\s+/g, " ");
-  const tag = el.tagName.toLowerCase();
-  const select = el as HTMLSelectElement;
-  const userValue = tag === "textarea" ||
-    (tag === "input" && !PAGE_VALUE_INPUT_TYPES.has((el.getAttribute("type") || "").toLowerCase()));
-  const typed = userValue ? (el as HTMLInputElement).value
-    : tag === "select" ? (select.selectedIndex >= 0 ? select.options[select.selectedIndex]?.textContent : "")
-    : (el as HTMLElement).isContentEditable ? el.textContent : "";
-  const fromValue = Boolean(typed?.trim()) && typed!.replace(/\s+/g, " ").includes(name.replace(/\.\.\.$/, ""));
-  return `${registerLocatedRef(el)} ${getResolvedRole(el)}${name && !fromValue ? ` ${JSON.stringify(name)}` : ""}`;
-}
-
 // Exact matches outrank partial ones. When the caller is about to act, two or more remaining
 // matches are refused instead of acting on whichever came first in the document.
 function narrowLocated(
@@ -977,7 +959,8 @@ function narrowLocated(
   const elements = exact.length ? exact : matches;
   if (elements.length === 0) return notFound;
   if (!unique || elements.length < 2) return elements;
-  const listed = elements.slice(0, 10).map((el) => `  ${listedMatch(el)}`);
+  const listed = elements.slice(0, 10).map((el) =>
+    `  ${registerLocatedRef(el)} ${getResolvedRole(el)} ${JSON.stringify(getName(el).replace(/\s+/g, " "))}`);
   if (elements.length > 10) listed.push(`  ...and ${elements.length - 10} more`);
   return `${elements.length} elements match ${query}, so nothing was done. ` +
     `Act on one of them by ref (for example surf click <ref>), or narrow the query:\n${listed.join("\n")}`;
@@ -1604,11 +1587,6 @@ function writeTextField(field: HTMLInputElement | HTMLTextAreaElement, text: str
   return null;
 }
 
-// Why a select has no option for a value. Never echoes the value: a select may be filled with a secret.
-function noOptionError({ target, select, by, which = "the given value" }: { target: string; select: HTMLSelectElement; by: string; which?: string }): string {
-  return `${target} has no option matching ${which} (by ${by}, ${select.options.length} options), so nothing was selected.`;
-}
-
 function setFormValue(ref: string, value: string | boolean | number): { success: boolean; error?: string } {
   const { element, error } = resolveRef(ref);
   if (!element) {
@@ -1638,7 +1616,7 @@ function setFormValue(ref: string, value: string | boolean | number): { success:
       }
 
       if (!found) {
-        return { success: false, error: noOptionError({ target: ref, select, by: "value or text" }) };
+        return { success: false, error: `Option "${value}" not found in select element ${ref}` };
       }
 
       select.dispatchEvent(new Event("change", { bubbles: true }));
@@ -2427,8 +2405,7 @@ function handleContentMessage(
           ].some(field => normalizeLocatorText(field).includes(query)));
         }
 
-        // The name can be text the caller typed: errors name the field, not its value.
-        const described = `role "${role}"${name ? " and the given name" : ''}`;
+        const described = `role "${role}"${name ? ` and name "${name}"` : ''}`;
         const narrowed = narrowLocated(
           matches,
           el => query !== "" && normalizeLocatorText(getName(el)) === query,
@@ -2475,8 +2452,8 @@ function handleContentMessage(
           sorted,
           el => normalizeLocatorText(el.textContent) === query,
           unique,
-          "the given text",
-          "No element found with the given text",
+          `text "${text}"`,
+          `No element found with text "${text}"`,
         );
         if (typeof narrowed === "string") {
           sendResponse({ error: narrowed });
@@ -2523,8 +2500,8 @@ function handleContentMessage(
           [...fields],
           field => exactFields.has(field),
           unique,
-          "the given label",
-          "No form field found with the given label",
+          `label "${label}"`,
+          `No form field found with label "${label}"`,
         );
         if (typeof narrowed === "string") {
           sendResponse({ error: narrowed });
@@ -2639,12 +2616,12 @@ function handleContentMessage(
         }
         
         const matched: HTMLOptionElement[] = [];
-        const notFound: number[] = []; // 1-based positions, so the error names no value
+        const notFound: string[] = [];
         
         // For single-select, only use the first value
         const valuesToSelect = selectEl.multiple ? values : [values[0]];
         
-        for (const [position, val] of valuesToSelect.entries()) {
+        for (const val of valuesToSelect) {
           let found = false;
           
           for (const opt of selectEl.options) {
@@ -2666,13 +2643,12 @@ function handleContentMessage(
             }
           }
           
-          if (!found) notFound.push(position + 1);
+          if (!found) notFound.push(val);
         }
 
         // Select nothing unless every value matched, so a typo can't leave a half-changed dropdown.
         if (notFound.length > 0) {
-          const which = valuesToSelect.length === 1 ? "the given value" : `given value ${notFound.join(", ")} of ${valuesToSelect.length}`;
-          sendResponse({ error: noOptionError({ target: selector, select: selectEl, by: by || "value", which }) });
+          sendResponse({ error: `${selector} has no option matching ${notFound.map((v) => JSON.stringify(v)).join(", ")} (by ${by || "value"}), so nothing was selected.` });
           break;
         }
         if (selectEl.multiple) {
@@ -2968,7 +2944,7 @@ function handleContentMessage(
               el.value = option.value;
               el.dispatchEvent(new Event("change", { bubbles: true }));
             }
-            results.push(option ? { ref, success: true } : { ref, success: false, error: noOptionError({ target: ref, select: el, by: "value or text" }) });
+            results.push(option ? { ref, success: true } : { ref, success: false, error: `${ref} has no option with value or text ${JSON.stringify(String(value))}, so nothing was selected.` });
           } else if (el.isContentEditable) {
             el.focus();
             el.textContent = String(value);

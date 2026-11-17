@@ -310,8 +310,6 @@ surf locate.text "Accept" --exact                 # Exact match only
 surf locate.label "Email" --action fill --value "test@example.com"
 ```
 
-A fill prints `OK` without the value it typed, and `select` prints how many options it chose. Pass `--echo-value` to print them, or set `echoValue: true` in `~/surf.json` (a project's `surf.json` can't turn it on).
-
 An exact name match wins over partial ones, so `--name "Save"` picks a "Save" button over "Save draft". With `--action`, if more than one element still matches, Surf does nothing and lists each match with its ref, so you can act on the one you mean with `surf click <ref>`.
 
 ### Iframe Support
@@ -721,15 +719,14 @@ Surf automatically captures all network requests while active. No explicit start
 
 ```bash
 # Overview (token-efficient for LLMs)
-surf network --last 20                # Recent requests, compact table with request ids (bare `surf network` prints help)
-surf network --json                   # Requests as JSON: id, method, status, type, MIME type, URL
+surf network                          # Recent requests, compact table
 surf network --urls                   # Just URLs (minimal output)
 surf network --format curl            # As curl commands
 
 # Filtering
 surf network --origin api.github.com  # Filter by origin/domain
 surf network --method POST            # Only POST requests
-surf network --type json              # Only JSON responses (by MIME type; also html, image/, xhr)
+surf network --type json              # Only JSON responses
 surf network --status 4xx,5xx         # Only errors
 surf network --since 5m               # Last 5 minutes
 surf network --exclude-static         # Skip images/fonts/css/js
@@ -746,12 +743,6 @@ surf network.clear                    # Clear captured data
 surf network.stats                    # Capture statistics
 surf network.export --har --output ./trace.har
 ```
-
-`network -v`, `network --format raw|curl`, `network.get` (and `--json`) and `network.curl` show secret headers (`Authorization`, `Cookie`, `Set-Cookie`, API-key, CSRF, token and session headers) as `<redacted>`, with secret-named query params and `user:password@` redacted, as exports do, and `network.body`, `network.wait` and `network.replay` print a body that echoes one with `<redacted>` in its place; `network.replay` still sends the real values.
-
-Exports show `<redacted>` for secret headers and for the values of secret-named body fields (`password=`, `"token":`) in JSON, urlencoded and multipart bodies; `--raw-bodies` keeps the bodies as captured.
-
-Add `--raw` on the command line to any of these to print the values as captured: `surf network.curl r_001 --raw` gives a command that runs as is. A playbook step, a saved workflow, a `--script` file or a `batch` action can't set it.
 
 Response bodies are fetched at `Network.loadingFinished` when capture is enabled. `--body-mode none|text|all`, `--per-body-bytes`, and `--total-body-bytes` control content and caps; exports include completeness metadata.
 
@@ -790,7 +781,6 @@ surf do 'go "url" | read | click e5 | screenshot' --dry-run
 - `--allow-semantic` - Opt in to bounded model decisions for a semantic workflow (model from `SURF_SEMANTIC_MODEL`, default `jev-1.13.0`; `extract` steps always use `clairic` with Cloudflare credentials)
 - `--allow-write` - Additionally authorize declared `fill`, `ensureChecked`, and `click` steps
 - `--inputs-stdin` - Read one bounded JSON object of private local input slots from stdin
-- `--echo-value` - Show typed values and chosen options in step results. A saved workflow's steps (`--file` or a named one, a project's included), a `--script` file's steps and `batch` actions can't set `echo-value`, `raw-bodies` or `include-input-values` themselves; only this flag or `echoValue: true` in `~/surf.json` turns echoing on
 - `--<arg> <value>` - Pass arguments to workflow (e.g., `--url "..."`)
 
 **Auto-waits:** Commands that trigger page changes automatically wait for completion:
@@ -1009,7 +999,6 @@ surf pb ops page
 surf use page read --json
 
 # Write ops require explicit authorization and a durable duplicate-safety receipt.
-# A recorded write blocks the same inputs for 5 minutes after it succeeds; --repeat sends again.
 surf use <site> <write-op> --write --resource-id 123
 ```
 
@@ -1044,13 +1033,9 @@ surf pb export example --out ./example-playbook
 surf pb import ./example-playbook
 ```
 
-A draft that clicked or typed is a write, as is one whose recorded requests include one other than GET, HEAD, or OPTIONS (beacons and analytics aside); scrolling and zoom don't make it one. When the flow only read data, stop with `--draft --read`: Surf drafts a read, and first names each captured request that can change data and each step that acts beyond the page (cookies, tabs, windows, emulation, AI providers). A record without `--network` has no requests to check, and Surf says so. A read op still can't replay PUT, PATCH or DELETE.
-
-A record belongs to the session that started it (or its tab, without a session): only that session's commands go into it, only that session can mark, stop, or discard it, and other sessions can record at the same time.
-
 Records, traces, receipts, and recent-use journals live under private Surf state. Input values and authentication headers are redacted by default; `--include-input-values` is an explicit recording choice.
 
-Generate a standalone client only from an observed or validated endpoint:
+Generate a standalone client only from an observed or validated read endpoint:
 
 ```bash
 surf pb client derive example --op read --from-record <record-id> --request-id <request-id> --out ./client
@@ -1058,83 +1043,7 @@ surf pb client export example --op read --out ./client
 surf pb client verify ./client
 ```
 
-Generated manifests declare provenance and authentication environment inputs. Surf leaves out cookies, bearer tokens, and secret headers. A client of a write needs `--write`: `client derive` of a captured write (POST, PUT, PATCH or DELETE; POST reads included) or `client export` of a write op. It sends with no receipt, and its body is as captured: a record that kept input values (`--include-input-values`) puts them, passwords included, in `surf-client.json`, whose `noEmbeddedSecrets` is then `false`. Make a body field an input with `pb param` first to leave it out. `client verify --live` of a write client needs `--write` too.
-
-#### Chain ops
-
-A chain op runs other ops of the same playbook in order and feeds one step's result into the next step's inputs, such as a page of quotes and then each quote's author in detail. It has `chain` and `output` in place of `run`, and `surf use` runs it in the tab like any op:
-
-```json
-{
-  "id": "quotes_with_authors",
-  "args": { "page": { "type": "number", "default": 1 }, "limit": { "type": "number", "default": 3 } },
-  "chain": [
-    { "id": "list", "op": "list_quotes", "with": { "page": "{{page}}" } },
-    {
-      "id": "author",
-      "op": "get_author",
-      "each": { "from": "list", "limit": "{{limit}}", "delayMs": 3000 },
-      "with": { "author": { "from": "item", "path": "author_url", "segment": 2 } }
-    }
-  ],
-  "output": "author"
-}
-```
-
-Here `list_quotes` reads `https://quotes.toscrape.com/page/{{page}}/` and returns records with `text`, `author` and `author_url`; `get_author` reads `/author/{{author}}/`.
-
-- `args`: the chain's own inputs, declared as any op's.
-- `chain`: 1 to 10 steps. Each step has an `id` (unique, not `item`), the `op` it runs (another op of the playbook, which may be a chain), `with` and optionally `each`.
-- `with` maps the step op's inputs to values. A string is a template filled from the chain's inputs (`"{{page}}"`; a whole-string `{{name}}` keeps the input's type and is left out when unset, so the step op's default applies). A number or boolean is passed as is. An object is a binding:
-  - `from`: an earlier step's id, which reads that step's result, or `item`, the record an `each` step runs for;
-  - `path` (optional): where in that value, as `$.data.id` or as a record path (`author_url`, `links[0].href`); a path that finds nothing fails the step;
-  - `segment` (optional): take the nth URL path segment (from 1) of the value, so `https://quotes.toscrape.com/author/Albert-Einstein/` gives `author` for 1 and `Albert-Einstein` for 2.
-- `each` (optional): run the step once per record of an earlier step, whose result must be a list. `from` names that step; `limit` caps the records (default 5, at most 50); `delayMs` is the wait before each record's run (default 2000, at most 60000). Both can be `{{input}}`. The step's result is the list of each run's results, a run that returns a list adding its records.
-- `page` (optional, not with `each`): run the step again for each next page and concatenate the pages' records. `into` names the step op's input that takes the page; `next` says where the next value comes from:
-  - `"increment"`: one more than the last page's value; the first page takes the step's own value for `into`, else that input's default, else 1;
-  - `{ "path": "$.next" }`: a `$`-JSON path or record path into the page's JSON response (the whole response, not only the records the op extracts); the op's network strategy must extract JSON;
-  - `{ "html": "li.next a@href" }`: one value from the page's HTML, as `selector` or `selector@attribute`; the op must extract HTML (`extract.html`, on a network or workflow strategy);
-  - `segment` (optional, with `path` or `html`): take the nth URL path segment of the value, so `/page/3/` gives `3` for 2.
-
-  Paging stops when the next value is missing, empty, only whitespace or `false`, a page returns no records, a value `into` already had comes again, or `max` pages ran (default 3, at most 20). `delayMs` is the wait between pages (default 2000, at most 60000); both can be `{{input}}`. Each page's result must be a list. `path` and `html` read the step op's own response, so they can't be used on a step that runs a chain; `increment` can. A next value of `.` or `..`, or a URL on another origin than the page it came from, stops the chain with an error. Set the playbook's (or op's) `origins` when paging into an input that holds a whole URL, so the op can only fetch from those origins.
-- `output`: the step whose result the chain returns.
-
-Every quote on the first pages of quotes.toscrape.com, following each page's Next link (`/page/2/`) into `list_quotes`'s `page` input:
-
-```json
-{
-  "id": "all_quotes",
-  "args": { "pages": { "type": "number", "default": 3 } },
-  "chain": [
-    {
-      "id": "quotes",
-      "op": "list_quotes",
-      "page": { "into": "page", "next": { "html": "li.next a@href", "segment": 2 }, "max": "{{pages}}", "delayMs": 3000 }
-    }
-  ],
-  "output": "quotes"
-}
-```
-
-With `"next": "increment"`, the same step reads pages 1, 2 and 3 without the link; books.toscrape.com's `list_books` (`/catalogue/page-{{page}}.html`) pages the same way.
-
-A step's result is what `surf use` returns for its op as `value` (its extracted records, say; a `page` step's is all its pages' records). The first step that fails stops the chain, with an error naming the step (and the record, in an `each`, or the page). One chain run calls at most 100 ops, each page counting as one. A playbook won't load while a chain names an op it doesn't have, passes an input that op doesn't take, binds from a later step or from no step, uses `item` outside `each`, pages into an input the op doesn't take, or runs itself through another chain.
-
-Chains read only for now: a chain op can't be a write, and a chain whose steps include a write op is refused (chains with write steps come later). `pb param`, `pb extract`, `pb test` and `pb client` work on the ops a chain runs, not on the chain.
-
-For a list and a detail op, `--each-from` runs the same two-step chain without a file:
-
-```bash
-# get_author (input author) once per quote of list_quotes (input page): you pass page,
-# so the second path segment of each quote's author_url fills author
-surf use quotes get_author --page 2 --each-from list_quotes:author_url@path.2 --limit 3
-# get_book once per book on a books.toscrape.com listing page, into the input you name, 3 s apart
-surf use books get_book --page 2 --each-from list_books:url@path.2 --each-into book --delay-ms 3000
-```
-
-Without `--each-into`, each record fills the detail op's one required input you didn't pass; when none or several are left, surf asks for `--each-into`. The other inputs go to whichever of the two ops takes them. A binding (here, the record's `author_url`) must find a string, number or boolean: an object, a list or nothing stops the chain, naming the step, input and path. `--dry-run` lists a chain's steps and sends nothing.
-
-A record can propose the chain for you. Record the list page and then one detail page (`pb record start quotes --op authors --network`, `navigate https://quotes.toscrape.com/`, click an author's "(about)" link), and `pb record stop --draft` looks for a value of 6 characters or more that an earlier response returned (a JSON value, or a link's path segment or an id attribute in a list of HTML items) and a later request sent as a whole URL path segment or query value. Each match prints one line, such as `authors_author --author ← $.url path segment 2 of each record of authors_list (div.quote > span > a[href]) (into path.2)`, and the chain goes to the record's `draft/chain.json`; `pb save --from-record <id> --chain` saves each of its requests as a read op, the bound values as required inputs, the extract the next step reads, and the chain op, which takes `--limit` and `--delay-ms` for its `each`. Give the last op an extract with `pb extract`, then `surf use quotes authors --limit 2 --delay-ms 3000`. The proposal holds request ids, paths, selectors and field names, never the values; headers, cookies, secret-named fields and credential-like values are never bound, and a record of one request proposes nothing.
+Generated manifests declare provenance and authentication environment inputs. Surf excludes cookies, bearer tokens, and captured credentials and does not export write-capable clients without explicit review.
 
 ### Threads and Feeds
 

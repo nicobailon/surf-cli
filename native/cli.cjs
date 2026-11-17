@@ -7,27 +7,20 @@ for (const stream of [process.stdout, process.stderr]) {
 const fs = require("fs");
 const path = require("path");
 const { execFileSync, execSync } = require("child_process");
-const { loadConfig, loadUserConfig, getConfigPath, createStarterConfig, STARTER_CONFIG } = require("./config.cjs");
+const { loadConfig, getConfigPath, createStarterConfig, STARTER_CONFIG } = require("./config.cjs");
 const networkFormatters = require("./formatters/network.cjs");
 const { formatPageChanges } = require("./formatters/page-changes.cjs");
 const {
   applyArgDefaults,
-  commandMetadata,
   formatStep,
   getWorkflowDirs,
   getWorkflowInfo,
   listWorkflows,
   normalizeWorkflow,
   parseDoCommands,
-  redactArgValues,
   resolveWorkflow,
-  summarizeArgs,
   validateWorkflowArgs,
   validateWorkflowFile,
-  ECHO_COMMANDS,
-  withEchoedValues,
-  withoutOptIns,
-  withoutStepOptIns,
 } = require("./workflow-definition.cjs");
 const { executeDoSteps, semanticRequestContext, sendDoRequest } = require("./do-executor.cjs");
 const { runExtraction, renderExtractionMarkdown } = require("./extract.cjs");
@@ -41,8 +34,6 @@ const {
   handleOracleCli,
 } = require("./oracle-cli.cjs");
 const { formatPlaybookOutput, handlePlaybookCli } = require("./playbook-cli.cjs");
-const { editDistance } = require("./edit-distance.cjs");
-const { formatGlobalOptions } = require("./global-options.cjs");
 
 const IS_WIN = process.platform === "win32";
 const { SURF_TMP, formatSocketError } = require("./socket-path.cjs");
@@ -54,7 +45,7 @@ const { resolveRequestDeadlineMs } = require("./host-sessions.cjs");
 const toolScope = require("./tool-scope.cjs");
 const { classifyTool } = toolScope;
 const { parseVideoFps, validateVideoOutputPath } = require("./video-recorder.cjs");
-const { AUTO_SCREENSHOT_TOOLS, MAX_SETTLE_MS, PAGE_CHANGES_TOOLS, isSettleMs, prepareToolRequest } = require("./file-transfer.cjs");
+const { AUTO_SCREENSHOT_TOOLS, MAX_SETTLE_MS, PAGE_CHANGES_TOOLS, isSettleMs, prepareRemoteTool, validateLocalToolPaths } = require("./file-transfer.cjs");
 const { authorizeClient, listClients, revokeClient, getStateDir } = require("./remote-auth.cjs");
 if (IS_WIN) { try { fs.mkdirSync(SURF_TMP, { recursive: true }); } catch {} }
 
@@ -141,12 +132,6 @@ function installBrowserLock({ noLock, timeoutMs }, endpoint) {
 }
 
 // Cross-platform image resize (macOS: sips, Linux: ImageMagick)
-
-// Help shows a positional argument as <name>, or as [name] when its name ends with "?" (optional).
-function formatArgs(args = []) {
-  return args.map((arg) => (arg.endsWith("?") ? `[${arg.slice(0, -1)}]` : `<${arg}>`)).join(" ");
-}
-
 function resizeImage(filePath, maxSize) {
   const platform = process.platform;
 
@@ -275,21 +260,7 @@ if (["playbook", "pb", "use"].includes(args[0]) && !helpRequested()) {
     .then((result) => {
       if (!result.handled) throw new Error("Playbook command was not handled");
       if (result.value !== undefined) console.log(formatPlaybookOutput(result.value, result.json));
-      process.exit(result.exitCode ?? 0);
-    })
-    .catch((error) => {
-      console.error(`Error: ${error.message}`);
-      process.exit(1);
-    });
-  return;
-}
-
-if (args[0] === "parse" && !helpRequested()) {
-  const { handleParseCli } = require("./parse-cli.cjs");
-  handleParseCli(args, { endpoint, cwd: process.cwd(), ...resolveEarlyTargetOptions(args, { allowWindow: false }) })
-    .then((result) => {
-      console.log(formatPlaybookOutput(result.value, result.json));
-      process.exit(result.exitCode);
+      process.exit(0);
     })
     .catch((error) => {
       console.error(`Error: ${error.message}`);
@@ -555,7 +526,7 @@ const TOOLS = {
       "tab.new": {
         desc: "Open new tab",
         args: ["url"],
-        opts: { urls: "Open multiple URLs", session: "Only picks the playbook record that holds this command, not the tab or window it acts on" },
+        opts: { urls: "Open multiple URLs" },
         examples: [
           { cmd: 'tab.new "https://google.com"', desc: "Open single tab" },
           { cmd: 'tab.new --urls "https://a.com" "https://b.com"', desc: "Open multiple" },
@@ -564,7 +535,6 @@ const TOOLS = {
       "tab.switch": {
         desc: "Switch to tab by ID or name",
         args: ["id"],
-        opts: { session: "Only picks the playbook record that holds this command, not the tab or window it acts on" },
         examples: [
           { cmd: "tab.switch 123", desc: "Switch by ID" },
           { cmd: 'tab.switch "myTab"', desc: "Switch by name" },
@@ -573,7 +543,7 @@ const TOOLS = {
       "tab.close": {
         desc: "Close tab by ID or name",
         args: ["id"],
-        opts: { ids: "Close multiple tabs", session: "With an id, only picks the playbook record that holds this command, not the tab it closes; without one, closes the session's tab" },
+        opts: { ids: "Close multiple tabs" },
         examples: [{ cmd: "tab.close 123", desc: "Close tab" }]
       },
       "tab.move": {
@@ -587,7 +557,7 @@ const TOOLS = {
         args: ["name"],
         examples: [{ cmd: 'tab.name "dashboard"', desc: "Name current tab" }]
       },
-      "tab.unname": { desc: "Unregister a named tab", args: ["name"], opts: { session: "Only picks the playbook record that holds this command, not the tab or window it acts on" } },
+      "tab.unname": { desc: "Unregister a named tab", args: ["name"] },
       "tab.named": { desc: "List all named tabs", args: [] },
       "tab.group": {
         desc: "Create/add to tab group",
@@ -819,7 +789,6 @@ const TOOLS = {
           name: "Element name/text",
           action: "Action to perform (click|fill|hover|text)",
           value: "Value for fill action",
-          "echo-value": "Print the filled value in the result (hidden by default; or set echoValue: true in ~/surf.json)",
           all: "Return all matches"
         },
         examples: [
@@ -834,8 +803,7 @@ const TOOLS = {
         opts: {
           exact: "Exact match",
           action: "Action to perform",
-          value: "Value for fill action",
-          "echo-value": "Print the filled value in the result (hidden by default; or set echoValue: true in ~/surf.json)"
+          value: "Value for fill action"
         },
         examples: [
           { cmd: 'locate.text "Sign In" --action click', desc: "Click by text" },
@@ -847,8 +815,7 @@ const TOOLS = {
         args: ["label"],
         opts: {
           action: "Action to perform",
-          value: "Value for fill action",
-          "echo-value": "Print the filled value in the result (hidden by default; or set echoValue: true in ~/surf.json)"
+          value: "Value for fill action"
         },
         examples: [
           { cmd: 'locate.label "Username" --action fill --value "john"', desc: "Fill by label" },
@@ -876,8 +843,7 @@ const TOOLS = {
         desc: "Select option(s) in dropdown",
         args: ["ref_or_selector", "values..."],
         opts: {
-          by: "Match by: value (default), label, index",
-          "echo-value": "Print the chosen option values (by default only how many; or set echoValue: true in ~/surf.json)"
+          by: "Match by: value (default), label, index"
         },
         examples: [
           { cmd: 'select e5 "US"', desc: "Select by value" },
@@ -974,8 +940,7 @@ const TOOLS = {
           submit: "Press Enter after (at the cursor or with --into; not with --ref)",
           clear: "Clear the field first (with --into)",
           escapes: "Turn \\n, \\t, \\r and \\\\ in the text into newline, tab, carriage return and backslash",
-          method: "cdp|js (cursor typing uses CDP; selector/ref targets use JS)",
-          "echo-value": "Show the typed text in the page-change report (shown as 'value changed' by default; or echoValue: true in ~/surf.json)"
+          method: "cdp|js (cursor typing uses CDP; selector/ref targets use JS)"
         },
         examples: [
           { cmd: 'type "hello world"', desc: "Type at cursor (CDP events)" },
@@ -1105,19 +1070,18 @@ const TOOLS = {
     desc: "Network capture",
     commands: {
       "network": {
-        desc: "List captured network requests (secret headers such as Authorization and Cookie show as <redacted>, as in network.export, unless --raw)",
+        desc: "List captured network requests",
         args: [],
         opts: {
           origin: "Filter by origin (domain)",
           method: "Filter by method (GET,POST,...)",
           status: "Filter by exact status code (e.g. 404)",
-          type: "Filter by response type: json, html, proto, a MIME type (image/png, image/) or subtype (css), or a resource type (document, xhr, fetch)",
+          type: "Filter by content type (json, html, proto)",
           last: "Show N requests (default: 100)",
           filter: "With --stream: URL pattern filter",
-          format: "compact|urls|curl|raw|json (default: compact, which starts each line with the request id; --json gives json)",
+          format: "compact|urls|curl|raw (default: compact)",
           v: "Verbose output",
           vv: "Very verbose output",
-          raw: "Print secret headers, URL credentials and echoed secrets as captured (command line only)",
           "body-mode": "Response bodies: none, text, or all (default: text)",
           "per-body-bytes": "Maximum captured bytes per response body",
           "total-body-bytes": "Maximum captured response-body bytes per tab session",
@@ -1132,31 +1096,30 @@ const TOOLS = {
         ]
       },
       "network.get": {
-        desc: "Get full details for a request; secret headers (Authorization, Cookie, API keys) show as <redacted> unless --raw, and network.replay still sends them",
+        desc: "Get full details for a request",
         args: ["id"],
-        opts: { raw: "Print secret headers, URL credentials and echoed secrets as captured (command line only)" },
+        opts: {},
         examples: [
           { cmd: "network.get r_001", desc: "Get request details" }
         ]
       },
       "network.body": {
-        desc: "Get response body (for piping); an echo of the request's secret headers shows as <redacted>",
+        desc: "Get response body (for piping)",
         args: ["id"],
-        opts: { request: "Get request body instead", raw: "Print secret headers, URL credentials and echoed secrets as captured (command line only)" },
+        opts: { request: "Get request body instead" },
         examples: [
           { cmd: "network.body r_001", desc: "Get response body" },
           { cmd: "network.body r_001 | jq .", desc: "Pipe JSON to jq" }
         ]
       },
       "network.wait": {
-        desc: "Wait for the page's next response whose URL matches a glob and print its JSON (or text); an echo of the request's secret headers shows as <redacted>",
+        desc: "Wait for the page's next response whose URL matches a glob and print its JSON (or text)",
         args: ["match"],
         opts: {
           match: "URL glob without query string: a path (/api/*/items) or a full URL (https://site/api/**); * stays within one path segment, ** matches anything",
           open: "Navigate to this URL after capture starts, so responses during page load count",
           timeout: "Seconds to wait (default: 30)",
           json: "Print {id, url, status, json | body}",
-          raw: "Print secret headers, URL credentials and echoed secrets as captured (command line only)",
         },
         examples: [
           { cmd: 'network.wait --match "/i/api/graphql/*/TweetDetail" --open "https://x.com/user/status/1"', desc: "Open a page and print its API response" },
@@ -1164,13 +1127,12 @@ const TOOLS = {
         ]
       },
       "network.replay": {
-        desc: "Re-send a captured request from inside its tab (same cookies and headers) and print the response, with echoes of its secret headers as <redacted>; the tab must still be on the request's origin or the page that sent it",
+        desc: "Re-send a captured request from inside its tab (same cookies and headers) and print the response",
         args: ["id"],
         opts: {
           set: "Edit before sending (repeatable): query.<param>=v, query.<param>.<json.path>=v, body=v, body.<json.path>=v; values are parsed as JSON when valid",
           "allow-post": "Allow methods other than GET/HEAD (re-sending a POST can repeat a write)",
           json: "Print {status, url, json | body}",
-          raw: "Print secret headers, URL credentials and echoed secrets as captured (command line only)",
         },
         examples: [
           { cmd: "network.replay r_001", desc: "Re-send a request" },
@@ -1178,12 +1140,11 @@ const TOOLS = {
         ]
       },
       "network.curl": {
-        desc: "Generate curl command for request (secret headers show as <redacted> unless --raw; network.replay re-sends with them)",
+        desc: "Generate curl command for request",
         args: ["id"],
-        opts: { raw: "Print secret headers, URL credentials and echoed secrets as captured (command line only)" },
+        opts: {},
         examples: [
-          { cmd: "network.curl r_001", desc: "Generate curl" },
-          { cmd: "network.curl r_001 --raw", desc: "A curl command that runs as is, with its auth headers" }
+          { cmd: "network.curl r_001", desc: "Generate curl" }
         ]
       },
       "network.origins": {
@@ -1221,8 +1182,6 @@ const TOOLS = {
           "body-mode": "Response bodies: none, text, or all (default: text)",
           "per-body-bytes": "Maximum captured bytes per response body",
           "total-body-bytes": "Maximum captured response-body bytes per tab session",
-          "raw-bodies": "Keep secret-named body fields (password=, \"token\":) as captured; by default their values read <redacted>",
-          raw: "Keep secret headers, URL credentials, echoed secrets and body fields as captured (command line only)",
         },
         examples: [
           { cmd: "network.export --jsonl --output /tmp/requests.jsonl", desc: "Export as JSONL" },
@@ -1360,7 +1319,7 @@ const TOOLS = {
       "form.fill": {
         desc: "Batch fill form fields",
         args: [],
-        opts: { data: "JSON array of {ref, value}; true/false sets a checkbox", "echo-value": "Show the filled values in the page-change report (hidden by default)" },
+        opts: { data: "JSON array of {ref, value}; true/false sets a checkbox" },
         examples: [{ cmd: `form.fill --data '[{"ref":"e1","value":"John"},{"ref":"e7","value":true}]'`, desc: "Text field and checkbox" }],
       },
     }
@@ -1516,7 +1475,6 @@ const TOOLS = {
           "allow-semantic": "Allow bounded semantic model decisions (model: SURF_SEMANTIC_MODEL, default jev-1.13.0); extract steps always use clairic (Cloudflare)",
           "allow-write": "Allow declared semantic fill/check/click steps",
           "inputs-stdin": "Read bounded private input slots as one JSON object from stdin",
-          "echo-value": "Show typed values and chosen options in step results, and variable values with --dry-run (or --raw; a saved workflow's steps can't turn this on)",
         },
         examples: [
           { cmd: 'do \'go "https://example.com" | read | click e5 | screenshot\'', desc: "Inline workflow" },
@@ -1600,7 +1558,7 @@ const TOOLS = {
       "history.search": {
         desc: "Search history",
         args: ["query"],
-        opts: { limit: "Max results (default: 20)", session: "Only picks the playbook record that holds this command" },
+        opts: { limit: "Max results (default: 20)" },
         examples: [{ cmd: 'history.search "github"', desc: "Search history" }]
       },
     }
@@ -1615,8 +1573,7 @@ const TOOLS = {
           width: "Window width",
           height: "Window height",
           incognito: "Open incognito window",
-          unfocused: "Don't focus the new window",
-          session: "Only picks the playbook record that holds this command, not the tab or window it acts on",
+          unfocused: "Don't focus the new window"
         },
         examples: [
           { cmd: 'window.new "https://example.com"', desc: "New window with URL" },
@@ -1633,13 +1590,11 @@ const TOOLS = {
       "window.focus": {
         desc: "Focus a window by ID",
         args: ["id"],
-        opts: { session: "Only picks the playbook record that holds this command, not the tab or window it acts on" },
         examples: [{ cmd: "window.focus 123", desc: "Focus window" }]
       },
       "window.close": {
         desc: "Close a window by ID",
         args: ["id"],
-        opts: { session: "Only picks the playbook record that holds this command, not the tab or window it acts on" },
         examples: [{ cmd: "window.close 123", desc: "Close window" }]
       },
       "window.resize": {
@@ -1694,42 +1649,19 @@ const TOOLS = {
         desc: "Run a playbook operation, such as reading a whole X thread",
         args: ["playbook", "op"],
         opts: {
-          "<arg>": "Operation input, e.g. --url <post-url>; an input the op doesn't define fails and lists its inputs",
-          timeout: "Seconds before the run gives up (default: the op's --timeout, else 600)",
+          "<arg>": "Operation input, e.g. --url <post-url> (see: surf pb ops <playbook>)",
           format: "md or jsonl instead of JSON",
           write: "Authorize a write operation",
-          "dry-run": "Print what the op would send (method, URL, header names, body, allowed origins) and the receipt check, or a chain op's steps with their each and page bounds; sends nothing, and a write needs no --write",
           "allow-script": "Allow the playbook's trusted script strategy",
-          repeat: "Send a write again though an earlier one with the same inputs was sent, is in doubt or was cut off",
-          "retry-attempt": "Retry this write attempt (its UUID); the claim must already hold it",
-          "override-in-doubt": "Old name of --repeat",
+          repeat: "Repeat a write whose last attempt was verified",
+          "retry-attempt": "Retry this write attempt id",
+          "override-in-doubt": "Write again after an indeterminate attempt",
           "pin-built-in": "Use the built-in playbook even if a user or project copy exists",
-          "each-from": "Run the op once per record of another op: <list-op>:<path>, such as list_books:url; add @path.<n> to take the nth URL path segment of the value (list_quotes:author_url@path.2). Read ops only; it runs as a two-step chain op",
-          "each-into": "With --each-from: the input each record's value fills (default: the op's one required input you didn't pass)",
-          limit: "With --each-from: at most this many records (default 5, at most 50)",
-          "delay-ms": "With --each-from: milliseconds to wait before each record's run (default 2000)",
           json: "Output raw JSON",
         },
         examples: [
           { cmd: "use x thread --url https://x.com/<user>/status/<id> --format md", desc: "Whole X thread as Markdown" },
           { cmd: "use page read --json", desc: "Read the current page" },
-          { cmd: "use quotes get_author --page 2 --each-from list_quotes:author_url@path.2 --limit 3", desc: "The authors of the first 3 quotes on page 2: each quote's author_url fills --author" },
-          { cmd: "use quotes all_quotes --pages 3", desc: "A chain op whose step has page: { into, next, max }: runs list_quotes for each next page (next: \"increment\", { path } or { html: \"li.next a@href\" }; max 3 by default, at most 20; 2 s apart) and joins the records" },
-        ],
-      },
-      parse: {
-        desc: "Make a tested read op from a URL in one command: record it from about:blank, pick the request, name its inputs, infer an extract and save a shape-only network test (heuristics, no model call). Reads robots.txt first. Exits 0 on a saved, tested op, 2 with the top 3 candidates when the pick is weak or tied, 1 on errors, a disallowed path, or a goal that needs a click, scroll or write",
-        args: ["url"],
-        opts: {
-          goal: "What you want from the page; names the op and the inputs it varies",
-          op: "Op name (default: get_ and the goal's first three words)",
-          input: "name=field (repeatable): name the input at this field, as pb param does (page=path.2, company=path.1); with --request-id it reruns on the same record, as the rename line parse prints does",
-          "request-id": "Save the request with this id (from the candidates a weak pick prints)",
-          json: "Output raw JSON",
-        },
-        examples: [
-          { cmd: "parse https://books.toscrape.com/catalogue/page-2.html --goal \"all books with price and rating\"", desc: "A listing: page input, one record per book" },
-          { cmd: "parse https://arxiv.org/abs/2101.10010 --goal \"arxiv paper details\"", desc: "A detail page: paper_id input, meta tag fields" },
         ],
       },
       pb: { alias: "playbook" },
@@ -1744,71 +1676,22 @@ const TOOLS = {
         opts: {
           op: "Operation name",
           "from-recent": "Use activity from this window (default: 1h)",
-          "from-record": "Use this record id. Origins: the record's page and the replayed request's. A write draft that replays a write saves network-only unless its workflow is one page-write step. The draft is saved as edited, and each way it differs from what the record drafts (effect, safety, strategies, request, checks, steps, origins, inputs) is printed under differs. Run pb param after",
-          "request-id": "With --from-record: replay this request (from pb record candidates) instead of the draft's",
-          chain: "With --from-record: save the chain pb record stop --draft proposed (draft/chain.json): each of its requests as a read op, its bound values as required inputs, and the chain op over them",
+          "from-record": "Use this record id",
           project: "Save in ./.surf/playbooks instead of ~/.surf/playbooks",
         },
         examples: [
           { cmd: "pb save example --op read --from-recent 1h", desc: "From recent activity" },
           { cmd: "pb save --from-record <record-id>", desc: "From a record" },
-          { cmd: "pb save --from-record <record-id> --request-id r_1794_12", desc: "From a record, replaying the request you chose" },
-          { cmd: "pb save --from-record <record-id> --chain", desc: "Save the list → detail chain the record showed" },
-        ],
-      },
-      "playbook param": {
-        desc: "Turn a recorded value in an op's network request into a named input (--as), or read a header from an environment variable (--env)",
-        args: ["playbook", "op", "field..."],
-        opts: {
-          as: "Input name; the same name in several fields fills them all",
-          required: "No default: surf use must pass --<name>",
-          default: "Default value (default: the recorded value)",
-          desc: "Input description",
-          value: "Template only this text inside the field, as 2 in page-2.html",
-          env: "With one headers.<name> field: send the header from this variable, read from the caller's shell at run time and never stored",
-          link: "With --as: give the workflow's steps that take this drafted input (text, from a typed value) the new input instead, and drop it",
-          json: "Output raw JSON",
-        },
-        examples: [
-          { cmd: "pb param books get_books path.2 --value 2 --as page", desc: "/catalogue/page-2.html → page-{{page}}.html" },
-          { cmd: "pb param arxiv get_paper path.2 --as arxiv_id --required", desc: "/abs/<id> → /abs/{{arxiv_id}}" },
-          { cmd: "pb param walmart search query.variables.query query.variables.searchArgs.query --as query", desc: "One input in two places in a JSON query param" },
-          { cmd: "pb param resy search body.slot_filter.party_size --as party_size", desc: "A JSON body field (form and multipart fields work the same way)" },
-          { cmd: "pb param resy search headers.authorization --env RESY_API_KEY", desc: "A site's public key from the environment" },
-          { cmd: "pb param hr search_employees query.nameOrId --as name --required --link text", desc: "The typed name and the request's name are one input, --name" },
         ],
       },
       "playbook record start": {
         desc: "Start recording a playbook op",
         args: ["playbook"],
-        opts: { op: "Operation name", network: "Record network requests", watch: "Watch page changes", "include-input-values": "Keep typed values in request bodies and captured URLs (by default bodies read <request-body> and typed values in URLs <text> or <value>; or --raw, includeInputValues: true in ~/surf.json, or pb record stop --include-input-values)" },
+        opts: { op: "Operation name", network: "Record network requests", watch: "Watch page changes", "include-input-values": "Keep typed values (redacted by default)" },
         examples: [{ cmd: "pb record start example --op read --network --watch", desc: "Record with network" }],
       },
       "playbook record mark": { desc: "Add a note to the recording", args: ["note"] },
-      "playbook record stop": {
-        desc: "Stop recording",
-        args: [],
-        opts: {
-          draft: "Save a draft playbook from the record (a write if it clicked or typed). When a later request sent a value an earlier response returned (a list's id or link in a detail URL), also propose a chain: one line per binding, saved with pb save --chain",
-          read: "With --draft: draft a read, as you say; names each captured request that can change data and each step beyond the page",
-          "request-id": "With --draft: replay this request (see pb record candidates) instead of the top-ranked one",
-          "include-input-values": "Keep request bodies and captured URLs as captured, though the record started without it (or --raw)",
-        },
-        examples: [
-          { cmd: "pb record stop --draft --read", desc: "Draft a search done by clicking as a read" },
-          { cmd: "pb record stop --draft --read --request-id r_1794_12", desc: "Draft it replaying the request you chose" },
-          { cmd: "pb record stop --draft --include-input-values", desc: "Draft a write that sends its body as captured" },
-        ],
-      },
-      "playbook record candidates": {
-        desc: "Rank a record's requests by how likely each carries the page's data (JSON or HTML document, records, page text overlap, first-party; telemetry, assets, redirects, preflights and small JSON that overlaps little of the page low)",
-        args: ["record-id?"],
-        opts: { limit: "How many to show (default: 10)", json: "Output raw JSON" },
-        examples: [
-          { cmd: "pb record candidates", desc: "Your active record (read live), else your latest one" },
-          { cmd: "pb record candidates rec-1794-ab12 --limit 3 --json", desc: "A stopped record, top 3 as JSON" },
-        ],
-      },
+      "playbook record stop": { desc: "Stop recording", args: [], opts: { draft: "Save a draft playbook from the record" } },
       "playbook record status": { desc: "Show the recording state (also: pause, resume, discard)", args: [] },
       "playbook trace export": { desc: "Export a record as HAR", args: [], opts: { "from-record": "Record id", har: "Output .har path" } },
       "playbook export": { desc: "Export a playbook directory", args: ["playbook"], opts: { out: "Output directory" } },
@@ -1816,51 +1699,10 @@ const TOOLS = {
       "playbook client derive": {
         desc: "Generate a standalone client from an observed request",
         args: ["playbook"],
-        opts: { op: "Operation name", "from-record": "Record id", "request-id": "Request id in the record", out: "Output directory", write: "Allow a captured write (POST, PUT, PATCH or DELETE); the client sends it with no receipt, and its body as captured, input values the record kept included (make a field an input with pb param to leave it out)" },
+        opts: { op: "Operation name", "from-record": "Record id", "request-id": "Request id in the record", out: "Output directory" },
       },
-      "playbook client export": {
-        desc: "Export a client for a playbook op; client.mjs takes the op's inputs as --name value or --name=value (\"\" for an empty one; a bare --name only for a boolean)",
-        args: ["playbook"],
-        opts: { op: "Operation name", out: "Output directory", write: "Allow a write op; the client sends it with no receipt, and a captured body as captured, input values the record kept included (make a field an input with pb param to leave it out)" },
-        examples: [{ cmd: "pb client export papers --op search --out ./papers && node papers/client.mjs --query graphs --author \"\"", desc: "Run it with an empty filter" }],
-      },
-      "playbook client verify": { desc: "Verify a generated client", args: ["dir"], opts: { live: "Also call the live endpoint", write: "Allow --live to send a write client's request" } },
-      "playbook test": {
-        desc: "Run an op as surf use does and check assertions on its result; exits 1 when one fails or no strategy answers",
-        args: ["playbook", "op"],
-        opts: {
-          "<arg>": "Operation input, as with surf use (or all at once with --args '<json>'); an input the op doesn't define fails",
-          timeout: "Seconds before the run gives up (default: the op's --timeout, else 600)",
-          assert: "<path> <op> [value] (repeatable): ops equals, array_min_len, not_null, exists, matches; paths like $, $[0].title, $.status. Default: the op's saved assertions",
-          strategy: "Run only this strategy (network, workflow, ...), to tell the network path from a fallback",
-          save: "Save the --assert list in the op when the test passes; surf use then checks it too. While env headers are set, refuses an assertion that would store an accidental copy of an env header's value (escaped or not, or a matches pattern sharing 6 characters in a row with it); it doesn't stop a pattern written to encode one on purpose",
-          write: "Allow testing a write op (it really writes)",
-          repeat: "With --write, send a write again that a receipt blocks as already sent",
-          json: "Output JSON: ok, strategy, records, durationMs, assertions, attempts",
-        },
-        examples: [
-          { cmd: "pb test books get_books --page 2 --assert '$' array_min_len 1 --assert '$[0].title' not_null --strategy network --save", desc: "Check the network path and save the checks" },
-          { cmd: "pb test resy search --args '{\"query\":\"pizza\"}' --json", desc: "Rerun the saved checks" },
-        ],
-      },
-      "playbook extract": {
-        desc: "Make an op return records: from HTML (collect's --item/--field) or JSON (--records, --field paths), saved in the op",
-        args: ["playbook", "op"],
-        opts: {
-          item: "HTML: selector for one record",
-          field: "name=source (repeatable). HTML: 'sel', 'sel@attr', 'sel[]' as in collect. JSON: a path in each record, e.g. venue.name",
-          value: "HTML: one value instead of records, 'sel@attr' (a $.path reads one JSON value)",
-          records: "JSON: path of the records array, e.g. $.search.hits ($ for the whole body)",
-          filter: "JSON: path=value; keep records whose value matches (as text)",
-          strategy: "Set it on this strategy only (default: network and workflow for HTML, network for JSON)",
-          json: "Output raw JSON",
-        },
-        examples: [
-          { cmd: "pb extract books get_books --item article.product_pod --field 'title=h3 a@title' --field price=.price_color --field 'url=h3 a@href'", desc: "Book records from a catalogue page" },
-          { cmd: "pb extract blast submit --value 'input[name=RID]@value'", desc: "One value from an HTML form" },
-          { cmd: "pb extract walmart search --records '$.data.items' --field id=usItemId --field price=price.current --filter __typename=Product", desc: "JSON records, renamed and filtered" },
-        ],
-      },
+      "playbook client export": { desc: "Export a client for a playbook op", args: ["playbook"], opts: { op: "Operation name", out: "Output directory" } },
+      "playbook client verify": { desc: "Verify a generated client", args: ["dir"], opts: { live: "Also call the live endpoint" } },
     },
   },
   remote: {
@@ -2337,7 +2179,7 @@ Usage: surf <command> [args] [options]
     console.log(`${groupName.toUpperCase()} - ${group.desc}`);
     for (const [cmd, info] of Object.entries(group.commands)) {
       if (info.alias) continue;
-      const argStr = formatArgs(info.args);
+      const argStr = info.args?.length ? `<${info.args.join("> <")}>` : "";
       const line = `${`  ${cmd} ${argStr}`.padEnd(31)} `;
       console.log(`${line}${info.desc}`);
     }
@@ -2346,7 +2188,21 @@ Usage: surf <command> [args] [options]
   console.log(`Aliases: snap -> screenshot, read -> page.read, find -> search, go -> navigate
 
 Options:
-${formatGlobalOptions()}
+  --remote <host>:<port>       Route requests to a remote native host
+  --remote-credential <path>   Use a mode-0600 Ed25519 remote credential file
+  --remote-tls                 Use TLS through a TLS-terminating reverse proxy
+  --remote-tls-ca <path>       Replace system roots with a custom CA bundle
+  --remote-tls-server-name <name>  Override TLS SNI and certificate identity
+  --session <name>  Target a durable named session (or set SURF_SESSION)
+  --tab-id <id>     Target specific tab
+  --window-id <id>  Target specific window
+  --no-wait         Return immediately when the tab/browser is busy
+  --json            Output raw JSON including target metadata
+  --auto-capture    On error: capture screenshot + console to /tmp
+  --soft-fail       Host tool errors: warn on stderr, exit 0, no JSON error output
+  --no-lock         Bypass the legacy lock for compound client-side commands
+  --settle <ms>     Max wait for the page to settle after actions (default 2000, max 30000, surf.json settleMs)
+  --no-diff         Skip reporting page changes after actions
 
 Host tool-response errors: stderr includes [code] on the first line when supplied;
 --json also writes {"error":{"code":"...","message":"..."}} to stdout; exit 1.
@@ -2384,7 +2240,7 @@ const showGroupHelp = (groupName) => {
       console.log(`  ${cmd} -> ${info.alias}\n`);
       continue;
     }
-    const argStr = formatArgs(info.args);
+    const argStr = info.args?.length ? `<${info.args.join("> <")}>` : "";
     console.log(`  ${cmd} ${argStr}`);
     console.log(`      ${info.desc}`);
     if (info.opts) {
@@ -2411,13 +2267,13 @@ const showToolHelp = (toolName) => {
         showToolHelp(info.alias);
         return;
       }
-      const argStr = formatArgs(info.args);
+      const argStr = info.args?.length ? `<${info.args.join("> <")}>` : "";
       console.log(`\n${toolName} - ${info.desc}\n`);
       console.log(`Usage: surf ${toolName} ${argStr}\n`);
       if (info.args?.length) {
         console.log("Arguments:");
         for (const arg of info.args) {
-          console.log(`  ${formatArgs([arg])}`);
+          console.log(`  <${arg}>`);
         }
         console.log();
       }
@@ -2456,6 +2312,18 @@ const showToolHelp = (toolName) => {
     return;
   }
   reportUnknownCommand(toolName);
+};
+
+const editDistance = (a, b) => {
+  let previous = Array.from({ length: b.length + 1 }, (_, index) => index);
+  for (let i = 1; i <= a.length; i++) {
+    const current = [i];
+    for (let j = 1; j <= b.length; j++) {
+      current[j] = Math.min(previous[j] + 1, current[j - 1] + 1, previous[j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1));
+    }
+    previous = current;
+  }
+  return previous[b.length];
 };
 
 // Closest public names, comparing the whole name and its group part (`bookmarks` -> bookmark.*, `key.repeat` -> key).
@@ -2809,7 +2677,7 @@ if (args.includes("--script")) {
       req.sessionSource = scriptTarget.sessionSource;
     }
     if (scriptTarget.admission) req.admission = scriptTarget.admission;
-    const prepared = prepareToolRequest(endpoint, toolName, toolArgs);
+    const prepared = endpoint.kind === "remote" ? prepareRemoteTool(toolName, toolArgs) : (() => { const args = validateLocalToolPaths(toolName, toolArgs); return { args, uploads: [], downloads: [] }; })();
     req.params.args = prepared.args;
     return scriptTransport.request(req, resolveRequestDeadlineMs(toolName, prepared.args), prepared);
   };
@@ -2829,10 +2697,11 @@ if (args.includes("--script")) {
       const step = script.steps[i];
       const stepNum = `[${i + 1}/${total}]`;
       const toolName = step.tool;
-      // A script file can't turn on what loosens a safe default; only the command line can.
-      const toolArgs = withoutOptIns(step.args);
+      const toolArgs = step.args || {};
 
-      const argSummary = summarizeArgs(toolName, toolArgs);
+      const argSummary = Object.entries(toolArgs)
+        .map(([k, v]) => typeof v === "string" && v.length > 40 ? `${k}="${v.slice(0, 37)}..."` : `${k}=${JSON.stringify(v)}`)
+        .join(" ");
       const desc = argSummary ? `${toolName} ${argSummary}` : toolName;
 
       if (dryRun) {
@@ -2846,8 +2715,7 @@ if (args.includes("--script")) {
       try {
         const resp = await sendScriptRequest(toolName, toolArgs);
         if (resp.error) {
-          // An error that quotes what the step typed prints <redacted> in its place.
-          const errText = redactArgValues(toolName, toolArgs, resp.error.content?.[0]?.text || JSON.stringify(resp.error));
+          const errText = resp.error.content?.[0]?.text || JSON.stringify(resp.error);
           console.log(`FAIL`);
           console.log(`     Error: ${errText}`);
           results.push({ step: i + 1, tool: toolName, status: "fail", error: errText });
@@ -2858,10 +2726,9 @@ if (args.includes("--script")) {
           results.push({ step: i + 1, tool: toolName, status: "ok" });
         }
       } catch (e) {
-        const message = redactArgValues(toolName, toolArgs, e.message);
         console.log(`FAIL`);
-        console.log(`     Error: ${message}`);
-        results.push({ step: i + 1, tool: toolName, status: "fail", error: message });
+        console.log(`     Error: ${e.message}`);
+        results.push({ step: i + 1, tool: toolName, status: "fail", error: e.message });
         failed++;
         if (stopOnError) break;
       }
@@ -2909,10 +2776,9 @@ if (args[0] === "do") {
   let allowSemantic = false;
   let allowWrite = false;
   let inputsStdin = false;
-  let echoValue = false;
 
   // Reserved flags that aren't workflow args
-  const reservedFlags = ['file', 'f', 'dry-run', 'on-error', 'no-auto-wait', 'step-delay', 'json', 'tab-id', 'window-id', 'session', 'no-lock', 'no-wait', 'allow-semantic', 'allow-write', 'inputs-stdin', 'echo-value', 'raw'];
+  const reservedFlags = ['file', 'f', 'dry-run', 'on-error', 'no-auto-wait', 'step-delay', 'json', 'tab-id', 'window-id', 'session', 'no-lock', 'no-wait', 'allow-semantic', 'allow-write', 'inputs-stdin'];
 
   // Workflow-specific args (collected for variable substitution)
   const workflowArgs = {};
@@ -2958,8 +2824,6 @@ if (args[0] === "do") {
       allowWrite = true;
     } else if (arg === "--inputs-stdin") {
       inputsStdin = true;
-    } else if (arg === "--echo-value" || arg === "--raw") {
-      echoValue = true;
     } else if (arg.startsWith("--")) {
       // Workflow-specific arg (e.g., --email, --password)
       const key = arg.slice(2);
@@ -3070,8 +2934,6 @@ if (args[0] === "do") {
         process.exit(1);
       }
 
-      // A saved workflow may be a project's: its steps can't turn on what loosens a safe default.
-      workflow = { ...workflow, steps: withoutStepOptIns(workflow.steps) };
       steps = workflow.steps;
     }
   } catch (e) {
@@ -3083,10 +2945,6 @@ if (args[0] === "do") {
     console.error("Error: No commands found in workflow");
     process.exit(1);
   }
-  // Typed values, chosen options and --dry-run's variable values show only with --echo-value or
-  // echoValue in ~/surf.json.
-  const echoed = echoValue || loadUserConfig().echoValue === true;
-  if (echoed) steps = withEchoedValues(steps);
 
   // Apply arg defaults
   const vars = workflow ? applyArgDefaults(workflow, workflowArgs) : workflowArgs;
@@ -3122,11 +2980,10 @@ if (args[0] === "do") {
     steps.forEach((s, i) => {
       console.log(`  ${i + 1}. ${formatStep(s)}`);
     });
-    // Names only unless echoed: a variable can hold a password or other typed input.
     if (Object.keys(vars).length > 0) {
       console.log(`\nVariables:`);
       for (const [k, v] of Object.entries(vars)) {
-        console.log(`  ${k} = ${echoed ? JSON.stringify(v) : "<redacted>"}`);
+        console.log(`  ${k} = ${JSON.stringify(v)}`);
       }
     }
     process.exit(0);
@@ -3484,7 +3341,7 @@ if (args[0] === "workflow.validate") {
   }
 }
 
-const BOOLEAN_FLAGS = ["auto-capture", "json", "stream", "dry-run", "stop-on-error", "fail-fast", "clear", "submit", "escapes", "all", "include-hidden", "case-sensitive", "hard", "annotate", "fullpage", "full-page", "reset", "no-screenshot", "no-diff", "full", "soft-fail", "has-body", "exclude-static", "v", "vv", "request", "by-tab", "har", "jsonl", "no-save", "no-auto-wait", "no-lock", "no-wait", "window", "tab", "focused", "unfocused", "keep-target", "close-target", "replace", "refresh", "allow-post", "echo-value", "raw-bodies", "raw"];
+const BOOLEAN_FLAGS = ["auto-capture", "json", "stream", "dry-run", "stop-on-error", "fail-fast", "clear", "submit", "escapes", "all", "include-hidden", "case-sensitive", "hard", "annotate", "fullpage", "full-page", "reset", "no-screenshot", "no-diff", "full", "soft-fail", "has-body", "exclude-static", "v", "vv", "request", "by-tab", "har", "jsonl", "no-save", "no-auto-wait", "no-lock", "no-wait", "window", "tab", "focused", "unfocused", "keep-target", "close-target", "replace", "refresh", "allow-post"];
 
 const parseArgs = (rawArgs) => {
   const result = { positional: [], options: {} };
@@ -3612,9 +3469,6 @@ if (options["full-page"] === true) {
 }
 
 const config = loadConfig();
-// Fill and select results show the value typed or the options chosen only when asked: per call,
-// or in the user's own ~/surf.json (never a project's).
-if (loadUserConfig().echoValue === true && ECHO_COMMANDS.has(tool)) options["echo-value"] = true;
 const autoSaveEnabled = config.autoSaveScreenshots !== false && !options["no-save"];
 if (tool === "screenshot" && !options.output && !options.savePath && firstArg === undefined && autoSaveEnabled) {
   options.savePath = path.join(SURF_TMP, `surf-snap-${Date.now()}.png`);
@@ -3899,8 +3753,6 @@ if (toolArgs["network-path"] !== undefined && typeof toolArgs["network-path"] !=
 }
 const wantJson = toolArgs.json === true;
 delete toolArgs.json;
-// The network listing is a text table; --json lists the requests as JSON instead, ids included.
-if (wantJson && tool === "network" && toolArgs.format === undefined && toolArgs.stream !== true) toolArgs.format = "json";
 
 const autoCapture = toolArgs["auto-capture"] === true;
 delete toolArgs["auto-capture"];
@@ -4035,15 +3887,12 @@ if (!noDiff && PAGE_CHANGES_TOOLS.includes(finalTool)) {
 }
 
 const finalClassification = classifyTool(finalTool, toolArgs);
-// Tab and window commands (and tab.unname, a host command) don't target a session's tab, but a
-// session's playbook record holds them: the host uses `recordSession` only to file the command there.
-const recordsBrowserCommand = ["browser", "host"].includes(finalClassification.targetUse) && commandMetadata(finalTool).recordable;
 if (explicitSession !== undefined) {
   if (typeof explicitSession !== "string" || !explicitSession) {
     console.error("Error: --session requires a session name");
     process.exit(1);
   }
-  if ((finalClassification.targetUse !== "default-tab" && !recordsBrowserCommand) || finalTool.startsWith("session.")) {
+  if (finalClassification.targetUse !== "default-tab" || finalTool.startsWith("session.")) {
     console.error(`Error: --session does not apply to ${finalTool}`);
     process.exit(1);
   }
@@ -4051,11 +3900,8 @@ if (explicitSession !== undefined) {
     console.error("Error: use either --session or --tab-id/--window-id, not both");
     process.exit(1);
   }
-  if (recordsBrowserCommand) globalOpts.recordSession = explicitSession;
-  else {
-    globalOpts.session = explicitSession;
-    globalOpts.sessionSource = "explicit";
-  }
+  globalOpts.session = explicitSession;
+  globalOpts.sessionSource = "explicit";
 } else if (
   environmentSession &&
   finalClassification.targetUse === "default-tab" &&
@@ -4065,8 +3911,6 @@ if (explicitSession !== undefined) {
 ) {
   globalOpts.session = environmentSession;
   globalOpts.sessionSource = "environment";
-} else if (environmentSession && recordsBrowserCommand) {
-  globalOpts.recordSession = environmentSession;
 }
 if (noWait) globalOpts.admission = { wait: false };
 
@@ -4184,7 +4028,7 @@ if (streamMode && (tool === "console" || tool === "network")) {
 
 let transferPlan;
 try {
-  transferPlan = prepareToolRequest(endpoint, finalTool, toolArgs);
+  transferPlan = endpoint.kind === "remote" ? prepareRemoteTool(finalTool, toolArgs) : (() => { const args = validateLocalToolPaths(finalTool, toolArgs); return { args, uploads: [], downloads: [] }; })();
 } catch (error) {
   const message = finalTool === "record" && endpoint.kind === "remote"
     ? `record is not supported with remote endpoint ${endpoint.display}`
@@ -4204,7 +4048,7 @@ const request = {
 const sendRequest = async (toolName, toolArgs = {}, timeoutMs = 5000) => {
   const transport = await openClientTransport(endpoint, { requestTimeoutMs: timeoutMs });
   try {
-    const prepared = prepareToolRequest(endpoint, toolName, toolArgs);
+    const prepared = endpoint.kind === "remote" ? prepareRemoteTool(toolName, toolArgs) : (() => { const args = validateLocalToolPaths(toolName, toolArgs); return { args, uploads: [], downloads: [] }; })();
     return await transport.request({
       type: "tool_request",
       method: "execute_tool",
@@ -4898,14 +4742,10 @@ async function handleResponse(response) {
     // Network list - handle both new (entries) and old (requests) formats
     const items = data.entries || data.requests || [];
 
-    if (toolArgs.format === "json") {
-      // The host's JSON listing: ids and capture warnings included.
-      console.log(JSON.stringify(data, null, 2));
-    } else if (items.length === 0) {
+    if (items.length === 0) {
       console.log("No network requests captured");
     } else if (data._format === 'raw') {
       // Raw JSON output - print entries array directly
-      for (const line of networkFormatters.describeCaptureGaps(data.capture)) console.error(`Warning: ${line}`);
       console.log(JSON.stringify(items, null, 2));
     } else {
       // Simple compact format for now

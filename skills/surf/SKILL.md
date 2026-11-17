@@ -1,6 +1,6 @@
 ---
 name: surf
-description: Drive the user's logged-in Chrome from the shell. Use for browser automation (open, read, click, fill, upload, screenshot), reading a site's feed or API, turning a site into a reusable op, or asking ChatGPT, Gemini, Perplexity or Grok through the browser.
+description: Drive the user's logged-in Chrome from the shell. Use for browser automation (open, read, click, fill, upload, screenshot), reading a site's feed or API, or asking ChatGPT, Gemini, Perplexity or Grok through the browser.
 ---
 
 # Surf
@@ -24,9 +24,7 @@ It is one tab in its own background window, and its commands run in order. Sessi
 
 **Fail fast on walls.** `wait.ready` returns when the page is ready and fails with `page_login|page_challenge|page_not_found|page_error|page_timeout`; `--accept login` returns that state instead.
 
-**API before scroll.** For feeds and threads, read the site's own API: `use x thread`, or `network.wait` then `network.replay --set`. Replay runs in the tab, so it fails, naming the origin to `go` back to, once the tab has left the page that sent the request. `collect` scrolls the page when there is no API and needs a visible tab (`session.ensure <name> <url> --window --focused`).
-
-**A site into an op: `surf parse` first.** `surf parse <url> --goal "<what you want>"` saves a tested read op and prints its `surf use` line. Exit 0: rename weak inputs (its `surf parse … --input` line) or fields (its `pb extract` line, then re-save the test), then stop. Exit 1 or 2, data that shows only after a click, search or scroll, writes and chains: follow [references/parse-recipe.md](references/parse-recipe.md).
+**API before scroll.** For feeds and threads, read the site's own API: `use x thread`, or `network.wait` then `network.replay --set`. `collect` scrolls the page when there is no API and needs a visible tab (`session.ensure <name> <url> --window --focused`).
 
 **Values, not pages.** To read a few values (a total, a date, a count), use `semantic.extract`: it returns typed values without a full page read.
 
@@ -53,9 +51,9 @@ page.text [--ref e5]              # --ref e5: that element's text or a field's w
 click <ref> | --selector <css> [--index <n>] | --x <n> --y <n>   [--button left|right|double|triple]
 type <text> [--ref e5|--into <css>] [--submit] [--clear] [--escapes] [--method cdp|js]   # --escapes turns \n \t into newline, tab
 key <key> [--repeat <n>]          # Enter, Escape, cmd+a
-select <ref|css> <value>… [--by value|label|index] [--echo-value]   # prints the count; --echo-value the options
+select <ref|css> <value>… [--by value|label|index]
 check <ref> | uncheck <ref>       # sets the state; already set = nothing clicked
-locate.role <role> [--name <text>] [--action click|fill|hover|text] [--value <v>] [--echo-value]   # a fill prints OK; --echo-value the value too
+locate.role <role> [--name <text>] [--action click|fill|hover|text] [--value <v>]
 wait.ready [--selector <css>] [--text <t>] [--url-prefix <u>] [--accept login,challenge,…] [--timeout <ms>=20000]
 screenshot [--output <f>] [--full-page] [--annotate] [--no-save]   # auto-saves to /tmp
 js <code> [--file <f>]            # `return` a value
@@ -103,7 +101,7 @@ emulate: emulate.network emulate.cpu emulate.geo emulate.device emulate.touch
 ai: kimi aistudio aistudio.build ai
 semantic: semantic.find semantic.filter semantic.verify | semantic auth set | semantic auth status | semantic auth clear
 oracle: oracle follow | oracle status | oracle list
-playbook: parse | playbook list | playbook show | playbook ops | playbook run | playbook test | playbook extract | playbook suggest | playbook save | playbook param | playbook record start | playbook record mark | playbook record stop | playbook record status | playbook record candidates | playbook trace export | playbook export | playbook import | playbook client derive | playbook client export | playbook client verify
+playbook: playbook list | playbook show | playbook ops | playbook run | playbook suggest | playbook save | playbook record start | playbook record mark | playbook record stop | playbook record status | playbook trace export | playbook export | playbook import | playbook client derive | playbook client export | playbook client verify
 workflow: batch workflow.list workflow.info workflow.validate
 setup: install uninstall update config server extension-path health smoke remote authorize | remote list | remote revoke
 ```
@@ -116,4 +114,3 @@ setup: install uninstall update config server extension-path health smoke remote
 - oracle jobs, files, Pro quota → [references/oracle.md](references/oracle.md)
 - browser on another machine → [references/remote.md](references/remote.md)
 - workflow JSON, playbooks → [references/workflows.md](references/workflows.md)
-- `surf parse` exits 1 or 2, data after a click, search or scroll, writes, chains → [references/parse-recipe.md](references/parse-recipe.md)

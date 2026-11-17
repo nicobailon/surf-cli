@@ -737,14 +737,6 @@ function createClientTransferController({ writer, limits = {}, onActivity = () =
   return { upload, expectDownload, cancelDownload, cancelDownloads, hasDownload, handle, cleanup };
 }
 
-// What a client (the CLI, --script, surf do, MCP) sends for `tool` to `endpoint`: paths checked
-// (local) or planned for transfer (remote), and network.export given the caller's folder, so the
-// export redacts the headers that project's saved ops read from the environment.
-function prepareToolRequest(endpoint, tool, args = {}) {
-  const sent = tool === "network.export" ? { ...args, projectDir: process.cwd() } : args;
-  return endpoint.kind === "remote" ? prepareRemoteTool(tool, sent) : { args: validateLocalToolPaths(tool, sent), uploads: [], downloads: [] };
-}
-
 module.exports = {
   AUTO_SCREENSHOT_TOOLS,
   PAGE_CHANGES_TOOLS,
@@ -764,7 +756,6 @@ module.exports = {
   materializeRemoteTool,
   parsePathDescriptor,
   prepareRemoteTool,
-  prepareToolRequest,
   randomStagingPath,
   validateLocalToolPaths,
   rewritePath,

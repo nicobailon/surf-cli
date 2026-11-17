@@ -1,6 +1,5 @@
 import { CDPController, type PendingDialog } from "../cdp/controller";
 import { debugLog } from "../utils/debug";
-import { matchesNetworkType } from "../utils/network-type";
 import type { PageChanges } from "../utils/page-changes";
 import {
   type CdpFrameEntry,
@@ -891,8 +890,7 @@ async function performLocateAction(
   action: string,
   value: string | undefined,
   cdp: CDPController,
-  frameId: number = 0,
-  echoValue = false
+  frameId: number = 0
 ): Promise<any> {
   switch (action) {
     case "click": {
@@ -906,7 +904,7 @@ async function performLocateAction(
         ref,
         value,
       }, { frameId });
-      return result.error ? result : { success: true, action: "fill", ref, ...(echoValue ? { value } : {}) };
+      return result.error ? result : { success: true, action: "fill", ref, value };
     }
     case "hover": {
       const coords = await chrome.tabs.sendMessage(tabId, {
@@ -1831,7 +1829,7 @@ export async function handleMessage(
 
         // Perform action if specified
         if (message.action && result.ref) {
-          return await performLocateAction(tabId, result.ref, message.action, message.value, cdp, locateFrameId, message.echoValue === true);
+          return await performLocateAction(tabId, result.ref, message.action, message.value, cdp, locateFrameId);
         }
 
         return result;
@@ -1857,7 +1855,7 @@ export async function handleMessage(
 
         // Perform action if specified
         if (message.action && result.ref) {
-          return await performLocateAction(tabId, result.ref, message.action, message.value, cdp, textFrameId, message.echoValue === true);
+          return await performLocateAction(tabId, result.ref, message.action, message.value, cdp, textFrameId);
         }
 
         return result;
@@ -1882,7 +1880,7 @@ export async function handleMessage(
 
         // Perform action if specified
         if (message.action && result.ref) {
-          return await performLocateAction(tabId, result.ref, message.action, message.value, cdp, labelFrameId, message.echoValue === true);
+          return await performLocateAction(tabId, result.ref, message.action, message.value, cdp, labelFrameId);
         }
 
         return result;
@@ -3112,7 +3110,7 @@ export async function handleMessage(
 
     case "START_NETWORK_CAPTURE": {
       if (!tabId) throw new Error("No tabId provided");
-      cdp.clearNetworkRequests(tabId, { restart: true });
+      cdp.clearNetworkRequests(tabId);
       await cdp.enableNetworkTracking(tabId, {
         bodyMode: message.bodyMode || "text",
         perBodyBytes: message.perBodyBytes,
@@ -3224,8 +3222,6 @@ export async function handleMessage(
 
     case "READ_NETWORK_REQUESTS": {
       if (!tabId) throw new Error("No tabId provided");
-      // Taken before reading turns capture on, so a stopped capture shows as stopped.
-      const capture = cdp.getNetworkCaptureStatus(tabId);
 
       try {
         if (message.bodyMode !== undefined || message.perBodyBytes !== undefined || message.totalBodyBytes !== undefined) {
@@ -3238,7 +3234,6 @@ export async function handleMessage(
       if (message.full) {
         let entries = cdp.getNetworkEntries(tabId, {
           urlPattern: message.urlPattern,
-          includeStatic: message.includeStatic === true,
         });
 
         // Apply filters
@@ -3249,7 +3244,7 @@ export async function handleMessage(
           entries = entries.filter(e => e.status === message.status);
         }
         if (message.contentType) {
-          entries = entries.filter(e => matchesNetworkType(e, message.contentType));
+          entries = entries.filter(e => e.type === message.contentType);
         }
 
         if (message.clear) {
@@ -3260,7 +3255,6 @@ export async function handleMessage(
         const limit = message.limit || 100;
         return {
           entries: entries.slice(0, limit),
-          capture,
           format: message.format,
           verbose: message.verbose
         };
@@ -3268,9 +3262,10 @@ export async function handleMessage(
 
       let requests = cdp.getNetworkRequests(tabId, {
         urlPattern: message.urlPattern,
+        limit: message.limit || 100,
       });
 
-      // Apply filters, then keep the newest `limit` matches
+      // Apply filters
       if (message.method) {
         requests = requests.filter(r => r.method === message.method);
       }
@@ -3278,9 +3273,8 @@ export async function handleMessage(
         requests = requests.filter(r => r.status === message.status);
       }
       if (message.contentType) {
-        requests = requests.filter(r => matchesNetworkType(r, message.contentType));
+        requests = requests.filter(r => r.type === message.contentType);
       }
-      requests = requests.slice(-(message.limit || 100));
 
       if (message.clear) {
         cdp.clearNetworkRequests(tabId);
@@ -3288,7 +3282,6 @@ export async function handleMessage(
 
       return {
         requests,
-        capture,
         format: message.format,
         verbose: message.verbose
       };
@@ -3341,7 +3334,7 @@ export async function handleMessage(
         entries = entries.filter(e => e.status === message.status);
       }
       if (message.type) {
-        entries = entries.filter(e => matchesNetworkType(e, message.type));
+        entries = entries.filter(e => e.type === message.type);
       }
       if (message.since) {
         entries = entries.filter(e => e.ts >= message.since);
@@ -4721,8 +4714,6 @@ initNativeMessaging(async (msg) => {
   }
 
   if (tabId && msg.frameId !== undefined) await validateRequestedFrame(tabId, msg.frameId);
-  // A dialog blocks attaching, so dialog commands skip this.
-  if (tabId && !isDialogCommand) await cdp.resumeNetworkCapture(tabId);
   const handle = () => handleMessage({ ...msg, tabId }, {} as chrome.runtime.MessageSender);
   const runAction = tabId && !isDialogCommand
     ? () => returnOnNativeDialog(tabId, msg.watchDialogs === true, handle)

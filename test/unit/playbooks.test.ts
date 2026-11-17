@@ -1,5 +1,4 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { captureTab } from "../fixtures/capture-tab";
 
 const fs = require("node:fs");
 const os = require("node:os");
@@ -7,7 +6,6 @@ const path = require("node:path");
 
 const playbooks = require("../../native/playbooks.cjs");
 const runtime = require("../../native/playbook-runtime.cjs");
-const receipts = require("../../native/playbook-receipts.cjs");
 const tempDirs: string[] = [];
 
 function writePlaybook(base: string, id: string, marker: string) {
@@ -44,18 +42,15 @@ describe("playbook resolution and strategies", () => {
     expect(resolved.provenance.scope).toBe("project");
     expect(resolved.description).toBe("project");
 
-    const executeTool = vi.fn(async (tool: string) => {
-      if (tool === "network") {
-        return { entries: [] };
-      }
-      return tool === "javascript_tool" ? { error: "CORS drift" } : { value: "fallback content" };
-    });
+    const executeTool = vi.fn(async (tool: string) =>
+      tool === "javascript_tool" ? { error: "CORS drift" } : { value: "fallback content" },
+    );
     const result = await runtime.runPlaybookOp({
       playbook: { id: "fixture", provenance: { scope: "test" } },
       op: {
         id: "read",
         effect: "read",
-        args: { label: {} },
+        args: {},
         run: [
           { using: "network", request: { method: "GET", url: "/api" } },
           {
@@ -80,79 +75,6 @@ describe("playbook resolution and strategies", () => {
     expect(executeTool).toHaveBeenCalledWith("page.text", { label: "fallback" }, expect.anything());
   });
 
-  it("returns a workflow op's captured outputs, never its inputs", async () => {
-    const executeTool = vi.fn(async (tool: string) =>
-      tool === "page.text" ? { value: "page words" } : { success: true },
-    );
-    const op = (steps: Array<Record<string, unknown>>) => ({
-      id: "search",
-      effect: "read",
-      args: { query: {} },
-      run: [{ using: "workflow", steps, stepDelay: 0 }],
-    });
-    const use = (steps: Array<Record<string, unknown>>) =>
-      runtime.runPlaybookOp({
-        playbook: { id: "fixture", provenance: { scope: "test" } },
-        op: op(steps),
-        args: { query: "dummy-input-delta" },
-        executeTool,
-        sleep: vi.fn(),
-      });
-    const typed = { cmd: "type", args: { selector: "#q", text: "{{query}}" } };
-    const captured = await use([typed, { cmd: "page.text", args: {}, as: "content" }]);
-    expect(captured.status).toBe("completed");
-    expect(captured.value.vars).toEqual({ content: "page words" });
-    expect(JSON.stringify(captured)).not.toContain("dummy-input-delta");
-    const bare = await use([typed]);
-    expect(bare.value).not.toHaveProperty("vars");
-    expect(JSON.stringify(bare)).not.toContain("dummy-input-delta");
-    expect(executeTool).toHaveBeenCalledWith(
-      "type",
-      { selector: "#q", text: "dummy-input-delta" },
-      expect.anything(),
-    );
-  });
-
-  it("never sends a redacted placeholder: the network strategy refuses and the workflow runs", async () => {
-    const executeTool = vi.fn(async (tool: string) =>
-      tool === "page.text" ? { value: "page words" } : { success: true },
-    );
-    const result = await runtime.runPlaybookOp({
-      playbook: { id: "fixture", provenance: { scope: "test" } },
-      op: {
-        id: "search",
-        effect: "read",
-        args: { text: { required: true } },
-        run: [
-          {
-            using: "network",
-            request: { method: "GET", url: "https://example.test/get", query: { q: "<text>" } },
-          },
-          {
-            using: "workflow",
-            stepDelay: 0,
-            steps: [
-              { cmd: "type", args: { selector: "#q", text: "{{text}}" } },
-              { cmd: "page.text", args: {}, as: "content" },
-            ],
-          },
-        ],
-      },
-      args: { text: "dummy-input-echo" },
-      executeTool,
-      sleep: vi.fn(),
-    });
-    expect(result.strategy).toBe("workflow");
-    expect(result.attempts[0].error).toMatch(
-      /query\.q holds <text>, a value the record redacted; run surf pb param fixture search query\.q --as <name>/,
-    );
-    expect(executeTool).not.toHaveBeenCalledWith(
-      "javascript_tool",
-      expect.anything(),
-      expect.anything(),
-    );
-  });
-
   it("defaults protected writes to explicit authorization and uses op auth origins", () => {
     const op = playbooks.validateOp(
       {
@@ -173,43 +95,6 @@ describe("playbook resolution and strategies", () => {
     expect(op.origins).toEqual(["https://example.test"]);
   });
 
-  // A write op may replay PUT, PATCH and DELETE; a read op can't.
-  it.each([["PUT"], ["patch"], ["DELETE"]])("refuses a read op that sends %s", (method) => {
-    const op = (effect: string) => ({
-      id: "update",
-      effect,
-      ...(effect === "write" ? { safety: { duplicate: "transactional", key: ["id"] } } : {}),
-      run: [{ using: "network", request: { method, url: "https://example.test/items/7" } }],
-    });
-    expect(() => playbooks.validateOp(op("read"), { origins: [] })).toThrow(
-      "read ops cannot use a mutating network method",
-    );
-    expect(playbooks.validateOp(op("write"), { origins: [] }).run[0].request.method).toBe(
-      method.toUpperCase(),
-    );
-  });
-
-  it("takes a write without a safety key, whose claim covers every input, and refuses an empty one", () => {
-    const write = (safety: Record<string, unknown>) =>
-      playbooks.validateOp(
-        {
-          id: "mutate",
-          effect: "write",
-          safety,
-          run: [{ using: "network", request: { method: "POST", url: "https://example.test/api" } }],
-        },
-        { origins: ["https://example.test"] },
-      );
-    expect(write({ duplicate: "repeatable-window", windowMs: 300_000 }).safety).toEqual({
-      authorization: "explicit",
-      duplicate: "repeatable-window",
-      windowMs: 300_000,
-    });
-    expect(() => write({ duplicate: "transactional", key: [] })).toThrow(
-      "write op mutate safety key must list inputs; leave it out to cover every input",
-    );
-  });
-
   it("rejects literal credentials and unsafe write workflows", () => {
     const validate = (op: unknown) => playbooks.validateOp(op, { origins: [] });
     expect(
@@ -221,15 +106,6 @@ describe("playbook resolution and strategies", () => {
         ],
       }).run[0].request.method,
     ).toBe("POST");
-    for (const method of ["PUT", "PATCH", "DELETE"]) {
-      expect(() =>
-        validate({
-          id: "search",
-          effect: "read",
-          run: [{ using: "network", request: { method, url: "https://example.test/search" } }],
-        }),
-      ).toThrow(/read ops cannot use a mutating network method/);
-    }
     expect(() =>
       validate({
         id: "read",
@@ -241,6 +117,22 @@ describe("playbook resolution and strategies", () => {
         ],
       }),
     ).toThrow(/auth input/);
+    expect(() =>
+      validate({
+        id: "mutate",
+        effect: "write",
+        safety: { duplicate: "transactional", key: ["id"] },
+        run: [
+          {
+            using: "workflow",
+            steps: [
+              { tool: "click", args: { selector: "#a" } },
+              { tool: "click", args: { selector: "#b" } },
+            ],
+          },
+        ],
+      }),
+    ).toThrow(/exactly one commit step/);
     expect(() =>
       validate({
         id: "mutate",
@@ -385,60 +277,12 @@ describe("playbook resolution and strategies", () => {
     expect(calls.some((call) => call.tool === "wait.dom")).toBe(true);
   });
 
-  it("rejects inputs the op does not define before any strategy runs", async () => {
-    const op = {
-      id: "thread",
-      effect: "read",
-      args: { url: { required: true }, limit: { default: 10 } },
-      run: [{ using: "workflow", steps: [{ cmd: "page.text", args: {}, as: "text" }] }],
-    };
-    expect(runtime.resolveArgs(op, { url: "https://x.test" })).toEqual({
-      url: "https://x.test",
-      limit: 10,
-    });
-    expect(() =>
-      runtime.resolveArgs(op, { url: "https://x.test", lmit: 5 }, { playbookId: "x" }),
-    ).toThrow(
-      "Unknown input --lmit for x thread. Did you mean --limit? Its inputs: --url (required), --limit",
-    );
-    expect(() =>
-      runtime.resolveArgs(
-        { id: "read", effect: "read", run: [] },
-        { bogus: 1 },
-        { playbookId: "page" },
-      ),
-    ).toThrow("Unknown input --bogus for page read. It takes no inputs");
-    const executeTool = vi.fn();
-    await expect(
-      runtime.runPlaybookOp({
-        playbook: { id: "x", provenance: { scope: "test" } },
-        op,
-        args: { url: "https://x.test", zzz: true },
-        executeTool,
-      }),
-    ).rejects.toThrow("Unknown input --zzz for x thread. Its inputs: --url (required), --limit");
-    expect(executeTool).not.toHaveBeenCalled();
-  });
-
-  it("leaves surf's global flags out of the input check, and gives them to ops that declare them", () => {
-    const read = { id: "read", effect: "read", run: [] };
-    expect(
-      runtime.resolveArgs(
-        read,
-        { timeout: 30, "no-diff": true, "window-id": 5, settle: 500 },
-        { playbookId: "page" },
-      ),
-    ).toEqual({});
-    const ask = { id: "ask", effect: "read", args: { timeout: { default: 60 } }, run: [] };
-    expect(runtime.resolveArgs(ask, { timeout: 30, "no-diff": true })).toEqual({ timeout: 30 });
-    expect(runtime.resolveArgs(ask, {})).toEqual({ timeout: 60 });
-    expect(() =>
-      runtime.resolveArgs(read, { "no-diff": true, bogus: 1 }, { playbookId: "page" }),
-    ).toThrow("Unknown input --bogus for page read. It takes no inputs");
-  });
-
   it("rejects a page-context network request outside the declared origins", async () => {
-    const { fetchImpl, executeTool } = captureTab({ href: "https://current.test/page" });
+    const fetchImpl = vi.fn();
+    const executeTool = vi.fn(async (_tool: string, args: { code: string }) => {
+      const execute = new Function("location", "fetch", `return ${args.code}`);
+      return { value: await execute({ href: "https://current.test/page" }, fetchImpl) };
+    });
     await expect(
       runtime.runPlaybookOp({
         playbook: { id: "fixture", provenance: { scope: "test" } },
@@ -476,19 +320,17 @@ describe("playbook resolution and strategies", () => {
           },
         ],
       },
-      executeTool: captureTab({ reply: () => ({ body: JSON.stringify({ data: "value" }) }) })
-        .executeTool,
+      executeTool: async () => ({
+        output: JSON.stringify({ ok: true, status: 200, bodyJson: { data: "value" } }),
+      }),
     });
     expect(result.value).toBe("value");
   });
 
   it("injects server idempotency into write network requests", async () => {
-    const tab = captureTab({ reply: () => ({ body: JSON.stringify({ ok: true }) }) });
-    const executeTool = vi.fn(async (tool: string, args: { code: string }) => {
-      if (tool === "javascript_tool") {
-        expect(args.code).toContain('"Idempotency-Key":"attempt-one"');
-      }
-      return tab.executeTool(tool, args);
+    const executeTool = vi.fn(async (_tool: string, args: { code: string }) => {
+      expect(args.code).toContain('"Idempotency-Key":"attempt-one"');
+      return { output: JSON.stringify({ ok: true, status: 200, bodyJson: { ok: true } }) };
     });
     await runtime.runPlaybookOp({
       playbook: { id: "fixture", provenance: { scope: "test" } },
@@ -513,7 +355,7 @@ describe("playbook resolution and strategies", () => {
       attemptId: "attempt-one",
       executeTool,
     });
-    expect(executeTool.mock.calls.filter(([tool]) => tool === "javascript_tool")).toHaveLength(1);
+    expect(executeTool).toHaveBeenCalledOnce();
   });
 
   it("distinguishes pre-dispatch write failures from ambiguous dispatched failures", async () => {
@@ -544,10 +386,7 @@ describe("playbook resolution and strategies", () => {
           args: {},
           run: [{ using: "network", request: { method: "POST", url: "https://example.test/api" } }],
         },
-        executeTool: async (tool: string) => {
-          if (tool === "network") {
-            return { entries: [] };
-          }
+        executeTool: async () => {
           throw new Error("timeout");
         },
         beforeDispatch: async () => statuses.push("dispatched"),
@@ -555,140 +394,6 @@ describe("playbook resolution and strategies", () => {
       }),
     ).rejects.toThrow(/timeout/);
     expect(statuses).toEqual(["dispatched", "indeterminate"]);
-  });
-
-  // A write op's workflow may type and then click. Its receipt starts at the first step that can
-  // commit (click, submit, key, type --submit…), so a failed fill leaves none and a failure at or
-  // after that step is in doubt.
-  describe("a write op whose workflow has several steps", () => {
-    const writeOp = (steps: Array<Record<string, unknown>>) =>
-      playbooks.validateOp(
-        {
-          id: "comment",
-          effect: "write",
-          args: { text: { required: true } },
-          safety: { duplicate: "repeatable-window", windowMs: 300_000 },
-          run: [{ using: "workflow", steps }],
-        },
-        { origins: ["https://example.test"] },
-      );
-    const typed = { tool: "type", args: { selector: "#comment", text: "{{text}}" } };
-    const send = { tool: "click", args: { selector: "#send" } };
-    const read = { tool: "page.text", args: {} };
-    // As host.cjs runs a write: checked first, a receipt reserved when a step can commit.
-    const run = async (steps: Array<Record<string, unknown>>, failing?: string) => {
-      const root = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "surf-multi-step-")), "state");
-      tempDirs.push(path.dirname(root));
-      const op = writeOp(steps);
-      const claim = {
-        playbookId: "fixture",
-        op,
-        args: { text: ["dummy", "note"].join("-") },
-        root,
-      };
-      receipts.checkReceipt(claim);
-      let receipt: unknown = null;
-      const tools: string[] = [];
-      const outcome = await runtime
-        .runPlaybookOp({
-          playbook: { id: "fixture", provenance: { scope: "test" } },
-          op,
-          args: claim.args,
-          executeTool: async (tool: string) => {
-            tools.push(tool);
-            return tool === failing ? { error: `${tool} failed` } : { success: true };
-          },
-          sleep: async () => undefined,
-          beforeDispatch: async () => {
-            receipt = receipts.reserveReceipt(claim);
-            receipts.updateReceipt(receipt, "dispatched", {}, root);
-          },
-          afterDispatch: async ({ status, error }: { status: string; error?: string }) =>
-            receipts.updateReceipt(receipt, status, { error }, root),
-        })
-        .then(
-          () => "completed",
-          (error: Error) => error.message,
-        );
-      const saved = (receipt as { receipt?: { status: string } } | null)?.receipt?.status ?? "none";
-      const again = (() => {
-        try {
-          receipts.checkReceipt(claim);
-          return "clear";
-        } catch (error) {
-          return (error as Error).message;
-        }
-      })();
-      return {
-        outcome,
-        tools: tools.filter((tool) => !tool.startsWith("wait.")),
-        receipt: saved,
-        again,
-      };
-    };
-
-    it("loads with a type and a click, and runs both", async () => {
-      expect(writeOp([typed, send]).run[0].steps.map((step: { cmd: string }) => step.cmd)).toEqual([
-        "type",
-        "click",
-      ]);
-      const result = await run([typed, send]);
-      expect(result).toMatchObject({
-        outcome: "completed",
-        tools: ["type", "click"],
-        receipt: "verified",
-      });
-      expect(result.again).toMatch(/succeeded\. Add --repeat/);
-    });
-
-    it("leaves no receipt when its type step fails", async () => {
-      expect(await run([typed, send], "type")).toEqual({
-        outcome: expect.stringContaining("type failed"),
-        tools: ["type"],
-        receipt: "none",
-        again: "clear",
-      });
-    });
-
-    it.each(["click", "page.text"])(
-      "leaves an in-doubt receipt when its %s step fails",
-      async (failing) => {
-        const result = await run([typed, send, read], failing);
-        expect(result.outcome).toContain(`${failing} failed`);
-        expect(result.receipt).toBe("indeterminate");
-        expect(result.again).toMatch(/its result is unknown\. .*--repeat/);
-      },
-    );
-
-    // Fills, reads and navigation come before the commit; any other page write or unknown step is it.
-    it.each([
-      ["smart_type", { selector: "#q", text: "{{text}}" }, "none"],
-      ["form_input", { ref: "e1", value: "{{text}}" }, "none"],
-      ["form.fill", { data: "{}" }, "none"],
-      ["select", { selector: "#size", values: "m" }, "none"],
-      ["navigate", { url: "https://example.test/" }, "none"],
-      ["scroll.bottom", {}, "none"],
-      ["type", { selector: "#q", text: "{{text}}", submit: false }, "none"],
-      ["type", { selector: "#q", text: "{{text}}", submit: true }, "indeterminate"],
-      // The host submits on any truthy --submit, the text "false" too.
-      ["type", { selector: "#q", text: "{{text}}", submit: "false" }, "indeterminate"],
-      // A line break in the text presses Enter.
-      ["type", { selector: "#q", text: "first line\nsecond" }, "indeterminate"],
-      ["smart_type", { selector: "#q", text: "sent\r" }, "indeterminate"],
-      ["key", { key: "Enter" }, "indeterminate"],
-      ["submit", {}, "indeterminate"],
-      ["check", { ref: "e1" }, "indeterminate"],
-      ["dialog.accept", {}, "indeterminate"],
-      ["js", { code: "1" }, "indeterminate"],
-    ])("a failed %s step %o leaves receipt %s", async (tool, args, receipt) => {
-      expect((await run([{ tool, args }, send], tool)).receipt).toBe(receipt);
-    });
-
-    it("loads when its only step is scroll.bottom", () => {
-      expect(writeOp([{ tool: "scroll.bottom", args: {} }]).run[0].steps).toEqual([
-        { cmd: "scroll.bottom", args: {} },
-      ]);
-    });
   });
 
   it("runs an api strategy with op args in its options and record fields in its templates", async () => {

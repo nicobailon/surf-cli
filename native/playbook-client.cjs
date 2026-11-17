@@ -3,112 +3,64 @@ const http = require("http");
 const path = require("path");
 const { execFile } = require("child_process");
 const { atomicWriteFile, atomicWriteJson, ensurePrivateDir, getPrivateStateRoot, readPrivateJson } = require("./private-state.cjs");
-const { escapedOp, renderRequest, requestInputs, resolveArgValues } = require("./playbook-template.cjs");
-const { findRedactedPlaceholder, placeholderError } = require("./record-typed-values.cjs");
 const { resolveOp } = require("./playbooks.cjs");
-const { isReplayCandidate, readRecord, recordsRoot, requestEffect, requestFromEntry } = require("./playbook-records.cjs");
-const { WINNER_MARGIN, isWeak, scoreEntries } = require("./record-candidates.cjs");
-const { assertNoEmbeddedSecrets, assertUrlHasNoEmbeddedSecrets, decodeBudget, redactJson, redactObject, redactText, redactValues, safeHeaders, secretIn, secretSpellings, spanningValues, valueSpellings } = require("./redaction.cjs");
+const { readRecord, recordsRoot } = require("./playbook-records.cjs");
+const { assertNoEmbeddedSecrets, assertUrlHasNoEmbeddedSecrets, safeHeaders } = require("./redaction.cjs");
 const { version: PACKAGE_VERSION } = require("../package.json");
 
-// URL parsing would percent-encode `{{name}}` in a path, so placeholders (and, in escaped text, the
-// `{{!}}` escape) sit out the parse.
-function absoluteEndpointUrl(url, origins = [], { escapes = false } = {}) {
+function absoluteEndpointUrl(url, origins = []) {
   if (typeof url !== "string" || !url) throw new Error("client projection requires an endpoint URL");
-  const placeholders = [];
-  const pattern = escapes ? /\{\{(?:[a-zA-Z0-9._-]+|!)\}\}/g : /\{\{[a-zA-Z0-9._-]+\}\}/g;
-  const masked = url.replace(pattern, (match) => `__surf_template_${placeholders.push(match) - 1}__`);
-  const unmask = (text) => text.replace(/__surf_template_(\d+)__/g, (_, index) => placeholders[Number(index)]);
   try {
-    const parsed = new URL(masked);
+    const parsed = new URL(url);
     if (parsed.protocol !== "http:" && parsed.protocol !== "https:") throw new Error("client projection endpoint must use HTTP(S)");
-    return unmask(parsed.toString());
+    return parsed.toString();
   } catch (error) {
     if (/^[a-zA-Z][a-zA-Z0-9+.-]*:/.test(url)) throw error;
   }
   if (!Array.isArray(origins) || origins.length !== 1) {
     throw new Error("client projection requires an absolute endpoint URL or exactly one declared origin");
   }
-  const resolved = new URL(masked, origins[0]);
+  const resolved = new URL(url, origins[0]);
   if (resolved.protocol !== "http:" && resolved.protocol !== "https:") throw new Error("client projection endpoint must use HTTP(S)");
-  return unmask(resolved.toString());
-}
-
-function usesJsonExtract(extract) {
-  return Boolean(extract && (extract.records !== undefined || extract.fields || extract.filter));
+  return resolved.toString();
 }
 
 function networkStrategy(op) {
-  if (op.chain) throw new Error(`op ${op.id} is a chain op; a client runs one op, so export a step's op`);
   const strategy = op.run.find((candidate) => candidate.using === "network");
   if (!strategy) throw new Error(`op ${op.id} has no validated network strategy`);
   return strategy;
 }
 
-// The generated client's options: `--name value` and `--name=value`, either of which can be the
-// empty string. A bare `--name` is true only for an input the op declares a boolean.
-function parseClientArgs(argv, specs) {
-  const args = {};
-  for (let i = 0; i < argv.length; i++) {
-    if (!argv[i].startsWith("--")) continue;
-    const equals = argv[i].indexOf("=");
-    if (equals > 2) {
-      args[argv[i].slice(2, equals)] = argv[i].slice(equals + 1);
-      continue;
-    }
-    const name = argv[i].slice(2);
-    const next = argv[i + 1];
-    if (next !== undefined && !next.startsWith("--")) args[name] = argv[++i];
-    else if (specs[name]?.type === "boolean") args[name] = true;
-    else throw new Error(`--${name} needs a value (--${name} "" for an empty one)`);
-  }
-  return args;
-}
-
 function clientSource() {
   return `#!/usr/bin/env node
 import fs from "node:fs";
-import { createRequire } from "node:module";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 const directory = path.dirname(fileURLToPath(import.meta.url));
 const manifest = JSON.parse(fs.readFileSync(path.join(directory, "surf-client.json"), "utf8"));
-${parseClientArgs.toString()}
-const args = parseClientArgs(process.argv.slice(2), manifest.args || {});
-${resolveArgValues.toString()}
-${renderRequest.toString()}
-const endpoint = renderRequest(manifest.endpoint, resolveArgValues(manifest.args || {}, args), { escapes: manifest.escapes === true });
-// SURF_CLIENT_ORIGIN sends the request to another origin (pb client verify's local server).
-let url = new URL(endpoint.url);
-if (process.env.SURF_CLIENT_ORIGIN) url = new URL(\`\${url.pathname}\${url.search}\`, process.env.SURF_CLIENT_ORIGIN);
-else if (process.env.SURF_CLIENT_ENDPOINT_URL) url = new URL(process.env.SURF_CLIENT_ENDPOINT_URL);
-for (const [name, value] of Object.entries(endpoint.query)) url.searchParams.set(name, value);
-const headers = { ...endpoint.headers };
-// Env-supplied values are redacted from what the client prints, output and errors alike, in every
-// spelling a response can hold them (JSON-escaped, URL-encoded).
-const secretValues = [];
-${redactValues.toString()}
-${redactObject.toString()}
-${valueSpellings.toString()}
-${secretSpellings.toString()}
-${decodeBudget.toString()}
-${secretIn.toString()}
-${redactText.toString()}
-${spanningValues.toString()}
-${redactJson.toString()}
-// A raw JSON body can hold a value escaped once or more: redactText and redactJson decode it.
-const redact = (text) => redactText(text, secretValues);
-process.on("uncaughtException", (error) => {
-  process.stderr.write(\`\${redact(error?.stack || error)}\\n\`);
-  process.exit(1);
-});
+const args = {};
+for (let i = 2; i < process.argv.length; i++) {
+  if (!process.argv[i].startsWith("--")) continue;
+  const name = process.argv[i].slice(2);
+  const next = process.argv[i + 1];
+  args[name] = next && !next.startsWith("--") ? (i++, next) : true;
+}
+const template = (value) => typeof value === "string"
+  ? value.replace(/\\{\\{([a-zA-Z0-9._-]+)\\}\\}/g, (_, name) => {
+      if (args[name] === undefined) throw new Error(\`missing argument --\${name}\`);
+      return String(args[name]);
+    })
+  : Array.isArray(value) ? value.map(template)
+  : value && typeof value === "object" ? Object.fromEntries(Object.entries(value).map(([key, item]) => [key, template(item)]))
+  : value;
+const endpoint = template(manifest.endpoint);
+const url = new URL(process.env.SURF_CLIENT_ENDPOINT_URL || endpoint.url);
+for (const [name, value] of Object.entries(endpoint.query || {})) url.searchParams.set(name, String(value));
+const headers = { ...(endpoint.headers || {}) };
 for (const input of manifest.authInputs || []) {
   const value = process.env[input.env];
   if (input.required && !value) throw new Error(\`missing auth environment variable \${input.env}\`);
-  if (value && input.header) {
-    headers[input.header] = value;
-    secretValues.push(value);
-  }
+  if (value && input.header) headers[input.header] = value;
 }
 const response = await fetch(url, {
   method: endpoint.method,
@@ -116,8 +68,7 @@ const response = await fetch(url, {
   ...(endpoint.body === undefined ? {} : { body: typeof endpoint.body === "string" ? endpoint.body : JSON.stringify(endpoint.body) }),
 });
 const text = await response.text();
-// Redacted in full before it is cut, so the cut can't keep the start of an env value.
-if (!response.ok) throw new Error(\`HTTP \${response.status}: \${redact(text).slice(0, 500)}\`);
+if (!response.ok) throw new Error(\`HTTP \${response.status}: \${text.slice(0, 500)}\`);
 let bodyJson;
 try { bodyJson = JSON.parse(text); } catch {}
 let output = manifest.extract ? {
@@ -133,39 +84,19 @@ if (manifest.extract?.jsonPath) {
   for (const part of manifest.extract.jsonPath.replace(/^\\$\\.?/, "").split(".").filter(Boolean)) output = output?.[part];
 }
 if (manifest.extract?.field) output = output?.[manifest.extract.field];
-if (manifest.extract && (manifest.extract.records !== undefined || manifest.extract.fields || manifest.extract.filter)) {
-  // records.cjs is Surf's own JSON extraction, copied next to this client with bounded-regex.cjs.
-  const { extractRecords } = createRequire(import.meta.url)("./records.cjs");
-  output = extractRecords(bodyJson ?? output, manifest.extract);
-}
-// Objects are redacted before they become text, so a secret used as a key can't merge two keys.
-process.stdout.write(output === undefined ? "" : typeof output === "string" ? redact(output) : JSON.stringify(redactJson(output, secretValues), null, 2));
+process.stdout.write(output === undefined ? "" : typeof output === "string" ? output : JSON.stringify(output, null, 2));
 process.stdout.write("\\n");
 `;
 }
 
-// The op's inputs the request uses; inputs only its browser steps take aren't asked for.
-function endpointArgs(op, endpoint, escapes) {
-  const used = requestInputs(endpoint, { escapes });
-  return Object.fromEntries(Object.entries(op.args || {}).filter(([name]) => used.has(name)));
-}
-
-// `escapes`: the request holds escaped text (pb save's, or a record's), whose `{{!}}` the client
-// sends as `{{`.
-function writeRefusal({ op, method, url, action }) {
-  return new Error(`op ${op} is a write request (${method || "GET"} ${url}); add --write to ${action}`);
-}
-
-function generateClient({ playbookId, op, strategy, provenance, out, allowWrite = false, origins = [], escapes = false }) {
-  const request = strategy.request;
-  if (op.effect === "write" && !allowWrite) throw writeRefusal({ op: op.id, method: request.method, url: request.url, action: "make a client for it" });
+function generateClient({ playbookId, op, strategy, provenance, out, allowWrite = false, origins = [] }) {
+  if (op.effect === "write" && !allowWrite) throw new Error("write-capable client projection requires explicit review");
   if (typeof out !== "string" || !out) throw new Error("client projection requires --out <directory>");
   const directory = path.resolve(out);
-  const placeholder = findRedactedPlaceholder(request);
-  if (placeholder) throw placeholderError(placeholder, `${playbookId} ${op.id}`);
+  const request = strategy.request;
   const endpoint = {
     method: request.method || "GET",
-    url: absoluteEndpointUrl(request.url, origins, { escapes }),
+    url: absoluteEndpointUrl(request.url, origins),
     query: request.query || {},
     headers: safeHeaders(request.headers),
     ...(request.body !== undefined ? { body: request.body } : {}),
@@ -173,16 +104,6 @@ function generateClient({ playbookId, op, strategy, provenance, out, allowWrite 
   assertNoEmbeddedSecrets(endpoint);
   assertUrlHasNoEmbeddedSecrets(endpoint.url);
   if (fs.existsSync(directory) && fs.lstatSync(directory).isSymbolicLink()) throw new Error(`refusing symbolic link: ${directory}`);
-  const warnings = [];
-  // The user's opt-in keeps their own values: a write's string body is sent as captured.
-  const capturedBody = op.effect === "write" && typeof endpoint.body === "string";
-  if (capturedBody) warnings.push("the request body is sent as captured, so values the record kept are in surf-client.json; make a field an input with surf pb param to leave it out");
-  let extract = strategy.extract || null;
-  const extractHtml = extract?.html;
-  if (extractHtml) {
-    warnings.push("extract.html runs only through surf use (Node has no DOM); this client prints the raw HTML body");
-    extract = null;
-  }
   ensurePrivateDir(directory, directory);
   const manifest = {
     version: 1,
@@ -192,30 +113,21 @@ function generateClient({ playbookId, op, strategy, provenance, out, allowWrite 
     op: op.id,
     effect: op.effect,
     endpoint,
-    ...(escapes ? { escapes: true } : {}),
-    args: endpointArgs(op, endpoint, escapes),
-    extract,
-    // surf use returns these records; this client prints the raw HTML body instead.
-    ...(extractHtml ? { extractHtml } : {}),
+    extract: strategy.extract || null,
     authInputs: Array.isArray(request.authInputs) ? request.authInputs.map((input) => ({ env: input.env, header: input.header, required: input.required !== false })) : [],
     verification: strategy.verify || null,
     verificationCommand: "surf pb client verify .",
-    noEmbeddedSecrets: !capturedBody,
+    noEmbeddedSecrets: true,
   };
   atomicWriteJson(path.join(directory, "surf-client.json"), manifest, { root: directory });
   atomicWriteFile(path.join(directory, "client.mjs"), clientSource(), { root: directory, encoding: "utf8" });
   atomicWriteJson(path.join(directory, "package.json"), { private: true, type: "module", scripts: { start: "node client.mjs" } }, { root: directory });
-  if (usesJsonExtract(extract)) {
-    for (const file of ["records.cjs", "bounded-regex.cjs"]) {
-      atomicWriteFile(path.join(directory, file), fs.readFileSync(path.join(__dirname, file), "utf8"), { root: directory, encoding: "utf8" });
-    }
-  }
-  return { directory, manifest, warnings };
+  return { directory, manifest };
 }
 
 function exportClient(playbookId, opId, out, options = {}) {
   const { playbook, op } = resolveOp(playbookId, opId, options);
-  return generateClient({ playbookId, op, strategy: networkStrategy(op), provenance: { type: "playbook", id: playbook.id, op: op.id, ...playbook.provenance }, out, allowWrite: options.allowWrite, origins: op.origins || playbook.origins, escapes: escapedOp(op) });
+  return generateClient({ playbookId, op, strategy: networkStrategy(op), provenance: { type: "playbook", id: playbook.id, op: op.id, ...playbook.provenance }, out, allowWrite: options.allowWrite, origins: op.origins || playbook.origins });
 }
 
 function findRecord(site, op, root = getPrivateStateRoot()) {
@@ -224,63 +136,38 @@ function findRecord(site, op, root = getPrivateStateRoot()) {
   return fs.readdirSync(base).filter((name) => name.startsWith("rec-")).map((name) => readRecord(name, root)).filter((record) => record?.site === site && record?.op === op).sort((a, b) => String(b.startedAt).localeCompare(String(a.startedAt)))[0] || null;
 }
 
-// Without --request-id, derive takes the top-ranked request when it is a strong match and leads the
-// next by WINNER_MARGIN points.
-function clearWinner(candidates, record) {
-  const [top, next] = scoreEntries(candidates, { origin: record.origin }).filter((candidate) => candidate.eligible);
-  if (!top || isWeak(top) || (next && top.score - next.score < WINNER_MARGIN)) return null;
-  return top.entry;
-}
-
-/** The extract of a saved op's network strategy, so a derived client returns the same records. */
-function savedExtract(site, opId, { cwd, home } = {}) {
-  try {
-    return resolveOp(site, opId, { cwd, home }).op.run?.find((strategy) => strategy.using === "network")?.extract;
-  } catch (error) {
-    if (/^(Playbook|Op) not found/.test(error.message)) return undefined;
-    throw error;
-  }
-}
-
 function deriveClient(site, opId, out, options = {}) {
   const root = options.root || getPrivateStateRoot();
   const record = options.recordId ? readRecord(options.recordId, root) : findRecord(site, opId, root);
   if (!record) throw new Error(`no record found for ${site} ${opId}`);
   const trace = readPrivateJson(path.join(recordsRoot(root), record.id, "network", "trace.json"), null, { root });
-  // Without --write or --request-id, a captured PUT, PATCH or DELETE is ranked only when the record
-  // has nothing else, so a GET beside one still derives. A POST is ranked with the reads, so one that
-  // leads is refused, naming --write.
-  const replayable = (trace?.entries || []).filter(isReplayCandidate);
-  const ranked = replayable.filter((candidate) => !["PUT", "PATCH", "DELETE"].includes(candidate.method));
-  const candidates = options.allowWrite || options.requestId || ranked.length === 0 ? replayable : ranked;
-  const endpoint = candidates.every((candidate) => requestEffect(candidate) === "read") ? "read endpoint" : "endpoint";
+  const candidates = (trace?.entries || []).filter((candidate) => ["GET", "HEAD", "OPTIONS", "POST"].includes(candidate.method) && candidate.status >= 200 && candidate.status < 400);
   const entry = options.requestId
     ? candidates.find((candidate) => candidate.id === options.requestId || candidate._requestId === options.requestId)
-    : candidates.length === 1 ? candidates[0] : clearWinner(candidates, record);
-  if (!options.requestId && candidates.length > 1 && !entry) throw new Error(`record ${record.id} has several ${endpoint}s and no clear winner; run surf pb record candidates ${record.id} and pass --request-id`);
-  if (!entry) throw new Error(`record ${record.id} has no validated ${endpoint}`);
-  const op = { id: opId, effect: requestEffect(entry), run: [] };
-  const extract = savedExtract(site, opId, options);
-  // Escaped as pb save escapes it, so captured text like {{x}} is sent as captured, not an input.
-  const strategy = { using: "network", request: requestFromEntry(entry), ...(extract ? { extract } : {}) };
-  return generateClient({ playbookId: site, op, strategy, provenance: { type: "record", recordId: record.id }, out, allowWrite: options.allowWrite, escapes: true });
+    : candidates.length === 1 ? candidates[0] : null;
+  if (!options.requestId && candidates.length > 1) throw new Error(`record ${record.id} has multiple read endpoints; pass --request-id`);
+  if (!entry) throw new Error(`record ${record.id} has no validated read endpoint`);
+  const op = { id: opId, effect: "read", run: [] };
+  const url = new URL(entry.url);
+  const query = Object.fromEntries(url.searchParams.entries());
+  url.search = "";
+  const strategy = { using: "network", request: { method: entry.method, url: url.toString(), query, headers: safeHeaders(entry.requestHeaders), ...(entry.requestBody !== undefined ? { body: entry.requestBody } : {}) } };
+  return generateClient({ playbookId: site, op, strategy, provenance: { type: "record", recordId: record.id }, out });
 }
 
-// Sample inputs for verification: each input's default, else a value of its type.
-function sampleArgs(manifest) {
-  const specs = manifest.args || {};
-  const samples = { string: "verify", number: 1, boolean: true };
-  return Object.fromEntries([...requestInputs(manifest.endpoint, { escapes: manifest.escapes === true })].map((name) => [name, specs[name]?.default ?? samples[specs[name]?.type] ?? "verify"]));
+function collectTemplateArgs(value, names = new Set()) {
+  if (typeof value === "string") {
+    for (const match of value.matchAll(/\{\{([a-zA-Z0-9._-]+)\}\}/g)) names.add(match[1]);
+  } else if (Array.isArray(value)) {
+    for (const item of value) collectTemplateArgs(item, names);
+  } else if (value && typeof value === "object") {
+    for (const item of Object.values(value)) collectTemplateArgs(item, names);
+  }
+  return names;
 }
 
-// Values go as --name=value, so one starting with -- stays a value. Clients made before
-// parseClientArgs take neither that form nor `--name ""`, so they get --name value, with empty
-// values left out for the client to take from its defaults.
-function clientArgs(manifest, source) {
-  const current = source.includes("function parseClientArgs(");
-  return Object.entries(sampleArgs(manifest))
-    .filter(([, value]) => current || String(value) !== "")
-    .flatMap(([name, value]) => (current ? [`--${name}=${value}`] : [`--${name}`, String(value)]));
+function clientArgs(manifest) {
+  return [...collectTemplateArgs(manifest.endpoint)].flatMap((name) => [`--${name}`, "verify"]);
 }
 
 function authEnv(manifest, live) {
@@ -294,27 +181,21 @@ function authEnv(manifest, live) {
   return env;
 }
 
-// Nests `leaf` at a $.a.b[0] path, so a records extract finds its array.
-function bodyAt(jsonPath, leaf) {
-  const parts = jsonPath.slice(1).match(/\[(?:\d+|\*)\]|[^.[\]]+/g) || [];
-  return parts.reduceRight((value, part) => {
-    if (!part.startsWith("[")) return { [part]: value };
-    return new Array(part === "[*]" ? 1 : Number(part.slice(1, -1)) + 1).fill(value);
-  }, leaf);
-}
-
-const VERIFY_HTML = "<html><body><p>verified</p></body></html>";
-
 function verificationBody(manifest) {
   if (manifest.extract?.field === "body") return "verified";
-  if (manifest.extractHtml) return VERIFY_HTML;
-  if (manifest.extract?.records !== undefined) return JSON.stringify(bodyAt(manifest.extract.records, [{}]));
   return JSON.stringify({ ok: true, body: "verified", data: "verified", items: ["verified"] });
 }
 
-function runClient(resolved, manifest, source, { env = {}, live = false } = {}) {
+function templateForVerify(value) {
+  if (typeof value === "string") return value.replace(/\{\{[a-zA-Z0-9._-]+\}\}/g, "verify");
+  if (Array.isArray(value)) return value.map(templateForVerify);
+  if (value && typeof value === "object") return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, templateForVerify(item)]));
+  return value;
+}
+
+function runClient(resolved, manifest, { env = {}, live = false } = {}) {
   return new Promise((resolve, reject) => {
-    execFile(process.execPath, [path.join(resolved, "client.mjs"), ...clientArgs(manifest, source)], {
+    execFile(process.execPath, [path.join(resolved, "client.mjs"), ...clientArgs(manifest)], {
       cwd: resolved,
       env: { ...process.env, ...authEnv(manifest, live), ...env },
       encoding: "utf8",
@@ -328,26 +209,9 @@ function runClient(resolved, manifest, source, { env = {}, live = false } = {}) 
   });
 }
 
-// Clients made before the shared renderer (they don't embed renderRequest) put "verify" for every
-// placeholder and send each query value with String(), objects as "[object Object]".
-function legacyEndpoint(value) {
-  if (typeof value === "string") return value.replace(/\{\{[a-zA-Z0-9._-]+\}\}/g, "verify");
-  if (Array.isArray(value)) return value.map(legacyEndpoint);
-  if (value && typeof value === "object") return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, legacyEndpoint(item)]));
-  return value;
-}
-
-function expectedEndpoint(manifest, source) {
-  if (!source.includes("function renderRequest(")) {
-    const endpoint = legacyEndpoint(manifest.endpoint);
-    return { ...endpoint, query: Object.fromEntries(Object.entries(endpoint.query || {}).map(([name, value]) => [name, String(value)])) };
-  }
-  return renderRequest(manifest.endpoint, resolveArgValues(manifest.args || {}, sampleArgs(manifest)), { escapes: manifest.escapes === true });
-}
-
-async function verifyWithLocalServer(resolved, manifest, source) {
+async function verifyWithLocalServer(resolved, manifest) {
   const requests = [];
-  const endpoint = expectedEndpoint(manifest, source);
+  const endpoint = templateForVerify(manifest.endpoint);
   const expectedUrl = new URL(endpoint.url);
   for (const [name, value] of Object.entries(endpoint.query || {})) expectedUrl.searchParams.set(name, String(value));
   const expectedPath = `${expectedUrl.pathname}${expectedUrl.search}`;
@@ -359,41 +223,36 @@ async function verifyWithLocalServer(resolved, manifest, source) {
     request.on("end", () => {
       requests.push({ method: request.method, url: request.url, body: requestBody });
       const body = verificationBody(manifest);
-      const type = manifest.extractHtml ? "text/html" : body.startsWith("{") ? "application/json" : "text/plain";
-      response.writeHead(manifest.verification?.status || 200, { "content-type": type });
+      response.writeHead(manifest.verification?.status || 200, { "content-type": body.startsWith("{") ? "application/json" : "text/plain" });
       response.end(body);
     });
   });
   await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
   try {
     const address = server.address();
-    const stdout = await runClient(resolved, manifest, source, {
-      // Clients made before SURF_CLIENT_ORIGIN read the whole URL.
-      env: { SURF_CLIENT_ORIGIN: `http://127.0.0.1:${address.port}`, SURF_CLIENT_ENDPOINT_URL: `http://127.0.0.1:${address.port}${expectedPath}` },
+    const stdout = await runClient(resolved, manifest, {
+      env: { SURF_CLIENT_ENDPOINT_URL: `http://127.0.0.1:${address.port}${expectedPath}` },
     });
     if (requests.length === 0) throw new Error("generated client did not call its verification endpoint");
     const request = requests[0];
     if (request.method !== endpoint.method) throw new Error(`generated client used ${request.method} instead of ${endpoint.method}`);
     if (request.url !== expectedPath) throw new Error(`generated client requested ${request.url} instead of ${expectedPath}`);
     if (expectedBody !== undefined && request.body !== expectedBody) throw new Error("generated client request body did not match the projected endpoint");
-    if (manifest.extractHtml && stdout.trim() !== VERIFY_HTML) throw new Error("generated client did not print the raw HTML body (extract.html runs only through surf use)");
     return { requests: requests.length, stdout: stdout.trim() };
   } finally {
     await new Promise((resolve) => server.close(resolve));
   }
 }
 
-async function verifyClient(directory, { live, allowWrite = false } = {}) {
+async function verifyClient(directory, { live } = {}) {
   const resolved = path.resolve(directory);
   const manifest = JSON.parse(fs.readFileSync(path.join(resolved, "surf-client.json"), "utf8"));
   const source = fs.readFileSync(path.join(resolved, "client.mjs"), "utf8");
   const serialized = `${JSON.stringify(manifest)}\n${source}`.toLowerCase();
-  const capturedBody = manifest.effect === "write" && manifest.noEmbeddedSecrets === false && typeof manifest.endpoint?.body === "string";
-  if ((!manifest.noEmbeddedSecrets && !capturedBody) || /bearer [a-z0-9._-]+|cookie:\s*[^<]|authorization\s*[:=]\s*["'][^<]/i.test(serialized)) throw new Error("generated client contains embedded credentials");
+  if (!manifest.noEmbeddedSecrets || /bearer [a-z0-9._-]+|cookie:\s*[^<]|authorization\s*[:=]\s*["'][^<]/i.test(serialized)) throw new Error("generated client contains embedded credentials");
   if (!manifest.endpoint?.method || !manifest.endpoint?.url) throw new Error("generated client endpoint is incomplete");
-  absoluteEndpointUrl(manifest.endpoint.url, [], { escapes: manifest.escapes === true });
-  if (live && manifest.effect !== "read" && !allowWrite) throw writeRefusal({ op: manifest.op, method: manifest.endpoint.method, url: manifest.endpoint.url, action: "send it live" });
-  const execution = live ? { stdout: (await runClient(resolved, manifest, source, { live: true })).trim() } : await verifyWithLocalServer(resolved, manifest, source);
+  absoluteEndpointUrl(manifest.endpoint.url);
+  const execution = live ? { stdout: (await runClient(resolved, manifest, { live: true })).trim() } : await verifyWithLocalServer(resolved, manifest);
   return { valid: true, playbook: manifest.playbook, op: manifest.op, endpoint: manifest.endpoint, execution };
 }
 

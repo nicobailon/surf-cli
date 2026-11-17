@@ -6,7 +6,7 @@ const { formatSocketError } = require("./socket-path.cjs");
 const { selectEndpoint } = require("./endpoint.cjs");
 const { openClientTransport } = require("./client-transport.cjs");
 const { resolveRequestDeadlineMs } = require("./host-sessions.cjs");
-const { prepareToolRequest } = require("./file-transfer.cjs");
+const { prepareRemoteTool, validateLocalToolPaths } = require("./file-transfer.cjs");
 
 const TOOL_SCHEMAS = {
   navigate: {
@@ -332,9 +332,7 @@ const TOOL_SCHEMAS = {
     schema: {
       output: z.string().optional().describe("Output file path"),
       jsonl: z.boolean().optional().describe("Write JSONL"),
-      har: z.boolean().optional().describe("Write HAR 1.2"),
-      "raw-bodies": z.boolean().optional().describe("Keep secret-named body fields as captured (redacted by default)"),
-      raw: z.boolean().optional().describe("Keep secret headers, URL credentials, echoes and body fields as captured (redacted by default)")
+      har: z.boolean().optional().describe("Write HAR 1.2")
     }
   },
   "network.wait": {
@@ -368,11 +366,11 @@ const TOOL_SCHEMAS = {
   }
 };
 
-async function sendSocketRequest(tool, toolArgs = {}, endpoint = selectEndpoint([]).endpoint) {
-  const requestTimeoutMs = resolveRequestDeadlineMs(tool, toolArgs);
+async function sendSocketRequest(tool, args = {}, endpoint = selectEndpoint([]).endpoint) {
+  const requestTimeoutMs = resolveRequestDeadlineMs(tool, args);
   const transport = await openClientTransport(endpoint, { requestTimeoutMs });
   try {
-    const prepared = prepareToolRequest(endpoint, tool, toolArgs);
+    const prepared = endpoint.kind === "remote" ? prepareRemoteTool(tool, args) : (() => { const normalized = validateLocalToolPaths(tool, args); return { args: normalized, uploads: [], downloads: [] }; })();
     return await transport.request({
       type: "tool_request",
       method: "execute_tool",

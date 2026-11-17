@@ -1,9 +1,0 @@
-# Dummy env value in a test (const KEY in test/unit/playbook-param-extract.test.ts), first added in
-# c9c3859d and since replaced; it was never a credential.
-c9c3859df3622c79c420e275b44814efed5cea1e:test/unit/playbook-param-extract.test.ts:generic-api-key:30
-# Dummy env value in a test (const secret in test/unit/playbook-network-body.test.ts), first added in
-# 8dbb6fec and since replaced; it was never a credential.
-8dbb6fecdb68fafc0bb620fdc498ae9a4ffa9b04:test/unit/playbook-network-body.test.ts:generic-api-key:67
-# Dummy session value in a test (the secret-named field case in test/unit/record-bindings.test.ts),
-# first added in 76c082f4 and since replaced; it was never a credential.
-76c082f48a1a1307646f3d12893ef324f35c6a58:test/unit/record-bindings.test.ts:generic-api-key:217
