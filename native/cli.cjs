@@ -1709,7 +1709,7 @@ const TOOLS = {
         opts: {
           op: "Operation name",
           "from-recent": "Use activity from this window (default: 1h)",
-          "from-record": "Use this record id. Origins: the record's page and the replayed request's. A write draft whose workflow isn't one page-write step saves network-only. The record decides what the op sends (effect, safety, its strategies in order, steps, requests); the draft names and describes it, and its checks can only make it fail. Run pb param after",
+          "from-record": "Use this record id. Origins: the record's page and the replayed request's. A write draft whose workflow isn't one page-write step saves network-only. The draft is saved as edited, and each way it differs from what the record drafts (effect, safety, strategies, request, checks, steps, origins, inputs) is printed under differs. Run pb param after",
           "request-id": "With --from-record: replay this request (from pb record candidates) instead of the draft's",
           project: "Save in ./.surf/playbooks instead of ~/.surf/playbooks",
         },

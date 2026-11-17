@@ -2041,6 +2041,17 @@ describe("a hand-edited draft", () => {
       ]);
     });
 
+    it("lists an added extract and an on.success check", () => {
+      const result = flow({ trace: [read] }).save((op) => {
+        networkOf(op).extract = { html: { value: "h1" } };
+        op.on = { success: { expect: { status: 200 } } };
+      });
+      expect(result.differs).toEqual([
+        'network extract: {"html":{"value":"h1"}} (the record drafts none)',
+        'on: {"success":{"expect":{"status":200}}} (the record drafts none)',
+      ]);
+    });
+
     it("saves an effect edited to read and says the record drafts a write", () => {
       const result = flow({ commands: ["click"], trace: [home, write] }).save(
         (op) => (op.effect = "read"),
@@ -2067,6 +2078,22 @@ describe("a hand-edited draft", () => {
         stop: { draft: true, requestId: "r_note" },
       }).stopped();
       expect(networkOf(named.draft as Op).request?.url).toBe(`${origin}/notes`);
+    });
+
+    it("saves a click-only write when none of them can be replayed (failed POSTs)", () => {
+      const failed = [
+        { ...write, status: 500 },
+        { ...note, status: 403 },
+      ];
+      const recorded = recordFlow({ origin, commands: ["click"], trace: [home, ...failed] });
+      const { record, draft } = recorded.stopped();
+      expect((draft as Op).run.map((strategy) => strategy.using)).toEqual(["workflow"]);
+      const saved = authoring.saveFromRecord({
+        recordId: record.id,
+        root: recorded.root,
+        home: path.dirname(recorded.root),
+      });
+      expect(saved.op).toBe("search");
     });
 
     it("is refused at pb save --from-record, listing the ids, until --request-id names one", () => {

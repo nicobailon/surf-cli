@@ -337,9 +337,9 @@ const REPLAYED_METHODS = new Set(["GET", "HEAD", "POST"]);
 // The request a draft replays: the one chosen with --request-id, else the top-ranked read. A write
 // draft whose trace holds a write replays its top-ranked write, the request its effect comes from,
 // and never a read: when it can't replay that write it gets no network strategy. Without
-// --request-id, a record that captured several writes is refused (Surf won't guess which one), and
-// so is a write on another origin than the record's page. A read draft never replays a write.
-// Telemetry, page assets and preflights are never replayed.
+// --request-id, a draft that would replay a write is refused when the record captured several
+// (Surf won't guess which one), or when the write is on another origin than the record's page. A
+// read draft never replays a write. Telemetry, page assets and preflights are never replayed.
 function pickRequest({ record, trace, effect, requestId, warnings }) {
   const entries = trace?.entries || [];
   const writes = effect === "write" ? entries.filter((entry) => requestEffect(entry) === "write" && !isTelemetryRequest(entry, record.origin)) : [];
@@ -355,10 +355,6 @@ function pickRequest({ record, trace, effect, requestId, warnings }) {
     return entry;
   }
   if (!trace) return undefined;
-  if (writes.length > 1) {
-    const listed = writes.map((entry) => `${entry.id} ${shownUrl(entry)}`).join(", ");
-    throw new Error(`the record captured ${writes.length} writes (${listed}); name the one the op replays with --request-id <r_…>`);
-  }
   const eligible = scoreEntries(entries, { origin: record.origin }).filter((candidate) => candidate.eligible);
   const sameEffect = eligible.filter((candidate) => candidate.effect === (capturedWrite ? "write" : "read"));
   const [top, next] = sameEffect;
@@ -367,6 +363,11 @@ function pickRequest({ record, trace, effect, requestId, warnings }) {
       ? `the draft has no network strategy: it is a write because of ${shownUrl(capturedWrite)}, which is ${neverReplayed(capturedWrite, record.origin)}, and a write draft never replays a read in its place`
       : NO_REPLAY);
     return undefined;
+  }
+  // Only when a write would be replayed: a record whose writes all failed drafts its steps alone.
+  if (writes.length > 1) {
+    const listed = writes.map((entry) => `${entry.id} ${shownUrl(entry)}`).join(", ");
+    throw new Error(`the record captured ${writes.length} writes (${listed}); name the one the op replays with --request-id <r_…>`);
   }
   if (capturedWrite) {
     // Origins are compared exactly: alice.github.io and bob.github.io are different sites.
