@@ -3734,7 +3734,13 @@ describe("CLI/native-host/fake-extension E2E contract", () => {
 // the tab's scripts run in a VM whose fetch answers from the fixture bodies and whose DOMParser
 // reads HTML with htmlparser2 and parse-infer's selector matcher.
 describe("surf parse", () => {
-  type Served = { origin: string; robotsRequests: number; close(): Promise<void> };
+  type Served = {
+    origin: string;
+    text: string;
+    robotsRequests: number;
+    robotsAt: number;
+    close(): Promise<void>;
+  };
   type DomNode = { attribs?: Record<string, string> };
   const http = require("node:http") as {
     createServer(
@@ -3760,11 +3766,12 @@ describe("surf parse", () => {
   };
 
   async function serveRobots(text: string): Promise<Served> {
-    const robots = { robotsRequests: 0 } as Served;
+    const robots = { text, robotsRequests: 0, robotsAt: 0 } as Served;
     const server = http.createServer((request, response) => {
       if (request.url === "/robots.txt") {
         robots.robotsRequests += 1;
-        response.end(text);
+        robots.robotsAt = Date.now();
+        response.end(robots.text);
       } else {
         response.statusCode = 404;
         response.end();
@@ -3971,7 +3978,7 @@ describe("surf parse", () => {
       expect(op.run[0].extract.html).toEqual({
         item: "article.product_pod",
         fields: {
-          title: "h3",
+          title: "a@title",
           url: "a@href",
           star_rating: ".star-rating@class",
           price_color: ".price_color",
@@ -4075,6 +4082,73 @@ describe("surf parse", () => {
       expect(served.robotsRequests).toBe(1);
       expect(navigations()).toBe(0);
       expect(fs.existsSync(path.join(home, ".surf", "playbooks"))).toBe(false);
+    } finally {
+      await host.dispose();
+    }
+  }, 60000);
+
+  it("refuses a replayed request robots.txt disallows, though the page is allowed", async () => {
+    served.text = "User-agent: *\nDisallow: /api/\n";
+    const items = Array.from({ length: 3 }, (_, i) => ({ id: i, title: `Dummy role ${i}` }));
+    const api = captured("r_api", `${served.origin}/api/jobs?page=1`, JSON.stringify({ items }));
+    const page = captured("r_doc", `${served.origin}/jobs`, "<html><body>Jobs</body></html>");
+    const { host, cli, home } = parseFixture([page, api], api);
+    try {
+      await host.waitForMessage((message) => message.type === "HOST_READY");
+      const parsed = await cli([`${served.origin}/jobs`, "--goal", "acme job postings"]);
+      expect(parsed.code).toBe(1);
+      expect(parsed.stderr).toContain(
+        `${served.origin}/robots.txt disallows /api/jobs (Disallow: /api/), the request that carries the data`,
+      );
+      expect(fs.existsSync(path.join(home, ".surf", "playbooks"))).toBe(false);
+      expect(host.messages.some((message) => /fetch\(/.test(String(message.code)))).toBe(false);
+    } finally {
+      await host.dispose();
+    }
+  }, 60000);
+
+  it("waits the Crawl-delay between reading robots.txt and loading the page", async () => {
+    served.text = "User-agent: *\nCrawl-delay: 0.5\n";
+    const html = `<html><head><meta name="citation_title" content="A Dummy Paper"></head><body><h1>A Dummy Paper</h1></body></html>`;
+    const page = captured("r_doc", `${served.origin}/abs/2101.10010`, html);
+    const { host, cli } = parseFixture([page], page);
+    try {
+      await host.waitForMessage((message) => message.type === "HOST_READY");
+      const loaded = host
+        .waitForMessage(
+          (message) => message.type === "EXECUTE_NAVIGATE" && message.url === page.url,
+          20000,
+        )
+        .then(() => Date.now());
+      const parsed = await cli([page.url, "--goal", "arxiv paper details"]);
+      expect(parsed.stderr).toBe("");
+      expect(parsed.code).toBe(0);
+      expect((await loaded) - served.robotsAt).toBeGreaterThanOrEqual(450);
+    } finally {
+      await host.dispose();
+    }
+  }, 60000);
+
+  it("saves a listing whose class names hold colons (Tailwind)", async () => {
+    const cards = Array.from(
+      { length: 5 },
+      (_, i) =>
+        `<div id="post:${i}" class="hover:shadow p-4"><a href="/p/${i}">Item ${i}</a><p class="price sm:text-lg">$${i}</p></div>`,
+    ).join("");
+    const page = captured(
+      "r_doc",
+      `${served.origin}/shop`,
+      `<html><body><div class="lg:grid gap-4">${cards}</div></body></html>`,
+    );
+    const { host, cli, opFile } = parseFixture([page], page);
+    try {
+      await host.waitForMessage((message) => message.type === "HOST_READY");
+      const parsed = await cli([page.url, "--goal", "shop items with price"]);
+      expect(parsed.stderr).toBe("");
+      expect(parsed.code).toBe(0);
+      const op = JSON.parse(fs.readFileSync(opFile("local", "get_shop_items_with"), "utf8"));
+      expect(op.run[0].extract.html.item).toBe("div.p-4");
+      expect(op.on.success.expect.assert).toHaveLength(3);
     } finally {
       await host.dispose();
     }

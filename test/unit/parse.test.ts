@@ -14,7 +14,7 @@ ${Array.from(
   (_, i) => `<li class="col-xs-6 col-sm-4 col-md-3 col-lg-3"><article class="product_pod">
   <div class="image_container"><a href="book-${i}_${100 + i}/index.html"><img src="x.jpg" alt="Book ${i}"></a></div>
   <p class="star-rating ${["One", "Two", "Three"][i % 3]}"><i class="icon-star"></i></p>
-  <h3><a href="book-${i}_${100 + i}/index.html" title="A Long Book Title Number ${i}">A Long Book Ti...</a></h3>
+  <h3><a href="book-${i}_${100 + i}/index.html" title="A Long Book Title Number ${i}">${i === 0 ? "A Long Book Title Number 0" : "A Long Book Ti..."}</a></h3>
   <div class="product_price"><p class="price_color">£${10 + i}.99</p><p class="instock availability">In stock</p>
   <form><button type="submit" class="btn btn-primary">Add to basket</button></form></div>
 </article></li>`,
@@ -66,6 +66,26 @@ const bookDetail = `<html><head><meta name="description" content="
 <p class="price_color">£51.77</p><p class="instock availability">In stock (22 available)</p></div></div>
 <table class="table table-striped"><tr><th>UPC</th><td>a897fe39b1053632</td></tr><tr><th>Product Type</th><td>Books</td></tr></table>
 <div class="side"><p class="price_color">£1.00</p></div></body></html>`;
+
+// Tailwind-style names (`hover:shadow`, `md:flex`, `post:0`) can't go in a selector as written.
+const tailwind = `<html><body><div class="lg:grid gap-4">
+${Array.from({ length: 5 }, (_, i) => `<div id="post:${i}" class="hover:shadow p-4"><a href="/p/${i}">Item ${i}</a><p class="price sm:text-lg">$${i}</p></div>`).join("\n")}
+</div></body></html>`;
+
+const tailwindDetail = `<html><body><div class="md:flex px-4"><h1>A Dummy Item</h1><p class="price md:text-xl">$5</p></div></body></html>`;
+
+const arxivAbs = `<html><head>
+<meta name="citation_title" content="A Dummy Paper">
+<meta name="citation_author" content="One, Author">
+</head><body><div id="header"><h1><a href="/">arXiv</a> &gt; <a href="/list/cs/recent">cs</a> &gt; arXiv:2101.10010</h1></div>
+<div id="abs"><h1 class="title mathjax"><span class="descriptor">Title:</span>A Dummy Paper</h1></div></body></html>`;
+
+const leverPosting = `<html><head><meta property="og:title" content="Acme - Dummy Engineer"></head><body>
+<div class="posting-headline"><h2>Dummy Engineer</h2><div class="posting-categories">
+<div class="sort-by-time posting-category location">City</div>
+<div class="sort-by-time posting-category department">Engineering</div>
+<div class="sort-by-time posting-category commitment">Full-time</div></div></div>
+<div class="section"><p>Long description.</p></div></body></html>`;
 
 describe("robots.txt", () => {
   const text = `# comment
@@ -215,6 +235,10 @@ describe("parse inputs", () => {
     ]);
   });
 
+  it("reads a path segment holding a bare % as written", () => {
+    expect(plan("https://a.example/items/100%/list", "items").inputs).toEqual([]);
+  });
+
   it("names the playbook after the site and the op after the goal", () => {
     expect(inputs.siteName("https://jobs.lever.co/acme")).toBe("lever-co");
     expect(inputs.siteName("https://books.toscrape.com/x")).toBe("toscrape-com");
@@ -342,11 +366,66 @@ describe("parse extract inference", () => {
       description: 'meta[name="description"]@content',
       title: "h1",
       price_color: ".product_main .price_color",
-      instock: ".product_main .instock",
+      availability: ".product_main .availability",
       upc: "table.table-striped tr:nth-child(1) td",
       product_type: "table.table-striped tr:nth-child(2) td",
     });
     expect(book.sample).toMatchObject({ price_color: "£51.77", upc: "a897fe39b1053632" });
+  });
+
+  it("builds selectors only from names a selector can take as written", () => {
+    const found = infer.inferHtml(tailwind, { baseUrl: "https://shop.example/" });
+    expect(found.extract.html).toEqual({
+      item: "div.p-4",
+      fields: { url: "a@href", id: ":scope@id", price: ".price", title: "a" },
+    });
+    expect(found.records).toBe(5);
+    const detail = infer.inferHtml(tailwindDetail, {
+      baseUrl: "https://shop.example/i/1",
+      detail: true,
+    });
+    expect(detail.extract.html.fields).toEqual({ title: "h1", price: ".px-4 .price" });
+  });
+
+  it("takes the title attribute when most headings' links have one that holds their text", () => {
+    const found = infer.inferHtml(books(6), { baseUrl: "https://books.example/" });
+    expect(found.extract.html.fields.title).toBe("h3 a@title");
+    expect(found.sample.title).toBe("A Long Book Title Number 0");
+  });
+
+  it("takes the page's own heading, not a breadcrumb, and an h2 when there is no h1", () => {
+    const abs = infer.inferHtml(arxivAbs, {
+      baseUrl: "https://arxiv.example/abs/2101.10010",
+      detail: true,
+    });
+    expect(abs.extract.html.fields).toMatchObject({
+      title: 'meta[name="citation_title"]@content',
+      heading: "h1.title",
+    });
+    expect(abs.sample.heading).toBe("Title:A Dummy Paper");
+    const posting = infer.inferHtml(leverPosting, {
+      baseUrl: "https://jobs.example/acme/x",
+      detail: true,
+    });
+    expect(posting.extract.html.fields).toEqual({
+      title: 'meta[property="og:title"]@content',
+      heading: "h2",
+      location: ".posting-headline .location",
+      department: ".posting-headline .department",
+      commitment: ".posting-headline .commitment",
+    });
+  });
+
+  it("measures records as the tab sends them back, inside the result", () => {
+    const items = Array.from({ length: 50 }, (_, i) => ({ id: i, a: i }));
+    const bare = JSON.stringify(items, null, 2).length;
+    const wrapped = JSON.stringify({ extracted: items }, null, 2).length;
+    expect(wrapped).toBeGreaterThan(bare + 20);
+    const found = infer.inferJson({ items }, { limit: bare + 10 });
+    expect(found.dropped).toEqual(["a"]);
+    expect(found.chars).toBe(
+      JSON.stringify({ extracted: items.map(({ id }) => ({ id })) }, null, 2).length,
+    );
   });
 
   it("drops the longest field until the records fit under the cap", () => {
@@ -354,5 +433,26 @@ describe("parse extract inference", () => {
     expect(Object.keys(found.extract.html.fields)).toEqual(["title", "price_color"]);
     expect(found.dropped).toEqual(["url", "star_rating"]);
     expect(found.chars).toBeLessThanOrEqual(700);
+  });
+});
+
+describe("parse pick", () => {
+  const { judgePick } = require("../../native/parse-cli.cjs");
+  it("fails, not a weak pick, when the page answered with an error", () => {
+    const page = {
+      id: "r_1",
+      method: "GET",
+      status: 404,
+      type: "Document",
+      url: "https://a.example/x",
+      eligible: false,
+      effect: "read",
+      score: -2,
+      reasons: ["HTML document", "status 404"],
+    };
+    expect(judgePick([page], "https://a.example/x")).toEqual({ fail: "the page answered 404" });
+    expect(judgePick([], "https://a.example/x")).toEqual({
+      fail: "the record holds no request a read op can replay",
+    });
   });
 });
