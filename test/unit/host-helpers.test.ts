@@ -1155,4 +1155,26 @@ describe("publicResponse", () => {
     expect(JSON.parse(view.body)).toEqual({ q: "<redacted>" });
     expect(view.json).toEqual({ q: "<redacted>" });
   });
+
+  it("keeps a bare JSON scalar body that is a secret valid JSON, in network.get --json and a read body", () => {
+    const TRUE = ["tr", "ue"].join("");
+    const requestHeaders = { Authorization: `ResyAPI api_key="${SHOP}", realm="${TRUE}"` };
+    const got = helpers.publicNetworkResult("network.get", {
+      entry: {
+        id: "r_1",
+        url: "https://example.test/api",
+        requestHeaders,
+        requestBody: TRUE,
+        responseBody: TRUE,
+      },
+    });
+    expect(JSON.parse(got.entry.requestBody)).toBe("<redacted>");
+    expect(JSON.parse(got.entry.responseBody)).toBe("<redacted>");
+    const view = helpers.publicResponse(
+      { url: "https://example.test/api", body: TRUE, json: true },
+      [{ requestHeaders }],
+    );
+    expect(JSON.parse(view.body)).toBe("<redacted>");
+    expect(view.json).toBe("<redacted>");
+  });
 });

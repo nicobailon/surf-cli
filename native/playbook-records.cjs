@@ -11,7 +11,7 @@ const {
   readPrivateFile,
   readPrivateJson,
 } = require("./private-state.cjs");
-const { redactEchoText, redactEchoUrl, redactSensitiveFields, redactUrlSecrets, safeHeaders, secretHeaderEchoes } = require("./redaction.cjs");
+const { redactEchoBody, redactEchoText, redactEchoUrl, redactSensitiveFields, redactUrlSecrets, safeHeaders, secretHeaderEchoes } = require("./redaction.cjs");
 const { draftedEvents, forgetTypedValues, heldTypingCalls, maskTypedValuesInUrl, numberRedactedMarkers, redactTypedValuesInUrl, rememberTypedValues, typedValuesForTrace } = require("./record-typed-values.cjs");
 const { commandMetadata, promoteRedactedStepArgs } = require("./workflow-definition.cjs");
 const { escapeStepArgs, escapeTemplates } = require("./playbook-template.cjs");
@@ -218,9 +218,9 @@ function redactTypedHeaders(headers, typed) {
 // The trace drops secret headers, so the values they held are known only here: the URL, a header or
 // a request body kept in the trace that echoes one has it replaced with <redacted> before it is saved.
 // A short value goes only where it is a whole value, so a draft keeps its query names and a valid
-// JSON body (see redactEchoText). `typed` lists the values the record's steps typed; each becomes
-// its marker in the entry's URLs, after the echoes go, so the markers' offsets hold. `urlMarkers`
-// lists the markers in the entry's URL, with the JSON type of a number or boolean one.
+// JSON body (see redactEchoText and redactEchoBody). `typed` lists the values the record's steps
+// typed; each becomes its marker in the entry's URLs, after the echoes go, so the markers' offsets
+// hold. `urlMarkers` lists the markers in the entry's URL, with the JSON type of a number or boolean one.
 function sanitizeTraceEntry(entry, includeInputValues = false, typed = []) {
   const secrets = secretHeaderEchoes([entry.requestHeaders, entry.responseHeaders]);
   const scrub = (value) => (typeof value === "string" ? redactEchoText(value, secrets) : value);
@@ -234,7 +234,7 @@ function sanitizeTraceEntry(entry, includeInputValues = false, typed = []) {
     requestHeaders: keptHeaders(entry.requestHeaders),
     responseHeaders: keptHeaders(entry.responseHeaders),
     responseBody: entry.responseBody === undefined ? undefined : "<response-body>",
-    requestBody: entry.requestBody === undefined ? undefined : includeInputValues ? scrub(entry.requestBody) : "<request-body>",
+    requestBody: entry.requestBody === undefined ? undefined : includeInputValues ? (typeof entry.requestBody === "string" ? redactEchoBody(entry.requestBody, secrets) : entry.requestBody) : "<request-body>",
   };
 }
 

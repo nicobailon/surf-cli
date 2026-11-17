@@ -3743,6 +3743,22 @@ describe("a record's trace, when a secret header holds a short value", () => {
     expect(kept.url).toBe("https://example.test/anything?<redacted>=first&<redacted-2>=second");
     expect(request.query).toEqual({ "<redacted>": "first", "<redacted-2>": "second" });
   });
+
+  it("keeps a query name without a value and a bare JSON scalar body in the draft, which still parses", () => {
+    const shop = ["sh", "op"].join("");
+    const realm = ["tr", "ue"].join("");
+    const { kept, request } = traceAndDraft(
+      sent(
+        { Authorization: `ResyAPI api_key="${shop}", realm="${realm}"` },
+        `https://example.test/anything?${shop}&${realm}=two`,
+        true,
+      ),
+    );
+    expect(kept.url).toBe("https://example.test/anything?<redacted>&<redacted-2>=two");
+    expect(request.query).toEqual({ "<redacted>": "", "<redacted-2>": "two" });
+    expect(JSON.parse(kept.requestBody)).toBe("<redacted>");
+    expect(JSON.parse(request.body)).toBe("<redacted>");
+  });
 });
 
 describe("a record's trace, when a body key is a secret header's value", () => {

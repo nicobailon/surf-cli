@@ -355,3 +355,22 @@ describe("redactEchoJson", () => {
     expect(view.other).toBe("{v}");
   });
 });
+
+describe("secretHeaderEchoes", () => {
+  it("classes a quoted auth parameter by its unescaped value, with its escaped spelling in the same class", () => {
+    const quoteEscaped = (value: string) => value.replace(/["\\]/g, "\\$&");
+    const three = ['"', "a", '"'].join("");
+    const seven = ['a"b', 'c"d'].join('"');
+    const echoes = redaction.secretHeaderEchoes([
+      { Authorization: `ResyAPI api_key="${quoteEscaped(three)}", realm="${quoteEscaped(seven)}"` },
+    ]);
+    for (const value of [three, quoteEscaped(three), seven, quoteEscaped(seven)]) {
+      expect(echoes.short).toContain(value);
+      expect(echoes.long).not.toContain(value);
+    }
+    expect(echoes.keys).toContain(seven);
+    expect(echoes.keys).toContain(quoteEscaped(seven));
+    expect(echoes.keys).not.toContain(three);
+    expect(echoes.keys).not.toContain(quoteEscaped(three));
+  });
+});

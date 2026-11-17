@@ -638,6 +638,7 @@ describe("echo redaction that keeps an export's structure", () => {
   });
 
   it("treats a body as a form only by its strict shape, so markup keeps the whole-token rule", () => {
+    // The cookie `lang=en` is a whole token between the tags, so it goes whole, without a new tag.
     const kept = exporter.publicEntry({
       id: "r-x",
       url: "https://example.test/api",
@@ -645,7 +646,7 @@ describe("echo redaction that keeps an export's structure", () => {
       requestBody: "<root>lang=en</root>",
       responseBody: "lang=en x=1",
     });
-    expect(kept.requestBody).toBe("<root>lang=en</root>");
+    expect(kept.requestBody).toBe("<root>&lt;redacted&gt;</root>");
     expect(kept.responseBody).toBe("<redacted> x=1");
   });
 });
@@ -723,7 +724,7 @@ describe("echo redaction by each secret's own length", () => {
     expect(JSON.parse(body)).toEqual({ note: `x ${encoded} y`, "<redacted>": 1, v: "<redacted>" });
   });
 
-  it("replaces a short secret in other text only as a token between spaces, never inside markup", () => {
+  it("replaces a short secret in other text only as a token between spaces or tags, never inside a tag", () => {
     const kept = exporter.publicEntry({
       id: "r-m",
       url: "https://example.test/api",
@@ -732,7 +733,9 @@ describe("echo redaction by each secret's own length", () => {
       responseBody: "a <b>a</b> word a",
     });
     expect(kept.requestBody).toBe("<a>lang=en</a>");
-    expect(kept.responseBody).toBe("<redacted> <b>a</b> word <redacted>");
+    expect(kept.responseBody).toBe(
+      "&lt;redacted&gt; <b>&lt;redacted&gt;</b> word &lt;redacted&gt;",
+    );
   });
 
   it("redacts a short cookie value as a whole value, never a key", () => {
@@ -744,5 +747,145 @@ describe("echo redaction by each secret's own length", () => {
     });
     expect(kept.url).toBe("https://example.test/api?lang=<redacted>&q=x");
     expect(JSON.parse(kept.responseBody)).toEqual({ lang: "<redacted>", en: 1 });
+  });
+});
+
+describe("echo redaction that keeps every structure parseable", () => {
+  // Short dummy values, built from parts so no literal here reads as a credential.
+  const SHOP = ["sh", "op"].join("");
+  const TRUE = ["tr", "ue"].join("");
+  const resy = `ResyAPI api_key="${SHOP}", realm="${TRUE}"`;
+  const entry = (requestHeaders: Record<string, string>, fields: Record<string, unknown> = {}) =>
+    exporter.publicEntry({ id: "r-s", url: "https://example.test/api", requestHeaders, ...fields });
+
+  // The tag names and attribute names of markup, in order, so a test can tell its structure changed.
+  const tagStructure = (html: string) =>
+    [...html.matchAll(/<\/?([A-Za-z][\w-]*)((?:[^<>"']|"[^"]*"|'[^']*')*)>/g)].map(
+      ([, tag, attributes]) => [
+        tag,
+        ...[...attributes.matchAll(/([^\s"'=<>/]+)(?:\s*=\s*(?:"[^"]*"|'[^']*'|[^\s>]+))?/g)].map(
+          ([, name]) => name,
+        ),
+      ],
+    );
+
+  it.each([
+    ["1", { "x-csrf-token": "1" }],
+    [TRUE, { Authorization: resy }],
+    [" null ", { "x-csrf-token": ["nu", "ll"].join("") }],
+    ["123456789", { "x-csrf-token": ["2345", "6789"].join("") }],
+  ])("keeps a bare JSON scalar body (%s) that holds a secret valid JSON", (body, headers) => {
+    const kept = entry(headers, {
+      requestBody: body,
+      responseBody: body,
+      mimeType: "application/json",
+    });
+    expect(JSON.parse(kept.requestBody)).toBe("<redacted>");
+    expect(JSON.parse(kept.responseBody)).toBe("<redacted>");
+    const har = JSON.parse(
+      exporter.serializeNetworkExport(
+        [
+          {
+            id: "r-h",
+            method: "POST",
+            url: "https://example.test/api",
+            requestHeaders: headers,
+            requestBody: body,
+            responseBody: body,
+            mimeType: "application/json",
+          },
+        ],
+        "har",
+      ),
+    );
+    expect(JSON.parse(har.log.entries[0].request.postData.text)).toBe("<redacted>");
+    expect(JSON.parse(har.log.entries[0].response.content.text)).toBe("<redacted>");
+  });
+
+  it("counts a query name without a value, so secret names never collide", () => {
+    const url = (query: string) =>
+      entry({ Authorization: resy }, { url: `https://example.test/anything?${query}` }).url;
+    expect(url(`${SHOP}&${TRUE}=two`)).toBe(
+      "https://example.test/anything?<redacted>&<redacted-2>=two",
+    );
+    expect(url(`${TRUE}=two&${SHOP}`)).toBe(
+      "https://example.test/anything?<redacted>=two&<redacted-2>",
+    );
+    expect([...new URL(url(`${SHOP}&${TRUE}=two`)).searchParams.keys()]).toEqual([
+      "<redacted>",
+      "<redacted-2>",
+    ]);
+  });
+
+  it("judges a quoted auth parameter by its unescaped value, not its escaped spelling", () => {
+    const quotedA = '"a"';
+    const escapedA = '\\"a\\"';
+    const keyed = entry(
+      { Authorization: `ResyAPI api_key="${escapedA}"` },
+      { responseBody: JSON.stringify({ [escapedA]: 1, v: escapedA, w: quotedA }) },
+    );
+    expect(JSON.parse(keyed.responseBody)).toEqual({
+      [escapedA]: 1,
+      v: "<redacted>",
+      w: "<redacted>",
+    });
+
+    const seven = ['a"b', 'c"d'].join('"');
+    const escaped = seven.replace(/"/g, '\\"');
+    const text = entry(
+      { Authorization: `ResyAPI api_key="${escaped}"` },
+      { responseBody: `z${escaped}z and ${escaped}` },
+    );
+    expect(text.responseBody).toBe(`z${escaped}z and <redacted>`);
+  });
+
+  it("redacts a body that is the secret whole as written, though as JSON it reads as another string", () => {
+    const quotedA = ['"', "a", '"'].join("");
+    const kept = entry(
+      { Authorization: `ResyAPI api_key="${quotedA.replace(/"/g, '\\"')}"` },
+      { responseBody: quotedA, requestBody: ` ${quotedA}` },
+    );
+    expect(JSON.parse(kept.responseBody)).toBe("<redacted>");
+    expect(JSON.parse(kept.requestBody)).toBe("<redacted>");
+  });
+
+  it("redacts a string by the URL rules only when it parses as a URL with a host", () => {
+    const kept = entry(
+      { Authorization: resy },
+      {
+        responseBody: JSON.stringify({
+          a: `https://?q=${SHOP}`,
+          b: `https://?${SHOP}=1`,
+          c: `https://example.test/?q=${SHOP}`,
+        }),
+      },
+    );
+    expect(JSON.parse(kept.responseBody)).toEqual({
+      a: `https://?q=${SHOP}`,
+      b: `https://?${SHOP}=1`,
+      c: "https://example.test/?q=<redacted>",
+    });
+  });
+
+  it("never replaces a short secret inside a tag, only text between tags and a whole quoted value", () => {
+    const cases: [Record<string, string>, string, string][] = [
+      [{ "x-csrf-token": "a" }, "<a a >link</a>", "<a a >link</a>"],
+      [{ Authorization: resy }, `<input value= ${TRUE} >`, `<input value= ${TRUE} >`],
+      [
+        { "x-csrf-token": "a" },
+        "<p>a</p> a <b> a </b>",
+        "<p>&lt;redacted&gt;</p> &lt;redacted&gt; <b> &lt;redacted&gt; </b>",
+      ],
+      [
+        { Authorization: resy },
+        `<input value="${SHOP}" title='${SHOP}' alt="${SHOP} x">`,
+        `<input value="&lt;redacted&gt;" title='&lt;redacted&gt;' alt="${SHOP} x">`,
+      ],
+    ];
+    for (const [headers, body, expected] of cases) {
+      const kept = entry(headers, { responseBody: body }).responseBody;
+      expect(kept).toBe(expected);
+      expect(tagStructure(kept)).toEqual(tagStructure(body));
+    }
   });
 });
