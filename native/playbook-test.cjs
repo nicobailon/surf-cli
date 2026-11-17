@@ -90,7 +90,7 @@ function localOp(playbook, op, { cwd, home }) {
 // pb test --save writes assertions to the op file, which must never hold an env header's value.
 // Before the run: refuse when assertionSecretIn finds one in the assertion (its path, op, any key
 // or leaf of its value, or the assertion as JSON, compact or indented as the op file stores it; a
-// short value next to other characters too in the path's keys and in the value, unlike output
+// short value next to other characters too in the path's keys, its indexes' digits and the value, unlike output
 // redaction), or when a
 // matches pattern could store or match one (patternSecretIn: a text the pattern can match holds
 // one, the pattern matches one, which also refuses broad patterns such as .*, it has a

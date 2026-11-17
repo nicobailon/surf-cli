@@ -1595,9 +1595,6 @@ describe("an env value in any JSON spelling the decoder reads", () => {
     const escaped = { path: join("$.X", "\\", "u006e.QX"), op: "exists" };
     expect(assertions.assertionSecretIn(escaped, [join("n", ".Q")])).toBe("found");
     expect(assertions.assertionSecretIn(escaped, [join("6", "e.")])).toBe("found");
-    expect(
-      assertions.assertionSecretIn({ path: "$.items[1234]", op: "exists" }, [join("2", "3")]),
-    ).toBeNull();
     expect(assertions.assertionSecretIn({ path: "$.X$X", op: "exists" }, [join("$")])).toBe(
       "found",
     );
@@ -1605,6 +1602,28 @@ describe("an env value in any JSON spelling the decoder reads", () => {
     expect(assertions.assertionSecretIn({ path: "$.text", op: "exists" }, [join("e", "x")])).toBe(
       "found",
     );
+  });
+
+  it("refuses a short value inside an index's digits, which the assertion's author wrote", async () => {
+    // The reviewer's case: 23 inside the index 1234, of an array that long.
+    const secret = join("2", "3");
+    const index = Number(join("1", secret, "4"));
+    const saves = await bothSavesOf(secret, ["--assert", `$.bodyJson.k[${index}]`, "exists"], {
+      k: Array(index + 1).fill(1),
+    });
+    expect(saves.caller).toBe(
+      "--save refused: assertion 1 contains the value of SURF_TEST_ITEMS_KEY, which is never stored; assert on something else",
+    );
+    expect(saves.host).toMatch(HOST_REFUSAL);
+    const found = (jsonPath: string, value: string) =>
+      assertions.assertionSecretIn({ path: jsonPath, op: "exists" }, [value]);
+    expect(found(`$.items[${index}]`, secret)).toBe("found");
+    expect(found("$.items[0]", join("0"))).toBe("found");
+    expect(found("$.items[5][12]", join("1", "2"))).toBe("found");
+    // A match the brackets or * help spell is still the index's syntax.
+    expect(found("$.items[0].text", join("[", "0]"))).toBeNull();
+    expect(found("$.items[*].text", join("[", "*]."))).toBeNull();
+    expect(found("$.items[12][34]", join("2][", "3"))).toBeNull();
   });
 
   it("saves a pattern whose readings overflow the listing, checking what it lists", async () => {

@@ -281,19 +281,20 @@ function compileJsonPath(source, where) {
 }
 
 /**
- * For each character of a $-path compileJsonPath accepts, whether it is the path's syntax rather
- * than a key's text: the leading $, each . (fromJsonPath, parseAlternative), each [n] or [*]
- * (SEGMENT), and each ?? with the space trimmed around it (compilePath). SEGMENT keeps [, ], ?, *
- * and space out of keys, so outside an index those are syntax wherever they stand; anything else
- * outside an index is key text, quotes, digits and a $ after the first included.
+ * For each character of a $-path compileJsonPath accepts, what it is: "syntax" for the leading $,
+ * each . (fromJsonPath, parseAlternative), the brackets and * of each [n] or [*] (SEGMENT), and
+ * each ?? with the space trimmed around it (compilePath); "index" for the digits of an [n], which
+ * the path's author wrote; else "key". SEGMENT keeps [, ], ?, * and space out of keys, so outside
+ * an index those are syntax wherever they stand; anything else outside an index is key text,
+ * quotes, digits and a $ after the first included.
  */
 function jsonPathSyntax(source) {
   let index = false;
   return Array.from(source.split(""), (char, at) => {
     if (char === "[") index = true;
-    const syntax = at === 0 || index || /[.?*\s]/.test(char);
+    const kind = at === 0 ? "syntax" : index ? (/\d/.test(char) ? "index" : "syntax") : /[.?*\s]/.test(char) ? "syntax" : "key";
     if (char === "]") index = false;
-    return syntax;
+    return kind;
   });
 }
 

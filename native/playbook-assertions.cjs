@@ -537,20 +537,28 @@ const decodeEscapes = (text) => text.replace(JSON_ESCAPE, (escape) => (escape[1]
 // Where one of `values` is in a valid $-path, at any length and next to any character, as secretIn
 // finds it with `anywhere`, but for a copy that only the path's syntax spells (jsonPathSyntax): an
 // env value such as $. or [0] is no copy of anything in $.items[0]. A copy with a key character in
-// it counts, one spanning keys and syntax too (n.Q in $.Xn.QX). JSON escapes stand only in key text,
-// none of whose escape letters is syntax, so each key run is decoded on its own, up to 8 levels,
-// and what it decodes to is key text. "found", "too deep" or "too costly" (spending `budget`) as
-// secretIn returns them; else null.
+// it counts, one spanning keys and syntax too (n.Q in $.Xn.QX), and so does one inside an index's
+// digits, which the author wrote too (23 in $.items[1234]); a match the brackets help spell ([0])
+// is still syntax. JSON escapes stand only in key text, none of whose escape letters is syntax, so
+// each key run is decoded on its own, up to 8 levels, and what it decodes to is key text. "found",
+// "too deep" or "too costly" (spending `budget`) as secretIn returns them; else null.
 function pathSecretIn(path, values, budget) {
   const secrets = values.filter((value) => value !== undefined && value !== null).map(String).filter(Boolean);
   if (secrets.length === 0) return null;
   const text = String(path);
-  const syntax = jsonPathSyntax(text);
+  const kinds = jsonPathSyntax(text);
   let runs = [];
   for (let at = 0; at < text.length; at++) {
     const last = runs.at(-1);
-    if (last?.syntax === syntax[at]) last.text += text[at];
-    else runs.push({ syntax: syntax[at], text: text[at] });
+    if (last?.kind === kinds[at]) last.text += text[at];
+    else runs.push({ kind: kinds[at], text: text[at] });
+  }
+  // Brackets part each index's digits from the next, so a run holds one index's digits.
+  for (const run of runs) {
+    if (run.kind !== "index") continue;
+    budget.steps += run.text.length;
+    if (budget.steps > budget.limit) return "too costly";
+    if (secrets.some((secret) => run.text.includes(secret))) return "found";
   }
   for (let level = 0; ; level++) {
     const reading = runs.map((run) => run.text).join("");
@@ -558,13 +566,13 @@ function pathSecretIn(path, values, budget) {
     if (budget.steps > budget.limit) return "too costly";
     // keys[at]: how many key characters stand before position `at`.
     const keys = [0];
-    for (const run of runs) for (let at = 0; at < run.text.length; at++) keys.push(keys.at(-1) + (run.syntax ? 0 : 1));
+    for (const run of runs) for (let at = 0; at < run.text.length; at++) keys.push(keys.at(-1) + (run.kind === "key" ? 1 : 0));
     for (const secret of secrets) {
       for (let at = reading.indexOf(secret); at !== -1; at = reading.indexOf(secret, at + 1)) {
         if (keys[at + secret.length] > keys[at]) return "found";
       }
     }
-    const decoded = runs.map((run) => (run.syntax ? run : { syntax: false, text: decodeEscapes(run.text) }));
+    const decoded = runs.map((run) => (run.kind === "key" ? { kind: "key", text: decodeEscapes(run.text) } : run));
     if (decoded.every((run, at) => run.text === runs[at].text)) return null;
     if (level === 8) return "too deep";
     runs = decoded;
@@ -574,7 +582,7 @@ function pathSecretIn(path, values, budget) {
 // Where both --save checks find one of `values` in an assertion: jsonSecretIn on the assertion as
 // the op file stores it, and in its path (pathSecretIn) and its value (each key and leaf, and the
 // value as JSON), a value under 8 characters also next to other characters: output redaction masks
-// a short value only where it stands alone, so as not to break up the words around it, but a saved
+// one under 4 only where it stands alone, so as not to break up the words around it, but a saved
 // assertion must hold no copy at all. Neither the op, one of OPS's names (validateAssertion), nor
 // surf's own keys (path, op, value) are searched that way: surf writes them, so they hold no copy.
 // The calls share one budget, sized by the assertion as JSON.
