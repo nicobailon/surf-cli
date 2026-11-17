@@ -76,6 +76,7 @@ const {
   DEFAULT_VIDEO_FPS,
   VideoRecorder,
   VideoRecorderError,
+  findFfmpeg,
   parseVideoFps,
   validateVideoOutputPath,
 } = require("./video-recorder.cjs");
@@ -3307,9 +3308,15 @@ const handleClient = (socket) => {
       return;
     }
 
-    // Answered here, without the extension, so `surf doctor` can compare versions.
+    // Answered here, without the extension, so `surf doctor` can compare versions and see
+    // whether this host, with the PATH the browser gave it, finds ffmpeg.
     if (msg.type === "versions_request") {
-      await sendSocket(socket, { type: "versions_response", host: HOST_VERSION, extension: browserIdentity?.extensionVersion ?? null });
+      await sendSocket(socket, {
+        type: "versions_response",
+        host: HOST_VERSION,
+        extension: browserIdentity?.extensionVersion ?? null,
+        ffmpeg: { path: findFfmpeg(), searchedPath: process.env.PATH || "", pinned: process.env.SURF_FFMPEG || null },
+      });
       return;
     }
 

@@ -2,6 +2,9 @@
 
 ## [Unreleased]
 
+### Fixed
+- **`video.start` finds Homebrew's ffmpeg when the browser starts the host** - A browser launched from the Dock starts the native host with macOS's default PATH, so `video.start` failed with `ffmpeg_missing` though ffmpeg was installed. `surf install` now writes node's folder, `/opt/homebrew/bin` and `/usr/local/bin` into the macOS host wrapper's PATH, and the ffmpeg your shell finds as `SURF_FFMPEG`, which the host runs while it exists (else ffmpeg on its PATH) and which a refresh from a shell without ffmpeg keeps. `ffmpeg_missing` names the PATH the host searched, and `surf doctor` warns when the host can't find ffmpeg.
+
 ## [2.26.0] - 2026-11-04
 
 ### Highlights
