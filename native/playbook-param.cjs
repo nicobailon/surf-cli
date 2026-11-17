@@ -204,10 +204,22 @@ function movedPath(from, to, parts, renamesOf) {
   return moved.join(".");
 }
 
+// The names in a URL's query, decoded as form names, one for each time a name appears.
+function urlQueryNames(url) {
+  const { rest } = splitUrl(url);
+  const query = rest.split("#")[0].replace(/^\?/, "");
+  return query ? query.split("&").filter(Boolean).map((pair) => decodeForm(pair.split("=")[0])) : [];
+}
+
 function querySlot(request, field, [param, ...jsonPath], escapes) {
   if (!param) throw new Error(`${field}: name the query param, as in query.q`);
   const query = request.query || {};
-  if (!Object.hasOwn(query, param)) throw new Error(`${field}: no query param "${param}" (has: ${listOf(Object.keys(query))})`);
+  if (!Object.hasOwn(query, param)) {
+    // A draft keeps a name that repeats (`?tag=1&tag=2`) in the request URL, with every value.
+    const repeats = urlQueryNames(request.url).filter((name) => name === param).length;
+    if (repeats > 1) throw new Error(`${field}: query param "${param}" repeats (${repeats} values), so it stays in the request URL as captured and can't be an input`);
+    throw new Error(`${field}: no query param "${param}" (has: ${listOf(Object.keys(query))})`);
+  }
   const current = query[param];
   const setParam = (value) => { request.query = { ...query, [param]: value }; };
   if (jsonPath.length === 0) {

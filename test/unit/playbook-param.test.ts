@@ -615,6 +615,19 @@ describe("pb param: validation", () => {
     );
   });
 
+  it("says a repeated query name stays in the request URL and can't be an input", () => {
+    const repeated = networkOp({
+      url: "https://shop.test/search?tag=a&tag=b",
+      query: { q: "laptop" },
+    });
+    expect(() => paramOp(repeated, { fields: ["query.tag"], as: "tag" })).toThrow(
+      'query.tag: query param "tag" repeats (2 values), so it stays in the request URL as captured and can\'t be an input',
+    );
+    expect(() => paramOp(repeated, { fields: ["query.missing"], as: "q" })).toThrow(
+      /query.missing: no query param "missing" \(has: q\)/,
+    );
+  });
+
   it("changes nothing when the same param is applied twice", () => {
     const first = paramOp(op, { fields: ["query.q"], as: "q", desc: "Search text" });
     const second = paramOp(first.op, { fields: ["query.q"], as: "q", desc: "Search text" });

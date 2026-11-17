@@ -3238,6 +3238,9 @@ describe("values typed during a record, in captured URLs", () => {
     expect(placeholderError(placeholder).message).toMatch(
       /query\.v holds <text> in the request URL.*include-input-values/,
     );
+    expect(() => paramOp(draft, { fields: ["query.v.year"], as: "year" })).toThrow(
+      'query.v.year: query param "v" repeats (2 values), so it stays in the request URL as captured and can\'t be an input',
+    );
   });
 
   it("masks a JSON string leaf encoded once more in the trace and the draft", () => {
