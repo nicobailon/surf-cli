@@ -22,7 +22,8 @@ function tempRoot() {
 function run(args: string[], root: string) {
   const result = spawnSync(process.execPath, [cli, ...args], {
     encoding: "utf8",
-    env: { ...process.env, SURF_SOCKET: join(root, "absent.sock") },
+    // Its own HOME, so an echoValue in the user's ~/surf.json doesn't apply.
+    env: { ...process.env, HOME: root, SURF_SOCKET: join(root, "absent.sock") },
   });
   return { ...result, output: `${result.stdout}${result.stderr}` };
 }
@@ -80,8 +81,14 @@ describe("surf do and surf --script output", () => {
     );
     const result = run(["do", "--file", file, "--dry-run", "--password", TYPED], root);
     expect(result.status).toBe(0);
-    expect(result.output).toContain("password");
+    expect(result.output).toContain("  password = <redacted>");
     expect(result.output).not.toContain(TYPED);
+    const echoed = run(
+      ["do", "--file", file, "--dry-run", "--echo-value", "--password", TYPED],
+      root,
+    );
+    expect(echoed.status).toBe(0);
+    expect(echoed.output).toContain(`  password = "${TYPED}"`);
   });
 
   it("dry-runs a --script without printing what its steps type", () => {

@@ -1497,7 +1497,7 @@ const TOOLS = {
           "allow-semantic": "Allow bounded semantic model decisions (model: SURF_SEMANTIC_MODEL, default jev-1.13.0); extract steps always use clairic (Cloudflare)",
           "allow-write": "Allow declared semantic fill/check/click steps",
           "inputs-stdin": "Read bounded private input slots as one JSON object from stdin",
-          "echo-value": "Show typed values and chosen options in step results (a saved workflow's steps can't turn this on)",
+          "echo-value": "Show typed values and chosen options in step results, and variable values with --dry-run (a saved workflow's steps can't turn this on)",
         },
         examples: [
           { cmd: 'do \'go "https://example.com" | read | click e5 | screenshot\'', desc: "Inline workflow" },
@@ -3037,8 +3037,10 @@ if (args[0] === "do") {
     console.error("Error: No commands found in workflow");
     process.exit(1);
   }
-  // Typed values and chosen options show only with --echo-value or echoValue in ~/surf.json.
-  if (echoValue || loadUserConfig().echoValue === true) steps = withEchoedValues(steps);
+  // Typed values, chosen options and --dry-run's variable values show only with --echo-value or
+  // echoValue in ~/surf.json.
+  const echoed = echoValue || loadUserConfig().echoValue === true;
+  if (echoed) steps = withEchoedValues(steps);
 
   // Apply arg defaults
   const vars = workflow ? applyArgDefaults(workflow, workflowArgs) : workflowArgs;
@@ -3074,11 +3076,11 @@ if (args[0] === "do") {
     steps.forEach((s, i) => {
       console.log(`  ${i + 1}. ${formatStep(s)}`);
     });
-    // Names only: a variable can hold a password or other typed input.
+    // Names only unless echoed: a variable can hold a password or other typed input.
     if (Object.keys(vars).length > 0) {
       console.log(`\nVariables:`);
-      for (const k of Object.keys(vars)) {
-        console.log(`  ${k} = <redacted>`);
+      for (const [k, v] of Object.entries(vars)) {
+        console.log(`  ${k} = ${echoed ? JSON.stringify(v) : "<redacted>"}`);
       }
     }
     process.exit(0);
