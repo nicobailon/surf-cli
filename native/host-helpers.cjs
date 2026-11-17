@@ -62,15 +62,16 @@ function truncatePageText(text, { maxBytes, maxChars = 50_000, fullPath } = {}) 
 // Tools that print captured requests: their entries are shown as an export holds them (secret
 // headers as <redacted>, URL credentials and echoes of a secret header's value redacted). Only what
 // is sent back to the caller is redacted; network.replay reads the raw entry inside the host.
+// `raw` (--raw on the command line) shows them as captured.
 const NETWORK_VIEW_TOOLS = new Set(["network", "get_network_entries", "read_network_requests", "network.get", "get_network_entry", "network.curl"]);
 const isEntry = (value) => Boolean(value) && typeof value === "object" && !Array.isArray(value);
 
-function publicNetworkResult(tool, result) {
+function publicNetworkResult(tool, result, { raw = false } = {}) {
   if (!NETWORK_VIEW_TOOLS.has(tool) || !isEntry(result)) return result;
   const view = { ...result };
-  if (isEntry(result.entry)) view.entry = publicEntry(result.entry);
+  if (isEntry(result.entry)) view.entry = publicEntry(result.entry, { raw });
   for (const key of ["entries", "requests"]) {
-    if (Array.isArray(result[key])) view[key] = result[key].map((entry) => (isEntry(entry) ? publicEntry(entry) : entry));
+    if (Array.isArray(result[key])) view[key] = result[key].map((entry) => (isEntry(entry) ? publicEntry(entry, { raw }) : entry));
   }
   return view;
 }
@@ -80,9 +81,9 @@ function publicNetworkResult(tool, result) {
 // in its place, as network.get shows it: the whole value, an auth parameter's or cookie's value, in
 // every spelling (see secretHeaderEchoes); the URL also without credentials, as an export has it.
 // The body is read by its own content type, else by the one its request's capture gave the response
-// (network.body sends the body alone), so an XML body isn't read as HTML.
-function publicResponse(response, entries) {
-  if (!isEntry(response)) return response;
+// (network.body sends the body alone), so an XML body isn't read as HTML. `raw` (--raw) keeps it as captured.
+function publicResponse(response, entries, { raw = false } = {}) {
+  if (!isEntry(response) || raw) return response;
   const captured = entries.filter(isEntry);
   const secrets = secretHeaderEchoes(captured.flatMap((entry) => [entry.requestHeaders, entry.responseHeaders]));
   const view = { ...response };
@@ -550,7 +551,7 @@ function formatToolContent(result, log = () => {}) {
 
 const { encodedForms, typedValues } = require("./record-typed-values.cjs");
 
-const echoesValue = (args) => args?.["echo-value"] === true || args?.echoValue === true;
+const echoesValue = (args) => args?.["echo-value"] === true || args?.echoValue === true || args?.raw === true;
 
 // A fill or select result carries the value typed or the options chosen. It reaches the caller
 // only with --echo-value (or echoValue in surf.json); otherwise the result says only that it worked.

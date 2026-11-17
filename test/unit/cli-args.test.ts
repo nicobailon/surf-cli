@@ -1159,8 +1159,14 @@ describe("CLI argument parsing", () => {
     const steps = [
       {
         tool: "network.export",
-        args: { output: path.join(directory, "x.har"), "raw-bodies": true, rawBodies: true },
+        args: {
+          output: path.join(directory, "x.har"),
+          "raw-bodies": true,
+          rawBodies: true,
+          raw: true,
+        },
       },
+      { tool: "network.curl", args: { id: "r_1", raw: true } },
       {
         tool: "playbook.record.start",
         args: { site: "s", op: "o", includeInputValues: true, "include-input-values": true },
@@ -1187,6 +1193,7 @@ describe("CLI argument parsing", () => {
           const { request } = await runCli(args);
           expect(request.params.tool).toBe(step.tool);
           for (const name of [
+            "raw",
             "raw-bodies",
             "rawBodies",
             "includeInputValues",

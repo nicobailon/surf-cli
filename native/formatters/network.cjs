@@ -138,7 +138,10 @@ function formatUrls(entries) {
 function formatCurl(entry) {
   if (!entry) return '';
   
-  let cmd = `curl -X ${entry.method || 'GET'} '${entry.url}'`;
+  // -g: send [] and {} in the URL as is. -I: with -X HEAD curl waits for a body.
+  const method = entry.method || 'GET';
+  const request = method === 'HEAD' ? '-I' : `-X ${method}`;
+  let cmd = `curl -g ${request} '${String(entry.url).replace(/'/g, "'\\''")}'`;
   
   const headers = entry.requestHeaders || {};
   const skipHeaders = ['host', 'content-length', 'connection', 'accept-encoding'];
@@ -152,7 +155,8 @@ function formatCurl(entry) {
   
   if (entry.requestBody) {
     const escapedBody = entry.requestBody.replace(/'/g, "'\\''");
-    cmd += ` \\\n  -d '${escapedBody}'`;
+    // --data-raw: a body starting with @ is text, not a file to read.
+    cmd += ` \\\n  --data-raw '${escapedBody}'`;
   }
   
   return cmd;

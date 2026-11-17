@@ -28,8 +28,8 @@ const TEXT_BODY_TYPE = /json|x-www-form-urlencoded|multipart\/form-data|^text\/|
 // of a secret header's value in a text body, the URL or another header (a page that reflects its
 // Authorization header), in any spelling (see secretHeaderEchoes). `secretHeaders` names, in lower case, the headers
 // saved ops read from the environment (see envBackedHeaders). Secret-named body fields (password=,
-// "token":) read <redacted> unless `rawBodies` (--raw-bodies).
-function publicEntry(entry, { secretHeaders = [], rawBodies = false } = {}) {
+// "token":) read <redacted> unless `rawBodies` (--raw-bodies). `raw` (--raw) keeps every value as captured.
+function publicEntry(entry, { secretHeaders = [], rawBodies = false, raw = false } = {}) {
   if (!entry || typeof entry !== "object" || Array.isArray(entry)) {
     throw new Error("network export entries must be objects");
   }
@@ -38,14 +38,15 @@ function publicEntry(entry, { secretHeaders = [], rawBodies = false } = {}) {
   const result = Object.create(null);
   for (const [key, value] of Object.entries(entry)) {
     if (INTERNAL_FIELDS.has(key)) continue;
-    if (HEADER_FIELDS.has(key)) result[key] = redactHeaders(value, named, secrets);
+    if (raw) result[key] = value;
+    else if (HEADER_FIELDS.has(key)) result[key] = redactHeaders(value, named, secrets);
     else if (URL_FIELDS.has(key)) result[key] = redactEchoUrl(redactUrlIfSecret(value), secrets);
     else if (BODY_FIELDS.has(key) && typeof value === "string" && !(key === "responseBody" && entry.responseBodyEncoding === "base64")) {
       const contentType = key === "requestBody" ? bodyContentType(entry.requestHeaders) : bodyContentType(entry.responseHeaders, entry.mimeType);
       result[key] = redactEchoBody(value, secrets, { contentType });
     } else result[key] = value;
   }
-  if (!rawBodies) {
+  if (!rawBodies && !raw) {
     for (const key of BODY_FIELDS) {
       const type = key === "requestBody" ? headerValue(entry.requestHeaders, "content-type") : headerValue(entry.responseHeaders, "content-type") || entry.mimeType;
       if (typeof result[key] !== "string") continue;

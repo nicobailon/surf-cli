@@ -577,7 +577,7 @@ function formatStep(step, indent = 0) {
 
 // Args that loosen a safe default. They count only from the command line or the user's own
 // ~/surf.json, never from a step that a saved workflow, a project's or an imported playbook holds.
-const OPT_IN_ARGS = new Set(["echoValue", "echo-value", "rawBodies", "raw-bodies", "includeInputValues", "include-input-values"]);
+const OPT_IN_ARGS = new Set(["raw", "echoValue", "echo-value", "rawBodies", "raw-bodies", "includeInputValues", "include-input-values"]);
 // The commands whose result or page diff can show a value typed or an option chosen.
 const ECHO_COMMANDS = new Set(["locate.role", "locate.text", "locate.label", "select", "type", "smart_type", "form_input", "form.fill"]);
 
