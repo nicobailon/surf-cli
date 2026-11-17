@@ -60,6 +60,20 @@ describe("summarizeResponse", () => {
     expect(summary).not.toHaveProperty("fieldNames");
   });
 
+  it("samples a whole-secret JSON body as <redacted> though it holds a secret-named field", () => {
+    const secret = JSON.stringify({ [["to", "ken"].join("")]: ["sh", "op"].join("") });
+    const summary = candidates.summarizeResponse(
+      get("r_1", "XHR", `${ORIGIN}/api/books`, {
+        mimeType: "application/json",
+        requestHeaders: { "x-csrf-token": secret },
+        responseBody: secret,
+      }),
+      candidates.pageWords(PAGE_TEXT),
+      { sample: true },
+    );
+    expect(summary.sample).toBe(JSON.stringify("<redacted>"));
+  });
+
   it("samples an HTML page's visible text, not its scripts or tags", () => {
     const body =
       "<html><head><title>All products | Books</title><script>var secret = 1;</script><style>p{}</style></head><body><h1>All products</h1><p>Sharp &amp; Objects</p></body></html>";

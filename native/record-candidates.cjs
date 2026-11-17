@@ -133,9 +133,12 @@ function summarizeResponse(entry, page, { sample: withSample = false, redact = [
   if (parsed) {
     const records = recordCount(parsed.value);
     if (records > 0) summary.records = records;
-    // A body that is a secret whole lists no field names, as its sample shows none.
-    Object.assign(summary, fieldsOf(parsed.value, { names: withSample && !isEchoedJson(parsed.value, secrets), hide }));
-    if (withSample) sample = JSON.stringify(redactEchoJson(redactSensitiveFields(parsed.value), secrets));
+    // A body that is a secret whole lists no field names, as its sample shows none. It is judged as
+    // sent, before its secret-named fields are redacted, so `{"token":"shop"}` still counts.
+    const whole = withSample && isEchoedJson(parsed.value, secrets);
+    Object.assign(summary, fieldsOf(parsed.value, { names: withSample && !whole, hide }));
+    if (whole) sample = JSON.stringify("<redacted>");
+    else if (withSample) sample = JSON.stringify(redactEchoJson(redactSensitiveFields(parsed.value), secrets));
   } else if (kind === "html") {
     text = visibleText(body);
     if (withSample) sample = redactEchoText(text, secrets);
