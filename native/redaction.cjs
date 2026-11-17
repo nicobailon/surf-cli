@@ -502,7 +502,8 @@ function spanningValues(values) {
   return [...values].filter((value) => value !== undefined && value !== null).map(String).filter((text) => /["\\\s:,{}[\]()]/.test(text));
 }
 
-// redactObject with redactText for each string, other leaf and key (a key by redactObject's rule);
+// redactObject with redactText for each string, other leaf and key (a key by redactObject's rule,
+// over each value's spellings, so a key that is or holds one URL- or form-encoded goes too);
 // then the value as surf prints and stores it, JSON compact and indented, so a value spanning keys
 // and values (a secret holding `": "`, see spanningValues) is caught too: one still found there
 // turns the whole value into "<redacted>". JSON escapes each string once more, so those forms are
@@ -512,7 +513,8 @@ function spanningValues(values) {
 // secretSpellings, decodeBudget, secretIn, redactText and spanningValues: generated clients embed
 // them.
 function redactJson(value, values, budget = decodeBudget(JSON.stringify(value)?.length ?? 0)) {
-  const redacted = redactObject(value, values, { anyLength: true, redactLeaf: (text, leafValues) => redactText(text, leafValues, budget) });
+  const spelled = [...values].filter((item) => item !== undefined && item !== null).flatMap(valueSpellings);
+  const redacted = redactObject(value, spelled, { anyLength: true, redactLeaf: (text, leafValues) => redactText(text, leafValues === spelled ? values : leafValues, budget) });
   if (redacted === undefined) return redacted;
   if (budget.steps > budget.limit) return "<redacted>";
   const spanning = spanningValues(values);

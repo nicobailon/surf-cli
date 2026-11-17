@@ -298,6 +298,79 @@ describe("a short env value that names a field", () => {
     expect(result.value).toEqual({ "<redacted>": 1, [`${value}Count`]: 2 });
   });
 
+  // A dummy 5-character value with URL-reserved characters, so its URL- and form-encoded
+  // spellings differ from it and from each other.
+  const reserved = ["q", " ", "z", "+", "w"].join("");
+  const urlSpelled = encodeURIComponent(reserved);
+  const formSpelled = urlSpelled.replace(/%20/g, "+");
+
+  it("renames a key that is or holds a 4-7 character value's encoded spelling", () => {
+    const keys = {
+      [urlSpelled]: 1,
+      [formSpelled]: 2,
+      [`https://x.test/?q=${urlSpelled}`]: 3,
+    };
+    expect(Object.keys(redaction.redactJson(keys, [reserved]))).toEqual([
+      "<redacted>",
+      "<redacted-2>",
+      "https://x.test/?q=<redacted>",
+    ]);
+    // A value of 8 characters or more goes wherever it appears in a key, in any spelling.
+    const long = ["dummy", " ", "lo+ng"].join("");
+    expect(
+      redaction.redactJson(
+        { [`a${long}b`]: 1, [`https://x.test/?q=${encodeURIComponent(long)}`]: 2 },
+        [long],
+      ),
+    ).toEqual({ "a<redacted>b": 1, "https://x.test/?q=<redacted>": 2 });
+    // A plain short value still goes only as the whole key.
+    const plain = ["q", "z", "x", "w"].join("");
+    expect(redaction.redactJson({ [plain]: 1, [`${plain}Count`]: 2 }, [plain])).toEqual({
+      "<redacted>": 1,
+      [`${plain}Count`]: 2,
+    });
+  });
+
+  it("is redacted from a generated client's JSON keys in its encoded spellings", async () => {
+    const out = fs.mkdtempSync(path.join(os.tmpdir(), "surf-client-keys-"));
+    try {
+      clients.generateClient({
+        playbookId: "shop",
+        op,
+        strategy: { ...op.run[0], extract: undefined },
+        provenance: { type: "playbook", id: "shop" },
+        out: path.join(out, "client"),
+      });
+      const server = http.createServer((req: any, res: any) => {
+        const sent = encodeURIComponent(req.headers["x-site-key"]);
+        res.writeHead(200, { "content-type": "application/json" });
+        res.end(JSON.stringify({ [sent]: 1, [`https://x.test/?q=${sent}`]: 2 }));
+      });
+      await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+      try {
+        const stdout = await new Promise<string>((resolve, reject) =>
+          execFile(
+            process.execPath,
+            [path.join(out, "client", "client.mjs")],
+            {
+              env: {
+                ...process.env,
+                SURF_TEST_FIELD_KEY: reserved,
+                SURF_CLIENT_ORIGIN: `http://127.0.0.1:${server.address().port}`,
+              },
+            },
+            (error: Error | null, output: string) => (error ? reject(error) : resolve(output)),
+          ),
+        );
+        expect(JSON.parse(stdout)).toEqual({ "<redacted>": 1, "https://x.test/?q=<redacted>": 2 });
+      } finally {
+        await new Promise((resolve) => server.close(resolve));
+      }
+    } finally {
+      fs.rmSync(out, { recursive: true, force: true });
+    }
+  });
+
   it("is redacted from a generated client's text output in every spelling", async () => {
     // A dummy value with a quote and a backslash, so its JSON-escaped spelling differs from it.
     const value = ["dummy", 'quo"ted', "va\\lue", "16"].join("-");
