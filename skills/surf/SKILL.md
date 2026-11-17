@@ -26,6 +26,8 @@ It is one tab in its own background window, and its commands run in order. Sessi
 
 **API before scroll.** For feeds and threads, read the site's own API: `use x thread`, or `network.wait` then `network.replay --set`. Replay runs in the tab, so it fails, naming the origin to `go` back to, once the tab has left the page that sent the request. `collect` scrolls the page when there is no API and needs a visible tab (`session.ensure <name> <url> --window --focused`).
 
+**A site into an op: `surf parse` first.** `surf parse <url> --goal "<what you want>"` saves a tested read op and prints its `surf use` line. Exit 0: rename weak inputs or fields with the `refine` lines it prints, then stop. Exit 1 or 2, data that shows only after a click, search or scroll, writes and chains: follow [references/parse-recipe.md](references/parse-recipe.md).
+
 **Values, not pages.** To read a few values (a total, a date, a count), use `semantic.extract`: it returns typed values without a full page read.
 
 **Pipe multi-step work.** `surf do` runs steps with waits between them; run it with `--dry-run` first.
@@ -101,7 +103,7 @@ emulate: emulate.network emulate.cpu emulate.geo emulate.device emulate.touch
 ai: kimi aistudio aistudio.build ai
 semantic: semantic.find semantic.filter semantic.verify | semantic auth set | semantic auth status | semantic auth clear
 oracle: oracle follow | oracle status | oracle list
-playbook: playbook list | playbook show | playbook ops | playbook run | playbook test | playbook extract | playbook suggest | playbook save | playbook param | playbook record start | playbook record mark | playbook record stop | playbook record status | playbook record candidates | playbook trace export | playbook export | playbook import | playbook client derive | playbook client export | playbook client verify
+playbook: parse | playbook list | playbook show | playbook ops | playbook run | playbook test | playbook extract | playbook suggest | playbook save | playbook param | playbook record start | playbook record mark | playbook record stop | playbook record status | playbook record candidates | playbook trace export | playbook export | playbook import | playbook client derive | playbook client export | playbook client verify
 workflow: batch workflow.list workflow.info workflow.validate
 setup: install uninstall update config server extension-path health smoke remote authorize | remote list | remote revoke
 ```
@@ -114,4 +116,4 @@ setup: install uninstall update config server extension-path health smoke remote
 - oracle jobs, files, Pro quota → [references/oracle.md](references/oracle.md)
 - browser on another machine → [references/remote.md](references/remote.md)
 - workflow JSON, playbooks → [references/workflows.md](references/workflows.md)
-- a URL and a goal ("all books with price and rating") to a saved, tested op → [references/parse-recipe.md](references/parse-recipe.md)
+- `surf parse` exits 1 or 2, data after a click, search or scroll, writes, chains → [references/parse-recipe.md](references/parse-recipe.md)
