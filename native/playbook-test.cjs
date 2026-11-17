@@ -3,10 +3,11 @@
 const { MATCH_INPUT_LIMIT, MATCH_SKIPPED, MATCH_TIMED_OUT, assertionSecretIn, createRegexBudget, patternSecretIn, validateAssertions } = require("./playbook-assertions.cjs");
 const { assertionLine, decodeBudget, maskResult, redactResult, secretIn, spanningValues } = require("./redaction.cjs");
 const { authInputs, resolveArgs } = require("./playbook-runtime.cjs");
+const { applyFilter, collectFilterFlags, filterText, takeRunFilter } = require("./record-filter.cjs");
 const { editSavedOp, resolveEditablePlaybook, resolveOp } = require("./playbooks.cjs");
 
 const USAGE =
-  "Usage: surf pb test <playbook> <op> [--args <json> | --<input> <value>...] [--assert <path> <op> [value]]... [--strategy <using>] [--save] [--write [--repeat]] [--json]";
+  "Usage: surf pb test <playbook> <op> [--args <json> | --<input> <value>...] [--assert <path> <op> [value]]... [--strategy <using>] [--save] [--write [--repeat]] [--where <field=value>]... [--fields <a,b.c>] [--limit <n>] [--json]";
 const VALUE_OPS = new Set(["equals", "array_min_len", "matches"]);
 // Options of pb test itself; any other --name is an op input, as with surf use.
 const FLAGS = new Set(["json", "save", "write", "repeat", "allow-script", "no-wait", "pin-built-in"]);
@@ -154,6 +155,10 @@ async function runPlaybookTest({ argv, cwd = process.cwd(), home, env = process.
   const op = localOp(spec.playbook, spec.op, { cwd, home });
   if (op?.chain) throw new Error(`${spec.playbook} ${spec.op} is a chain op; pb test runs single ops, so test each step's op`);
   if (op?.effect === "write" && options.write !== true) throw new Error(`${spec.playbook} ${spec.op} is a write op; pb test runs it only with --write`);
+  // As with surf use, filter flags the op doesn't take as inputs filter what this prints. The
+  // host checks assertions on the whole result, so a filter can't make a failing test pass.
+  // parseTestArgs read each flag (the last --where) as an input, which takeRunFilter takes out again.
+  const filter = takeRunFilter({ flags: collectFilterFlags(argv), args: spec.args, ops: op ? [op] : [] });
   // The same input check as surf use, here so a typo is a usage error rather than a failed test.
   // The host checks again (and alone, when the op lives only on a remote browser host).
   if (op) resolveArgs(op, spec.args, { playbookId: spec.playbook });
@@ -206,6 +211,7 @@ async function runPlaybookTest({ argv, cwd = process.cwd(), home, env = process.
     assertions: (ok ? result.assertions : lastChecked?.assertions) || [],
     attempts,
     ...(ok ? {} : { error: result.error }),
+    ...(ok && filter ? applyFilter(result.value, filter) : {}),
     saved: null,
   };
   report = redactReport(report, Object.values(secret));
@@ -243,6 +249,10 @@ function formatTestReport(report) {
   const records = report.records === null ? "" : `, ${report.records} record${report.records === 1 ? "" : "s"}`;
   const lines = [`${report.ok ? "PASS" : "FAIL"} ${report.playbook} ${report.op}: ${answered}${records}, ${report.durationMs} ms`];
   for (const assertion of report.assertions) lines.push(`  ${assertionLine(assertion)}`);
+  if (report.filter) {
+    const { before, after } = report.filter;
+    lines.push(`Filtered: ${after} of ${before} record${before === 1 ? "" : "s"} (${filterText(report.filter)})`, JSON.stringify(report.value, null, 2));
+  }
   if (!report.ok) {
     for (const attempt of report.attempts) lines.push(`  ${attempt.using}: ${attempt.error}`);
     if (report.attempts.length === 0 && report.error) lines.push(`  ${report.error}`);

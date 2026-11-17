@@ -11,6 +11,7 @@ const { authInputs } = require("./playbook-runtime.cjs");
 const { parseEachFrom } = require("./chain-runtime.cjs");
 const { formatExtractResult, parseExtractArgs, saveExtract } = require("./playbook-extract.cjs");
 const { formatTestReport, runPlaybookTest } = require("./playbook-test.cjs");
+const { applyFilter, collectFilterFlags, takeRunFilter } = require("./record-filter.cjs");
 const { redactResult } = require("./redaction.cjs");
 const { exportPlaybookDirectory, importPlaybookDirectory, listPlaybooks, resolvePlaybook } = require("./playbooks.cjs");
 
@@ -98,7 +99,7 @@ function runSpec(argv) {
   const eachFrom = eachFromSpec(parsed.options);
   // With --each-from, --limit and --delay-ms bound its each, so they are no op inputs.
   if (eachFrom) for (const name of ["limit", "delay-ms"]) delete args[name];
-  return { playbook, op, args, raw: parsed.raw, options: parsed.options, ...(eachFrom ? { eachFrom } : {}) };
+  return { playbook, op, args, raw: parsed.raw, options: parsed.options, filterFlags: collectFilterFlags(argv.slice(offset)), ...(eachFrom ? { eachFrom } : {}) };
 }
 
 // --each-from <list-op>[:<path>][@path.<n>], with --each-into, --limit and --delay-ms.
@@ -127,14 +128,19 @@ function resolveLocalOp(spec, cwd) {
   }
 }
 
+// The op and, with --each-from, its list op, as this machine sees them (none when they live only
+// on a remote browser host).
+function localRunOps(spec, local) {
+  return local ? [local.op, spec.eachFrom && local.playbook.ops.get(spec.eachFrom.op)].filter(Boolean) : [];
+}
+
 // String inputs keep the text as typed. Env-supplied headers are read here, from the caller's
 // shell, and go to the host with this one request (in `secret`, a name redaction hides). With
 // --each-from the list op's inputs count too.
-function prepareRun(spec, cwd) {
-  const local = resolveLocalOp(spec, cwd);
+function prepareRun(spec, local) {
   if (!local) return { args: spec.args, secret: {} };
   const { playbook } = local;
-  const ops = [local.op, spec.eachFrom && playbook.ops.get(spec.eachFrom.op)].filter(Boolean);
+  const ops = localRunOps(spec, local);
   const args = { ...spec.args };
   for (const op of ops) {
     for (const [name, input] of Object.entries(op.args || {})) {
@@ -177,8 +183,13 @@ async function handlePlaybookCli(argv, { endpoint, cwd = process.cwd(), session,
     if (spec.options["dry-run"] !== undefined && spec.options["dry-run"] !== true) throw new Error("--dry-run takes no value");
     const format = spec.options.format;
     if (format !== undefined && format !== "md" && format !== "jsonl") throw new Error("--format must be md or jsonl");
+    const local = resolveLocalOp(spec, cwd);
+    // Takes the filter flags out of spec.args before they're sent as inputs.
+    const filter = takeRunFilter({ flags: spec.filterFlags, args: spec.args, ops: localRunOps(spec, local), eachFrom: spec.eachFrom });
+    if (filter && format) throw new Error("--where, --fields and --limit don't combine with --format; drop --format to filter the JSON records");
+    if (filter && spec.options["dry-run"] === true) throw new Error("--where, --fields and --limit filter a run's records; --dry-run runs nothing");
     const timeout = resolveRunTimeout(spec, cwd);
-    const prepared = prepareRun(spec, cwd);
+    const prepared = prepareRun(spec, local);
     const args = {
       playbook: spec.playbook,
       op: spec.op,
@@ -208,7 +219,9 @@ async function handlePlaybookCli(argv, { endpoint, cwd = process.cwd(), session,
     if (args.dryRun) return { handled: true, value: spec.options.json === true ? value : formatDryRun(value), json: spec.options.json === true };
     // With --format the host returns the rendered records as the value.
     if (format) return { handled: true, value: value.value, json: false };
-    return { handled: true, value, json: spec.options.json === true };
+    // The filtered records replace value; a failed run has none to filter.
+    const filtered = filter && Object.hasOwn(value, "value") ? { ...value, ...applyFilter(value.value, filter) } : value;
+    return { handled: true, value: filtered, json: spec.options.json === true };
   }
   const command = argv[1];
   if (command === "param") {

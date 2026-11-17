@@ -1136,6 +1136,22 @@ Without `--each-into`, each record fills the detail op's one required input you 
 
 A record can propose the chain for you. Record the list page and then one detail page (`pb record start quotes --op authors --network`, `navigate https://quotes.toscrape.com/`, click an author's "(about)" link), and `pb record stop --draft` looks for a value of 6 characters or more that an earlier response returned (a JSON value, or a link's path segment or an id attribute in a list of HTML items) and a later request sent as a whole URL path segment or query value. Each match prints one line, such as `authors_author --author ← $.url path segment 2 of each record of authors_list (div.quote > span > a[href]) (into path.2)`, and the chain goes to the record's `draft/chain.json`; `pb save --from-record <id> --chain` saves each of its requests as a read op, the bound values as required inputs, the extract the next step reads, and the chain op, which takes `--limit` and `--delay-ms` for its `each`. Give the last op an extract with `pb extract`, then `surf use quotes authors --limit 2 --delay-ms 3000`. The proposal holds request ids, paths, selectors and field names, never the values; headers, cookies, secret-named fields and credential-like values are never bound, and a record of one request proposes nothing.
 
+#### Filtering records
+
+`--where`, `--fields` and `--limit` trim what `surf use` and `surf pb test` print, after the op ran:
+
+```bash
+surf use books list_books --page 2 --where star_rating~=Three --fields title,price --limit 3
+```
+
+- `--where field=value` keeps records whose field, read as trimmed text, equals the value; `field!=value` keeps the others and `field~=text` those that contain the text, case-insensitive. Repeat it to need several; a dotted field (`stock.count`) reads a nested one.
+- `--fields a,b.c` keeps only those fields; a dotted one stays nested, `{ "b": { "c": … } }`.
+- `--limit n` keeps the first n records left after `--where`. With `--each-from` it bounds the each, as above, and keeps every record.
+- An unknown field in `--where` or `--fields` fails, listing the first record's fields (nested ones dotted).
+- A single-object result is kept or becomes `null`. The kept records replace `value`, next to `filter: { where, fields, limit, before, after }`. `--format` and `--dry-run` don't take filters.
+- An op that has an input of the same name (an op with a `limit` input, say) gets the flag as that input, and that filter isn't applied. `--limit` is a filter only when the op is in a playbook on this machine, so with `--remote` and a playbook only the browser host has, it still goes to the op.
+- `pb test` prints the kept records under its result; its assertions check the whole result, so a filter can't make a failing test pass.
+
 ### Threads and Feeds
 
 Get a whole thread or feed as clean records in seconds, instead of having an agent scroll and re-read the page. Sites like X and Bluesky keep only a few posts on screen at a time, so scrolling takes dozens of calls and long posts can come back cut short. The page itself gets its posts as data from the site's own API, a page at a time. Surf reads that data directly through your logged-in browser, so sites that need you signed in work and you don't need API keys.
