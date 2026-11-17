@@ -671,22 +671,41 @@ function pairsIn(reading, start, end) {
   return parts;
 }
 
-// The parts a URL-shaped reading (an absolute URL, `/path?query` or `?query`) sends, each read by
-// its own rules as the top-level URL is: its path, query keys and fragment route as written, its
-// query values (and a fragment's `k=v` pairs) form-encoded. None when it isn't URL-shaped.
+// How a fragment reads, in the top-level URL and in a URL a value holds alike: `#route?k=v` a
+// route and form pairs, `#/route` a route (an `=` in it is a route character), `#k=v&…` form
+// pairs, anything else one value. `split` is where the pairs of a `route+pairs` one begin, less 1.
+function fragmentShape(fragment) {
+  const split = fragment.indexOf("?");
+  if (split >= 0) return { kind: "route+pairs", split };
+  if (fragment.startsWith("/")) return { kind: "route" };
+  return { kind: fragment.includes("=") ? "pairs" : "whole" };
+}
+
+// A URL a value holds, absolute or relative: an origin, or a query or fragment after an empty path
+// (`?q`, `#f`), an absolute one (`/s?q`, `/s#f`, `//host/s?q`) or a `./` or `../` one.
+const RELATIVE_PATH = /^(?:$|\/|\.\.?(?:\/|$))/;
+
+// The parts a URL-shaped reading sends, split on its own `?`, `#`, `&` and `=` as written and each
+// read by its own rules as the top-level URL's are: its path, query keys and fragment route as
+// written, its query values (and a fragment's `k=v` pairs, see fragmentShape) form-encoded. Only
+// those values can be read as a URL or pairs again (`split`). None when it isn't URL-shaped.
 function urlParts(reading) {
-  if (!reading.text.includes("?") && !reading.text.includes("://")) return null;
-  const [, origin = "", pathname, query, fragment] = reading.text.match(URL_PARTS) || [];
-  if (pathname === undefined || !(origin || (query !== undefined && /^[/?]/.test(reading.text)))) return null;
-  const parts = [{ ...sliced(reading, origin.length, origin.length + pathname.length), form: false }];
+  const { text } = reading;
+  if (!text.includes("?") && !text.includes("#") && !text.includes("://")) return null;
+  const [, origin = "", pathname, query, fragment] = text.match(URL_PARTS) || [];
+  if (pathname === undefined) return null;
+  if (!origin && !((query !== undefined || fragment !== undefined) && RELATIVE_PATH.test(pathname))) return null;
+  const named = (start, end) => ({ ...sliced(reading, start, end), form: false, split: false });
+  const pairs = (start, end) => pairsIn(reading, start, end).map((part) => ({ ...part, split: part.form }));
+  const parts = [named(origin.length, origin.length + pathname.length)];
   const queryStart = origin.length + pathname.length + 1;
-  if (query !== undefined) parts.push(...pairsIn(reading, queryStart, queryStart + query.length));
+  if (query !== undefined) parts.push(...pairs(queryStart, queryStart + query.length));
   if (fragment !== undefined) {
-    const start = reading.text.length - fragment.length;
-    const split = fragment.indexOf("?");
-    if (split >= 0) parts.push({ ...sliced(reading, start, start + split), form: false }, ...pairsIn(reading, start + split + 1, reading.text.length));
-    else if (fragment.includes("=")) parts.push(...pairsIn(reading, start, reading.text.length));
-    else parts.push({ ...sliced(reading, start, reading.text.length), form: false });
+    const start = text.length - fragment.length;
+    const shape = fragmentShape(fragment);
+    if (shape.kind === "route+pairs") parts.push(named(start, start + shape.split), ...pairs(start + shape.split + 1, text.length));
+    else if (shape.kind === "pairs") parts.push(...pairs(start, text.length));
+    else parts.push(named(start, text.length));
   }
   return parts;
 }
@@ -701,7 +720,8 @@ const READ_MARGIN = 65536;
  * tokens }`: percent-decoded (each well-formed run, and as URLSearchParams does, an invalid byte
  * read as U+FFFD), repeatedly; a JSON string literal's value; the string values of a JSON document
  * (its keys are names, never typed values); and the parts of a URL-shaped text (see urlParts), each
- * read the same way at any depth. + is a space only in a query or form value: the value itself
+ * read the same way at any depth; only a value is read as a URL or pairs (`split`), and a decoding of
+ * a text already split is never split again. + is a space only in a query or form value: the value itself
  * where `plusIsSpace`, a URL-shaped text's query values, and the values of a `k=v&…` text decoded
  * from a form value; never a path, a key, a JSON string or a decoded value as a whole. `raw`: text
  * as captured or a part cut from a reading, not itself a decoding; `final`: decoding doesn't change
@@ -714,44 +734,51 @@ function readingsOf(masked, { inside, plusIsSpace }) {
   const add = (reading) => {
     // A reading that is one marker and nothing else holds nothing to check.
     if (isMark(reading.marks, 0, reading.text.length)) return;
-    const flags = `${Number(reading.raw)}${Number(reading.form)}${Number(reading.nested)}`;
+    const flags = `${Number(reading.raw)}${Number(reading.form)}${Number(reading.nested)}${Number(reading.split)}`;
     const key = reading.marks.length === 0 ? `${flags}|${reading.text}` : `${flags}${reading.marks.map(({ start, end }) => `${start},${end}`).join(";")}|${reading.text}`;
     if (seen.has(key)) return;
     seen.add(key);
     queue.push(reading);
   };
-  add({ ...masked, raw: true, form: plusIsSpace, nested: false });
+  add({ ...masked, raw: true, form: plusIsSpace, nested: false, split: true });
   const readings = [];
   let budget = MAX_READ_FACTOR * masked.text.length + READ_MARGIN;
   for (let index = 0; index < queue.length; index++) {
     const reading = queue[index];
-    const { text, form, nested } = reading;
+    const { text, form, nested, split } = reading;
     budget -= text.length;
     if (budget < 0) return null;
     const tokens = jsonTokens(text);
     let final = true;
     try {
       if (tokens) {
-        if (inside) for (const leaf of tokens.leaves) if (leaf.kind === "string" && !isMark(reading.marks, leaf.start + 1, leaf.end - 1)) add({ ...jsonString(reading, leaf.start, leaf.end), raw: false, form: false, nested: false });
+        if (inside) for (const leaf of tokens.leaves) if (leaf.kind === "string" && !isMark(reading.marks, leaf.start + 1, leaf.end - 1)) add({ ...jsonString(reading, leaf.start, leaf.end), raw: false, form: false, nested: false, split });
       } else {
+        let decodings = [];
         if (text.includes("%") || (form && text.includes("+"))) {
           const source = form ? between(reading, (run) => run.replace(/\+/g, " ")) : reading;
           const strict = between(source, decode);
           const lenient = between(source, decodeLeniently);
           final = lenient.text === text;
           // A strict decoding that reads it as it is still counts as one: a site reads that text.
-          if (!final) for (const decoded of lenient.text === strict.text ? [strict] : [strict, lenient]) add({ ...decoded, raw: false, form: false, nested: form || nested });
+          if (!final) decodings = lenient.text === strict.text ? [strict] : [strict, lenient];
         }
+        // A value read as a URL or pairs is split on its own separators, as written once it is
+        // decoded by its own rules (raw text a site decodes further isn't yet): a decoding of the
+        // whole is never split again, so a %3D or %3F in a key or path never becomes one.
+        // A form value that decoding doesn't change is its own decoding.
+        const pairs = (nested || (form && final)) && text.includes("=");
+        const parts = inside && split && (final || !reading.raw) ? urlParts(reading) || (pairs ? pairsIn(reading, 0, text.length).map((part) => ({ ...part, split: part.form })) : []) : [];
+        const splitAgain = split && parts.length === 0;
+        for (const decoded of decodings) add({ ...decoded, raw: false, form: false, nested: form || nested, split: splitAgain });
         if (inside && /^\s*"/.test(text)) {
           let quoted = null;
           try {
             quoted = JSON.parse(text);
           } catch {}
-          if (typeof quoted === "string") add({ ...jsonString(reading, text.indexOf('"'), text.trimEnd().length), raw: false, form: false, nested: false });
+          // The text read as JSON, not a decoding of it: it reads as the text itself would.
+          if (typeof quoted === "string") add({ ...jsonString(reading, text.indexOf('"'), text.trimEnd().length), raw: false, form: false, nested: false, split });
         }
-        // A form value that decoding doesn't change is its own decoding.
-        const pairs = (nested || (form && final)) && text.includes("=");
-        const parts = inside ? urlParts(reading) || (pairs ? pairsIn(reading, 0, text.length) : []) : [];
         for (const part of parts) add({ ...part, raw: true, nested: false });
       }
     } catch {
@@ -1049,15 +1076,15 @@ function maskUrl(url, typed, { body, markers = [], walk }) {
   if (fragment !== undefined) {
     const fragmentStart = url.length - fragment.length;
     const edits = maskEach(fragment, fragmentStart, values, { plusIsSpace: false, inside: false }, context);
-    const split = fragment.indexOf("?");
+    const shape = fragmentShape(fragment);
     if (edits.length === 1 && edits[0].start === fragmentStart && edits[0].end === url.length) held.push({ start: fragmentStart, end: url.length });
-    else if (split >= 0) {
-      route = { text: fragment.slice(0, split), at: fragmentStart };
-      maskPairs(fragment.slice(split + 1), fragmentStart + split + 1, values, context);
-      held.push({ start: fragmentStart + split + 1, end: url.length });
-    } else if (fragment.startsWith("/")) route = { text: fragment, at: fragmentStart };
+    else if (shape.kind === "route+pairs") {
+      route = { text: fragment.slice(0, shape.split), at: fragmentStart };
+      maskPairs(fragment.slice(shape.split + 1), fragmentStart + shape.split + 1, values, context);
+      held.push({ start: fragmentStart + shape.split + 1, end: url.length });
+    } else if (shape.kind === "route") route = { text: fragment, at: fragmentStart };
     else {
-      if (fragment.includes("=")) maskPairs(fragment, fragmentStart, values, context);
+      if (shape.kind === "pairs") maskPairs(fragment, fragmentStart, values, context);
       held.push({ start: fragmentStart, end: url.length });
     }
   }

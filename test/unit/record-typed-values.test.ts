@@ -589,7 +589,7 @@ describe("every spelling of a typed value, masked at any depth", () => {
     });
   });
 
-  it("masks in time linear in the URL's size", () => {
+  it("masks in time near-linear (n log n) in the URL's size", () => {
     const time = (url: string, values: string[]) => {
       const start = performance.now();
       const result = typedValues.maskTypedValuesInUrl(url, typed(...values));
@@ -616,7 +616,7 @@ describe("every spelling of a typed value, masked at any depth", () => {
       expect(numbers.ms).toBeLessThan(LIMIT);
       expect(numbers.result.markers).toHaveLength(count);
     }
-    // The work counts below prove linear growth; these only catch a gross slowdown.
+    // The work counts below prove near-linear growth; these only catch a gross slowdown.
     const alternating = `[${Array.from({ length: 8000 }, (_, i) => (i % 2 ? "2025" : "2024")).join(",")}]`;
     expect(
       time(`https://example.test/g?v=${encodeURIComponent(alternating)}`, ["2024", "2025"]).ms,
@@ -909,6 +909,41 @@ describe("the check after masking: only a proven match counts, read as a site re
     // Its query value is foo bar: the route piece is the value the query sends, so it stays.
     expect(mask("/s?q=foo+bar")).toBe(route);
   });
+
+  for (const next of ["/s#q=foo+bar", "/s#/route?q=foo+bar", "#q=foo+bar"]) {
+    it(`reads a relative URL with a fragment in JSON as the top-level URL is read: ${next}`, () => {
+      const json = JSON.stringify({ next });
+      const { url } = typedValues.maskTypedValuesInUrl(
+        `https://example.test/g?v=${encodeURIComponent(json)}`,
+        [typed("foo bar")],
+      );
+      const body = new URL(url).searchParams.get("v") as string;
+      // Masked whole: no part of it is sent.
+      if (body.startsWith("<")) {
+        return;
+      }
+      const fragment = new URL(JSON.parse(body).next, "https://e.test").hash.slice(1);
+      const pairs = fragment.includes("?") ? fragment.slice(fragment.indexOf("?") + 1) : fragment;
+      expect(new URLSearchParams(pairs).get("q")).not.toBe("foo bar");
+    });
+  }
+
+  // Each nested URL sends foo+bar only in a key, a path or a #/route, never as a form value: the
+  // query holds no typed value, so the real route is masked.
+  for (const next of [
+    "/s?q%3Dfoo%2Bbar=safe",
+    "/%2Fs%3Fq%3Dfoo%2Bbar?x=safe",
+    "https://e.test/s#/route=foo+bar",
+  ]) {
+    it(`keeps a nested URL's encoded delimiters in the part they sit in: ${next}`, () => {
+      const route = `/${encodeURIComponent("foo bar")}`;
+      const { url } = typedValues.maskTypedValuesInUrl(
+        `https://example.test${route}?next=${encodeURIComponent(next)}`,
+        [typed("foo bar")],
+      );
+      expect(url).toBe(`https://example.test/<text>?next=${encodeURIComponent(next)}`);
+    });
+  }
 
   it("names the field of a JSON scalar only to a bounded depth, in work linear in the depth", () => {
     const counter = { steps: 0 };
