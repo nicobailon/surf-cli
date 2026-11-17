@@ -216,19 +216,26 @@ describe("extracting records from JSON", () => {
 
 /**
  * A tab whose network strategy answers `body`, with the service worker's output handling: the
- * script's value pretty-printed and cut at 50,000 characters.
+ * script's value pretty-printed and cut at 50,000 characters, or { error } when it throws.
  */
 type TabOptions = {
   clock?: { now: () => number };
   worker?: unknown;
   // What the tab's output goes through on its way out, as a page's own JSON.stringify could.
   serialize?: (value: Record<string, unknown>) => Record<string, unknown>;
+  // The page's JSON, which the tab's scripts use.
+  json?: Pick<typeof JSON, "parse" | "stringify">;
 };
 
 function jsonTab(
   body: string,
   contentType = "application/json",
-  { clock = performance, worker = PageWorker, serialize = (value) => value }: TabOptions = {},
+  {
+    clock = performance,
+    worker = PageWorker,
+    serialize = (value) => value,
+    json = JSON,
+  }: TabOptions = {},
 ) {
   const outputs: Record<string, unknown>[] = [];
   const executeTool = async (_tool: string, args: { code: string }) => {
@@ -239,13 +246,19 @@ function jsonTab(
       headers: new Headers({ "content-type": contentType }),
       text: async () => body,
     });
-    const value = await new Function(
-      "fetch",
-      "location",
-      "performance",
-      "Worker",
-      `return ${args.code}`,
-    )(fetchImpl, { href: "https://api.test/" }, clock, worker);
+    let value: Record<string, unknown>;
+    try {
+      value = await new Function(
+        "fetch",
+        "location",
+        "performance",
+        "Worker",
+        "JSON",
+        `return ${args.code}`,
+      )(fetchImpl, { href: "https://api.test/" }, clock, worker, json);
+    } catch (error) {
+      return { error: (error as Error).message };
+    }
     outputs.push(value);
     return { output: JSON.stringify(serialize(value), null, 2).substring(0, 50000) };
   };
@@ -420,12 +433,13 @@ describe("a JSON extract runs in the tab", () => {
   });
 
   it("charges what the host saw when a page rewrites regexSpentMs to 0", async () => {
-    // Each strategy's 30 matches take 60 ms on the page's clock, 1.8 s; the page reports 0. The host
-    // reads the same clock, so it sees the time the regex call took and stops the run at 2 s.
+    // Each strategy's 30 matches take 60 ms on the page's clock (two reads, 30 ms a read), 1.8 s;
+    // the page reports 0. The host reads the same clock without moving it, so it sees the time the
+    // regex call took and stops the run at 2 s.
     const body = JSON.stringify(Array.from({ length: 30 }, (_, index) => ({ id: `id-${index}` })));
     const ids = { records: "$", fields: { id: { path: "id", match: "id-(\\d+)" } } };
     let now = 0;
-    const clock = { now: () => (now += 60) };
+    const clock = { now: () => (now += 30) };
     const tab = jsonTab(body, undefined, {
       clock,
       serialize: (value) => ("regexSpentMs" in value ? { ...value, regexSpentMs: 0 } : value),
@@ -439,7 +453,83 @@ describe("a JSON extract runs in the tab", () => {
       playbook: { id: "fixture", provenance: { scope: "test" } },
       op: op([{ ...strategy, verify: { status: 201 } }, strategy]),
       executeTool: tab.executeTool,
+      now: () => now,
+    });
+    await expect(run).rejects.toThrow(
+      "All strategies failed (network: expected status 201; network: skipped: the run's 2 s regex budget is spent)",
+    );
+  });
+
+  it("charges a pattern call that fails after its patterns ran", async () => {
+    // The page's JSON.stringify throws on the tab's output, so the pattern call rejects after each
+    // strategy's 30 matches have taken 1.8 s. The first is charged its whole 2 s allowance, and the
+    // second runs no pattern.
+    const body = JSON.stringify(Array.from({ length: 30 }, (_, index) => ({ id: `id-${index}` })));
+    const ids = { records: "$", fields: { id: { path: "id", match: "id-(\\d+)" } } };
+    let now = 0;
+    const clock = { now: () => (now += 60) };
+    let matches = 0;
+    class CountingWorker extends PageWorker {
+      postMessage(data: unknown) {
+        if (data !== "ping") {
+          matches++;
+        }
+        super.postMessage(data);
+      }
+    }
+    const json = {
+      parse: JSON.parse,
+      stringify: (value: unknown, ...rest: [never, number]) => {
+        if (value && typeof value === "object" && "regexSpentMs" in value) {
+          throw new Error("page says no");
+        }
+        return JSON.stringify(value, ...rest);
+      },
+    };
+    const tab = jsonTab(body, undefined, { clock, worker: CountingWorker, json });
+    const strategy = {
+      using: "network",
+      request: { method: "GET", url: "https://api.test/search" },
+      extract: ids,
+    };
+    const run = runtime.runPlaybookOp({
+      playbook: { id: "fixture", provenance: { scope: "test" } },
+      op: op([strategy, strategy]),
+      executeTool: tab.executeTool,
       now: () => clock.now(),
+    });
+    await expect(run).rejects.toThrow(
+      "All strategies failed (network: page says no; network: skipped: the run's 2 s regex budget is spent)",
+    );
+    expect(matches).toBe(30);
+  });
+
+  it("refuses a pattern call that took longer than its allowance, when the page's clock stands still", async () => {
+    // The page's clock never moves, so its worker runs every match; each takes 60 ms on the host's
+    // clock. The first strategy spends 1.8 s and fails its status check; the second, with 200 ms
+    // left, also takes 1.8 s, and its result is refused.
+    const body = JSON.stringify(Array.from({ length: 30 }, (_, index) => ({ id: `id-${index}` })));
+    const ids = { records: "$", fields: { id: { path: "id", match: "id-(\\d+)" } } };
+    let hostNow = 0;
+    class SlowWorker extends PageWorker {
+      postMessage(data: unknown) {
+        if (data !== "ping") {
+          hostNow += 60;
+        }
+        super.postMessage(data);
+      }
+    }
+    const tab = jsonTab(body, undefined, { clock: { now: () => 0 }, worker: SlowWorker });
+    const strategy = {
+      using: "network",
+      request: { method: "GET", url: "https://api.test/search" },
+      extract: ids,
+    };
+    const run = runtime.runPlaybookOp({
+      playbook: { id: "fixture", provenance: { scope: "test" } },
+      op: op([{ ...strategy, verify: { status: 201 } }, strategy]),
+      executeTool: tab.executeTool,
+      now: () => hostNow,
     });
     await expect(run).rejects.toThrow(
       "All strategies failed (network: expected status 201; network: skipped: the run's 2 s regex budget is spent)",

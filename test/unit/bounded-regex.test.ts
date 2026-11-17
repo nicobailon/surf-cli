@@ -253,6 +253,54 @@ describe("bounded regex in a tab", () => {
     expect(budget.remainingMs).toBe(0);
   });
 
+  it("charges the pattern call's whole allowance when it fails or throws", async () => {
+    const failures: Array<() => Promise<unknown>> = [
+      async () => ({ error: "page says no" }),
+      async () => {
+        throw new Error("page says no");
+      },
+    ];
+    for (const fail of failures) {
+      const budget = bounded.createRegexBudget({ ms: 2000, scope: "run" });
+      budget.remainingMs = 1500;
+      let calls = 0;
+      await expect(
+        bounded.runTabScript({
+          budget,
+          now: () => 0,
+          script: () => "code",
+          execute: async () =>
+            ++calls === 1 ? { output: JSON.stringify({ regexPending: { key: "k" } }) } : fail(),
+          unreadable: () => new Error("unreadable"),
+        }),
+      ).rejects.toThrow("page says no");
+      expect(budget.remainingMs).toBe(0);
+    }
+  });
+
+  it("refuses a pattern call's result when the host saw it take longer than its allowance", async () => {
+    const budget = bounded.createRegexBudget({ ms: 2000, scope: "run" });
+    budget.remainingMs = 200;
+    let now = 0;
+    let calls = 0;
+    await expect(
+      bounded.runTabScript({
+        budget,
+        now: () => now,
+        script: () => "code",
+        execute: async () => {
+          if (++calls === 1) {
+            return { output: JSON.stringify({ regexPending: { key: "k" } }) };
+          }
+          now += 1800;
+          return { output: JSON.stringify({ value: 1, regexSpentMs: 0 }) };
+        },
+        unreadable: () => new Error("unreadable"),
+      }),
+    ).rejects.toThrow("skipped: the run's 2 s regex budget is spent");
+    expect(budget.remainingMs).toBe(-1600);
+  });
+
   it("leaves the budget alone for a script that runs no patterns, however long it takes", async () => {
     // A plain network request: no extract, so no regexSpentMs and no pattern call.
     const budget = bounded.createRegexBudget({ ms: 2000, scope: "run" });

@@ -369,29 +369,40 @@ function chargeTab({ budget, allowanceMs, reported, observedMs }) {
  * timed with `now()` and charged by chargeTab; the first call (reading the page, fetching) runs
  * none and is charged nothing, so a script without patterns, such as a plain network request,
  * leaves the budget as it was. Then finishTabExtract completes it. An output that isn't JSON (cut
- * at the tab's limit, say) throws `unreadable(size)`; from the pattern call it is first charged the
- * whole allowance.
+ * at the tab's limit, say) throws `unreadable(size)`. A pattern call that fails, whether with an
+ * error, a throw or an unreadable output, is charged the whole allowance before it throws; one the
+ * host saw take longer than its allowance throws the budget's error instead of giving its result,
+ * and once the budget is spent, none is made.
  */
 async function runTabScript({ budget, script, execute, unreadable, now = () => performance.now() }) {
-  // `onUnreadable` runs before an output that isn't JSON throws.
-  const read = async (code, onUnreadable = () => {}) => {
+  const read = async (code) => {
     const response = await execute(code);
     if (response?.error) throw new Error(typeof response.error === "string" ? response.error : JSON.stringify(response.error));
     if (typeof response?.output !== "string") return response?.value ?? response;
     try {
       return JSON.parse(response.output);
     } catch {
-      onUnreadable();
       throw unreadable(response.output.length);
     }
   };
   let result = await read(script(budget));
   if (result?.regexPending) {
-    const allowanceMs = Math.max(0, budget.remainingMs);
+    if (budget.remainingMs <= 0) throw skippedError(budget);
+    const allowanceMs = budget.remainingMs;
     const started = now();
-    const charge = (reported) => chargeTab({ budget, allowanceMs, reported, observedMs: now() - started });
-    result = await read(stashCallScript(result.regexPending.key), () => charge(undefined));
+    let observedMs;
+    const charge = (reported) => {
+      observedMs = now() - started;
+      chargeTab({ budget, allowanceMs, reported, observedMs });
+    };
+    try {
+      result = await read(stashCallScript(result.regexPending.key));
+    } catch (error) {
+      charge(undefined);
+      throw error;
+    }
     charge(result?.regexSpentMs);
+    if (!(observedMs <= allowanceMs)) throw skippedError(budget);
   }
   return finishTabExtract({ result, budget, runScript: read });
 }
