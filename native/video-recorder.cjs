@@ -109,11 +109,36 @@ function buildFfmpegArgs(output, fps) {
   ];
 }
 
-function normalizeChildError(error) {
+function isExecutable(filePath) {
+  try {
+    fs.accessSync(filePath, fs.constants.X_OK);
+    return fs.statSync(filePath).isFile();
+  } catch {
+    return false;
+  }
+}
+
+// The ffmpeg the host would run with this environment, or null when there is none:
+// SURF_FFMPEG when it is executable, else the first ffmpeg on PATH.
+function findFfmpeg(env = process.env) {
+  if (env.SURF_FFMPEG && isExecutable(env.SURF_FFMPEG)) return env.SURF_FFMPEG;
+  const name = process.platform === "win32" ? "ffmpeg.exe" : "ffmpeg";
+  for (const dir of (env.PATH || "").split(path.delimiter)) {
+    if (dir && isExecutable(path.join(dir, name))) return path.join(dir, name);
+  }
+  return null;
+}
+
+function normalizeChildError(error, env = process.env) {
   if (error instanceof VideoRecorderError) return error;
   const message = error?.message || String(error || "ffmpeg failed");
   if (error?.code === "ENOENT") {
-    return new VideoRecorderError("ffmpeg_missing", "ffmpeg was not found on PATH. Install ffmpeg and retry.");
+    // A browser starts the host with its own PATH (on macOS /usr/bin:/bin:/usr/sbin:/sbin),
+    // so an ffmpeg the user's shell finds can still be missing here.
+    const notOnPath = `ffmpeg was not found on the native host's PATH (${env.PATH || ""})`;
+    return new VideoRecorderError("ffmpeg_missing", env.SURF_FFMPEG
+      ? `SURF_FFMPEG (${env.SURF_FFMPEG}) does not exist and ${notOnPath}. Rerun \`surf install\` or point SURF_FFMPEG at ffmpeg.`
+      : `${notOnPath}. If it's installed, rerun \`surf install\` or set SURF_FFMPEG to its path.`);
   }
   return new VideoRecorderError("ffmpeg_failed", message);
 }
@@ -131,6 +156,7 @@ class VideoRecorder {
     startupGraceMs = DEFAULT_STARTUP_GRACE_MS,
     stopTimeoutMs = DEFAULT_STOP_TIMEOUT_MS,
     onFailure = () => {},
+    env = process.env,
   } = {}) {
     this.output = validateVideoOutputPath(output, { createParent: false });
     this.fps = parseVideoFps(fps);
@@ -143,6 +169,7 @@ class VideoRecorder {
     this.startupGraceMs = startupGraceMs;
     this.stopTimeoutMs = stopTimeoutMs;
     this.onFailure = onFailure;
+    this.env = env;
 
     this.state = "idle";
     this.child = null;
@@ -191,12 +218,14 @@ class VideoRecorder {
     this.startedAt = this.now();
     let child;
     try {
-      child = this.spawnImpl("ffmpeg", buildFfmpegArgs(this.output, this.fps), {
+      // A stale SURF_FFMPEG (ffmpeg moved since `surf install`) falls back to ffmpeg on PATH.
+      const pinned = this.env.SURF_FFMPEG && isExecutable(this.env.SURF_FFMPEG) ? this.env.SURF_FFMPEG : null;
+      child = this.spawnImpl(pinned || "ffmpeg", buildFfmpegArgs(this.output, this.fps), {
         stdio: ["pipe", "ignore", "pipe"],
         windowsHide: true,
       });
     } catch (error) {
-      this._fail(normalizeChildError(error));
+      this._fail(normalizeChildError(error, this.env));
       throw this.failure;
     }
     this.child = child;
@@ -205,7 +234,7 @@ class VideoRecorder {
     try {
       await this._waitForStartup();
     } catch (error) {
-      const normalized = normalizeChildError(error);
+      const normalized = normalizeChildError(error, this.env);
       this._fail(normalized);
       await this._killChild();
       throw normalized;
@@ -264,7 +293,7 @@ class VideoRecorder {
   _attachChildListeners(child) {
     child.once?.("error", (error) => {
       if (this.state === "stopping" || this.state === "stopped") return;
-      this._fail(normalizeChildError(error));
+      this._fail(normalizeChildError(error, this.env));
     });
     child.once?.("exit", (code, signal) => {
       this.closeCode = code;
@@ -286,7 +315,7 @@ class VideoRecorder {
     });
     child.stdin?.once?.("error", (error) => {
       if (this.state === "stopping" || this.state === "stopped") return;
-      this._fail(normalizeChildError(error));
+      this._fail(normalizeChildError(error, this.env));
     });
     child.stderr?.on?.("data", (chunk) => {
       const text = String(chunk || "").trim();
@@ -311,7 +340,7 @@ class VideoRecorder {
         timer = setTimeout(() => finish(), this.startupGraceMs);
       };
       child.once?.("spawn", onSpawn);
-      child.once?.("error", (error) => finish(normalizeChildError(error)));
+      child.once?.("error", (error) => finish(normalizeChildError(error, this.env)));
       child.once?.("exit", (code) => {
         finish(new VideoRecorderError("ffmpeg_exit_early", `ffmpeg exited before recording started${code === null ? "" : ` (code ${code})`}`));
       });
@@ -343,7 +372,7 @@ class VideoRecorder {
       stdin.write(frame.data);
       this.frames += 1;
     } catch (error) {
-      this._fail(normalizeChildError(error));
+      this._fail(normalizeChildError(error, this.env));
     }
   }
 
@@ -375,7 +404,7 @@ class VideoRecorder {
         if (child.stdin && !child.stdin.destroyed && !child.stdin.writableEnded) child.stdin.end();
         else if (child.stdin?.destroy) child.stdin.destroy();
       } catch (error) {
-        this._fail(normalizeChildError(error));
+        this._fail(normalizeChildError(error, this.env));
         finish(null, null);
       }
       timer = setTimeout(() => {
@@ -413,7 +442,7 @@ class VideoRecorder {
 
   _fail(error) {
     if (this.failure) return;
-    this.failure = normalizeChildError(error);
+    this.failure = normalizeChildError(error, this.env);
     this.state = "failed";
     this._clearTicker();
     if (!this._failureNotified) {
@@ -439,6 +468,7 @@ module.exports = {
   VIDEO_FRAME_QUEUE_LIMIT,
   VideoRecorder,
   VideoRecorderError,
+  findFfmpeg,
   parseVideoFps,
   validateVideoOutputPath,
 };

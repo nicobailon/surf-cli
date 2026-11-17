@@ -544,7 +544,7 @@ surf video stop
 surf video restart ./take-2.webm --fps 60
 ```
 
-`--fps` defaults to 30 and is capped at 60. Video recording is local-only and requires `ffmpeg` on `PATH`.
+`--fps` defaults to 30 and is capped at 60. Video recording is local-only and requires `ffmpeg`. The native host runs with the browser's PATH, not your shell's, so `surf install` records the ffmpeg your shell finds as `SURF_FFMPEG` in the host wrapper; after installing ffmpeg, rerun `surf install` and reload the extension. `surf doctor` reports whether the host finds it.
 
 ### Animation Audit
 

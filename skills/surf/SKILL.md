@@ -1,6 +1,6 @@
 ---
 name: surf
-description: Drive the user's logged-in Chrome from the shell. Use for browser automation (open, read, click, fill, upload, screenshot), reading a site's feed or API, or asking ChatGPT, Gemini, Perplexity or Grok through the browser.
+description: Drive the user's logged-in Chrome from the shell. Use for browser automation (open, read, click, fill, upload, screenshot), reading a site's feed or API, turning a site into a reusable op, or asking ChatGPT, Gemini, Perplexity or Grok through the browser.
 ---
 
 # Surf
@@ -114,3 +114,4 @@ setup: install uninstall update config server extension-path health smoke remote
 - oracle jobs, files, Pro quota → [references/oracle.md](references/oracle.md)
 - browser on another machine → [references/remote.md](references/remote.md)
 - workflow JSON, playbooks → [references/workflows.md](references/workflows.md)
+- a URL and a goal ("all books with price and rating") to a saved, tested op → [references/parse-recipe.md](references/parse-recipe.md)

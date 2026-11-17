@@ -73,6 +73,7 @@ const fs = require("node:fs") as {
   readdirSync(targetPath: string): string[];
   writeFileSync(targetPath: string, content: string): void;
   readFileSync(targetPath: string, encoding: string): string;
+  chmodSync(targetPath: string, mode: number): void;
 };
 const os = require("node:os") as { tmpdir(): string };
 const path = require("node:path") as { join(...paths: string[]): string };
@@ -84,6 +85,7 @@ const { openClientTransport } = require("../../native/client-transport.cjs") as 
 const fileTransfer = require("../../native/file-transfer.cjs") as any;
 const { version: packageVersion } = require("../../package.json") as { version: string };
 const crypto = require("node:crypto") as any;
+const { runDoctor } = require("../../native/doctor.cjs") as any;
 
 const tempDirs: string[] = [];
 const children: ChildProcessLike[] = [];
@@ -1449,6 +1451,41 @@ describe("native host protocol integration", () => {
     expect(result.stderr).toBe(
       `surf: version mismatch (cli ${packageVersion}, host 0.0.1, extension ${packageVersion}). Run \`surf update\`.\n`,
     );
+  });
+
+  it("tells surf doctor whether the host finds ffmpeg with the PATH it was started with", async ({
+    skip,
+  }) => {
+    if (process.platform === "win32") {
+      skip();
+      return;
+    }
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "surf-host-ffmpeg-"));
+    tempDirs.push(tempDir);
+    const binDir = path.join(tempDir, "bin");
+    fs.mkdirSync(binDir, { recursive: true });
+    const ffmpegPath = path.join(binDir, "ffmpeg");
+    fs.writeFileSync(ffmpegPath, "#!/bin/sh\nexit 0\n");
+    fs.chmodSync(ffmpegPath, 0o755);
+    const hostFfmpegCheck = async (env: Record<string, string | undefined>) => {
+      const host = await startHostHarness({ SURF_FFMPEG: undefined, ...env });
+      const report = await runDoctor(
+        { browser: "chrome", socket: host.socketPath },
+        { homeDir: tempDir, env: {} },
+      );
+      return report.checks.find((check: any) => check.id === "host-ffmpeg");
+    };
+
+    const guiPath = path.join(tempDir, "empty");
+    const missing = await hostFfmpegCheck({ PATH: guiPath });
+    expect(missing.status).toBe("warn");
+    expect(missing.message).toContain(`on its PATH (${guiPath})`);
+
+    const found = await hostFfmpegCheck({ PATH: `${guiPath}:${binDir}` });
+    expect(found).toMatchObject({ status: "pass", message: expect.stringContaining(ffmpegPath) });
+
+    const pinned = await hostFfmpegCheck({ PATH: guiPath, SURF_FFMPEG: ffmpegPath });
+    expect(pinned).toMatchObject({ status: "pass", message: expect.stringContaining(ffmpegPath) });
   });
 
   it("routes page text, page state, and JavaScript through the selected frame until frame.main", async () => {
