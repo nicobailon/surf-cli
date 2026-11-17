@@ -1584,6 +1584,19 @@ describe("activity and explicit record evidence", () => {
         },
       );
 
+      it("warns of a lone write's origin when the record had no page origin", () => {
+        // A record started on about:blank has no page origin to compare the write's with.
+        const url = "https://api.shop.example/cart";
+        const write = { ...create, id: "r_cart", url };
+        const flow = recordFlow({ commands: ["navigate"], origin: "", trace: [write] });
+        const { record } = flow.stopped();
+        const saved = save(flow.root, record.id);
+        expect(saved.origins).toEqual(["https://api.shop.example"]);
+        expect(saved.warnings).toContain(
+          `the op sends to https://api.shop.example, the origin of the request it replays (POST ${url}), and the record had no page origin to compare it with; if that is the wrong request, save again with --request-id <r_…> from pb record candidates`,
+        );
+      });
+
       it("refuses several writes on another origin until --request-id names one", () => {
         const origin = "https://shop.example";
         const cart = { ...create, id: "r_cart", url: "https://api.shop.example/cart" };
