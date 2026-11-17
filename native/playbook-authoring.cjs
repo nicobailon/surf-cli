@@ -4,7 +4,7 @@ const { isDeepStrictEqual } = require("util");
 const { readRecent } = require("./activity-journal.cjs");
 const { writeNetworkExport } = require("./network-export.cjs");
 const { getPrivateStateRoot, readPrivateJson } = require("./private-state.cjs");
-const { buildDraft, draftFromRecord, readRecord, recordsRoot } = require("./playbook-records.cjs");
+const { buildDraft, DRAFT_SAFETY, draftFromRecord, readRecord, recordsRoot } = require("./playbook-records.cjs");
 const { escapeStepArgs, requestInputs, sentRequest } = require("./playbook-template.cjs");
 const { envBackedHeaders, savePlaybook, validateOp } = require("./playbooks.cjs");
 const { requestEffect } = require("./request-kinds.cjs");
@@ -20,13 +20,13 @@ function suggestions({ since = "1h", root } = {}) {
 function saveFromRecent({ site, op: opId, since = "1h", scope = "user", cwd, home, root }) {
   const events = readRecent({ since, root }).filter((event) => event.type === "tool.issued");
   if (events.length === 0) throw new Error("no recent Surf activity to save");
-  if (events.some((event) => ["page-write", "unknown"].includes(commandMetadata(event.command, event.argsRedacted).effect))) {
-    throw new Error("recent activity includes write-capable commands; use an explicit record (with --network, so its requests show whether the flow writes) and review its draft before saving");
-  }
   // Escaped as a record's steps are, so a literal like `%{term}` in a selector isn't filled from an
   // input; provenance.escaped tells the runtime so (escapedOp).
   const promoted = promoteRedactedStepArgs(events.map((event) => ({ tool: event.command, args: escapeStepArgs(event.argsRedacted || {}) })));
-  const op = { id: opId, description: "Drafted from recent Surf activity", effect: "read", args: promoted.args, run: [{ using: "workflow", steps: promoted.steps }], provenance: { recentSince: since, escaped: true } };
+  // A page write saves as a write that needs --write, with a drafted write's safety (DRAFT_SAFETY).
+  const writes = events.some((event) => ["page-write", "unknown"].includes(commandMetadata(event.command, event.argsRedacted).effect));
+  const effect = writes ? { effect: "write", safety: { ...DRAFT_SAFETY } } : { effect: "read" };
+  const op = { id: opId, description: "Drafted from recent Surf activity", ...effect, args: promoted.args, run: [{ using: "workflow", steps: promoted.steps }], provenance: { recentSince: since, escaped: true } };
   validateOp(op, { origins: [] });
   return savePlaybook({ manifest: { id: site, name: site, version: "1.0.0", origins: [] }, op, scope, cwd, home });
 }

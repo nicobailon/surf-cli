@@ -427,8 +427,8 @@ function requestFromEntry(entry, warnings = []) {
   };
 }
 
-// How long a drafted write blocks the same inputs after it succeeded.
-const DRAFT_WINDOW_MS = 300_000;
+// A drafted write runs only with --write and blocks the same inputs for 5 minutes after it succeeded.
+const DRAFT_SAFETY = Object.freeze({ authorization: "explicit", duplicate: "repeatable-window", windowMs: 300_000 });
 
 // The steps a record ran that a draft replays: its completed recordable commands, in order. Their
 // arguments are escaped, so text like `{{action}}` in a recorded selector or URL is sent as
@@ -458,7 +458,7 @@ function buildDraft(record, { read = false, requestId, warnings = [], root = get
   }
   if (strategies.length === 0) throw new Error("record has no executable evidence");
   // A drafted write has no key: its duplicate claim covers every input, for 5 minutes once verified.
-  const safety = effect === "write" ? { authorization: "explicit", duplicate: "repeatable-window", windowMs: DRAFT_WINDOW_MS } : undefined;
+  const safety = effect === "write" ? { ...DRAFT_SAFETY } : undefined;
   const provenance = { recordId: record.id, ...(requestId ? { requestId } : {}) };
   const op = { id: record.op, description: `Drafted from ${record.id}`, effect, args, ...(safety ? { safety } : {}), run: strategies, provenance };
   return { op, because };
@@ -604,6 +604,7 @@ module.exports = {
   appendRecordEvent,
   attachNetworkTrace,
   buildDraft,
+  DRAFT_SAFETY,
   discardRecord,
   draftFromRecord,
   findCandidatesRecord,
