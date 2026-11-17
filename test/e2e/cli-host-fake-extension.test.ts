@@ -1271,6 +1271,197 @@ describe("CLI/native-host/fake-extension E2E contract", () => {
     }
   }, 60000);
 
+  // A saved op (pb save, provenance.escaped) whose workflow runs the given steps for each op id;
+  // `run` returns the terms the steps searched for.
+  async function startSavedOps(
+    ops: Record<string, unknown[]>,
+    inputs: Record<string, unknown> = {},
+  ) {
+    const socketPath = createSocketPath();
+    const project = fs.mkdtempSync(path.join(os.tmpdir(), "surf-escaped-steps-"));
+    tempDirs.push(project);
+    const opsDir = path.join(project, ".surf", "playbooks", "saved", "ops");
+    fs.mkdirSync(opsDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(project, ".surf", "playbooks", "saved", "playbook.json"),
+      JSON.stringify({ id: "saved", version: "1.0.0", origins: [] }),
+    );
+    for (const [id, steps] of Object.entries(ops)) {
+      fs.writeFileSync(
+        path.join(opsDir, `${id}.json`),
+        JSON.stringify({
+          id,
+          effect: "read",
+          provenance: { escaped: true },
+          args: {
+            text: { required: true },
+            other: { default: "OTHER" },
+            count: { default: "2" },
+            name: { default: "entry" },
+            tool: { default: "search" },
+            ...inputs,
+          },
+          run: [{ using: "workflow", steps, autoWait: false, stepDelay: 0 }],
+        }),
+      );
+    }
+    const host = startHost(socketPath, { recording: true });
+    await host.waitForMessage((message) => message.type === "HOST_READY");
+    const searched = () =>
+      host.messages
+        .filter((message) => message.type === "SEARCH_PAGE")
+        .map((message) => message.term);
+    const run = async (id: string, text: string) => {
+      const before = searched().length;
+      const result = await runCli(
+        socketPath,
+        ["use", "saved", id, "--text", text, "--json"],
+        project,
+        {
+          SURF_STATE_DIR: host.stateDir,
+        },
+      );
+      if (result.code !== 0 || result.stderr) {
+        throw new Error(`surf use saved ${id} failed: ${result.stderr}`);
+      }
+      return searched().slice(before);
+    };
+    return { run, dispose: () => host.dispose() };
+  }
+  const search = (term: unknown) => ({ cmd: "search", args: { term } });
+  // Input values that read like stored escapes, vars and other inputs.
+  const literalInputs = ["%{!}{{other}}", "{{!}}%{item}", "a%{text}b{{text}}"];
+
+  it("fills a saved op's input into an inline each list", async () => {
+    const saved = await startSavedOps({
+      inline: [{ each: ["{{text}}"], steps: [search("%{item}")] }],
+    });
+    try {
+      expect(await saved.run("inline", "hello")).toEqual(["hello"]);
+    } finally {
+      await saved.dispose();
+    }
+  }, 60000);
+
+  it("fills a saved op's input into an object nested in an each list", async () => {
+    const saved = await startSavedOps({
+      nested: [
+        {
+          each: ["x"],
+          steps: [
+            {
+              each: [{ q: "{{text}}", deep: ["<{{text}}>", { r: "{{text}}" }] }],
+              steps: [search("%{item}")],
+            },
+          ],
+        },
+      ],
+    });
+    try {
+      expect(await saved.run("nested", "hello")).toEqual([
+        { q: "hello", deep: ["<hello>", { r: "hello" }] },
+      ]);
+    } finally {
+      await saved.dispose();
+    }
+  }, 60000);
+
+  it("decodes the escapes a saved op's each list stores, without filling what they stand for", async () => {
+    const saved = await startSavedOps({
+      stored: [
+        {
+          each: ["a{{!}}b%{!}c", { q: "{{!}}text}}", r: ["%{!}item}"] }],
+          steps: [search("%{item}")],
+        },
+      ],
+    });
+    try {
+      expect(await saved.run("stored", "hello")).toEqual([
+        "a{{b%{c",
+        { q: "{{text}}", r: ["%{item}"] },
+      ]);
+    } finally {
+      await saved.dispose();
+    }
+  }, 60000);
+
+  it("sends an input's value as given from a saved op's each lists", async () => {
+    const saved = await startSavedOps({
+      inline: [{ each: ["{{text}}", "<{{text}}>"], steps: [search("%{item}")] }],
+      nested: [{ each: [{ q: "{{text}}", r: ["<{{text}}>"] }], steps: [search("%{item}")] }],
+    });
+    try {
+      for (const text of literalInputs) {
+        expect(await saved.run("inline", text)).toEqual([text, `<${text}>`]);
+        expect(await saved.run("nested", text)).toEqual([{ q: text, r: [`<${text}>`] }]);
+      }
+    } finally {
+      await saved.dispose();
+    }
+  }, 60000);
+
+  // The CLI passes an input as text, so the list is the input's default.
+  it("iterates a saved op's list input as given, never reading its entries", async () => {
+    const items = ["%{!}", "{{!}}", "{{other}}", "%{item}", { q: "{{text}}", r: ["%{!}"] }];
+    const saved = await startSavedOps(
+      { input: [{ each: "{{items}}", steps: [search("%{item}")] }] },
+      { items: { default: items } },
+    );
+    try {
+      expect(await saved.run("input", "hello")).toEqual(items);
+    } finally {
+      await saved.dispose();
+    }
+  }, 60000);
+
+  it("fills a saved op's input into args arrays and objects, and sends it as given", async () => {
+    const saved = await startSavedOps({
+      args: [
+        search(["{{text}}", "<{{text}}>", "%{!}", ["{{text}}"]]),
+        search({ q: "{{text}}", r: { s: "<{{text}}>", t: ["{{text}}", "{{!}}"] } }),
+      ],
+    });
+    try {
+      for (const text of ["hello", ...literalInputs]) {
+        expect(await saved.run("args", text)).toEqual([
+          [text, `<${text}>`, "%{", [text]],
+          { q: text, r: { s: `<${text}>`, t: [text, "{{"] } },
+        ]);
+      }
+    } finally {
+      await saved.dispose();
+    }
+  }, 60000);
+
+  it("fills a saved op's inputs into repeat, until and a step's cmd and as", async () => {
+    // The until step's search answers {}, which is not a stop, so the loop runs its two times.
+    const saved = await startSavedOps({
+      loops: [
+        {
+          repeat: "{{count}}",
+          steps: [search("<{{text}}>")],
+          until: { cmd: "{{tool}}", args: { term: ["{{text}}", { q: "{{text}}" }] } },
+        },
+      ],
+      fields: [
+        {
+          each: ["{{text}}"],
+          as: "{{name}}",
+          steps: [{ cmd: "{{tool}}", args: { term: "%{entry}" } }],
+        },
+      ],
+    });
+    try {
+      for (const text of ["hello", ...literalInputs]) {
+        const iteration = [`<${text}>`, [text, { q: text }]];
+        expect(await saved.run("loops", text)).toEqual([...iteration, ...iteration]);
+        expect(await saved.run("fields", text)).toEqual([text]);
+      }
+    } finally {
+      await saved.dispose();
+    }
+  }, 60000);
+
   // An input --link joins sends its value as given from both strategies: typed by the workflow,
   // in the network write's body.
   it("sends a linked input exactly as given from a saved op's workflow and its request", async () => {

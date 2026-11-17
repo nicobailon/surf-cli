@@ -14,7 +14,8 @@ const { extractRecords } = require("./records.cjs");
 
 // Fills an op's inputs into a hand-written op's workflow steps, and into an api or collect
 // strategy's spec. With `escapes` (an op pb save escaped, see escapedOp), `{{!}}` is sent as `{{`;
-// any other op sends it as written. An escaped op's steps are filled by the workflow runtime.
+// any other op sends it as written. An escaped op's steps are filled by fillEscapedSteps and the
+// workflow runtime.
 function applyTemplate(value, args, { escapes = false } = {}) {
   if (typeof value === "string") {
     const exact = value.match(/^\{\{([a-zA-Z0-9._-]+)\}\}$/);
@@ -28,6 +29,31 @@ function applyTemplate(value, args, { escapes = false } = {}) {
   if (Array.isArray(value)) return value.map((item) => applyTemplate(item, args, { escapes }));
   if (value && typeof value === "object") return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, applyTemplate(item, args, { escapes })]));
   return value;
+}
+
+// An escaped op's step fields the workflow runtime doesn't read, such as cmd, as and id (and a
+// semantic step's args), take their inputs here, as applyTemplate gives any other op's. Its args,
+// each and repeat, and until's args, are left as stored: the runtime fills their inputs and vars
+// in the pass that decodes them (resolveVar). So each stored string is read once.
+const RUNTIME_FILLED = new Set(["args", "each", "repeat"]);
+
+function fillEscapedSteps(steps, args) {
+  if (!Array.isArray(steps)) return steps;
+  return steps.map((step) => {
+    if (!step || typeof step !== "object" || Array.isArray(step)) return step;
+    const filled = {};
+    for (const [key, value] of Object.entries(step)) {
+      if (key === "steps") filled.steps = fillEscapedSteps(value, args);
+      else if (key === "until") filled.until = fillEscapedSteps([value], args)[0];
+      else if (!RUNTIME_FILLED.has(key)) filled[key] = applyTemplate(value, args, { escapes: true });
+    }
+    for (const key of RUNTIME_FILLED) {
+      if (!Object.hasOwn(step, key)) continue;
+      const semanticArgs = key === "args" && filled.cmd === "semantic.step";
+      filled[key] = semanticArgs ? applyTemplate(step.args, args, { escapes: true }) : step[key];
+    }
+    return filled;
+  });
 }
 
 // A failure of a check the op's file wrote (its extract, verify, expect or on.success.expect),
@@ -340,9 +366,10 @@ async function runStrategy(strategy, context) {
     // An escaped op's steps go to the workflow runtime as stored: it decodes their text and fills
     // inputs in the same pass (resolveVar), as renderRequest does a request, so it never reads an
     // input's value. This first pass only checks that every input they embed is set, before any
-    // step runs. Any other op gets its inputs first, then its workflow vars, as on main.
+    // step runs; fillEscapedSteps fills the fields the runtime doesn't. Any other op gets its
+    // inputs first, then its workflow vars, as on main.
     if (context.escapes) substituteVars(strategy.steps, {}, { escapes: true, inputs: context.args });
-    const steps = context.escapes ? strategy.steps : applyTemplate(strategy.steps, context.args);
+    const steps = context.escapes ? fillEscapedSteps(strategy.steps, context.args) : applyTemplate(strategy.steps, context.args);
     const result = await executeWorkflow(steps, {
       autoWait: strategy.autoWait !== false,
       escapes: context.escapes,

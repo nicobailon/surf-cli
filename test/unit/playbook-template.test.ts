@@ -315,6 +315,34 @@ describe("an escaped op's input values", () => {
     }
   });
 
+  it("iterates a list a step captured as given, never reading its entries", async () => {
+    const list = [...values, { q: "{{q}}", r: ["%{!}"] }];
+    const typed: unknown[] = [];
+    await runtime.runPlaybookOp({
+      playbook: { id: "steps", provenance: {} },
+      op: escapedOp([
+        {
+          using: "workflow",
+          steps: [
+            { cmd: "list", as: "found" },
+            { each: "%{found}", steps: [{ cmd: "type", args: { text: "%{item}" } }] },
+            { each: ["%{found}"], steps: [{ cmd: "type", args: { text: "%{item}" } }] },
+          ],
+        },
+      ]),
+      args: { q: "Q" },
+      executeTool: async (tool: string, toolArgs: Record<string, unknown>) => {
+        if (tool === "list") {
+          return { output: JSON.stringify(list) };
+        }
+        typed.push(toolArgs.text);
+        return { output: "{}" };
+      },
+      sleep: async () => undefined,
+    });
+    expect(typed).toEqual([...list, list]);
+  });
+
   it("stops before any step runs when a step embeds an input that isn't set", async () => {
     await expect(
       runSteps(

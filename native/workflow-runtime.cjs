@@ -227,7 +227,10 @@ async function executeStep(step, vars, options) {
     return { success: true, stepsExecuted };
   }
   if (step.each !== undefined) {
-    const items = resolveVar(step.each, vars, { escapes: options.escapes, inputs: options.inputs });
+    // An escaped op's inline list is read like its args, every string at any depth once; an input
+    // or var that is the whole value comes in as is. Any other op's list was filled before the run.
+    const fill = options.escapes ? substituteVars : resolveVar;
+    const items = fill(step.each, vars, { escapes: options.escapes, inputs: options.inputs });
     if (!Array.isArray(items)) return { success: false, error: `each: expected array, got ${typeof items}${items === undefined ? " (undefined)" : ""}`, stepsExecuted: 0 };
     if (!Array.isArray(step.steps) || step.steps.length === 0) return { success: false, error: "each: steps array required", stepsExecuted: 0 };
     const itemVar = step.as || "item";
