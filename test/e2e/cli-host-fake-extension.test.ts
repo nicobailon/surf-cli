@@ -3061,6 +3061,77 @@ describe("CLI/native-host/fake-extension E2E contract", () => {
     }
   });
 
+  // A saved playbook `pn` whose op `id` runs `steps` as a workflow.
+  function writeWorkflowOp(scratch: string, id: string, steps: unknown[]) {
+    const ops = path.join(scratch, ".surf", "playbooks", "pn", "ops");
+    fs.mkdirSync(ops, { recursive: true });
+    fs.writeFileSync(
+      path.join(ops, "..", "playbook.json"),
+      JSON.stringify({ id: "pn", version: "1.0.0", origins: ["https://fixture.test"] }),
+    );
+    fs.writeFileSync(
+      path.join(ops, `${id}.json`),
+      JSON.stringify({
+        id,
+        effect: "read",
+        run: [{ using: "workflow", autoWait: false, stepDelay: 0, steps }],
+      }),
+    );
+  }
+
+  it("shows a playbook step's captured secrets as <redacted>, with or without raw, and still replays them", async () => {
+    const socketPath = createSocketPath();
+    const { auth, entry, scratch, env, secrets } = rawFixture();
+    // Each view as a step, without and with raw; network.body prints the response, which
+    // echoes only the Authorization value. A step can give the id as its first positional arg.
+    const views = [
+      { name: "network", tool: "network", args: { v: true }, hidden: secrets },
+      { name: "network-get", tool: "network.get", args: { id: "r_auth" }, hidden: secrets },
+      { name: "network-curl", tool: "network.curl", args: { id: "r_auth" }, hidden: secrets },
+      { name: "network-body", tool: "network.body", args: { id: "r_auth" }, hidden: [auth] },
+      { name: "network-body-arg", tool: "network.body", args: { "0": "r_auth" }, hidden: [auth] },
+    ].flatMap((view) => [
+      { ...view, id: view.name },
+      { ...view, id: `${view.name}-raw`, args: { ...view.args, raw: true } },
+    ]);
+    for (const view of views) {
+      writeWorkflowOp(scratch, view.id, [{ tool: view.tool, args: view.args, as: "view" }]);
+    }
+    writeWorkflowOp(scratch, "replay", [
+      { tool: "network.replay", args: { id: "r_auth" }, as: "replayed" },
+    ]);
+    const host = startHost(socketPath, {
+      env,
+      pageTraffic: [entry],
+      scriptResponse: { mimeType: entry.mimeType, responseBody: entry.responseBody },
+    });
+    try {
+      await host.waitForMessage((message) => message.type === "HOST_READY");
+      await runCli(socketPath, ["navigate", "https://fixture.test/"], scratch, env);
+      const runs = views.flatMap((view) => [
+        { ...view, args: ["use", "pn", view.id, "--json"] },
+        { ...view, args: ["use", "pn", view.id] },
+      ]);
+      for (const run of runs) {
+        const label = run.args.join(" ");
+        const printed = await runCli(socketPath, run.args, scratch, env);
+        expect(printed.code, `${label}: ${printed.stdout}${printed.stderr}`).toBe(0);
+        expect(printed.stdout, label).toContain("<redacted>");
+        expect(
+          run.hidden.filter((secret) => printed.stdout.includes(secret)),
+          label,
+        ).toEqual([]);
+      }
+      const replay = await runCli(socketPath, ["use", "pn", "replay", "--json"], scratch, env);
+      expect(replay.code, replay.stderr).toBe(0);
+      expect(replay.stdout).not.toContain(auth);
+      const sent = host.messages.filter((message) => message.type === "EXECUTE_JAVASCRIPT");
+      expect(JSON.stringify(sent.at(-1))).toContain(auth);
+    } finally {
+      await host.dispose();
+    }
+  });
+
   it.each([
     ["plain", ["dummy", "resy", "key", "18"].join("-")],
     ["quoted", ["dummy", 'quo"ted', "va\\lue", "18"].join("-")],

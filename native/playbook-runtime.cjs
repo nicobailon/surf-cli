@@ -438,7 +438,7 @@ async function runStrategy(strategy, context) {
         await context.markDispatched?.();
         const step = await executeSingleStep({ cmd: tool, args, as: "value" }, vars, {
           autoWait: strategy.autoWait !== false,
-          executeTool: context.executeTool,
+          executeTool: context.executeStep,
           onEvent: context.onEvent,
           signal: options.signal || context.signal,
           sleep: context.sleep,
@@ -464,7 +464,7 @@ async function runStrategy(strategy, context) {
       inputs: context.args,
       executeTool: async (tool, args, options) => {
         await context.markDispatched?.();
-        return context.executeTool(tool, args, options);
+        return context.executeStep(tool, args, options);
       },
       onError: strategy.onError || "stop",
       onEvent: context.onEvent,
@@ -540,10 +540,12 @@ async function runStrategy(strategy, context) {
   throw new Error(`unsupported strategy: ${strategy.using}`);
 }
 
+// `executeStep` runs a workflow or script strategy's steps (default `executeTool`, which the other
+// strategies read capture through).
 // `assertions` replaces the op's saved on.success.expect.assert for this run (pb test --assert).
 // `strategy` runs only the strategies of that kind (pb test --strategy). `now` is the host's clock
 // for timing the tab's pattern calls.
-async function runPlaybookOp({ playbook, op, args: providedArgs = {}, secrets = {}, env = process.env, attemptId, executeTool, executeNative, signal, sleep, now = () => performance.now(), onEvent = () => {}, beforeDispatch = async () => {}, afterDispatch = async () => {}, allowScript = false, assertions, strategy: forced }) {
+async function runPlaybookOp({ playbook, op, args: providedArgs = {}, secrets = {}, env = process.env, attemptId, executeTool, executeStep = executeTool, executeNative, signal, sleep, now = () => performance.now(), onEvent = () => {}, beforeDispatch = async () => {}, afterDispatch = async () => {}, allowScript = false, assertions, strategy: forced }) {
   const args = resolveArgs(op, providedArgs, { playbookId: playbook.id });
   const authValues = resolveAuthValues(op, secrets, env);
   const run = strategiesToRun(op, forced);
@@ -575,6 +577,7 @@ async function runPlaybookOp({ playbook, op, args: providedArgs = {}, secrets = 
         args,
         attemptId,
         executeTool,
+        executeStep,
         executeNative,
         signal,
         sleep,

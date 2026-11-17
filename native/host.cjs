@@ -1547,6 +1547,24 @@ async function executeMappedHostTool(request, tool, args, tabId) {
   return withoutTypedEcho(await requestExtensionOrThrow(request, tool, extensionMsg, resolveRequestDeadlineMs(tool, args)), {});
 }
 
+// network.body as it prints: echoes of its request's secret headers redacted unless `raw`. The body
+// can come from Chrome when capture has no entry for it; then no secret values are known. Its id is
+// read as mapToolToMessage reads it: `id`, else the first positional arg.
+async function publicNetworkBody(request, args, tabId, { raw = false } = {}) {
+  const [body, loaded] = await Promise.all([
+    executeMappedHostTool(request, "network.body", args, tabId),
+    executeMappedHostTool(request, "network.get", { id: args.id || args[0] }, tabId).catch(() => null),
+  ]);
+  return publicResponse(body, [loaded?.entry], { raw });
+}
+
+// A playbook step's network view, as the command prints it without --raw (a step can't set it).
+// network.wait and network.replay redact their own; the strategies read capture unredacted.
+async function executePlaybookStep(request, tool, args, tabId) {
+  if (tool === "network.body") return publicNetworkBody(request, args || {}, tabId);
+  return publicNetworkResult(tool, await executeMappedHostTool(request, tool, args, tabId));
+}
+
 async function executeNativePlaybook(request, handler, args, options = {}) {
   if (handler !== "chatgpt.ask") throw new Error(`unknown native playbook handler: ${handler}`);
   const result = await chatgptClient.query({
@@ -1630,6 +1648,10 @@ async function runHostPlaybook(msg, request) {
     executeTool: (tool, args) => {
       rememberRecordInput(tool, args, { target: recordEventTarget(request) });
       return executeMappedHostTool(request, tool, args, msg.tabId);
+    },
+    executeStep: (tool, args) => {
+      rememberRecordInput(tool, args, { target: recordEventTarget(request) });
+      return executePlaybookStep(request, tool, args, msg.tabId);
     },
     executeNative: (handler, args, options) => executeNativePlaybook(request, handler, args, options),
     sleep: (ms) => abortableDelay(ms, request.signal),
@@ -2090,10 +2112,8 @@ function handleToolRequest(msg, socket, requestContext = requestStorage.getStore
     return;
   }
   if (tool === "network.body") {
-    const run = (name, toolArgs) => executeMappedHostTool(requestContext, name, toolArgs, tabId);
-    // The body can come from Chrome when capture has no entry for it; then no secret values are known.
-    Promise.all([run("network.body", args || {}), run("network.get", { id: args?.id }).catch(() => null)])
-      .then(([body, loaded]) => sendToolResponse(socket, originalId, publicResponse(body, [loaded?.entry], { raw: args?.raw === true }), null))
+    publicNetworkBody(requestContext, args || {}, tabId, { raw: args?.raw === true })
+      .then((body) => sendToolResponse(socket, originalId, body, null))
       .catch((error) => sendToolResponse(socket, originalId, null, error));
     return;
   }
