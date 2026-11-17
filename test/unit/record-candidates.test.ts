@@ -580,3 +580,42 @@ describe("a live sample's field names", () => {
     expect(JSON.stringify(summary)).not.toContain("dummy");
   });
 });
+
+describe("a live sample, when the request carries a short auth parameter or cookie value", () => {
+  // Short dummy values, built from parts so no literal here reads as a credential.
+  const SHOP = ["sh", "op"].join("");
+  const SID = ["ab", "c"].join("");
+  const headers = { Authorization: `ResyAPI api_key="${SHOP}"`, Cookie: `sid=${SID}` };
+
+  it("redacts them as whole JSON strings and hides a field named by one", () => {
+    const summary = candidates.summarizeResponse(
+      get("r_1", "XHR", "https://books.example/api", {
+        mimeType: "application/json",
+        requestHeaders: headers,
+        responseBody: JSON.stringify({ echo: SHOP, sid: SID, [SHOP]: 1, title: "Sharp Objects" }),
+      }),
+      candidates.pageWords(""),
+      { sample: true },
+    );
+    expect(JSON.parse(summary.sample)).toEqual({
+      echo: "<redacted>",
+      sid: "<redacted>",
+      "<redacted>": 1,
+      title: "Sharp Objects",
+    });
+    expect(summary.fieldNames).toEqual({ echo: "string", sid: "string", title: "string" });
+  });
+
+  it("redacts them as whole words of an HTML page's text", () => {
+    const summary = candidates.summarizeResponse(
+      get("r_2", "Document", "https://books.example/", {
+        mimeType: "text/html",
+        requestHeaders: headers,
+        responseBody: `<html><body><p>${SHOP} and ${SID}</p></body></html>`,
+      }),
+      candidates.pageWords(""),
+      { sample: true },
+    );
+    expect(summary.sample).toBe("<redacted> and <redacted>");
+  });
+});

@@ -1136,3 +1136,23 @@ describe("page changes after typing", () => {
     expect(helpers.withoutTypedPageChanges(diff, "click", { ref: "e1" })).toBe(diff);
   });
 });
+
+describe("publicResponse", () => {
+  // Dummy values, built from parts so no literal here reads as a credential.
+  const SHOP = ["sh", "op"].join("");
+  const LONG = ["dummy", "long", "key", "23"].join("-");
+
+  it("redacts a secret header's value echoed in the response URL, as an export does", () => {
+    const view = helpers.publicResponse(
+      {
+        url: `https://example.test/anything/${LONG}?${SHOP}=first&q=${SHOP}`,
+        body: JSON.stringify({ q: SHOP }),
+        json: { q: SHOP },
+      },
+      [{ requestHeaders: { Authorization: `ResyAPI api_key="${SHOP}", token="${LONG}"` } }],
+    );
+    expect(view.url).toBe("https://example.test/anything/<redacted>?<redacted>=first&q=<redacted>");
+    expect(JSON.parse(view.body)).toEqual({ q: "<redacted>" });
+    expect(view.json).toEqual({ q: "<redacted>" });
+  });
+});

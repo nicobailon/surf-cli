@@ -1,7 +1,7 @@
 const fs = require("fs");
 const networkFormatters = require("./formatters/network.cjs");
 const { publicEntry } = require("./network-export.cjs");
-const { redactEchoJson, redactEchoText, redactValues, secretHeaderEchoes } = require("./redaction.cjs");
+const { redactEchoJson, redactEchoText, redactEchoUrl, redactUrlIfSecret, redactValues, secretHeaderEchoes } = require("./redaction.cjs");
 const { recoveryFor } = require("./surf-error.cjs");
 
 function buildProviderUploadMessage(provider, tabId, filePaths, id) {
@@ -75,15 +75,15 @@ function publicNetworkResult(tool, result) {
   return view;
 }
 
-// A response the host read from capture for network.wait, network.replay or network.body: its URL
-// by the export rules, and a body or JSON echoing a secret header value of `entries` (the request
-// it answers) with <redacted> in its place, as network.get shows it: the whole value, an auth
-// parameter's or cookie's value, in every spelling (see secretHeaderEchoes).
+// A response the host read from capture for network.wait, network.replay or network.body: its URL,
+// body or JSON echoing a secret header value of `entries` (the request it answers) with <redacted>
+// in its place, as network.get shows it: the whole value, an auth parameter's or cookie's value, in
+// every spelling (see secretHeaderEchoes); the URL also without credentials, as an export has it.
 function publicResponse(response, entries) {
   if (!isEntry(response)) return response;
   const secrets = secretHeaderEchoes(entries.filter(isEntry).flatMap((entry) => [entry.requestHeaders, entry.responseHeaders]));
   const view = { ...response };
-  if (typeof view.url === "string") view.url = publicEntry({ url: view.url }).url;
+  if (typeof view.url === "string") view.url = redactEchoUrl(redactUrlIfSecret(view.url), secrets);
   if (typeof view.body === "string" && view.base64Encoded !== true) view.body = redactEchoText(view.body, secrets);
   if (view.json !== undefined) view.json = redactEchoJson(view.json, secrets);
   return view;
