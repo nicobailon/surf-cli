@@ -332,7 +332,8 @@ const TOOL_SCHEMAS = {
     schema: {
       output: z.string().optional().describe("Output file path"),
       jsonl: z.boolean().optional().describe("Write JSONL"),
-      har: z.boolean().optional().describe("Write HAR 1.2")
+      har: z.boolean().optional().describe("Write HAR 1.2"),
+      "raw-bodies": z.boolean().optional().describe("Keep secret-named body fields as captured (redacted by default)")
     }
   },
   "network.wait": {

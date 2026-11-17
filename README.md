@@ -310,6 +310,8 @@ surf locate.text "Accept" --exact                 # Exact match only
 surf locate.label "Email" --action fill --value "test@example.com"
 ```
 
+A fill prints `OK` without the value it typed, and `select` prints how many options it chose. Pass `--echo-value` to print them, or set `echoValue: true` in `~/surf.json` (a project's `surf.json` can't turn it on).
+
 An exact name match wins over partial ones, so `--name "Save"` picks a "Save" button over "Save draft". With `--action`, if more than one element still matches, Surf does nothing and lists each match with its ref, so you can act on the one you mean with `surf click <ref>`.
 
 ### Iframe Support
@@ -747,6 +749,8 @@ surf network.export --har --output ./trace.har
 
 `network -v`, `network --format raw|curl`, `network.get` (and `--json`) and `network.curl` show secret headers (`Authorization`, `Cookie`, `Set-Cookie`, API-key, CSRF, token and session headers) as `<redacted>`, with secret-named query params and `user:password@` redacted, as exports do, and `network.body`, `network.wait` and `network.replay` print a body that echoes one with `<redacted>` in its place; `network.replay` still sends the real values.
 
+Exports show `<redacted>` for secret headers and for the values of secret-named body fields (`password=`, `"token":`) in JSON, urlencoded and multipart bodies; `--raw-bodies` keeps the bodies as captured.
+
 Response bodies are fetched at `Network.loadingFinished` when capture is enabled. `--body-mode none|text|all`, `--per-body-bytes`, and `--total-body-bytes` control content and caps; exports include completeness metadata.
 
 Storage location: `~/.surf/state/network/` (override with `SURF_NETWORK_PATH` in the native host environment). Surf creates private `0700` directories and `0600` files and rejects symlink targets. Auto-cleanup: 24 hours TTL, 200MB max.
@@ -784,6 +788,7 @@ surf do 'go "url" | read | click e5 | screenshot' --dry-run
 - `--allow-semantic` - Opt in to bounded model decisions for a semantic workflow (model from `SURF_SEMANTIC_MODEL`, default `jev-1.13.0`; `extract` steps always use `clairic` with Cloudflare credentials)
 - `--allow-write` - Additionally authorize declared `fill`, `ensureChecked`, and `click` steps
 - `--inputs-stdin` - Read one bounded JSON object of private local input slots from stdin
+- `--echo-value` - Show typed values and chosen options in step results. A saved workflow's steps (`--file` or a named one, a project's included), a `--script` file's steps and `batch` actions can't set `echo-value`, `raw-bodies` or `include-input-values` themselves; only this flag or `echoValue: true` in `~/surf.json` turns echoing on
 - `--<arg> <value>` - Pass arguments to workflow (e.g., `--url "..."`)
 
 **Auto-waits:** Commands that trigger page changes automatically wait for completion:

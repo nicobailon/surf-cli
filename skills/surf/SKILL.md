@@ -51,9 +51,9 @@ page.text [--ref e5]              # --ref e5: that element's text or a field's w
 click <ref> | --selector <css> [--index <n>] | --x <n> --y <n>   [--button left|right|double|triple]
 type <text> [--ref e5|--into <css>] [--submit] [--clear] [--escapes] [--method cdp|js]   # --escapes turns \n \t into newline, tab
 key <key> [--repeat <n>]          # Enter, Escape, cmd+a
-select <ref|css> <value>… [--by value|label|index]
+select <ref|css> <value>… [--by value|label|index] [--echo-value]   # prints the count; --echo-value the options
 check <ref> | uncheck <ref>       # sets the state; already set = nothing clicked
-locate.role <role> [--name <text>] [--action click|fill|hover|text] [--value <v>]
+locate.role <role> [--name <text>] [--action click|fill|hover|text] [--value <v>] [--echo-value]   # a fill prints OK; --echo-value the value too
 wait.ready [--selector <css>] [--text <t>] [--url-prefix <u>] [--accept login,challenge,…] [--timeout <ms>=20000]
 screenshot [--output <f>] [--full-page] [--annotate] [--no-save]   # auto-saves to /tmp
 js <code> [--file <f>]            # `return` a value

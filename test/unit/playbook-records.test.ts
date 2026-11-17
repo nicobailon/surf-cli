@@ -2875,3 +2875,672 @@ describe("what a hand-edited draft can't change", () => {
     });
   });
 });
+
+describe("values typed during a record, in captured URLs", () => {
+  const { redactCommandArgs } = require("../../native/workflow-definition.cjs");
+  const { findRedactedPlaceholder } = require("../../native/record-typed-values.cjs");
+  const runtime = require("../../native/playbook-runtime.cjs");
+  const TYPED = "dummy echo words";
+  const FILLED = "dummyfoxtrot";
+  const hostEvent = (command: string, args: Entry) => ({
+    type: "tool.completed",
+    command,
+    argsRedacted: redactCommandArgs(command, args),
+    startedAt: new Date().toISOString(),
+  });
+  const typeArgs = { selector: "#q", text: TYPED };
+  const fillArgs = { label: "City", action: "fill", value: FILLED };
+  const search = {
+    id: "r_1",
+    method: "GET",
+    status: 200,
+    type: "XHR",
+    url: `https://example.test/api/search?q=${encodeURIComponent(TYPED).replace(/%20/g, "+")}&page=1`,
+    tabUrl: `https://example.test/search/${encodeURIComponent(FILLED)}?term=${encodeURIComponent(TYPED)}`,
+    requestHeaders: {
+      accept: "application/json",
+      referer: `https://example.test/?q=${TYPED.replace(/ /g, "+")}`,
+    },
+    responseHeaders: { "content-type": "application/json" },
+  };
+  const everyFile = (directory: string): string =>
+    fs
+      .readdirSync(directory, { recursive: true, withFileTypes: true })
+      .filter((entry: { isFile: () => boolean }) => entry.isFile())
+      .map((entry: { parentPath: string; name: string }) =>
+        fs.readFileSync(path.join(entry.parentPath, entry.name), "utf8"),
+      )
+      .join("\n");
+
+  function recordSearch(includeInputValues: boolean) {
+    const root = tempRoot();
+    const home = path.dirname(root);
+    const record = records.startRecord({
+      site: "fixture",
+      op: "search",
+      tabId: 1,
+      origin: "https://example.test",
+      network: true,
+      includeInputValues,
+      root,
+    });
+    records.appendRecordEvent(hostEvent("type", typeArgs), { target: TAB, root, args: typeArgs });
+    records.appendRecordEvent(hostEvent("locate.label", fillArgs), {
+      target: TAB,
+      root,
+      args: fillArgs,
+    });
+    records.attachNetworkTrace(record.id, [search], root, { capture: COMPLETE });
+    const { draft } = records.stopRecord({ target: TAB, draft: true, read: true, root });
+    authoring.saveFromRecord({ recordId: record.id, root, home });
+    authoring.exportRecordHar(record.id, path.join(home, "trace.har"), root);
+    return { root, home, record, draft };
+  }
+
+  it("puts <text> and <value> where the typed values were, in the trace, draft, playbook and HAR", () => {
+    const { root, home, record, draft } = recordSearch(false);
+    const trace = JSON.parse(
+      fs.readFileSync(
+        path.join(records.recordsRoot(root), record.id, "network", "trace.json"),
+        "utf8",
+      ),
+    );
+    expect(trace.entries[0].url).toBe("https://example.test/api/search?q=<text>&page=1");
+    expect(trace.entries[0].tabUrl).toBe("https://example.test/search/<value>?term=<text>");
+    expect(trace.entries[0].requestHeaders.referer).toBe("https://example.test/?q=<text>");
+    const network = draft.run.find((strategy: { using: string }) => strategy.using === "network");
+    expect(network.request.query).toEqual({ q: "<text>", page: "1" });
+    const written = everyFile(home);
+    expect(written).toContain("<text>");
+    for (const form of [TYPED, encodeURIComponent(TYPED), TYPED.replace(/ /g, "+"), FILLED]) {
+      expect(written).not.toContain(form);
+    }
+  });
+
+  it("keeps the URLs as captured in a record started with --include-input-values", () => {
+    const { draft, home } = recordSearch(true);
+    const network = draft.run.find((strategy: { using: string }) => strategy.using === "network");
+    expect(network.request.query).toEqual({ q: TYPED, page: "1" });
+    expect(everyFile(home)).toContain(FILLED);
+  });
+
+  it("lets pb param name a redacted value, taking over the step that typed it", () => {
+    const { draft } = recordSearch(false);
+    const { op, notes } = paramOp(draft, { fields: ["query.q"], as: "q" });
+    const network = op.run.find((strategy: { using: string }) => strategy.using === "network");
+    expect(network.request.query.q).toBe("{{q}}");
+    expect(op.args.q).toEqual({ type: "string", required: true });
+    expect(op.args).not.toHaveProperty("text");
+    const workflow = op.run.find((strategy: { using: string }) => strategy.using === "workflow");
+    expect(workflow.steps[0].args.text).toBe("{{q}}");
+    expect(notes.join("\n")).toMatch(/redacted/);
+  });
+
+  it("gives each typing step its own placeholder, which pb param links to that step", () => {
+    const root = tempRoot();
+    const record = records.startRecord({
+      site: "fixture",
+      op: "search",
+      tabId: 1,
+      origin: "https://example.test",
+      network: true,
+      root,
+    });
+    for (const text of ["dummy first words", "dummy second words"]) {
+      const args = { selector: "#q", text };
+      records.appendRecordEvent(hostEvent("type", args), { target: TAB, root, args });
+    }
+    const url = "https://example.test/api?a=dummy+first+words&b=dummy+second+words";
+    records.attachNetworkTrace(record.id, [{ ...search, url, tabUrl: undefined }], root, {
+      capture: COMPLETE,
+    });
+    const { draft } = records.stopRecord({ target: TAB, draft: true, read: true, root });
+    const network = draft.run.find((strategy: { using: string }) => strategy.using === "network");
+    expect(network.request.query).toEqual({ a: "<text>", b: "<text-2>" });
+    const typing = (op: typeof draft) =>
+      op.run
+        .find((candidate: { using: string }) => candidate.using === "workflow")
+        .steps.filter((item: { tool: string }) => item.tool === "type")
+        .map((item: { args: Entry }) => item.args.text);
+    expect(typing(draft)).toEqual(["{{text}}", "{{text-2}}"]);
+    const named = paramOp(paramOp(draft, { fields: ["query.a"], as: "first" }).op, {
+      fields: ["query.b"],
+      as: "second",
+    }).op;
+    expect(typing(named)).toEqual(["{{first}}", "{{second}}"]);
+    expect(Object.keys(named.args).sort()).toEqual(["first", "second"]);
+  });
+
+  // Types each text, captures `url` (and `tabUrl`), and stops with a draft.
+  function draftTyping(texts: string[], url: string, tabUrl?: string) {
+    const root = tempRoot();
+    const record = records.startRecord({
+      site: "fixture",
+      op: "search",
+      tabId: 1,
+      origin: "https://example.test",
+      network: true,
+      root,
+    });
+    for (const text of texts) {
+      const args = { selector: "#q", text };
+      records.appendRecordEvent(hostEvent("type", args), { target: TAB, root, args });
+    }
+    records.attachNetworkTrace(record.id, [{ ...search, url, tabUrl }], root, {
+      capture: COMPLETE,
+    });
+    const { draft } = records.stopRecord({ target: TAB, draft: true, read: true, root });
+    const trace = JSON.parse(
+      fs.readFileSync(
+        path.join(records.recordsRoot(root), record.id, "network", "trace.json"),
+        "utf8",
+      ),
+    );
+    return { draft, trace, record, root };
+  }
+  const networkOf = (op: { run: Array<{ using: string; request?: Entry }> }) =>
+    op.run.find((strategy) => strategy.using === "network")?.request as Record<string, any>;
+
+  it("keeps a JSON query param valid when a typed number is redacted, so pb param can name it", () => {
+    const variables = JSON.stringify({ year: 2024, live: true });
+    const { draft } = draftTyping(
+      ["2024"],
+      `https://example.test/graphql?variables=${encodeURIComponent(variables)}`,
+    );
+    expect(JSON.parse(networkOf(draft).query.variables)).toEqual({ year: "<text>", live: true });
+    const { op } = paramOp(draft, { fields: ["query.variables.year"], as: "year" });
+    expect(op.args.year).toEqual({ type: "number", required: true });
+    expect(networkOf(op)).not.toHaveProperty("redactedTypes");
+    const rendered = renderRequest(networkOf(op), { year: 2031 });
+    expect(JSON.parse(rendered.query.variables)).toEqual({ year: 2031, live: true });
+    expect(findRedactedPlaceholder(networkOf(op))).toBeNull();
+  });
+
+  it("replays a typed year it masked in GraphQL variables as a number", async () => {
+    const { draft } = draftTyping(
+      ["2024"],
+      "https://example.test/graphql?variables=%7B%22year%22:2024%7D&op=dummy",
+    );
+    expect(networkOf(draft).query).toEqual({ variables: '{"year":"<text>"}', op: "dummy" });
+    expect(networkOf(draft).redactedTypes).toEqual({ "query.variables.year": "number" });
+    const { op } = paramOp(draft, { fields: ["query.variables.year"], as: "year" });
+    // The endpoint refuses a year sent as a string.
+    const tab = captureTab({
+      reply: (url: string) => {
+        const year = JSON.parse(new URL(url).searchParams.get("variables") as string).year;
+        return Number.isInteger(year)
+          ? { body: JSON.stringify({ year }) }
+          : { status: 400, body: '{"error":"year must be an integer"}' };
+      },
+    });
+    const result = await runtime.runPlaybookOp({
+      playbook: { id: "fixture" },
+      op: {
+        ...op,
+        run: op.run.filter((strategy: { using: string }) => strategy.using === "network"),
+      },
+      args: { year: "2031" },
+      executeTool: tab.executeTool,
+    });
+    expect(result).toMatchObject({ status: "completed", strategy: "network" });
+    expect(result.value.bodyJson).toEqual({ year: 2031 });
+    const sent = new URL(tab.fetchImpl.mock.calls[0][0]);
+    expect(sent.searchParams.get("variables")).toBe('{"year":2031}');
+  });
+
+  // The JSON param is stored escaped as one string, so its keys read {{!}}field}} there; the record
+  // names the masked values by their captured keys. pb param does too, and keeps their types.
+  it("replays a masked number and boolean under JSON keys that read like inputs with their types", () => {
+    const variables = JSON.stringify({ "{{field}}": 2024, "{{flag}}": true, "{{!}}kept": "seed" });
+    const { record, root } = draftTyping(
+      ["2024", "true"],
+      `https://example.test/g?v=${encodeURIComponent(variables)}`,
+    );
+    const { directory } = authoring.saveFromRecord({
+      recordId: record.id,
+      root,
+      home: path.dirname(root),
+    });
+    const saved = JSON.parse(fs.readFileSync(path.join(directory, "ops", "search.json"), "utf8"));
+    expect(networkOf(saved).redactedTypes).toEqual({
+      "query.v.{{field}}": "number",
+      "query.v.{{flag}}": "boolean",
+    });
+    const year = paramOp(saved, { fields: ["query.v.{{field}}"], as: "year" }).op;
+    const { op } = paramOp(year, { fields: ["query.v.{{flag}}"], as: "live" });
+    expect(op.args.year).toEqual({ type: "number", required: true });
+    expect(op.args.live).toEqual({ type: "boolean", required: true });
+    expect(networkOf(op)).not.toHaveProperty("redactedTypes");
+    const args = resolveArgValues(op.args, { year: "2031", live: "false" });
+    const rendered = renderRequest(networkOf(op), args, { escapes: escapedOp(op) });
+    expect(JSON.parse(rendered.query.v)).toEqual({
+      "{{field}}": 2031,
+      "{{flag}}": false,
+      "{{!}}kept": "seed",
+    });
+    // The stored spelling isn't a captured key.
+    expect(() => paramOp(saved, { fields: ["query.v.{{!}}field}}"], as: "year" })).toThrow(
+      'query.v.{{!}}field}}: no "{{!}}field}}" at the top level (has: {{field}}, {{flag}}, {{!}}kept)',
+    );
+  });
+
+  // pb param stores the parsed JSON with its captured key {{text}} escaped, as {{!}}text}}, which
+  // takes no input and is sent as captured, so the drafted --text input still goes once its typing
+  // step takes --year.
+  it("drops the drafted input when a JSON key that reads like it holds the masked value", () => {
+    const variables = JSON.stringify({ "{{text}}": 2024 });
+    const { record, root } = draftTyping(
+      ["2024"],
+      `https://example.test/g?v=${encodeURIComponent(variables)}`,
+    );
+    const { directory } = authoring.saveFromRecord({
+      recordId: record.id,
+      root,
+      home: path.dirname(root),
+    });
+    const saved = JSON.parse(fs.readFileSync(path.join(directory, "ops", "search.json"), "utf8"));
+    expect(Object.keys(saved.args)).toEqual(["text"]);
+    const { op, notes } = paramOp(saved, { fields: ["query.v.{{text}}"], as: "year" });
+    expect(networkOf(op).query).toEqual({ v: { "{{!}}text}}": "{{year}}" } });
+    expect(Object.keys(op.args)).toEqual(["year"]);
+    const sent = renderRequest(networkOf(op), { year: 2031 }, { escapes: escapedOp(op) });
+    expect(JSON.parse(sent.query.v)).toEqual({ "{{text}}": 2031 });
+    expect(notes).toContain("input text is now year");
+    const workflow = op.run.find((strategy: { using: string }) => strategy.using === "workflow");
+    expect(workflow.steps.map((item: { args: Entry }) => item.args.text)).toEqual(["{{year}}"]);
+  });
+
+  it("records no type for a query key the URL sends twice, and pb param says so", () => {
+    const pair = (year: string) => `v=${encodeURIComponent(`{"year":${year}}`)}`;
+    const { draft, trace } = draftTyping(
+      ["2024"],
+      `https://example.test/g?${pair("2024")}&${pair('"2024"')}`,
+    );
+    // The draft keeps the last pair, whose 2024 was a string; the first pair's number says nothing of it.
+    expect(trace.entries[0].urlMarkers).toHaveLength(2);
+    expect(networkOf(draft).query).toEqual({ v: '{"year":"<text>"}' });
+    expect(networkOf(draft)).not.toHaveProperty("redactedTypes");
+    expect(networkOf(draft).repeatedQuery).toEqual(["v"]);
+    const { op, notes } = paramOp(draft, { fields: ["query.v.year"], as: "year" });
+    expect(op.args.year).toEqual({ type: "string", required: true });
+    expect(notes.join("\n")).toMatch(/query\.v was sent more than once.*keeps the last.*no type/);
+    expect(renderRequest(networkOf(op), { year: "2031" }).query).toEqual({ v: '{"year":"2031"}' });
+  });
+
+  it("masks a JSON string leaf encoded once more in the trace and the draft", () => {
+    const url = `https://example.test/g?v=${encodeURIComponent('{"q":"foo%20bar"}')}`;
+    const { draft, trace } = draftTyping(["foo bar"], url);
+    expect(trace.entries[0].url).toBe("https://example.test/g?v=%7B%22q%22%3A%22<text>%22%7D");
+    expect(networkOf(draft).query).toEqual({ v: '{"q":"<text>"}' });
+    expect(JSON.stringify(trace)).not.toMatch(/foo(%20|%2520| )bar/);
+  });
+
+  it("masks every spelling of a typed value in one JSON leaf in the trace and the draft", () => {
+    const url = `https://example.test/g?v=${encodeURIComponent('{"q":"foo bar, foo%20bar"}')}`;
+    const { draft, trace } = draftTyping(["foo bar"], url);
+    expect(networkOf(draft).query).toEqual({ v: '{"q":"<text>"}' });
+    expect(JSON.stringify([trace, draft])).not.toMatch(/foo/);
+  });
+
+  it("masks two path segments holding a typed value; pb param templates both with one input", () => {
+    const { draft } = draftTyping(["users"], "https://example.test/users/users");
+    expect(networkOf(draft).url).toBe("https://example.test/%3Ctext%3E/%3Ctext%3E");
+    const one = paramOp(draft, { fields: ["path.2"], as: "who" });
+    expect(one.notes.join("\n")).toMatch(/path\.1 holds <text> too.*path\.1 path\.2/);
+    expect(findRedactedPlaceholder(networkOf(one.op))).toEqual({
+      field: "path.1",
+      placeholder: "<text>",
+    });
+    const both = paramOp(draft, { fields: ["path.1", "path.2"], as: "who" });
+    expect(findRedactedPlaceholder(networkOf(both.op))).toBeNull();
+    expect(renderRequest(networkOf(both.op), { who: "dummy" }).url).toBe(
+      "https://example.test/dummy/dummy",
+    );
+  });
+
+  it("keeps a route segment that also holds the typed value, so pb param leaves nothing redacted", () => {
+    const { draft } = draftTyping(["users"], "https://example.test/api/users?q=users");
+    expect(networkOf(draft).url).toBe("https://example.test/api/users");
+    expect(networkOf(draft).query).toEqual({ q: "<text>" });
+    const { op } = paramOp(draft, { fields: ["query.q"], as: "q" });
+    expect(findRedactedPlaceholder(networkOf(op))).toBeNull();
+  });
+
+  it("replaces a whole fragment holding a slash in the trace", () => {
+    const { trace } = draftTyping(
+      ["dummy/slash"],
+      "https://example.test/api?x=1",
+      "https://example.test/page#dummy/slash",
+    );
+    expect(trace.entries[0].tabUrl).toBe("https://example.test/page#<text>");
+  });
+
+  it("redacts values a playbook typed in the host process during the record", () => {
+    const root = tempRoot();
+    const record = records.startRecord({
+      site: "fixture",
+      op: "search",
+      tabId: 1,
+      origin: "https://example.test",
+      network: true,
+      root,
+    });
+    // The host's playbook runner hands each tool call to rememberRecordInput before running it;
+    // the workflow's own event comes after, without arguments.
+    records.rememberRecordInput("type", typeArgs, { target: TAB, root });
+    records.appendRecordEvent(hostEvent("type", typeArgs), { target: TAB, root });
+    records.attachNetworkTrace(record.id, [search], root, { capture: COMPLETE });
+    const { record: stopped, warnings } = records.stopRecord({ target: TAB, root });
+    const trace = fs.readFileSync(
+      path.join(records.recordsRoot(root), stopped.id, "network", "trace.json"),
+      "utf8",
+    );
+    expect(trace).toContain("q=<text>");
+    expect(trace).not.toContain("dummy+echo+words");
+    expect(warnings).toBeUndefined();
+  });
+
+  it("warns when typing steps ran before this host held their values", () => {
+    const root = tempRoot();
+    const record = records.startRecord({
+      site: "fixture",
+      op: "search",
+      tabId: 1,
+      origin: "https://example.test",
+      network: true,
+      root,
+    });
+    records.appendRecordEvent(hostEvent("type", typeArgs), { target: TAB, root });
+    records.attachNetworkTrace(record.id, [search], root, { capture: COMPLETE });
+    const { warnings } = records.stopRecord({ target: TAB, root });
+    expect(warnings.join("\n")).toMatch(
+      /1 typing step entered a value this Surf host no longer holds \(it restarted during the record\), so it may remain in the trace's URLs/,
+    );
+  });
+});
+
+describe("values typed during a record, in watch events", () => {
+  const { redactCommandArgs } = require("../../native/workflow-definition.cjs");
+  const TYPED = "dummy golf words";
+  const typeArgs = { selector: "#q", text: TYPED };
+  const watchEvent = (event: string, url: string) => ({
+    type: "browser.event",
+    event,
+    url,
+    tabId: 1,
+    timestamp: new Date().toISOString(),
+  });
+
+  it.each([false, true])(
+    "puts <text> in the page URLs a watch event carries (includeInputValues %s)",
+    (includeInputValues) => {
+      const root = tempRoot();
+      const record = records.startRecord({
+        site: "fixture",
+        op: "search",
+        tabId: 1,
+        origin: "https://example.test",
+        watch: true,
+        includeInputValues,
+        root,
+      });
+      const pageTarget = { tabId: 1, page: true };
+      const url = "https://example.test/get?q=dummy+golf+words&x=1";
+      // A navigation the typing itself caused (type --submit) can arrive before the typing step ends.
+      records.appendRecordEvent(watchEvent("navigation", url), { target: pageTarget, root });
+      records.appendRecordEvent(
+        {
+          type: "tool.completed",
+          command: "type",
+          argsRedacted: redactCommandArgs("type", typeArgs, includeInputValues),
+          startedAt: new Date().toISOString(),
+        },
+        { target: TAB, root, args: typeArgs },
+      );
+      records.appendRecordEvent(watchEvent("click", url), { target: pageTarget, root });
+      const before = records
+        .readEvents(record.id, root)
+        .filter((e: Entry) => e.type === "browser.event");
+      if (!includeInputValues) {
+        expect(before[1].url).toBe("https://example.test/get?q=<text>&x=1");
+      }
+      records.stopRecord({ target: TAB, root });
+      const events = records
+        .readEvents(record.id, root)
+        .filter((e: Entry) => e.type === "browser.event");
+      const file = fs.readFileSync(
+        path.join(records.recordsRoot(root), record.id, "events.jsonl"),
+        "utf8",
+      );
+      if (includeInputValues) {
+        expect(events.map((e: Entry) => e.url)).toEqual([url, url]);
+      } else {
+        expect(events.map((e: Entry) => e.url)).toEqual([
+          "https://example.test/get?q=<text>&x=1",
+          "https://example.test/get?q=<text>&x=1",
+        ]);
+        expect(file).not.toContain("golf");
+      }
+    },
+  );
+
+  function watchTyping(steps: Array<{ text: string } | { url: string }>) {
+    const root = tempRoot();
+    const record = records.startRecord({
+      site: "fixture",
+      op: "search",
+      tabId: 1,
+      origin: "https://example.test",
+      watch: true,
+      root,
+    });
+    for (const item of steps) {
+      if ("url" in item) {
+        records.appendRecordEvent(watchEvent("click", item.url), {
+          target: { tabId: 1, page: true },
+          root,
+        });
+        continue;
+      }
+      const args = { selector: "#q", text: item.text };
+      records.appendRecordEvent(
+        {
+          type: "tool.completed",
+          command: "type",
+          argsRedacted: redactCommandArgs("type", args, false),
+          startedAt: new Date().toISOString(),
+        },
+        { target: TAB, root, args },
+      );
+    }
+    records.stopRecord({ target: TAB, root });
+    return records
+      .readEvents(record.id, root)
+      .filter((e: Entry) => e.type === "browser.event")
+      .map((e: Entry) => e.url);
+  }
+
+  it("keeps the placeholders already in an event's URL when it redacts again at stop", () => {
+    expect(
+      watchTyping([
+        { text: "romeo" },
+        { url: "https://example.test/get?q=romeo" },
+        { text: "text" },
+        { url: "https://example.test/get?q=romeo&r=text" },
+      ]),
+    ).toEqual([
+      "https://example.test/get?q=<text>",
+      "https://example.test/get?q=<text>&r=<text-2>",
+    ]);
+  });
+
+  it("masks a route segment typed later while paused, though an earlier value shares the marker's name", () => {
+    const root = tempRoot();
+    const record = records.startRecord({
+      site: "fixture",
+      op: "search",
+      tabId: 1,
+      origin: "https://example.test",
+      watch: true,
+      root,
+    });
+    const pausedTyping = (text: string) => {
+      records.pauseRecord({ target: TAB, root });
+      records.rememberRecordInput("type", { selector: "#q", text }, { target: TAB, root });
+      records.resumeRecord({ target: TAB, root });
+    };
+    pausedTyping("romeo");
+    records.appendRecordEvent(watchEvent("navigation", "https://example.test/secrets?q=romeo"), {
+      target: { tabId: 1, page: true },
+      root,
+    });
+    pausedTyping("secrets");
+    records.stopRecord({ target: TAB, root });
+    const [event] = records
+      .readEvents(record.id, root)
+      .filter((e: Entry) => e.type === "browser.event");
+    expect(event.url).toBe("https://example.test/<redacted>?q=<redacted>");
+  });
+
+  it("keeps an event's marker when a later step types that marker's text", () => {
+    expect(
+      watchTyping([
+        { text: "romeo" },
+        { url: "https://example.test/get?q=romeo" },
+        { text: "<text>" },
+        { url: "https://example.test/get?r=%3Ctext%3E" },
+      ]),
+    ).toEqual(["https://example.test/get?q=<text>", "https://example.test/get?r=<text-2>"]);
+  });
+
+  it("masks a route segment typed later, beside a value it couldn't read, which counts as no typed value", () => {
+    // Encoded more often than the check reads, so the first pass masks it whole as <redacted>.
+    const unreadable = `%${"25".repeat(1000)}41`;
+    expect(
+      watchTyping([
+        { text: "romeo" },
+        { url: `https://example.test/redacted?q=${unreadable}` },
+        { text: "redacted" },
+      ]),
+    ).toEqual(["https://example.test/<text-2>?q=<redacted>"]);
+  });
+
+  it("replaces a whole fragment holding a slash in an event's URL", () => {
+    expect(
+      watchTyping([{ text: "dummy/slash" }, { url: "https://example.test/page#dummy/slash" }]),
+    ).toEqual(["https://example.test/page#<text>"]);
+  });
+});
+
+describe("a typed value a URL holds only on a guessed reading, through every artifact", () => {
+  const { redactCommandArgs } = require("../../native/workflow-definition.cjs");
+  const { serializeNetworkExport } = require("../../native/network-export.cjs");
+  const TYPED = "dummy kilo words";
+  const ROUTE = `https://example.test/${encodeURIComponent(TYPED)}`;
+  const spelled = TYPED.replace(/ /g, "+");
+  const typeArgs = { selector: "#q", text: TYPED };
+  const everyFile = (directory: string) =>
+    fs
+      .readdirSync(directory, { recursive: true, withFileTypes: true })
+      .filter((entry: { isFile: () => boolean }) => entry.isFile())
+      .map((entry: { parentPath: string; name: string }) =>
+        path.join(entry.parentPath, entry.name),
+      );
+
+  // Records typing TYPED, a navigation to `url` and one request to it, then drafts, saves and exports.
+  function pipeline(url: string, request: Entry = {}) {
+    const root = tempRoot();
+    const home = path.join(path.dirname(root), "home");
+    fs.mkdirSync(home);
+    const record = records.startRecord({
+      site: "fixture",
+      op: "search",
+      tabId: 1,
+      origin: "https://example.test",
+      network: true,
+      watch: true,
+      root,
+    });
+    records.appendRecordEvent(
+      {
+        type: "tool.completed",
+        command: "type",
+        argsRedacted: redactCommandArgs("type", typeArgs),
+        startedAt: new Date().toISOString(),
+      },
+      { target: TAB, root, args: typeArgs },
+    );
+    records.appendRecordEvent(
+      {
+        type: "browser.event",
+        event: "navigation",
+        url,
+        tabId: 1,
+        timestamp: new Date().toISOString(),
+      },
+      { target: { tabId: 1, page: true }, root },
+    );
+    const entry = {
+      id: "r_1",
+      method: "GET",
+      status: 200,
+      type: "XHR",
+      url,
+      requestHeaders: { accept: "application/json" },
+      responseHeaders: { "content-type": "application/json" },
+      ...request,
+    };
+    records.attachNetworkTrace(record.id, [entry], root, { capture: COMPLETE });
+    const { draft } = records.stopRecord({ target: TAB, draft: true, root });
+    authoring.saveFromRecord({ recordId: record.id, root, home });
+    authoring.exportRecordHar(record.id, path.join(home, "trace.har"), root);
+    const folder = path.join(records.recordsRoot(root), record.id);
+    const trace = JSON.parse(fs.readFileSync(path.join(folder, "network", "trace.json"), "utf8"));
+    fs.writeFileSync(path.join(home, "export.json"), serializeNetworkExport(trace.entries, "json"));
+    const events = records
+      .readEvents(record.id, root)
+      .filter((e: Entry) => e.type === "browser.event");
+    const files = [...everyFile(home), ...everyFile(folder)];
+    return { draft, trace, events, files, home, folder };
+  }
+
+  for (const next of ["/s%23q%3Dfoo%2Bbar", "./s%3Fq%3Dfoo%2Bbar", "s?q=foo+bar"].map((shape) =>
+    shape.replace("foo%2Bbar", encodeURIComponent(spelled)).replace("foo+bar", spelled),
+  )) {
+    it(`masks the JSON value and the route in the trace, watch events, draft, op, HAR and export: ${next}`, () => {
+      const url = `${ROUTE}?v=${encodeURIComponent(JSON.stringify({ next }))}`;
+      const { draft, trace, events, files } = pipeline(url);
+      expect(trace.entries[0].url).toBe("https://example.test/<text>?v=<text>");
+      expect(events.map((e: Entry) => e.url)).toEqual(["https://example.test/<text>?v=<text>"]);
+      const network = draft.run.find((strategy: { using: string }) => strategy.using === "network");
+      expect(network.request.url).toBe("https://example.test/%3Ctext%3E");
+      expect(network.request.query).toEqual({ v: "<text>" });
+      expect(files.map((file: string) => path.basename(file))).toEqual(
+        expect.arrayContaining([
+          "search.json",
+          "trace.har",
+          "export.json",
+          "op.json",
+          "events.jsonl",
+          "trace.json",
+        ]),
+      );
+      for (const file of files) {
+        expect(fs.readFileSync(file, "utf8")).not.toContain("kilo");
+      }
+    });
+  }
+
+  it("masks the route when only a guessed URL in the JSON request body holds the typed value", () => {
+    const next = `/s%23q%3D${encodeURIComponent(spelled)}`;
+    const { trace, files } = pipeline(ROUTE, {
+      method: "POST",
+      requestHeaders: { "content-type": "application/json" },
+      requestBody: JSON.stringify({ next }),
+    });
+    expect(trace.entries[0].url).toBe("https://example.test/<text>");
+    for (const file of files) {
+      expect(fs.readFileSync(file, "utf8")).not.toContain("kilo");
+    }
+  });
+});

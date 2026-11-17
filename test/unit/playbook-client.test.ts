@@ -160,6 +160,27 @@ describe("playbook client projection", () => {
     },
   );
 
+  it("refuses to build a client that would send a redacted placeholder", () => {
+    const parent = fs.mkdtempSync(path.join(os.tmpdir(), "surf-client-"));
+    directories.push(parent);
+    expect(() =>
+      clients.generateClient({
+        playbookId: "fixture",
+        op: { id: "search", effect: "read", run: [] },
+        strategy: {
+          using: "network",
+          request: {
+            method: "GET",
+            url: "https://example.test/api/search",
+            query: { q: "<text>" },
+          },
+        },
+        provenance: { type: "test" },
+        out: path.join(parent, "client"),
+      }),
+    ).toThrow(/query\.q holds <text>.*surf pb param fixture search query\.q --as <name>/);
+  });
+
   it("derives from the one clear winner of the ranking, and asks for --request-id when there is none", () => {
     const parent = fs.mkdtempSync(path.join(os.tmpdir(), "surf-client-"));
     directories.push(parent);
@@ -469,6 +490,105 @@ describe("clients from parameterised ops", () => {
     });
     expect(requests.map((request) => request.body)).toEqual(values.map((q) => `{{q}} ${q}`));
     expect(requests.map((request) => request.headers["x-q"])).toEqual(values);
+  });
+
+  // pb param stores a JSON param's keys escaped, as its values: one may take an input.
+  it("exports a client of an op pb save made that fills a JSON key's input and sends a captured key as captured", async () => {
+    const cwd = writeOp({
+      id: "keyed",
+      effect: "read",
+      args: {
+        key: { type: "string", required: true },
+        n: { type: "number", default: 1 },
+      },
+      provenance: { recordId: "rec-1", escaped: true },
+      run: [
+        {
+          using: "network",
+          request: {
+            method: "GET",
+            url: "https://books.test/keyed",
+            query: {
+              v: {
+                "{{key}}": "kept",
+                "{{!}}key}}": "literal",
+                "{{!}}!}}k": "{{n}}",
+              },
+            },
+          },
+        },
+      ],
+    });
+    const out = path.join(cwd, "client");
+    const { manifest } = clients.exportClient("books", "keyed", out, { cwd });
+    expect(Object.keys(manifest.args)).toEqual(["key", "n"]);
+    const requests = await serve(async (origin) => {
+      await runClient(out, ["--key", "live{{!}}%{!}", "--n", "2"], {
+        SURF_CLIENT_ORIGIN: origin,
+      });
+    });
+    const sent = new URL(requests[0].url, "http://client.test").searchParams.get("v");
+    expect(JSON.parse(sent as string)).toEqual({
+      "live{{!}}%{!}": "kept",
+      "{{key}}": "literal",
+      "{{!}}k": 2,
+    });
+    await expect(clients.verifyClient(out, { live: false })).resolves.toMatchObject({
+      valid: true,
+    });
+  });
+
+  // Exporting, verifying and running the client read a deep op's JSON without recursion. A query
+  // that deep is longer than a local server takes, so that one is only exported and rendered.
+  it("exports, verifies and runs a client of an op whose JSON nests 1,500 levels deep", async () => {
+    // Capped where Node 24's recursive JSON.stringify, which writes the op, fits a Linux CI stack.
+    const depth = 1500;
+    const nested = (leaf: unknown) => {
+      let value = leaf;
+      for (let level = 0; level < depth; level++) {
+        value = { x: value };
+      }
+      return value;
+    };
+    const deepOp = (id: string, request: Record<string, unknown>) => ({
+      id,
+      effect: "write",
+      args: { n: { type: "number", default: 1 } },
+      safety: { duplicate: "repeatable-window", windowMs: 1000, key: ["n"] },
+      provenance: { recordId: "rec-1", escaped: true },
+      run: [
+        {
+          using: "network",
+          request: { method: "POST", url: `https://books.test/${id}`, ...request },
+        },
+      ],
+    });
+    const cwd = writeOp(
+      deepOp("deep", { headers: { "content-type": "application/json" }, body: nested("{{n}}") }),
+    );
+    const out = path.join(cwd, "client");
+    const { manifest } = clients.exportClient("books", "deep", out, { cwd, allowWrite: true });
+    expect(Object.keys(manifest.args)).toEqual(["n"]);
+    await expect(clients.verifyClient(out, { live: false })).resolves.toMatchObject({
+      valid: true,
+    });
+    const requests = await serve(async (origin) => {
+      await runClient(out, ["--n", "2"], { SURF_CLIENT_ORIGIN: origin });
+    });
+    // As text: a matcher compares objects this deep by recursion.
+    expect(requests[0].body).toBe(JSON.stringify(nested(2)));
+
+    fs.writeFileSync(
+      path.join(cwd, ".surf", "playbooks", "books", "ops", "deepq.json"),
+      JSON.stringify(deepOp("deepq", { query: { v: nested("{{n}}") } })),
+    );
+    const query = clients.exportClient("books", "deepq", path.join(cwd, "query-client"), {
+      cwd,
+      allowWrite: true,
+    }).manifest;
+    expect(Object.keys(query.args)).toEqual(["n"]);
+    const sent = renderRequest(query.endpoint, { n: 2 }, { escapes: query.escapes }).query.v;
+    expect(sent).toBe(JSON.stringify(nested(2)));
   });
 
   it('reads --x "" and --x= as the empty string, and a bare --flag only for a boolean', async () => {

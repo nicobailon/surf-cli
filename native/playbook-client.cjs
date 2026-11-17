@@ -3,7 +3,8 @@ const http = require("http");
 const path = require("path");
 const { execFile } = require("child_process");
 const { atomicWriteFile, atomicWriteJson, ensurePrivateDir, getPrivateStateRoot, readPrivateJson } = require("./private-state.cjs");
-const { escapedOp, renderRequest, resolveArgValues } = require("./playbook-template.cjs");
+const { escapedOp, renderRequest, requestInputs, resolveArgValues } = require("./playbook-template.cjs");
+const { findRedactedPlaceholder, placeholderError } = require("./record-typed-values.cjs");
 const { resolveOp } = require("./playbooks.cjs");
 const { isReplayCandidate, readRecord, recordsRoot, requestEffect, requestFromEntry } = require("./playbook-records.cjs");
 const { WINNER_MARGIN, isWeak, scoreEntries } = require("./record-candidates.cjs");
@@ -133,8 +134,8 @@ process.stdout.write("\\n");
 }
 
 // The op's inputs the request uses; inputs only its browser steps take aren't asked for.
-function endpointArgs(op, endpoint) {
-  const used = collectTemplateArgs(endpoint);
+function endpointArgs(op, endpoint, escapes) {
+  const used = requestInputs(endpoint, { escapes });
   return Object.fromEntries(Object.entries(op.args || {}).filter(([name]) => used.has(name)));
 }
 
@@ -145,6 +146,8 @@ function generateClient({ playbookId, op, strategy, provenance, out, allowWrite 
   if (typeof out !== "string" || !out) throw new Error("client projection requires --out <directory>");
   const directory = path.resolve(out);
   const request = strategy.request;
+  const placeholder = findRedactedPlaceholder(request);
+  if (placeholder) throw placeholderError(placeholder, `${playbookId} ${op.id}`);
   const endpoint = {
     method: request.method || "GET",
     url: absoluteEndpointUrl(request.url, origins, { escapes }),
@@ -172,7 +175,7 @@ function generateClient({ playbookId, op, strategy, provenance, out, allowWrite 
     effect: op.effect,
     endpoint,
     ...(escapes ? { escapes: true } : {}),
-    args: endpointArgs(op, endpoint),
+    args: endpointArgs(op, endpoint, escapes),
     extract,
     // surf use returns these records; this client prints the raw HTML body instead.
     ...(extractHtml ? { extractHtml } : {}),
@@ -239,22 +242,11 @@ function deriveClient(site, opId, out, options = {}) {
   return generateClient({ playbookId: site, op, strategy, provenance: { type: "record", recordId: record.id }, out, allowWrite: options.allowWrite, escapes: true });
 }
 
-function collectTemplateArgs(value, names = new Set()) {
-  if (typeof value === "string") {
-    for (const match of value.matchAll(/\{\{([a-zA-Z0-9._-]+)\}\}/g)) names.add(match[1]);
-  } else if (Array.isArray(value)) {
-    for (const item of value) collectTemplateArgs(item, names);
-  } else if (value && typeof value === "object") {
-    for (const item of Object.values(value)) collectTemplateArgs(item, names);
-  }
-  return names;
-}
-
 // Sample inputs for verification: each input's default, else a value of its type.
 function sampleArgs(manifest) {
   const specs = manifest.args || {};
   const samples = { string: "verify", number: 1, boolean: true };
-  return Object.fromEntries([...collectTemplateArgs(manifest.endpoint)].map((name) => [name, specs[name]?.default ?? samples[specs[name]?.type] ?? "verify"]));
+  return Object.fromEntries([...requestInputs(manifest.endpoint, { escapes: manifest.escapes === true })].map((name) => [name, specs[name]?.default ?? samples[specs[name]?.type] ?? "verify"]));
 }
 
 // Values go as --name=value, so one starting with -- stays a value. Clients made before

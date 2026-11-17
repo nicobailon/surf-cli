@@ -1059,3 +1059,80 @@ describe("formatToolContent network listing", () => {
     expect(JSON.parse(text({ ...result, format: "json" }))).toEqual(expected);
   });
 });
+
+describe("fill and select results", () => {
+  const filled = { success: true, action: "fill", ref: "e3", value: "dummy-typed-alpha" };
+  const selected = { selected: ["dummy-option-a", "dummy-option-b"] };
+  const shown = (result: unknown, args: Record<string, unknown> = {}) =>
+    helpers.formatToolContent(helpers.withoutTypedEcho(result, args))[0].text;
+
+  it("prints neither the filled value nor the chosen options by default", () => {
+    expect(shown(filled)).toBe("OK");
+    expect(shown(selected)).toBe("Selected 2 options");
+    expect(shown({ selected: ["dummy-option-a"] })).toBe("Selected 1 option");
+    expect(JSON.stringify(helpers.withoutTypedEcho(filled, {}))).not.toContain("dummy-typed-alpha");
+    expect(JSON.stringify(helpers.withoutTypedEcho(selected, {}))).not.toContain("dummy-option");
+  });
+
+  it.each([{ "echo-value": true }, { echoValue: true }])("prints them with %o", (args) => {
+    expect(shown(filled, args)).toBe('OK\nValue: "dummy-typed-alpha"');
+    expect(shown(selected, args)).toBe("Selected: dummy-option-a, dummy-option-b");
+  });
+
+  it("asks the extension for the filled value only with --echo-value", () => {
+    for (const tool of ["locate.role", "locate.text", "locate.label"]) {
+      const args = { role: "textbox", text: "Name", label: "Name", action: "fill", value: "x" };
+      expect(helpers.mapToolToMessage(tool, args, 1).echoValue).toBe(false);
+      expect(helpers.mapToolToMessage(tool, { ...args, "echo-value": true }, 1).echoValue).toBe(
+        true,
+      );
+    }
+  });
+});
+
+describe("page changes after typing", () => {
+  const changes = (to: string) => ({
+    settle: { state: "settled", ms: 5 },
+    navigated: null,
+    changes: [
+      {
+        kind: "changed",
+        ref: "e1",
+        role: "textbox",
+        name: "Name",
+        property: "value",
+        from: "",
+        to,
+      },
+      { kind: "added", ref: "e2", role: "option", name: `Results for ${to}` },
+    ],
+    text: [],
+    omitted: 0,
+  });
+  const fill = { label: "Name", action: "fill", value: "dummy-typed-echo" };
+
+  it.each([
+    ["locate.label", fill],
+    ["type", { text: "dummy-typed-echo", selector: "#q" }],
+    ["select", { selector: "#s", values: "dummy-typed-echo" }],
+  ])("keeps the value %s entered out of the page diff", (tool, args) => {
+    const shown = helpers.withoutTypedPageChanges(changes("dummy-typed-echo"), tool, args);
+    expect(JSON.stringify(shown)).not.toContain("dummy-typed-echo");
+    expect(shown.changes[0]).toEqual({
+      kind: "changed",
+      ref: "e1",
+      role: "textbox",
+      name: "Name",
+      property: "value",
+      redacted: true,
+    });
+  });
+
+  it("leaves the diff alone with --echo-value and for commands that type nothing", () => {
+    const diff = changes("dummy-typed-echo");
+    expect(
+      helpers.withoutTypedPageChanges(diff, "locate.label", { ...fill, "echo-value": true }),
+    ).toBe(diff);
+    expect(helpers.withoutTypedPageChanges(diff, "click", { ref: "e1" })).toBe(diff);
+  });
+});

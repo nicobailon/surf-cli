@@ -31,6 +31,22 @@ function requestOf(op: { run: Array<{ using: string; request?: Record<string, un
   return op.run.find((strategy) => strategy.using === "network")?.request as Record<string, any>;
 }
 
+// An op pb save made from a record whose request sent the JSON text `raw` as its query param v,
+// or as its body.
+function savedJsonOp(raw: string, where: string) {
+  const { requestFromEntry } = require("../../native/playbook-records.cjs");
+  const entry =
+    where === "query"
+      ? { method: "GET", url: `https://shop.test/s?v=${encodeURIComponent(raw)}` }
+      : {
+          method: "POST",
+          url: "https://shop.test/s",
+          requestBody: raw,
+          requestHeaders: { "content-type": "application/json" },
+        };
+  return networkOp(requestFromEntry(entry), { provenance: { recordId: "rec-1", escaped: true } });
+}
+
 function project(op: Record<string, unknown>, id = "shop") {
   const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "surf-param-"));
   tempDirs.push(cwd);
@@ -220,6 +236,263 @@ describe("pb param: field locations", () => {
     );
   });
 
+  // pb save escapes a captured JSON param or body as text, before it is parsed, so a `{{` written
+  // \u007b\u007b was never escaped. pb param reads the text as captured, and every key and value
+  // goes out as captured, however it was written.
+  it("sends a stored JSON param's keys and values as captured, \\u escapes included", () => {
+    const { escapedOp } = require("../../native/playbook-template.cjs");
+    const captured = [
+      String.raw`{"\u007b\u007b!}}kept":"unchanged","n":"seed"}`,
+      String.raw`{"{\u007b!}}kept":"unchanged","n":"seed"}`,
+      String.raw`{"{{!\u007d}kept":"unchanged","n":"seed"}`,
+      // Two keys, one written with \u escapes.
+      String.raw`{"\u007b\u007b!}}":"one","{{":"two","n":"seed"}`,
+      String.raw`{"{{field}}":"a","{{!}}field}}":"b","n":"seed"}`,
+      // A value that reads like an input once parsed is text, not an input.
+      String.raw`{"a":"\u007b\u007bx}}","n":"seed"}`,
+      String.raw`{"a":"\u007b\u007b!}}","b":"{{!}}","c":"{{x}}","n":"seed"}`,
+      // A request's text has no %{ escape: a captured %{!} is text, in a key or a value.
+      '{"%{!}k":"%{!}v","n":"seed"}',
+    ];
+    for (const raw of captured) {
+      for (const where of ["query", "body"]) {
+        const saved = savedJsonOp(raw, where);
+        const { op } = paramOp(saved, {
+          fields: [where === "query" ? "query.v.n" : "body.n"],
+          as: "n",
+        });
+        expect(Object.keys(op.args)).toEqual(["n"]);
+        const sent = renderRequest(requestOf(op), { n: "next" }, { escapes: escapedOp(op) });
+        expect(where === "query" ? JSON.parse(sent.query.v) : sent.body).toEqual({
+          ...JSON.parse(raw),
+          n: "next",
+        });
+      }
+    }
+  });
+
+  // Templating part of a JSON param's text leaves it a string holding a live {{a}}; templating a
+  // field inside it next keeps that input, and every captured key and value, as they were.
+  it("keeps an input in a stored JSON param's text when a field inside it is templated next", () => {
+    const { escapedOp } = require("../../native/playbook-template.cjs");
+    const raw = String.raw`{"a":"first-seed","b":"second-seed","c":"third-seed","literal":"{{keep}}","esc":"\u007b\u007bx}}","bang":"{{!}}","{{k}}":"key","\u007b\u007b!}}k":"key2","{{!}}j":"key3"}`;
+    const given: Record<string, string> = {
+      a: "live-a{{!}}%{!}",
+      b: "live-b{{!}}%{!}",
+      c: "live-c{{!}}%{!}",
+    };
+    // Each order's steps before its last, which templates a field inside the text.
+    const orders = {
+      forward: { before: [{ as: "a", value: "first-seed" }], field: "b" },
+      reverse: { before: [{ as: "b", value: "second-seed" }], field: "a" },
+      three: {
+        before: [
+          { as: "a", value: "first-seed" },
+          { as: "b", value: "second-seed" },
+        ],
+        field: "c",
+      },
+    };
+    for (const [name, { before, field }] of Object.entries(orders)) {
+      const partial = before.reduce(
+        (at, step) => paramOp(at, { fields: ["query.v"], ...step }).op,
+        savedJsonOp(raw, "query"),
+      );
+      const inputs = [...before.map((step) => step.as), field];
+      const args = Object.fromEntries(inputs.map((input) => [input, given[input]]));
+      const expected = { ...JSON.parse(raw), ...args };
+
+      const { op } = paramOp(partial, { fields: [`query.v.${field}`], as: field });
+      expect(Object.keys(op.args), name).toEqual(inputs);
+      const sent = renderRequest(requestOf(op), args, { escapes: escapedOp(op) });
+      expect(JSON.parse(sent.query.v), name).toEqual(expected);
+
+      // The same text as a body, which pb param reads the same way.
+      const body = networkOp(
+        {
+          url: "https://shop.test/s",
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: requestOf(partial).query.v,
+        },
+        { args: partial.args, provenance: { recordId: "rec-1", escaped: true } },
+      );
+      const fromBody = paramOp(body, { fields: [`body.${field}`], as: field }).op;
+      expect(renderRequest(requestOf(fromBody), args, { escapes: true }).body, name).toEqual(
+        expected,
+      );
+    }
+  });
+
+  // Templating part of a JSON param's text can put an input in a key. Stored as an object, that
+  // key stays an input; a captured key that reads the same, {{key}}, stays captured beside it.
+  it("keeps an input in a stored JSON param's key when a field inside it is templated next", () => {
+    const { escapedOp } = require("../../native/playbook-template.cjs");
+    const raw = String.raw`{"seed-key":"kept","{{key}}":"literal","{{field}}":"f","\u007b\u007bx}}":"esc","n":"start","m":"other"}`;
+    const given: Record<string, string> = {
+      key: "live{{!}}%{!}",
+      n: "N{{!}}%{!}",
+      m: "M",
+    };
+    const captured = JSON.parse(raw);
+    const orders = {
+      // The reviewer's: the key, then a field.
+      forward: [
+        { fields: ["query.v"], as: "key", value: "seed-key" },
+        { fields: ["query.v.n"], as: "n" },
+      ],
+      // A value in the text first, then the key, then a field.
+      reverse: [
+        { fields: ["query.v"], as: "n", value: "start" },
+        { fields: ["query.v"], as: "key", value: "seed-key" },
+        { fields: ["query.v.m"], as: "m" },
+      ],
+    };
+    for (const [name, steps] of Object.entries(orders)) {
+      const op = steps.reduce((at, step) => paramOp(at, step).op, savedJsonOp(raw, "query"));
+      const inputs = steps.map((step) => step.as);
+      expect(Object.keys(op.args), name).toEqual(inputs);
+      const args = Object.fromEntries(inputs.map((input) => [input, given[input]]));
+      const { "seed-key": kept, ...rest } = captured;
+      const expected = {
+        ...rest,
+        [given.key]: kept,
+        ...(args.n ? { n: given.n } : {}),
+        ...(args.m ? { m: given.m } : {}),
+      };
+      const sent = renderRequest(requestOf(op), args, {
+        escapes: escapedOp(op),
+      });
+      expect(JSON.parse(sent.query.v), name).toEqual(expected);
+      // A field names a captured key by its captured text; the input's key and the captured
+      // key that reads the same are both named {{key}}, so pb param refuses to pick one.
+      expect(paramOp(op, { fields: ["query.v.{{field}}"], as: "f" }).op.args.f, name).toEqual({
+        type: "string",
+        default: "f",
+      });
+      expect(() => paramOp(op, { fields: ["query.v.{{key}}"], as: "k" }), name).toThrow(
+        'query.v.{{key}}: more than one key at the top level reads "{{key}}"',
+      );
+    }
+  });
+
+  // A masked number under a key that an input then takes keeps its type: the record's note on it
+  // follows the key.
+  it("keeps a masked number's type under a JSON key templated into an input", () => {
+    const { escapedOp, resolveArgValues } = require("../../native/playbook-template.cjs");
+    const saved = savedJsonOp('{"year":"<text>","n":"seed"}', "query");
+    requestOf(saved).redactedTypes = { "query.v.year": "number" };
+    const keyed = paramOp(saved, {
+      fields: ["query.v"],
+      as: "field",
+      value: "year",
+    }).op;
+    expect(requestOf(keyed).redactedTypes).toEqual({
+      "query.v.{{field}}": "number",
+    });
+    const { op } = paramOp(keyed, {
+      fields: ["query.v.{{field}}"],
+      as: "year",
+    });
+    expect(op.args.year).toEqual({ type: "number", required: true });
+    expect(requestOf(op)).not.toHaveProperty("redactedTypes");
+    const args = resolveArgValues(op.args, { field: "y{{!}}", year: "2031" });
+    const sent = renderRequest(requestOf(op), args, { escapes: escapedOp(op) });
+    expect(JSON.parse(sent.query.v)).toEqual({ "y{{!}}": 2031, n: "seed" });
+  });
+
+  // A recorded JSON value with a masked number at each of its keys: each type is moved once the
+  // object's renamed key is known, in work linear in the number of keys.
+  it("moves the types of many masked numbers under a renamed key in work linear in their number", () => {
+    const counter = { keys: 0 };
+    (globalThis as any).paramKeyReads = counter;
+    const file = (require as any).resolve("../../native/playbook-param.cjs");
+    const source = fs.readFileSync(file, "utf8");
+    const line = "const keyReader = (escapes) => (escapes ? unescapeTemplates : keep);";
+    if (!source.includes(line)) {
+      throw new Error("the change matched nothing in the source");
+    }
+    const Module = require("node:module");
+    const loaded = new Module(file);
+    loaded.filename = file;
+    loaded.paths = Module._nodeModulePaths(path.dirname(file));
+    loaded._compile(
+      source.replace(
+        line,
+        "const keyReader = (escapes) => (key) => (globalThis.paramKeyReads.keys++, escapes ? unescapeTemplates(key) : key);",
+      ),
+      file,
+    );
+    const name = (index: number) => `field-${String(index).padStart(6, "0")}`;
+    const counts = [200, 400, 800, 1600].map((width) => {
+      const keys = Array.from({ length: width }, (_, index) => name(index));
+      const saved = savedJsonOp(
+        JSON.stringify(Object.fromEntries(keys.map((key) => [key, "<text>"]))),
+        "query",
+      );
+      requestOf(saved).redactedTypes = Object.fromEntries(
+        keys.map((key) => [`query.v.${key}`, "number"]),
+      );
+      counter.keys = 0;
+      const { op } = loaded.exports.paramOp(saved, {
+        fields: ["query.v"],
+        as: "key",
+        value: name(0),
+      });
+      const types = requestOf(op).redactedTypes;
+      expect(Object.keys(types)).toHaveLength(width);
+      expect(types).toMatchObject({
+        "query.v.{{key}}": "number",
+        [`query.v.${name(width - 1)}`]: "number",
+      });
+      return counter.keys;
+    });
+    (globalThis as any).paramKeyReads = undefined;
+    // How much more work each doubling took than the one before: about 2 when linear.
+    expect(
+      Math.max(...counts.slice(1).map((count, index) => count / counts[index])),
+    ).toBeLessThanOrEqual(2.2);
+  });
+
+  // A hand-written op fills every {{name}} in a JSON param's text, keys too, but sends an object's
+  // keys as written: pb param won't turn one into the other.
+  it("refuses to store a hand-written JSON param whose key takes an input as an object", () => {
+    const op = networkOp({
+      url: "https://shop.test/s",
+      query: { v: '{"{{key}}":"kept","n":"seed"}' },
+    });
+    expect(() => paramOp(op, { fields: ["query.v.n"], as: "n" })).toThrow(
+      'query.v.n: the key "{{key}}" in query.v takes an input',
+    );
+  });
+
+  // JSON.parse reads any depth; so do pb param and renderRequest.
+  it("templates, saves and sends a field of a stored JSON param or body nested 1,500 levels deep", () => {
+    const { findRedactedPlaceholder } = require("../../native/record-typed-values.cjs");
+    // Capped where Node 24's recursive JSON.stringify, which pb param saves with, fits a Linux CI stack.
+    const depth = 1500;
+    const raw = `{"n":"seed","deep":${'{"x":'.repeat(depth)}0${"}".repeat(depth)}}`;
+    for (const where of ["query", "body"]) {
+      const field = where === "query" ? "query.v.n" : "body.n";
+      const { op } = paramOp(savedJsonOp(raw, where), { fields: [field], as: "n" });
+      expect(op.args.n).toEqual({ type: "string", default: "seed" });
+      // renderRequest reads any depth too.
+      const sent = renderRequest(requestOf(op), { n: "next" }, { escapes: true });
+      const text = where === "query" ? sent.query.v : JSON.stringify(sent.body);
+      expect(text).toBe(raw.replace('"seed"', '"next"'));
+      // Saved through validateOp, and read for a placeholder before it is sent, at that depth.
+      const { cwd, file } = project(savedJsonOp(raw, where));
+      expect(
+        applyParam({ playbook: "shop", op: "search", cwd, fields: [field], as: "n" }).changed,
+      ).toBe(true);
+      const stored = JSON.parse(fs.readFileSync(file, "utf8"));
+      expect(where === "query" ? requestOf(stored).query.v.n : requestOf(stored).body.n).toBe(
+        "{{n}}",
+      );
+      expect(findRedactedPlaceholder(requestOf(stored))).toBeNull();
+    }
+  });
+
   // A hand-written op never held the escape: its {{!}} is text, as it always was.
   it("templates a hand-written op's {{!}} as plain text", () => {
     const { op } = paramOp(
@@ -386,6 +659,158 @@ describe("pb param: validation", () => {
   });
 });
 
+describe("pb param: the input a typed step drafted", () => {
+  // A record masks the typed value (<text>) in the request; pb param gives it an input, and the
+  // step's own input {{text}} goes once nothing the op runs fills or sends it.
+  const check = { truthy: true, note: "{{text}}" };
+  const typed = (strategies: Array<Record<string, unknown>>) => ({
+    id: "search",
+    effect: "read",
+    args: { text: { required: true } },
+    provenance: { recordId: "rec-1", escaped: true },
+    on: { success: { expect: check } },
+    run: [
+      {
+        using: "network",
+        request: { method: "GET", url: "https://shop.test/s", query: { q: "<text>" } },
+        verify: check,
+        expect: check,
+        extract: { path: "{{text}}" },
+      },
+      ...strategies,
+    ],
+  });
+  const inputs = (strategies: Array<Record<string, unknown>>) =>
+    Object.keys(paramOp(typed(strategies), { fields: ["query.q"], as: "q" }).op.args).sort();
+  // The same op with no checks, so only the strategy given keeps the input.
+  const unchecked = (strategy: Record<string, unknown>) => {
+    const op = typed([strategy]);
+    const { verify: _verify, expect: _expect, extract: _extract, ...network } = op.run[0];
+    return Object.keys(
+      paramOp({ ...op, on: {}, run: [network, strategy] }, { fields: ["query.q"], as: "q" }).op
+        .args,
+    ).sort();
+  };
+
+  it("drops it when only a check names it", () => {
+    expect(inputs([])).toEqual(["q"]);
+    const workflow = {
+      using: "workflow",
+      steps: [{ cmd: "click", args: { ref: "e1" } }],
+      verify: check,
+    };
+    expect(inputs([workflow])).toEqual(["q"]);
+    const api = {
+      using: "api",
+      match: "https://shop.test/s*",
+      records: { path: "items", fields: { t: "{{text}}" } },
+      verify: check,
+    };
+    expect(inputs([api])).toEqual(["q"]);
+    const collect = { using: "collect", item: ".row", key: "{{text}}", fields: { t: "{{text}}" } };
+    expect(inputs([collect])).toEqual(["q"]);
+  });
+
+  it("keeps it while a strategy fills it or is given every input", () => {
+    const steps = [
+      [{ cmd: "click", args: { ref: "e1" }, each: "{{text}}" }],
+      [{ cmd: "click", args: { ref: "e1" }, as: "{{text}}" }],
+      [{ repeat: 2, steps: [{ cmd: "click" }], until: { cmd: "js", args: { code: "{{text}}" } } }],
+    ];
+    for (const body of steps) {
+      expect(unchecked({ using: "workflow", steps: body })).toEqual(["q", "text"]);
+    }
+    expect(
+      unchecked({ using: "api", match: "https://shop.test/{{text}}", records: { path: "items" } }),
+    ).toEqual(["q", "text"]);
+    expect(
+      unchecked({ using: "collect", item: "{{text}}", key: "id", fields: { t: "a" } }),
+    ).toEqual(["q", "text"]);
+    expect(unchecked({ using: "script", script: "return input" })).toEqual(["q", "text"]);
+    expect(unchecked({ using: "native", handler: "h" })).toEqual(["q", "text"]);
+    expect(
+      unchecked({ using: "workflow", steps: [{ cmd: "click", args: { ref: "e1" } }] }),
+    ).toEqual(["q"]);
+  });
+
+  // An escaped op fills the keys inside a header's object value as renderRequest sends it, so the
+  // input stays and the op still runs.
+  it("keeps it while an escaped header object's key takes it", () => {
+    const op = typed([]);
+    const { verify: _v, expect: _e, extract: _x, ...network } = op.run[0] as any;
+    network.request.headers = { "X-Thing": { "{{text}}": "constant" } };
+    const next = paramOp({ ...op, on: {}, run: [network] }, { fields: ["query.q"], as: "q" }).op;
+    expect(Object.keys(next.args).sort()).toEqual(["q", "text"]);
+    expect(() =>
+      renderRequest(next.run[0].request, { q: "new", text: "t" }, { escapes: true }),
+    ).not.toThrow();
+  });
+
+  // A workflow starts with the op's inputs as its vars, so a step's %{text} types --text, and a
+  // check naming {{text}} changes nothing.
+  const afterParam = (
+    steps: unknown[],
+    { escaped = true, onError }: { escaped?: boolean; onError?: string } = {},
+  ) => {
+    const op = typed([{ using: "workflow", ...(onError ? { onError } : {}), steps }]);
+    return Object.keys(
+      paramOp({ ...op, provenance: { escaped } }, { fields: ["query.q"], as: "q" }).op.args,
+    ).sort();
+  };
+  const hover = (selector: unknown) => ({ cmd: "hover", args: { selector } });
+
+  it("keeps it while a step reads it as a var where the workflow runtime fills vars", () => {
+    for (const escaped of [true, false]) {
+      for (const steps of [
+        [hover("%{text}")],
+        [hover([{ deep: "a %{text} b" }])],
+        [{ each: "%{text}", steps: [hover("%{item}")] }],
+        [{ repeat: "%{text}", steps: [hover("#s")] }],
+        [{ repeat: 1, steps: [hover("#s")], until: { cmd: "js", args: { code: "%{text}" } } }],
+        [{ repeat: 1, steps: [{ each: [1], steps: [hover("%{text}")] }] }],
+        // A capture binds only once its step ran: before it, and under onError continue, it is the input.
+        [hover("%{text}"), { ...hover("#s"), as: "text" }],
+      ]) {
+        expect(afterParam(steps, { escaped })).toEqual(["q", "text"]);
+      }
+      expect(
+        afterParam([{ ...hover("#s"), as: "text" }, hover("%{text}")], {
+          escaped,
+          onError: "continue",
+        }),
+      ).toEqual(["q", "text"]);
+    }
+    // Only an escaped op reads a var inside an inline each list; any other op's list was filled before.
+    expect(afterParam([{ each: ["%{text}"], steps: [hover("#s")] }])).toEqual(["q", "text"]);
+    expect(afterParam([{ each: ["%{text}"], steps: [hover("#s")] }], { escaped: false })).toEqual([
+      "q",
+    ]);
+  });
+
+  it("drops it where no step reads it from the op's inputs", () => {
+    for (const escaped of [true, false]) {
+      for (const steps of [
+        // An escape, a loop's own vars and a capture an earlier step made are no input.
+        [hover("%{!}text}")],
+        [{ each: [1], as: "text", steps: [hover("%{text}")] }],
+        [{ ...hover("#s"), as: "text" }, hover("%{text}")],
+        [
+          {
+            repeat: 1,
+            steps: [{ ...hover("#s"), as: "text" }],
+            until: { cmd: "js", args: { code: "%{text}" } },
+          },
+        ],
+        // A loop's own args and a step's other fields are never filled with vars.
+        [{ repeat: 1, args: { code: "%{text}" }, steps: [hover("#s")] }],
+        [{ ...hover("#s"), id: "%{text}" }],
+      ]) {
+        expect(afterParam(steps, { escaped })).toEqual(["q"]);
+      }
+    }
+  });
+});
+
 describe("pb param --link: a drafted typed-value input", () => {
   // A draft never stores a typed value, so the workflow types {{text}}, an input of its own.
   const drafted = (extra: Record<string, unknown> = {}) => ({
@@ -462,6 +887,90 @@ describe("pb param --link: a drafted typed-value input", () => {
       "workflow fallback takes --name in place of --text: type text, key key, locate.text text",
     ]);
     expect(() => playbooks.validateOp(op, { origins: [] })).not.toThrow();
+  });
+
+  it("renames the var a step reads from the input, not a loop's own or a capture", () => {
+    const vars = drafted();
+    (vars.run[1] as any).steps = [
+      { cmd: "type", args: { selector: "input.name", text: "{{text}} %{text}" } },
+      { each: "%{text}", as: "text", steps: [{ cmd: "type", args: { text: "%{text}" } }] },
+      { cmd: "js", args: { code: "1" }, as: "text" },
+      { cmd: "type", args: { text: "%{text} %{!}text}" } },
+    ];
+    const { op, notes } = paramOp(vars, { fields: ["query.nameOrId"], as: "name", link: "text" });
+    expect((op.run[1] as any).steps).toEqual([
+      { cmd: "type", args: { selector: "input.name", text: "{{name}} %{name}" } },
+      { each: "%{name}", as: "text", steps: [{ cmd: "type", args: { text: "%{text}" } }] },
+      { cmd: "js", args: { code: "1" }, as: "text" },
+      { cmd: "type", args: { text: "%{text} %{!}text}" } },
+    ]);
+    expect(notes).toEqual([
+      "workflow fallback takes --name in place of --text: type text, loop each",
+    ]);
+    // A name no var can take (%{name} is \w+) leaves the var to edit by hand.
+    const dashed = drafted();
+    (dashed.run[1] as any).steps = [{ cmd: "type", args: { text: "%{text}" } }];
+    expect(() =>
+      paramOp(dashed, { fields: ["query.nameOrId"], as: "full-name", link: "text" }),
+    ).toThrow(
+      "--link text: a step reads %{text}, and --as full-name can't be a var name; pick a name of letters, digits and _",
+    );
+  });
+
+  it("refuses to rename a %{text} a capture or loop var named text or the new name may shadow", async () => {
+    const typed = { cmd: "type", args: { selector: "input.name", text: "{{text}} %{text}" } };
+    const capture = (as: string) => ({ cmd: "js", args: { code: "'dummy'" }, as });
+    const cases: Array<[string, unknown[], Record<string, unknown>, string]> = [
+      // The new name is a capture, so %{name} would read it, not --name.
+      ["target capture", [capture("name"), typed], {}, "name"],
+      // The new name is the loop's var, so %{name} would read the item, not --name.
+      ["target loop var", [{ each: ["a"], as: "name", steps: [typed] }], {}, "name"],
+      // A later step in the loop body captures name, so a second pass would read it.
+      ["target later in loop", [{ repeat: 2, steps: [typed, capture("name")] }], {}, "name"],
+      // A loop may have captured text, so %{text} may read that, not the input.
+      ["source loop capture", [{ repeat: 1, steps: [capture("text")] }, typed], {}, "text"],
+      // Under onError continue a capture may or may not be set.
+      ["source continue capture", [capture("text"), typed], { onError: "continue" }, "text"],
+    ];
+    for (const escaped of [false, true]) {
+      for (const [label, steps, workflow, shadow] of cases) {
+        const op = drafted({ provenance: { escaped } });
+        Object.assign(op.run[1], { steps, ...workflow });
+        const message =
+          `--link text: type text reads %{text} where a capture or loop var ${shadow} may be set, ` +
+          `so it may not read the input; ${shadow === "name" ? "pick another --as" : "rename that var, or edit the op by hand"}`;
+        expect(
+          () => paramOp(op, { fields: ["query.nameOrId"], as: "name", link: "text" }),
+          `${label}, escaped ${escaped}`,
+        ).toThrow(message);
+        const { cwd, file } = project(op);
+        const before = fs.readFileSync(file, "utf8");
+        await expect(
+          handlePlaybookCli(
+            ["pb", "param", "shop", "search", "query.nameOrId", "--as", "name", "--link", "text"],
+            { cwd },
+          ),
+        ).rejects.toThrow(message);
+        expect(fs.readFileSync(file, "utf8")).toBe(before);
+      }
+    }
+  });
+
+  it("still renames a %{text} no capture or loop var could shadow", () => {
+    for (const escaped of [false, true]) {
+      const op = drafted({ provenance: { escaped } });
+      (op.run[1] as any).steps = [
+        { cmd: "type", args: { text: "{{text}} %{text}" } },
+        // Captures made after the step, outside any loop, can't reach it.
+        { cmd: "js", args: { code: "'dummy'" }, as: "name" },
+        { each: ["a"], as: "item", steps: [{ cmd: "js", args: { code: "'dummy'" }, as: "text" }] },
+      ];
+      const { op: next } = paramOp(op, { fields: ["query.nameOrId"], as: "name", link: "text" });
+      expect((next.run[1] as any).steps[0]).toEqual({
+        cmd: "type",
+        args: { text: "{{name}} %{name}" },
+      });
+    }
   });
 
   it("moves a write's safety key to the named input", () => {

@@ -4,9 +4,10 @@
 const os = require("os");
 const { editSavedOp, validateOp } = require("./playbooks.cjs");
 const { isSecretHeader, isSensitiveName } = require("./redaction.cjs");
-const { LITERAL_OPEN, escapeTemplates, escapedOp, unescapeTemplates } = require("./playbook-template.cjs");
+const { LITERAL_OPEN, escapeTemplates, escapedOp, requestInputs, sentRequest, templateInputs, unescapeTemplates } = require("./playbook-template.cjs");
 const { lineDiff } = require("./text-diff.cjs");
 const { commandMetadata } = require("./workflow-definition.cjs");
+const { mapStartingVars, startingVars } = require("./workflow-runtime.cjs");
 
 // `surf use` options that never reach an op, so no input can take these names.
 const RESERVED_RUN_OPTIONS = new Set(["json", "no-lock", "no-wait", "session", "tab-id", "write", "repeat", "retry-attempt", "override-in-doubt", "pin-built-in", "allow-script", "format"]);
@@ -14,6 +15,8 @@ const NAME_PATTERN = /^[a-z0-9][a-z0-9._-]{0,63}$/;
 const ENV_PATTERN = /^[A-Za-z_][A-Za-z0-9_]*$/;
 const TEMPLATE_ONLY = /^\{\{[a-zA-Z0-9._-]+\}\}$/;
 const REDACTED_BODY = "<request-body>";
+// Where a record redacted a value its steps typed (record-typed-values.cjs): <text>, <value>...
+const REDACTED_VALUE = /^<([a-z0-9._-]+)>$/;
 
 const keep = (text) => text;
 const decodePath = (text) => { try { return decodeURIComponent(text); } catch { return text; } };
@@ -29,35 +32,169 @@ function listOf(keys) {
 
 // A slot is one place in the request: its current (decoded) value, how text around a placeholder
 // is encoded there, and how to store the new text.
-function jsonSlot(field, root, parts, onStore) {
+// `keyText` reads a stored key as captured, the text a field names it by (see keyReader).
+function jsonSlot(field, root, parts, { onStore, keyText }) {
   let node = root;
   for (const [index, part] of parts.entries()) {
     const where = parts.slice(0, index).join(".") || "the top level";
-    if (!node || typeof node !== "object" || !Object.hasOwn(node, part)) {
-      const keys = node && typeof node === "object" ? Object.keys(node) : [];
-      throw new Error(`${field}: no "${part}" at ${where} (has: ${listOf(keys)})`);
-    }
+    const keys = node && typeof node === "object" ? Object.keys(node) : [];
+    const found = keys.filter((key) => keyText(key) === part);
+    if (found.length === 0) throw new Error(`${field}: no "${part}" at ${where} (has: ${listOf(keys.map(keyText))})`);
+    if (found.length > 1) throw new Error(`${field}: more than one key at ${where} reads "${part}", a captured key and one that takes an input; edit the op by hand to tell them apart`);
+    const [key] = found;
     if (index === parts.length - 1) {
-      const value = node[part];
+      const value = node[key];
       if (value && typeof value === "object") throw new Error(`${field}: holds an object or array; name a field inside it`);
       const parent = node;
-      return { field, value, json: true, sensitive: isSensitiveName(part), encode: keep, store: (text) => { parent[part] = text; onStore(root); } };
+      return { field, value, json: true, sensitive: isSensitiveName(part), encode: keep, store: (text) => { parent[key] = text; onStore(root); } };
     }
-    node = node[part];
+    node = node[key];
   }
   throw new Error(`${field}: name a field inside it`);
 }
 
-function parseJson(text) {
+// An escaped op stores a JSON param's keys as it stores values (storedJsonText), and a field names
+// a key by its captured text, its inputs as written: a `{{!}}` reads `{{`. Any other op's keys are
+// the text.
+const keyReader = (escapes) => (escapes ? unescapeTemplates : keep);
+
+// A JSON param or body stored as text. In an escaped op that text was escaped whole, as text, so
+// only a `{{!}}` or `{{name}}` written as is in it is an escape or an input: a `{{` written
+// \u007b\u007b was never escaped, and pb param's partial templating writes inputs as is, in a key
+// or a value. Parsed, the document is stored as an object, whose keys renderRequest fills as it
+// does values in an escaped op, so each string is read where it is written (storedJsonText) and
+// the text parsed once.
+function parseJson(text, escapes) {
+  let value;
   try {
-    const value = JSON.parse(text);
-    return value && typeof value === "object" ? value : null;
+    value = JSON.parse(escapes ? storedJsonText(text) : text);
   } catch {
     return null;
   }
+  return value && typeof value === "object" ? value : null;
 }
 
-function querySlot(request, field, [param, ...jsonPath]) {
+const STORED_MARK = /\{\{(?:[a-zA-Z0-9._-]+|!)\}\}/g;
+const INPUT_MARK = /\{\{[a-zA-Z0-9._-]+\}\}/;
+
+// The stored JSON text with each string token, key or value, written again as the one form pb
+// param keeps: escaped (escapeTemplates), its inputs as they were. A match of STORED_MARK in a
+// token's source holds no `\`, so it is written as is; the text between matches, JSON escapes and
+// all, is captured text. Throws on text that isn't JSON.
+function storedJsonText(text) {
+  let out = "";
+  let at = 0;
+  while (at < text.length) {
+    const open = text.indexOf('"', at);
+    if (open < 0) break;
+    let close = open + 1;
+    while (close < text.length && text[close] !== '"') close += text[close] === "\\" ? 2 : 1;
+    if (close >= text.length) throw new Error("unterminated JSON string");
+    out += text.slice(at, open) + JSON.stringify(storedString(text.slice(open + 1, close)));
+    at = close + 1;
+  }
+  return out + text.slice(at);
+}
+
+function storedString(source) {
+  const decode = (piece) => JSON.parse(`"${piece}"`);
+  let stored = "";
+  let captured = "";
+  let last = 0;
+  for (const match of source.matchAll(STORED_MARK)) {
+    captured += decode(source.slice(last, match.index));
+    last = match.index + match[0].length;
+    if (match[0] === LITERAL_OPEN) captured += "{{";
+    else {
+      stored += escapeTemplates(captured) + match[0];
+      captured = "";
+    }
+  }
+  return stored + escapeTemplates(captured + decode(source.slice(last)));
+}
+
+// The JSON a query param or body holds as text, as pb param stores it. A hand-written op fills a
+// {{name}} in that text's keys, but sends an object's keys as written, so one whose keys take an
+// input stays text.
+function storedJson({ text, escapes, field, where }) {
+  const doc = parseJson(text, escapes);
+  const key = doc && !escapes ? inputKey(doc) : null;
+  if (key !== null) throw new Error(`${field}: the key ${JSON.stringify(key)} in ${where} takes an input, and this op sends an object's keys as written, so pb param won't store it as one; edit the op by hand`);
+  return doc;
+}
+
+function inputKey(doc) {
+  const stack = [doc];
+  while (stack.length) {
+    const node = stack.pop();
+    if (!node || typeof node !== "object") continue;
+    for (const [key, value] of Object.entries(node)) {
+      if (!Array.isArray(node) && INPUT_MARK.test(key)) return key;
+      stack.push(value);
+    }
+  }
+  return null;
+}
+
+// Templating part of a JSON param's text can put an input in a key. The record names a masked
+// value by its path (redactedTypes), so a path through that key moves with it.
+function moveRedactedTypes(request, { prefix, before, after, escapes }) {
+  const types = request.redactedTypes;
+  const from = types && parseJson(before, escapes);
+  const to = from && parseJson(after, escapes);
+  if (!to) return;
+  const keyText = keyReader(escapes);
+  // Each object's keys are read once, whatever number of types sit under it.
+  const renames = new Map();
+  const renamesOf = (before, after) => {
+    if (!renames.has(before)) renames.set(before, renameOf(before, after, keyText));
+    return renames.get(before);
+  };
+  request.redactedTypes = Object.fromEntries(
+    Object.entries(types).map(([field, type]) => {
+      const moved = field.startsWith(prefix) ? movedPath(from, to, field.slice(prefix.length).split("."), renamesOf) : null;
+      return [moved === null ? field : prefix + moved, type];
+    }),
+  );
+}
+
+// How `after`'s keys follow `before`'s, by the text a field names them by: at most one renamed.
+function renameOf(before, after, keyText) {
+  const read = (node) => {
+    const keys = new Map();
+    for (const key of Object.keys(node)) {
+      const text = keyText(key);
+      keys.set(text, keys.has(text) ? null : key);
+    }
+    return keys;
+  };
+  const from = read(before);
+  const to = read(after);
+  const gone = [...from.keys()].filter((text) => !to.has(text));
+  const added = [...to.keys()].filter((text) => !from.has(text));
+  const single = (texts, keys) => texts.length === 1 && keys.get(texts[0]) !== null;
+  return { from, to, renamed: single(gone, from) && single(added, to) ? { from: gone[0], to: added[0] } : null };
+}
+
+// The path in `to` of the value at `parts` in `from`, where at most one key at each level was
+// renamed; null when it can't tell (a key named twice, or no such key).
+function movedPath(from, to, parts, renamesOf) {
+  const moved = [];
+  for (const part of parts) {
+    if (!from || typeof from !== "object" || !to || typeof to !== "object") return null;
+    const { from: before, to: after, renamed } = renamesOf(from, to);
+    const next = renamed?.from === part ? renamed.to : part;
+    const fromKey = before.get(part);
+    const toKey = after.get(next);
+    if (fromKey === undefined || fromKey === null || toKey === undefined || toKey === null) return null;
+    moved.push(next);
+    from = from[fromKey];
+    to = to[toKey];
+  }
+  return moved.join(".");
+}
+
+function querySlot(request, field, [param, ...jsonPath], escapes) {
   if (!param) throw new Error(`${field}: name the query param, as in query.q`);
   const query = request.query || {};
   if (!Object.hasOwn(query, param)) throw new Error(`${field}: no query param "${param}" (has: ${listOf(Object.keys(query))})`);
@@ -65,11 +202,15 @@ function querySlot(request, field, [param, ...jsonPath]) {
   const setParam = (value) => { request.query = { ...query, [param]: value }; };
   if (jsonPath.length === 0) {
     if (current && typeof current === "object") throw new Error(`${field}: holds JSON; name a field inside it, as in ${field}.<path>`);
-    return { field, value: String(current), json: false, sensitive: isSensitiveName(param), encode: keep, store: setParam };
+    const store = (text) => {
+      setParam(text);
+      moveRedactedTypes(request, { prefix: `${field}.`, before: String(current), after: text, escapes });
+    };
+    return { field, value: String(current), json: false, sensitive: isSensitiveName(param), encode: keep, store };
   }
-  const doc = current && typeof current === "object" ? current : parseJson(String(current));
+  const doc = current && typeof current === "object" ? current : storedJson({ text: String(current), escapes, field, where: `query.${param}` });
   if (!doc) throw new Error(`${field}: query param "${param}" is not JSON`);
-  return jsonSlot(field, doc, jsonPath, setParam);
+  return jsonSlot(field, doc, jsonPath, { onStore: setParam, keyText: keyReader(escapes) });
 }
 
 // Splits a URL without parsing it, since parsing would percent-encode `{{name}}`.
@@ -160,14 +301,15 @@ function formSlot(request, field, name, body) {
   };
 }
 
-function bodySlot(request, field, parts) {
+function bodySlot(request, field, parts, escapes) {
   const body = request.body;
   if (body === undefined || body === null || body === "") throw new Error(`${field}: the request has no body`);
   if (body === REDACTED_BODY) throw new Error(`${field}: the recorded body was redacted; record again with pb record start --include-input-values to keep it`);
   if (parts.length === 0) throw new Error(`${field}: name a field inside the body, as in body.<name>`);
-  if (typeof body === "object") return jsonSlot(field, body, parts, (root) => { request.body = root; });
-  const doc = parseJson(body);
-  if (doc) return jsonSlot(field, doc, parts, (root) => { request.body = root; });
+  const slot = { onStore: (root) => { request.body = root; }, keyText: keyReader(escapes) };
+  if (typeof body === "object") return jsonSlot(field, body, parts, slot);
+  const doc = storedJson({ text: body, escapes, field, where: "the body" });
+  if (doc) return jsonSlot(field, doc, parts, slot);
   const type = String(headerValue(request.headers, "content-type")?.[1] || "");
   const name = parts.join(".");
   if (/multipart\/form-data/i.test(type) || body.startsWith("--")) {
@@ -193,11 +335,12 @@ function headerSlot(request, field, name) {
   };
 }
 
-function resolveSlot(request, field) {
+// `escapes`: the op holds escaped text (escapedOp).
+function resolveSlot(request, field, escapes) {
   const [target, ...parts] = field.split(".");
-  if (target === "query") return querySlot(request, field, parts);
+  if (target === "query") return querySlot(request, field, parts, escapes);
   if (target === "path") return pathSlot(request, field, parts);
-  if (target === "body") return bodySlot(request, field, parts);
+  if (target === "body") return bodySlot(request, field, parts, escapes);
   if (target === "headers") return headerSlot(request, field, parts.join("."));
   throw new Error(`${field}: a field starts with query., path., body. or headers.`);
 }
@@ -295,8 +438,10 @@ function coerce(value, type, label) {
   return String(value);
 }
 
-function inputType(results) {
-  const types = new Set(results.filter((result) => result.json && result.whole).map((result) => typeof result.literal));
+// `redactedTypes` maps a field whose number or boolean the record masked (as <text>) to that type.
+function inputType(results, redactedTypes = {}) {
+  const typeOf = (result) => (REDACTED_VALUE.test(String(result.literal)) && redactedTypes[result.field]) || typeof result.literal;
+  const types = new Set(results.filter((result) => result.json && result.whole).map(typeOf));
   if (types.size > 1) throw new Error(`the fields hold values of different types (${[...types].join(", ")}); give each its own input`);
   const [type] = types;
   return type === "number" || type === "boolean" ? type : "string";
@@ -317,7 +462,7 @@ function templateSteps(steps, context, touched) {
     for (const [arg, value] of Object.entries(args)) {
       if (typeof value !== "string") continue;
       let next = value;
-      if (kinds[arg] === "user-input" && value === context.literal) next = context.placeholder;
+      if (kinds[arg] === "user-input" && (value === context.literal || value === context.typedStep)) next = context.placeholder;
       else if (kinds[arg] === "url") next = templateStepUrl(value, context);
       if (next !== value) {
         args[arg] = next;
@@ -346,14 +491,38 @@ function templateStepUrl(value, { origin, segments, queries, placeholder, litera
   return joinUrl({ ...url, rest });
 }
 
-const usesInput = (value, input) => JSON.stringify(value).includes(`{{${input}}}`);
+// The inputs a strategy takes where the runtime fills them (runStrategy): a network strategy's
+// request where renderRequest fills it (requestInputs), a workflow's steps (each {{name}} in them,
+// and each %{name} a step reads from the vars the workflow starts with, the op's inputs), an api or
+// collect spec but its record fields. Never an extract, verify or expect, which only read the
+// result. A script or native strategy is given every input: null.
+function filledInputs(strategy, escapes) {
+  const { using, extract: _extract, verify: _verify, expect: _expect, ...spec } = strategy;
+  if (using === "network") return spec.request === undefined ? new Set() : requestInputs(sentRequest(spec.request), { escapes });
+  if (using === "workflow") return new Set([...templateInputs(spec.steps), ...startingVars(spec.steps, { escapes, onError: spec.onError || "stop" })]);
+  if (using === "api") {
+    const { records: { fields: _fields, ...records } = {}, ...rest } = spec;
+    return templateInputs([rest, records]);
+  }
+  if (using === "collect") {
+    const { fields: _fields, key: _key, ...rest } = spec;
+    return templateInputs(rest);
+  }
+  return null;
+}
+
+// Whether a strategy, or any of a list, takes `input` (filledInputs).
+function usesInput(strategies, input, { escapes }) {
+  return [strategies].flat().some((strategy) => filledInputs(strategy, escapes)?.has(input) ?? true);
+}
 
 // Inputs only workflow steps take, such as the {{text}} a draft makes of a typed value (it never
 // stores the value, so pb param can't match it to a request field).
 function workflowOnlyInputs(op) {
   const workflows = op.run.filter((strategy) => strategy.using === "workflow");
   const others = op.run.filter((strategy) => strategy.using !== "workflow");
-  return Object.keys(op.args || {}).filter((input) => usesInput(workflows, input) && !usesInput(others, input));
+  const render = { escapes: escapedOp(op) };
+  return Object.keys(op.args || {}).filter((input) => usesInput(workflows, input, render) && !usesInput(others, input, render));
 }
 
 // Renames {{from}} to {{to}} at every depth: step args, loop bodies, a loop's `until` step and its
@@ -380,24 +549,40 @@ function renameInSteps(steps, from, to, touched) {
   });
 }
 
-// --link: the workflow-only input `link` becomes `name`. Its steps take {{name}}, the input goes,
-// and a write's safety key follows. Returns the step arguments it changed; none when it is
-// already linked.
+// --link: the workflow-only input `link` becomes `name`. Its steps take {{name}}, and %{name}
+// where they read the input as a var, the input goes, and a write's safety key follows. A %{link}
+// a capture or loop var named `link` or `name` may shadow is refused, as renaming it could change
+// what the step reads. Returns the step arguments it changed; none when it is already linked.
 function linkInput(op, link, name) {
   const from = `{{${link}}}`;
+  const render = { escapes: escapedOp(op) };
   if (!Object.hasOwn(op.args || {}, link)) {
-    if (!usesInput(op.run, link) && usesInput(op.run.filter((strategy) => strategy.using === "workflow"), name)) return [];
+    if (!usesInput(op.run, link, render) && usesInput(op.run.filter((strategy) => strategy.using === "workflow"), name, render)) return [];
     throw new Error(`--link ${link}: the op has no input ${link} (inputs: ${listOf(Object.keys(op.args || {}))})`);
   }
-  const other = op.run.find((strategy) => strategy.using !== "workflow" && usesInput(strategy, link));
+  const other = op.run.find((strategy) => strategy.using !== "workflow" && usesInput(strategy, link, render));
   if (other) throw new Error(`--link ${link}: the ${other.using} strategy uses ${from} too, so it is an input of its own; pick another --as`);
   const touched = [];
-  for (const workflow of op.run.filter((strategy) => strategy.using === "workflow")) workflow.steps = renameInSteps(workflow.steps, from, `{{${name}}}`, touched);
-  if (touched.length === 0) throw new Error(`--link ${link}: no workflow step takes ${from}`);
-  if (usesInput(op.run, link)) throw new Error(`--link ${link}: ${from} is still in the op after renaming; edit it by hand`);
+  const renameVar = (input, field, maybe) => {
+    if (input !== link) return input;
+    if (!/^\w+$/.test(name)) throw new Error(`--link ${link}: a step reads %{${link}}, and --as ${name} can't be a var name; pick a name of letters, digits and _`);
+    const shadow = [link, name].find((other) => maybe.has(other));
+    if (shadow !== undefined) {
+      const fix = shadow === name ? "pick another --as" : "rename that var, or edit the op by hand";
+      throw new Error(`--link ${link}: ${field} reads %{${link}} where a capture or loop var ${shadow} may be set, so it may not read the input; ${fix}`);
+    }
+    touched.push(field);
+    return name;
+  };
+  for (const workflow of op.run.filter((strategy) => strategy.using === "workflow")) {
+    const steps = renameInSteps(workflow.steps, from, `{{${name}}}`, touched);
+    workflow.steps = mapStartingVars(steps, { escapes: render.escapes, onError: workflow.onError || "stop" }, renameVar);
+  }
+  if (touched.length === 0) throw new Error(`--link ${link}: no workflow step takes ${from} or %{${link}}`);
+  if (usesInput(op.run, link, render)) throw new Error(`--link ${link}: ${from} is still in the op after renaming; edit it by hand`);
   delete op.args[link];
   if (op.safety?.key?.includes(link)) op.safety.key = [...new Set(op.safety.key.map((key) => (key === link ? name : key)))];
-  return touched;
+  return [...new Set(touched)];
 }
 
 // Adds a header read from an environment variable at run time; nothing about its value is stored.
@@ -446,14 +631,15 @@ function paramOp(op, { fields, as: name, env, required = false, default: default
 
   const request = strategy.request;
   const originalUrl = splitUrl(request.url);
+  const escapes = escapedOp(op);
   const results = fields.map((field) => {
-    const slot = resolveSlot(request, field);
+    const slot = resolveSlot(request, field, escapes);
     // A secret-looking field, or one inside a secret-looking param or key, is templated whole:
     // a partial template would leave the rest of the credential in the op.
     const sensitive = slot.sensitive || field.split(".").slice(1).some(isSensitiveName);
     const partial = literal !== undefined && String(slot.value) !== literal && !String(slot.value).includes(`{{${name}}}`);
     if (sensitive && partial) throw new Error(`${field} looks secret: template it whole (leave out --value), so no part of it is stored`);
-    return { ...slot, sensitive, ...templateSlot(slot, { name, literal, escapes: escapedOp(op) }) };
+    return { ...slot, sensitive, ...templateSlot(slot, { name, literal, escapes }) };
   });
   const templated = results.filter((result) => result.status === "templated");
   const literals = [...new Set(templated.map((result) => String(result.literal)))];
@@ -461,22 +647,40 @@ function paramOp(op, { fields, as: name, env, required = false, default: default
     const shown = templated.map((result) => `${result.field}=${JSON.stringify(result.literal)}`).join(", ");
     throw new Error(`the fields hold different values (${shown}); pass --value <text> to template the same text in each`);
   }
+  // A value the record redacted has no recorded value to default to: the input is required.
+  const redacted = literals.length === 1 ? literals[0].match(REDACTED_VALUE) : null;
   const sensitive = results.find((result) => result.sensitive);
   if (sensitive && !required) throw new Error(`${sensitive.field} looks secret: pass --required so its value isn't stored as a default`);
 
   const existing = next.args?.[name];
-  const type = templated.length ? inputType(templated) : existing?.type || "string";
+  const type = templated.length ? inputType(templated, request.redactedTypes) : existing?.type || "string";
+  if (request.redactedTypes) {
+    const left = Object.fromEntries(Object.entries(request.redactedTypes).filter(([field]) => !templated.some((result) => result.field === field)));
+    if (Object.keys(left).length) request.redactedTypes = left;
+    else delete request.redactedTypes;
+  }
   let fallback;
   if (defaultValue !== undefined) fallback = coerce(defaultValue, type, "--default");
-  else if (!required) fallback = templated.length ? coerce(templated[0].literal, type, `the value of ${templated[0].field}`) : existing?.default;
+  else if (!required && !redacted) fallback = templated.length ? coerce(templated[0].literal, type, `the value of ${templated[0].field}`) : existing?.default;
   const description = desc ?? existing?.desc;
-  const spec = { type, ...(required ? { required: true } : {}), ...(fallback !== undefined ? { default: fallback } : {}), ...(description !== undefined ? { desc: description } : {}) };
+  const spec = { type, ...(required || (redacted && fallback === undefined) ? { required: true } : {}), ...(fallback !== undefined ? { default: fallback } : {}), ...(description !== undefined ? { desc: description } : {}) };
   if (existing && !sameSpec(existing, spec)) {
     throw new Error(`input ${name} already exists with a different definition (${JSON.stringify(existing)}); pick another --as or repeat its definition`);
   }
   next.args = { ...(next.args || {}), [name]: { ...(existing || {}), ...spec } };
 
-  const notes = [];
+  const notes = redacted && fallback === undefined ? [`the record redacted the value it typed here (${redacted[0]}), so --${name} is required`] : [];
+  // A query key the recorded URL sent more than once: the record kept no type for what it masked there.
+  for (const key of request.repeatedQuery || []) {
+    if (!fields.some((field) => field === `query.${key}` || field.startsWith(`query.${key}.`))) continue;
+    notes.push(`query.${key} was sent more than once in the recorded URL; the draft keeps the last, and the record keeps no type for a number or boolean it masked under a repeated key, so --${name} is a ${type}`);
+  }
+  // The record masks every path segment that is the typed value; one of them may be a fixed route piece.
+  if (redacted) {
+    const named = templated.filter((result) => result.segment).map((result) => result.field);
+    const others = named.length ? splitUrl(request.url).segments.map((segment, index) => [`path.${index + 1}`, decodePath(segment)]).filter(([field, value]) => value === redacted[0] && !named.includes(field)).map(([field]) => field) : [];
+    if (others.length) notes.push(`${others.join(", ")} holds ${redacted[0]} too, the same typed value: name every segment to template them with one input (surf pb param <playbook> <op> ${[...others, ...named].sort((a, b) => Number(a.slice(5)) - Number(b.slice(5))).join(" ")} --as ${name}), or put back the route text it held there`);
+  }
   const workflows = next.run.filter((candidate) => candidate.using === "workflow");
   const linked = link === undefined ? [] : linkInput(next, link, name);
   if (linked.length) notes.push(`workflow fallback takes --${name} in place of --${link}: ${linked.join(", ")}`);
@@ -488,6 +692,9 @@ function paramOp(op, { fields, as: name, env, required = false, default: default
       literal: literals[0],
       segments: templated.filter((result) => result.segment).map((result) => ({ ...result.segment, stored: result.stored })),
       queries: templated.filter((result) => result.whole && !result.json && /^query\.[^.]+$/.test(result.field)).map((result) => result.field.slice("query.".length)),
+      // The drafted step that typed a redacted value holds {{text}} or {{value}}; it takes the input too.
+      // Only a typed text or value is one input; form.fill's data and select's values are whole lists.
+      ...(redacted && /^(text|value)(-\d+)?$/.test(redacted[1]) ? { typedStep: `{{${redacted[1]}}}` } : {}),
     };
     for (const workflow of workflows) workflow.steps = templateSteps(workflow.steps, context, touched);
     if (touched.length) notes.push(`workflow fallback takes the input too: ${touched.join(", ")}`);
@@ -495,6 +702,14 @@ function paramOp(op, { fields, as: name, env, required = false, default: default
       const hints = workflowOnlyInputs(next).filter((input) => input !== name).map((input) => `; if --${input} holds the same value, add --link ${input}`);
       notes.push(`workflow strategy unchanged: no step argument holds ${JSON.stringify(literals[0])}, so the browser fallback still runs as recorded${hints.join("")}`);
     }
+  }
+  // The draft's input for that step (--text, --value) goes once nothing uses it, so it isn't still required.
+  const replaced = redacted?.[1];
+  if (replaced && replaced !== name && next.args?.[replaced] && !usesInput(next.run, replaced, { escapes })) {
+    const { [replaced]: _replaced, ...rest } = next.args;
+    next.args = rest;
+    if (next.safety?.key?.includes(replaced)) next.safety = { ...next.safety, key: [...new Set(next.safety.key.map((key) => (key === replaced ? name : key)))] };
+    notes.push(`input ${replaced} is now ${name}`);
   }
   return { op: next, changed: JSON.stringify(next) !== JSON.stringify(op), notes };
 }

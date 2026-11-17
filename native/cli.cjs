@@ -7,7 +7,7 @@ for (const stream of [process.stdout, process.stderr]) {
 const fs = require("fs");
 const path = require("path");
 const { execFileSync, execSync } = require("child_process");
-const { loadConfig, getConfigPath, createStarterConfig, STARTER_CONFIG } = require("./config.cjs");
+const { loadConfig, loadUserConfig, getConfigPath, createStarterConfig, STARTER_CONFIG } = require("./config.cjs");
 const networkFormatters = require("./formatters/network.cjs");
 const { formatPageChanges } = require("./formatters/page-changes.cjs");
 const {
@@ -22,6 +22,10 @@ const {
   resolveWorkflow,
   validateWorkflowArgs,
   validateWorkflowFile,
+  ECHO_COMMANDS,
+  withEchoedValues,
+  withoutOptIns,
+  withoutStepOptIns,
 } = require("./workflow-definition.cjs");
 const { executeDoSteps, semanticRequestContext, sendDoRequest } = require("./do-executor.cjs");
 const { runExtraction, renderExtractionMarkdown } = require("./extract.cjs");
@@ -799,6 +803,7 @@ const TOOLS = {
           name: "Element name/text",
           action: "Action to perform (click|fill|hover|text)",
           value: "Value for fill action",
+          "echo-value": "Print the filled value in the result (hidden by default; or set echoValue: true in ~/surf.json)",
           all: "Return all matches"
         },
         examples: [
@@ -813,7 +818,8 @@ const TOOLS = {
         opts: {
           exact: "Exact match",
           action: "Action to perform",
-          value: "Value for fill action"
+          value: "Value for fill action",
+          "echo-value": "Print the filled value in the result (hidden by default; or set echoValue: true in ~/surf.json)"
         },
         examples: [
           { cmd: 'locate.text "Sign In" --action click', desc: "Click by text" },
@@ -825,7 +831,8 @@ const TOOLS = {
         args: ["label"],
         opts: {
           action: "Action to perform",
-          value: "Value for fill action"
+          value: "Value for fill action",
+          "echo-value": "Print the filled value in the result (hidden by default; or set echoValue: true in ~/surf.json)"
         },
         examples: [
           { cmd: 'locate.label "Username" --action fill --value "john"', desc: "Fill by label" },
@@ -853,7 +860,8 @@ const TOOLS = {
         desc: "Select option(s) in dropdown",
         args: ["ref_or_selector", "values..."],
         opts: {
-          by: "Match by: value (default), label, index"
+          by: "Match by: value (default), label, index",
+          "echo-value": "Print the chosen option values (by default only how many; or set echoValue: true in ~/surf.json)"
         },
         examples: [
           { cmd: 'select e5 "US"', desc: "Select by value" },
@@ -950,7 +958,8 @@ const TOOLS = {
           submit: "Press Enter after (at the cursor or with --into; not with --ref)",
           clear: "Clear the field first (with --into)",
           escapes: "Turn \\n, \\t, \\r and \\\\ in the text into newline, tab, carriage return and backslash",
-          method: "cdp|js (cursor typing uses CDP; selector/ref targets use JS)"
+          method: "cdp|js (cursor typing uses CDP; selector/ref targets use JS)",
+          "echo-value": "Show the typed text in the page-change report (shown as 'value changed' by default; or echoValue: true in ~/surf.json)"
         },
         examples: [
           { cmd: 'type "hello world"', desc: "Type at cursor (CDP events)" },
@@ -1192,6 +1201,7 @@ const TOOLS = {
           "body-mode": "Response bodies: none, text, or all (default: text)",
           "per-body-bytes": "Maximum captured bytes per response body",
           "total-body-bytes": "Maximum captured response-body bytes per tab session",
+          "raw-bodies": "Keep secret-named body fields (password=, \"token\":) as captured; by default their values read <redacted>",
         },
         examples: [
           { cmd: "network.export --jsonl --output /tmp/requests.jsonl", desc: "Export as JSONL" },
@@ -1329,7 +1339,7 @@ const TOOLS = {
       "form.fill": {
         desc: "Batch fill form fields",
         args: [],
-        opts: { data: "JSON array of {ref, value}; true/false sets a checkbox" },
+        opts: { data: "JSON array of {ref, value}; true/false sets a checkbox", "echo-value": "Show the filled values in the page-change report (hidden by default)" },
         examples: [{ cmd: `form.fill --data '[{"ref":"e1","value":"John"},{"ref":"e7","value":true}]'`, desc: "Text field and checkbox" }],
       },
     }
@@ -1485,6 +1495,7 @@ const TOOLS = {
           "allow-semantic": "Allow bounded semantic model decisions (model: SURF_SEMANTIC_MODEL, default jev-1.13.0); extract steps always use clairic (Cloudflare)",
           "allow-write": "Allow declared semantic fill/check/click steps",
           "inputs-stdin": "Read bounded private input slots as one JSON object from stdin",
+          "echo-value": "Show typed values and chosen options in step results (a saved workflow's steps can't turn this on)",
         },
         examples: [
           { cmd: 'do \'go "https://example.com" | read | click e5 | screenshot\'', desc: "Inline workflow" },
@@ -1725,7 +1736,7 @@ const TOOLS = {
       "playbook record start": {
         desc: "Start recording a playbook op",
         args: ["playbook"],
-        opts: { op: "Operation name", network: "Record network requests", watch: "Watch page changes", "include-input-values": "Keep typed values (redacted by default)" },
+        opts: { op: "Operation name", network: "Record network requests", watch: "Watch page changes", "include-input-values": "Keep typed values in request bodies and captured URLs (by default bodies read <request-body> and typed values in URLs <text> or <value>)" },
         examples: [{ cmd: "pb record start example --op read --network --watch", desc: "Record with network" }],
       },
       "playbook record mark": { desc: "Add a note to the recording", args: ["note"] },
@@ -2770,7 +2781,8 @@ if (args.includes("--script")) {
       const step = script.steps[i];
       const stepNum = `[${i + 1}/${total}]`;
       const toolName = step.tool;
-      const toolArgs = step.args || {};
+      // A script file can't turn on what loosens a safe default; only the command line can.
+      const toolArgs = withoutOptIns(step.args);
 
       const argSummary = Object.entries(toolArgs)
         .map(([k, v]) => typeof v === "string" && v.length > 40 ? `${k}="${v.slice(0, 37)}..."` : `${k}=${JSON.stringify(v)}`)
@@ -2849,9 +2861,10 @@ if (args[0] === "do") {
   let allowSemantic = false;
   let allowWrite = false;
   let inputsStdin = false;
+  let echoValue = false;
 
   // Reserved flags that aren't workflow args
-  const reservedFlags = ['file', 'f', 'dry-run', 'on-error', 'no-auto-wait', 'step-delay', 'json', 'tab-id', 'window-id', 'session', 'no-lock', 'no-wait', 'allow-semantic', 'allow-write', 'inputs-stdin'];
+  const reservedFlags = ['file', 'f', 'dry-run', 'on-error', 'no-auto-wait', 'step-delay', 'json', 'tab-id', 'window-id', 'session', 'no-lock', 'no-wait', 'allow-semantic', 'allow-write', 'inputs-stdin', 'echo-value'];
 
   // Workflow-specific args (collected for variable substitution)
   const workflowArgs = {};
@@ -2897,6 +2910,8 @@ if (args[0] === "do") {
       allowWrite = true;
     } else if (arg === "--inputs-stdin") {
       inputsStdin = true;
+    } else if (arg === "--echo-value") {
+      echoValue = true;
     } else if (arg.startsWith("--")) {
       // Workflow-specific arg (e.g., --email, --password)
       const key = arg.slice(2);
@@ -3007,6 +3022,8 @@ if (args[0] === "do") {
         process.exit(1);
       }
 
+      // A saved workflow may be a project's: its steps can't turn on what loosens a safe default.
+      workflow = { ...workflow, steps: withoutStepOptIns(workflow.steps) };
       steps = workflow.steps;
     }
   } catch (e) {
@@ -3018,6 +3035,8 @@ if (args[0] === "do") {
     console.error("Error: No commands found in workflow");
     process.exit(1);
   }
+  // Typed values and chosen options show only with --echo-value or echoValue in ~/surf.json.
+  if (echoValue || loadUserConfig().echoValue === true) steps = withEchoedValues(steps);
 
   // Apply arg defaults
   const vars = workflow ? applyArgDefaults(workflow, workflowArgs) : workflowArgs;
@@ -3414,7 +3433,7 @@ if (args[0] === "workflow.validate") {
   }
 }
 
-const BOOLEAN_FLAGS = ["auto-capture", "json", "stream", "dry-run", "stop-on-error", "fail-fast", "clear", "submit", "escapes", "all", "include-hidden", "case-sensitive", "hard", "annotate", "fullpage", "full-page", "reset", "no-screenshot", "no-diff", "full", "soft-fail", "has-body", "exclude-static", "v", "vv", "request", "by-tab", "har", "jsonl", "no-save", "no-auto-wait", "no-lock", "no-wait", "window", "tab", "focused", "unfocused", "keep-target", "close-target", "replace", "refresh", "allow-post"];
+const BOOLEAN_FLAGS = ["auto-capture", "json", "stream", "dry-run", "stop-on-error", "fail-fast", "clear", "submit", "escapes", "all", "include-hidden", "case-sensitive", "hard", "annotate", "fullpage", "full-page", "reset", "no-screenshot", "no-diff", "full", "soft-fail", "has-body", "exclude-static", "v", "vv", "request", "by-tab", "har", "jsonl", "no-save", "no-auto-wait", "no-lock", "no-wait", "window", "tab", "focused", "unfocused", "keep-target", "close-target", "replace", "refresh", "allow-post", "echo-value", "raw-bodies"];
 
 const parseArgs = (rawArgs) => {
   const result = { positional: [], options: {} };
@@ -3542,6 +3561,9 @@ if (options["full-page"] === true) {
 }
 
 const config = loadConfig();
+// Fill and select results show the value typed or the options chosen only when asked: per call,
+// or in the user's own ~/surf.json (never a project's).
+if (loadUserConfig().echoValue === true && ECHO_COMMANDS.has(tool)) options["echo-value"] = true;
 const autoSaveEnabled = config.autoSaveScreenshots !== false && !options["no-save"];
 if (tool === "screenshot" && !options.output && !options.savePath && firstArg === undefined && autoSaveEnabled) {
   options.savePath = path.join(SURF_TMP, `surf-snap-${Date.now()}.png`);

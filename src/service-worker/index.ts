@@ -863,7 +863,8 @@ async function performLocateAction(
   action: string,
   value: string | undefined,
   cdp: CDPController,
-  frameId: number = 0
+  frameId: number = 0,
+  echoValue = false
 ): Promise<any> {
   switch (action) {
     case "click": {
@@ -877,7 +878,7 @@ async function performLocateAction(
         ref,
         value,
       }, { frameId });
-      return result.error ? result : { success: true, action: "fill", ref, value };
+      return result.error ? result : { success: true, action: "fill", ref, ...(echoValue ? { value } : {}) };
     }
     case "hover": {
       const coords = await chrome.tabs.sendMessage(tabId, {
@@ -1802,7 +1803,7 @@ export async function handleMessage(
 
         // Perform action if specified
         if (message.action && result.ref) {
-          return await performLocateAction(tabId, result.ref, message.action, message.value, cdp, locateFrameId);
+          return await performLocateAction(tabId, result.ref, message.action, message.value, cdp, locateFrameId, message.echoValue === true);
         }
 
         return result;
@@ -1828,7 +1829,7 @@ export async function handleMessage(
 
         // Perform action if specified
         if (message.action && result.ref) {
-          return await performLocateAction(tabId, result.ref, message.action, message.value, cdp, textFrameId);
+          return await performLocateAction(tabId, result.ref, message.action, message.value, cdp, textFrameId, message.echoValue === true);
         }
 
         return result;
@@ -1853,7 +1854,7 @@ export async function handleMessage(
 
         // Perform action if specified
         if (message.action && result.ref) {
-          return await performLocateAction(tabId, result.ref, message.action, message.value, cdp, labelFrameId);
+          return await performLocateAction(tabId, result.ref, message.action, message.value, cdp, labelFrameId, message.echoValue === true);
         }
 
         return result;

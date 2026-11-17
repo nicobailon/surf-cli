@@ -524,6 +524,42 @@ function sessionAccessTime(stateDir: string) {
   return state.browsers["contract-browser"].sessions.old.lastAccessedAt;
 }
 
+// Records a write whose captured POST is at `page.url` (the host's scriptResponse): each of `typed`
+// is typed into the page first, so the record masks it there, and the op is saved from the record.
+// Then capture holds each later request at the fixture API's URL, the one the fake extension
+// answers, so an op's own send is found.
+async function saveRecordedWrite({
+  cli,
+  page,
+  typed,
+}: {
+  cli: (args: string[]) => Promise<CliResult>;
+  page: { url: string };
+  typed: string[];
+}) {
+  const run = async (args: string[]) => {
+    const result = await cli(args);
+    if (result.code !== 0) {
+      throw new Error(`surf ${args.join(" ")} failed: ${result.stderr}`);
+    }
+    return result;
+  };
+  await run(["navigate", "https://fixture.test/form"]);
+  await run(["pb", "record", "start", "fixture", "--op", "submit", "--network"]);
+  for (const [index, text] of typed.entries()) {
+    await run(["type", text, "--selector", `#field-${index}`]);
+  }
+  await run(["js", 'fetch("/api", { method: "POST" })']);
+  await run(["click", "--selector", "#commit", "--no-screenshot"]);
+  const { record } = JSON.parse((await run(["pb", "record", "stop", "--draft", "--json"])).stdout);
+  page.url = "https://fixture.test/api";
+  await run(["pb", "save", "--from-record", record.id, "--project", "--json"]);
+}
+
+function jsonQueryUrl(variables: Record<string, unknown>) {
+  return `https://fixture.test/api?variables=${encodeURIComponent(JSON.stringify(variables))}`;
+}
+
 describe("CLI/native-host/fake-extension E2E contract", () => {
   it("runs browser-like navigation, page text, and screenshot flows without Chrome", async () => {
     const socketPath = createSocketPath();
@@ -943,6 +979,670 @@ describe("CLI/native-host/fake-extension E2E contract", () => {
     }
   }, 60000);
 
+  // A recorded write whose one step types the value it sends: its duplicate key is that step's
+  // input. pb param on the masked number gives the request and the step one input, so the step's
+  // own input goes and the key follows, though a draft's check still names it: a check is never
+  // filled or sent. The same year is then blocked as a duplicate whatever else is given.
+  it("keys a recorded write on the input it sends after pb param, not one only its check names", async () => {
+    const socketPath = createSocketPath();
+    const project = fs.mkdtempSync(path.join(os.tmpdir(), "surf-record-check-key-"));
+    tempDirs.push(project);
+    const page = { url: jsonQueryUrl({ n: 2024 }) };
+    const host = startHost(socketPath, { recording: true, scriptResponse: page });
+    const cli = (args: string[]) =>
+      runCli(socketPath, args, project, { SURF_STATE_DIR: host.stateDir });
+    const posts = () => host.messages.filter((message) => message.type === "EXECUTE_JAVASCRIPT");
+    const savedOp = () =>
+      JSON.parse(
+        fs.readFileSync(
+          path.join(project, ".surf", "playbooks", "fixture", "ops", "submit.json"),
+          "utf8",
+        ),
+      );
+
+    try {
+      await host.waitForMessage((message) => message.type === "HOST_READY");
+      expect((await cli(["navigate", "https://fixture.test/form"])).code).toBe(0);
+      expect(
+        (await cli(["pb", "record", "start", "fixture", "--op", "submit", "--network"])).code,
+      ).toBe(0);
+      expect((await cli(["type", "2024", "--selector", "#year"])).code).toBe(0);
+      expect((await cli(["js", 'fetch("/api", { method: "POST" })'])).code).toBe(0);
+      const stopped = await cli(["pb", "record", "stop", "--draft", "--json"]);
+      expect(stopped.code).toBe(0);
+      const { record } = JSON.parse(stopped.stdout);
+      const file = path.join(host.stateDir, "records", record.id, "draft", "op.json");
+      const draft = JSON.parse(fs.readFileSync(file, "utf8"));
+      draft.run[0].verify = { truthy: true, note: "{{text}}" };
+      fs.writeFileSync(file, JSON.stringify(draft));
+      page.url = "https://fixture.test/api";
+      const saved = await cli(["pb", "save", "--from-record", record.id, "--project", "--json"]);
+      expect(saved).toMatchObject({ code: 0, stderr: "" });
+      expect(savedOp().safety.key).toEqual(["text"]);
+
+      const param = await cli([
+        "pb",
+        "param",
+        "fixture",
+        "submit",
+        "query.variables.n",
+        "--as",
+        "year",
+        "--json",
+      ]);
+      expect(param).toMatchObject({ code: 0, stderr: "" });
+      const op = savedOp();
+      expect(op.run[0].verify).toEqual({ truthy: true, note: "{{text}}" });
+      expect({ key: op.safety.key, inputs: Object.keys(op.args) }).toEqual({
+        key: ["year"],
+        inputs: ["year"],
+      });
+
+      const before = posts().length;
+      const use = (...args: string[]) =>
+        cli(["use", "fixture", "submit", "--year", "2031", ...args, "--write", "--json"]);
+      const byText = await use("--text", "one");
+      expect(byText.code).toBe(1);
+      expect(byText.stderr).toMatch(/Unknown input --text/);
+      expect((await use()).code).toBe(0);
+      const again = await use();
+      expect(again.code).toBe(1);
+      expect(again.stderr).toMatch(/write blocked by verified receipt/);
+      expect(posts().length - before).toBe(1);
+    } finally {
+      await host.dispose();
+    }
+  }, 60000);
+
+  // renderRequest never fills a request's note, nor its cache (an env header's request is sent
+  // no-store whatever it says), so an input named only there is no input of the write: after pb
+  // param the key is the year it sends, and the same year is blocked whatever else is given.
+  for (const [label, unsent] of [
+    ["note", { note: "{{text}}" }],
+    [
+      "cache, under an env header",
+      { cache: "{{text}}", authInputs: [{ header: "X-Probe", env: "PROBE_KEY" }] },
+    ],
+  ] as const) {
+    it(`keys a recorded write on the input it sends after pb param, not one only its ${label} names`, async () => {
+      const socketPath = createSocketPath();
+      const project = fs.mkdtempSync(path.join(os.tmpdir(), "surf-record-unsent-key-"));
+      tempDirs.push(project);
+      const page = { url: jsonQueryUrl({ n: 2024 }) };
+      const host = startHost(socketPath, { recording: true, scriptResponse: page });
+      const cli = (args: string[]) =>
+        runCli(socketPath, args, project, {
+          SURF_STATE_DIR: host.stateDir,
+          PROBE_KEY: "dummy-key",
+        });
+      const posts = () => host.messages.filter((message) => message.type === "EXECUTE_JAVASCRIPT");
+      const file = path.join(project, ".surf", "playbooks", "fixture", "ops", "submit.json");
+
+      try {
+        await host.waitForMessage((message) => message.type === "HOST_READY");
+        expect((await cli(["navigate", "https://fixture.test/form"])).code).toBe(0);
+        expect(
+          (await cli(["pb", "record", "start", "fixture", "--op", "submit", "--network"])).code,
+        ).toBe(0);
+        expect((await cli(["type", "2024", "--selector", "#year"])).code).toBe(0);
+        expect((await cli(["js", 'fetch("/api", { method: "POST" })'])).code).toBe(0);
+        const { record } = JSON.parse(
+          (await cli(["pb", "record", "stop", "--draft", "--json"])).stdout,
+        );
+        page.url = "https://fixture.test/api";
+        expect(
+          (await cli(["pb", "save", "--from-record", record.id, "--project", "--json"])).code,
+        ).toBe(0);
+        const saved = JSON.parse(fs.readFileSync(file, "utf8"));
+        expect(saved.safety.key).toEqual(["text"]);
+        Object.assign(saved.run[0].request, unsent);
+        fs.writeFileSync(file, JSON.stringify(saved));
+        const param = await cli([
+          "pb",
+          "param",
+          "fixture",
+          "submit",
+          "query.variables.n",
+          "--as",
+          "year",
+          "--json",
+        ]);
+        expect(param).toMatchObject({ code: 0, stderr: "" });
+        const op = JSON.parse(fs.readFileSync(file, "utf8"));
+        expect({ key: op.safety.key, inputs: Object.keys(op.args) }).toEqual({
+          key: ["year"],
+          inputs: ["year"],
+        });
+
+        const before = posts().length;
+        const use = (...args: string[]) =>
+          cli(["use", "fixture", "submit", "--year", "2031", ...args, "--write", "--json"]);
+        expect((await use("--text", "one")).stderr).toMatch(/Unknown input --text/);
+        expect((await use()).code).toBe(0);
+        const again = await use();
+        expect(again.code).toBe(1);
+        expect(again.stderr).toMatch(/write blocked by verified receipt/);
+        expect(posts().length - before).toBe(1);
+      } finally {
+        await host.dispose();
+      }
+    }, 60000);
+  }
+
+  // The record keeps the type of a number it masked (redactedTypes) under the JSON key it sat at,
+  // here a key reading {{text}}. That note is never sent, so it gives the op no input: the safety
+  // key is review_key, and the same review key is blocked as a duplicate whatever else is given.
+  for (const [label, field, input, value] of [
+    ["the masked number", "query.variables.{{text}}", "year", "2031"],
+    ["the whole JSON param", "query.variables", "variables", '{"{{text}}":2031}'],
+  ]) {
+    it(`keys a recorded write on what it sends, not the record's notes, after pb param on ${label}`, async () => {
+      const socketPath = createSocketPath();
+      const project = fs.mkdtempSync(path.join(os.tmpdir(), "surf-record-notes-"));
+      tempDirs.push(project);
+      const page = { url: jsonQueryUrl({ "{{text}}": 2024 }) };
+      const host = startHost(socketPath, { recording: true, scriptResponse: page });
+      const cli = (args: string[]) =>
+        runCli(socketPath, args, project, { SURF_STATE_DIR: host.stateDir });
+      const posts = () => host.messages.filter((message) => message.type === "EXECUTE_JAVASCRIPT");
+
+      try {
+        await host.waitForMessage((message) => message.type === "HOST_READY");
+        await saveRecordedWrite({ cli, page, typed: ["2024"] });
+        const param = await cli([
+          "pb",
+          "param",
+          "fixture",
+          "submit",
+          field,
+          "--as",
+          input,
+          "--required",
+          "--json",
+        ]);
+        expect(param).toMatchObject({ code: 0, stderr: "" });
+        const op = JSON.parse(
+          fs.readFileSync(
+            path.join(project, ".surf", "playbooks", "fixture", "ops", "submit.json"),
+            "utf8",
+          ),
+        );
+        expect(op.safety.key).toEqual(["review_key"]);
+        expect(Object.keys(op.args).sort()).toEqual([input, "review_key"].sort());
+
+        const before = posts().length;
+        const use = (...args: string[]) =>
+          cli(["use", "fixture", "submit", `--${input}`, value, ...args, "--write", "--json"]);
+        const byText = await use("--text", "one", "--review_key", "k");
+        expect(byText.code).toBe(1);
+        expect(byText.stderr).toMatch(/Unknown input --text/);
+        expect((await use("--review_key", "k")).code).toBe(0);
+        const again = await use("--review_key", "k");
+        expect(again.code).toBe(1);
+        expect(again.stderr).toMatch(/write blocked by verified receipt/);
+        expect(posts().length - before).toBe(1);
+      } finally {
+        await host.dispose();
+      }
+    }, 60000);
+  }
+
+  // A JSON query param is stored escaped as one string, its keys with it. pb param names a key by
+  // the text it was captured as, so a masked number there keeps its type, and every key goes out
+  // as captured; an input's value is sent as given, {{!}} and %{!} included. (The next test has a
+  // masked boolean.)
+  it("templates a recorded JSON key that reads like an input, and sends it and each input as given", async () => {
+    const socketPath = createSocketPath();
+    const project = fs.mkdtempSync(path.join(os.tmpdir(), "surf-record-json-key-"));
+    tempDirs.push(project);
+    const vm = require("node:vm") as {
+      runInNewContext(code: string, context: Record<string, unknown>): unknown;
+    };
+    const sent: string[] = [];
+    const tab = {
+      URL,
+      location: { href: "https://fixture.test/form" },
+      fetch: async (url: string) => {
+        sent.push(url);
+        return {
+          status: 200,
+          ok: true,
+          url,
+          redirected: false,
+          headers: new Map([["content-type", "application/json"]]),
+          text: async () => '{"ok":true}',
+          arrayBuffer: async () => new ArrayBuffer(0),
+        };
+      },
+    };
+    let running = false;
+    const page = {
+      url: jsonQueryUrl({ "{{field}}": 2024, "{{flag}}": true, note: "seed", "{{!}}kept": 1 }),
+    };
+    const host = startHost(socketPath, {
+      recording: true,
+      scriptResponse: page,
+      // The tab runs the request to see what it sends; the answer is the fake extension's, so
+      // network capture finds the request it recorded.
+      runScript: async (code) => {
+        if (running) {
+          await vm.runInNewContext(code, { ...tab });
+        }
+        const at = Date.now();
+        return {
+          output: JSON.stringify({
+            status: 200,
+            ok: true,
+            url: "https://fixture.test/api",
+            headers: {},
+            sentAt: at,
+            doneAt: at,
+          }),
+        };
+      },
+    });
+    const cli = (args: string[]) =>
+      runCli(socketPath, args, project, { SURF_STATE_DIR: host.stateDir });
+    const param = (field: string, input: string) =>
+      cli(["pb", "param", "fixture", "submit", field, "--as", input, "--json"]);
+
+    try {
+      await host.waitForMessage((message) => message.type === "HOST_READY");
+      await saveRecordedWrite({ cli, page, typed: ["2024"] });
+      expect(await param("query.variables.{{field}}", "year")).toMatchObject({
+        code: 0,
+        stderr: "",
+      });
+      expect(await param("query.variables.note", "note")).toMatchObject({ code: 0, stderr: "" });
+      const op = JSON.parse(
+        fs.readFileSync(
+          path.join(project, ".surf", "playbooks", "fixture", "ops", "submit.json"),
+          "utf8",
+        ),
+      );
+      expect(op.args.year).toMatchObject({ type: "number", required: true });
+      expect(op.run[0].request).not.toHaveProperty("redactedTypes");
+
+      running = true;
+      const notes = ["{{!}}x%{!}", "{{field}}", "%{note}"];
+      for (const [index, note] of notes.entries()) {
+        const ran = await cli([
+          "use",
+          "fixture",
+          "submit",
+          "--year",
+          String(2031 + index),
+          "--note",
+          note,
+          "--review_key",
+          `k${index}`,
+          "--write",
+          "--json",
+        ]);
+        expect(ran).toMatchObject({ code: 0, stderr: "" });
+      }
+      expect(
+        sent.map((url) => JSON.parse(new URL(url).searchParams.get("variables") ?? "")),
+      ).toEqual(
+        notes.map((note, index) => ({
+          "{{field}}": 2031 + index,
+          "{{flag}}": true,
+          note,
+          "{{!}}kept": 1,
+        })),
+      );
+    } finally {
+      await host.dispose();
+    }
+  }, 60000);
+
+  // pb param on part of a JSON query param's text leaves it a string holding a live {{a}}; a
+  // field templated inside it next keeps that input, so the replay sends each input as given and
+  // the captured text as captured.
+  it("keeps an input in a JSON param's text when a field inside it is templated next", async () => {
+    const socketPath = createSocketPath();
+    const project = fs.mkdtempSync(path.join(os.tmpdir(), "surf-record-json-steps-"));
+    tempDirs.push(project);
+    const vm = require("node:vm") as {
+      runInNewContext(code: string, context: Record<string, unknown>): unknown;
+    };
+    const sent: string[] = [];
+    const tab = {
+      URL,
+      location: { href: "https://fixture.test/form" },
+      fetch: async (url: string) => {
+        sent.push(url);
+        return {
+          status: 200,
+          ok: true,
+          url,
+          redirected: false,
+          headers: new Map([["content-type", "application/json"]]),
+          text: async () => '{"ok":true}',
+          arrayBuffer: async () => new ArrayBuffer(0),
+        };
+      },
+    };
+    let running = false;
+    const raw = String.raw`{"a":"first-seed","b":"second-seed","c":"third-seed","literal":"{{keep}}","esc":"\u007b\u007bx}}","\u007b\u007b!}}k":1}`;
+    const page = { url: `https://fixture.test/api?v=${encodeURIComponent(raw)}` };
+    const host = startHost(socketPath, {
+      recording: true,
+      scriptResponse: page,
+      runScript: async (code) => {
+        if (running) {
+          await vm.runInNewContext(code, { ...tab });
+        }
+        const at = Date.now();
+        return {
+          output: JSON.stringify({
+            status: 200,
+            ok: true,
+            url: "https://fixture.test/api",
+            headers: {},
+            sentAt: at,
+            doneAt: at,
+          }),
+        };
+      },
+    });
+    const cli = async (args: string[]) => {
+      const result = await runCli(socketPath, args, project, { SURF_STATE_DIR: host.stateDir });
+      expect(result.code, `surf ${args.join(" ")}: ${result.stderr}`).toBe(0);
+      return result;
+    };
+    const opFile = path.join(project, ".surf", "playbooks", "fixture", "ops", "probe.json");
+    const given: Record<string, string> = {
+      a: "live-a{{!}}%{!}",
+      b: "live-b{{!}}%{!}",
+      c: "live-c",
+    };
+    const orders = [
+      [
+        ["query.v", "a", "first-seed"],
+        ["query.v.b", "b"],
+      ],
+      [
+        ["query.v", "b", "second-seed"],
+        ["query.v.a", "a"],
+      ],
+      [
+        ["query.v", "a", "first-seed"],
+        ["query.v", "b", "second-seed"],
+        ["query.v.c", "c"],
+      ],
+    ];
+
+    try {
+      await host.waitForMessage((message) => message.type === "HOST_READY");
+      await cli(["navigate", "https://fixture.test/form"]);
+      await cli(["pb", "record", "start", "fixture", "--op", "probe", "--network"]);
+      await cli(["js", 'fetch("/api")']);
+      const { record } = JSON.parse(
+        (await cli(["pb", "record", "stop", "--draft", "--read", "--json"])).stdout,
+      );
+      await cli(["pb", "save", "--from-record", record.id, "--project", "--json"]);
+      const saved = fs.readFileSync(opFile, "utf8");
+      page.url = "https://fixture.test/api";
+      running = true;
+      for (const steps of orders) {
+        fs.writeFileSync(opFile, saved);
+        for (const [field, input, value] of steps) {
+          await cli([
+            "pb",
+            "param",
+            "fixture",
+            "probe",
+            field,
+            "--as",
+            input,
+            ...(value ? ["--value", value] : []),
+            "--json",
+          ]);
+        }
+        const inputs = steps.map(([, input]) => input);
+        sent.length = 0;
+        await cli([
+          "use",
+          "fixture",
+          "probe",
+          ...inputs.flatMap((input) => [`--${input}`, given[input]]),
+          "--json",
+        ]);
+        expect(
+          sent.map((url) => JSON.parse(new URL(url).searchParams.get("v") ?? "")),
+          inputs.join(" then "),
+        ).toEqual([
+          {
+            ...JSON.parse(raw),
+            ...Object.fromEntries(inputs.map((input) => [input, given[input]])),
+          },
+        ]);
+      }
+    } finally {
+      await host.dispose();
+    }
+  }, 60000);
+
+  // pb param on part of a JSON query param's text can put an input in a key, beside a captured
+  // key that reads the same, {{key}}. A field templated next keeps both keys: the replay sends the
+  // input's key as given and the captured one as captured, and a field naming {{key}} is refused.
+  it("keeps an input in a JSON param's key when a field inside it is templated next", async () => {
+    const socketPath = createSocketPath();
+    const project = fs.mkdtempSync(path.join(os.tmpdir(), "surf-record-json-key-"));
+    tempDirs.push(project);
+    const vm = require("node:vm") as {
+      runInNewContext(code: string, context: Record<string, unknown>): unknown;
+    };
+    const sent: string[] = [];
+    const tab = {
+      URL,
+      location: { href: "https://fixture.test/form" },
+      fetch: async (url: string) => {
+        sent.push(url);
+        return {
+          status: 200,
+          ok: true,
+          url,
+          redirected: false,
+          headers: new Map([["content-type", "application/json"]]),
+          text: async () => '{"ok":true}',
+          arrayBuffer: async () => new ArrayBuffer(0),
+        };
+      },
+    };
+    let running = false;
+    const raw = String.raw`{"seed-key":"kept","{{key}}":"literal","{{field}}":"f","\u007b\u007bx}}":"esc","n":"start","m":"other"}`;
+    const page = {
+      url: `https://fixture.test/api?v=${encodeURIComponent(raw)}`,
+    };
+    const host = startHost(socketPath, {
+      recording: true,
+      scriptResponse: page,
+      runScript: async (code) => {
+        if (running) {
+          await vm.runInNewContext(code, { ...tab });
+        }
+        const at = Date.now();
+        return {
+          output: JSON.stringify({
+            status: 200,
+            ok: true,
+            url: "https://fixture.test/api",
+            headers: {},
+            sentAt: at,
+            doneAt: at,
+          }),
+        };
+      },
+    });
+    const run = (args: string[]) =>
+      runCli(socketPath, args, project, { SURF_STATE_DIR: host.stateDir });
+    const cli = async (args: string[]) => {
+      const result = await run(args);
+      expect(result.code, `surf ${args.join(" ")}: ${result.stderr}`).toBe(0);
+      return result;
+    };
+    const opFile = path.join(project, ".surf", "playbooks", "fixture", "ops", "probe.json");
+    const given: Record<string, string> = {
+      key: "live-key{{!}}%{!}",
+      n: "N{{!}}%{!}",
+      m: "M",
+    };
+    // What the replay sends once `input` takes `field`: --value seed-key puts it in that key.
+    const sentAfter = (expected: Record<string, unknown>, field: string, input: string) => {
+      if (field === "query.v" && input === "key") {
+        const { "seed-key": kept, ...rest } = expected;
+        return { ...rest, [given.key]: kept };
+      }
+      return {
+        ...expected,
+        [field === "query.v" ? input : field.slice("query.v.".length)]: given[input],
+      };
+    };
+    // The reviewer's order, a key then a field, and a value in the text before the key.
+    const orders = [
+      [
+        ["query.v", "key", "seed-key"],
+        ["query.v.n", "n"],
+      ],
+      [
+        ["query.v", "n", "start"],
+        ["query.v", "key", "seed-key"],
+        ["query.v.m", "m"],
+      ],
+    ];
+
+    try {
+      await host.waitForMessage((message) => message.type === "HOST_READY");
+      await cli(["navigate", "https://fixture.test/form"]);
+      await cli(["pb", "record", "start", "fixture", "--op", "probe", "--network"]);
+      await cli(["js", 'fetch("/api")']);
+      const { record } = JSON.parse(
+        (await cli(["pb", "record", "stop", "--draft", "--read", "--json"])).stdout,
+      );
+      await cli(["pb", "save", "--from-record", record.id, "--project", "--json"]);
+      const saved = fs.readFileSync(opFile, "utf8");
+      page.url = "https://fixture.test/api";
+      running = true;
+      for (const steps of orders) {
+        fs.writeFileSync(opFile, saved);
+        let expected: Record<string, unknown> = JSON.parse(raw);
+        const inputs: string[] = [];
+        for (const [field, input, value] of steps) {
+          await cli([
+            "pb",
+            "param",
+            "fixture",
+            "probe",
+            field,
+            "--as",
+            input,
+            ...(value ? ["--value", value] : []),
+            "--json",
+          ]);
+          inputs.push(input);
+          expected = sentAfter(expected, field, input);
+          sent.length = 0;
+          await cli([
+            "use",
+            "fixture",
+            "probe",
+            ...inputs.flatMap((name) => [`--${name}`, given[name]]),
+            "--json",
+          ]);
+          expect(
+            sent.map((url) => JSON.parse(new URL(url).searchParams.get("v") ?? "")),
+            inputs.join(" then "),
+          ).toEqual([expected]);
+        }
+        const refused = await run([
+          "pb",
+          "param",
+          "fixture",
+          "probe",
+          "query.v.{{key}}",
+          "--as",
+          "k",
+          "--json",
+        ]);
+        expect(refused.code).not.toBe(0);
+        expect(refused.stderr).toContain('more than one key at the top level reads "{{key}}"');
+      }
+    } finally {
+      await host.dispose();
+    }
+  }, 60000);
+
+  // The CLI types `true` as a boolean; the record holds it as the text it typed, as it does a
+  // number, so a URL that sends it is masked in the trace, the saved op and the HAR, and a JSON
+  // `true` there becomes a boolean input.
+  it("masks a typed boolean in a recorded URL and keeps its type in a JSON value", async () => {
+    const socketPath = createSocketPath();
+    const project = fs.mkdtempSync(path.join(os.tmpdir(), "surf-record-boolean-"));
+    tempDirs.push(project);
+    const page = {
+      url: `https://fixture.test/api?q=true&v=${encodeURIComponent('{"flag":true}')}`,
+    };
+    const host = startHost(socketPath, { recording: true, scriptResponse: page });
+    const cli = async (args: string[]) => {
+      const result = await runCli(socketPath, args, project, { SURF_STATE_DIR: host.stateDir });
+      expect(result.code, `surf ${args.join(" ")}: ${result.stderr}`).toBe(0);
+      return result;
+    };
+    const { recordsRoot } = require("../../native/playbook-records.cjs") as {
+      recordsRoot(root: string): string;
+    };
+
+    try {
+      await host.waitForMessage((message) => message.type === "HOST_READY");
+      await cli(["navigate", "https://fixture.test/form"]);
+      await cli(["pb", "record", "start", "fixture", "--op", "probe", "--network"]);
+      await cli(["type", "true", "--selector", "#field"]);
+      expect(host.messages.find((message) => message.type === "SMART_TYPE")).toMatchObject({
+        text: true,
+      });
+      await cli(["js", 'fetch("/api")']);
+      const { record } = JSON.parse(
+        (await cli(["pb", "record", "stop", "--draft", "--read", "--json"])).stdout,
+      );
+      // The JSON `true` becomes the string "<text>", noted as a boolean in the saved op.
+      const masked = "https://fixture.test/api?q=<text>&v=%7B%22flag%22%3A%22<text>%22%7D";
+      const trace = JSON.parse(
+        fs.readFileSync(
+          path.join(recordsRoot(host.stateDir), record.id, "network", "trace.json"),
+          "utf8",
+        ),
+      );
+      expect(trace.entries.map((entry: { url: string }) => entry.url)).toEqual([masked]);
+      const har = path.join(project, "trace.har");
+      await cli(["pb", "trace", "export", "--from-record", record.id, "--har", har]);
+      expect(
+        JSON.parse(fs.readFileSync(har, "utf8")).log.entries.map(
+          (entry: { request: { url: string } }) => entry.request.url,
+        ),
+      ).toEqual([masked]);
+
+      await cli(["pb", "save", "--from-record", record.id, "--project", "--json"]);
+      const opFile = path.join(project, ".surf", "playbooks", "fixture", "ops", "probe.json");
+      const saved = JSON.parse(fs.readFileSync(opFile, "utf8"));
+      const request = saved.run.find((step: { using: string }) => step.using === "network").request;
+      expect(JSON.stringify(request)).not.toContain("true");
+      expect(request.redactedTypes).toEqual({ "query.v.flag": "boolean" });
+
+      await cli(["pb", "param", "fixture", "probe", "query.v.flag", "--as", "live", "--json"]);
+      const op = JSON.parse(fs.readFileSync(opFile, "utf8"));
+      expect(op.args.live).toEqual({ type: "boolean", required: true });
+      expect(
+        op.run.find((step: { using: string }) => step.using === "network").request.query.v,
+      ).toEqual({
+        flag: "{{live}}",
+      });
+    } finally {
+      await host.dispose();
+    }
+  }, 60000);
+
   // A draft's extract runs in the tab after the answer; a failure anywhere in it, the page it
   // prepares from the response included, is final.
   it("stops a recorded read whose extract can't prepare the response", async () => {
@@ -1108,6 +1808,111 @@ describe("CLI/native-host/fake-extension E2E contract", () => {
       await host.dispose();
     }
   }, 60000);
+
+  // A workflow starts with the op's inputs as its vars, so a step's %{text} types --text: pb param
+  // keeps that input, though the request no longer takes it and a check names it, in a hand-written
+  // op and in one marked escaped alike, until --link names it.
+  for (const escaped of [false, true]) {
+    it(`keeps an input a workflow step reads as a var after pb param${escaped ? ", in an escaped op" : ""}`, async () => {
+      const socketPath = createSocketPath();
+      const project = fs.mkdtempSync(path.join(os.tmpdir(), "surf-workflow-var-"));
+      tempDirs.push(project);
+      const opsDir = path.join(project, ".surf", "playbooks", "manual", "ops");
+      fs.mkdirSync(opsDir, { recursive: true });
+      fs.writeFileSync(
+        path.join(project, ".surf", "playbooks", "manual", "playbook.json"),
+        JSON.stringify({ id: "manual", version: "1.0.0", origins: ["https://fixture.test"] }),
+      );
+      const file = path.join(opsDir, "find.json");
+      // Its request fails its check, so the op goes on to its steps.
+      fs.writeFileSync(
+        file,
+        JSON.stringify({
+          id: "find",
+          effect: "read",
+          ...(escaped ? { provenance: { escaped: true } } : {}),
+          args: { text: { required: true } },
+          run: [
+            {
+              using: "network",
+              request: { method: "GET", url: "https://fixture.test/api", query: { q: "<text>" } },
+              verify: { status: 201, note: "{{text}}" },
+            },
+            {
+              using: "workflow",
+              steps: [{ cmd: "type", args: { text: "%{text}", selector: "#field" } }],
+            },
+          ],
+        }),
+      );
+      const host = startHost(socketPath, { recording: true });
+      const cli = (args: string[]) =>
+        runCli(socketPath, args, project, { SURF_STATE_DIR: host.stateDir });
+      const typed = () =>
+        host.messages
+          .filter((message) => message.type === "SMART_TYPE")
+          .map((message) => message.text);
+
+      try {
+        await host.waitForMessage((message) => message.type === "HOST_READY");
+        const param = await cli([
+          "pb",
+          "param",
+          "manual",
+          "find",
+          "query.q",
+          "--as",
+          "q",
+          "--json",
+        ]);
+        expect(param).toMatchObject({ code: 0, stderr: "" });
+        expect(Object.keys(JSON.parse(fs.readFileSync(file, "utf8")).args).sort()).toEqual([
+          "q",
+          "text",
+        ]);
+
+        const found = await cli([
+          "use",
+          "manual",
+          "find",
+          "--q",
+          "new",
+          "--text",
+          "dummy-typed",
+          "--json",
+        ]);
+        expect(found).toMatchObject({ code: 0 });
+        expect(typed()).toEqual(["dummy-typed"]);
+
+        // --link gives the step the named input as a var too, so the page gets --q.
+        const linked = await cli([
+          "pb",
+          "param",
+          "manual",
+          "find",
+          "query.q",
+          "--as",
+          "q",
+          "--required",
+          "--link",
+          "text",
+          "--json",
+        ]);
+        expect(linked).toMatchObject({ code: 0, stderr: "" });
+        const op = JSON.parse(fs.readFileSync(file, "utf8"));
+        expect({ inputs: Object.keys(op.args), steps: op.run[1].steps }).toEqual({
+          inputs: ["q"],
+          steps: [{ cmd: "type", args: { text: "%{q}", selector: "#field" } }],
+        });
+        expect((await cli(["use", "manual", "find", "--q", "dummy-linked", "--json"])).code).toBe(
+          0,
+        );
+        expect(typed()).toEqual(["dummy-typed", "dummy-linked"]);
+      } finally {
+        await host.dispose();
+      }
+    }, 60000);
+  }
 
   // `{{!}}` and `%{!}` stand for `{{` and `%{` only in an op pb save made from a record or recent
   // activity: surf do and a hand-written op send them as written, as before.

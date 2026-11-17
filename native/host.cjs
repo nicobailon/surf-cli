@@ -28,7 +28,7 @@ const grokClient = require("./grok-client.cjs");
 const kimiClient = require("./kimi-client.cjs");
 const aistudioClient = require("./aistudio-client.cjs");
 const aistudioBuild = require("./aistudio-build.cjs");
-const { mapToolToMessage, mapComputerAction, formatToolContent, formatToolError, publicNetworkResult, publicResponse, buildProviderUploadMessage, applySemanticExpectedIdentity, truncatePageText } = require("./host-helpers.cjs");
+const { mapToolToMessage, mapComputerAction, formatToolContent, withoutTypedEcho, withoutTypedPageChanges, formatToolError, publicNetworkResult, publicResponse, buildProviderUploadMessage, applySemanticExpectedIdentity, truncatePageText } = require("./host-helpers.cjs");
 const { createOracleHost } = require("./oracle-host.cjs");
 
 const IS_WIN = process.platform === "win32";
@@ -50,6 +50,7 @@ const { checkReceipt, reserveReceipt, updateReceipt } = require("./playbook-rece
 const {
   appendRecordEvent,
   attachNetworkTrace,
+  rememberRecordInput,
   discardRecord,
   findCandidatesRecord,
   isActive,
@@ -71,7 +72,7 @@ const { resolveOp } = require("./playbooks.cjs");
 const { replay, waitForResponse } = require("./api-harvest.cjs");
 const { runCollect } = require("./dom-collect.cjs");
 const { formatRecords } = require("./record-format.cjs");
-const { commandMetadata, redactCommandArgs } = require("./workflow-definition.cjs");
+const { commandMetadata, redactCommandArgs, withoutOptIns } = require("./workflow-definition.cjs");
 const { BrowserScheduler } = require("./browser-scheduler.cjs");
 const { BrowserSessionStore, parseDurationMs, validateSessionName } = require("./browser-session-store.cjs");
 const { applySocketPermissions, resolveSocketPermissions } = require("./socket-permissions.cjs");
@@ -1523,7 +1524,12 @@ async function executeMappedHostTool(request, tool, args, tabId) {
   if (tool === "network.wait" || tool === "network.replay" || tool === "collect") {
     return { output: await runHarvestTool(tool, args || {}, { tabId }, request) };
   }
-  const extensionMsg = mapToolToMessage(tool, args, tabId);
+  // Its bodies are redacted only where the socket path writes the file.
+  if (tool === "network.export") throw new Error(`tool ${tool} is not available inside a host-owned workflow`);
+  // A step comes from a playbook, which may be a project's or an imported one, so it can't turn
+  // the echo of typed values (or any other opt-in) on.
+  const stepArgs = withoutOptIns(args);
+  const extensionMsg = mapToolToMessage(tool, stepArgs, tabId);
   if (!extensionMsg) throw new Error(`Unknown tool: ${tool}`);
   if (request.target?.strict) extensionMsg.strictTarget = true;
   applyFrameContextToMessage(request, extensionMsg);
@@ -1536,7 +1542,8 @@ async function executeMappedHostTool(request, tool, args, tabId) {
   if (extensionMsg.type === "BATCH_EXECUTE" || extensionMsg.type.endsWith("_QUERY")) {
     throw new Error(`tool ${tool} is not available inside a host-owned workflow`);
   }
-  return requestExtensionOrThrow(request, tool, extensionMsg, resolveRequestDeadlineMs(tool, args));
+  // A workflow step's result can be captured (`as`) and returned, so it hides typed values too.
+  return withoutTypedEcho(await requestExtensionOrThrow(request, tool, extensionMsg, resolveRequestDeadlineMs(tool, args)), {});
 }
 
 async function executeNativePlaybook(request, handler, args, options = {}) {
@@ -1599,7 +1606,11 @@ async function runHostPlaybook(msg, request) {
     ...(params.strategy !== undefined ? { strategy: params.strategy } : {}),
     attemptId: op.effect === "write" ? claim.attemptId : undefined,
     signal: request.signal,
-    executeTool: (tool, args) => executeMappedHostTool(request, tool, args, msg.tabId),
+    // The workflow's own events carry no arguments, so the values it types reach the record here.
+    executeTool: (tool, args) => {
+      rememberRecordInput(tool, args, { target: recordEventTarget(request) });
+      return executeMappedHostTool(request, tool, args, msg.tabId);
+    },
     executeNative: (handler, args, options) => executeNativePlaybook(request, handler, args, options),
     sleep: (ms) => abortableDelay(ms, request.signal),
     onEvent: report,
@@ -1874,6 +1885,7 @@ function sendToolResponse(socket, id, result, error) {
     const formattedError = finalError ? formatToolError(finalError) : null;
     let pageChanges;
     if (!formattedError && output?.pageChanges) ({ pageChanges, ...output } = output);
+    pageChanges = withoutTypedPageChanges(pageChanges, request?.tool, request?.args);
     if (formattedError && request) {
       const rewrittenMessage = rewriteTransferPaths(
         formattedError.content[0].text,
@@ -1894,7 +1906,7 @@ function sendToolResponse(socket, id, result, error) {
           resultSummary: finalError ? "failed" : "success",
         };
         appendActivity(event);
-        appendRecordEvent(event, { target: recordEventTarget(request) });
+        appendRecordEvent(event, { target: recordEventTarget(request), args: request.args });
       }
     }
     await cleanupRequestTransfers(request);
@@ -1923,7 +1935,7 @@ function sendToolResponse(socket, id, result, error) {
     if (pageChanges) response.pageChanges = pageChanges;
     if (formattedError) response.error = formattedError;
     else {
-      response.result = { content: formatToolContent(output, log) };
+      response.result = { content: formatToolContent(withoutTypedEcho(output, request?.args), log) };
       if (output?.truncated) response.truncated = output.truncated;
       if (request?.tool === "tab.new" && Number.isInteger(output?.tabId) && output.tabId > 0) {
         response.result.tabId = output.tabId;
@@ -2857,6 +2869,7 @@ function handleToolRequest(msg, socket, requestContext = requestStorage.getStore
     networkExportPath: args?.output,
     networkPath: args?.["network-path"],
     networkExportFormat: extensionMsg.har ? "har" : extensionMsg.jsonl ? "jsonl" : "json",
+    networkExportRawBodies: args?.["raw-bodies"] === true || args?.rawBodies === true,
     fullRes: extensionMsg.fullRes || args?.fullRes,
     maxSize: extensionMsg.maxSize || args?.maxSize,
     tabId: extensionMsg.tabId || tabId
@@ -2889,7 +2902,10 @@ function executeBatch(actions, tabId, socket, originalId, requestContext = reque
     
     const action = actions[currentIndex];
     const toolName = mapBatchActionToTool(action);
-    const toolArgs = mapBatchActionToArgs(action);
+    // Actions can come from a file, so they can't turn an opt-in on.
+    const toolArgs = withoutOptIns(mapBatchActionToArgs(action));
+    // The batch's own event carries no typed values, so each action's reach the record here.
+    rememberRecordInput(toolName, toolArgs, { target: recordEventTarget(requestContext), evented: false });
     
     const extensionMsg = mapToolToMessage(toolName, toolArgs, tabId);
     if (requestContext.target?.strict && extensionMsg) extensionMsg.strictTarget = true;
@@ -3115,7 +3131,7 @@ function processInput() {
           
           if (pending.networkExport && Array.isArray(msg.entries)) {
             try {
-              const exportResult = writeNetworkExport(pending.networkExportPath, msg.entries, pending.networkExportFormat);
+              const exportResult = writeNetworkExport(pending.networkExportPath, msg.entries, pending.networkExportFormat, { rawBodies: pending.networkExportRawBodies });
               sendToolResponse(socket, originalId, exportResult, null);
             } catch (error) {
               sendToolResponse(socket, originalId, null, `Failed to export network requests: ${error.message}`);

@@ -67,6 +67,7 @@ const { spawn } = require("node:child_process") as {
 const fs = require("node:fs") as {
   existsSync(targetPath: string): boolean;
   mkdtempSync(prefix: string): string;
+  mkdirSync(targetPath: string, options: { recursive: boolean }): void;
   statSync(targetPath: string): { gid: number; mode: number };
   rmSync(targetPath: string, options: { recursive: boolean; force: boolean }): void;
   readdirSync(targetPath: string): string[];
@@ -156,12 +157,13 @@ async function runCli(
   args: string[],
   socketPath: string,
   env: Record<string, string> = {},
+  cwd: string = process.cwd(),
 ): Promise<CliResult> {
   const cliPath = path.join(process.cwd(), "native", "cli.cjs");
 
   return await new Promise<CliResult>((resolve, reject) => {
     const child = spawn(process.execPath, [cliPath, ...args], {
-      cwd: process.cwd(),
+      cwd,
       env: { ...process.env, SURF_SOCKET: socketPath, ...env },
       stdio: ["ignore", "pipe", "pipe"],
     });
@@ -819,6 +821,592 @@ describe("native host protocol integration", () => {
         query: { ref: "nav" },
       },
     });
+  });
+
+  it("prints a filled value or chosen options only with --echo-value", async () => {
+    const host = await startHostHarness();
+    const fill = async (extra: string[]) => {
+      const cli = runCli(
+        [
+          "locate.label",
+          "Name",
+          "--action",
+          "fill",
+          "--value",
+          "dummy-kilo",
+          ...extra,
+          "--no-diff",
+        ],
+        host.socketPath,
+      );
+      const request = await host.waitForMessage(
+        (message) => message.type === "LOCATE_LABEL",
+        "LOCATE_LABEL",
+      );
+      // An extension older than this host sends the value back whatever it was asked.
+      host.send({ id: request.id, success: true, action: "fill", ref: "e1", value: "dummy-kilo" });
+      return { echoValue: request.echoValue, ...(await cli) };
+    };
+    const plain = await fill([]);
+    expect(plain).toMatchObject({ code: 0, echoValue: false, stdout: "OK\n" });
+    const echoed = await fill(["--echo-value"]);
+    expect(echoed).toMatchObject({ code: 0, echoValue: true, stdout: 'OK\nValue: "dummy-kilo"\n' });
+
+    const select = async (extra: string[]) => {
+      const cli = runCli(["select", "e2", ...extra, "dummy-lima", "--no-diff"], host.socketPath);
+      const request = await host.waitForMessage(
+        (message) => message.type === "SELECT_OPTION",
+        "SELECT_OPTION",
+      );
+      host.send({ id: request.id, selected: ["dummy-lima"] });
+      return await cli;
+    };
+    expect((await select([])).stdout).toBe("Selected 1 option\n");
+    expect((await select(["--echo-value"])).stdout).toBe("Selected: dummy-lima\n");
+  });
+
+  it("keeps a typed value out of the page-change diff unless --echo-value", async () => {
+    const host = await startHostHarness();
+    const fill = async (extra: string[]) => {
+      const cli = runCli(
+        ["type", "dummy-kilo", "--ref", "e1", ...extra, "--no-screenshot"],
+        host.socketPath,
+      );
+      const request = await host.waitForMessage(
+        (message) => message.type === "FORM_FILL",
+        "FORM_FILL",
+      );
+      expect(request.pageChanges).toBeDefined();
+      host.send({
+        id: request.id,
+        success: true,
+        filled: 1,
+        failed: 0,
+        results: [{ ref: "e1", success: true }],
+        pageChanges: {
+          settle: { state: "settled", ms: 5 },
+          navigated: null,
+          changes: [
+            {
+              kind: "changed",
+              ref: "e1",
+              role: "textbox",
+              name: "Name",
+              property: "value",
+              from: "",
+              to: "dummy-kilo",
+            },
+          ],
+          text: [],
+          omitted: 0,
+        },
+      });
+      return await cli;
+    };
+    const plain = await fill([]);
+    expect(plain.code).toBe(0);
+    expect(plain.stdout).toContain('e1 textbox "Name"  value changed');
+    expect(plain.stdout).not.toContain("dummy-kilo");
+    expect((await fill(["--echo-value"])).stdout).toContain('value "" -> "dummy-kilo"');
+  });
+
+  it("keeps chosen options out of a playbook step's captured result", async () => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), "surf-host-pick-"));
+    tempDirs.push(home);
+    const ops = path.join(home, ".surf", "playbooks", "pw", "ops");
+    fs.mkdirSync(ops, { recursive: true });
+    fs.writeFileSync(
+      path.join(ops, "..", "playbook.json"),
+      JSON.stringify({ id: "pw", version: "1.0.0" }),
+    );
+    fs.writeFileSync(
+      path.join(ops, "pick.json"),
+      JSON.stringify({
+        id: "pick",
+        effect: "read",
+        run: [
+          {
+            using: "workflow",
+            autoWait: false,
+            stepDelay: 0,
+            steps: [
+              { tool: "select", args: { selector: "#s", values: "dummy-lima" }, as: "chosen" },
+            ],
+          },
+        ],
+      }),
+    );
+    const host = await startHostHarness({ HOME: home });
+    const cli = runCli(["use", "pw", "pick", "--json"], host.socketPath, { HOME: home });
+    const select = await host.waitForMessage(
+      (message) => message.type === "SELECT_OPTION",
+      "SELECT_OPTION",
+    );
+    host.send({ id: select.id, selected: ["dummy-lima"] });
+    const used = await cli;
+    expect(used.code).toBe(0);
+    expect(used.stdout).toContain('"selectedCount": 1');
+    expect(used.stdout).not.toContain("dummy-lima");
+  });
+
+  it("ignores an echo opt-in a playbook step sets in its own args", async () => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), "surf-host-echo-step-"));
+    tempDirs.push(home);
+    const ops = path.join(home, ".surf", "playbooks", "pw", "ops");
+    fs.mkdirSync(ops, { recursive: true });
+    fs.writeFileSync(
+      path.join(ops, "..", "playbook.json"),
+      JSON.stringify({ id: "pw", version: "1.0.0" }),
+    );
+    fs.writeFileSync(
+      path.join(ops, "pick.json"),
+      JSON.stringify({
+        id: "pick",
+        effect: "read",
+        args: { choice: { required: true } },
+        run: [
+          {
+            using: "workflow",
+            autoWait: false,
+            stepDelay: 0,
+            steps: [
+              {
+                tool: "select",
+                args: { selector: "#s", values: "{{choice}}", echoValue: true },
+                as: "chosen",
+              },
+              {
+                tool: "locate.label",
+                args: { label: "Name", action: "fill", value: "{{choice}}", "echo-value": true },
+                as: "filled",
+              },
+            ],
+          },
+        ],
+      }),
+    );
+    const host = await startHostHarness({ HOME: home });
+    const cli = runCli(["use", "pw", "pick", "--choice", "dummy-lima", "--json"], host.socketPath, {
+      HOME: home,
+    });
+    const select = await host.waitForMessage(
+      (message) => message.type === "SELECT_OPTION",
+      "SELECT_OPTION",
+    );
+    host.send({ id: select.id, selected: ["dummy-lima"] });
+    const locate = await host.waitForMessage(
+      (message) => message.type === "LOCATE_LABEL",
+      "LOCATE_LABEL",
+    );
+    expect(locate.echoValue).toBe(false);
+    host.send({ id: locate.id, success: true, action: "fill", ref: "e1", value: "dummy-lima" });
+    const used = await cli;
+    expect(used.code).toBe(0);
+    expect(used.stdout).toContain('"selectedCount": 1');
+    expect(used.stdout).not.toContain("dummy-lima");
+  });
+
+  it("ignores opt-ins a project workflow's steps set; surf do --echo-value still echoes", async () => {
+    const project = fs.mkdtempSync(path.join(os.tmpdir(), "surf-host-do-optin-"));
+    tempDirs.push(project);
+    const home = path.join(project, "home");
+    const stateDir = path.join(project, "state");
+    const workflows = path.join(project, ".surf", "workflows");
+    fs.mkdirSync(workflows, { recursive: true });
+    fs.mkdirSync(home, { recursive: true });
+    const output = path.join(project, "x.har");
+    const select = {
+      tool: "select",
+      args: { selector: "#s", values: "{{choice}}", echoValue: true, "echo-value": true },
+      as: "chosen",
+    };
+    fs.writeFileSync(
+      path.join(workflows, "pick.json"),
+      JSON.stringify({
+        args: { choice: { required: true } },
+        steps: [
+          select,
+          {
+            tool: "network.export",
+            args: { har: true, output, "raw-bodies": true, rawBodies: true },
+          },
+          {
+            tool: "playbook.record.start",
+            args: {
+              site: "s",
+              op: "o",
+              watch: true,
+              includeInputValues: true,
+              "include-input-values": true,
+            },
+          },
+        ],
+      }),
+    );
+    fs.writeFileSync(
+      path.join(workflows, "pick-only.json"),
+      JSON.stringify({ args: { choice: { required: true } }, steps: [select] }),
+    );
+    const host = await startHostHarness({ HOME: home, SURF_STATE_DIR: stateDir });
+    const env = { HOME: home, SURF_STATE_DIR: stateDir };
+    const doFlags = ["--choice", "dummy-lima", "--json", "--no-auto-wait", "--step-delay", "0"];
+    const answerSelect = async () => {
+      const request = await host.waitForMessage(
+        (message) => message.type === "SELECT_OPTION",
+        "SELECT_OPTION",
+      );
+      host.send({ id: request.id, selected: ["dummy-lima"] });
+    };
+
+    const ran = runCli(["do", "pick", ...doFlags], host.socketPath, env, project);
+    await answerSelect();
+    const exported = await host.waitForMessage(
+      (message) => message.type === "EXPORT_NETWORK_REQUESTS",
+      "EXPORT_NETWORK_REQUESTS",
+    );
+    host.send({
+      id: exported.id,
+      har: true,
+      jsonl: false,
+      entries: [
+        {
+          id: "r1",
+          method: "POST",
+          url: "https://example.test/post",
+          requestHeaders: { "content-type": "application/x-www-form-urlencoded" },
+          requestBody: "user=dummy-mike&password=dummy-november",
+        },
+      ],
+    });
+    const context = await host.waitForMessage(
+      (message) => message.type === "GET_PLAYBOOK_RECORD_CONTEXT",
+      "GET_PLAYBOOK_RECORD_CONTEXT",
+    );
+    host.send({ id: context.id, origin: "https://example.test" });
+    const watch = await host.waitForMessage(
+      (message) => message.type === "START_PLAYBOOK_WATCH",
+      "START_PLAYBOOK_WATCH",
+    );
+    expect(watch.includeInputValues).toBe(false);
+    host.send({ id: watch.id, success: true });
+    const result = await ran;
+    expect(result.code).toBe(0);
+    expect(result.stdout).toContain('"chosen": "Selected 1 option"');
+    expect(result.stdout).not.toContain("dummy-lima");
+    const har = fs.readFileSync(output, "utf8");
+    expect(har).toContain("password=<redacted>");
+    expect(har).not.toContain("dummy-november");
+
+    const echoed = runCli(
+      ["do", "pick-only", ...doFlags, "--echo-value"],
+      host.socketPath,
+      env,
+      project,
+    );
+    await answerSelect();
+    const shown = await echoed;
+    expect(shown.code).toBe(0);
+    expect(shown.stdout).toContain("dummy-lima");
+  });
+
+  it("refuses network.export as a playbook step, so its bodies can't skip redaction", async () => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), "surf-host-export-step-"));
+    tempDirs.push(home);
+    const ops = path.join(home, ".surf", "playbooks", "pw", "ops");
+    fs.mkdirSync(ops, { recursive: true });
+    fs.writeFileSync(
+      path.join(ops, "..", "playbook.json"),
+      JSON.stringify({ id: "pw", version: "1.0.0" }),
+    );
+    fs.writeFileSync(
+      path.join(ops, "dump.json"),
+      JSON.stringify({
+        id: "dump",
+        effect: "read",
+        run: [
+          {
+            using: "workflow",
+            autoWait: false,
+            stepDelay: 0,
+            steps: [
+              { tool: "network.export", args: { output: path.join(home, "x.json") }, as: "dump" },
+            ],
+          },
+        ],
+      }),
+    );
+    const host = await startHostHarness({ HOME: home });
+    const cli = runCli(["use", "pw", "dump", "--json"], host.socketPath, { HOME: home });
+    const first = await Promise.race([
+      cli,
+      host.waitForMessage(
+        (message) => message.type === "EXPORT_NETWORK_REQUESTS",
+        "EXPORT_NETWORK_REQUESTS",
+      ),
+    ]);
+    if ("type" in first) {
+      host.send({
+        id: first.id,
+        entries: [
+          {
+            id: "r1",
+            method: "POST",
+            url: "https://example.test/post",
+            requestHeaders: { "content-type": "application/x-www-form-urlencoded" },
+            requestBody: "user=dummy-mike&password=dummy-november",
+          },
+        ],
+        har: false,
+        jsonl: false,
+      });
+    }
+    const used = await cli;
+    expect(`${used.stdout}${used.stderr}`).not.toContain("dummy-november");
+    expect(used.code).not.toBe(0);
+    expect(used.stderr).toContain("network.export is not available inside a host-owned workflow");
+  });
+
+  it("redacts values a playbook typed during a record from the URLs its trace captured", async () => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), "surf-host-typed-use-"));
+    tempDirs.push(home);
+    const stateDir = path.join(home, "state");
+    const ops = path.join(home, ".surf", "playbooks", "pw", "ops");
+    fs.mkdirSync(ops, { recursive: true });
+    fs.writeFileSync(
+      path.join(ops, "..", "playbook.json"),
+      JSON.stringify({ id: "pw", version: "1.0.0" }),
+    );
+    fs.writeFileSync(
+      path.join(ops, "search.json"),
+      JSON.stringify({
+        id: "search",
+        effect: "read",
+        args: { q: { required: true } },
+        run: [
+          {
+            using: "workflow",
+            autoWait: false,
+            stepDelay: 0,
+            steps: [{ tool: "type", args: { selector: "#q", text: "{{q}}" } }],
+          },
+        ],
+      }),
+    );
+    const records = require("../../native/playbook-records.cjs") as any;
+    const record = records.startRecord({
+      site: "s",
+      op: "search",
+      tabId: 1,
+      network: true,
+      root: stateDir,
+    });
+    const host = await startHostHarness({ HOME: home, SURF_STATE_DIR: stateDir });
+    const used = runCli(
+      ["use", "pw", "search", "--q", "dummy papa words", "--json"],
+      host.socketPath,
+      {
+        HOME: home,
+      },
+    );
+    const typing = await host.waitForMessage(
+      (message) => message.type === "SMART_TYPE",
+      "SMART_TYPE",
+    );
+    host.send({ id: typing.id, success: true });
+    expect((await used).code).toBe(0);
+
+    const stop = runCli(["pb", "record", "stop", "--json"], host.socketPath);
+    const read = await host.waitForMessage(
+      (message) => message.type === "READ_NETWORK_REQUESTS",
+      "READ_NETWORK_REQUESTS",
+    );
+    host.send({
+      id: read.id,
+      entries: [
+        {
+          id: "r1",
+          method: "GET",
+          status: 200,
+          type: "XHR",
+          url: "https://example.test/api?q=dummy+papa+words",
+        },
+      ],
+      capture: { active: true, interruptions: [], dropped: 0 },
+    });
+    const stopCapture = await host.waitForMessage(
+      (message) => message.type === "STOP_NETWORK_CAPTURE",
+      "STOP_NETWORK_CAPTURE",
+    );
+    host.send({ id: stopCapture.id, success: true });
+    const stopped = await stop;
+    expect(stopped.code).toBe(0);
+    expect(stopped.stdout).not.toContain("no longer holds");
+    const trace = fs.readFileSync(
+      path.join(records.recordsRoot(stateDir), record.id, "network", "trace.json"),
+      "utf8",
+    );
+    expect(JSON.parse(trace).entries[0].url).toBe("https://example.test/api?q=<text>");
+  });
+
+  it("redacts secret-named body fields in network.export unless --raw-bodies", async () => {
+    const host = await startHostHarness();
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), "surf-host-export-"));
+    tempDirs.push(directory);
+    const entries = [
+      {
+        id: "r1",
+        method: "POST",
+        url: "https://example.test/post",
+        requestHeaders: { "content-type": "application/x-www-form-urlencoded" },
+        requestBody: "custname=dummy-mike&password=dummy-november",
+      },
+    ];
+    const exported = async (name: string, extra: string[]) => {
+      const output = path.join(directory, name);
+      const cli = runCli(
+        ["network.export", "--har", ...extra, "--output", output],
+        host.socketPath,
+      );
+      const request = await host.waitForMessage(
+        (message) => message.type === "EXPORT_NETWORK_REQUESTS",
+        "EXPORT_NETWORK_REQUESTS",
+      );
+      host.send({ id: request.id, entries, har: true, jsonl: false });
+      expect((await cli).code).toBe(0);
+      return fs.readFileSync(output, "utf8");
+    };
+    const redacted = await exported("default.har", []);
+    expect(redacted).toContain("custname=dummy-mike&password=<redacted>");
+    expect(redacted).not.toContain("dummy-november");
+    expect(await exported("raw.har", ["--raw-bodies"])).toContain("password=dummy-november");
+  });
+
+  it("redacts the values a record's steps typed from the URLs its trace captured", async () => {
+    const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), "surf-host-typed-"));
+    tempDirs.push(stateDir);
+    const records = require("../../native/playbook-records.cjs") as any;
+    const record = records.startRecord({
+      site: "s",
+      op: "search",
+      tabId: 1,
+      network: true,
+      origin: "https://example.test",
+      root: stateDir,
+    });
+    const host = await startHostHarness({ SURF_STATE_DIR: stateDir });
+    const typed = runCli(
+      ["type", "dummy oscar", "--into", "#q", "--no-diff", "--no-screenshot"],
+      host.socketPath,
+    );
+    const typing = await host.waitForMessage(
+      (message) => message.type === "SMART_TYPE",
+      "SMART_TYPE",
+    );
+    host.send({ id: typing.id, success: true });
+    expect((await typed).code).toBe(0);
+
+    const stop = runCli(["pb", "record", "stop"], host.socketPath);
+    const read = await host.waitForMessage(
+      (message) => message.type === "READ_NETWORK_REQUESTS",
+      "READ_NETWORK_REQUESTS",
+    );
+    host.send({
+      id: read.id,
+      entries: [
+        {
+          id: "r1",
+          method: "GET",
+          status: 200,
+          type: "XHR",
+          url: "https://example.test/api?q=dummy+oscar",
+        },
+      ],
+      capture: { active: true, interruptions: [], dropped: 0 },
+    });
+    const stopCapture = await host.waitForMessage(
+      (message) => message.type === "STOP_NETWORK_CAPTURE",
+      "STOP_NETWORK_CAPTURE",
+    );
+    host.send({ id: stopCapture.id, success: true });
+    expect((await stop).code).toBe(0);
+    const trace = fs.readFileSync(
+      path.join(records.recordsRoot(stateDir), record.id, "network", "trace.json"),
+      "utf8",
+    );
+    expect(JSON.parse(trace).entries[0].url).toBe("https://example.test/api?q=<text>");
+    expect(trace).not.toContain("oscar");
+  });
+
+  it("redacts values a batch typed during a record, and drops the opt-ins its actions set", async () => {
+    const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), "surf-host-batch-typed-"));
+    tempDirs.push(stateDir);
+    const records = require("../../native/playbook-records.cjs") as any;
+    const record = records.startRecord({
+      site: "s",
+      op: "search",
+      tabId: 1,
+      network: true,
+      origin: "https://example.test",
+      root: stateDir,
+    });
+    const host = await startHostHarness({ SURF_STATE_DIR: stateDir });
+    const actions = [
+      { type: "type", text: "dummy kilo words" },
+      {
+        type: "locate.label",
+        label: "City",
+        action: "fill",
+        value: "dummy-lima-town",
+        echoValue: true,
+      },
+    ];
+    const batch = runCli(["batch", "--actions", JSON.stringify(actions)], host.socketPath);
+    const typing = await host.waitForMessage(
+      (message) => message.type === "EXECUTE_TYPE",
+      "EXECUTE_TYPE",
+    );
+    host.send({ id: typing.id, success: true });
+    const fill = await host.waitForMessage(
+      (message) => message.type === "LOCATE_LABEL",
+      "LOCATE_LABEL",
+    );
+    expect(fill.echoValue).toBe(false);
+    host.send({ id: fill.id, success: true, action: "fill" });
+    expect((await batch).code).toBe(0);
+
+    const stop = runCli(["pb", "record", "stop", "--json"], host.socketPath);
+    const read = await host.waitForMessage(
+      (message) => message.type === "READ_NETWORK_REQUESTS",
+      "READ_NETWORK_REQUESTS",
+    );
+    host.send({
+      id: read.id,
+      entries: [
+        {
+          id: "r1",
+          method: "GET",
+          status: 200,
+          type: "XHR",
+          url: "https://example.test/api?q=dummy+kilo+words&city=dummy-lima-town",
+        },
+      ],
+      capture: { active: true, interruptions: [], dropped: 0 },
+    });
+    const stopCapture = await host.waitForMessage(
+      (message) => message.type === "STOP_NETWORK_CAPTURE",
+      "STOP_NETWORK_CAPTURE",
+    );
+    host.send({ id: stopCapture.id, success: true });
+    expect((await stop).code).toBe(0);
+    const trace = fs.readFileSync(
+      path.join(records.recordsRoot(stateDir), record.id, "network", "trace.json"),
+      "utf8",
+    );
+    expect(trace).not.toContain("kilo");
+    expect(trace).not.toContain("lima");
+    expect(JSON.parse(trace).entries[0].url).toBe(
+      "https://example.test/api?q=<redacted>&city=<redacted>",
+    );
   });
 
   it("prints one stderr line, and leaves stdout alone, when the host version differs from the CLI", async () => {

@@ -93,23 +93,23 @@ function redactUrlSecrets(url) {
   return absolute ? parsed.toString() : `${parsed.pathname}${parsed.search}${parsed.hash}`;
 }
 
+// Walks `value` in order with its own stack, so JSON nested any depth is checked.
 function assertNoEmbeddedSecrets(value, key = "value") {
-  if (Array.isArray(value)) {
-    for (const item of value) assertNoEmbeddedSecrets(item, key);
-    return;
-  }
-  if (value && typeof value === "object") {
-    for (const [name, item] of Object.entries(value)) {
-      if (isSensitiveName(name)) {
-        if (isTemplate(item) || item === undefined || item === null || item === "") continue;
-        throw new Error(`playbook requires an auth input instead of a literal ${name}`);
-      }
-      assertNoEmbeddedSecrets(item, name);
+  const stack = [{ value, key }];
+  while (stack.length) {
+    const { value: item, key: name, field } = stack.pop();
+    if (field && isSensitiveName(name)) {
+      if (isTemplate(item) || item === undefined || item === null || item === "") continue;
+      throw new Error(`playbook requires an auth input instead of a literal ${name}`);
     }
-    return;
-  }
-  if (typeof value === "string" && !isTemplate(value) && CREDENTIAL_LITERAL_PATTERN.test(value)) {
-    throw new Error(`playbook contains a credential-like literal in ${key}`);
+    if (Array.isArray(item)) {
+      for (let index = item.length - 1; index >= 0; index--) stack.push({ value: item[index], key: name });
+    } else if (item && typeof item === "object") {
+      const entries = Object.entries(item);
+      for (let index = entries.length - 1; index >= 0; index--) stack.push({ value: entries[index][1], key: entries[index][0], field: true });
+    } else if (typeof item === "string" && !isTemplate(item) && CREDENTIAL_LITERAL_PATTERN.test(item)) {
+      throw new Error(`playbook contains a credential-like literal in ${name}`);
+    }
   }
 }
 
