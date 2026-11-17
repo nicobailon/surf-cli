@@ -31,6 +31,22 @@ function requestOf(op: { run: Array<{ using: string; request?: Record<string, un
   return op.run.find((strategy) => strategy.using === "network")?.request as Record<string, any>;
 }
 
+// An op pb save made from a record whose request sent the JSON text `raw` as its query param v,
+// or as its body.
+function savedJsonOp(raw: string, where: string) {
+  const { requestFromEntry } = require("../../native/playbook-records.cjs");
+  const entry =
+    where === "query"
+      ? { method: "GET", url: `https://shop.test/s?v=${encodeURIComponent(raw)}` }
+      : {
+          method: "POST",
+          url: "https://shop.test/s",
+          requestBody: raw,
+          requestHeaders: { "content-type": "application/json" },
+        };
+  return networkOp(requestFromEntry(entry), { provenance: { recordId: "rec-1", escaped: true } });
+}
+
 function project(op: Record<string, unknown>, id = "shop") {
   const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "surf-param-"));
   tempDirs.push(cwd);
@@ -218,6 +234,49 @@ describe("pb param: field locations", () => {
     expect(() => paramOp(op, { fields: ["query.note"], as: "t", value: "v}} b" })).toThrow(
       'query.note: "v}} b" overlaps an input in "a {{v}} b {{!}}y}}"',
     );
+  });
+
+  // pb save escapes a captured JSON param or body as text, before it is parsed, so a `{{` written
+  // \u007b\u007b was never escaped. pb param reads the text as captured, and every key and value
+  // goes out as captured, however it was written.
+  it("sends a stored JSON param's keys and values as captured, \\u escapes included", () => {
+    const { escapedOp } = require("../../native/playbook-template.cjs");
+    const captured = [
+      String.raw`{"\u007b\u007b!}}kept":"unchanged","n":"seed"}`,
+      String.raw`{"{\u007b!}}kept":"unchanged","n":"seed"}`,
+      String.raw`{"{{!\u007d}kept":"unchanged","n":"seed"}`,
+      // Two keys, one written with \u escapes.
+      String.raw`{"\u007b\u007b!}}":"one","{{":"two","n":"seed"}`,
+      String.raw`{"{{field}}":"a","{{!}}field}}":"b","n":"seed"}`,
+      // A value that reads like an input once parsed is text, not an input.
+      String.raw`{"a":"\u007b\u007bx}}","n":"seed"}`,
+      String.raw`{"a":"\u007b\u007b!}}","b":"{{!}}","c":"{{x}}","n":"seed"}`,
+    ];
+    for (const raw of captured) {
+      for (const where of ["query", "body"]) {
+        const saved = savedJsonOp(raw, where);
+        const { op } = paramOp(saved, {
+          fields: [where === "query" ? "query.v.n" : "body.n"],
+          as: "n",
+        });
+        expect(Object.keys(op.args)).toEqual(["n"]);
+        const sent = renderRequest(requestOf(op), { n: "next" }, { escapes: escapedOp(op) });
+        expect(where === "query" ? JSON.parse(sent.query.v) : sent.body).toEqual({
+          ...JSON.parse(raw),
+          n: "next",
+        });
+      }
+    }
+  });
+
+  // JSON.parse reads any depth; so does pb param.
+  it("templates a field of a stored JSON param nested 5,000 levels deep", () => {
+    const depth = 5000;
+    const raw = `{"n":"seed","deep":${'{"x":'.repeat(depth)}0${"}".repeat(depth)}}`;
+    const saved = savedJsonOp(raw, "query");
+    const { op } = paramOp(saved, { fields: ["query.v.n"], as: "n" });
+    expect(op.args.n).toEqual({ type: "string", default: "seed" });
+    expect(requestOf(op).query.v.n).toBe("{{n}}");
   });
 
   // A hand-written op never held the escape: its {{!}} is text, as it always was.

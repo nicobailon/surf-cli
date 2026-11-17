@@ -50,24 +50,36 @@ function jsonSlot(field, root, parts, onStore) {
   throw new Error(`${field}: name a field inside it`);
 }
 
-// A JSON param or body stored as text. In an escaped op that text was escaped whole, its keys
-// with it; parsed, it is stored as an object, whose keys are sent as they are (renderRequest fills
-// values only). So its keys are unescaped here, once, and a field names a key by its captured text,
-// as redactedTypes does; its values stay escaped text, which templateSlot reads.
+// A JSON param or body stored as text. In an escaped op that text was escaped whole, as text, so a
+// `{{` written \u007b\u007b was never escaped; parsed, it is stored as an object, whose keys are
+// sent as they are (renderRequest fills values only). So the text is unescaped whole, which gives
+// back the captured text, and parsed: a field names a key by its captured text, as redactedTypes
+// does. Then each string value is escaped as a string, the one form templateSlot and renderRequest
+// read, so a value that reads like an input once parsed stays text.
 function parseJson(text, escapes) {
+  let value;
   try {
-    const value = JSON.parse(text);
-    if (!value || typeof value !== "object") return null;
-    return escapes ? unescapeKeys(value) : value;
+    value = JSON.parse(escapes ? unescapeTemplates(text) : text);
   } catch {
     return null;
   }
+  if (!value || typeof value !== "object") return null;
+  return escapes ? escapeValues(value) : value;
 }
 
-function unescapeKeys(value) {
-  if (Array.isArray(value)) return value.map(unescapeKeys);
-  if (value && typeof value === "object") return Object.fromEntries(Object.entries(value).map(([key, item]) => [unescapeTemplates(key), unescapeKeys(item)]));
-  return value;
+// escapeTemplates on each string value of a freshly parsed document, in place and without
+// recursion, so a document of any depth JSON.parse reads is read here too.
+function escapeValues(root) {
+  const pending = [root];
+  while (pending.length > 0) {
+    const node = pending.pop();
+    for (const key of Object.keys(node)) {
+      const item = node[key];
+      if (typeof item === "string") node[key] = escapeTemplates(item);
+      else if (item && typeof item === "object") pending.push(item);
+    }
+  }
+  return root;
 }
 
 function querySlot(request, field, [param, ...jsonPath], escapes) {
