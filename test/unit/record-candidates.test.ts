@@ -74,6 +74,22 @@ describe("summarizeResponse", () => {
     expect(summary.sample).toBe(JSON.stringify("<redacted>"));
   });
 
+  it("samples a JSON body that is a typed redact value whole as <redacted>, with no field names", () => {
+    const key = ["k", "ey"].join("");
+    for (const secret of [`{ "${key}": 1 }`, `{"${key}":1}`]) {
+      const summary = candidates.summarizeResponse(
+        get("r_1", "XHR", `${ORIGIN}/api/books`, {
+          mimeType: "application/json",
+          responseBody: secret,
+        }),
+        candidates.pageWords(PAGE_TEXT),
+        { sample: true, redact: [secret] },
+      );
+      expect(summary.sample).toBe(JSON.stringify("<redacted>"));
+      expect(summary).not.toHaveProperty("fieldNames");
+    }
+  });
+
   it("samples an HTML page's visible text, not its scripts or tags", () => {
     const body =
       "<html><head><title>All products | Books</title><script>var secret = 1;</script><style>p{}</style></head><body><h1>All products</h1><p>Sharp &amp; Objects</p></body></html>";

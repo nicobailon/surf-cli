@@ -1,7 +1,7 @@
 // Ranks a record's captured requests by how likely each is the one that carries the page's data.
 // Scores are integers from fixed rules, so the same trace always ranks the same way.
 
-const { isEchoedJson, redactCredentialLiterals, redactEchoJson, redactEchoText, redactSensitiveFields, redactValues, secretHeaderEchoes, valueSpellings } = require("./redaction.cjs");
+const { echoSecrets, isEchoedJson, redactCredentialLiterals, redactEchoJson, redactEchoText, redactSensitiveFields, redactValues, secretHeaderEchoes, valueSpellings } = require("./redaction.cjs");
 const { ASSET_TYPES, hostname, isReplayCandidate, isTelemetryRequest, requestEffect } = require("./request-kinds.cjs");
 
 const SAMPLE_CHARS = 200;
@@ -127,14 +127,17 @@ function summarizeResponse(entry, page, { sample: withSample = false, redact = [
   let sample = "";
   // What a response can reflect: the record's typed text and the exchange's secret header values.
   const typed = withSample ? redact.flatMap(valueSpellings) : [];
-  const secrets = secretHeaderEchoes(withSample ? [entry.requestHeaders, entry.responseHeaders] : []);
-  const hide = (name) => secrets.keys.includes(name) || redactValues(name, [...typed, ...secrets.long]) !== name;
+  const headers = secretHeaderEchoes(withSample ? [entry.requestHeaders, entry.responseHeaders] : []);
+  const hide = (name) => headers.keys.includes(name) || redactValues(name, [...typed, ...headers.long]) !== name;
+  // A JSON body is judged against both, so one that is a typed value whole goes whole too.
+  const echoed = echoSecrets(withSample ? redact : []);
+  const secrets = Object.fromEntries(["long", "short", "keys"].map((key) => [key, [...headers[key], ...echoed[key]]]));
   const parsed = kind === "json" ? parseJson(body) : null;
   if (parsed) {
     const records = recordCount(parsed.value);
     if (records > 0) summary.records = records;
-    // A body that is a secret whole lists no field names, as its sample shows none. It is judged as
-    // sent, before its secret-named fields are redacted, so `{"token":"shop"}` still counts.
+    // A body that is a secret or typed value whole lists no field names, as its sample shows none. It
+    // is judged as sent, before its secret-named fields are redacted, so `{"token":"shop"}` still counts.
     const whole = withSample && isEchoedJson(parsed.value, secrets);
     Object.assign(summary, fieldsOf(parsed.value, { names: withSample && !whole, hide }));
     if (whole) sample = JSON.stringify("<redacted>");

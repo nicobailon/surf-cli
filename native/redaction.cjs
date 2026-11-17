@@ -555,6 +555,7 @@ function assertUrlHasNoEmbeddedSecrets(url) {
 module.exports = {
   assertNoEmbeddedSecrets,
   assertUrlHasNoEmbeddedSecrets,
+  echoSecrets,
   isSecretHeader,
   isSensitiveName,
   isEchoedJson,
