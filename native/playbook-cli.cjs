@@ -8,6 +8,7 @@ const { formatCandidates } = require("./record-candidates.cjs");
 const { RESERVED_RUN_OPTIONS, applyParam, formatParamResult } = require("./playbook-param.cjs");
 const { assertAttemptId } = require("./playbook-receipts.cjs");
 const { authInputs } = require("./playbook-runtime.cjs");
+const { parseEachFrom } = require("./chain-runtime.cjs");
 const { formatExtractResult, parseExtractArgs, saveExtract } = require("./playbook-extract.cjs");
 const { formatTestReport, runPlaybookTest } = require("./playbook-test.cjs");
 const { redactResult } = require("./redaction.cjs");
@@ -94,30 +95,56 @@ function runSpec(argv) {
   const [playbook, op] = parsed.positional;
   if (!playbook || !op) throw new Error(direct ? "Usage: surf use <playbook> <op> [--arg value]" : "Usage: surf pb run <playbook> <op> [--arg value]");
   const args = Object.fromEntries(Object.entries(parsed.options).filter(([name]) => !RESERVED_RUN_OPTIONS.has(name)));
-  return { playbook, op, args, raw: parsed.raw, options: parsed.options };
+  const eachFrom = eachFromSpec(parsed.options);
+  // With --each-from, --limit and --delay-ms bound its each, so they are no op inputs.
+  if (eachFrom) for (const name of ["limit", "delay-ms"]) delete args[name];
+  return { playbook, op, args, raw: parsed.raw, options: parsed.options, ...(eachFrom ? { eachFrom } : {}) };
+}
+
+// --each-from <list-op>[:<path>][@path.<n>], with --each-into, --limit and --delay-ms.
+function eachFromSpec(options) {
+  if (options["each-from"] === undefined) {
+    if (options["each-into"] !== undefined) throw new Error("--each-into goes with --each-from");
+    return undefined;
+  }
+  if (typeof options["each-from"] !== "string") throw new Error("--each-from needs <list-op>:<path>, such as list_postings:id");
+  if (options["each-into"] !== undefined && typeof options["each-into"] !== "string") throw new Error("--each-into needs an input name");
+  return {
+    ...parseEachFrom(options["each-from"]),
+    ...(options["each-into"] !== undefined ? { into: options["each-into"] } : {}),
+    ...(options.limit !== undefined ? { limit: options.limit } : {}),
+    ...(options["delay-ms"] !== undefined ? { delayMs: options["delay-ms"] } : {}),
+  };
 }
 
 function resolveLocalOp(spec, cwd) {
   try {
-    return resolvePlaybook(spec.playbook, { cwd, pinBuiltIn: spec.options["pin-built-in"] === true }).ops.get(spec.op);
+    const playbook = resolvePlaybook(spec.playbook, { cwd, pinBuiltIn: spec.options["pin-built-in"] === true });
+    const op = playbook.ops.get(spec.op);
+    return op ? { playbook, op } : undefined;
   } catch {
     return undefined;
   }
 }
 
 // String inputs keep the text as typed. Env-supplied headers are read here, from the caller's
-// shell, and go to the host with this one request (in `secret`, a name redaction hides).
+// shell, and go to the host with this one request (in `secret`, a name redaction hides). With
+// --each-from the list op's inputs count too.
 function prepareRun(spec, cwd) {
-  const op = resolveLocalOp(spec, cwd);
-  if (!op) return { args: spec.args, secret: {} };
+  const local = resolveLocalOp(spec, cwd);
+  if (!local) return { args: spec.args, secret: {} };
+  const { playbook } = local;
+  const ops = [local.op, spec.eachFrom && playbook.ops.get(spec.eachFrom.op)].filter(Boolean);
   const args = { ...spec.args };
-  for (const [name, input] of Object.entries(op.args || {})) {
-    if (input.type === "string" && typeof spec.raw[name] === "string") args[name] = spec.raw[name];
+  for (const op of ops) {
+    for (const [name, input] of Object.entries(op.args || {})) {
+      if (input.type === "string" && typeof spec.raw[name] === "string") args[name] = spec.raw[name];
+    }
   }
   // A variable the shell doesn't set is left to the host's environment; the host fails, naming it,
   // when neither has it.
   const secret = {};
-  for (const { env } of authInputs(op)) if (process.env[env]) secret[env] = process.env[env];
+  for (const op of ops) for (const { env } of authInputs(op, playbook)) if (process.env[env]) secret[env] = process.env[env];
   return { args, secret };
 }
 
@@ -165,6 +192,7 @@ async function handlePlaybookCli(argv, { endpoint, cwd = process.cwd(), session,
       retryAttempt: spec.options["retry-attempt"],
       pinBuiltIn: spec.options["pin-built-in"] === true,
       allowScript: spec.options["allow-script"] === true,
+      ...(spec.eachFrom ? { eachFrom: spec.eachFrom } : {}),
       ...(spec.options["dry-run"] === true ? { dryRun: true } : {}),
       ...(format ? { format } : {}),
     };
@@ -223,7 +251,7 @@ async function handlePlaybookCli(argv, { endpoint, cwd = process.cwd(), session,
   }
   if (command === "ops") {
     const playbook = resolvePlaybook(parsed.positional[0], { cwd });
-    return { handled: true, value: [...playbook.ops.values()].map((op) => ({ id: op.id, description: op.description || "", effect: op.effect, strategies: op.run.map((strategy) => strategy.using) })), json: parsed.options.json === true };
+    return { handled: true, value: [...playbook.ops.values()].map((op) => ({ id: op.id, description: op.description || "", effect: op.effect, strategies: op.chain ? ["chain"] : op.run.map((strategy) => strategy.using) })), json: parsed.options.json === true };
   }
   if (command === "record") {
     const action = parsed.positional[0];
@@ -287,7 +315,13 @@ function formatDryRun(preview) {
   if (preview.headers) lines.push(`headers: ${preview.headers.join(", ") || "none"}`);
   if (preview.body !== undefined) lines.push(`body: ${show(preview.body)}`);
   if (preview.step) lines.push(`first step: ${show(preview.step)}`);
-  lines.push(`allowed origins: ${preview.allowedOrigins.join(", ") || "any"}`, `receipt: ${preview.receipt}`);
+  for (const step of preview.steps || []) {
+    const each = step.each ? `, each record of ${step.each.from} (at most ${step.each.limit}, ${step.each.delayMs} ms apart)` : "";
+    lines.push(`step ${step.id}: ${step.op}${each}`);
+  }
+  if (preview.output) lines.push(`output: ${preview.output}`);
+  if (preview.allowedOrigins) lines.push(`allowed origins: ${preview.allowedOrigins.join(", ") || "any"}`);
+  lines.push(`receipt: ${preview.receipt}`);
   if (preview.refused) lines.push(`refused: ${preview.refused}`);
   return lines.join("\n");
 }

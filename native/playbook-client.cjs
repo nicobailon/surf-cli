@@ -39,6 +39,7 @@ function usesJsonExtract(extract) {
 }
 
 function networkStrategy(op) {
+  if (op.chain) throw new Error(`op ${op.id} is a chain op; a client runs one op, so export a step's op`);
   const strategy = op.run.find((candidate) => candidate.using === "network");
   if (!strategy) throw new Error(`op ${op.id} has no validated network strategy`);
   return strategy;
@@ -234,7 +235,7 @@ function clearWinner(candidates, record) {
 /** The extract of a saved op's network strategy, so a derived client returns the same records. */
 function savedExtract(site, opId, { cwd, home } = {}) {
   try {
-    return resolveOp(site, opId, { cwd, home }).op.run.find((strategy) => strategy.using === "network")?.extract;
+    return resolveOp(site, opId, { cwd, home }).op.run?.find((strategy) => strategy.using === "network")?.extract;
   } catch (error) {
     if (/^(Playbook|Op) not found/.test(error.message)) return undefined;
     throw error;

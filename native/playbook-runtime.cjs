@@ -85,8 +85,13 @@ function resolveArgs(op, provided, { playbookId } = {}) {
   return resolveArgValues(op.args, args);
 }
 
-// Env-supplied headers (`request.authInputs`) of an op's network strategies.
-function authInputs(op) {
+// Env-supplied headers (`request.authInputs`) of an op's network strategies; a chain op's are its
+// steps' ops', read from `playbook`.
+function authInputs(op, playbook) {
+  if (op.chain) return op.chain.flatMap((step) => {
+    const target = playbook?.ops?.get(step.op);
+    return target ? authInputs(target, playbook) : [];
+  });
   return op.run.filter((strategy) => strategy.using === "network").flatMap((strategy) => strategy.request?.authInputs || []);
 }
 
@@ -611,4 +616,4 @@ async function testPlaybookOp(options) {
   }
 }
 
-module.exports = { authInputs, previewPlaybookOp, resolveArgs, runPlaybookOp, testPlaybookOp };
+module.exports = { applyTemplate, authInputs, previewPlaybookOp, resolveArgs, runPlaybookOp, testPlaybookOp };

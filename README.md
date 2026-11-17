@@ -1060,6 +1060,51 @@ surf pb client verify ./client
 
 Generated manifests declare provenance and authentication environment inputs. Surf leaves out cookies, bearer tokens, and secret headers. A client of a write needs `--write`: `client derive` of a captured write (POST, PUT, PATCH or DELETE; POST reads included) or `client export` of a write op. It sends with no receipt, and its body is as captured: a record that kept input values (`--include-input-values`) puts them, passwords included, in `surf-client.json`, whose `noEmbeddedSecrets` is then `false`. Make a body field an input with `pb param` first to leave it out. `client verify --live` of a write client needs `--write` too.
 
+#### Chain ops
+
+A chain op runs other ops of the same playbook in order and feeds one step's result into the next step's inputs, such as a job list and then each listed posting in detail. It has `chain` and `output` in place of `run`, and `surf use` runs it in the tab like any op:
+
+```json
+{
+  "id": "jobs_with_details",
+  "args": { "company": { "type": "string", "required": true }, "limit": { "type": "number", "default": 3 } },
+  "chain": [
+    { "id": "list", "op": "list_postings", "with": { "company": "{{company}}" } },
+    {
+      "id": "detail",
+      "op": "get_posting",
+      "each": { "from": "list", "limit": "{{limit}}", "delayMs": 2000 },
+      "with": { "company": "{{company}}", "posting_id": { "from": "item", "path": "url", "segment": 2 } }
+    }
+  ],
+  "output": "detail"
+}
+```
+
+- `args`: the chain's own inputs, declared as any op's.
+- `chain`: 1 to 10 steps. Each step has an `id` (unique, not `item`), the `op` it runs (another op of the playbook, which may be a chain), `with` and optionally `each`.
+- `with` maps the step op's inputs to values. A string is a template filled from the chain's inputs (`"{{company}}"`; a whole-string `{{name}}` keeps the input's type and is left out when unset, so the step op's default applies). A number or boolean is passed as is. An object is a binding:
+  - `from`: an earlier step's id, which reads that step's result, or `item`, the record an `each` step runs for;
+  - `path` (optional): where in that value, as `$.data.id` or as a record path (`url`, `links[0].href`); a path that finds nothing fails the step;
+  - `segment` (optional): take the nth URL path segment (from 1) of the value, so `https://jobs.example/acme/42` gives `acme` for 1 and `42` for 2.
+- `each` (optional): run the step once per record of an earlier step, whose result must be a list. `from` names that step; `limit` caps the records (default 5, at most 50); `delayMs` is the wait before each record's run (default 2000, at most 60000). Both can be `{{input}}`. The step's result is the list of each run's results, a run that returns a list adding its records.
+- `output`: the step whose result the chain returns.
+
+A step's result is what `surf use` returns for its op as `value` (its extracted records, say). The first step that fails stops the chain, with an error naming the step (and the record, in an `each`). One chain run calls at most 100 ops. A playbook won't load while a chain names an op it doesn't have, passes an input that op doesn't take, binds from a later step or from no step, uses `item` outside `each`, or runs itself through another chain.
+
+Chains read only for now: a chain op can't be a write, and a chain whose steps include a write op is refused (chains with write steps come later). `pb param`, `pb extract`, `pb test` and `pb client` work on the ops a chain runs, not on the chain.
+
+For a list and a detail op, `--each-from` runs the same two-step chain without a file:
+
+```bash
+# get_posting once per record of list_postings, its first required input from each record's id
+surf use lever get_posting --company acme --each-from list_postings:id --limit 3
+# the URL's second path segment, into the input you name
+surf use lever get_posting --company acme --each-from list_postings:url@path.2 --each-into posting_id --delay-ms 3000
+```
+
+The other inputs go to whichever of the two ops takes them. `--dry-run` lists a chain's steps and sends nothing.
+
 ### Threads and Feeds
 
 Get a whole thread or feed as clean records in seconds, instead of having an agent scroll and re-read the page. Sites like X and Bluesky keep only a few posts on screen at a time, so scrolling takes dozens of calls and long posts can come back cut short. The page itself gets its posts as data from the site's own API, a page at a time. Surf reads that data directly through your logged-in browser, so sites that need you signed in work and you don't need API keys.
