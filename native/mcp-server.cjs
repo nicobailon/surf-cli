@@ -333,7 +333,8 @@ const TOOL_SCHEMAS = {
       output: z.string().optional().describe("Output file path"),
       jsonl: z.boolean().optional().describe("Write JSONL"),
       har: z.boolean().optional().describe("Write HAR 1.2"),
-      "raw-bodies": z.boolean().optional().describe("Keep secret-named body fields as captured (redacted by default)")
+      "raw-bodies": z.boolean().optional().describe("Keep secret-named body fields as captured (redacted by default)"),
+      raw: z.boolean().optional().describe("Keep secret headers, URL credentials, echoes and body fields as captured (redacted by default)")
     }
   },
   "network.wait": {

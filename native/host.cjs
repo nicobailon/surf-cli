@@ -1522,14 +1522,14 @@ async function handleNamedTabCommand(tool, args, request) {
 }
 
 async function executeMappedHostTool(request, tool, args, tabId) {
+  // A step comes from a playbook, which may be a project's or an imported one, so it can't turn
+  // the echo of typed values, --raw or any other opt-in on.
+  const stepArgs = withoutOptIns(args);
   if (tool === "network.wait" || tool === "network.replay" || tool === "collect") {
-    return { output: await runHarvestTool(tool, args || {}, { tabId }, request) };
+    return { output: await runHarvestTool(tool, stepArgs, { tabId }, request) };
   }
   // Its bodies are redacted only where the socket path writes the file.
   if (tool === "network.export") throw new Error(`tool ${tool} is not available inside a host-owned workflow`);
-  // A step comes from a playbook, which may be a project's or an imported one, so it can't turn
-  // the echo of typed values (or any other opt-in) on.
-  const stepArgs = withoutOptIns(args);
   const extensionMsg = mapToolToMessage(tool, stepArgs, tabId);
   if (!extensionMsg) throw new Error(`Unknown tool: ${tool}`);
   if (request.target?.strict) extensionMsg.strictTarget = true;
@@ -1657,14 +1657,14 @@ async function runHarvestTool(tool, args, msg, request) {
     const seconds = args.timeout === undefined ? 30 : Number(args.timeout);
     if (!Number.isFinite(seconds) || seconds <= 0) throw new Error("--timeout must be a positive number of seconds");
     const response = await waitForResponse({ executeTool, sleep, match: args.match, open: args.open, timeoutMs: seconds * 1000 });
-    return JSON.stringify(publicResponse(response, [await capturedEntry(response.id)]));
+    return JSON.stringify(publicResponse(response, [await capturedEntry(response.id)], { raw: args.raw === true }));
   }
   if (tool === "network.replay") {
     if (typeof args.id !== "string" || !args.id) throw new Error("network.replay requires a request id");
     const allowPost = args["allow-post"] === true || args.allowPost === true;
     // Read before sending, so a sent replay never fails for want of its entry.
     const entry = await capturedEntry(args.id);
-    return JSON.stringify(publicResponse(await replay({ executeTool, sleep, id: args.id, set: args.set, allowPost }), [entry]));
+    return JSON.stringify(publicResponse(await replay({ executeTool, sleep, id: args.id, set: args.set, allowPost }), [entry], { raw: args.raw === true }));
   }
   const spec = { item: args.item, key: args.key, fields: args.fields, open: args.open, maxItems: args.max, idleRounds: args.idle, expand: args.expand };
   const records = await runCollect({ executeTool, sleep, spec: Object.fromEntries(Object.entries(spec).filter(([, value]) => value !== undefined)) });
@@ -1897,7 +1897,7 @@ function sendToolResponse(socket, id, result, error) {
       if (!error) output = await sendRequestDownloads(context, request, result);
       if (!error) output = await truncatePageRead(context, request, output);
       if (!error) output = await truncatePageTextResult(context, request, output);
-      if (!error) output = publicNetworkResult(request?.tool, output);
+      if (!error) output = publicNetworkResult(request?.tool, output, { raw: request?.args?.raw === true });
       if (!error && output?.semanticObservation?.identity && request?.target) {
         output.semanticObservation.identity.browserEpoch = request.target.browserEpoch;
       }
@@ -2092,7 +2092,7 @@ function handleToolRequest(msg, socket, requestContext = requestStorage.getStore
     const run = (name, toolArgs) => executeMappedHostTool(requestContext, name, toolArgs, tabId);
     // The body can come from Chrome when capture has no entry for it; then no secret values are known.
     Promise.all([run("network.body", args || {}), run("network.get", { id: args?.id }).catch(() => null)])
-      .then(([body, loaded]) => sendToolResponse(socket, originalId, publicResponse(body, [loaded?.entry]), null))
+      .then(([body, loaded]) => sendToolResponse(socket, originalId, publicResponse(body, [loaded?.entry], { raw: args?.raw === true }), null))
       .catch((error) => sendToolResponse(socket, originalId, null, error));
     return;
   }
@@ -2894,6 +2894,7 @@ function handleToolRequest(msg, socket, requestContext = requestStorage.getStore
     networkPath: args?.["network-path"],
     networkExportFormat: extensionMsg.har ? "har" : extensionMsg.jsonl ? "jsonl" : "json",
     networkExportRawBodies: args?.["raw-bodies"] === true || args?.rawBodies === true,
+    networkExportRaw: args?.raw === true,
     fullRes: extensionMsg.fullRes || args?.fullRes,
     maxSize: extensionMsg.maxSize || args?.maxSize,
     tabId: extensionMsg.tabId || tabId
@@ -3156,7 +3157,7 @@ function processInput() {
           if (pending.networkExport && Array.isArray(msg.entries)) {
             try {
               const secretHeaders = envBackedHeaders(pending.networkExportProjectDir ? { cwd: pending.networkExportProjectDir } : {});
-              const exportResult = writeNetworkExport(pending.networkExportPath, msg.entries, pending.networkExportFormat, { secretHeaders, rawBodies: pending.networkExportRawBodies });
+              const exportResult = writeNetworkExport(pending.networkExportPath, msg.entries, pending.networkExportFormat, { secretHeaders, rawBodies: pending.networkExportRawBodies, raw: pending.networkExportRaw });
               sendToolResponse(socket, originalId, exportResult, null);
             } catch (error) {
               sendToolResponse(socket, originalId, null, `Failed to export network requests: ${error.message}`);

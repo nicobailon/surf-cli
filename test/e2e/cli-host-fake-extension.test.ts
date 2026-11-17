@@ -243,6 +243,7 @@ function buildExtensionResponse(
       };
     // Network capture holds what each script sent; its body is the fixture API's.
     case "READ_NETWORK_REQUESTS":
+    case "EXPORT_NETWORK_REQUESTS":
       return { id: message.id, entries: captured };
     case "GET_NETWORK_ENTRY": {
       const entry = captured.find((candidate) => candidate.id === message.requestId);
@@ -2776,6 +2777,155 @@ describe("CLI/native-host/fake-extension E2E contract", () => {
         expect(sent()).toContain(auth);
       } finally {
         await client.close();
+      }
+    } finally {
+      await host.dispose();
+    }
+  });
+
+  // A captured request with a secret header, a cookie, a secret query param and a body echoing
+  // its Authorization value; dummy values built from parts.
+  function rawFixture() {
+    const auth = ["Bearer", ["dummy", "raw", "token", "18"].join("-")].join(" ");
+    const cookie = ["dummy", "raw", "cookie", "18"].join("-");
+    const query = ["dummy", "raw", "query", "18"].join("-");
+    const entry: CapturedRequest = {
+      id: "r_auth",
+      ts: Date.now() - 60_000,
+      method: "GET",
+      url: `https://fixture.test/bearer?session_token=${query}`,
+      type: "Fetch",
+      requestHeaders: { Authorization: auth, Cookie: `sid=${cookie}`, Accept: "application/json" },
+      status: 200,
+      responseHeaders: { "content-type": "application/json" },
+      mimeType: "application/json",
+      responseBody: `{"headers":{"Authorization":"${auth}"}}`,
+      flags: [],
+      _loadingFinished: true,
+    };
+    const scratch = fs.mkdtempSync(path.join(os.tmpdir(), "surf-network-raw-"));
+    tempDirs.push(scratch);
+    const env = { HOME: path.join(scratch, "home"), SURF_TMP: path.join(scratch, "tmp") };
+    for (const directory of [env.HOME, env.SURF_TMP]) {
+      fs.mkdirSync(directory, { recursive: true });
+    }
+    return { auth, cookie, query, entry, scratch, env, secrets: [auth, cookie, query] };
+  }
+
+  it("prints captured secret headers, URL credentials and echoes as captured with --raw", async () => {
+    const socketPath = createSocketPath();
+    const { auth, entry, scratch, env, secrets } = rawFixture();
+    const host = startHost(socketPath, {
+      env,
+      pageTraffic: [entry],
+      navigationTraffic: [entry],
+      scriptResponse: { mimeType: entry.mimeType, responseBody: entry.responseBody },
+    });
+    // What one view prints without and with --raw: `<redacted>` and none of `shown`, then all of it.
+    const expectRawOnlyWithFlag = (label: string, plain: string, raw: string, shown: string[]) => {
+      expect(plain, label).toContain("<redacted>");
+      expect(raw, `${label} --raw`).not.toContain("<redacted>");
+      for (const secret of shown) {
+        expect(plain, label).not.toContain(secret);
+        expect(raw, `${label} --raw`).toContain(secret);
+      }
+    };
+    const cli = async (args: string[]) => {
+      const run = await runCli(socketPath, args, scratch, env);
+      expect(run.code, `${args.join(" ")}: ${run.stderr}`).toBe(0);
+      return run.stdout;
+    };
+    try {
+      await host.waitForMessage((message) => message.type === "HOST_READY");
+      expect(await cli(["network.curl", "r_auth", "--raw"])).toContain(
+        `-H 'Authorization: ${auth}'`,
+      );
+      expect(await cli(["network.curl", "r_auth"])).toContain("-H 'Authorization: <redacted>'");
+
+      // Request views show every secret; responses show the echo.
+      const views: Array<[string[], string[]]> = [
+        [["network.get", "r_auth"], secrets],
+        [["network.get", "r_auth", "--json"], secrets],
+        [["network.curl", "r_auth"], secrets],
+        [["network", "-v"], secrets],
+        [["network", "--format", "raw"], secrets],
+        [["network", "--format", "curl"], secrets],
+        [["network.body", "r_auth"], [auth]],
+        [["network.wait", "/bearer", "--open", "https://fixture.test/", "--json"], [auth]],
+        [["network.replay", "r_auth", "--json"], [auth]],
+      ];
+      for (const [args, shown] of views) {
+        expectRawOnlyWithFlag(
+          args.join(" "),
+          await cli(args),
+          await cli([...args, "--raw"]),
+          shown,
+        );
+      }
+
+      for (const format of [[], ["--har"]]) {
+        const output = path.join(scratch, `export-${format.length}.json`);
+        await cli(["network.export", ...format, "--output", output]);
+        const plain = fs.readFileSync(output, "utf8");
+        await cli(["network.export", ...format, "--output", output, "--raw"]);
+        expectRawOnlyWithFlag(
+          `network.export ${format.join(" ")}`,
+          plain,
+          fs.readFileSync(output, "utf8"),
+          secrets,
+        );
+      }
+    } finally {
+      await host.dispose();
+    }
+  });
+
+  it("ignores raw=true in a surf do file's step, a saved workflow's step and a playbook step", async () => {
+    const socketPath = createSocketPath();
+    const { entry, scratch, env, secrets } = rawFixture();
+    const steps = [
+      { tool: "network.get", args: { id: "r_auth", raw: true }, as: "entry" },
+      { tool: "network.replay", args: { id: "r_auth", raw: true }, as: "replayed" },
+    ];
+    const file = path.join(scratch, "dump.json");
+    fs.writeFileSync(file, JSON.stringify({ steps }));
+    const workflows = path.join(scratch, ".surf", "workflows");
+    fs.mkdirSync(workflows, { recursive: true });
+    fs.writeFileSync(path.join(workflows, "dump.json"), JSON.stringify({ steps }));
+    const ops = path.join(scratch, ".surf", "playbooks", "pw", "ops");
+    fs.mkdirSync(ops, { recursive: true });
+    fs.writeFileSync(
+      path.join(ops, "..", "playbook.json"),
+      JSON.stringify({ id: "pw", version: "1.0.0", origins: ["https://fixture.test"] }),
+    );
+    fs.writeFileSync(
+      path.join(ops, "replay.json"),
+      JSON.stringify({
+        id: "replay",
+        effect: "read",
+        run: [{ using: "workflow", autoWait: false, stepDelay: 0, steps: [steps[1]] }],
+      }),
+    );
+    const host = startHost(socketPath, {
+      env,
+      pageTraffic: [entry],
+      scriptResponse: { mimeType: entry.mimeType, responseBody: entry.responseBody },
+    });
+    try {
+      await host.waitForMessage((message) => message.type === "HOST_READY");
+      await runCli(socketPath, ["navigate", "https://fixture.test/"], scratch, env);
+      const runs = [
+        ["do", "--file", file, "--json", "--no-auto-wait", "--step-delay", "0"],
+        ["do", "dump", "--json", "--no-auto-wait", "--step-delay", "0"],
+        ["use", "pw", "replay", "--json"],
+      ];
+      for (const args of runs) {
+        const run = await runCli(socketPath, args, scratch, env);
+        expect(run.code, `${args.join(" ")}: ${run.stdout}${run.stderr}`).toBe(0);
+        expect(run.stdout, args.join(" ")).toContain("<redacted>");
+        for (const secret of secrets) {
+          expect(run.stdout, args.join(" ")).not.toContain(secret);
+        }
       }
     } finally {
       await host.dispose();

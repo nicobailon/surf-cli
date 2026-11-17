@@ -138,7 +138,7 @@ function formatUrls(entries) {
 function formatCurl(entry) {
   if (!entry) return '';
   
-  let cmd = `curl -X ${entry.method || 'GET'} '${entry.url}'`;
+  let cmd = `curl -X ${entry.method || 'GET'} '${String(entry.url).replace(/'/g, "'\\''")}'`;
   
   const headers = entry.requestHeaders || {};
   const skipHeaders = ['host', 'content-length', 'connection', 'accept-encoding'];

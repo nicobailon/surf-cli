@@ -1091,7 +1091,7 @@ const TOOLS = {
     desc: "Network capture",
     commands: {
       "network": {
-        desc: "List captured network requests (secret headers such as Authorization and Cookie show as <redacted>, as in network.export)",
+        desc: "List captured network requests (secret headers such as Authorization and Cookie show as <redacted>, as in network.export, unless --raw)",
         args: [],
         opts: {
           origin: "Filter by origin (domain)",
@@ -1103,6 +1103,7 @@ const TOOLS = {
           format: "compact|urls|curl|raw|json (default: compact, which starts each line with the request id; --json gives json)",
           v: "Verbose output",
           vv: "Very verbose output",
+          raw: "Print secret headers, URL credentials and echoed secrets as captured (command line only)",
           "body-mode": "Response bodies: none, text, or all (default: text)",
           "per-body-bytes": "Maximum captured bytes per response body",
           "total-body-bytes": "Maximum captured response-body bytes per tab session",
@@ -1117,9 +1118,9 @@ const TOOLS = {
         ]
       },
       "network.get": {
-        desc: "Get full details for a request; secret headers (Authorization, Cookie, API keys) show as <redacted>, and network.replay still sends them",
+        desc: "Get full details for a request; secret headers (Authorization, Cookie, API keys) show as <redacted> unless --raw, and network.replay still sends them",
         args: ["id"],
-        opts: {},
+        opts: { raw: "Print secret headers, URL credentials and echoed secrets as captured (command line only)" },
         examples: [
           { cmd: "network.get r_001", desc: "Get request details" }
         ]
@@ -1127,7 +1128,7 @@ const TOOLS = {
       "network.body": {
         desc: "Get response body (for piping); an echo of the request's secret headers shows as <redacted>",
         args: ["id"],
-        opts: { request: "Get request body instead" },
+        opts: { request: "Get request body instead", raw: "Print secret headers, URL credentials and echoed secrets as captured (command line only)" },
         examples: [
           { cmd: "network.body r_001", desc: "Get response body" },
           { cmd: "network.body r_001 | jq .", desc: "Pipe JSON to jq" }
@@ -1141,6 +1142,7 @@ const TOOLS = {
           open: "Navigate to this URL after capture starts, so responses during page load count",
           timeout: "Seconds to wait (default: 30)",
           json: "Print {id, url, status, json | body}",
+          raw: "Print secret headers, URL credentials and echoed secrets as captured (command line only)",
         },
         examples: [
           { cmd: 'network.wait --match "/i/api/graphql/*/TweetDetail" --open "https://x.com/user/status/1"', desc: "Open a page and print its API response" },
@@ -1154,6 +1156,7 @@ const TOOLS = {
           set: "Edit before sending (repeatable): query.<param>=v, query.<param>.<json.path>=v, body=v, body.<json.path>=v; values are parsed as JSON when valid",
           "allow-post": "Allow methods other than GET/HEAD (re-sending a POST can repeat a write)",
           json: "Print {status, url, json | body}",
+          raw: "Print secret headers, URL credentials and echoed secrets as captured (command line only)",
         },
         examples: [
           { cmd: "network.replay r_001", desc: "Re-send a request" },
@@ -1161,11 +1164,12 @@ const TOOLS = {
         ]
       },
       "network.curl": {
-        desc: "Generate curl command for request (secret headers show as <redacted>; network.replay re-sends with them)",
+        desc: "Generate curl command for request (secret headers show as <redacted> unless --raw; network.replay re-sends with them)",
         args: ["id"],
-        opts: {},
+        opts: { raw: "Print secret headers, URL credentials and echoed secrets as captured (command line only)" },
         examples: [
-          { cmd: "network.curl r_001", desc: "Generate curl" }
+          { cmd: "network.curl r_001", desc: "Generate curl" },
+          { cmd: "network.curl r_001 --raw", desc: "A curl command that runs as is, with its auth headers" }
         ]
       },
       "network.origins": {
@@ -1204,6 +1208,7 @@ const TOOLS = {
           "per-body-bytes": "Maximum captured bytes per response body",
           "total-body-bytes": "Maximum captured response-body bytes per tab session",
           "raw-bodies": "Keep secret-named body fields (password=, \"token\":) as captured; by default their values read <redacted>",
+          raw: "Keep secret headers, URL credentials, echoed secrets and body fields as captured (command line only)",
         },
         examples: [
           { cmd: "network.export --jsonl --output /tmp/requests.jsonl", desc: "Export as JSONL" },
@@ -1497,7 +1502,7 @@ const TOOLS = {
           "allow-semantic": "Allow bounded semantic model decisions (model: SURF_SEMANTIC_MODEL, default jev-1.13.0); extract steps always use clairic (Cloudflare)",
           "allow-write": "Allow declared semantic fill/check/click steps",
           "inputs-stdin": "Read bounded private input slots as one JSON object from stdin",
-          "echo-value": "Show typed values and chosen options in step results, and variable values with --dry-run (a saved workflow's steps can't turn this on)",
+          "echo-value": "Show typed values and chosen options in step results, and variable values with --dry-run (or --raw; a saved workflow's steps can't turn this on)",
         },
         examples: [
           { cmd: 'do \'go "https://example.com" | read | click e5 | screenshot\'', desc: "Inline workflow" },
@@ -1739,7 +1744,7 @@ const TOOLS = {
       "playbook record start": {
         desc: "Start recording a playbook op",
         args: ["playbook"],
-        opts: { op: "Operation name", network: "Record network requests", watch: "Watch page changes", "include-input-values": "Keep typed values in request bodies and captured URLs (by default bodies read <request-body> and typed values in URLs <text> or <value>)" },
+        opts: { op: "Operation name", network: "Record network requests", watch: "Watch page changes", "include-input-values": "Keep typed values in request bodies and captured URLs (by default bodies read <request-body> and typed values in URLs <text> or <value>; or --raw)" },
         examples: [{ cmd: "pb record start example --op read --network --watch", desc: "Record with network" }],
       },
       "playbook record mark": { desc: "Add a note to the recording", args: ["note"] },
@@ -2867,7 +2872,7 @@ if (args[0] === "do") {
   let echoValue = false;
 
   // Reserved flags that aren't workflow args
-  const reservedFlags = ['file', 'f', 'dry-run', 'on-error', 'no-auto-wait', 'step-delay', 'json', 'tab-id', 'window-id', 'session', 'no-lock', 'no-wait', 'allow-semantic', 'allow-write', 'inputs-stdin', 'echo-value'];
+  const reservedFlags = ['file', 'f', 'dry-run', 'on-error', 'no-auto-wait', 'step-delay', 'json', 'tab-id', 'window-id', 'session', 'no-lock', 'no-wait', 'allow-semantic', 'allow-write', 'inputs-stdin', 'echo-value', 'raw'];
 
   // Workflow-specific args (collected for variable substitution)
   const workflowArgs = {};
@@ -2913,7 +2918,7 @@ if (args[0] === "do") {
       allowWrite = true;
     } else if (arg === "--inputs-stdin") {
       inputsStdin = true;
-    } else if (arg === "--echo-value") {
+    } else if (arg === "--echo-value" || arg === "--raw") {
       echoValue = true;
     } else if (arg.startsWith("--")) {
       // Workflow-specific arg (e.g., --email, --password)
@@ -3439,7 +3444,7 @@ if (args[0] === "workflow.validate") {
   }
 }
 
-const BOOLEAN_FLAGS = ["auto-capture", "json", "stream", "dry-run", "stop-on-error", "fail-fast", "clear", "submit", "escapes", "all", "include-hidden", "case-sensitive", "hard", "annotate", "fullpage", "full-page", "reset", "no-screenshot", "no-diff", "full", "soft-fail", "has-body", "exclude-static", "v", "vv", "request", "by-tab", "har", "jsonl", "no-save", "no-auto-wait", "no-lock", "no-wait", "window", "tab", "focused", "unfocused", "keep-target", "close-target", "replace", "refresh", "allow-post", "echo-value", "raw-bodies"];
+const BOOLEAN_FLAGS = ["auto-capture", "json", "stream", "dry-run", "stop-on-error", "fail-fast", "clear", "submit", "escapes", "all", "include-hidden", "case-sensitive", "hard", "annotate", "fullpage", "full-page", "reset", "no-screenshot", "no-diff", "full", "soft-fail", "has-body", "exclude-static", "v", "vv", "request", "by-tab", "har", "jsonl", "no-save", "no-auto-wait", "no-lock", "no-wait", "window", "tab", "focused", "unfocused", "keep-target", "close-target", "replace", "refresh", "allow-post", "echo-value", "raw-bodies", "raw"];
 
 const parseArgs = (rawArgs) => {
   const result = { positional: [], options: {} };

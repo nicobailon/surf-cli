@@ -751,6 +751,8 @@ surf network.export --har --output ./trace.har
 
 Exports show `<redacted>` for secret headers and for the values of secret-named body fields (`password=`, `"token":`) in JSON, urlencoded and multipart bodies; `--raw-bodies` keeps the bodies as captured.
 
+Add `--raw` on the command line to any of these to print the values as captured: `surf network.curl r_001 --raw` gives a command that runs as is. A playbook step, a saved workflow, a `--script` file or a `batch` action can't set it.
+
 Response bodies are fetched at `Network.loadingFinished` when capture is enabled. `--body-mode none|text|all`, `--per-body-bytes`, and `--total-body-bytes` control content and caps; exports include completeness metadata.
 
 Storage location: `~/.surf/state/network/` (override with `SURF_NETWORK_PATH` in the native host environment). Surf creates private `0700` directories and `0600` files and rejects symlink targets. Auto-cleanup: 24 hours TTL, 200MB max.

@@ -224,7 +224,7 @@ async function handlePlaybookCli(argv, { endpoint, cwd = process.cwd(), session,
     const action = parsed.positional[0];
     const tool = `playbook.record.${action}`;
     let args = {};
-    if (action === "start") args = { site: parsed.positional[1], op: parsed.options.op, watch: parsed.options.watch === true, network: parsed.options.network === true, includeInputValues: parsed.options["include-input-values"] === true };
+    if (action === "start") args = { site: parsed.positional[1], op: parsed.options.op, watch: parsed.options.watch === true, network: parsed.options.network === true, includeInputValues: parsed.options["include-input-values"] === true || parsed.options.raw === true };
     else if (action === "mark") args = { label: parsed.positional.slice(1).join(" ") };
     else if (action === "stop") args = { draft: parsed.options.draft === true, read: parsed.options.read === true, ...(parsed.options["request-id"] ? { requestId: String(parsed.options["request-id"]) } : {}) };
     else if (action === "candidates") args = { ...(parsed.positional[1] ? { recordId: parsed.positional[1] } : {}), ...(parsed.options.limit !== undefined ? { limit: parsed.options.limit } : {}) };
