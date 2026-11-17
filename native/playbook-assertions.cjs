@@ -1,4 +1,4 @@
-// Assertions on an op's result, modelled on parse.bot's endpoint checks: { path, op, value? } with
+// Assertions on an op's result: { path, op, value? } with
 // a $-path into the result. Saved in an op's on.success.expect.assert, they run on every strategy's
 // result, like the rest of verifyResult.
 
