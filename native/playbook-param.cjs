@@ -7,6 +7,7 @@ const { isSecretHeader, isSensitiveName } = require("./redaction.cjs");
 const { LITERAL_OPEN, escapeTemplates, escapedOp, requestInputs, sentRequest, templateInputs, unescapeTemplates } = require("./playbook-template.cjs");
 const { lineDiff } = require("./text-diff.cjs");
 const { commandMetadata } = require("./workflow-definition.cjs");
+const { startingVars } = require("./workflow-runtime.cjs");
 
 // `surf use` options that never reach an op, so no input can take these names.
 const RESERVED_RUN_OPTIONS = new Set(["json", "no-lock", "no-wait", "session", "tab-id", "write", "repeat", "retry-attempt", "override-in-doubt", "pin-built-in", "allow-script", "format"]);
@@ -490,15 +491,15 @@ function templateStepUrl(value, { origin, segments, queries, placeholder, litera
   return joinUrl({ ...url, rest });
 }
 
-// The inputs a strategy takes where the runtime fills them before it runs (runStrategy): a network
-// strategy's request where renderRequest fills it (never the record's notes, and a JSON key only in
-// an escaped op), a workflow's steps, an api or collect spec but its record fields. Never an
-// extract, verify or expect, which only read the result. A script or native strategy is given
-// every input: null.
+// The inputs a strategy takes where the runtime fills them (runStrategy): a network strategy's
+// request where renderRequest fills it (requestInputs), a workflow's steps (each {{name}} in them,
+// and each %{name} a step reads from the vars the workflow starts with, the op's inputs), an api or
+// collect spec but its record fields. Never an extract, verify or expect, which only read the
+// result. A script or native strategy is given every input: null.
 function filledInputs(strategy, escapes) {
   const { using, extract: _extract, verify: _verify, expect: _expect, ...spec } = strategy;
   if (using === "network") return spec.request === undefined ? new Set() : requestInputs(sentRequest(spec.request), { escapes });
-  if (using === "workflow") return templateInputs(spec.steps);
+  if (using === "workflow") return new Set([...templateInputs(spec.steps), ...startingVars(spec.steps, { escapes, onError: spec.onError || "stop" })]);
   if (using === "api") {
     const { records: { fields: _fields, ...records } = {}, ...rest } = spec;
     return templateInputs([rest, records]);

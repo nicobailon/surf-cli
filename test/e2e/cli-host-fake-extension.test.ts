@@ -1809,6 +1809,86 @@ describe("CLI/native-host/fake-extension E2E contract", () => {
     }
   }, 60000);
 
+  // A workflow starts with the op's inputs as its vars, so a step's %{text} types --text: pb param
+  // keeps that input, though the request no longer takes it and a check names it, in a hand-written
+  // op and in one marked escaped alike.
+  for (const escaped of [false, true]) {
+    it(`keeps an input a workflow step reads as a var after pb param${escaped ? ", in an escaped op" : ""}`, async () => {
+      const socketPath = createSocketPath();
+      const project = fs.mkdtempSync(path.join(os.tmpdir(), "surf-workflow-var-"));
+      tempDirs.push(project);
+      const opsDir = path.join(project, ".surf", "playbooks", "manual", "ops");
+      fs.mkdirSync(opsDir, { recursive: true });
+      fs.writeFileSync(
+        path.join(project, ".surf", "playbooks", "manual", "playbook.json"),
+        JSON.stringify({ id: "manual", version: "1.0.0", origins: ["https://fixture.test"] }),
+      );
+      const file = path.join(opsDir, "find.json");
+      // Its request fails its check, so the op goes on to its steps.
+      fs.writeFileSync(
+        file,
+        JSON.stringify({
+          id: "find",
+          effect: "read",
+          ...(escaped ? { provenance: { escaped: true } } : {}),
+          args: { text: { required: true } },
+          run: [
+            {
+              using: "network",
+              request: { method: "GET", url: "https://fixture.test/api", query: { q: "<text>" } },
+              verify: { status: 201, note: "{{text}}" },
+            },
+            {
+              using: "workflow",
+              steps: [{ cmd: "type", args: { text: "%{text}", selector: "#field" } }],
+            },
+          ],
+        }),
+      );
+      const host = startHost(socketPath, { recording: true });
+      const cli = (args: string[]) =>
+        runCli(socketPath, args, project, { SURF_STATE_DIR: host.stateDir });
+      const typed = () =>
+        host.messages
+          .filter((message) => message.type === "SMART_TYPE")
+          .map((message) => message.text);
+
+      try {
+        await host.waitForMessage((message) => message.type === "HOST_READY");
+        const param = await cli([
+          "pb",
+          "param",
+          "manual",
+          "find",
+          "query.q",
+          "--as",
+          "q",
+          "--json",
+        ]);
+        expect(param).toMatchObject({ code: 0, stderr: "" });
+        expect(Object.keys(JSON.parse(fs.readFileSync(file, "utf8")).args).sort()).toEqual([
+          "q",
+          "text",
+        ]);
+
+        const found = await cli([
+          "use",
+          "manual",
+          "find",
+          "--q",
+          "new",
+          "--text",
+          "dummy-typed",
+          "--json",
+        ]);
+        expect(found).toMatchObject({ code: 0 });
+        expect(typed()).toEqual(["dummy-typed"]);
+      } finally {
+        await host.dispose();
+      }
+    }, 60000);
+  }
+
   // `{{!}}` and `%{!}` stand for `{{` and `%{` only in an op pb save made from a record or recent
   // activity: surf do and a hand-written op send them as written, as before.
   it("sends {{!}} and %{!} as written from surf do and a hand-written op", async () => {

@@ -744,6 +744,70 @@ describe("pb param: the input a typed step drafted", () => {
       renderRequest(next.run[0].request, { q: "new", text: "t" }, { escapes: true }),
     ).not.toThrow();
   });
+
+  // A workflow starts with the op's inputs as its vars, so a step's %{text} types --text, and a
+  // check naming {{text}} changes nothing.
+  const afterParam = (
+    steps: unknown[],
+    { escaped = true, onError }: { escaped?: boolean; onError?: string } = {},
+  ) => {
+    const op = typed([{ using: "workflow", ...(onError ? { onError } : {}), steps }]);
+    return Object.keys(
+      paramOp({ ...op, provenance: { escaped } }, { fields: ["query.q"], as: "q" }).op.args,
+    ).sort();
+  };
+  const hover = (selector: unknown) => ({ cmd: "hover", args: { selector } });
+
+  it("keeps it while a step reads it as a var where the workflow runtime fills vars", () => {
+    for (const escaped of [true, false]) {
+      for (const steps of [
+        [hover("%{text}")],
+        [hover([{ deep: "a %{text} b" }])],
+        [{ each: "%{text}", steps: [hover("%{item}")] }],
+        [{ repeat: "%{text}", steps: [hover("#s")] }],
+        [{ repeat: 1, steps: [hover("#s")], until: { cmd: "js", args: { code: "%{text}" } } }],
+        [{ repeat: 1, steps: [{ each: [1], steps: [hover("%{text}")] }] }],
+        // A capture binds only once its step ran: before it, and under onError continue, it is the input.
+        [hover("%{text}"), { ...hover("#s"), as: "text" }],
+      ]) {
+        expect(afterParam(steps, { escaped })).toEqual(["q", "text"]);
+      }
+      expect(
+        afterParam([{ ...hover("#s"), as: "text" }, hover("%{text}")], {
+          escaped,
+          onError: "continue",
+        }),
+      ).toEqual(["q", "text"]);
+    }
+    // Only an escaped op reads a var inside an inline each list; any other op's list was filled before.
+    expect(afterParam([{ each: ["%{text}"], steps: [hover("#s")] }])).toEqual(["q", "text"]);
+    expect(afterParam([{ each: ["%{text}"], steps: [hover("#s")] }], { escaped: false })).toEqual([
+      "q",
+    ]);
+  });
+
+  it("drops it where no step reads it from the op's inputs", () => {
+    for (const escaped of [true, false]) {
+      for (const steps of [
+        // An escape, a loop's own vars and a capture an earlier step made are no input.
+        [hover("%{!}text}")],
+        [{ each: [1], as: "text", steps: [hover("%{text}")] }],
+        [{ ...hover("#s"), as: "text" }, hover("%{text}")],
+        [
+          {
+            repeat: 1,
+            steps: [{ ...hover("#s"), as: "text" }],
+            until: { cmd: "js", args: { code: "%{text}" } },
+          },
+        ],
+        // A loop's own args and a step's other fields are never filled with vars.
+        [{ repeat: 1, args: { code: "%{text}" }, steps: [hover("#s")] }],
+        [{ ...hover("#s"), id: "%{text}" }],
+      ]) {
+        expect(afterParam(steps, { escaped })).toEqual(["q"]);
+      }
+    }
+  });
 });
 
 describe("pb param --link: a drafted typed-value input", () => {

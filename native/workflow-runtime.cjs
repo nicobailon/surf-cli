@@ -39,6 +39,8 @@ function varText(vars, name) {
 // an input or var holding `%{!}` or `%{name}` is sent as given. `!` is in no name, so every name
 // is filled. surf do and other ops fill only `%{name}` here and send `%{!}` as written.
 const ESCAPED_TEXT = /\{\{([a-zA-Z0-9._-]+|!)\}\}|%\{(\w+|!)\}/g;
+// A var any op's step reads: `%{!}` is none, since `!` is in no name.
+const VAR_TEXT = /%\{(\w+)\}/g;
 
 function resolveVar(template, vars, { escapes = false, inputs = {} } = {}) {
   if (typeof template !== "string") return template;
@@ -46,7 +48,7 @@ function resolveVar(template, vars, { escapes = false, inputs = {} } = {}) {
   if (input) return inputs[input[1]];
   const match = template.match(/^%\{(\w+)\}$/);
   if (match) return vars[match[1]] !== undefined ? vars[match[1]] : template;
-  if (!escapes) return template.replace(/%\{(\w+)\}/g, (_, name) => varText(vars, name));
+  if (!escapes) return template.replace(VAR_TEXT, (_, name) => varText(vars, name));
   return template.replace(ESCAPED_TEXT, (_, inputName, varName) => {
     if (inputName === "!") return "{{";
     if (varName === "!") return "%{";
@@ -328,6 +330,72 @@ async function executeWorkflow(steps, options = {}) {
   return { status: failed > 0 ? "partial" : "completed", completedSteps: stepsExecuted, totalSteps: steps.length, results, failed, ...(semantic ? { semantic } : {}), totalMs: Date.now() - startTotal, ...capturedOutputs(steps, vars, captured) };
 }
 
+// The vars a workflow's steps read from the ones it starts with (an op's inputs), walked as
+// executeStep reads them: a step's args (an until step's too), and a loop's repeat and each, in
+// loops at any depth. Never a loop's own vars (its each item, _index, _iteration), a capture (as)
+// an earlier step of the same body made under onError stop (a failed step stops the run), a
+// semantic step's args (its executor reads them), a loop's args or any other field. A list each
+// is read only in an escaped op: any other op's was filled before the run. `rename(name, field)`
+// gives the name each such var is to read, `field` saying where it is (`hover selector`, `loop
+// each`); returns the steps so renamed.
+function mapStartingVars(steps, { escapes = false, onError = "stop" } = {}, rename) {
+  const renameText = (text, bound, field) => text.replace(VAR_TEXT, (token, name) => {
+    if (bound.has(name)) return token;
+    const next = rename(name, field);
+    return next === name ? token : `%{${next}}`;
+  });
+  const renameValue = (value, bound, field) => {
+    if (typeof value === "string") return renameText(value, bound, field);
+    if (Array.isArray(value)) return value.map((item) => renameValue(item, bound, field));
+    if (value && typeof value === "object") return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, renameValue(item, bound, field)]));
+    return value;
+  };
+  const single = (step, bound) => {
+    if (!step || typeof step !== "object" || step.args === undefined) return step;
+    const named = step.args && typeof step.args === "object" && !Array.isArray(step.args);
+    const args = named
+      ? Object.fromEntries(Object.entries(step.args).map(([key, value]) => [key, renameValue(value, bound, `${step.cmd} ${key}`)]))
+      : renameValue(step.args, bound, String(step.cmd));
+    return { ...step, args };
+  };
+  const walk = (list, outer) => {
+    if (!Array.isArray(list)) return { steps: list, bound: outer };
+    const bound = new Set(outer);
+    const mapped = list.map((step) => {
+      if (!step || typeof step !== "object" || step.cmd === "semantic.step") return step;
+      if (step.repeat !== undefined) {
+        const body = walk(step.steps, new Set([...bound, "_index", "_iteration"]));
+        return {
+          ...step,
+          repeat: typeof step.repeat === "string" ? renameText(step.repeat, bound, "loop repeat") : step.repeat,
+          ...(Array.isArray(step.steps) ? { steps: body.steps } : {}),
+          ...(step.until ? { until: single(step.until, body.bound) } : {}),
+        };
+      }
+      if (step.each !== undefined) {
+        const body = walk(step.steps, new Set([...bound, step.as || "item", "_index", "_iteration"]));
+        const fill = escapes || typeof step.each === "string" ? renameValue : (value) => value;
+        return { ...step, each: fill(step.each, bound, "loop each"), ...(Array.isArray(step.steps) ? { steps: body.steps } : {}) };
+      }
+      const next = single(step, bound);
+      if (onError === "stop" && typeof step.as === "string" && step.as) bound.add(step.as);
+      return next;
+    });
+    return { steps: mapped, bound };
+  };
+  return walk(steps, new Set()).steps;
+}
+
+// The names of the vars mapStartingVars finds.
+function startingVars(steps, options) {
+  const names = new Set();
+  mapStartingVars(steps, options, (name) => {
+    names.add(name);
+    return name;
+  });
+  return names;
+}
+
 module.exports = {
   AUTO_WAIT_COMMANDS,
   AUTO_WAIT_MAP,
@@ -338,7 +406,9 @@ module.exports = {
   executeWorkflow,
   extractStepOutput,
   getAutoWaitCommand,
+  mapStartingVars,
   resolveVar,
   shouldAutoWait,
+  startingVars,
   substituteVars,
 };
