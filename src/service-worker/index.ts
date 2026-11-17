@@ -68,16 +68,20 @@ const CLICK_WAIT_MS = 5000;
 
 // Waits until a user could click the ref (visible, enabled, not covered), then clicks it with
 // trusted input. A missing ref or stale observation fails at once; nothing is clicked on failure.
-async function clickRef(tabId: number, frameId: number, ref: string, button: string, expectedIdentity?: unknown): Promise<any> {
+// `label` names the target in messages when the caller found it another way (a selector).
+async function clickRef(tabId: number, frameId: number, ref: string, button: string, expectedIdentity?: unknown, label = ref): Promise<any> {
   const deadline = Date.now() + CLICK_WAIT_MS;
   let target: any;
   while (true) {
     target = await chrome.tabs.sendMessage(tabId, { type: "CLICK_POINT", ref, expectedIdentity }, { frameId });
-    if (target?.error) return { error: target.error, code: target.code };
+    if (target?.error) {
+      const error = label === ref ? target.error : target.error.replace(new RegExp(`\\b${ref}\\b`), label);
+      return { error, code: target.code };
+    }
     if (!target?.reason || Date.now() >= deadline) break;
     await sleep(100);
   }
-  if (target?.reason) return { error: `${ref} ${target.reason}, so it was not clicked (waited ${CLICK_WAIT_MS / 1000}s).` };
+  if (target?.reason) return { error: `${label} ${target.reason}, so it was not clicked (waited ${CLICK_WAIT_MS / 1000}s).` };
   // Attach even after the user cancelled the debugging bar: a dismissed bar is not a refusal.
   let attachFailure = "";
   try {
@@ -94,11 +98,35 @@ async function clickRef(tabId: number, frameId: number, ref: string, button: str
   if (inPageReason) {
     const result = await chrome.tabs.sendMessage(tabId, { type: "CLICK_ELEMENT", ref, button, expectedIdentity }, { frameId });
     if (result.error) return { error: result.error, code: result.code };
-    return { success: true, _hint: `Clicked ${ref} inside the page, not with the mouse, because ${inPageReason}.` };
+    return { success: true, _hint: `Clicked ${label} inside the page, not with the mouse, because ${inPageReason}.` };
   }
   const clicks = button === "double" ? 2 : button === "triple" ? 3 : 1;
   await cdp.click(tabId, target.x, target.y, button === "right" ? "right" : "left", clicks);
   return { success: true };
+}
+
+// Clicks the centre of a selector's match through the debugger alone, after scrolling it into view.
+async function clickSelectorWithDebugger(tabId: number, selector: string, index: number): Promise<any> {
+  const script = `(() => {
+    const elements = document.querySelectorAll(${JSON.stringify(selector)});
+    if (elements.length === 0) return { error: "No elements match selector" };
+    if (${index} >= elements.length) return { error: "Index " + ${index} + " out of range (found " + elements.length + " elements)" };
+
+    const el = elements[${index}];
+    el.scrollIntoView({ block: "center", behavior: "instant" });
+    const rect = el.getBoundingClientRect();
+    return {
+      x: rect.left + rect.width / 2,
+      y: rect.top + rect.height / 2,
+      count: elements.length
+    };
+  })()`;
+  const result = await cdp.evaluateScript(tabId, script);
+  const coords = result.result?.value;
+  if (coords?.error) return { error: coords.error };
+  if (!coords) return { error: "Failed to get element coordinates" };
+  await cdp.click(tabId, coords.x, coords.y, "left", 1, 0);
+  return { success: true, selector, index, matchCount: coords.count };
 }
 
 async function validateRequestedFrame(tabId: number, value: unknown): Promise<void> {
@@ -3904,28 +3932,23 @@ export async function handleMessage(
         return result?.result || { error: "Failed to click element" };
       }
 
-      const script = `(() => {
-        const elements = document.querySelectorAll(${JSON.stringify(selector)});
-        if (elements.length === 0) return { error: "No elements match selector" };
-        if (${index} >= elements.length) return { error: "Index " + ${index} + " out of range (found " + elements.length + " elements)" };
-
-        const el = elements[${index}];
-        const rect = el.getBoundingClientRect();
-        return {
-          x: rect.left + rect.width / 2,
-          y: rect.top + rect.height / 2,
-          count: elements.length
-        };
-      })()`;
-
-      const result = await cdp.evaluateScript(tabId, script);
-      const coords = result.result?.value;
-
-      if (coords?.error) return { error: coords.error };
-      if (!coords) return { error: "Failed to get element coordinates" };
-
-      await cdp.click(tabId, coords.x, coords.y, "left", 1, 0);
-      return { success: true, selector, index, matchCount: coords.count };
+      const label = `selector ${JSON.stringify(selector)}${index ? ` (index ${index})` : ""}`;
+      let located: any;
+      try {
+        located = await chrome.tabs.sendMessage(tabId, { type: "LOCATE_SELECTOR", selector, index }, { frameId: 0 });
+      } catch {
+        located = undefined;
+      }
+      // No content script answers on data: and about:blank pages, or in a tab open across an extension reload.
+      if (!located) return clickSelectorWithDebugger(tabId, selector, index);
+      if (located.error) return { error: located.error };
+      try {
+        const clicked = await clickRef(tabId, 0, located.ref, "left", undefined, label);
+        if (clicked.error) return clicked;
+        return { success: true, selector, index, matchCount: located.count, ...(clicked._hint ? { _hint: clicked._hint } : {}) };
+      } catch (err) {
+        return { error: await contentScriptError(tabId, 0, err) };
+      }
     }
 
     case "COOKIE_LIST": {
