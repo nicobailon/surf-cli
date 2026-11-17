@@ -250,10 +250,11 @@ function traceEntriesForRecord(record, entries) {
 // The trace keeps no response bodies; each entry keeps a summary of the response's structure
 // instead (see summarizeResponse), so pb record candidates can rank it. `pageText` is the page's
 // visible text, used for the overlap score and never stored. `sample` adds a short sample, for
-// live ranking only: entries with samples are never written.
-function sanitizeTraceEntries(record, entries, pageText, { sample = false, redact = [], root = getPrivateStateRoot() } = {}) {
+// live ranking only: entries with samples are never written. `includeInputValues` keeps the values
+// for a record started without it (pb record stop --include-input-values).
+function sanitizeTraceEntries(record, entries, pageText, { sample = false, redact = [], includeInputValues = false, root = getPrivateStateRoot() } = {}) {
   const page = pageWords(pageText);
-  const keepValues = record.redaction?.includeInputValues === true;
+  const keepValues = includeInputValues || record.redaction?.includeInputValues === true;
   const typed = keepValues ? [] : typedValuesForTrace(readEvents(record.id, root), heldTypingCalls(record.id)).typed;
   return entries.map((entry) => {
     const responseSummary = summarizeResponse(entry, page, { sample, redact });
@@ -264,15 +265,16 @@ function sanitizeTraceEntries(record, entries, pageText, { sample = false, redac
 // `capture` is the extension's capture status when the trace was read, and `truncatedAt` the read
 // limit when the read returned that many entries. Without a status, or with a gap, dropped entries
 // or a truncated read, the trace is incomplete and can't show that a flow sent no writes.
-function attachNetworkTrace(recordId, entries, root = getPrivateStateRoot(), { capture, truncatedAt, pageText } = {}) {
+function attachNetworkTrace(recordId, entries, root = getPrivateStateRoot(), { capture, truncatedAt, pageText, includeInputValues = false } = {}) {
   const record = readRecord(recordId, root);
   if (!record) throw new Error(`record not found: ${recordId}`);
-  const sanitized = sanitizeTraceEntries(record, entries, pageText, { root });
+  const keepValues = includeInputValues || record.redaction?.includeInputValues === true;
+  const sanitized = sanitizeTraceEntries(record, entries, pageText, { includeInputValues: keepValues, root });
   const warnings = capture
     ? describeCaptureGaps(capture, { atStop: true })
     : ["the extension did not report whether network capture ran (it may be older than this Surf); requests may be missing"];
   if (truncatedAt) warnings.push(`the trace holds only the first ${truncatedAt} requests read from the tab; later ones are missing`);
-  if (record.redaction?.includeInputValues !== true) {
+  if (!keepValues) {
     const { unheld } = typedValuesForTrace(readEvents(recordId, root), heldTypingCalls(recordId));
     if (unheld > 0) warnings.push(unheld === 1
       ? "1 typing step entered a value this Surf host no longer holds (it restarted during the record), so it may remain in the trace's URLs"
@@ -460,7 +462,9 @@ function draftFromRecord(recordId, root = getPrivateStateRoot(), options = {}) {
 // The draft is made before the record stops, so a refused draft (--read) leaves it recording. The
 // request --request-id names, and --read, are kept in the record, which pb save reads them from:
 // the draft file is only a suggestion.
-function stopRecord({ target, draft = false, read = false, requestId, root = getPrivateStateRoot() } = {}) {
+// `includeInputValues` (pb record stop --include-input-values) marks the record as kept, as if
+// started with it; the host passes it to attachNetworkTrace first.
+function stopRecord({ target, draft = false, read = false, requestId, includeInputValues = false, root = getPrivateStateRoot() } = {}) {
   if (read && !draft) throw new Error("--read applies only with --draft");
   if (requestId && !draft) throw new Error("--request-id applies only with --draft");
   let record = requireRecordFor(target, root);
@@ -474,6 +478,7 @@ function stopRecord({ target, draft = false, read = false, requestId, root = get
   record.stoppedAt = new Date().toISOString();
   if (requestId) record.requestId = requestId;
   if (read) record.read = true;
+  if (includeInputValues) record.redaction = { ...record.redaction, includeInputValues: true };
   writeRecord(record, root);
   writeActiveIds(activeIds(root).filter((id) => id !== record.id), root);
   const warnings = [...(record.trace?.warnings || []), ...draftWarnings];

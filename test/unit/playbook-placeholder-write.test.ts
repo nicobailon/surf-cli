@@ -37,7 +37,7 @@ describe("a write op whose request holds <request-body>", () => {
     });
 
     await expect(run).rejects.toThrow(
-      "body holds <request-body>: the record redacted the request body; record again with pb record start --include-input-values to keep it",
+      "body holds <request-body>: the record redacted the request body; to keep it, record again and stop with pb record stop --draft --include-input-values (or start with --include-input-values)",
     );
     expect(executeTool).not.toHaveBeenCalled();
     expect(beforeDispatch).not.toHaveBeenCalled();

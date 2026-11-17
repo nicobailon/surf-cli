@@ -1744,7 +1744,7 @@ const TOOLS = {
       "playbook record start": {
         desc: "Start recording a playbook op",
         args: ["playbook"],
-        opts: { op: "Operation name", network: "Record network requests", watch: "Watch page changes", "include-input-values": "Keep typed values in request bodies and captured URLs (by default bodies read <request-body> and typed values in URLs <text> or <value>; or --raw)" },
+        opts: { op: "Operation name", network: "Record network requests", watch: "Watch page changes", "include-input-values": "Keep typed values in request bodies and captured URLs (by default bodies read <request-body> and typed values in URLs <text> or <value>; or --raw, includeInputValues: true in ~/surf.json, or pb record stop --include-input-values)" },
         examples: [{ cmd: "pb record start example --op read --network --watch", desc: "Record with network" }],
       },
       "playbook record mark": { desc: "Add a note to the recording", args: ["note"] },
@@ -1755,10 +1755,12 @@ const TOOLS = {
           draft: "Save a draft playbook from the record (a write if it clicked or typed)",
           read: "With --draft: mark the draft a read. Needs --network; refused if a captured request can change data or a step acts beyond the page",
           "request-id": "With --draft: replay this request (see pb record candidates) instead of the top-ranked one",
+          "include-input-values": "Keep request bodies and captured URLs as captured, though the record started without it (or --raw)",
         },
         examples: [
           { cmd: "pb record stop --draft --read", desc: "Draft a search done by clicking as a read" },
           { cmd: "pb record stop --draft --read --request-id r_1794_12", desc: "Draft it replaying the request you chose" },
+          { cmd: "pb record stop --draft --include-input-values", desc: "Draft a write that sends its body as captured" },
         ],
       },
       "playbook record candidates": {
