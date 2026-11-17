@@ -1054,6 +1054,81 @@ describe("CLI/native-host/fake-extension E2E contract", () => {
     }
   }, 60000);
 
+  // renderRequest never fills a request's note, nor its cache (an env header's request is sent
+  // no-store whatever it says), so an input named only there is no input of the write: after pb
+  // param the key is the year it sends, and the same year is blocked whatever else is given.
+  for (const [label, unsent] of [
+    ["note", { note: "{{text}}" }],
+    [
+      "cache, under an env header",
+      { cache: "{{text}}", authInputs: [{ header: "X-Probe", env: "PROBE_KEY" }] },
+    ],
+  ] as const) {
+    it(`keys a recorded write on the input it sends after pb param, not one only its ${label} names`, async () => {
+      const socketPath = createSocketPath();
+      const project = fs.mkdtempSync(path.join(os.tmpdir(), "surf-record-unsent-key-"));
+      tempDirs.push(project);
+      const page = { url: jsonQueryUrl({ n: 2024 }) };
+      const host = startHost(socketPath, { recording: true, scriptResponse: page });
+      const cli = (args: string[]) =>
+        runCli(socketPath, args, project, {
+          SURF_STATE_DIR: host.stateDir,
+          PROBE_KEY: "dummy-key",
+        });
+      const posts = () => host.messages.filter((message) => message.type === "EXECUTE_JAVASCRIPT");
+      const file = path.join(project, ".surf", "playbooks", "fixture", "ops", "submit.json");
+
+      try {
+        await host.waitForMessage((message) => message.type === "HOST_READY");
+        expect((await cli(["navigate", "https://fixture.test/form"])).code).toBe(0);
+        expect(
+          (await cli(["pb", "record", "start", "fixture", "--op", "submit", "--network"])).code,
+        ).toBe(0);
+        expect((await cli(["type", "2024", "--selector", "#year"])).code).toBe(0);
+        expect((await cli(["js", 'fetch("/api", { method: "POST" })'])).code).toBe(0);
+        const { record } = JSON.parse(
+          (await cli(["pb", "record", "stop", "--draft", "--json"])).stdout,
+        );
+        page.url = "https://fixture.test/api";
+        expect(
+          (await cli(["pb", "save", "--from-record", record.id, "--project", "--json"])).code,
+        ).toBe(0);
+        const saved = JSON.parse(fs.readFileSync(file, "utf8"));
+        expect(saved.safety.key).toEqual(["text"]);
+        Object.assign(saved.run[0].request, unsent);
+        fs.writeFileSync(file, JSON.stringify(saved));
+        const param = await cli([
+          "pb",
+          "param",
+          "fixture",
+          "submit",
+          "query.variables.n",
+          "--as",
+          "year",
+          "--json",
+        ]);
+        expect(param).toMatchObject({ code: 0, stderr: "" });
+        const op = JSON.parse(fs.readFileSync(file, "utf8"));
+        expect({ key: op.safety.key, inputs: Object.keys(op.args) }).toEqual({
+          key: ["year"],
+          inputs: ["year"],
+        });
+
+        const before = posts().length;
+        const use = (...args: string[]) =>
+          cli(["use", "fixture", "submit", "--year", "2031", ...args, "--write", "--json"]);
+        expect((await use("--text", "one")).stderr).toMatch(/Unknown input --text/);
+        expect((await use()).code).toBe(0);
+        const again = await use();
+        expect(again.code).toBe(1);
+        expect(again.stderr).toMatch(/write blocked by verified receipt/);
+        expect(posts().length - before).toBe(1);
+      } finally {
+        await host.dispose();
+      }
+    }, 60000);
+  }
+
   // The record keeps the type of a number it masked (redactedTypes) under the JSON key it sat at,
   // here a key reading {{text}}. That note is never sent, so it gives the op no input: the safety
   // key is review_key, and the same review key is blocked as a duplicate whatever else is given.

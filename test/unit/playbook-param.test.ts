@@ -731,6 +731,19 @@ describe("pb param: the input a typed step drafted", () => {
       unchecked({ using: "workflow", steps: [{ cmd: "click", args: { ref: "e1" } }] }),
     ).toEqual(["q"]);
   });
+
+  // An escaped op fills the keys inside a header's object value as renderRequest sends it, so the
+  // input stays and the op still runs.
+  it("keeps it while an escaped header object's key takes it", () => {
+    const op = typed([]);
+    const { verify: _v, expect: _e, extract: _x, ...network } = op.run[0] as any;
+    network.request.headers = { "X-Thing": { "{{text}}": "constant" } };
+    const next = paramOp({ ...op, on: {}, run: [network] }, { fields: ["query.q"], as: "q" }).op;
+    expect(Object.keys(next.args).sort()).toEqual(["q", "text"]);
+    expect(() =>
+      renderRequest(next.run[0].request, { q: "new", text: "t" }, { escapes: true }),
+    ).not.toThrow();
+  });
 });
 
 describe("pb param --link: a drafted typed-value input", () => {

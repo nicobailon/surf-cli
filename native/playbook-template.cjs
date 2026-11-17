@@ -158,13 +158,21 @@ function templateInputs(value, { keys = false } = {}) {
   return names;
 }
 
-// The inputs a request (sentRequest's) takes where renderRequest fills them: with `escapes`, the
-// keys inside a query value or the body too, never a query param's or header's name.
-function requestInputs({ query, headers, body, ...rest }, { escapes = false } = {}) {
-  return new Set([
-    ...templateInputs([rest, Object.values(headers || {})]),
-    ...templateInputs([Object.values(query || {}), body], { keys: escapes }),
-  ]);
+// The inputs a request (sentRequest's) takes: the ones renderRequest reads as it fills it, so the
+// two never disagree. That is the URL, header and query values and the body, with `escapes` the
+// keys inside them too; never a header's or query param's name, nor a field renderRequest passes on
+// as written (method, cache, note). Each read gets text of its own, so no two keys come out the same.
+function requestInputs(request, { escapes = false } = {}) {
+  const names = new Set();
+  let reads = 0;
+  const args = new Proxy({}, {
+    get(_, name) {
+      if (typeof name === "string") names.add(name);
+      return `\u{10FFFF}${reads++}\u{10FFFF}`;
+    },
+  });
+  renderRequest(request, args, { escapes });
+  return names;
 }
 
 // Whether an op holds escaped text: pb save --from-record and --from-recent set provenance.escaped

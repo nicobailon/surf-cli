@@ -21,6 +21,54 @@ const fakeTab = () => captureTab();
 // How an op pb save made from a record or recent activity renders: its `{{!}}` stands for `{{`.
 const saved = { escapes: true };
 
+// Random requests for requestInputs: text from these pieces at every place renderRequest may fill.
+let seed = 7;
+const pick = <T>(items: T[]): T => {
+  seed = (seed * 48271) % 2147483647;
+  return items[seed % items.length];
+};
+const requestPieces = ["{{a}}", "{{b}}", "x", "{{!}}", "{{!}}a}}", "%{a}"];
+const randomText = () => Array.from({ length: pick([1, 2]) }, () => pick(requestPieces)).join("");
+const randomValue = (depth: number): unknown => {
+  const kind = depth > 2 ? 0 : pick([0, 0, 1, 2]);
+  if (kind === 0) {
+    return randomText();
+  }
+  if (kind === 1) {
+    return [randomValue(depth + 1)];
+  }
+  return Object.fromEntries(
+    Array.from({ length: pick([1, 2]) }, () => [randomText(), randomValue(depth + 1)]),
+  );
+};
+const randomRequest = () => {
+  const shape: Record<string, unknown> = { url: `https://api.test/${randomText()}` };
+  for (const field of ["method", "cache", "note"]) {
+    if (pick([0, 1])) {
+      shape[field] = randomText();
+    }
+  }
+  // A header's value is sent as text, so an object there is sent as [object Object] whatever it holds.
+  const fields: Array<[string, () => unknown]> = [
+    ["headers", () => ({ [randomText()]: randomText() })],
+    ["query", () => ({ [randomText()]: randomValue(1) })],
+    ["body", () => randomValue(0)],
+  ];
+  for (const [field, make] of fields) {
+    if (pick([0, 1])) {
+      shape[field] = make();
+    }
+  }
+  return shape;
+};
+const sendOf = (shape: Record<string, unknown>, args: Record<string, string>, options: object) => {
+  try {
+    return JSON.stringify(renderRequest(shape, args, options));
+  } catch (error) {
+    return `throws: ${(error as Error).message}`;
+  }
+};
+
 function op(request: Record<string, unknown>, args: Record<string, unknown> = {}) {
   return {
     id: "search",
@@ -192,6 +240,50 @@ describe("request templates", () => {
     expect(() => renderRequest(request, { ...args, k: "{{k}}" }, saved)).toThrow(
       'an input fills a JSON key that is already there: "{{k}}"',
     );
+  });
+
+  // requestInputs reads a request as renderRequest fills it: never its method, cache or note (or
+  // any field renderRequest passes on as written), nor a header's or query param's name.
+  it("counts an input only where renderRequest fills it", () => {
+    const { requestInputs } = require("../../native/playbook-template.cjs");
+    const request = {
+      method: "{{m}}",
+      url: "https://api.test/{{u}}",
+      cache: "{{c}}",
+      note: "{{n}}",
+      headers: { "{{hk}}": "{{hv}}", "X-O": { "{{ok}}": "{{ov}}" } },
+      query: { "{{qk}}": "{{qv}}", v: { "{{vk}}": 1 } },
+      body: { "{{bk}}": ["{{bv}}"] },
+    };
+    const filled = new Set(["u", "hv", "ov", "qv", "bv"]);
+    expect(requestInputs(request)).toEqual(filled);
+    expect(requestInputs(request, saved)).toEqual(new Set([...filled, "ok", "vk", "bk"]));
+    const values = (names: Set<string>) =>
+      Object.fromEntries([...names].map((name, index) => [name, `v${index}`]));
+    expect(() =>
+      renderRequest(request, values(requestInputs(request, saved)), saved),
+    ).not.toThrow();
+
+    // An input counts when its value changes what is sent, or its absence stops the send.
+    let compared = 0;
+    for (let index = 0; index < 3000; index++) {
+      const shape = randomRequest();
+      for (const options of [{}, saved]) {
+        const base = sendOf(shape, { a: "1", b: "2" }, options);
+        if (base.startsWith("throws: an input fills a JSON key")) {
+          continue;
+        }
+        compared++;
+        const used = ["a", "b"].filter((name) => {
+          const rest: Record<string, string> = { a: "1", b: "2" };
+          delete rest[name];
+          const changed = sendOf(shape, { a: "1", b: "2", [name]: "9" }, options);
+          return changed !== base || sendOf(shape, rest, options) !== base;
+        });
+        expect([...requestInputs(shape, options)].sort()).toEqual(used);
+      }
+    }
+    expect(compared).toBeGreaterThan(5000);
   });
 
   it("sends every escaped captured request text as captured", () => {
