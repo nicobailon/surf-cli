@@ -73,18 +73,29 @@ function pageBounds(step, args) {
 }
 
 // The value page.into takes on the page after one that ran with `current` and whose response gave
-// `next` (page.next's path or html, read by runPlaybookOp). Undefined: there is no next page.
+// `next` ({ value, from }: page.next's path or html, read by runPlaybookOp, and the page's URL).
+// Undefined: there is no next page (no value, false, or only whitespace).
 function followingPage(step, current, next) {
   if (step.page.next === "increment") return current + 1;
-  if (next === undefined || next === null || next === "") return undefined;
   const label = `page.next of step ${step.id}`;
-  if (typeof next === "object") throw new Error(`${label} is ${describe(next)}; read a field inside it`);
-  if (step.page.next.segment === undefined) return next;
-  try {
-    return urlSegment(next, step.page.next.segment);
-  } catch (error) {
-    throw new Error(`${label} ${error.message}`);
+  let value = typeof next?.value === "string" ? next.value.trim() : next?.value;
+  if (value === undefined || value === null || value === "" || value === false) return undefined;
+  if (typeof value === "object") throw new Error(`${label} is ${describe(value)}; read a field inside it`);
+  // A page chooses its next URL: one on another origin would take the chain off the site.
+  if (typeof value === "string" && /^([a-z][a-z0-9+.-]*:|\/\/)/i.test(value) && typeof next.from === "string") {
+    const to = new URL(value, next.from).origin;
+    const at = new URL(next.from).origin;
+    if (to !== at) throw new Error(`${label} is a URL on ${to}, not on ${at}, the page it came from`);
   }
+  if (step.page.next.segment !== undefined) {
+    try {
+      value = urlSegment(value, step.page.next.segment);
+    } catch (error) {
+      throw new Error(`${label} ${error.message}`);
+    }
+  }
+  if (value === "." || value === "..") throw new Error(`${label} is ${value}, which would move the request up a path level`);
+  return value;
 }
 
 // An increment's first page: the step's own value for page.into, else that input's default, else 1.

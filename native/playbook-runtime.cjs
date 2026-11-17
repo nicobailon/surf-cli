@@ -340,8 +340,8 @@ function pageNextRefusal(strategy, next) {
 
 function networkScript(request, allowedOrigins = [], extract, regexBudget = boundedRegex.createFieldRegexBudget(), pageNext) {
   const html = extract?.html;
-  // A chain step's page.next is read from the same response, into head.pageNext.
-  const readNext = (from) => (pageNext ? `head.pageNext = ${pageNextSource(pageNext)}(${from}) ?? null;\n` : "");
+  // A chain step's page.next is read from the same response, into head.pageNext with the URL it came from.
+  const readNext = (from) => (pageNext ? `head.pageNext = { value: ${pageNextSource(pageNext)}(${from}) ?? null, from: response.url || url.toString() };\n` : "");
   const headers = request.headers || {};
   const query = request.query || {};
   const body = request.body;
@@ -500,10 +500,10 @@ async function runStrategy(strategy, context) {
     if (result.status !== "completed") throw new Error(result.error || "workflow strategy failed");
     if (!strategy.extract?.html) return result;
     // The same extraction as the network strategy, on the page the workflow ended on.
-    const readNext = context.pageNext ? `head.pageNext = ${pageNextSource(context.pageNext)}(document) ?? null;\n` : "";
+    const readNext = context.pageNext ? `head.pageNext = { value: ${pageNextSource(context.pageNext)}(document) ?? null, from: location.href };\n` : "";
     const found = await runTabExtract(context, (budget) => `(async () => {\n${finishSource(budget)}\nconst head = {};\n${readNext}return finish(head, ${htmlExtractFunction(strategy.extract.html)}(document), "--item/--field");\n})()`);
     if (found?.extractError) throw new Error(found.extractError);
-    return { ...result, extracted: found?.extracted, ...(context.pageNext ? { pageNext: found?.pageNext ?? null } : {}) };
+    return { ...result, extracted: found?.extracted, ...(context.pageNext ? { pageNext: found?.pageNext } : {}) };
   }
   if (strategy.using === "network") {
     // A draft's request can hold <text> where the record redacted a typed value: never send it.
@@ -603,9 +603,10 @@ async function runPlaybookOp({ playbook, op, args: providedArgs = {}, secrets = 
         allowScript,
         pageNext,
       });
-      // A strategy that read a chain step's page.next hands it over beside the response.
-      let next = null;
-      if (pageNext) ({ pageNext: next = null, ...raw } = raw);
+      // A strategy that read a chain step's page.next hands it over beside the response, with the
+      // URL of the page it came from.
+      let next = { value: null };
+      if (pageNext) ({ pageNext: next = { value: null }, ...raw } = raw);
       const value = extractResult(raw, strategy.extract, fieldRegexBudget);
       const expect = strategy.verify || strategy.expect || op.on?.success?.expect;
       // Saved assertions hold for every strategy, even one with its own verify.
@@ -613,8 +614,8 @@ async function runPlaybookOp({ playbook, op, args: providedArgs = {}, secrets = 
       if (op.effect === "write") await afterDispatch({ status: "verified", strategy, index });
       onEvent({ type: "strategy.completed", playbook: playbook.id, op: op.id, using: strategy.using, index, endedAt: new Date().toISOString() });
       // Its parts are redacted one by one; redactResult reads them next to surf's own fields.
-      // A chain step's page.next comes back as `next`, null when the response has none.
-      return redactResult({ status: "completed", playbook: playbook.id, op: op.id, strategy: strategy.using, value: redactSecrets(value, authValues), provenance: playbook.provenance, attempts, ...(checked ? { assertions: checked } : {}), ...(pageNext ? { next: redactSecrets(next, authValues) } : {}) }, Object.values(authValues));
+      // A chain step's page.next comes back as `next`: its value (null when the response has none) and `from`, the page's URL.
+      return redactResult({ status: "completed", playbook: playbook.id, op: op.id, strategy: strategy.using, value: redactSecrets(value, authValues), provenance: playbook.provenance, attempts, ...(checked ? { assertions: checked } : {}), ...(pageNext ? { next: { value: redactSecrets(next.value ?? null, authValues), ...(typeof next.from === "string" ? { from: next.from } : {}) } } : {}) }, Object.values(authValues));
     } catch (caught) {
       const message = redactSecrets(caught?.message || String(caught), authValues);
       const error = message === caught?.message ? caught : new Error(message);

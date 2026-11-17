@@ -7,6 +7,7 @@ const path = require("node:path");
 
 const playbooks = require("../../native/playbooks.cjs");
 const chain = require("../../native/chain-runtime.cjs");
+const { formatDryRun } = require("../../native/playbook-cli.cjs");
 
 const tempDirs: string[] = [];
 
@@ -187,6 +188,65 @@ describe("chain step paging", () => {
     const result = await run(playbook, "feed_back", tab);
     expect(sentQueries(tab.fetchImpl)).toEqual(["?page=1", "?page=2"]);
     expect(result.value).toHaveLength(4);
+  });
+
+  // A cursor feed whose first page's next value is `next`; later pages have none.
+  const firstNext = (next: unknown) =>
+    captureTab({
+      href: "https://feed.test/",
+      reply: (url) => {
+        const cursor = new URL(url).searchParams.get("cursor") ?? "";
+        return {
+          body: JSON.stringify({ items: items(cursor || "first"), ...(cursor ? {} : { next }) }),
+        };
+      },
+    });
+  const cursorChain = (id: string, next: Record<string, unknown> = { path: "$.next" }) =>
+    paged(id, { op: "list_after", page: { into: "cursor", next, max: 5, delayMs: 0 } });
+
+  it("stops at a next value of false or only whitespace", async () => {
+    for (const next of [false, "   ", "\n\t"]) {
+      const playbook = load([byCursor, cursorChain("feed_blank")]);
+      const tab = firstNext(next);
+      const result = await run(playbook, "feed_blank", tab);
+      expect(sentQueries(tab.fetchImpl)).toEqual(["?cursor="]);
+      expect(result.value).toHaveLength(2);
+    }
+  });
+
+  it("trims a next value", async () => {
+    const playbook = load([byCursor, cursorChain("feed_trim")]);
+    const tab = firstNext("  c2 ");
+    await run(playbook, "feed_trim", tab);
+    expect(sentQueries(tab.fetchImpl)).toEqual(["?cursor=", "?cursor=c2"]);
+  });
+
+  it("stops the chain at a next value of . or .., which would move the request up a path level", async () => {
+    for (const next of [".", ".."]) {
+      const playbook = load([byCursor, cursorChain("feed_dots")]);
+      const tab = firstNext(next);
+      await expect(run(playbook, "feed_dots", tab)).rejects.toThrow(
+        new RegExp(
+          `step feed \\(list_after, page 1\\) failed: page\\.next of step feed is \\${next === "." ? "." : ".\\."}, which would move the request up a path level`,
+        ),
+      );
+      expect(sentQueries(tab.fetchImpl)).toEqual(["?cursor="]);
+    }
+  });
+
+  it("stops the chain at a next URL on another origin than its page, naming both", async () => {
+    for (const next of ["https://evil.test/feed/2/", "//evil.test/feed/2/"]) {
+      const playbook = load([byCursor, cursorChain("feed_away", { path: "$.next", segment: 2 })]);
+      const tab = firstNext(next);
+      await expect(run(playbook, "feed_away", tab)).rejects.toThrow(
+        /page\.next of step feed is a URL on https:\/\/evil\.test, not on https:\/\/feed\.test, the page it came from/,
+      );
+      expect(sentQueries(tab.fetchImpl)).toEqual(["?cursor="]);
+    }
+    const playbook = load([byCursor, cursorChain("feed_home", { path: "$.next", segment: 2 })]);
+    const tab = firstNext("https://feed.test/feed/c2/");
+    await run(playbook, "feed_home", tab);
+    expect(sentQueries(tab.fetchImpl)).toEqual(["?cursor=", "?cursor=c2"]);
   });
 
   it("stops at a page with no records", async () => {
@@ -394,6 +454,29 @@ describe("chain step paging over HTML", () => {
       "q3a",
       "q3b",
     ]);
+  });
+
+  it("prints each step's page bounds in a text dry run", () => {
+    const linked = paged("linked", {
+      op: "list_quotes",
+      page: { into: "page", next: { html: "li.next a@href" }, delayMs: 3000 },
+    });
+    const counted = paged("counted", {
+      op: "list_quotes",
+      page: { into: "page", next: "increment", max: 5 },
+    });
+    const playbook = load([quotes, linked, counted]);
+    const text = (id: string) =>
+      formatDryRun({
+        ...chain.previewChainOp({ playbook, op: playbook.ops.get(id) }),
+        receipt: "none",
+      });
+    expect(text("linked")).toContain(
+      "step feed: list_quotes, pages into page via li.next a@href (at most 3, 3000 ms apart)",
+    );
+    expect(text("counted")).toContain(
+      "step feed: list_quotes, pages into page via increment (at most 5, 2000 ms apart)",
+    );
   });
 
   it("follows the Next link of the page a workflow strategy ends on", async () => {

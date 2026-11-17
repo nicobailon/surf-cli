@@ -1096,7 +1096,7 @@ Here `list_quotes` reads `https://quotes.toscrape.com/page/{{page}}/` and return
   - `{ "html": "li.next a@href" }`: one value from the page's HTML, as `selector` or `selector@attribute`; the op must extract HTML (`extract.html`, on a network or workflow strategy);
   - `segment` (optional, with `path` or `html`): take the nth URL path segment of the value, so `/page/3/` gives `3` for 2.
 
-  Paging stops when the next value is missing (or empty), a page returns no records, a value `into` already had comes again, or `max` pages ran (default 3, at most 20). `delayMs` is the wait between pages (default 2000, at most 60000); both can be `{{input}}`. Each page's result must be a list. `path` and `html` read the step op's own response, so they can't be used on a step that runs a chain; `increment` can.
+  Paging stops when the next value is missing, empty, only whitespace or `false`, a page returns no records, a value `into` already had comes again, or `max` pages ran (default 3, at most 20). `delayMs` is the wait between pages (default 2000, at most 60000); both can be `{{input}}`. Each page's result must be a list. `path` and `html` read the step op's own response, so they can't be used on a step that runs a chain; `increment` can. A next value of `.` or `..`, or a URL on another origin than the page it came from, stops the chain with an error. Set the playbook's (or op's) `origins` when paging into an input that holds a whole URL, so the op can only fetch from those origins.
 - `output`: the step whose result the chain returns.
 
 Every quote on the first pages of quotes.toscrape.com, following each page's Next link (`/page/2/`) into `list_quotes`'s `page` input:
