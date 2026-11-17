@@ -92,8 +92,8 @@ function localOp(playbook, op, { cwd, home }) {
 // its value, or the assertion as JSON, compact or indented as the op file stores it), or when a
 // matches pattern could store or match one (patternSecretIn: a text the pattern can match holds
 // one, the pattern matches one, which also refuses broad patterns such as .*, it has a
-// backreference, or it spells most of one around a class or .), or when that check runs out of
-// work. secretIn decodes JSON escapes, so a value escaped any number of times, or written with \/
+// backreference, it has more readings than the check lists, or it spells most of one around a
+// class or ., its lookarounds read in place), or when that check runs out of work. secretIn decodes JSON escapes, so a value escaped any number of times, or written with \/
 // or \uXXXX, is found; text escaped past its 8 levels is refused as too deep to check, and text
 // too costly to decode as too large. A value over MATCH_INPUT_LIMIT is refused for any pattern: a
 // run tests only its start. Errors name the assertion's position and the variable, never the
@@ -124,6 +124,7 @@ function refuseSecretAssertions(assertions, secret) {
       if (found === MATCH_SKIPPED) throw new Error(`--save refused: the 1 s regex budget was spent before ${position}'s pattern was checked against ${name}; use fewer or simpler patterns`);
       if (found === MATCH_TIMED_OUT) throw new Error(`--save refused: ${position}'s pattern took too long (over 100 ms) on the value of ${name}; simplify it`);
       if (found === "matches") throw new Error(`--save refused: ${position}'s pattern matches the value of ${name}, which is never stored; use a narrower pattern`);
+      if (found === "too many readings") throw new Error(`--save refused: ${position}'s pattern has too many readings to check against ${name}; simplify it`);
       if (found === "backreference") throw new Error(`--save refused: ${position}'s pattern uses a backreference, which could repeat part of the value of ${name}; while env values are set, save a pattern without one`);
       throw new Error(`--save refused: ${position}'s pattern spells most of the value of ${name} around ${found.around}; assert on something else`);
     }

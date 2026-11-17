@@ -1262,4 +1262,88 @@ describe("an env value in any JSON spelling the decoder reads", () => {
     expect(redaction.secretIn("undefined", [undefined, null, ""])).toBeNull();
     expect(redaction.redactValues("undefined null", [undefined, null])).toBe("undefined null");
   });
+
+  it("refuses a pattern with more readings than it can list, whichever of them spells the value", async () => {
+    // The reviewer's shape: 17 × 17 readings, the value in a reading that is neither side's first.
+    const side = (name: string) =>
+      Array.from({ length: 17 }, (_, index) => [name, String(index).padStart(2, "0")].join(""));
+    const left = side(["head", "a"].join("-"));
+    const right = side(["tail", "b"].join("-"));
+    const secret = left[1] + right[1];
+    const pattern = `^(?:ok|(?:${left.join("|")})(?:${right.join("|")})X)$`;
+    expect(new RegExp(pattern).test(`${secret}X`)).toBe(true);
+    expect(assertions.patternTexts(pattern).exact).toBe(false);
+    expect(assertions.patternSecretIn(pattern, [secret])).toBe("too many readings");
+    const saves = await bothSaves(secret, pattern);
+    expect(saves.caller).toContain(
+      "--save refused: assertion 1's pattern has too many readings to check against SURF_TEST_ITEMS_KEY; simplify it",
+    );
+    expect(saves).toMatchObject({ ranBeforeCaller: false, unchanged: true });
+    expect(saves.host).toMatch(HOST_REFUSAL);
+  });
+
+  it("lists every reading of ordinary patterns, so they still save with a long env value", async () => {
+    const secret = "z".repeat(8192);
+    const ordinary = [
+      ["^\\d+$", "123"],
+      [".*ok.*", "ok"],
+      ["^[A-Z]{3}$", "ABC"],
+      ["(?:ok|done)", "ok"],
+      ["^(?=\\w+$)ok$", "ok"],
+      ["\\bok\\b", "ok"],
+      ["[a-f0-9]{32}", "a".repeat(32)],
+      // A wide repeat of a class lists as the class and any more copies: nothing is lost.
+      ["^\\w{1,300}$", "ok"],
+      ["^(?!error)ok$", "ok"],
+      ["^(?=.*ok)\\w+ok$", "took"],
+    ];
+    for (const [pattern, text] of ordinary) {
+      expect(assertions.patternTexts(pattern).exact, pattern).toBe(true);
+      expect(assertions.patternSecretIn(pattern, [secret]), pattern).toBeNull();
+      const body = JSON.stringify({ text });
+      const asserts = ["--assert", "$.bodyJson.text", "matches", pattern];
+      const { cwd, file } = tempShop(rawOp);
+      expect(
+        (await save(cwd, asserts, { [ENV]: secret }, hostedRun(secret, body))).saved,
+        pattern,
+      ).toBe(file);
+      const hosted = tempShop(rawOp);
+      expect((await save(hosted.cwd, asserts, {}, hostedRun(secret, body))).saved, pattern).toBe(
+        hosted.file,
+      );
+    }
+  });
+
+  it("reads a pattern's lookarounds in place, so their texts and the rest can't split the value", async () => {
+    const first = ["prefix", "fragment"].join("-");
+    const last = ["suffix", "fragment"].join("-");
+    const secret = first + last;
+    const splits = [
+      // The reviewer's case: two lookaheads, each under 3/4 of the value. It matches only ok,
+      // but its text stores the value.
+      {
+        pattern: `^(?:ok|(?=${first})(?=.{${first.length}}${last})X)$`,
+        refusal: "spells most of the value of SURF_TEST_ITEMS_KEY around the wildcard .",
+      },
+      // One lookahead and the text after it.
+      {
+        pattern: `^(?:ok|(?=${first}).{${first.length}}${last}X)$`,
+        refusal: "spells most of the value of SURF_TEST_ITEMS_KEY around the wildcard .",
+      },
+      // A lookahead right after the text before it.
+      {
+        pattern: `^(?:ok|${first}(?=${last}).+X)$`,
+        refusal: "contains the value of SURF_TEST_ITEMS_KEY",
+      },
+    ];
+    expect(new RegExp(splits[1].pattern).test(`${secret}X`)).toBe(true);
+    expect(new RegExp(splits[2].pattern).test(`${secret}X`)).toBe(true);
+    for (const { pattern, refusal } of splits) {
+      expect(new RegExp(pattern).test("ok"), pattern).toBe(true);
+      const saves = await bothSaves(secret, pattern);
+      expect(saves.caller, pattern).toContain(`--save refused: assertion 1's pattern ${refusal}`);
+      expect(saves, pattern).toMatchObject({ ranBeforeCaller: false, unchanged: true });
+      expect(saves.host, pattern).toMatch(HOST_REFUSAL);
+    }
+  });
 });

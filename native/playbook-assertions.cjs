@@ -130,6 +130,8 @@ const gapKind = (char) => GAPS[char.charCodeAt(0) - 0xe000];
 const BREAK = String.fromCharCode(0xe00f);
 // Gaps and BREAK: what splits a text into the runs of characters the filter looks for.
 const MARKS = /[\ue000-\ue00f]/;
+// Whether a text holds a character, not only gaps and breaks.
+const hasLiteral = (text) => /[^\ue000-\ue00f]/.test(text);
 // Thrown when the pattern check's work budget runs out.
 const TOO_COSTLY = Symbol("too costly");
 // Spends `steps` from a pattern check's work budget, or throws TOO_COSTLY when they don't fit,
@@ -139,7 +141,8 @@ function spendWork(work, steps) {
   work.steps += steps;
 }
 
-// What a matches pattern can match, normalized to texts: { texts, setAside, backreference, exact }.
+// What a matches pattern can match, normalized to texts: { texts, setAside, backreference,
+// lookaround, exact }.
 // Regex escapes (\xNN, \uNNNN, \cX, \0, \t, \/, \. ...) become the characters they stand for, a
 // class of one character ([d], [\x64]) becomes that character, groups and | are expanded, ^, $,
 // \b, \B and lookarounds match no characters, and a repeat is written out its fewest times, with
@@ -148,15 +151,19 @@ function spendWork(work, steps) {
 // list's first text is its fullest reading: a character under ?, * or {0,n} still spells it. A
 // part with too many texts to list keeps every text of each side next to the other side's first
 // (so the pattern's fullest reading stays listed), the rest going to setAside, as
-// do each lookaround's texts. Every text written is charged to `work` (a decodeBudget, by default
-// one sized by the pattern); past its limit this throws TOO_COSTLY. With `breaks`, an unbounded
-// repeat (+, *, {n,}) is followed by BREAK, for the spelling test's filter; `exact` is then false
-// when the texts don't list every reading (a part too large to list, a backreference, a
-// case-insensitive group). Patterns run without flags, so this follows that grammar (\u{...} is a
-// repeated u). A backreference repeats text the pattern can't list, so it is reported instead.
-function patternTexts(pattern, { work = decodeBudget(pattern.length), breaks = false } = {}) {
+// do each lookaround's texts (`lookaround` says there is one); with `inline`, a lookaround's texts
+// stand in its place instead, as the pattern's text spells them. Every text written is charged to
+// `work` (a decodeBudget, by default one sized by the pattern); past its limit this throws
+// TOO_COSTLY. With `breaks`, an unbounded repeat (+, *, {n,}) is followed by BREAK, for the
+// spelling test's filter. `exact` is false when the texts don't list every reading: a part too
+// large to list (a repeat too wide to write out counts only when it repeats characters, not gaps
+// alone), a backreference, a case-insensitive group. Patterns run without flags, so this follows
+// that grammar (\u{...} is a repeated u). A backreference repeats text the pattern can't list, so
+// it is reported instead.
+function patternTexts(pattern, { work = decodeBudget(pattern.length), breaks = false, inline = false } = {}) {
   let at = 0;
   let backreference = false;
+  let lookaround = false;
   let exact = true;
   const setAside = [];
   const spend = (texts) => spendWork(work, texts.reduce((sum, text) => sum + text.length + 1, 0));
@@ -255,17 +262,19 @@ function patternTexts(pattern, { work = decodeBudget(pattern.length), breaks = f
       return read.char !== undefined ? [read.char] : read.gap ? [gapOf(read.gap)] : null;
     }
     if (char === "(") {
-      let lookaround = false;
+      let around = false;
       if (pattern[at] === "?") {
         const head = /^\?(?:<(?![=!])[^>]*>|([a-z]*)(?:-[a-z]*)?:|(<?[=!]))/.exec(pattern.slice(at));
         at += head[0].length;
         // (?i:...) matches either case of the letters it lists.
         if (head[1]?.includes("i")) exact = false;
-        lookaround = head[2] !== undefined;
+        around = head[2] !== undefined;
       }
       const texts = alternatives();
       at++;
-      if (!lookaround) return texts;
+      if (!around) return texts;
+      lookaround = true;
+      if (inline) return texts;
       keep(texts);
       return null;
     }
@@ -283,7 +292,8 @@ function patternTexts(pattern, { work = decodeBudget(pattern.length), breaks = f
     // {n,} is written out n times, and once more when n is 0.
     const max = unbounded ? Math.max(min, 1) : quantifier[3] ? Number(quantifier[4]) : min;
     if (min * Math.max(1, ...texts.map((text) => text.length)) > MATCH_INPUT_LIMIT || max - min > PATTERN_TEXT_LIMIT) {
-      exact = false;
+      // Copies of gaps alone are what a text and a gap after it read as.
+      if (texts.some(hasLiteral)) exact = false;
       keep(texts);
       return listed([...texts.map((text) => text + gapOf(GAPS[3])), ...(min === 0 ? [""] : [])]);
     }
@@ -323,7 +333,7 @@ function patternTexts(pattern, { work = decodeBudget(pattern.length), breaks = f
     return listed(emptyLast([...each.map((texts) => texts[0]).filter((text) => text !== undefined), ...each.flatMap((texts) => texts.slice(1))]));
   };
   const texts = alternatives();
-  return { texts: [...new Set(texts)], setAside, backreference, exact };
+  return { texts: [...new Set(texts)], setAside, backreference, lookaround, exact };
 }
 
 // Whether `text`, a patternTexts text, spells most of `spelling` around its gaps: its characters,
@@ -399,10 +409,13 @@ function couldMatch(read, spelling, spend) {
 // "found" or "too deep" when secretIn finds one in a text the pattern can match or set aside
 // (patternTexts); "matches" when it matches a spelling of one (patternSpellings), which also
 // catches broad patterns such as .*; MATCH_TIMED_OUT or MATCH_SKIPPED when that test is cut short
-// (from bounded-regex.cjs, spending `budget`); "backreference" for a pattern with one; { around }
-// when a text spells most of a spelling around a gap (spellsMost), `around` naming the gap's
-// kind; else null. Ordinary patterns (^\d+$, .*ok.*, ^[A-Z]{3}$, (?:ok|done)) spell no value, and
-// pass. Writing the texts, decoding them, the spelling tests (each a pass over its spelling) and
+// (from bounded-regex.cjs, spending `budget`); "backreference" for a pattern with one; "too many
+// readings" when the texts don't list every reading (patternTexts' `exact`), as a reading left
+// out could spell one; { around } when a text spells most of a spelling around a gap
+// (spellsMost), `around` naming the gap's kind; else null. A lookaround matches no characters,
+// but the pattern's text spells it next to what is around it, so the texts are also read with
+// each lookaround's texts in place (`inline`), for the "found", "too many readings" and 3/4
+// tests. Ordinary patterns (^\d+$, .*ok.*, ^[A-Z]{3}$, (?:ok|done)) spell no value, and pass. Writing the texts, decoding them, the spelling tests (each a pass over its spelling) and
 // spellsMost all spend from `work` (patternWork): "too costly" when it runs out, or when a value
 // is over MATCH_INPUT_LIMIT, longer than a run tests. A spelling test is skipped when the
 // spelling lacks a text every match of the pattern holds (couldMatch), so a broad pattern such as
@@ -413,7 +426,9 @@ function patternSecretIn(pattern, values, { budget = createRegexBudget(), work =
   const spend = (steps) => spendWork(work, steps);
   try {
     const read = patternTexts(pattern, { work });
-    const found = [...read.texts, ...read.setAside].map((text) => secretIn(text, values, { budget: work }));
+    const inPlace = read.lookaround ? patternTexts(pattern, { work, inline: true }) : read;
+    const texts = [...new Set([...read.texts, ...inPlace.texts])];
+    const found = [...texts, ...read.setAside].map((text) => secretIn(text, values, { budget: work }));
     const status = ["found", "too deep", "too costly"].find((candidate) => found.includes(candidate));
     if (status) return status;
     const filter = patternTexts(pattern, { work, breaks: true });
@@ -429,7 +444,8 @@ function patternSecretIn(pattern, values, { budget = createRegexBudget(), work =
       }
     }
     if (read.backreference) return "backreference";
-    for (const text of read.texts) {
+    if (!read.exact || !inPlace.exact) return "too many readings";
+    for (const text of texts) {
       const gap = [...text].find(gapKind);
       if (gap === undefined) continue;
       // A text can spell at most its own characters' worth.
