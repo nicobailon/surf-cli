@@ -11,7 +11,7 @@ const {
   readPrivateFile,
   readPrivateJson,
 } = require("./private-state.cjs");
-const { redactEchoText, redactEchoUrl, redactSensitiveFields, redactUrlSecrets, safeHeaders, secretHeaderValues } = require("./redaction.cjs");
+const { redactEchoText, redactEchoUrl, redactSensitiveFields, redactUrlSecrets, safeHeaders, secretHeaderEchoes } = require("./redaction.cjs");
 const { draftedEvents, forgetTypedValues, heldTypingCalls, maskTypedValuesInUrl, numberRedactedMarkers, redactTypedValuesInUrl, rememberTypedValues, typedValuesForTrace } = require("./record-typed-values.cjs");
 const { commandMetadata, promoteRedactedStepArgs } = require("./workflow-definition.cjs");
 const { escapeStepArgs, escapeTemplates } = require("./playbook-template.cjs");
@@ -222,16 +222,15 @@ function redactTypedHeaders(headers, typed) {
 // its marker in the entry's URLs, after the echoes go, so the markers' offsets hold. `urlMarkers`
 // lists the markers in the entry's URL, with the JSON type of a number or boolean one.
 function sanitizeTraceEntry(entry, includeInputValues = false, typed = []) {
-  const secrets = [entry.requestHeaders, entry.responseHeaders].flatMap((headers) => secretHeaderValues(headers));
-  const scrub = (value) => (typeof value === "string" && secrets.length > 0 ? redactEchoText(value, secrets) : value);
-  const echoUrl = (value) => (secrets.length > 0 ? redactEchoUrl(value, secrets) : value);
+  const secrets = secretHeaderEchoes([entry.requestHeaders, entry.responseHeaders]);
+  const scrub = (value) => (typeof value === "string" ? redactEchoText(value, secrets) : value);
   const keptHeaders = (headers) => redactTypedHeaders(Object.fromEntries(Object.entries(safeHeaders(headers)).map(([name, value]) => [name, scrub(value)])), typed);
-  const { url, markers } = maskTypedValuesInUrl(echoUrl(redactUrlSecrets(entry.url)), typed, { body: entry.requestBody });
+  const { url, markers } = maskTypedValuesInUrl(redactEchoUrl(redactUrlSecrets(entry.url), secrets), typed, { body: entry.requestBody });
   return {
     ...redactSensitiveFields(entry),
     url,
     ...(markers.length ? { urlMarkers: markers } : {}),
-    ...(entry.tabUrl !== undefined ? { tabUrl: redactTypedValuesInUrl(echoUrl(redactUrlSecrets(entry.tabUrl)), typed) } : {}),
+    ...(entry.tabUrl !== undefined ? { tabUrl: redactTypedValuesInUrl(redactEchoUrl(redactUrlSecrets(entry.tabUrl), secrets), typed) } : {}),
     requestHeaders: keptHeaders(entry.requestHeaders),
     responseHeaders: keptHeaders(entry.responseHeaders),
     responseBody: entry.responseBody === undefined ? undefined : "<response-body>",

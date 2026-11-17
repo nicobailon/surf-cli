@@ -508,3 +508,131 @@ describe("a quoted auth parameter echoed in a JSON body", () => {
     });
   });
 });
+
+describe("echo redaction that keeps an export's structure", () => {
+  // Dummy values, built from parts so no literal here reads as a credential.
+  const LONG = ["dummy", "long", "key", "20"].join("-");
+  const QUOTED = ["dummy", 'quo"ted', "va\\lue", "20"].join("-");
+  const quote = (value: string) => `"${value.replace(/["\\]/g, "\\$&")}"`;
+  const spellings = (value: string) => {
+    const once = JSON.stringify(value).slice(1, -1);
+    return [value, once, JSON.stringify(once).slice(1, -1), encodeURIComponent(value)];
+  };
+
+  it("redacts a body key that is a long or a quoted secret, and numbers the collisions", () => {
+    const entry = {
+      id: "r-k",
+      method: "POST",
+      url: "https://example.test/api",
+      requestHeaders: { Authorization: `Bearer ${LONG}`, "x-api-key": QUOTED },
+      requestBody: JSON.stringify({
+        [LONG]: "ok",
+        "<redacted>": "kept",
+        [QUOTED]: { n: 1 },
+        page: 2,
+      }),
+      responseBody: JSON.stringify([{ [QUOTED]: "ok" }]),
+    };
+    for (const format of ["json", "jsonl", "har"]) {
+      const text = exporter.serializeNetworkExport([entry], format);
+      for (const value of [LONG, QUOTED]) {
+        for (const spelling of spellings(value)) {
+          expect(text, format).not.toContain(spelling);
+        }
+      }
+      expect(text, format).not.toContain("dummy");
+    }
+    const kept = exporter.publicEntry(entry);
+    expect(JSON.parse(kept.requestBody)).toEqual({
+      "<redacted-2>": "ok",
+      "<redacted>": "kept",
+      "<redacted-3>": { n: 1 },
+      page: 2,
+    });
+    expect(JSON.parse(kept.responseBody)).toEqual([{ "<redacted>": "ok" }]);
+  });
+
+  it("keeps a key that only holds a secret, or equals one under 4 characters", () => {
+    const kept = exporter.publicEntry({
+      id: "r-k2",
+      url: "https://example.test/api",
+      requestHeaders: { "x-csrf-token": "abc" },
+      requestBody: JSON.stringify({ abc: "abc", abcd: 1 }),
+    });
+    expect(JSON.parse(kept.requestBody)).toEqual({ abc: "<redacted>", abcd: 1 });
+  });
+
+  it("redacts a long secret echoed in the entry's URL, keeping its query names", () => {
+    const kept = exporter.publicEntry({
+      id: "r-u",
+      url: `https://example.test/api?echo=${encodeURIComponent(LONG)}&page=2`,
+      requestHeaders: { Authorization: `Bearer ${LONG}` },
+    });
+    expect(kept.url).toBe("https://example.test/api?echo=<redacted>&page=2");
+  });
+
+  it.each(["v", "id", "true"])(
+    "redacts a short quoted auth parameter (%s) as a whole JSON string or query value",
+    (value) => {
+      const kept = exporter.publicEntry({
+        id: "r-s",
+        url: "https://example.test/api",
+        requestHeaders: { Authorization: `ResyAPI api_key=${quote(value)}` },
+        requestBody: `key=${value}&page=2`,
+        responseBody: JSON.stringify({ key: value, note: `${value} inside`, ok: true, n: 1 }),
+      });
+      expect(JSON.parse(kept.responseBody)).toEqual({
+        key: "<redacted>",
+        note: `${value} inside`,
+        ok: true,
+        n: 1,
+      });
+      expect(kept.requestBody).toBe("key=<redacted>&page=2");
+    },
+  );
+
+  it.each([
+    ["a comma", ["dummy", "com,ma", "21"].join("-")],
+    ["a semicolon", ["dummy", "semi;colon", "21"].join("-")],
+    ["an escaped quote", ["dummy", 'esc"aped', "21"].join("-")],
+    ["a comma and a short tail", ["x", "y"].join(",")],
+  ])("parses a quoted auth parameter holding %s whole", (_label, value) => {
+    const kept = exporter.publicEntry({
+      id: "r-p",
+      url: "https://example.test/api",
+      requestHeaders: { Authorization: `ResyAPI api_key=${quote(value)}, realm="shop"` },
+      responseBody: JSON.stringify({ token: value, realm: "shop", n: 1 }),
+    });
+    expect(JSON.parse(kept.responseBody)).toEqual({
+      token: "<redacted>",
+      realm: "<redacted>",
+      n: 1,
+    });
+    for (const spelling of spellings(value)) {
+      expect(kept.responseBody).not.toContain(spelling);
+    }
+  });
+
+  it("redacts a whole form value that equals a short numeric secret, and leaves other numbers", () => {
+    const code = ["123", "4567"].join("");
+    const kept = exporter.publicEntry({
+      id: "r-n",
+      url: "https://example.test/api",
+      requestHeaders: { "x-csrf-token": code },
+      requestBody: `code=${code}&page=1&ref=${code}9`,
+    });
+    expect(kept.requestBody).toBe(`code=<redacted>&page=1&ref=${code}9`);
+  });
+
+  it("treats a body as a form only by its strict shape, so markup keeps the whole-token rule", () => {
+    const kept = exporter.publicEntry({
+      id: "r-x",
+      url: "https://example.test/api",
+      requestHeaders: { Cookie: ["lang", "en"].join("=") },
+      requestBody: "<root>lang=en</root>",
+      responseBody: "lang=en x=1",
+    });
+    expect(kept.requestBody).toBe("<root><redacted></root>");
+    expect(kept.responseBody).toBe("<redacted> x=1");
+  });
+});

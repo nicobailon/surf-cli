@@ -3,7 +3,7 @@ const path = require("path");
 const { version: PACKAGE_VERSION } = require("../package.json");
 const { redactSecretBodyFields } = require("./body-redaction.cjs");
 const { atomicWriteFile } = require("./private-state.cjs");
-const { isSecretHeader, redactEchoText, redactUrlIfSecret, secretHeaderValues } = require("./redaction.cjs");
+const { isSecretHeader, redactEchoText, redactEchoUrl, redactUrlIfSecret, secretHeaderEchoes } = require("./redaction.cjs");
 
 const MAX_NETWORK_EXPORT_FILE_BYTES = 256 * 1024 * 1024;
 const INTERNAL_FIELDS = new Set(["_requestId", "_responseReceived", "_loadingFinished"]);
@@ -17,7 +17,7 @@ function redactHeaders(headers, secretHeaders, secrets) {
   if (!headers || typeof headers !== "object" || Array.isArray(headers)) return headers;
   return Object.fromEntries(Object.entries(headers).map(([name, value]) => {
     if (isSecretHeader(name) || secretHeaders.has(name.toLowerCase())) return [name, "<redacted>"];
-    return [name, typeof value === "string" && secrets.length > 0 ? redactEchoText(value, secrets) : value];
+    return [name, typeof value === "string" ? redactEchoText(value, secrets) : value];
   }));
 }
 
@@ -25,8 +25,8 @@ const BODY_FIELDS = new Set(["requestBody", "responseBody"]);
 const TEXT_BODY_TYPE = /json|x-www-form-urlencoded|multipart\/form-data|^text\/|xml|javascript/i;
 
 // What an export may contain: no internal fields, secret headers or URL credentials, and no echo
-// of a secret header's value in a text body or another header (a page that reflects its
-// Authorization header), as sent or JSON-escaped. `secretHeaders` names, in lower case, the headers
+// of a secret header's value in a text body, the URL or another header (a page that reflects its
+// Authorization header), in any spelling (see secretHeaderEchoes). `secretHeaders` names, in lower case, the headers
 // saved ops read from the environment (see envBackedHeaders). Secret-named body fields (password=,
 // "token":) read <redacted> unless `rawBodies` (--raw-bodies).
 function publicEntry(entry, { secretHeaders = [], rawBodies = false } = {}) {
@@ -34,13 +34,13 @@ function publicEntry(entry, { secretHeaders = [], rawBodies = false } = {}) {
     throw new Error("network export entries must be objects");
   }
   const named = new Set(secretHeaders.map((name) => String(name).toLowerCase()));
-  const secrets = [entry.requestHeaders, entry.responseHeaders].flatMap((headers) => secretHeaderValues(headers, secretHeaders));
+  const secrets = secretHeaderEchoes([entry.requestHeaders, entry.responseHeaders], secretHeaders);
   const result = Object.create(null);
   for (const [key, value] of Object.entries(entry)) {
     if (INTERNAL_FIELDS.has(key)) continue;
     if (HEADER_FIELDS.has(key)) result[key] = redactHeaders(value, named, secrets);
-    else if (URL_FIELDS.has(key)) result[key] = redactUrlIfSecret(value);
-    else if (BODY_FIELDS.has(key) && typeof value === "string" && secrets.length > 0 && !(key === "responseBody" && entry.responseBodyEncoding === "base64")) {
+    else if (URL_FIELDS.has(key)) result[key] = redactEchoUrl(redactUrlIfSecret(value), secrets);
+    else if (BODY_FIELDS.has(key) && typeof value === "string" && !(key === "responseBody" && entry.responseBodyEncoding === "base64")) {
       result[key] = redactEchoText(value, secrets);
     } else result[key] = value;
   }

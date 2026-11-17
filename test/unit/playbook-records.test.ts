@@ -32,6 +32,16 @@ function tempRoot() {
   return root;
 }
 
+// Every file under `directory`, joined, so a test can search all of it for a value.
+const everyFile = (directory: string): string =>
+  fs
+    .readdirSync(directory, { recursive: true, withFileTypes: true })
+    .filter((entry: { isFile: () => boolean }) => entry.isFile())
+    .map((entry: { parentPath: string; name: string }) =>
+      fs.readFileSync(path.join(entry.parentPath, entry.name), "utf8"),
+    )
+    .join("\n");
+
 // A step is a command name, or [name, args] for a command whose effect depends on its arguments.
 type Step = string | [string, Entry];
 const step = (command: string, args: Entry): Step => [command, args];
@@ -2331,16 +2341,6 @@ describe("values typed with locate.* --action fill", () => {
     endedAt: new Date().toISOString(),
     resultSummary: "success",
   });
-  // Every file under `directory`, joined, so a test can search all of it for a value.
-  const everyFile = (directory: string): string =>
-    fs
-      .readdirSync(directory, { recursive: true, withFileTypes: true })
-      .filter((entry: { isFile: () => boolean }) => entry.isFile())
-      .map((entry: { parentPath: string; name: string }) =>
-        fs.readFileSync(path.join(entry.parentPath, entry.name), "utf8"),
-      )
-      .join("\n");
-
   it.each(Object.entries(fill))("redacts the value %s fills", (command, args) => {
     const redacted = redactCommandArgs(command, args);
     expect(JSON.stringify(redacted)).not.toContain("hunter2-S3cret!");
@@ -2974,15 +2974,6 @@ describe("values typed during a record, in captured URLs", () => {
     },
     responseHeaders: { "content-type": "application/json" },
   };
-  const everyFile = (directory: string): string =>
-    fs
-      .readdirSync(directory, { recursive: true, withFileTypes: true })
-      .filter((entry: { isFile: () => boolean }) => entry.isFile())
-      .map((entry: { parentPath: string; name: string }) =>
-        fs.readFileSync(path.join(entry.parentPath, entry.name), "utf8"),
-      )
-      .join("\n");
-
   function recordSearch(includeInputValues: boolean) {
     const root = tempRoot();
     const home = path.dirname(root);
@@ -3510,7 +3501,7 @@ describe("a typed value a URL holds only on a guessed reading, through every art
   const ROUTE = `https://example.test/${encodeURIComponent(TYPED)}`;
   const spelled = TYPED.replace(/ /g, "+");
   const typeArgs = { selector: "#q", text: TYPED };
-  const everyFile = (directory: string) =>
+  const everyPath = (directory: string) =>
     fs
       .readdirSync(directory, { recursive: true, withFileTypes: true })
       .filter((entry: { isFile: () => boolean }) => entry.isFile())
@@ -3571,7 +3562,7 @@ describe("a typed value a URL holds only on a guessed reading, through every art
     const events = records
       .readEvents(record.id, root)
       .filter((e: Entry) => e.type === "browser.event");
-    const files = [...everyFile(home), ...everyFile(folder)];
+    const files = [...everyPath(home), ...everyPath(folder)];
     return { draft, trace, events, files, home, folder };
   }
 
@@ -3626,15 +3617,6 @@ describe("values key, network.replay --set and locate.role --name carry", () => 
     ["network.replay", { id: "r_1", set: { "query.q": TYPED } }, "set"],
     ["locate.role", { role: "textbox", name: TYPED, action: "click" }, "name"],
   ];
-  const everyFile = (directory: string): string =>
-    fs
-      .readdirSync(directory, { recursive: true, withFileTypes: true })
-      .filter((entry: { isFile: () => boolean }) => entry.isFile())
-      .map((entry: { parentPath: string; name: string }) =>
-        fs.readFileSync(path.join(entry.parentPath, entry.name), "utf8"),
-      )
-      .join("\n");
-
   it.each(commands)("redacts %s %j", (command, args, name) => {
     expect(redactCommandArgs(command, args)[name]).toBe(`<${name}>`);
     expect(redactCommandArgs(command, args, true)[name]).toEqual(args[name]);
@@ -3693,16 +3675,42 @@ describe("a record's trace, when a secret header holds a short value", () => {
     requestBody: JSON.stringify(body),
   });
 
-  it("keeps a query value and a JSON number that equal a one-character x-csrf-token", () => {
-    const url = "https://example.test/api/search?page=1&q=x";
+  it("redacts a whole query value that equals a one-character x-csrf-token, and keeps a JSON number", () => {
+    const url = "https://example.test/api/search?page=1&q=x&n=12";
     const { kept, request } = traceAndDraft(
       sent({ "x-csrf-token": "1" }, url, { page: 1, q: "x", token: "1" }),
     );
-    expect(kept.url).toBe(url);
+    expect(kept.url).toBe("https://example.test/api/search?page=<redacted>&q=x&n=12");
     expect(JSON.parse(kept.requestBody)).toEqual({ page: 1, q: "x", token: "<redacted>" });
-    expect(request.query).toEqual({ page: "1", q: "x" });
+    expect(request.query).toEqual({ page: "<redacted>", q: "x", n: "12" });
     expect(JSON.parse(request.body)).toEqual({ page: 1, q: "x", token: "<redacted>" });
   });
+
+  it("redacts a whole query value that equals a numeric x-csrf-token, and keeps page=1", () => {
+    const code = ["123", "4567"].join("");
+    const { kept, request } = traceAndDraft(
+      sent({ "x-csrf-token": code }, `https://example.test/api/verify?code=${code}&page=1`, {}),
+    );
+    expect(kept.url).toBe("https://example.test/api/verify?code=<redacted>&page=1");
+    expect(request.query).toEqual({ code: "<redacted>", page: "1" });
+  });
+
+  it.each(["v", "id", "true"])(
+    "redacts a short quoted auth parameter (%s) from the trace and draft, which still parse",
+    (value) => {
+      const { kept, request } = traceAndDraft(
+        sent(
+          { Authorization: `ResyAPI api_key="${value}"` },
+          `https://example.test/api/search?key=${value}&q=x`,
+          { key: value, q: "x", ok: true },
+        ),
+      );
+      expect(kept.url).toBe("https://example.test/api/search?key=<redacted>&q=x");
+      expect(JSON.parse(kept.requestBody)).toEqual({ key: "<redacted>", q: "x", ok: true });
+      expect(request.query).toEqual({ key: "<redacted>", q: "x" });
+      expect(JSON.parse(request.body)).toEqual({ key: "<redacted>", q: "x", ok: true });
+    },
+  );
 
   it("never rewrites a key that equals the token, only a whole string value", () => {
     const { kept, request } = traceAndDraft(
@@ -3720,5 +3728,50 @@ describe("a record's trace, when a secret header holds a short value", () => {
     expect(kept.url).toBe(url);
     expect(JSON.parse(kept.requestBody)).toEqual({ lang: "en" });
     expect(request.query).toEqual({ lang: "en", q: "x" });
+  });
+});
+
+describe("a record's trace, when a body key is a secret header's value", () => {
+  // Dummy values, built from parts so no literal here reads as a credential.
+  const LONG = ["dummy", "long", "key", "22"].join("-");
+  const QUOTED = ["dummy", 'quo"ted', "va\\lue", "22"].join("-");
+
+  it("keeps a long and a quoted secret key out of the trace and draft, which still parse", () => {
+    const root = tempRoot();
+    const record = records.startRecord({
+      site: "fixture",
+      op: "search",
+      tabId: 1,
+      origin: "https://example.test",
+      network: true,
+      includeInputValues: true,
+      root,
+    });
+    records.attachNetworkTrace(
+      record.id,
+      [
+        {
+          id: "r_1",
+          method: "POST",
+          status: 200,
+          type: "Fetch",
+          mimeType: "application/json",
+          url: "https://example.test/api/search",
+          requestHeaders: {
+            "content-type": "application/json",
+            Authorization: `Bearer ${LONG}`,
+            "x-api-key": QUOTED,
+          },
+          requestBody: JSON.stringify({ [LONG]: "ok", [QUOTED]: "ok", q: "x" }),
+        },
+      ],
+      root,
+      { capture: COMPLETE },
+    );
+    const { draft } = records.stopRecord({ target: TAB, draft: true, root });
+    const request = draft.run.find((s: Entry) => s.using === "network").request;
+    expect(JSON.parse(request.body)).toEqual({ "<redacted>": "ok", "<redacted-2>": "ok", q: "x" });
+    const written = everyFile(root);
+    expect(written).not.toContain("dummy");
   });
 });
