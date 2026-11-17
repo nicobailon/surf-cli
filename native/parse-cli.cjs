@@ -15,7 +15,8 @@ const { resolveOp } = require("./playbooks.cjs");
 const { getPrivateStateRoot, readPrivateJson } = require("./private-state.cjs");
 const { WINNER_MARGIN, formatCandidates, siteOf } = require("./record-candidates.cjs");
 const { RESULT_LIMIT } = require("./bounded-regex.cjs");
-const { RECORDS_LIMIT, inferHtml, inferJson, keyFields } = require("./parse-infer.cjs");
+const { inferPage } = require("./parse-embedded.cjs");
+const { RECORDS_LIMIT, inferJson, keyFields } = require("./parse-infer.cjs");
 const { goalNeedsRecipe, opName, planInputs, siteName } = require("./parse-inputs.cjs");
 const { checkRobots } = require("./parse-robots.cjs");
 
@@ -62,7 +63,8 @@ function parseArgs(argv) {
 }
 
 // Whether the pick can be trusted: the top read is a first-party JSON or HTML document and no other
-// such request comes within the margin (a JSON with records beats a document too large to sample).
+// such request comes within the margin (a JSON with records beats a document too large to sample,
+// and a document with embedded records beats a JSON within the margin).
 // A low score is fine when nothing competes. `fail` when there is nothing to pick: the page answered
 // an error, or no request can be replayed.
 function judgePick(candidates, url) {
@@ -74,6 +76,10 @@ function judgePick(candidates, url) {
   const reads = candidates.filter((candidate) => candidate.eligible && candidate.effect === "read");
   const [top] = reads;
   if (!top) return { fail: "the record holds no request a read op can replay" };
+  // The page's own Document holding records in its embedded JSON carries the data that a JSON beside
+  // it (recommendations, a cart) ties with: it wins within the margin.
+  const holder = reads.find((candidate) => isData(candidate) && candidate.type === "Document" && candidate.reasons.some((reason) => /^\d+ embedded records$/.test(reason)));
+  if (holder && top.score - holder.score < WINNER_MARGIN) return { pick: holder };
   if (!isData(top)) return { why: `the top request, ${top.method} ${top.url} (score ${top.score}), isn't a first-party JSON or HTML document` };
   const records = (candidate) => candidate.reasons.some((reason) => /^\d+ records$/.test(reason));
   const rival = reads.slice(1).find((candidate) => isData(candidate) && (top.score - candidate.score < WINNER_MARGIN || (top.unsampled && top.type === "Document" && records(candidate))));
@@ -210,7 +216,7 @@ async function finish({ spec, site, op, recorded, saved, cwd, gapMs, host, endpo
   const head = { status: response.status, ok: response.ok, url: response.url, headers: response.headers };
   const headChars = JSON.stringify({ ...head, extracted: null }, null, 2).length - JSON.stringify({ extracted: null }, null, 2).length;
   const limit = Math.min(RECORDS_LIMIT, RESULT_LIMIT - headChars - HEAD_SLACK);
-  const found = response.bodyJson !== undefined ? inferJson(response.bodyJson, { limit }) : typeof response.body === "string" ? inferHtml(response.body, { baseUrl: response.url || spec.url, detail, limit }) : undefined;
+  const found = response.bodyJson !== undefined ? inferJson(response.bodyJson, { limit }) : typeof response.body === "string" ? inferPage(response.body, { baseUrl: response.url || spec.url, detail, goal: spec.goal, limit }) : undefined;
   if (!found) throw new Error("found no records or fields to extract from its response");
   saveExtract({ playbook: site, op, extract: found.extract, cwd });
   commands.push(extractCommand(site, op, found.extract));
@@ -251,9 +257,14 @@ function extractCommand(site, op, extract) {
   if (extract.html) {
     words.push("--item", extract.html.item);
     for (const [name, field] of Object.entries(extract.html.fields)) words.push("--field", `${name}=${field}`);
-  } else if (extract.jsonPath) words.push("--value", extract.jsonPath);
+  } else if (extract.jsonPath && !extract.embedded) words.push("--value", extract.jsonPath);
   else {
-    words.push("--records", extract.records);
+    if (extract.embedded) {
+      const { selector, assign, type } = extract.embedded;
+      words.push(...(assign ? ["--assign", assign] : ["--embedded", selector]), ...(type ? ["--ld-type", type] : []));
+      if (extract.jsonPath) words.push("--value", extract.jsonPath);
+    }
+    if (extract.records) words.push("--records", extract.records);
     for (const [name, field] of Object.entries(extract.fields || {})) words.push("--field", `${name}=${field}`);
   }
   return shell(words);
@@ -262,7 +273,8 @@ function extractCommand(site, op, extract) {
 function formatResult(value) {
   const { extract, test } = value;
   const fields = extract.html ? Object.keys(extract.html.fields) : Object.keys(extract.fields || {});
-  const where = extract.html ? extract.html.item : extract.records ?? extract.jsonPath;
+  const source = extract.embedded ? `${extract.embedded.assign ?? extract.embedded.selector}${extract.embedded.type ? ` (${extract.embedded.type})` : ""} ` : "";
+  const where = extract.html ? extract.html.item : `${source}${extract.records ?? extract.jsonPath}`;
   const lines = [
     `recorded ${value.record}  picked ${value.request}`,
     `saved   ${value.playbook} ${value.op}  origins: ${value.origins.join(", ")}`,

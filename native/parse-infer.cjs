@@ -134,8 +134,10 @@ function largestRecords(value, path = "$", depth = 0) {
 const FIELD_ORDER = [/^(id|uuid|slug|key)$/i, /^(title|name|headline)$/i, /^(url|link|href|permalink)$/i];
 const rank = (key) => { const at = FIELD_ORDER.findIndex((pattern) => pattern.test(key)); return at < 0 ? FIELD_ORDER.length : at; };
 
-function inferJson(value, { limit = RECORDS_LIMIT } = {}) {
-  const found = largestRecords(value);
+// `at` ({ path, items }) names the records, or null for none (the whole value); by default the
+// largest array. Fields the goal names (`prefer`) come after id, title and url; `names` renames a key.
+function inferJson(value, { limit = RECORDS_LIMIT, at = largestRecords(value), prefer = () => false, names = {} } = {}) {
+  const found = at;
   if (!found) {
     const chars = measure(value);
     return chars <= limit ? { mode: "value", extract: { jsonPath: "$" }, records: null, chars, dropped: [] } : undefined;
@@ -146,9 +148,10 @@ function inferJson(value, { limit = RECORDS_LIMIT } = {}) {
       if (KEY.test(key) && !keys.includes(key) && field !== null && typeof field !== "object") keys.push(key);
     }
   }
-  const ordered = keys.map((key, index) => [key, index]).sort((a, b) => rank(a[0]) - rank(b[0]) || a[1] - b[1]).map(([key]) => key).slice(0, 8);
+  const order = (key) => (rank(key) < FIELD_ORDER.length ? rank(key) : prefer(names[key] || key) ? FIELD_ORDER.length : FIELD_ORDER.length + 1);
+  const ordered = keys.map((key, index) => [key, index]).sort((a, b) => order(a[0]) - order(b[0]) || a[1] - b[1]).map(([key]) => key).slice(0, 8);
   const project = (fields) => found.items.map((item) => Object.fromEntries(Object.entries(fields).map(([name, key]) => [name, item[key]])));
-  const fit = ordered.length ? fitRecords(Object.fromEntries(ordered.map((key) => [key, key])), project, limit) : { fields: {}, records: found.items, chars: measure(found.items), dropped: [] };
+  const fit = ordered.length ? fitRecords(Object.fromEntries(ordered.map((key) => [names[key] || key, key])), project, limit) : { fields: {}, records: found.items, chars: measure(found.items), dropped: [] };
   const extract = { records: found.path, ...(Object.keys(fit.fields).length ? { fields: fit.fields } : {}) };
   return { mode: "records", extract, records: found.items.length, chars: fit.chars, dropped: fit.dropped, sample: fit.records[0] };
 }
@@ -430,4 +433,4 @@ function keyFields(found) {
   return keys.length ? keys : fields.slice(0, 1);
 }
 
-module.exports = { RECORDS_LIMIT, inferHtml, inferJson, keyFields, selectAll };
+module.exports = { KEY, MIN_ITEMS, RECORDS_LIMIT, inferHtml, inferJson, keyFields, selectAll };

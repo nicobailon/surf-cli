@@ -312,4 +312,4 @@ async function runCollect({ spec, executeTool, sleep = (ms) => new Promise((reso
   return filterRecords([...byKey.values()], options.keep);
 }
 
-module.exports = { hiddenTabError, htmlExtractFunction, parseHtmlExtract, runCollect, validateCollectSpec };
+module.exports = { assertSelector, hiddenTabError, htmlExtractFunction, parseHtmlExtract, runCollect, validateCollectSpec };

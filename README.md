@@ -1060,6 +1060,20 @@ surf pb client verify ./client
 
 Generated manifests declare provenance and authentication environment inputs. Surf leaves out cookies, bearer tokens, and secret headers. A client of a write needs `--write`: `client derive` of a captured write (POST, PUT, PATCH or DELETE; POST reads included) or `client export` of a write op. It sends with no receipt, and its body is as captured: a record that kept input values (`--include-input-values`) puts them, passwords included, in `surf-client.json`, whose `noEmbeddedSecrets` is then `false`. Make a body field an input with `pb param` first to leave it out. `client verify --live` of a write client needs `--write` too.
 
+#### Parse a page into an op
+
+`surf parse <url> --goal "<what you want>"` records the page, picks the request that carries the data, names its inputs, infers an extract and saves a shape-only network test, all in one command (the surf skill's `references/parse-recipe.md` covers what it can't do). For an HTML page it first looks for data the page embeds in its own HTML: Next.js's `<script id="__NEXT_DATA__">`, other `<script type="application/json">` (Shopify's `data-product-json`), JSON-LD (`@graph` included; breadcrumbs, site and organization nodes are skipped), and `window.X = {...};` or `var X = {...};` state in inline scripts, read only when the object is valid JSON (nothing is run). Each one is a candidate, like a JSON response: an array of records (a product's `variants`, with `option1`/`option2` named after the product's `options`, such as `color` and `size`) or one detail object (a JSON-LD `Product` with its `offers`), scored against the goal's words. It wins when it matches the goal or holds at least as many records as the HTML shows. Otherwise, or when the embedded JSON isn't valid, parse infers from the HTML as before. A page Document that embeds records also outranks a JSON request beside it within the pick margin (recommendations, a cart).
+
+The saved extract names where the JSON is, then picks from it as a JSON extract does:
+
+```jsonc
+{ "embedded": { "selector": "script#__NEXT_DATA__" }, "records": "$.props.pageProps.items", "fields": { "id": "id", "name": "name" } }
+{ "embedded": { "selector": "script[type=\"application/ld+json\"]", "type": "Product" }, "jsonPath": "$" }
+{ "embedded": { "assign": "window.__STATE__" }, "records": "$.search.results" }
+```
+
+`surf pb extract <pb> <op> --embedded <css> [--ld-type <type>]` or `--assign <name>`, with `--records`, `--field`, `--filter` or `--value $.path`, sets one by hand. It runs on network strategies, in the tab like `extract.html`, under the same 50,000-character cap. A replay fails with a clear error when the page no longer embeds the data. A client from `pb client` prints the raw HTML instead.
+
 #### Chain ops
 
 A chain op runs other ops of the same playbook in order and feeds one step's result into the next step's inputs, such as a page of quotes and then each quote's author in detail. It has `chain` and `output` in place of `run`, and `surf use` runs it in the tab like any op:

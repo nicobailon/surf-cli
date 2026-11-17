@@ -486,4 +486,44 @@ describe("parse pick", () => {
       fail: "the record holds no request a read op can replay",
     });
   });
+
+  it("takes the page's Document over a JSON within the margin when the page embeds records", () => {
+    const candidate = (
+      id: string,
+      type: string,
+      url: string,
+      score: number,
+      reasons: string[],
+    ) => ({
+      id,
+      method: "GET",
+      status: 200,
+      type,
+      url,
+      eligible: true,
+      effect: "read",
+      score,
+      reasons,
+    });
+    const recommended = candidate("r_json", "XHR", "https://a.example/recs.json", 14, [
+      "JSON",
+      "4 records",
+      "first-party",
+    ]);
+    const page = (reasons: string[], score: number) =>
+      candidate("r_doc", "Document", "https://a.example/p/tee", score, reasons);
+    const embedded = page(["HTML document", "8 embedded records", "first-party"], 12);
+    expect(judgePick([recommended, embedded], "https://a.example/p/tee")).toEqual({
+      pick: embedded,
+    });
+    expect(
+      judgePick(
+        [recommended, page(["HTML document", "first-party"], 12)],
+        "https://a.example/p/tee",
+      ),
+    ).toHaveProperty("why");
+    expect(judgePick([{ ...recommended, score: 15 }, embedded], "https://a.example/p/tee")).toEqual(
+      { pick: { ...recommended, score: 15 } },
+    );
+  });
 });

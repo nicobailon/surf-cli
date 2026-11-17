@@ -4558,6 +4558,74 @@ describe("surf parse", () => {
     }
   }, 60000);
 
+  it("saves a product page's embedded variants over a JSON side request, and surf use replays them", async () => {
+    const html = fs.readFileSync(
+      path.join(__dirname, "..", "fixtures", "embedded", "shopify-product.html"),
+      "utf8",
+    );
+    const page = captured("r_doc", `${served.origin}/products/dummy-tee`, html);
+    // Recommendations with records and some of the page's words: without the page's own embedded
+    // records it comes within the margin of the Document, and the pick is a tie.
+    const recommended = captured(
+      "r_recs",
+      `${served.origin}/recommendations/products.json`,
+      JSON.stringify({
+        products: Array.from({ length: 4 }, (_, i) => ({
+          id: 8000 + i,
+          title: `Dummy Tee ${["Black", "Sand", "Cotton", "Plain"][i]} ${i}`,
+          vendor: "Dummy Co",
+          price: 2500,
+        })),
+      }),
+    );
+    const { home, host, cli, opFile } = parseFixture([page, recommended], page);
+    try {
+      await host.waitForMessage((message) => message.type === "HOST_READY");
+      const parsed = await cli([
+        `${served.origin}/products/dummy-tee`,
+        "--goal",
+        "tee variants with colour, size and availability",
+        "--op",
+        "get_variants",
+        "--json",
+      ]);
+      expect(parsed.stderr).toBe("");
+      expect(parsed.code).toBe(0);
+      const result = JSON.parse(parsed.stdout);
+      expect(result).toMatchObject({
+        ok: true,
+        request: "r_doc_1",
+        extract: { mode: "embedded", count: 6, records: "$.variants" },
+        test: { ok: true, records: 6 },
+      });
+      expect(result.commands).toContain(
+        "surf pb extract local get_variants --embedded 'script[data-product-json]' --records '$.variants' --field id=id --field title=title --field name=name --field color=option1 --field size=option2 --field available=available --field inventory_quantity=inventory_quantity --field sku=sku",
+      );
+      const op = JSON.parse(fs.readFileSync(opFile("local", "get_variants"), "utf8"));
+      expect(op.run[0].extract).toMatchObject({
+        embedded: { selector: "script[data-product-json]" },
+        records: "$.variants",
+        fields: { color: "option1", size: "option2", available: "available" },
+      });
+
+      const used = await runCli(socketPath, ["use", "local", "get_variants", "--json"], home, {
+        HOME: home,
+        SURF_STATE_DIR: host.stateDir,
+      });
+      expect(used).toMatchObject({ code: 0, stderr: "" });
+      const value = JSON.parse(used.stdout).value;
+      expect(value).toHaveLength(6);
+      expect(value[5]).toMatchObject({
+        color: "Sand",
+        size: "L",
+        available: false,
+        inventory_quantity: 0,
+      });
+    } finally {
+      await host.dispose();
+    }
+  }, 60000);
+
   it("sends a write goal to the recipe without loading anything or saving", async () => {
     const { host, cli, home, navigations } = parseFixture(
       [],

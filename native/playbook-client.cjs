@@ -182,6 +182,9 @@ function generateClient({ playbookId, op, strategy, provenance, out, allowWrite 
   if (extractHtml) {
     warnings.push("extract.html runs only through surf use (Node has no DOM); this client prints the raw HTML body");
     extract = null;
+  } else if (extract?.embedded) {
+    warnings.push("extract.embedded runs only through surf use (it reads the page's scripts); this client prints the raw HTML body");
+    extract = null;
   }
   ensurePrivateDir(directory, directory);
   const manifest = {

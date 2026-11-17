@@ -1718,7 +1718,7 @@ const TOOLS = {
         ],
       },
       parse: {
-        desc: "Make a tested read op from a URL in one command: record it from about:blank, pick the request, name its inputs, infer an extract and save a shape-only network test (heuristics, no model call). Reads robots.txt first. Exits 0 on a saved, tested op, 2 with the top 3 candidates when the pick is weak or tied, 1 on errors, a disallowed path, or a goal that needs a click, scroll or write",
+        desc: "Make a tested read op from a URL in one command: record it from about:blank, pick the request, name its inputs, infer an extract (from JSON the page embeds first: __NEXT_DATA__, JSON-LD, product JSON, window.X state) and save a shape-only network test (heuristics, no model call). Reads robots.txt first. Exits 0 on a saved, tested op, 2 with the top 3 candidates when the pick is weak or tied, 1 on errors, a disallowed path, or a goal that needs a click, scroll or write",
         args: ["url"],
         opts: {
           goal: "What you want from the page; names the op and the inputs it varies",
@@ -1849,6 +1849,9 @@ const TOOLS = {
           field: "name=source (repeatable). HTML: 'sel', 'sel@attr', 'sel[]' as in collect. JSON: a path in each record, e.g. venue.name",
           value: "HTML: one value instead of records, 'sel@attr' (a $.path reads one JSON value)",
           records: "JSON: path of the records array, e.g. $.search.hits ($ for the whole body)",
+          embedded: "JSON the HTML page embeds: the script holding it, e.g. script#__NEXT_DATA__ (then --records/--field or --value $.path)",
+          assign: "JSON an inline script assigns, e.g. window.__STATE__ or meta (valid JSON only)",
+          "ld-type": "With --embedded on JSON-LD scripts: the @type to read, e.g. Product",
           filter: "JSON: path=value; keep records whose value matches (as text)",
           strategy: "Set it on this strategy only (default: network and workflow for HTML, network for JSON)",
           json: "Output raw JSON",
@@ -1856,6 +1859,7 @@ const TOOLS = {
         examples: [
           { cmd: "pb extract books get_books --item article.product_pod --field 'title=h3 a@title' --field price=.price_color --field 'url=h3 a@href'", desc: "Book records from a catalogue page" },
           { cmd: "pb extract blast submit --value 'input[name=RID]@value'", desc: "One value from an HTML form" },
+          { cmd: "pb extract shop get_variants --embedded 'script[data-product-json]' --records '$.variants' --field color=option1 --field available=available", desc: "Variant records from a product page's embedded JSON" },
           { cmd: "pb extract walmart search --records '$.data.items' --field id=usItemId --field price=price.current --filter __typename=Product", desc: "JSON records, renamed and filtered" },
         ],
       },

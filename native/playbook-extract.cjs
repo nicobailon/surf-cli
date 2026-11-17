@@ -3,16 +3,18 @@
 //   { html: { item, fields } }           records from HTML, with collect's field specs
 //   { html: { value } }                  one value from HTML
 //   { records?, fields?, filter? }       records from JSON (paths as in records.cjs)
+//   { embedded, jsonPath | records… }    the same, from JSON the HTML page embeds (embedded-json.cjs)
 // `surf pb extract` sets it on an op and saves the op.
 
 const { parseHtmlExtract } = require("./dom-collect.cjs");
+const { parseEmbeddedSpec } = require("./embedded-json.cjs");
 const { compileJsonExtract } = require("./records.cjs");
 const { lineDiff } = require("./text-diff.cjs");
 
-const EXTRACT_KEYS = ["jsonPath", "field", "html", "records", "fields", "filter"];
+const EXTRACT_KEYS = ["jsonPath", "field", "html", "embedded", "records", "fields", "filter"];
 const HTML_STRATEGIES = ["network", "workflow"];
 const USAGE =
-  "Usage: surf pb extract <playbook> <op> (--item <css> --field name=<selector>[@attr]... | --value <selector>[@attr] | [--records <$.path>] --field name=<path>... [--filter <path>=<value>]) [--strategy <using>] [--json]";
+  "Usage: surf pb extract <playbook> <op> (--item <css> --field name=<selector>[@attr]... | --value <selector>[@attr] | [--embedded <css> [--ld-type <type>] | --assign <name>] ([--records <$.path>] --field name=<path>... [--filter <path>=<value>] | --value <$.path>)) [--strategy <using>] [--json]";
 
 function isJsonRecords(extract) {
   return extract.records !== undefined || extract.fields !== undefined || extract.filter !== undefined;
@@ -32,6 +34,11 @@ function validateExtract(extract, using) {
     if (!HTML_STRATEGIES.includes(using)) throw new Error("extract.html works only on network and workflow strategies");
     parseHtmlExtract(extract.html);
     return;
+  }
+  if (extract.embedded !== undefined) {
+    if (using !== "network") throw new Error("extract.embedded works only on network strategies");
+    if (extract.field !== undefined) throw new Error("extract cannot combine embedded with field (use jsonPath)");
+    parseEmbeddedSpec(extract.embedded);
   }
   if (isJsonRecords(extract)) {
     if (extract.jsonPath !== undefined || extract.field !== undefined) throw new Error("extract cannot combine jsonPath or field with records, fields or filter");
@@ -71,7 +78,7 @@ function parseExtractArgs(argv) {
     } else if (name === "filter") {
       const [key, expected] = splitPair(value, "--filter");
       filter[key] = expected;
-    } else if (["item", "value", "records"].includes(name)) single[name] = value;
+    } else if (["item", "value", "records", "embedded", "assign", "ld-type"].includes(name)) single[name] = value;
     else if (name === "strategy") options.strategy = value;
     else throw new Error(`Unknown option ${arg} for pb extract. ${USAGE}`);
   }
@@ -80,7 +87,19 @@ function parseExtractArgs(argv) {
   const hasFilter = Object.keys(filter).length > 0;
   if (!playbook || !op || positional.length > 2) throw new Error(USAGE);
   let extract;
-  if (single.value !== undefined && single.value.startsWith("$")) {
+  const embedded = single.embedded !== undefined || single.assign !== undefined || single["ld-type"] !== undefined;
+  if (embedded) {
+    if (single.item !== undefined || (single.value !== undefined && !single.value.startsWith("$"))) throw new Error("--embedded and --assign read JSON: use --records, --field and --filter, or --value $.path");
+    if (single.value !== undefined && (single.records !== undefined || hasFields || hasFilter)) throw new Error("--value takes no other extract flags");
+    const source = { ...(single.embedded !== undefined ? { selector: single.embedded } : {}), ...(single.assign !== undefined ? { assign: single.assign } : {}), ...(single["ld-type"] !== undefined ? { type: single["ld-type"] } : {}) };
+    extract = {
+      embedded: parseEmbeddedSpec(source),
+      ...(single.value !== undefined ? { jsonPath: single.value } : {}),
+      ...(single.records !== undefined ? { records: single.records } : {}),
+      ...(hasFields ? { fields } : {}),
+      ...(hasFilter ? { filter } : {}),
+    };
+  } else if (single.value !== undefined && single.value.startsWith("$")) {
     if (single.item || single.records || hasFields || hasFilter) throw new Error("--value takes no other extract flags");
     extract = { jsonPath: single.value };
   } else if (single.item !== undefined || single.value !== undefined) {

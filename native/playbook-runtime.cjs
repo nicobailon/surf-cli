@@ -5,6 +5,7 @@ const { executeSingleStep, executeWorkflow, substituteVars } = require("./workfl
 const { runWorkflowScript } = require("./workflow-script-runtime.cjs");
 const { runApiHarvest, watchCapture } = require("./api-harvest.cjs");
 const { htmlExtractFunction, runCollect } = require("./dom-collect.cjs");
+const { embeddedReadSource } = require("./embedded-json.cjs");
 const { editDistance } = require("./edit-distance.cjs");
 const { GLOBAL_OPTIONS } = require("./global-options.cjs");
 const { LITERAL_OPEN, escapedOp, renderRequest, resolveArgValues, sentRequest } = require("./playbook-template.cjs");
@@ -265,7 +266,7 @@ function isJsonExtract(extract) {
 // An HTML or JSON extract runs in the tab and returns only its result; any other op takes the
 // whole body, which comes from network capture.
 function extractsInTab(extract) {
-  return Boolean(extract?.html) || isJsonExtract(extract);
+  return Boolean(extract?.html || extract?.embedded) || isJsonExtract(extract);
 }
 
 // Page-side finish(head, { read, extract }, narrow): runs an extract through boundedRegex.tabExtract and
@@ -317,6 +318,7 @@ return module.exports;
 })()`;
 
 function jsonExtractSource(extract) {
+  if (extract.embedded && !isJsonExtract(extract)) return "return json;";
   if (extract.jsonPath) return `${getJsonPath.toString()}\nreturn getJsonPath(json, ${JSON.stringify(extract.jsonPath)});`;
   const { records, fields, filter } = extract;
   return `return ${recordsModuleSource()}.extractRecords(json, ${JSON.stringify({ records, fields, filter })});`;
@@ -367,16 +369,20 @@ try {
   return { ...head, extractError: \`the response couldn't be prepared for its extract: \${error.message}\` };
 }
 return finish(head, prepared, "--item/--field");`;
-  } else if (isJsonExtract(extract)) {
+  } else if (isJsonExtract(extract) || extract?.embedded) {
+    // An embedded extract reads the JSON the HTML page holds, then extracts as from a JSON response.
+    const parse = extract.embedded
+      ? `json = ${embeddedReadSource(extract.embedded)}(new DOMParser().parseFromString(text, "text/html"));`
+      : `try {
+      json = JSON.parse(text);
+    } catch {
+      throw new Error(\`the response is not JSON (\${response.headers.get("content-type") || "no content type"})\`);
+    }`;
     tail = `${finishSource(regexBudget)}
 return finish(head, {
   read: () => {
     let json;
-    try {
-      json = JSON.parse(text);
-    } catch {
-      throw new Error(\`the response is not JSON (\${response.headers.get("content-type") || "no content type"})\`);
-    }
+    ${parse}
     ${readNext("json")}return json;
   },
   extract: (json) => {

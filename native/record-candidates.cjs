@@ -144,6 +144,10 @@ function summarizeResponse(entry, page, { sample: withSample = false, redact = [
     // By its content type too, so a JSON body served as XML is read as markup.
     else if (withSample) sample = JSON.stringify(redactEchoJson(redactSensitiveFields(parsed.value), secrets, { contentType: mimeOf(entry) }));
   } else if (kind === "html") {
+    // Records the page embeds as JSON (__NEXT_DATA__, product JSON, JSON-LD) count as a JSON's do.
+    // Required here: parse-embedded.cjs reaches this module through parse-inputs.cjs.
+    const records = require("./parse-embedded.cjs").embeddedRecordCount(body);
+    if (records > 0) summary.records = records;
     text = visibleText(body);
     if (withSample) sample = redactEchoText(text, secrets);
   }
@@ -212,7 +216,7 @@ function scoreEntry(entry, origin) {
   const manifest = smallLowJson && isManifest(entry);
   const guessedSide = smallLowJson && hasRecords && !manifest && hasSidePath(entry);
   const sideJson = smallLowJson && (!hasRecords || manifest || guessedSide);
-  if (hasRecords && !sideJson) add(RECORDS_POINTS, `${summary.records} records`);
+  if (hasRecords && !sideJson) add(RECORDS_POINTS, `${summary.records} ${kind === "html" ? "embedded " : ""}records`);
   else if (guessedSide) reasons.push(`${summary.records} records not counted (the path reads like a banner or announcements feed)`);
   const site = hostname(origin);
   const host = hostname(entry.url);

@@ -75,7 +75,7 @@ surf use <pb> <op> --<input> <B> --json            # .strategy is network, and t
 
 ## Cases
 
-**JSON API vs HTML.** If the page calls a JSON endpoint (`Fetch`/`XHR` with records in the sample), take it: its fields are stable paths, and a Node client (`pb client export`) can return records. For an HTML Document, extract with selectors. `surf use` returns records, and a Node client prints the raw HTML.
+**JSON API vs HTML.** If the page calls a JSON endpoint (`Fetch`/`XHR` with records in the sample), take it: its fields are stable paths, and a Node client (`pb client export`) can return records. For an HTML Document, extract with selectors. `surf use` returns records, and a Node client prints the raw HTML. When the Document embeds its data as JSON (`__NEXT_DATA__`, `application/json` or JSON-LD scripts, `window.X = {...}`), extract that instead: `surf pb extract <pb> <op> --embedded 'script#__NEXT_DATA__' --records '$.props.pageProps.items' --field …` (or `--assign window.__STATE__`, or `--embedded 'script[type="application/ld+json"]' --ld-type Product --value '$'`). `surf parse` tries this first.
 
 **List → detail.** Build two ops: `list_<things>` with an id or URL field, and `get_<thing>` taking that id as a required input (`path.2 --as author`). Then run the detail op over the list with `--each-from` (`surf use <pb> get_<thing> --each-from list_<things>:url@path.2 --limit 3`), or save a chain op (the README's "Chain ops" section), instead of copying each id across by hand: books `url` `…/catalogue/<slug>/index.html` → `--book` (`:url@path.2`), quotes `author_url` `…/author/<slug>/` → `--author` (`:author_url@path.2`). Write that mapping in the decision log.
 

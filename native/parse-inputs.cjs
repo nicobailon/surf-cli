@@ -34,6 +34,11 @@ function goalNeedsRecipe(goal, url) {
   return undefined;
 }
 
+/** The goal's words that say what it wants (lamps, price), stop words aside. */
+function goalTerms(goal) {
+  return words(goal).filter((word) => word.length >= 3 && !STOP.has(word) && !/^\d/.test(word));
+}
+
 /** The playbook: the site's registrable name (lever-co). */
 function siteName(url) {
   const host = new URL(url).hostname;
@@ -118,4 +123,4 @@ function planInputs({ request, goal, overrides = [] }) {
   return { detail, inputs };
 }
 
-module.exports = { goalNeedsRecipe, opName, planInputs, siteName };
+module.exports = { goalNeedsRecipe, goalTerms, opName, planInputs, siteName };
