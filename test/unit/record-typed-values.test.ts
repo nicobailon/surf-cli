@@ -829,6 +829,19 @@ describe("the check after masking: only a proven match counts, read as a site re
     expect(growth(spread)).toBeLessThanOrEqual(2.2);
   });
 
+  // The CLI passes `type true` as a boolean; every typed value is held as the text it entered.
+  it("holds each typed boolean and number as the text it typed, form.fill data included", () => {
+    typedValues.rememberTypedValues("rec-bool", "type", { text: true });
+    typedValues.rememberTypedValues("rec-bool", "select", { values: [false, 7, ""] });
+    typedValues.rememberTypedValues("rec-bool", "form.fill", {
+      data: [{ value: true }, { value: 2024 }, { value: "" }, { value: null }],
+    });
+    expect(
+      typedValues.heldTypingCalls("rec-bool").map((call: { values: string[] }) => call.values),
+    ).toEqual([["true"], ["false", "7"], ["true", "2024"]]);
+    typedValues.forgetTypedValues("rec-bool");
+  });
+
   it("keeps no typed value once the masking call returns", () => {
     const loaded = instrumented(
       (source) => `${source}\nmodule.exports.insidePatternsNow = () => insidePatterns;`,

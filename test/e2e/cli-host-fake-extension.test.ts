@@ -1039,8 +1039,8 @@ describe("CLI/native-host/fake-extension E2E contract", () => {
 
   // A JSON query param is stored escaped as one string, its keys with it. pb param names a key by
   // the text it was captured as, so a masked number there keeps its type, and every key goes out
-  // as captured; an input's value is sent as given, {{!}} and %{!} included. (The CLI types `true`
-  // as a boolean, which the record doesn't mask; playbook-records.test.ts has the masked boolean.)
+  // as captured; an input's value is sent as given, {{!}} and %{!} included. (The next test has a
+  // masked boolean.)
   it("templates a recorded JSON key that reads like an input, and sends it and each input as given", async () => {
     const socketPath = createSocketPath();
     const project = fs.mkdtempSync(path.join(os.tmpdir(), "surf-record-json-key-"));
@@ -1141,6 +1141,75 @@ describe("CLI/native-host/fake-extension E2E contract", () => {
           "{{!}}kept": 1,
         })),
       );
+    } finally {
+      await host.dispose();
+    }
+  }, 60000);
+
+  // The CLI types `true` as a boolean; the record holds it as the text it typed, as it does a
+  // number, so a URL that sends it is masked in the trace, the saved op and the HAR, and a JSON
+  // `true` there becomes a boolean input.
+  it("masks a typed boolean in a recorded URL and keeps its type in a JSON value", async () => {
+    const socketPath = createSocketPath();
+    const project = fs.mkdtempSync(path.join(os.tmpdir(), "surf-record-boolean-"));
+    tempDirs.push(project);
+    const page = {
+      url: `https://fixture.test/api?q=true&v=${encodeURIComponent('{"flag":true}')}`,
+    };
+    const host = startHost(socketPath, { recording: true, scriptResponse: page });
+    const cli = async (args: string[]) => {
+      const result = await runCli(socketPath, args, project, { SURF_STATE_DIR: host.stateDir });
+      expect(result.code, `surf ${args.join(" ")}: ${result.stderr}`).toBe(0);
+      return result;
+    };
+    const { recordsRoot } = require("../../native/playbook-records.cjs") as {
+      recordsRoot(root: string): string;
+    };
+
+    try {
+      await host.waitForMessage((message) => message.type === "HOST_READY");
+      await cli(["navigate", "https://fixture.test/form"]);
+      await cli(["pb", "record", "start", "fixture", "--op", "probe", "--network"]);
+      await cli(["type", "true", "--selector", "#field"]);
+      expect(host.messages.find((message) => message.type === "SMART_TYPE")).toMatchObject({
+        text: true,
+      });
+      await cli(["js", 'fetch("/api")']);
+      const { record } = JSON.parse(
+        (await cli(["pb", "record", "stop", "--draft", "--read", "--json"])).stdout,
+      );
+      // The JSON `true` becomes the string "<text>", noted as a boolean in the saved op.
+      const masked = "https://fixture.test/api?q=<text>&v=%7B%22flag%22%3A%22<text>%22%7D";
+      const trace = JSON.parse(
+        fs.readFileSync(
+          path.join(recordsRoot(host.stateDir), record.id, "network", "trace.json"),
+          "utf8",
+        ),
+      );
+      expect(trace.entries.map((entry: { url: string }) => entry.url)).toEqual([masked]);
+      const har = path.join(project, "trace.har");
+      await cli(["pb", "trace", "export", "--from-record", record.id, "--har", har]);
+      expect(
+        JSON.parse(fs.readFileSync(har, "utf8")).log.entries.map(
+          (entry: { request: { url: string } }) => entry.request.url,
+        ),
+      ).toEqual([masked]);
+
+      await cli(["pb", "save", "--from-record", record.id, "--project", "--json"]);
+      const opFile = path.join(project, ".surf", "playbooks", "fixture", "ops", "probe.json");
+      const saved = JSON.parse(fs.readFileSync(opFile, "utf8"));
+      const request = saved.run.find((step: { using: string }) => step.using === "network").request;
+      expect(JSON.stringify(request)).not.toContain("true");
+      expect(request.redactedTypes).toEqual({ "query.v.flag": "boolean" });
+
+      await cli(["pb", "param", "fixture", "probe", "query.v.flag", "--as", "live", "--json"]);
+      const op = JSON.parse(fs.readFileSync(opFile, "utf8"));
+      expect(op.args.live).toEqual({ type: "boolean", required: true });
+      expect(
+        op.run.find((step: { using: string }) => step.using === "network").request.query.v,
+      ).toEqual({
+        flag: "{{live}}",
+      });
     } finally {
       await host.dispose();
     }

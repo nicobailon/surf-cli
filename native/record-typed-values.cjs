@@ -39,7 +39,14 @@ function typedArg(command, args) {
   return name;
 }
 
-/** [{ value, marker }] for the values one command typed, each marked with its argument's name. */
+// A typed value as the text it entered: the CLI passes `type true` and `type 2024` as a boolean and
+// a number, which are typed as `true` and `2024`. Anything else, or empty text, types nothing.
+function typedText(value) {
+  if (typeof value === "string") return value || null;
+  return typeof value === "number" || typeof value === "boolean" ? String(value) : null;
+}
+
+/** [{ value, marker }] for the values one command typed, each marked with its argument's name, as text. */
 function typedValues(command, args) {
   const name = typedArg(command, args);
   if (!name) return [];
@@ -53,11 +60,12 @@ function typedValues(command, args) {
       }
     }
     const items = Array.isArray(raw) ? raw : [];
-    return items.map((item) => item?.value).filter((value) => typeof value === "string" && value).map((value) => ({ value, marker: "<data>" }));
+    return items.map((item) => typedText(item?.value)).filter((value) => value !== null).map((value) => ({ value, marker: "<data>" }));
   }
   return (Array.isArray(raw) ? raw : [raw])
-    .filter((value) => (typeof value === "string" && value) || typeof value === "number")
-    .map((value) => ({ value: String(value), marker: `<${name}>` }));
+    .map(typedText)
+    .filter((value) => value !== null)
+    .map((value) => ({ value, marker: `<${name}>` }));
 }
 
 /**
