@@ -1482,6 +1482,123 @@ describe("activity and explicit record evidence", () => {
     });
   });
 
+  // The draft's network strategy decides, not its effect label or its workflow: a write it replays
+  // must be one the record captured, on the record page's origin unless --request-id names it.
+  describe("a hand-edited draft's network write", () => {
+    const origin = "https://alice.github.io";
+    const bob = "POST https://bob.github.io/save";
+    const trace = [
+      { ...page, url: `${origin}/` },
+      { ...create, id: "r_other", url: "https://bob.github.io/save" },
+    ];
+    type Op = { effect?: string; run: { using: string; request?: { url: string } }[] };
+    const edit = (root: string, recordId: string, change: (op: Op) => void) => {
+      const file = path.join(records.recordsRoot(root), recordId, "draft", "op.json");
+      const op = JSON.parse(fs.readFileSync(file, "utf8"));
+      change(op);
+      fs.writeFileSync(file, JSON.stringify(op));
+    };
+    const save = (root: string, recordId: string, requestId?: string) =>
+      authoring.saveFromRecord({
+        recordId,
+        root,
+        home: path.dirname(root),
+        ...(requestId ? { requestId } : {}),
+      });
+    const shapes: [string, Step[], string][] = [
+      ["no steps", [], "write op search can't be saved network-only"],
+      ["one click", ["click"], "write op search can't be saved"],
+      ["several steps", ["navigate", "click"], "write op search can't be saved network-only"],
+    ];
+    const asRead = [
+      ["read", (op: Op) => (op.effect = "read")],
+      ["missing", (op: Op) => Reflect.deleteProperty(op, "effect")],
+    ] as const;
+    const readRefusal = `op search can't be saved: it replays ${bob}, a write the record captured, and a read op never replays a write (pb record stop --draft --read refuses a record that captured one); save it as a write op ("effect": "write")`;
+
+    describe.each(shapes)("with %s", (_shape, commands, prefix) => {
+      it.each(asRead)("refuses a captured write when its effect is %s", (_effect, change) => {
+        const flow = recordFlow({ commands, origin, trace });
+        const { record } = flow.stopped();
+        edit(flow.root, record.id, change);
+        expect(() => save(flow.root, record.id)).toThrow(readRefusal);
+      });
+
+      it.each(asRead)(
+        "refuses it when its effect is %s, though --request-id at stop names it",
+        (_effect, change) => {
+          const flow = recordFlow({
+            commands,
+            origin,
+            trace,
+            stop: { draft: true, requestId: "r_other" },
+          });
+          const { record } = flow.stopped();
+          edit(flow.root, record.id, change);
+          expect(() => save(flow.root, record.id)).toThrow(readRefusal);
+        },
+      );
+
+      it("redrafts with --request-id at save: a read stays refused, a missing effect saves as a write", () => {
+        const flow = recordFlow({ commands, origin, trace });
+        const { record } = flow.stopped();
+        edit(flow.root, record.id, (op) => (op.effect = "read"));
+        expect(() => save(flow.root, record.id, "r_other")).toThrow(
+          `--read refused: the record captured ${bob}, which can change data`,
+        );
+        edit(flow.root, record.id, (op) => Reflect.deleteProperty(op, "effect"));
+        const saved = save(flow.root, record.id, "r_other");
+        expect(saved.origins).toEqual([origin, "https://bob.github.io"]);
+        expect(saved.warnings).toContain(
+          `the op may also send to https://bob.github.io, the origin of the request it replays (${bob}), which isn't the origin of the record's page (${origin}); if that is the wrong request, save again with --request-id <r_…> from pb record candidates`,
+        );
+      });
+
+      it("refuses a write the record didn't capture, on the page's own origin too", () => {
+        const uncaptured = (op: Op) => {
+          const network = op.run.find((strategy) => strategy.using === "network");
+          if (network?.request) {
+            network.request.url = `${origin}/uncaptured-write`;
+          }
+        };
+        const why = `it would replay POST ${origin}/uncaptured-write, which isn't a write the record captured`;
+        const flow = recordFlow({ commands, origin, trace });
+        const { record } = flow.stopped();
+        edit(flow.root, record.id, uncaptured);
+        expect(() => save(flow.root, record.id)).toThrow(`${prefix}: ${why}`);
+        edit(flow.root, record.id, (op) => (op.effect = "read"));
+        expect(() => save(flow.root, record.id)).toThrow(`op search can't be saved: ${why}`);
+        // --request-id at stop names Bob's write, not the edited request.
+        const named = recordFlow({
+          commands,
+          origin,
+          trace,
+          stop: { draft: true, requestId: "r_other" },
+        });
+        const stopped = named.stopped();
+        edit(named.root, stopped.record.id, uncaptured);
+        expect(() => save(named.root, stopped.record.id)).toThrow(`${prefix}: ${why}`);
+        // At save it redrafts with the write it names, which saves with a warning.
+        expect(save(named.root, stopped.record.id, "r_other").origins).toEqual([
+          origin,
+          "https://bob.github.io",
+        ]);
+      });
+    });
+
+    it("takes a request without a method for the GET it sends, not a write", () => {
+      const flow = recordFlow({ commands: ["navigate"], trace: [page, create] });
+      const { record } = flow.stopped();
+      edit(flow.root, record.id, (op) => {
+        const network = op.run.find((strategy) => strategy.using === "network");
+        Reflect.deleteProperty(network?.request ?? {}, "method");
+      });
+      expect(() => save(flow.root, record.id)).toThrow(
+        "write op search can't be saved: a write op's workflow fallback must be one page-write step, and this draft's is navigate, and its network strategy replays GET https://example.test/api/employees, a read, not the write",
+      );
+    });
+  });
+
   it("does not save recent activity with a locate click as a read op", () => {
     const root = tempRoot();
     journal.journalCommand(
