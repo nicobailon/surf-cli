@@ -1385,6 +1385,48 @@ describe("an env value in any JSON spelling the decoder reads", () => {
     }
   });
 
+  it("refuses a pattern whose text holds a whole short value, beside other characters", async () => {
+    // Under 8 characters, secretIn finds a value only where it stands alone, and the shared-run
+    // rule needs 6 characters: a whole copy next to a letter, overflowing or not, is still one.
+    const three = ["n", "Q7"].join("");
+    const five = ["nQ7", "zR"].join("");
+    const hex = (text: string) =>
+      [...text].map((char) => `\\x${char.charCodeAt(0).toString(16)}`).join("");
+    const unicode = (text: string) =>
+      [...text].map((char) => `\\\\u${char.charCodeAt(0).toString(16).padStart(4, "0")}`).join("");
+    const words = "(?:red|green|blue|orange){6}!";
+    const refused = [
+      // The reviewer's cases: a{1,300} and the {6} group overflow the listing.
+      { secret: three, pattern: `^(?:ok|a{1,300}${three}X)$` },
+      { secret: five, pattern: `^(?:ok|${five}X|${words})$` },
+      { secret: five, pattern: `^(?:ok|${hex(five)}X|${words})$` },
+      // Without an overflow, and in the JSON-escaped, \/ and \uXXXX spellings.
+      { secret: three, pattern: `^(?:ok|${three}X)$` },
+      { secret: join("q", '"', "7"), pattern: '^(?:ok|q\\\\"7X)$' },
+      { secret: join("q", "/", "7"), pattern: "^(?:ok|q\\\\\\/7X)$" },
+      { secret: three, pattern: `^(?:ok|${unicode(three)}X)$` },
+    ];
+    for (const { secret, pattern } of refused) {
+      expect(new RegExp(pattern).test("ok"), pattern).toBe(true);
+      expect(assertions.patternSecretIn(pattern, [secret]), pattern).toBe("found");
+      const saves = await bothSaves(secret, pattern);
+      expect(saves.caller, pattern).toBe(
+        "--save refused: assertion 1's pattern contains the value of SURF_TEST_ITEMS_KEY, which is never stored; assert on something else",
+      );
+      expect(saves, pattern).toMatchObject({ ranBeforeCaller: false, unchanged: true });
+      expect(saves.host, pattern).toMatch(HOST_REFUSAL);
+    }
+    // Part of the value is not a whole copy.
+    const kept = [
+      { secret: three, pattern: `^(?:ok|a{1,300}${three.slice(0, 2)}X)$` },
+      { secret: five, pattern: `^(?:ok|${five.slice(0, 4)}X|${words})$` },
+    ];
+    for (const { secret, pattern } of kept) {
+      expect(assertions.patternSecretIn(pattern, [secret]), pattern).toBeNull();
+      expect((await bothSaves(secret, pattern)).caller, pattern).toBe("saved");
+    }
+  });
+
   it("saves a pattern whose readings overflow the listing, checking what it lists", async () => {
     // Without an a: a{1,300} matches any value holding one, which the spelling test still refuses.
     const secret = ["dummy", "env", "text", "for", "overflow"].join("-");

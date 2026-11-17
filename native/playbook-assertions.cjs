@@ -405,6 +405,18 @@ function couldMatch(read, spelling, spend) {
   return read.texts.some((text) => text.split(MARKS).every((run) => run === "" || has(run)));
 }
 
+// Whether one of `texts` (patternTexts texts) holds the whole of one of `spellings`, wherever it
+// stands: secretIn finds a value under 8 characters only where it stands alone, so this finds a
+// short value written next to other characters. The texts are searched as one, BREAK between
+// them (a spelling holds no mark), so each spelling is one pass, charged to `spend`.
+function holdsWhole(texts, spellings, spend) {
+  const all = texts.join(BREAK);
+  return spellings.some((spelling) => {
+    spend(all.length + spelling.length);
+    return spelling !== "" && all.includes(spelling);
+  });
+}
+
 // How many characters in a row a pattern's text may share with a spelling of a value.
 const SHARED_RUN = 6;
 
@@ -429,8 +441,9 @@ function sharesRun(texts, spellings, spend) {
 
 // Whether a matches pattern could store or match one of `values`, for both --save checks:
 // "found" or "too deep" when secretIn finds one in a text the pattern can match or set aside
-// (patternTexts); "matches" when it matches a spelling of one (patternSpellings), which also
-// catches broad patterns such as .*; MATCH_TIMED_OUT or MATCH_SKIPPED when that test is cut short
+// (patternTexts), and "found" when such a text holds a whole spelling of one, at any length and
+// next to any character (holdsWhole); "matches" when it matches a spelling of one
+// (patternSpellings), which also catches broad patterns such as .*; MATCH_TIMED_OUT or MATCH_SKIPPED when that test is cut short
 // (from bounded-regex.cjs, spending `budget`); "backreference" for a pattern with one; { around }
 // when a text spells most of a spelling around a gap (spellsMost), `around` naming the gap's kind;
 // "shares" when a text, listed or set aside, holds SHARED_RUN characters in a row of a spelling
@@ -456,8 +469,10 @@ function patternSecretIn(pattern, values, { budget = createRegexBudget(), work =
     const found = [...texts, ...read.setAside].map((text) => secretIn(text, values, { budget: work }));
     const status = ["found", "too deep", "too costly"].find((candidate) => found.includes(candidate));
     if (status) return status;
-    const filter = patternTexts(pattern, { work, breaks: true });
     const spellings = patternSpellings(values);
+    const every = [...new Set([...texts, ...read.setAside, ...inPlace.setAside])];
+    if (holdsWhole(every, spellings, spend)) return "found";
+    const filter = patternTexts(pattern, { work, breaks: true });
     for (const spelling of spellings) {
       if (filter.exact && !couldMatch(filter, spelling, spend)) continue;
       spend(spelling.length);
@@ -479,7 +494,7 @@ function patternSecretIn(pattern, values, { budget = createRegexBudget(), work =
         if (spellsMost(text, spelling)) return { around: gapKind(gap) };
       }
     }
-    return sharesRun([...new Set([...texts, ...read.setAside, ...inPlace.setAside])], spellings, spend) ? "shares" : null;
+    return sharesRun(every, spellings, spend) ? "shares" : null;
   } catch (error) {
     if (error === TOO_COSTLY) return "too costly";
     throw error;
