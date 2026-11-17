@@ -46,6 +46,9 @@ const ASSET_TYPES = new Set(["Image", "Stylesheet", "Script", "Font", "Media"]);
 // The methods a draft replays. A derived client may also send an OPTIONS.
 const REPLAYED_METHODS = new Set(["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE"]);
 
+// The methods a read op's network strategy may send: a POST may only search.
+const READ_OP_METHODS = new Set(["GET", "HEAD", "OPTIONS", "POST"]);
+
 // A captured request a draft or derived client may replay.
 function isReplayCandidate(entry) {
   return (REPLAYED_METHODS.has(entry.method) || entry.method === "OPTIONS") && entry.status >= 200 && entry.status < 400 && !ASSET_TYPES.has(entry.type);
@@ -61,4 +64,4 @@ function shownUrl(entry) {
   return `${entry.method} ${url}`;
 }
 
-module.exports = { ASSET_TYPES, REPLAYED_METHODS, hostname, isReplayCandidate, isTelemetryRequest, requestEffect, shownUrl };
+module.exports = { ASSET_TYPES, READ_OP_METHODS, REPLAYED_METHODS, hostname, isReplayCandidate, isTelemetryRequest, requestEffect, shownUrl };
