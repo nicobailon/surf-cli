@@ -79,12 +79,21 @@ function publicNetworkResult(tool, result) {
 // body or JSON echoing a secret header value of `entries` (the request it answers) with <redacted>
 // in its place, as network.get shows it: the whole value, an auth parameter's or cookie's value, in
 // every spelling (see secretHeaderEchoes); the URL also without credentials, as an export has it.
+// The body is read by its own content type, else by the one its request's capture gave the response
+// (network.body sends the body alone), so an XML body isn't read as HTML.
 function publicResponse(response, entries) {
   if (!isEntry(response)) return response;
-  const secrets = secretHeaderEchoes(entries.filter(isEntry).flatMap((entry) => [entry.requestHeaders, entry.responseHeaders]));
+  const captured = entries.filter(isEntry);
+  const secrets = secretHeaderEchoes(captured.flatMap((entry) => [entry.requestHeaders, entry.responseHeaders]));
   const view = { ...response };
   if (typeof view.url === "string") view.url = redactEchoUrl(redactUrlIfSecret(view.url), secrets);
-  if (typeof view.body === "string" && view.base64Encoded !== true) view.body = redactEchoBody(view.body, secrets, { contentType: bodyContentType(view.headers, view.mimeType) });
+  if (typeof view.body === "string" && view.base64Encoded !== true) {
+    const contentType =
+      bodyContentType(view.headers, view.mimeType || view.contentType) ||
+      captured.map((entry) => bodyContentType(entry.responseHeaders, entry.mimeType)).find(Boolean) ||
+      "";
+    view.body = redactEchoBody(view.body, secrets, { contentType });
+  }
   if (view.json !== undefined) view.json = redactEchoJson(view.json, secrets);
   return view;
 }

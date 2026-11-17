@@ -1034,3 +1034,142 @@ describe("echo redaction that keeps every structure parseable", () => {
     expect(parseMarkup(kept).map(({ xml: parsed }) => parsed)).toEqual(xml.map(() => "valid"));
   });
 });
+
+describe("an XML body on every surface that prints it", () => {
+  const SHOP = ["sh", "op"].join("");
+  const XML_TYPE = "application/xml";
+  // Bodies HTML and XML read differently: XML decodes the script's entity and reads its tags.
+  const BODIES: [string, string][] = [
+    ["<r><script>sh&#111;p</script></r>", "<r><script>(redacted)</script></r>"],
+    [`<r><script>a<b>${SHOP}</b></script></r>`, "<r><script>a<b>(redacted)</b></script></r>"],
+  ];
+
+  // A host's tools over one captured request: `network` lists `listed` after a first, empty
+  // listing, network.get gives `got`, and network.body the body alone, without its content type.
+  const fakeTools = ({
+    got,
+    listed,
+    body,
+  }: {
+    got: { url: string };
+    listed: object;
+    body: string;
+  }) => {
+    let calls = 0;
+    const results: Record<string, () => unknown> = {
+      network: () => ({ entries: calls++ === 0 ? [] : [listed] }),
+      "network.get": () => ({ entry: got }),
+      "network.body": () => ({ body }),
+      javascript_tool: () => ({ output: JSON.stringify({ status: 200, url: got.url }) }),
+    };
+    const executeTool = async (tool: string) => {
+      const result = results[tool];
+      if (!result) {
+        throw new Error(`unexpected tool ${tool}`);
+      }
+      return result();
+    };
+    return {
+      executeTool,
+      reset: () => {
+        calls = 0;
+      },
+    };
+  };
+
+  it.each(BODIES)("redacts %s as XML on all nine surfaces", async (body, expected) => {
+    const helpers = require("../../native/host-helpers.cjs");
+    const harvest = require("../../native/api-harvest.cjs");
+    const records = require("../../native/playbook-records.cjs");
+    const entry = {
+      id: "r_1",
+      method: "POST",
+      url: "https://example.test/api",
+      status: 200,
+      type: "Fetch",
+      mimeType: XML_TYPE,
+      _loadingFinished: true,
+      flags: [],
+      requestHeaders: { "content-type": XML_TYPE, "x-csrf-token": SHOP },
+      responseHeaders: { "content-type": XML_TYPE },
+      requestBody: body,
+      responseBody: body,
+    };
+    const { executeTool, reset } = fakeTools({ got: entry, listed: entry, body });
+    const sleep = async () => undefined;
+    const wait = helpers.publicResponse(
+      await harvest.waitForResponse({ executeTool, sleep, match: "/api" }),
+      [entry],
+    );
+    reset();
+    const replay = helpers.publicResponse(
+      await harvest.replay({ executeTool, sleep, id: entry.id, allowPost: true }),
+      [entry],
+    );
+    const root = await tempDir();
+    const record = records.startRecord({
+      site: "fx",
+      op: "o",
+      tabId: 1,
+      origin: "https://example.test",
+      network: true,
+      includeInputValues: true,
+      root,
+    });
+    const attached = records.attachNetworkTrace(record.id, [entry], root, {
+      capture: { active: true, interruptions: [] },
+    });
+    const trace = JSON.parse(await fs.readFile(attached.path, "utf8")).entries[0];
+    const stopped = records.stopRecord({ target: { tabId: 1 }, draft: true, root });
+    const draft = stopped.draft.run.find(
+      (step: { using?: string }) => step.using === "network",
+    ).request;
+    const surfaces = {
+      public: exporter.publicEntry(entry).responseBody,
+      export: JSON.parse(exporter.serializeNetworkExport([entry]))[0].responseBody,
+      har: JSON.parse(exporter.serializeNetworkExport([entry], "har")).log.entries[0].response
+        .content.text,
+      get: helpers.publicNetworkResult("network.get", { entry }).entry.responseBody,
+      body: helpers.publicResponse({ body }, [entry]).body,
+      wait: wait.body,
+      replay: replay.body,
+      trace: trace.requestBody,
+      draft: draft.body,
+    };
+    expect(surfaces).toEqual(
+      Object.fromEntries(Object.keys(surfaces).map((key) => [key, expected])),
+    );
+  });
+
+  it("redacts a replayed response by its own content type", async () => {
+    const helpers = require("../../native/host-helpers.cjs");
+    const harvest = require("../../native/api-harvest.cjs");
+    const [body, expected] = BODIES[1];
+    // The request as captured carries no content type; the replayed response's capture does.
+    const original = {
+      id: "r_1",
+      method: "POST",
+      url: "https://example.test/api",
+      status: 200,
+      type: "Fetch",
+      _loadingFinished: true,
+      flags: [],
+      requestHeaders: { "x-csrf-token": SHOP },
+    };
+    const replayed = {
+      ...original,
+      id: "r_2",
+      mimeType: XML_TYPE,
+      responseHeaders: { "content-type": XML_TYPE },
+    };
+    const { executeTool } = fakeTools({ got: original, listed: replayed, body });
+    const response = await harvest.replay({
+      executeTool,
+      sleep: async () => undefined,
+      id: original.id,
+      allowPost: true,
+    });
+    expect(response.contentType).toBe(XML_TYPE);
+    expect(helpers.publicResponse(response, [original]).body).toBe(expected);
+  });
+});
