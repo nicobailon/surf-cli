@@ -120,7 +120,7 @@ if (manifest.extract?.jsonPath) {
 }
 if (manifest.extract?.field) output = output?.[manifest.extract.field];
 if (manifest.extract && (manifest.extract.records !== undefined || manifest.extract.fields || manifest.extract.filter)) {
-  // records.cjs is Surf's own JSON extraction, copied next to this client.
+  // records.cjs is Surf's own JSON extraction, copied next to this client with bounded-regex.cjs.
   const { extractRecords } = createRequire(import.meta.url)("./records.cjs");
   output = extractRecords(bodyJson ?? output, manifest.extract);
 }
@@ -180,7 +180,9 @@ function generateClient({ playbookId, op, strategy, provenance, out, allowWrite 
   atomicWriteFile(path.join(directory, "client.mjs"), clientSource(), { root: directory, encoding: "utf8" });
   atomicWriteJson(path.join(directory, "package.json"), { private: true, type: "module", scripts: { start: "node client.mjs" } }, { root: directory });
   if (usesJsonExtract(extract)) {
-    atomicWriteFile(path.join(directory, "records.cjs"), fs.readFileSync(path.join(__dirname, "records.cjs"), "utf8"), { root: directory, encoding: "utf8" });
+    for (const file of ["records.cjs", "bounded-regex.cjs"]) {
+      atomicWriteFile(path.join(directory, file), fs.readFileSync(path.join(__dirname, file), "utf8"), { root: directory, encoding: "utf8" });
+    }
   }
   return { directory, manifest, warnings };
 }

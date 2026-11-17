@@ -3,6 +3,7 @@
 
 const { createRecordSet, readCursor } = require("./records.cjs");
 const { hiddenTabError } = require("./dom-collect.cjs");
+const { PATTERN_LIMIT } = require("./bounded-regex.cjs");
 const { redactValues } = require("./redaction.cjs");
 
 const POLL_MS = 500;
@@ -23,12 +24,65 @@ function isPlainObject(value) {
   return value !== null && typeof value === "object" && !Array.isArray(value);
 }
 
+// A glob is checked when an op is saved and loaded, and over PATTERN_LIMIT characters it is
+// refused; a URL whose tested part is over URL_TEST_LIMIT characters never matches. A match then
+// takes at most PATTERN_LIMIT x URL_TEST_LIMIT steps (about 4 million, some 10 ms).
+const URL_TEST_LIMIT = 8 * 1024;
+
+// A glob as tokens: a literal character, "*" (any run except /) or "**" (any run); "***" is "**" then "*".
+function globTokens(pattern) {
+  const tokens = [];
+  for (let index = 0; index < pattern.length; index++) {
+    if (pattern[index] !== "*") tokens.push(pattern[index]);
+    else if (pattern[index + 1] === "*") {
+      tokens.push("**");
+      index++;
+    } else tokens.push("*");
+  }
+  return tokens;
+}
+
+// Marks the states a star can skip: a star matches the empty run too.
+function skipStars(tokens, states) {
+  for (let index = 0; index < tokens.length; index++) {
+    if (states[index] && (tokens[index] === "*" || tokens[index] === "**")) states[index + 1] = 1;
+  }
+}
+
+// Steps every token position at once, one character at a time, so a match takes at most
+// text length x pattern length steps, whatever the pattern: a backtracking regex of many ** can
+// take exponential time.
+function globMatches(tokens, text) {
+  let states = new Uint8Array(tokens.length + 1);
+  let next = new Uint8Array(tokens.length + 1);
+  states[0] = 1;
+  skipStars(tokens, states);
+  for (let at = 0; at < text.length; at++) {
+    const char = text[at];
+    next.fill(0);
+    let alive = false;
+    for (let index = 0; index < tokens.length; index++) {
+      if (!states[index]) continue;
+      const token = tokens[index];
+      if (token === "**" || (token === "*" && char !== "/")) next[index] = 1;
+      else if (token === char) next[index + 1] = 1;
+      else continue;
+      alive = true;
+    }
+    if (!alive) return false;
+    skipStars(tokens, next);
+    [states, next] = [next, states];
+  }
+  return states[tokens.length] === 1;
+}
+
 /**
  * `match` glob: tested against the URL without query string; the whole URL when the
  * pattern has `://`, else the whole pathname. `*` = any run except `/`, `**` = anything.
  */
 function urlMatcher(pattern) {
   if (typeof pattern !== "string" || !pattern) throw new Error("match must be a non-empty URL glob");
+  if (pattern.length > PATTERN_LIMIT) throw new Error(`match is ${pattern.length} characters; the limit is ${PATTERN_LIMIT}`);
   if (/[?#]/.test(pattern)) {
     throw new Error(`match "${pattern}" must not contain ? or #: it is tested against the URL without its query string`);
   }
@@ -36,15 +90,7 @@ function urlMatcher(pattern) {
   if (!whole && !pattern.startsWith("/")) {
     throw new Error(`match "${pattern}" must start with / (a path) or contain :// (a full URL)`);
   }
-  const source = pattern
-    .split(/(\*\*|\*)/)
-    .map((part) => {
-      if (part === "**") return ".*";
-      if (part === "*") return "[^/]*";
-      return part.replace(/[.+^${}()|[\]\\]/g, "\\$&");
-    })
-    .join("");
-  const regex = new RegExp(`^${source}$`);
+  const tokens = globTokens(pattern);
   return (url) => {
     let parsed;
     try {
@@ -52,7 +98,8 @@ function urlMatcher(pattern) {
     } catch {
       return false;
     }
-    return regex.test(whole ? `${parsed.origin}${parsed.pathname}` : parsed.pathname);
+    const tested = whole ? `${parsed.origin}${parsed.pathname}` : parsed.pathname;
+    return tested.length <= URL_TEST_LIMIT && globMatches(tokens, tested);
   };
 }
 
@@ -487,10 +534,10 @@ async function driveNext(ctx, matches, filter) {
  * The `api` strategy: first matching response, then next pages by `mode` (auto: replay, then
  * drive after the first replay failure). Returns the merged records.
  */
-async function runApiHarvest({ spec, origins = [], onEvent = () => {}, ...options }) {
+async function runApiHarvest({ spec, origins = [], onEvent = () => {}, regexBudget, ...options }) {
   validateApiSpec(spec);
   const ctx = context(options);
-  const records = createRecordSet(spec.records);
+  const records = createRecordSet(spec.records, regexBudget ? { regexBudget } : {});
   const { entry, response } = await waitWith(ctx, spec);
   if (response.json === undefined) throw new Error(`the response matching "${spec.match}" is not JSON`);
   records.add(response.json);

@@ -2,41 +2,23 @@
 // a $-path into the result. Saved in an op's on.success.expect.assert, they run on every strategy's
 // result, like the rest of verifyResult.
 
-const { performance } = require("node:perf_hooks");
 const { isDeepStrictEqual } = require("node:util");
-const vm = require("node:vm");
+const bounded = require("./bounded-regex.cjs");
 const { compileJsonPath } = require("./records.cjs");
 
-// matches patterns come from the CLI and from op files, which pb export and pb import share, so a
-// hostile one must not hang the host. Patterns are not analysed: a pattern is refused only when it
-// is over PATTERN_LIMIT characters or isn't a valid regex, and every run of one is bounded. It runs
-// in a vm context with a MATCH_TIMEOUT_MS timeout, which V8 interrupts even inside a backtracking
-// regex, on at most the first MATCH_INPUT_LIMIT characters of the text.
-const PATTERN_LIMIT = 500;
-const MATCH_TIMEOUT_MS = 100;
-const MATCH_INPUT_LIMIT = 64 * 1024;
-const MATCH_TIMED_OUT = "pattern_timeout";
+// matches patterns come from the CLI and from op files, so every run of one is bounded as
+// bounded-regex.cjs describes: a 100 ms timeout on at most the first 64 KB of the text. A pattern is
+// refused only when it is over PATTERN_LIMIT characters or isn't a valid regex.
+const { MATCH_INPUT_LIMIT, MATCH_SKIPPED, MATCH_TIMED_OUT, PATTERN_LIMIT, isBoundedOut } = bounded;
 // Each run is bounded, and so is a run's total: one budget is shared by an op run's matches checks
 // and its secret checks. Once it is spent, the rest don't run. Ops hold at most ASSERTION_LIMIT.
 const REGEX_BUDGET_MS = 1000;
-const MATCH_SKIPPED = "pattern_skipped";
 const ASSERTION_LIMIT = 50;
 
 /** A regex time budget for one op run: pass it to every boundedMatch of the run. */
 function createRegexBudget(ms = REGEX_BUDGET_MS) {
-  return { remainingMs: ms };
+  return bounded.createRegexBudget({ ms, scope: "run" });
 }
-const matchContext = vm.createContext({ cache: undefined, p: undefined, t: undefined });
-vm.runInContext("cache = new Map();", matchContext);
-const matchScript = new vm.Script(`(() => {
-  let regex = cache.get(p);
-  if (!regex) {
-    if (cache.size >= 1000) cache.clear();
-    regex = new RegExp(p);
-    cache.set(p, regex);
-  }
-  return regex.test(t) === true;
-})()`);
 
 /** Refuses a matches pattern over the length limit or that isn't a valid regex. */
 function checkPattern(pattern) {
@@ -49,42 +31,14 @@ function checkPattern(pattern) {
   }
 }
 
-function skippedError() {
-  const error = new Error(`skipped: the run's ${REGEX_BUDGET_MS / 1000} s regex budget is spent`);
-  error.code = MATCH_SKIPPED;
-  return error;
-}
-
 /**
- * Whether `pattern` matches the first MATCH_INPUT_LIMIT characters of `text`, spending from
- * `budget`. A run past MATCH_TIMEOUT_MS is stopped and throws code "pattern_timeout"; a run the
- * budget can't cover throws code "pattern_skipped" (at once when nothing is left, or when it is
- * stopped at the budget's end).
+ * Whether `pattern` matches the first 64 KB of `text`, spending from `budget`. A run past 100 ms is
+ * stopped and throws code "pattern_timeout"; a run the budget can't cover throws code
+ * "pattern_skipped" (at once when nothing is left, or when it is stopped at the budget's end).
  */
 function boundedMatch(pattern, text, budget = createRegexBudget()) {
   checkPattern(pattern);
-  if (budget.remainingMs <= 0) throw skippedError();
-  const limit = Math.max(1, Math.min(MATCH_TIMEOUT_MS, Math.floor(budget.remainingMs)));
-  matchContext.p = pattern;
-  matchContext.t = String(text).slice(0, MATCH_INPUT_LIMIT);
-  const started = performance.now();
-  try {
-    return matchScript.runInContext(matchContext, { timeout: limit });
-  } catch (error) {
-    if (error?.code !== "ERR_SCRIPT_EXECUTION_TIMEOUT") throw error;
-    if (limit < MATCH_TIMEOUT_MS) throw skippedError();
-    const timeout = new Error(`matches pattern took too long (over ${MATCH_TIMEOUT_MS} ms); simplify it`);
-    timeout.code = MATCH_TIMED_OUT;
-    throw timeout;
-  } finally {
-    budget.remainingMs -= performance.now() - started;
-    matchContext.p = undefined;
-    matchContext.t = undefined;
-  }
-}
-
-function isBoundedOut(error) {
-  return error?.code === MATCH_TIMED_OUT || error?.code === MATCH_SKIPPED;
+  return bounded.boundedTest({ pattern, text, budget, label: "matches" });
 }
 
 const OPS = {
@@ -204,4 +158,5 @@ function describeAssertion({ path, op, value }) {
   return [path, op, ...(value === undefined ? [] : [JSON.stringify(value)])].join(" ");
 }
 
-module.exports = { MATCH_SKIPPED, MATCH_TIMED_OUT, boundedMatch, checkAssertions, createRegexBudget, describeAssertion, validateAssertions, valueTexts };
+// MATCH_INPUT_LIMIT is bounded-regex.cjs's, exported here too for callers of boundedMatch.
+module.exports = { MATCH_INPUT_LIMIT, MATCH_SKIPPED, MATCH_TIMED_OUT, boundedMatch, checkAssertions, createRegexBudget, describeAssertion, validateAssertions, valueTexts };

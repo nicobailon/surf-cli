@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { PageWorker } from "../fixtures/page-worker";
 
 const fs = require("node:fs");
 const os = require("node:os");
@@ -215,9 +216,27 @@ describe("extracting records from JSON", () => {
 
 /**
  * A tab whose network strategy answers `body`, with the service worker's output handling: the
- * script's value pretty-printed and cut at 50,000 characters.
+ * script's value pretty-printed and cut at 50,000 characters, or { error } when it throws.
  */
-function jsonTab(body: string, contentType = "application/json") {
+type TabOptions = {
+  clock?: { now: () => number };
+  worker?: unknown;
+  // What the tab's output goes through on its way out, as a page's own JSON.stringify could.
+  serialize?: (value: Record<string, unknown>) => Record<string, unknown>;
+  // The page's JSON, which the tab's scripts use.
+  json?: Pick<typeof JSON, "parse" | "stringify">;
+};
+
+function jsonTab(
+  body: string,
+  contentType = "application/json",
+  {
+    clock = performance,
+    worker = PageWorker,
+    serialize = (value) => value,
+    json = JSON,
+  }: TabOptions = {},
+) {
   const outputs: Record<string, unknown>[] = [];
   const executeTool = async (_tool: string, args: { code: string }) => {
     const fetchImpl = async (url: string) => ({
@@ -227,11 +246,21 @@ function jsonTab(body: string, contentType = "application/json") {
       headers: new Headers({ "content-type": contentType }),
       text: async () => body,
     });
-    const value = await new Function("fetch", "location", `return ${args.code}`)(fetchImpl, {
-      href: "https://api.test/",
-    });
+    let value: Record<string, unknown>;
+    try {
+      value = await new Function(
+        "fetch",
+        "location",
+        "performance",
+        "Worker",
+        "JSON",
+        `return ${args.code}`,
+      )(fetchImpl, { href: "https://api.test/" }, clock, worker, json);
+    } catch (error) {
+      return { error: (error as Error).message };
+    }
     outputs.push(value);
-    return { output: JSON.stringify(value, null, 2).substring(0, 50000) };
+    return { output: JSON.stringify(serialize(value), null, 2).substring(0, 50000) };
   };
   return { executeTool, outputs };
 }
@@ -242,8 +271,13 @@ const hits = Array.from({ length: 400 }, (_, index) => ({
 }));
 const largeBody = JSON.stringify({ hits, meta: { total: 400 } });
 
-function runJson(body: string, spec: Record<string, unknown>, contentType?: string) {
-  const tab = jsonTab(body, contentType);
+function runJson(
+  body: string,
+  spec: Record<string, unknown>,
+  contentType?: string,
+  tabOptions?: TabOptions,
+) {
+  const tab = jsonTab(body, contentType, tabOptions);
   const run = runtime.runPlaybookOp({
     playbook: { id: "fixture", provenance: { scope: "test" } },
     op: op([
@@ -278,6 +312,227 @@ describe("a JSON extract runs in the tab", () => {
     const { run } = runJson(largeBody, { records: "$.hits", fields: { text: "description" } });
     await expect(run).rejects.toThrow(
       /extracted result is \d+ characters; narrow --records\/--field/,
+    );
+  });
+
+  it("bounds field match patterns in the tab: 64 KB of text, a 2 s budget, 100 ms a run", async () => {
+    const items = Array.from({ length: 50 }, (_, index) => ({
+      id: `id-${index}`,
+      t: `${"a".repeat(70000)}x`,
+    }));
+    const body = JSON.stringify(items);
+    const id = { path: "id", match: "id-(\\d+)" };
+    const end = { path: "t", match: "x$" };
+    const small = await runJson(JSON.stringify(items.slice(0, 2)), {
+      records: "$",
+      fields: { id, end },
+    }).run;
+    expect(small.value).toEqual([{ id: "0" }, { id: "1" }]);
+    // On a clock where each run takes 60 ms, the 34th run spends the budget.
+    const step = (ms: number) => {
+      let now = 0;
+      return { now: () => (now += ms) };
+    };
+    await expect(
+      runJson(body, { records: "$", fields: { id } }, undefined, { clock: step(60) }).run,
+    ).rejects.toThrow("skipped: the run's 2 s regex budget is spent");
+    // A run that never ends is stopped after 100 ms, in the tab's worker or, when the page blocks
+    // workers, on the host.
+    const never = { fields: { t: { path: "t", match: "(a?){500}b" } } };
+    for (const tabWorker of [PageWorker, null]) {
+      const started = Date.now();
+      await expect(
+        runJson(JSON.stringify({ t: "a".repeat(30) }), never, undefined, { worker: tabWorker }).run,
+      ).rejects.toThrow("fields.t.match pattern took too long (over 100 ms); simplify it");
+      expect(Date.now() - started).toBeLessThan(600);
+    }
+    const handed = await runJson(
+      JSON.stringify(items.slice(0, 2).map((item) => ({ id: item.id }))),
+      { records: "$", fields: { id } },
+      undefined,
+      { worker: null },
+    ).run;
+    expect(handed.value).toEqual([{ id: "0" }, { id: "1" }]);
+  });
+
+  it("shares one 2 s field-regex budget across an op run's strategies", async () => {
+    // 20 records whose match takes 60 ms each on this clock: 1.2 s a strategy. The first fails its
+    // status check, so the second runs on what is left and spends it.
+    const body = JSON.stringify(Array.from({ length: 20 }, (_, index) => ({ id: `id-${index}` })));
+    const ids = { records: "$", fields: { id: { path: "id", match: "id-(\\d+)" } } };
+    let now = 0;
+    const tab = jsonTab(body, undefined, { clock: { now: () => (now += 60) } });
+    const strategy = {
+      using: "network",
+      request: { method: "GET", url: "https://api.test/search" },
+      extract: ids,
+    };
+    const run = runtime.runPlaybookOp({
+      playbook: { id: "fixture", provenance: { scope: "test" } },
+      op: op([{ ...strategy, verify: { status: 201 } }, strategy]),
+      executeTool: tab.executeTool,
+    });
+    await expect(run).rejects.toThrow(
+      "All strategies failed (network: expected status 201; network: skipped: the run's 2 s regex budget is spent)",
+    );
+  });
+
+  it("gives the same records with or without the tab's worker when a group doesn't match", async () => {
+    const optional = {
+      fields: { optional: { path: "t", match: "(x)?a" }, whole: { path: "t", match: "a" } },
+    };
+    for (const worker of [PageWorker, null]) {
+      const result = await runJson('{"t":"a"}', optional, undefined, { worker }).run;
+      expect(result.value).toStrictEqual({ whole: "a" });
+    }
+  });
+
+  it("charges a near-limit tab result's regex time to the run", async () => {
+    // 30 records whose match takes 60 ms each on this clock: 1.8 s a strategy, with a result just
+    // under the tab's 50,000 characters until regexSpentMs is added.
+    const head = {
+      status: 200,
+      ok: true,
+      url: "https://api.test/search",
+      headers: { "content-type": "application/json" },
+    };
+    const rows = (length: number) =>
+      Array.from({ length: 30 }, (_, index) => ({
+        id: `id-${index}`,
+        pad: index ? "" : "p".repeat(length),
+      }));
+    const size = (length: number) =>
+      JSON.stringify(
+        {
+          ...head,
+          extracted: rows(length).map(({ id, pad: text }) => ({ id: id.slice(3), pad: text })),
+        },
+        null,
+        2,
+      ).length;
+    const padding = 49_990 - size(0);
+    expect(size(padding)).toBe(49_990);
+    const near = { records: "$", fields: { id: { path: "id", match: "id-(\\d+)" }, pad: "pad" } };
+    let now = 0;
+    const tab = jsonTab(JSON.stringify(rows(padding)), undefined, {
+      clock: { now: () => (now += 60) },
+    });
+    const strategy = {
+      using: "network",
+      request: { method: "GET", url: "https://api.test/search" },
+      extract: near,
+    };
+    const run = runtime.runPlaybookOp({
+      playbook: { id: "fixture", provenance: { scope: "test" } },
+      op: op([strategy, strategy]),
+      executeTool: tab.executeTool,
+    });
+    await expect(run).rejects.toThrow(
+      /^All strategies failed \(network: extracted result is \d+ characters; narrow --records\/--field; network: skipped: the run's 2 s regex budget is spent\)$/,
+    );
+  });
+
+  it("charges what the host saw when a page rewrites regexSpentMs to 0", async () => {
+    // Each strategy's 30 matches take 60 ms on the page's clock (two reads, 30 ms a read), 1.8 s;
+    // the page reports 0. The host reads the same clock without moving it, so it sees the time the
+    // regex call took and stops the run at 2 s.
+    const body = JSON.stringify(Array.from({ length: 30 }, (_, index) => ({ id: `id-${index}` })));
+    const ids = { records: "$", fields: { id: { path: "id", match: "id-(\\d+)" } } };
+    let now = 0;
+    const clock = { now: () => (now += 30) };
+    const tab = jsonTab(body, undefined, {
+      clock,
+      serialize: (value) => ("regexSpentMs" in value ? { ...value, regexSpentMs: 0 } : value),
+    });
+    const strategy = {
+      using: "network",
+      request: { method: "GET", url: "https://api.test/search" },
+      extract: ids,
+    };
+    const run = runtime.runPlaybookOp({
+      playbook: { id: "fixture", provenance: { scope: "test" } },
+      op: op([{ ...strategy, verify: { status: 201 } }, strategy]),
+      executeTool: tab.executeTool,
+      now: () => now,
+    });
+    await expect(run).rejects.toThrow(
+      "All strategies failed (network: expected status 201; network: skipped: the run's 2 s regex budget is spent)",
+    );
+  });
+
+  it("charges a pattern call that fails after its patterns ran", async () => {
+    // The page's JSON.stringify throws on the tab's output, so the pattern call rejects after each
+    // strategy's 30 matches have taken 1.8 s. The first is charged its whole 2 s allowance, and the
+    // second runs no pattern.
+    const body = JSON.stringify(Array.from({ length: 30 }, (_, index) => ({ id: `id-${index}` })));
+    const ids = { records: "$", fields: { id: { path: "id", match: "id-(\\d+)" } } };
+    let now = 0;
+    const clock = { now: () => (now += 60) };
+    let matches = 0;
+    class CountingWorker extends PageWorker {
+      postMessage(data: unknown) {
+        if (data !== "ping") {
+          matches++;
+        }
+        super.postMessage(data);
+      }
+    }
+    const json = {
+      parse: JSON.parse,
+      stringify: (value: unknown, ...rest: [never, number]) => {
+        if (value && typeof value === "object" && "regexSpentMs" in value) {
+          throw new Error("page says no");
+        }
+        return JSON.stringify(value, ...rest);
+      },
+    };
+    const tab = jsonTab(body, undefined, { clock, worker: CountingWorker, json });
+    const strategy = {
+      using: "network",
+      request: { method: "GET", url: "https://api.test/search" },
+      extract: ids,
+    };
+    const run = runtime.runPlaybookOp({
+      playbook: { id: "fixture", provenance: { scope: "test" } },
+      op: op([strategy, strategy]),
+      executeTool: tab.executeTool,
+      now: () => clock.now(),
+    });
+    await expect(run).rejects.toThrow(
+      "All strategies failed (network: page says no; network: skipped: the run's 2 s regex budget is spent)",
+    );
+    expect(matches).toBe(30);
+  });
+
+  it("refuses a pattern call that took longer than its allowance, when the page's clock stands still", async () => {
+    // The page's clock never moves, so its worker runs every match; each takes 60 ms on the host's
+    // clock. The first strategy spends 1.8 s and fails its status check; the second, with 200 ms
+    // left, also takes 1.8 s, and its result is refused.
+    const body = JSON.stringify(Array.from({ length: 30 }, (_, index) => ({ id: `id-${index}` })));
+    const ids = { records: "$", fields: { id: { path: "id", match: "id-(\\d+)" } } };
+    let hostNow = 0;
+    class SlowWorker extends PageWorker {
+      postMessage(data: unknown) {
+        if (data !== "ping") {
+          hostNow += 60;
+        }
+        super.postMessage(data);
+      }
+    }
+    const tab = jsonTab(body, undefined, { clock: { now: () => 0 }, worker: SlowWorker });
+    const strategy = {
+      using: "network",
+      request: { method: "GET", url: "https://api.test/search" },
+      extract: ids,
+    };
+    const run = runtime.runPlaybookOp({
+      playbook: { id: "fixture", provenance: { scope: "test" } },
+      op: op([{ ...strategy, verify: { status: 201 } }, strategy]),
+      executeTool: tab.executeTool,
+      now: () => hostNow,
+    });
+    await expect(run).rejects.toThrow(
+      "All strategies failed (network: expected status 201; network: skipped: the run's 2 s regex budget is spent)",
     );
   });
 
@@ -440,6 +695,36 @@ describe("validating an op's extract", () => {
         },
       }),
     ).not.toThrow();
+  });
+
+  it("refuses a field match over 500 characters on every kind of op extract", () => {
+    const long = "a".repeat(501);
+    expect(() => validate({ extract: { fields: { id: { path: "id", match: long } } } })).toThrow(
+      "op get_books extract: fields.id.match is 501 characters; the limit is 500",
+    );
+    expect(() =>
+      validate({
+        extract: { html: { item: "li", fields: { id: { selector: "a", match: long } } } },
+      }),
+    ).toThrow("op get_books extract: html field id.match is 501 characters; the limit is 500");
+    expect(() => validate({ extract: { fields: { id: { path: "id", match: "(" } } } })).toThrow(
+      /fields\.id\.match is not a valid regex/,
+    );
+    const strategy = (using: string, fields: Record<string, unknown>) =>
+      playbooks.validateOp(
+        op([
+          using === "api"
+            ? { using, match: "/api/*", records: { find: { exists: ["id"] }, key: "id", fields } }
+            : { using, item: "li", key: ":scope@data-id", fields },
+        ]),
+        { origins: [] },
+      );
+    expect(() => strategy("api", { id: { path: "id", match: long } })).toThrow(
+      "op get_books api strategy: records.fields.id.match is 501 characters; the limit is 500",
+    );
+    expect(() => strategy("collect", { id: { selector: "a", match: long } })).toThrow(
+      "op get_books collect strategy: collect field id.match is 501 characters; the limit is 500",
+    );
   });
 
   it("rejects malformed selectors, paths and mixes", () => {
@@ -666,6 +951,15 @@ describe("surf pb extract", () => {
         home,
       }),
     ).toThrow(/unbalanced selector/);
+    expect(() =>
+      extract.saveExtract({
+        playbook: "books",
+        op: "get_books",
+        extract: { records: "$.items", fields: { id: { path: "id", match: "a".repeat(501) } } },
+        cwd,
+        home,
+      }),
+    ).toThrow(/fields\.id\.match is 501 characters; the limit is 500/);
     expect(fs.readFileSync(file, "utf8")).toBe(before);
     expect(() =>
       extract.saveExtract({ playbook: "x", op: "thread", extract: htmlExtract, cwd, home }),
@@ -685,7 +979,11 @@ describe("generated clients and extract", () => {
         request: { method: "GET", url: "https://api.lever.test/v0/postings/acme" },
         extract: {
           records: "$",
-          fields: { title: "text", team: "categories.team" },
+          fields: {
+            title: "text",
+            team: "categories.team",
+            code: { path: "id", match: "^lv-(\\d+)$" },
+          },
           filter: { workplaceType: "remote" },
         },
       },
@@ -699,7 +997,7 @@ describe("generated clients and extract", () => {
       response.writeHead(200, { "content-type": "application/json" });
       response.end(
         JSON.stringify([
-          { text: "Engineer", categories: { team: "Dev" }, workplaceType: "remote" },
+          { text: "Engineer", categories: { team: "Dev" }, workplaceType: "remote", id: "lv-7" },
           { text: "Designer", categories: { team: "Design" }, workplaceType: "onsite" },
         ]),
       );
@@ -720,7 +1018,8 @@ describe("generated clients and extract", () => {
           (error: Error | null, output: string) => (error ? reject(error) : resolve(output)),
         ),
       );
-      expect(JSON.parse(stdout)).toEqual([{ title: "Engineer", team: "Dev" }]);
+      // The match runs through bounded-regex.cjs, copied next to records.cjs.
+      expect(JSON.parse(stdout)).toEqual([{ title: "Engineer", team: "Dev", code: "7" }]);
     } finally {
       await new Promise((resolve) => server.close(resolve));
     }

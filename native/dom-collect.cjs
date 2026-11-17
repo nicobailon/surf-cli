@@ -1,6 +1,7 @@
 // Scroll-and-harvest for virtualized lists: read the visible items each round, merge by key on
 // the host (so a page reload does not lose records), stop when scrolling stops adding items.
 
+const { checkPattern, createFieldRegexBudget, runTabScript, tabBudgetSource, tabSource } = require("./bounded-regex.cjs");
 const { assertFieldName, filterRecords } = require("./records.cjs");
 
 const COLLECT_KEYS = ["open", "item", "key", "fields", "maxItems", "idleRounds", "scrollDelayMs", "expand", "keep"];
@@ -33,14 +34,7 @@ function parseDomField(spec, where) {
   if (typeof spec.selector !== "string" || !spec.selector.trim()) throw new Error(`${where} needs a selector`);
   if (spec.attr !== undefined && (typeof spec.attr !== "string" || !spec.attr)) throw new Error(`${where}.attr must be a string`);
   if (spec.all !== undefined && typeof spec.all !== "boolean") throw new Error(`${where}.all must be a boolean`);
-  if (spec.match !== undefined) {
-    if (typeof spec.match !== "string") throw new Error(`${where}.match must be a regex string`);
-    try {
-      new RegExp(spec.match);
-    } catch (error) {
-      throw new Error(`${where}.match is not a valid regex: ${error.message}`);
-    }
-  }
+  if (spec.match !== undefined) checkPattern(spec.match, `${where}.match`);
   return { ...spec };
 }
 
@@ -77,7 +71,9 @@ function validateCollectSpec(spec) {
   };
 }
 
-// Page-side helpers shared by collect and playbook HTML extraction. The script defines `textOf`.
+// Page-side helpers shared by collect and playbook HTML extraction. The script defines `textOf`, and
+// `boundedRegex` (tabSource()), whose tabExtract runs them: readItem reads an item's raw values off
+// the page once, and buildItem makes its record from them, running match patterns, without the page.
 const PICK_SOURCE = `// Dotted field names ("quoted.text") build nested objects.
 const assign = (record, name, value) => {
   if (value === undefined) return;
@@ -86,7 +82,20 @@ const assign = (record, name, value) => {
   for (const part of parts.slice(0, -1)) node = node[part] ??= {};
   node[parts[parts.length - 1]] = value;
 };
-const pick = (item, field, record) => {
+// A field's raw values: what each element it selects reads as (text or attribute), or null for a
+// template, which reads the record instead.
+const readField = (item, field) => {
+  if (field.template !== undefined) return null;
+  const elements = field.selector === ":scope" ? [item] : field.all ? [...item.querySelectorAll(field.selector)] : [item.querySelector(field.selector)].filter(Boolean);
+  const read = (element) => {
+    if (!field.attr) return textOf(element);
+    const property = element[field.attr];
+    return typeof property === "string" ? property : element.getAttribute(field.attr) ?? undefined;
+  };
+  return field.all ? elements.map(read) : elements.slice(0, 1).map(read);
+};
+// A field's value from its raw values and the record so far. \`where\` names it in a pattern's error.
+const buildField = (field, raw, record, where) => {
   if (field.template !== undefined) {
     let missing = false;
     const text = field.template.replace(/\\{\\{([a-zA-Z0-9._-]+)\\}\\}/g, (_, name) => {
@@ -96,40 +105,37 @@ const pick = (item, field, record) => {
     });
     return missing ? undefined : text;
   }
-  const elements = field.selector === ":scope" ? [item] : field.all ? [...item.querySelectorAll(field.selector)] : [item.querySelector(field.selector)].filter(Boolean);
-  const read = (element) => {
-    if (!field.attr) return textOf(element);
-    const property = element[field.attr];
-    return typeof property === "string" ? property : element.getAttribute(field.attr) ?? undefined;
-  };
   const apply = (value) => {
     if (!field.match || typeof value !== "string") return value;
-    const found = value.match(new RegExp(field.match));
+    const found = boundedRegex.boundedExec({ pattern: field.match, text: value, label: \`\${where} match\` });
     return found ? (found.length > 1 ? found[1] : found[0]) : undefined;
   };
   if (field.all) {
-    const values = elements.map(read).map(apply).filter((value) => value !== undefined && value !== null);
+    const values = raw.map(apply).filter((value) => value !== undefined && value !== null);
     return values.length ? values : undefined;
   }
-  return elements.length ? apply(read(elements[0])) : undefined;
+  return raw.length ? apply(raw[0]) : undefined;
 };
+const readItem = (item, fields) => Object.entries(fields).map(([name, field]) => [name, readField(item, field)]);
 // Templates run last, so they can use the item's other fields.
-const readItem = (item, fields) => {
+const buildItem = (raws, fields) => {
   const record = {};
-  const templates = [];
-  for (const [name, field] of Object.entries(fields)) {
-    if (field.template !== undefined) templates.push([name, field]);
-    else assign(record, name, pick(item, field, record));
+  for (const [name, raw] of raws) {
+    if (fields[name].template === undefined) assign(record, name, buildField(fields[name], raw, record, \`field \${name}\`));
   }
-  for (const [name, field] of templates) assign(record, name, pick(item, field, record));
+  for (const [name, raw] of raws) {
+    if (fields[name].template !== undefined) assign(record, name, buildField(fields[name], raw, record, \`field \${name}\`));
+  }
   return record;
 };
 `;
 
 // Runs in the page. Reads unseen items, then scrolls the last item to the top for the next round.
-function roundScript(spec, seenKeys) {
+function roundScript(spec, seenKeys, budget) {
   const input = JSON.stringify({ item: spec.item, key: spec.key, fields: spec.fields, expand: spec.expand, seen: seenKeys });
   return `(async () => {
+${tabSource()}
+${tabBudgetSource(budget)}
 const spec = ${input};
 // Background tabs and minimized windows do not render virtualized lists.
 if (document.visibilityState === "hidden") return { hidden: true };
@@ -153,19 +159,28 @@ ${PICK_SOURCE}if (spec.expand) {
   }
 }
 const items = [...document.querySelectorAll(spec.item)];
-const records = [];
-for (const item of items) {
-  const record = readItem(item, spec.fields);
-  const key = pick(item, spec.key, record);
-  if (key === undefined || key === null || key === "") continue;
-  const id = JSON.stringify(key);
-  if (seen.has(id)) continue;
-  seen.add(id);
-  records.push({ id, record });
-}
-if (items.length) items[items.length - 1].scrollIntoView({ block: "start" });
-else window.scrollBy(0, window.innerHeight);
-return { records };
+return boundedRegex.tabExtract({
+  budget: regexBudget,
+  read: () => items.map((item) => ({ raws: readItem(item, spec.fields), key: readField(item, spec.key) })),
+  extract: (rows) => rows.map(({ raws, key }) => {
+    const record = buildItem(raws, spec.fields);
+    return { record, key: buildField(spec.key, key, record, "key") };
+  }),
+  onValue: (read) => {
+    const records = [];
+    for (const { record, key } of read) {
+      if (key === undefined || key === null || key === "") continue;
+      const id = JSON.stringify(key);
+      if (seen.has(id)) continue;
+      seen.add(id);
+      records.push({ id, record });
+    }
+    if (items.length) items[items.length - 1].scrollIntoView({ block: "start" });
+    else window.scrollBy(0, window.innerHeight);
+    return { records };
+  },
+  onError: (error) => ({ error: error.message }),
+});
 })()`;
 }
 
@@ -212,7 +227,9 @@ function parseHtmlExtract(spec) {
 }
 
 /**
- * Page-side function `(doc) => records | value` for an extract.html spec. Text is the element's text
+ * Page-side function `(doc) => ({ read, extract })` for an extract.html spec, the reading and the
+ * building of its records or value, for boundedRegex.tabExtract (the script defines `boundedRegex`
+ * with tabSource()). Text is the element's text
  * with whitespace collapsed, the same in a parsed response body (which has no layout) and a live page.
  */
 function htmlExtractFunction(spec) {
@@ -228,12 +245,22 @@ ${PICK_SOURCE}const check = (where, field) => {
   }
 };
 if (spec.value) {
-  check("value", spec.value);
-  return pick(doc, spec.value, {}) ?? null;
+  return {
+    read: () => {
+      check("value", spec.value);
+      return readField(doc, spec.value);
+    },
+    extract: (raw) => buildField(spec.value, raw, {}, "value") ?? null,
+  };
 }
-check("item", { selector: spec.item });
-for (const [name, field] of Object.entries(spec.fields)) check(\`field \${name}\`, field);
-return [...doc.querySelectorAll(spec.item)].map((item) => readItem(item, spec.fields));
+return {
+  read: () => {
+    check("item", { selector: spec.item });
+    for (const [name, field] of Object.entries(spec.fields)) check(\`field \${name}\`, field);
+    return [...doc.querySelectorAll(spec.item)].map((item) => readItem(item, spec.fields));
+  },
+  extract: (items) => items.map((raws) => buildItem(raws, spec.fields)),
+};
 })`;
 }
 
@@ -245,8 +272,11 @@ function hiddenTabError(what = "collect") {
   );
 }
 
-/** Collects records from a virtualized list. Returns records in first-seen order, deduped by key. */
-async function runCollect({ spec, executeTool, sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms)) }) {
+/**
+ * Collects records from a virtualized list. Returns records in first-seen order, deduped by key.
+ * Every round's field match patterns spend from `regexBudget` (an op run's, or one for the collect).
+ */
+async function runCollect({ spec, executeTool, sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms)), regexBudget = createFieldRegexBudget(), now = () => performance.now() }) {
   const options = validateCollectSpec(spec);
   if (options.open) await executeTool("navigate", { url: options.open });
   const visibility = await executeTool("javascript_tool", { code: "document.visibilityState" });
@@ -255,19 +285,20 @@ async function runCollect({ spec, executeTool, sleep = (ms) => new Promise((reso
   const byKey = new Map();
   let idle = 0;
   while (byKey.size < options.maxItems && idle < options.idleRounds) {
-    const result = await executeTool("javascript_tool", { code: roundScript(options, [...byKey.keys()]) });
-    let round;
-    try {
-      round = JSON.parse(result?.output);
-    } catch {
-      const size = typeof result?.output === "string" ? result.output.length : 0;
-      throw new Error(
-        size >= OUTPUT_LIMIT
-          ? `collect round output reached the ${OUTPUT_LIMIT}-character script limit; narrow the fields`
-          : "collect round returned no records",
-      );
-    }
+    const round = await runTabScript({
+      budget: regexBudget,
+      now,
+      script: (budget) => roundScript(options, [...byKey.keys()], budget),
+      execute: (code) => executeTool("javascript_tool", { code }),
+      unreadable: (size) =>
+        new Error(
+          size >= OUTPUT_LIMIT
+            ? `collect round output reached the ${OUTPUT_LIMIT}-character script limit; narrow the fields`
+            : "collect round returned no records",
+        ),
+    });
     if (round?.hidden === true) throw hiddenTabError();
+    if (typeof round?.error === "string") throw new Error(`collect round failed: ${round.error}`);
     if (!Array.isArray(round?.records)) throw new Error("collect round returned no records");
     let added = 0;
     for (const { id, record } of round.records) {
