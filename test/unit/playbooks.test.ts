@@ -172,6 +172,22 @@ describe("playbook resolution and strategies", () => {
     expect(op.origins).toEqual(["https://example.test"]);
   });
 
+  // A write op may replay PUT, PATCH and DELETE; a read op can't.
+  it.each([["PUT"], ["patch"], ["DELETE"]])("refuses a read op that sends %s", (method) => {
+    const op = (effect: string) => ({
+      id: "update",
+      effect,
+      ...(effect === "write" ? { safety: { duplicate: "transactional", key: ["id"] } } : {}),
+      run: [{ using: "network", request: { method, url: "https://example.test/items/7" } }],
+    });
+    expect(() => playbooks.validateOp(op("read"), { origins: [] })).toThrow(
+      "read ops cannot use a mutating network method",
+    );
+    expect(playbooks.validateOp(op("write"), { origins: [] }).run[0].request.method).toBe(
+      method.toUpperCase(),
+    );
+  });
+
   it("rejects literal credentials and unsafe write workflows", () => {
     const validate = (op: unknown) => playbooks.validateOp(op, { origins: [] });
     expect(

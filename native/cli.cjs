@@ -1779,7 +1779,7 @@ const TOOLS = {
       "playbook client derive": {
         desc: "Generate a standalone client from an observed request",
         args: ["playbook"],
-        opts: { op: "Operation name", "from-record": "Record id", "request-id": "Request id in the record", out: "Output directory", write: "Allow a captured POST (a write); the client sends it with no receipt, and its body as captured, input values the record kept included (make a field an input with pb param to leave it out)" },
+        opts: { op: "Operation name", "from-record": "Record id", "request-id": "Request id in the record", out: "Output directory", write: "Allow a captured write (POST, PUT, PATCH or DELETE); the client sends it with no receipt, and its body as captured, input values the record kept included (make a field an input with pb param to leave it out)" },
       },
       "playbook client export": {
         desc: "Export a client for a playbook op; client.mjs takes the op's inputs as --name value or --name=value (\"\" for an empty one; a bare --name only for a boolean)",

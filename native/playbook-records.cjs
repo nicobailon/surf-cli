@@ -16,7 +16,7 @@ const { draftedEvents, forgetTypedValues, heldTypingCalls, maskTypedValuesInUrl,
 const { commandMetadata, promoteRedactedStepArgs } = require("./workflow-definition.cjs");
 const { escapeStepArgs, escapeTemplates } = require("./playbook-template.cjs");
 const { describeCaptureGaps } = require("./formatters/network.cjs");
-const { ASSET_TYPES, isReplayCandidate, isTelemetryRequest, requestEffect, shownUrl } = require("./request-kinds.cjs");
+const { ASSET_TYPES, REPLAYED_METHODS, isReplayCandidate, isTelemetryRequest, requestEffect, shownUrl } = require("./request-kinds.cjs");
 const { WINNER_MARGIN, isWeak, pageWords, rankCandidates, scoreEntries, summarizeResponse } = require("./record-candidates.cjs");
 const { version: PACKAGE_VERSION } = require("../package.json");
 
@@ -328,11 +328,10 @@ function neverReplayed(entry, origin) {
   if (isTelemetryRequest(entry, origin)) return "telemetry";
   if (ASSET_TYPES.has(entry.type)) return `a page asset (${entry.type})`;
   if (entry.method === "OPTIONS" || entry.type === "Preflight") return "a CORS preflight";
-  if (!REPLAYED_METHODS.has(entry.method)) return `a ${entry.method} (a draft replays only GET, HEAD and POST)`;
+  if (!REPLAYED_METHODS.has(entry.method)) return `a ${entry.method} (a draft replays only GET, HEAD, POST, PUT, PATCH and DELETE)`;
   if (!isReplayCandidate(entry)) return `a ${entry.method} answered with status ${entry.status ?? "none"}`;
   return "";
 }
-const REPLAYED_METHODS = new Set(["GET", "HEAD", "POST"]);
 
 // The request a draft replays: the one chosen with --request-id, else the top-ranked read. A write
 // draft whose trace holds a write replays its top-ranked write, the request its effect comes from,
