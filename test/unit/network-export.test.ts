@@ -451,3 +451,60 @@ describe("a record's trace and its HAR, when a response echoes a secret header",
     expect(await fs.readFile(output, "utf8")).toContain("x-echo");
   });
 });
+
+describe("a quoted auth parameter echoed in a JSON body", () => {
+  const PLAIN = ["dummy", "resy", "key", "15"].join("-");
+  const QUOTED = ["dummy", 'quo"ted', "va\\lue", "15"].join("-");
+  // The header quotes the value and escapes its quotes and backslashes, as an auth parameter does.
+  const header = (value: string) => `ResyAPI api_key="${value.replace(/["\\]/g, "\\$&")}"`;
+  const body = (value: string) => JSON.stringify({ token: value, n: 1 });
+
+  it.each([PLAIN, QUOTED])("keeps the export's body valid JSON without %s", (value) => {
+    const entry = exporter.publicEntry({
+      id: "r-1",
+      method: "GET",
+      url: "https://example.test/api",
+      requestHeaders: { Authorization: header(value) },
+      responseBody: body(value),
+    });
+    expect(entry.responseBody).not.toContain("dummy");
+    expect(JSON.parse(entry.responseBody)).toEqual({ token: "<redacted>", n: 1 });
+  });
+
+  it.each([PLAIN, QUOTED])("keeps a record trace's body valid JSON without %s", async (value) => {
+    const records = require("../../native/playbook-records.cjs");
+    const root = await tempDir();
+    const record = records.startRecord({
+      site: "shop",
+      op: "items",
+      tabId: 1,
+      network: true,
+      includeInputValues: true,
+      root,
+    });
+    records.attachNetworkTrace(
+      record.id,
+      [
+        {
+          id: "r-1",
+          method: "POST",
+          url: "https://example.test/api",
+          requestHeaders: { Authorization: header(value), "content-type": "application/json" },
+          requestBody: body(value),
+          status: 200,
+        },
+      ],
+      root,
+      { capture: { active: true, interruptions: [], dropped: 0 } },
+    );
+    const trace = await fs.readFile(
+      path.join(root, "records", record.id, "network", "trace.json"),
+      "utf8",
+    );
+    expect(trace).not.toContain("dummy");
+    expect(JSON.parse(JSON.parse(trace).entries[0].requestBody)).toEqual({
+      token: "<redacted>",
+      n: 1,
+    });
+  });
+});

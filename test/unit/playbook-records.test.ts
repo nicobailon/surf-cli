@@ -3660,3 +3660,65 @@ describe("values key, network.replay --set and locate.role --name carry", () => 
     expect(written).not.toContain(TYPED);
   });
 });
+
+describe("a record's trace, when a secret header holds a short value", () => {
+  // Records `entry` with --include-input-values and stops with a draft; returns the trace entry the
+  // record kept and the request its draft replays.
+  function traceAndDraft(entry: Entry) {
+    const root = tempRoot();
+    const record = records.startRecord({
+      site: "fixture",
+      op: "search",
+      tabId: 1,
+      origin: "https://example.test",
+      network: true,
+      includeInputValues: true,
+      root,
+    });
+    records.attachNetworkTrace(record.id, [entry], root, { capture: COMPLETE });
+    const kept = JSON.parse(
+      fs.readFileSync(path.join(root, "records", record.id, "network", "trace.json"), "utf8"),
+    ).entries[0];
+    const { draft } = records.stopRecord({ target: TAB, draft: true, root });
+    return { kept, request: draft.run.find((s: Entry) => s.using === "network").request };
+  }
+  const sent = (headers: Entry, url: string, body: unknown): Entry => ({
+    id: "r_1",
+    method: "POST",
+    status: 200,
+    type: "Fetch",
+    mimeType: "application/json",
+    url,
+    requestHeaders: { "content-type": "application/json", ...headers },
+    requestBody: JSON.stringify(body),
+  });
+
+  it("keeps a query value and a JSON number that equal a one-character x-csrf-token", () => {
+    const url = "https://example.test/api/search?page=1&q=x";
+    const { kept, request } = traceAndDraft(
+      sent({ "x-csrf-token": "1" }, url, { page: 1, q: "x", token: "1" }),
+    );
+    expect(kept.url).toBe(url);
+    expect(JSON.parse(kept.requestBody)).toEqual({ page: 1, q: "x", token: "<redacted>" });
+    expect(request.query).toEqual({ page: "1", q: "x" });
+    expect(JSON.parse(request.body)).toEqual({ page: 1, q: "x", token: "<redacted>" });
+  });
+
+  it("never rewrites a key that equals the token, only a whole string value", () => {
+    const { kept, request } = traceAndDraft(
+      sent({ "x-csrf-token": "id" }, "https://example.test/api/items?id=7&kind=id", { id: "id" }),
+    );
+    expect(kept.url).toBe("https://example.test/api/items?id=7&kind=<redacted>");
+    expect(JSON.parse(kept.requestBody)).toEqual({ id: "<redacted>" });
+    expect(request.query).toEqual({ id: "7", kind: "<redacted>" });
+    expect(JSON.parse(request.body)).toEqual({ id: "<redacted>" });
+  });
+
+  it("keeps a query pair that reads like the cookie", () => {
+    const url = "https://example.test/api/search?lang=en&q=x";
+    const { kept, request } = traceAndDraft(sent({ Cookie: "lang=en" }, url, { lang: "en" }));
+    expect(kept.url).toBe(url);
+    expect(JSON.parse(kept.requestBody)).toEqual({ lang: "en" });
+    expect(request.query).toEqual({ lang: "en", q: "x" });
+  });
+});

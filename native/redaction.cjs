@@ -61,6 +61,81 @@ function redactSecretValues(text, values, options = {}) {
   return redactValues(text, values.flatMap(valueSpellings), options);
 }
 
+// Echoes of secret header values (see secretHeaderValues) are redacted without changing what holds
+// them: a value of 8 characters or more wherever it appears, a shorter one only as a whole value (a
+// whole JSON string, or a whole query or form value), never in a key, a number or the structure
+// around it. So a JSON text stays valid JSON with its keys, and a URL keeps its query's names.
+
+// A string value: <redacted> when it is a short value whole, else with each long value replaced.
+function redactEchoString(text, values) {
+  const long = values.filter((value) => value.length >= 8);
+  return values.some((value) => value.length < 8 && value === text) ? "<redacted>" : redactValues(text, long);
+}
+
+// A parsed JSON value: its strings by redactEchoString, at any depth; keys and numbers as they are.
+function redactEchoJson(value, values) {
+  const texts = values.map(String).filter(Boolean);
+  const walk = (item) => {
+    if (typeof item === "string") return redactEchoString(item, texts);
+    if (Array.isArray(item)) return item.map(walk);
+    if (!item || typeof item !== "object") return item;
+    return Object.fromEntries(Object.entries(item).map(([key, child]) => [key, walk(child)]));
+  };
+  return walk(value);
+}
+
+// A query or form-encoded text (`a=1&b=2`): each value whole by its decoded and encoded spellings,
+// each long value within it; names, `&` and `=` as they are. A number (`page=1`) is left as JSON's
+// numbers are, as a short value matching one is far likelier the page number than the secret.
+function redactEchoQuery(query, values) {
+  return query.split("&").map((pair) => {
+    const equals = pair.indexOf("=");
+    if (equals < 0) return pair;
+    const raw = pair.slice(equals + 1);
+    let decoded = raw;
+    try {
+      decoded = decodeURIComponent(raw.replace(/\+/g, " "));
+    } catch {}
+    const whole = !/^-?\d+(?:\.\d+)?$/.test(decoded) && values.some((value) => value.length < 8 && (value === raw || value === decoded));
+    return `${pair.slice(0, equals + 1)}${whole ? "<redacted>" : redactValues(raw, values.filter((value) => value.length >= 8))}`;
+  }).join("&");
+}
+
+// A URL: its query by redactEchoQuery, and long values anywhere else in it.
+function redactEchoUrl(url, values) {
+  if (typeof url !== "string") return url;
+  const texts = values.map(String).filter(Boolean);
+  const long = texts.filter((value) => value.length >= 8);
+  const hash = url.indexOf("#") < 0 ? url.length : url.indexOf("#");
+  const question = url.indexOf("?");
+  if (question < 0 || question > hash) return redactValues(url, long);
+  return `${redactValues(url.slice(0, question + 1), long)}${redactEchoQuery(url.slice(question + 1, hash), texts)}${redactValues(url.slice(hash), long)}`;
+}
+
+// A body or header text: JSON by its string values (each string literal decoded, redacted and
+// written back only when it changed; keys never), a form-encoded text by redactEchoQuery, and any
+// other text with long values anywhere and short ones where they stand alone.
+function redactEchoText(text, values) {
+  const texts = values.map(String).filter(Boolean);
+  const source = String(text);
+  if (texts.length === 0) return source;
+  let json = false;
+  try {
+    JSON.parse(source);
+    json = true;
+  } catch {}
+  if (json) {
+    return source.replace(/"(?:[^"\\]|\\.)*"(\s*:)?/g, (literal, key) => {
+      if (key) return literal;
+      const decoded = JSON.parse(literal);
+      const redacted = redactEchoString(decoded, texts);
+      return redacted === decoded ? literal : JSON.stringify(redacted);
+    });
+  }
+  if (/^[^=&\s]+=[^&\s]*(?:&[^=&\s]+=[^&\s]*)*$/.test(source)) return redactEchoQuery(source, texts);
+  return redactValues(source, texts);
+}
+
 function isTemplate(value) {
   return typeof value === "string" && TEMPLATE_PATTERN.test(value);
 }
@@ -77,7 +152,10 @@ function isSecretHeader(name) {
 // The values of the secret headers in `headers` (and of the headers named in `names`), in the
 // forms a body or another header can echo: whole, the credential after an auth scheme, each
 // cookie's or auth parameter's value (8 characters or more, as a shorter one is no secret), a quoted
-// one with and without its quotes and escapes, and each in every spelling (see valueSpellings).
+// one inside its quotes, as written and unescaped, and each in every spelling (see valueSpellings).
+// A quoted value goes without its quotes, so redacting an echo leaves a JSON string's quotes alone.
+// The whole value can be short: redact echoes with redactEchoText, which keeps short ones from
+// rewriting keys, numbers or structure.
 function secretHeaderValues(headers, names = []) {
   if (!headers || typeof headers !== "object" || Array.isArray(headers)) return [];
   const named = new Set(names.map((name) => String(name).toLowerCase()));
@@ -89,7 +167,7 @@ function secretHeaderValues(headers, names = []) {
     for (const part of parts[0].split(/[;,]\s*/)) {
       const assigned = part.slice(part.indexOf("=") + 1).trim();
       const quoted = assigned.match(/^"(.*)"$/);
-      parts.push(assigned, ...(quoted ? [quoted[1], quoted[1].replace(/\\(.)/g, "$1")] : []));
+      parts.push(...(quoted ? [quoted[1], quoted[1].replace(/\\(.)/g, "$1")] : [assigned]));
     }
     values.push(text, ...parts.filter((part) => part.length >= 8));
   }
@@ -198,6 +276,9 @@ module.exports = {
   isSensitiveName,
   isTemplate,
   redactCredentialLiterals,
+  redactEchoJson,
+  redactEchoText,
+  redactEchoUrl,
   redactObject,
   redactSecretValues,
   redactSensitiveFields,

@@ -3,7 +3,7 @@ const path = require("path");
 const { version: PACKAGE_VERSION } = require("../package.json");
 const { redactSecretBodyFields } = require("./body-redaction.cjs");
 const { atomicWriteFile } = require("./private-state.cjs");
-const { isSecretHeader, redactUrlIfSecret, redactValues, secretHeaderValues } = require("./redaction.cjs");
+const { isSecretHeader, redactEchoText, redactUrlIfSecret, secretHeaderValues } = require("./redaction.cjs");
 
 const MAX_NETWORK_EXPORT_FILE_BYTES = 256 * 1024 * 1024;
 const INTERNAL_FIELDS = new Set(["_requestId", "_responseReceived", "_loadingFinished"]);
@@ -17,7 +17,7 @@ function redactHeaders(headers, secretHeaders, secrets) {
   if (!headers || typeof headers !== "object" || Array.isArray(headers)) return headers;
   return Object.fromEntries(Object.entries(headers).map(([name, value]) => {
     if (isSecretHeader(name) || secretHeaders.has(name.toLowerCase())) return [name, "<redacted>"];
-    return [name, typeof value === "string" && secrets.length > 0 ? redactValues(value, secrets) : value];
+    return [name, typeof value === "string" && secrets.length > 0 ? redactEchoText(value, secrets) : value];
   }));
 }
 
@@ -41,7 +41,7 @@ function publicEntry(entry, { secretHeaders = [], rawBodies = false } = {}) {
     if (HEADER_FIELDS.has(key)) result[key] = redactHeaders(value, named, secrets);
     else if (URL_FIELDS.has(key)) result[key] = redactUrlIfSecret(value);
     else if (BODY_FIELDS.has(key) && typeof value === "string" && secrets.length > 0 && !(key === "responseBody" && entry.responseBodyEncoding === "base64")) {
-      result[key] = redactValues(value, secrets);
+      result[key] = redactEchoText(value, secrets);
     } else result[key] = value;
   }
   if (!rawBodies) {
