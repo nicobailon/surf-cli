@@ -1524,6 +1524,89 @@ describe("an env value in any JSON spelling the decoder reads", () => {
     expect(redaction.redactText("Xz9X", [secret])).toBe("Xz9X");
   });
 
+  it("saves an assertion whose op or path syntax alone spells a short value, and refuses a copy across a path's keys", async () => {
+    // surf's own words and a path's syntax hold no pasted value.
+    const kept = [
+      { secret: join("e", "x"), asserts: ["$.bodyJson.title", "exists"], body: { title: "ok" } },
+      {
+        secret: join("q", "u"),
+        asserts: ["$.bodyJson.text", "equals", '"ok"'],
+        body: { text: "ok" },
+      },
+      { secret: join("o", "t"), asserts: ["$.bodyJson.text", "not_null"], body: { text: "ok" } },
+      {
+        secret: join("a", "y"),
+        asserts: ["$.bodyJson.text", "array_min_len", "1"],
+        body: { text: [1] },
+      },
+      {
+        secret: join("t", "ch"),
+        asserts: ["$.bodyJson.text", "matches", "^ok$"],
+        body: { text: "ok" },
+      },
+      { secret: join("$", "."), asserts: ["$.bodyJson.text", "exists"], body: { text: "ok" } },
+      { secret: join("."), asserts: ["$.bodyJson.text", "exists"], body: { text: "ok" } },
+      {
+        secret: join("[", "0]"),
+        asserts: ["$.bodyJson.items[0].text", "exists"],
+        body: { items: [{ text: "ok" }] },
+      },
+      {
+        secret: join("[", "*]."),
+        asserts: ["$.bodyJson.items[*].text", "exists"],
+        body: { items: [{ text: "ok" }] },
+      },
+      {
+        secret: join("? "),
+        asserts: ["$.bodyJson.gone ?? bodyJson.text", "exists"],
+        body: { text: "ok" },
+      },
+    ];
+    for (const { secret, asserts, body } of kept) {
+      const saves = await bothSavesOf(secret, ["--assert", ...asserts], body);
+      expect(saves, `${secret} ${asserts.join(" ")}`).toMatchObject({
+        caller: "saved",
+        host: "saved",
+      });
+    }
+    // A copy with any key character in it is refused, across keys and indexes too.
+    const refused = [
+      { secret: join("n", ".Q"), asserts: ["$.bodyJson.Xn.QX", "exists"], body: { Xn: { QX: 1 } } },
+      {
+        secret: join("n", "[0]"),
+        asserts: ["$.bodyJson.Xn[0].text", "exists"],
+        body: { Xn: [{ text: 1 }] },
+      },
+      {
+        secret: join("z", "9"),
+        asserts: ["$.bodyJson.text", "equals", '"Xz9X"'],
+        body: { text: "Xz9X" },
+      },
+      { secret: join("z", "9"), asserts: ["$.bodyJson.Xz9X", "exists"], body: { Xz9X: 1 } },
+    ];
+    for (const { secret, asserts, body } of refused) {
+      const saves = await bothSavesOf(secret, ["--assert", ...asserts], body);
+      expect(saves.caller, `${secret} ${asserts.join(" ")}`).toBe(
+        "--save refused: assertion 1 contains the value of SURF_TEST_ITEMS_KEY, which is never stored; assert on something else",
+      );
+      expect(saves.host, `${secret} ${asserts.join(" ")}`).toMatch(HOST_REFUSAL);
+    }
+    // A key's JSON escapes are read as the key characters they spell.
+    const escaped = { path: join("$.X", "\\", "u006e.QX"), op: "exists" };
+    expect(assertions.assertionSecretIn(escaped, [join("n", ".Q")])).toBe("found");
+    expect(assertions.assertionSecretIn(escaped, [join("6", "e.")])).toBe("found");
+    expect(
+      assertions.assertionSecretIn({ path: "$.items[1234]", op: "exists" }, [join("2", "3")]),
+    ).toBeNull();
+    expect(assertions.assertionSecretIn({ path: "$.X$X", op: "exists" }, [join("$")])).toBe(
+      "found",
+    );
+    // A key holding it is a copy, whatever the op: te(ex)t.
+    expect(assertions.assertionSecretIn({ path: "$.text", op: "exists" }, [join("e", "x")])).toBe(
+      "found",
+    );
+  });
+
   it("saves a pattern whose readings overflow the listing, checking what it lists", async () => {
     // Without an a: a{1,300} matches any value holding one, which the spelling test still refuses.
     const secret = ["dummy", "env", "text", "for", "overflow"].join("-");
