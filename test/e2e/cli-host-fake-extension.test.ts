@@ -1004,7 +1004,7 @@ describe("CLI/native-host/fake-extension E2E contract", () => {
     const cli = (args: string[]) =>
       runCli(socketPath, args, project, { SURF_STATE_DIR: host.stateDir });
     // Text that reads like an input or an escape, which the saved op clicks as recorded.
-    const selector = '[data-x="{{review_key}}"] .y-%{review_key} [data-z="{{!}}%{!}"]';
+    const selector = '[data-x="{{note}}"] .y-%{note} [data-z="{{!}}%{!}"]';
     const clicks = () => host.messages.filter((message) => message.type === "CLICK_SELECTOR");
 
     try {
@@ -1017,7 +1017,12 @@ describe("CLI/native-host/fake-extension E2E contract", () => {
       const stopped = await cli(["pb", "record", "stop", "--draft", "--json"]);
       expect(stopped.code).toBe(0);
       const { record, draft } = JSON.parse(stopped.stdout);
-      expect(draft).toMatchObject({ effect: "write", safety: { authorization: "explicit" } });
+      // A drafted write takes no input: every input is its duplicate key, for 5 minutes.
+      expect(draft).toMatchObject({
+        effect: "write",
+        args: {},
+        safety: { authorization: "explicit", duplicate: "repeatable-window", windowMs: 300000 },
+      });
       const file = path.join(host.stateDir, "records", record.id, "draft", "op.json");
       const original = fs.readFileSync(file, "utf8");
       type Draft = {
@@ -1037,13 +1042,11 @@ describe("CLI/native-host/fake-extension E2E contract", () => {
       const asRead = await save((op) => {
         op.effect = "read";
         Reflect.deleteProperty(op, "safety");
-        Reflect.deleteProperty(op.args, "review_key");
       });
       expect(asRead.code).toBe(0);
       expect(JSON.parse(asRead.stdout).differs).toEqual([
         "effect: read (the record drafts write: it ran click, a page write)",
-        'safety: none (the record drafts {"authorization":"explicit","duplicate":"transactional","key":["review_key"]})',
-        "inputs: review_key removed",
+        'safety: none (the record drafts {"authorization":"explicit","duplicate":"repeatable-window","windowMs":300000})',
       ]);
 
       // As drafted, it saves a write that needs --write and clicks the selector as recorded: pb
@@ -1053,20 +1056,21 @@ describe("CLI/native-host/fake-extension E2E contract", () => {
       });
       expect(drafted.code).toBe(0);
       expect(JSON.parse(drafted.stdout).differs).toBeUndefined();
-      const unwritten = await cli(["use", "fixture", "save", "--review_key", "deleteAll"]);
+      const unwritten = await cli(["use", "fixture", "save"]);
       expect(unwritten.stderr).toMatch(/write op fixture save requires --write/);
       expect(clicks()).toHaveLength(1);
-      const run = await cli([
-        "use",
-        "fixture",
-        "save",
-        "--review_key",
-        "deleteAll",
-        "--write",
-        "--json",
-      ]);
+      const run = await cli(["use", "fixture", "save", "--write", "--json"]);
       expect(run).toMatchObject({ code: 0, stderr: "" });
       expect(clicks().slice(1)).toEqual([expect.objectContaining({ selector })]);
+      // The same inputs (none) inside 5 minutes are blocked; --repeat sends again.
+      const again = await cli(["use", "fixture", "save", "--write", "--json"]);
+      expect(again.code).toBe(1);
+      expect(again.stderr).toMatch(
+        /write blocked: attempt \S+ was sent at .+ and succeeded\. Add --repeat to send it again\./,
+      );
+      expect(clicks()).toHaveLength(2);
+      expect((await cli(["use", "fixture", "save", "--write", "--repeat", "--json"])).code).toBe(0);
+      expect(clicks()).toHaveLength(3);
     } finally {
       await host.dispose();
     }
@@ -1117,7 +1121,7 @@ describe("CLI/native-host/fake-extension E2E contract", () => {
       // Saved as recorded with a check its answer fails: the POST is sent once, the click never.
       const checked = await save((op) => (op.run[0].verify = { status: 201 }));
       expect(checked.code).toBe(0);
-      const run = await cli(["use", "fixture", "save", "--review_key", "k-1", "--write", "--json"]);
+      const run = await cli(["use", "fixture", "save", "--write", "--json"]);
       expect(run.code).toBe(1);
       expect(run.stderr).toContain("expected status 201");
       expect(sent().slice(before)).toEqual(["EXECUTE_JAVASCRIPT"]);
@@ -1126,8 +1130,8 @@ describe("CLI/native-host/fake-extension E2E contract", () => {
     }
   }, 60000);
 
-  // A network-only write's inputs and duplicate key come from what it sends, never from its checks.
-  it("keeps a recorded write's duplicate key when a draft's check names a step's input", async () => {
+  // A network-only write's inputs, and so its duplicate claim, come from what it sends, never from its checks.
+  it("keeps a recorded write's inputs when a draft's check names a step's input", async () => {
     const socketPath = createSocketPath();
     const project = fs.mkdtempSync(path.join(os.tmpdir(), "surf-record-key-"));
     tempDirs.push(project);
@@ -1165,7 +1169,8 @@ describe("CLI/native-host/fake-extension E2E contract", () => {
       };
 
       const drafted = await save(original);
-      expect(drafted.safety.key).toEqual(["review_key"]);
+      expect(drafted.safety.key).toBeUndefined();
+      expect(drafted.args).toEqual({});
       const checked = structuredClone(original);
       checked.run[0].verify = { truthy: true, note: "{{text}}" };
       const withCheck = await save(checked);
@@ -1175,10 +1180,9 @@ describe("CLI/native-host/fake-extension E2E contract", () => {
       });
 
       const before = posts().length;
-      const use = (key: string) =>
-        cli(["use", "fixture", "submit", "--review_key", key, "--write", "--json"]);
-      expect((await use("one")).code).toBe(0);
-      const again = await use("one");
+      const use = () => cli(["use", "fixture", "submit", "--write", "--json"]);
+      expect((await use()).code).toBe(0);
+      const again = await use();
       expect(again.code).toBe(1);
       expect(again.stderr).toMatch(
         /write blocked: attempt \S+ was sent at .+ and succeeded\. Add --repeat/,
@@ -1191,10 +1195,10 @@ describe("CLI/native-host/fake-extension E2E contract", () => {
     }
   }, 60000);
 
-  // A recorded write whose one step types the value it sends: its duplicate key is that step's
-  // input. pb param on the masked number gives the request and the step one input, so the step's
-  // own input goes and the key follows, though a draft's check still names it: a check is never
-  // filled or sent. The same year is then blocked as a duplicate whatever else is given.
+  // A recorded write whose one step types the value it sends: that step's input is its one input.
+  // pb param on the masked number gives the request and the step one input, so the step's own
+  // input goes, though a draft's check still names it: a check is never filled or sent. The op
+  // keeps no key, so the duplicate claim is every input: the same year is blocked, a new one sent.
   it("keys a recorded write on the input it sends after pb param, not one only its check names", async () => {
     const socketPath = createSocketPath();
     const project = fs.mkdtempSync(path.join(os.tmpdir(), "surf-record-check-key-"));
@@ -1230,7 +1234,8 @@ describe("CLI/native-host/fake-extension E2E contract", () => {
       page.url = "https://fixture.test/api";
       const saved = await cli(["pb", "save", "--from-record", record.id, "--project", "--json"]);
       expect(saved).toMatchObject({ code: 0, stderr: "" });
-      expect(savedOp().safety.key).toEqual(["text"]);
+      expect(savedOp().safety.key).toBeUndefined();
+      expect(Object.keys(savedOp().args)).toEqual(["text"]);
 
       const param = await cli([
         "pb",
@@ -1246,23 +1251,25 @@ describe("CLI/native-host/fake-extension E2E contract", () => {
       const op = savedOp();
       expect(op.run[0].verify).toEqual({ truthy: true, note: "{{text}}" });
       expect({ key: op.safety.key, inputs: Object.keys(op.args) }).toEqual({
-        key: ["year"],
+        key: undefined,
         inputs: ["year"],
       });
 
       const before = posts().length;
-      const use = (...args: string[]) =>
-        cli(["use", "fixture", "submit", "--year", "2031", ...args, "--write", "--json"]);
-      const byText = await use("--text", "one");
+      const use = (year: string, ...args: string[]) =>
+        cli(["use", "fixture", "submit", "--year", year, ...args, "--write", "--json"]);
+      const byText = await use("2031", "--text", "one");
       expect(byText.code).toBe(1);
       expect(byText.stderr).toMatch(/Unknown input --text/);
-      expect((await use()).code).toBe(0);
-      const again = await use();
+      expect((await use("2031")).code).toBe(0);
+      const again = await use("2031");
       expect(again.code).toBe(1);
       expect(again.stderr).toMatch(
         /write blocked: attempt \S+ was sent at .+ and succeeded\. Add --repeat/,
       );
-      expect(posts().length - before).toBe(1);
+      // A new value of the input pb param added is a new write.
+      expect((await use("2032")).code).toBe(0);
+      expect(posts().length - before).toBe(2);
     } finally {
       await host.dispose();
     }
@@ -1270,7 +1277,7 @@ describe("CLI/native-host/fake-extension E2E contract", () => {
 
   // renderRequest never fills a request's note, nor its cache (an env header's request is sent
   // no-store whatever it says), so an input named only there is no input of the write: after pb
-  // param the key is the year it sends, and the same year is blocked whatever else is given.
+  // param the year it sends is the op's one input, and the same year is blocked.
   for (const [label, unsent] of [
     ["note", { note: "{{text}}" }],
     [
@@ -1308,7 +1315,7 @@ describe("CLI/native-host/fake-extension E2E contract", () => {
           (await cli(["pb", "save", "--from-record", record.id, "--project", "--json"])).code,
         ).toBe(0);
         const saved = JSON.parse(fs.readFileSync(file, "utf8"));
-        expect(saved.safety.key).toEqual(["text"]);
+        expect(Object.keys(saved.args)).toEqual(["text"]);
         Object.assign(saved.run[0].request, unsent);
         fs.writeFileSync(file, JSON.stringify(saved));
         const param = await cli([
@@ -1324,7 +1331,7 @@ describe("CLI/native-host/fake-extension E2E contract", () => {
         expect(param).toMatchObject({ code: 0, stderr: "" });
         const op = JSON.parse(fs.readFileSync(file, "utf8"));
         expect({ key: op.safety.key, inputs: Object.keys(op.args) }).toEqual({
-          key: ["year"],
+          key: undefined,
           inputs: ["year"],
         });
 
@@ -1346,8 +1353,8 @@ describe("CLI/native-host/fake-extension E2E contract", () => {
   }
 
   // The record keeps the type of a number it masked (redactedTypes) under the JSON key it sat at,
-  // here a key reading {{text}}. That note is never sent, so it gives the op no input: the safety
-  // key is review_key, and the same review key is blocked as a duplicate whatever else is given.
+  // here a key reading {{text}}. That note is never sent, so it gives the op no input: its one
+  // input is the one pb param names, and the same value of it is blocked as a duplicate.
   for (const [label, field, input, value] of [
     ["the masked number", "query.variables.{{text}}", "year", "2031"],
     ["the whole JSON param", "query.variables", "variables", '{"{{text}}":2031}'],
@@ -1383,17 +1390,17 @@ describe("CLI/native-host/fake-extension E2E contract", () => {
             "utf8",
           ),
         );
-        expect(op.safety.key).toEqual(["review_key"]);
-        expect(Object.keys(op.args).sort()).toEqual([input, "review_key"].sort());
+        expect(op.safety.key).toBeUndefined();
+        expect(Object.keys(op.args)).toEqual([input]);
 
         const before = posts().length;
         const use = (...args: string[]) =>
           cli(["use", "fixture", "submit", `--${input}`, value, ...args, "--write", "--json"]);
-        const byText = await use("--text", "one", "--review_key", "k");
+        const byText = await use("--text", "one");
         expect(byText.code).toBe(1);
         expect(byText.stderr).toMatch(/Unknown input --text/);
-        expect((await use("--review_key", "k")).code).toBe(0);
-        const again = await use("--review_key", "k");
+        expect((await use()).code).toBe(0);
+        const again = await use();
         expect(again.code).toBe(1);
         expect(again.stderr).toMatch(
           /write blocked: attempt \S+ was sent at .+ and succeeded\. Add --repeat/,
@@ -1492,8 +1499,6 @@ describe("CLI/native-host/fake-extension E2E contract", () => {
           String(2031 + index),
           "--note",
           note,
-          "--review_key",
-          `k${index}`,
           "--write",
           "--json",
         ]);

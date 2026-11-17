@@ -1408,14 +1408,12 @@ describe("activity and explicit record evidence", () => {
       ]);
       const op = savedOp(saved);
       expect(op.run.map((strategy: { using: string }) => strategy.using)).toEqual(["network"]);
-      // The workflow's typed input goes with it; the write keeps its review key.
-      expect(op.args).toEqual({
-        review_key: { required: true, desc: "Semantic key for reviewed write replay" },
-      });
-      expect(op.safety).toMatchObject({
+      // The workflow's typed input goes with it; the write needs no input of its own.
+      expect(op.args).toEqual({});
+      expect(op.safety).toEqual({
         authorization: "explicit",
-        duplicate: "transactional",
-        key: ["review_key"],
+        duplicate: "repeatable-window",
+        windowMs: 300_000,
       });
     });
 
@@ -1440,7 +1438,7 @@ describe("activity and explicit record evidence", () => {
       const checked = saveWith(check);
       expect(checked.safety).toEqual(plain.safety);
       expect(checked.args).toEqual(plain.args);
-      expect(checked.safety.key).toEqual(["review_key"]);
+      expect(checked.safety.key).toBeUndefined();
     });
 
     it("allows the page's origin and the replayed request's, and no other captured origin", () => {
@@ -1829,8 +1827,9 @@ describe("activity and explicit record evidence", () => {
     const stopped = records.stopRecord({ target: TAB, draft: true, root });
     expect(stopped.draft).toMatchObject({
       effect: "write",
-      safety: { authorization: "explicit", duplicate: "transactional", key: ["review_key"] },
+      safety: { authorization: "explicit", duplicate: "repeatable-window", windowMs: 300_000 },
     });
+    expect(stopped.draft.args).toEqual({});
     expect(() =>
       authoring.saveFromRecord({ recordId: stopped.record.id, root, home: path.dirname(root) }),
     ).not.toThrow();
@@ -2201,7 +2200,7 @@ describe("a hand-edited draft", () => {
       const saved = flow({ commands: ["click"], trace: [home, write] }).saved(
         (op) => ((op.run[0] as Entry).verify = { status: 201 }),
       );
-      const { calls, error } = await run(saved, { review_key: "k" });
+      const { calls, error } = await run(saved);
       expect(calls).toEqual(["javascript_tool"]);
       expect(error).toBe("expected status 201");
     });
@@ -2231,14 +2230,12 @@ describe("a hand-edited draft", () => {
   });
 
   describe("recorded step arguments", () => {
-    it("are sent as recorded, a selector holding {{review_key}} or %{review_key} too", async () => {
-      const selector = '[data-x="{{review_key}}"] .a-%{review_key}';
+    it("are sent as recorded, a selector holding {{note}} or %{note} too", async () => {
+      const selector = '[data-x="{{note}}"] .a-%{note}';
       const click = flow({ commands: [step("click", { selector })] });
       const op = click.saved();
-      expect(op.args).toEqual({ review_key: records.REVIEW_KEY_ARG });
-      expect(await dispatched(op, { review_key: "deleteAll" })).toEqual([
-        { tool: "click", args: { selector } },
-      ]);
+      expect(op.args).toEqual({});
+      expect(await dispatched(op)).toEqual([{ tool: "click", args: { selector } }]);
     });
 
     it("are sent as recorded in a URL and a locate name", async () => {
