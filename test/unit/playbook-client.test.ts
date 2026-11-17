@@ -150,9 +150,11 @@ describe("playbook client projection", () => {
         recordId: record.id,
       });
       expect(manifest.args).toEqual({});
+      expect(manifest.escapes).toBe(true);
       const sent = renderRequest(
         manifest.endpoint,
         resolveArgValues(manifest.args, { x: "deleteAll" }),
+        { escapes: manifest.escapes },
       );
       expect(sent).toMatchObject({ query: { q: literal }, headers: { "x-note": literal } });
     },
@@ -408,6 +410,33 @@ describe("clients from parameterised ops", () => {
     await expect(clients.verifyClient(out, { live: false })).resolves.toMatchObject({
       valid: true,
       execution: { requests: 1 },
+    });
+  });
+
+  // Only an op pb save escaped reads {{!}} as {{; a hand-written op's client sends it as written.
+  it.each([
+    ["a hand-written op", {}, "a {{!}} b"],
+    ["an op pb save made", { provenance: { recordId: "rec-1", escaped: true } }, "a {{ b"],
+  ])("exports a client of %s that sends {{!}} as that op does", async (_case, extra, body) => {
+    const cwd = writeOp({
+      id: "note",
+      effect: "read",
+      run: [
+        {
+          using: "network",
+          request: { method: "POST", url: "https://books.test/note", body: "a {{!}} b" },
+        },
+      ],
+      ...extra,
+    });
+    const out = path.join(cwd, "client");
+    clients.exportClient("books", "note", out, { cwd, allowWrite: true });
+    const requests = await serve(async (origin) => {
+      await runClient(out, [], { SURF_CLIENT_ORIGIN: origin });
+    });
+    expect(requests[0]).toMatchObject({ method: "POST", body });
+    await expect(clients.verifyClient(out, { live: false })).resolves.toMatchObject({
+      valid: true,
     });
   });
 

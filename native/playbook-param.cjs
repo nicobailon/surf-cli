@@ -4,7 +4,7 @@
 const os = require("os");
 const { editSavedOp, validateOp } = require("./playbooks.cjs");
 const { isSecretHeader, isSensitiveName } = require("./redaction.cjs");
-const { LITERAL_OPEN, escapeTemplates, unescapeTemplates } = require("./playbook-template.cjs");
+const { LITERAL_OPEN, escapeTemplates, escapedOp, unescapeTemplates } = require("./playbook-template.cjs");
 const { lineDiff } = require("./text-diff.cjs");
 const { commandMetadata } = require("./workflow-definition.cjs");
 
@@ -203,11 +203,13 @@ function resolveSlot(request, field) {
 }
 
 // Puts `{{name}}` in the slot: over its whole value, or over the one place `literal` appears in it.
-function templateSlot(slot, name, literal) {
+// `escapes`: the op holds escaped text (escapedOp), so its `{{!}}` stands for `{{`.
+function templateSlot(slot, { name, literal, escapes }) {
   const placeholder = `{{${name}}}`;
   const current = slot.value;
   if (typeof current === "string" && current.includes(placeholder)) return { status: "already" };
   if (typeof current === "string" && TEMPLATE_ONLY.test(current)) throw new Error(`${slot.field}: already the input ${current}`);
+  if (!escapes) return templatePlainSlot(slot, { placeholder, literal });
   // A recorded `{{…}}` is stored escaped; --value and the input's default are the text it stands
   // for, and the text around a templated part stays escaped.
   const text = typeof current === "string" ? unescapeTemplates(current) : current;
@@ -223,6 +225,22 @@ function templateSlot(slot, name, literal) {
   const last = first + literal.length;
   if (pieces.some((piece) => piece.input && piece.start < last && piece.end > first)) throw new Error(`${slot.field}: "${literal}" overlaps an input in "${current}"`);
   const stored = `${restorePieces(pieces, 0, first, slot.encode)}${placeholder}${restorePieces(pieces, last, text.length, slot.encode)}`;
+  slot.store(stored);
+  return { status: "templated", literal, whole: false, stored };
+}
+
+// templateSlot for an op whose text isn't escaped (a hand-written one): what it holds is the text.
+function templatePlainSlot(slot, { placeholder, literal }) {
+  const current = slot.value;
+  if (literal === undefined || String(current) === literal) {
+    slot.store(placeholder);
+    return { status: "templated", literal: current, whole: true, stored: placeholder };
+  }
+  if (typeof current !== "string") throw new Error(`${slot.field}: "${literal}" not found in ${JSON.stringify(current)}`);
+  const first = current.indexOf(literal);
+  if (first < 0) throw new Error(`${slot.field}: "${literal}" not found in "${current}"`);
+  if (current.indexOf(literal, first + literal.length) >= 0) throw new Error(`${slot.field}: "${literal}" appears more than once in "${current}"; template the whole value instead`);
+  const stored = `${slot.encode(current.slice(0, first))}${placeholder}${slot.encode(current.slice(first + literal.length))}`;
   slot.store(stored);
   return { status: "templated", literal, whole: false, stored };
 }
@@ -435,7 +453,7 @@ function paramOp(op, { fields, as: name, env, required = false, default: default
     const sensitive = slot.sensitive || field.split(".").slice(1).some(isSensitiveName);
     const partial = literal !== undefined && String(slot.value) !== literal && !String(slot.value).includes(`{{${name}}}`);
     if (sensitive && partial) throw new Error(`${field} looks secret: template it whole (leave out --value), so no part of it is stored`);
-    return { ...slot, sensitive, ...templateSlot(slot, name, literal) };
+    return { ...slot, sensitive, ...templateSlot(slot, { name, literal, escapes: escapedOp(op) }) };
   });
   const templated = results.filter((result) => result.status === "templated");
   const literals = [...new Set(templated.map((result) => String(result.literal)))];

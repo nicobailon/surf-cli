@@ -23,9 +23,10 @@ function saveFromRecent({ site, op: opId, since = "1h", scope = "user", cwd, hom
   if (events.some((event) => ["page-write", "unknown"].includes(commandMetadata(event.command, event.argsRedacted).effect))) {
     throw new Error("recent activity includes write-capable commands; use an explicit record (with --network, so its requests show whether the flow writes) and review its draft before saving");
   }
-  // Escaped as a record's steps are, so a literal like `%{term}` in a selector isn't filled from an input.
+  // Escaped as a record's steps are, so a literal like `%{term}` in a selector isn't filled from an
+  // input; provenance.escaped tells the runtime so (escapedOp).
   const promoted = promoteRedactedStepArgs(events.map((event) => ({ tool: event.command, args: escapeStepArgs(event.argsRedacted || {}) })));
-  const op = { id: opId, description: "Drafted from recent Surf activity", effect: "read", args: promoted.args, run: [{ using: "workflow", steps: promoted.steps }], provenance: { recentSince: since } };
+  const op = { id: opId, description: "Drafted from recent Surf activity", effect: "read", args: promoted.args, run: [{ using: "workflow", steps: promoted.steps }], provenance: { recentSince: since, escaped: true } };
   validateOp(op, { origins: [] });
   return savePlaybook({ manifest: { id: site, name: site, version: "1.0.0", origins: [] }, op, scope, cwd, home });
 }
@@ -243,7 +244,10 @@ function originOf(url) {
 // A write draft whose workflow can't be its fallback (a navigate first, or a type and a click)
 // saves with its network strategy alone when that replays the site's own captured write. The
 // workflow's inputs go with it, and the review key takes their place as the safety key when none
-// is left. A one-click draft keeps its workflow. rebuildWrites has already rebuilt the write.
+// is left. Which inputs are left is read from the requests rebuilt from the record, never from a
+// draft's checks (extract, verify, expect), so a check naming {{text}} can't make the safety key
+// one the request never sends. A one-click draft keeps its workflow. rebuildWrites has already
+// rebuilt the write.
 function fitWriteWorkflow(op, warnings) {
   const workflow = op.effect === "write" && op.run.find((strategy) => strategy.using === "workflow");
   if (!workflow) return op;
@@ -258,7 +262,7 @@ function fitWriteWorkflow(op, warnings) {
   if (requestEffect(request) !== "write") throw new Error(`write op ${op.id} can't be saved: ${why}, and its network strategy replays ${shown}, a read, not the write`);
   warnings.push(`saved network-only: ${why}, so the op replays ${shown} alone`);
   const run = op.run.filter((strategy) => strategy !== workflow);
-  const used = JSON.stringify(run);
+  const used = JSON.stringify(run.map((strategy) => strategy.request));
   const args = Object.fromEntries(Object.entries(op.args || {}).filter(([name]) => used.includes(`{{${name}}}`)));
   let key = op.safety.key.filter((name) => Object.hasOwn(args, name));
   if (key.length === 0) {
@@ -297,7 +301,9 @@ function saveFromRecord({ recordId, requestId, scope = "user", cwd, home, root =
   const { op: reference, because } = buildDraft(record, { read, requestId: chosen, root });
   const trace = readPrivateJson(path.join(recordsRoot(root), recordId, "network", "trace.json"), null, { root });
   const held = holdToRecord(holdEffect(drafted, { reference, because, record }), { steps: recordedSteps(recordId, root) });
-  const provenance = { recordId: record.id, ...(chosen ? { requestId: chosen } : {}) };
+  // The saver's, never the draft's: escaped says the op's captured text is escaped (escapedOp), as
+  // the record's requests and steps are rebuilt here, so a draft can't turn the escape on or off.
+  const provenance = { recordId: record.id, ...(chosen ? { requestId: chosen } : {}), escaped: true };
   const rebuilt = held.rebuild(rebuildWrites({ ...held.op, provenance }, { record, trace, chosen }));
   const op = fitWriteWorkflow(holdStrategies(rebuilt, reference), warnings);
   const origins = allowedOrigins(record, op, warnings);

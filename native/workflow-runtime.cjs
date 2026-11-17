@@ -27,13 +27,14 @@ function getAutoWaitCommand(cmd) {
   return null;
 }
 
-// `%{!}` is sent as `%{`: a step argument recorded with `%{name}` in it keeps it as text (see
-// escapeStepArgs in playbook-template.cjs). `!` is in no var name (\w+), so every var is filled.
-function resolveVar(template, vars) {
+// With `escapes` (the steps of an op pb save escaped), `%{!}` is sent as `%{`: a step argument
+// recorded with `%{name}` in it keeps it as text (see escapeStepArgs in playbook-template.cjs).
+// `!` is in no var name (\w+), so every var is filled. surf do and other ops send `%{!}` as written.
+function resolveVar(template, vars, { escapes = false } = {}) {
   if (typeof template !== "string") return template;
   const match = template.match(/^%\{(\w+)\}$/);
   if (match) return vars[match[1]] !== undefined ? vars[match[1]] : template;
-  return template.replace(/%\{(\w+|!)\}/g, (_, name) => {
+  return template.replace(escapes ? /%\{(\w+|!)\}/g : /%\{(\w+)\}/g, (_, name) => {
     if (name === "!") return "%{";
     const value = vars[name];
     if (value === undefined) return `%{${name}}`;
@@ -41,10 +42,10 @@ function resolveVar(template, vars) {
   });
 }
 
-function substituteVars(value, vars) {
-  if (!value || typeof value !== "object") return typeof value === "string" ? resolveVar(value, vars) : value;
-  if (Array.isArray(value)) return value.map((item) => substituteVars(item, vars));
-  return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, substituteVars(item, vars)]));
+function substituteVars(value, vars, options) {
+  if (!value || typeof value !== "object") return typeof value === "string" ? resolveVar(value, vars, options) : value;
+  if (Array.isArray(value)) return value.map((item) => substituteVars(item, vars, options));
+  return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, substituteVars(item, vars, options)]));
 }
 
 function extractStepOutput(response) {
@@ -133,6 +134,7 @@ async function executeSemanticStep(step, semanticContext, options) {
 async function executeSingleStep(step, vars, options) {
   const {
     autoWait = true,
+    escapes = false,
     executeTool,
     includeInputValues = false,
     onEvent = () => {},
@@ -141,7 +143,7 @@ async function executeSingleStep(step, vars, options) {
     stepDelay = 100,
   } = options;
   if (typeof executeTool !== "function") throw new Error("workflow runtime requires executeTool");
-  const args = substituteVars(step.args || {}, vars);
+  const args = substituteVars(step.args || {}, vars, { escapes });
   const startedAt = new Date().toISOString();
   const baseEvent = { command: step.cmd, argsRedacted: redactCommandArgs(step.cmd, args, includeInputValues), startedAt };
   onEvent({ type: "tool.started", ...baseEvent });
@@ -187,7 +189,7 @@ async function executeStep(step, vars, options) {
     return { ...result, stepsExecuted: 1 };
   }
   if (step.repeat !== undefined) {
-    let max = resolveVar(step.repeat, vars);
+    let max = resolveVar(step.repeat, vars, { escapes: options.escapes });
     if (typeof max === "string") max = Number.parseInt(max, 10);
     if (typeof max !== "number" || Number.isNaN(max)) max = 1;
     max = Math.min(max, MAX_LOOP_ITERATIONS);
@@ -210,7 +212,7 @@ async function executeStep(step, vars, options) {
     return { success: true, stepsExecuted };
   }
   if (step.each !== undefined) {
-    const items = resolveVar(step.each, vars);
+    const items = resolveVar(step.each, vars, { escapes: options.escapes });
     if (!Array.isArray(items)) return { success: false, error: `each: expected array, got ${typeof items}${items === undefined ? " (undefined)" : ""}`, stepsExecuted: 0 };
     if (!Array.isArray(step.steps) || step.steps.length === 0) return { success: false, error: "each: steps array required", stepsExecuted: 0 };
     const itemVar = step.as || "item";

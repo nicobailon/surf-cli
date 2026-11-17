@@ -187,8 +187,13 @@ describe("pb param: field locations", () => {
   it("templates a --value that holds a captured {{…}}, the text around it kept as captured", () => {
     const { escapeTemplates } = require("../../native/playbook-template.cjs");
     const captured = { note: "a {{x}} b {{y}}", whole: "{{x}}" };
+    // pb save marks an op whose captured text it escaped.
+    const saved = { escapes: true };
     const { op } = paramOp(
-      networkOp({ url: "https://shop.test/save", query: escapeTemplates(captured) }),
+      networkOp(
+        { url: "https://shop.test/save", query: escapeTemplates(captured) },
+        { provenance: { recordId: "rec-1", escaped: true } },
+      ),
       {
         fields: ["query.note"],
         as: "v",
@@ -196,21 +201,33 @@ describe("pb param: field locations", () => {
       },
     );
     expect(op.args.v).toEqual({ type: "string", default: "{{x}}" });
-    expect(renderRequest(requestOf(op), { v: "Z" }).query).toEqual({
+    expect(renderRequest(requestOf(op), { v: "Z" }, saved).query).toEqual({
       note: "a Z b {{y}}",
       whole: "{{x}}",
     });
     const whole = paramOp(op, { fields: ["query.whole"], as: "w", value: "{{x}}" }).op;
-    expect(renderRequest(requestOf(whole), { v: "Z", w: "W" }).query).toEqual({
+    expect(renderRequest(requestOf(whole), { v: "Z", w: "W" }, saved).query).toEqual({
       note: "a Z b {{y}}",
       whole: "W",
     });
     // A second part of the same field keeps the first input and the captured text around both.
     const second = paramOp(op, { fields: ["query.note"], as: "u", value: "b" }).op;
-    expect(renderRequest(requestOf(second), { v: "Z", u: "U" }).query.note).toBe("a Z U {{y}}");
+    expect(renderRequest(requestOf(second), { v: "Z", u: "U" }, saved).query.note).toBe(
+      "a Z U {{y}}",
+    );
     expect(() => paramOp(op, { fields: ["query.note"], as: "t", value: "v}} b" })).toThrow(
       'query.note: "v}} b" overlaps an input in "a {{v}} b {{!}}y}}"',
     );
+  });
+
+  // A hand-written op never held the escape: its {{!}} is text, as it always was.
+  it("templates a hand-written op's {{!}} as plain text", () => {
+    const { op } = paramOp(
+      networkOp({ url: "https://shop.test/save", query: { note: "a{{!}}b {{!}}c" } }),
+      { fields: ["query.note"], as: "v", value: "b" },
+    );
+    expect(requestOf(op).query).toEqual({ note: "a{{!}}{{v}} {{!}}c" });
+    expect(renderRequest(requestOf(op), { v: "Z" }).query).toEqual({ note: "a{{!}}Z {{!}}c" });
   });
 
   it("templates a plain header", () => {

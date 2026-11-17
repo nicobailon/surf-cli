@@ -18,6 +18,8 @@ type FetchCall = [
 
 // Runs the page-context network script with a fake fetch, as the tab would.
 const fakeTab = () => captureTab();
+// How an op pb save made from a record or recent activity renders: its `{{!}}` stands for `{{`.
+const saved = { escapes: true };
 
 function op(request: Record<string, unknown>, args: Record<string, unknown> = {}) {
   return {
@@ -112,7 +114,7 @@ describe("request templates", () => {
       named: "{{!}}_open}}",
     });
     expect(unescapeTemplates(escaped.body)).toBe(captured.body);
-    expect(renderRequest(escaped, { q: "filled" })).toMatchObject(captured);
+    expect(renderRequest(escaped, { q: "filled" }, saved)).toMatchObject(captured);
     // A field pb param made an input is filled; the captured text beside it is not.
     const form = renderRequest(
       {
@@ -121,14 +123,18 @@ describe("request templates", () => {
         body: `${escapeTemplates("a={{q}}")}&b={{q}}`,
       },
       { q: "x&y" },
+      saved,
     );
     expect(form.body).toBe("a={{q}}&b=x%26y");
     const { fetchImpl, executeTool } = fakeTab();
     await runtime.runPlaybookOp({
       playbook: { id: "books", provenance: {} },
-      op: op(escapeTemplates({ url: "https://api.test/save", query: { note: "{{q}}" } }), {
-        q: { default: "filled" },
-      }),
+      op: {
+        ...op(escapeTemplates({ url: "https://api.test/save", query: { note: "{{q}}" } }), {
+          q: { default: "filled" },
+        }),
+        provenance: { recordId: "rec-1", escaped: true },
+      },
       executeTool,
     });
     expect(fetchImpl.mock.calls[0][0]).toBe("https://api.test/save?note=%7B%7Bq%7D%7D");
@@ -161,9 +167,12 @@ describe("request templates", () => {
   it("sends every escaped captured request text as captured", () => {
     for (const text of literals) {
       const escaped = escapeTemplates(text);
-      expect(renderRequest({ url: "https://api.test/", body: escaped }, { q: "filled" }).body).toBe(
-        text,
+      const body = renderRequest(
+        { url: "https://api.test/", body: escaped },
+        { q: "filled" },
+        saved,
       );
+      expect(body.body).toBe(text);
       expect(unescapeTemplates(escaped)).toBe(text);
     }
   });
@@ -176,6 +185,7 @@ describe("request templates", () => {
         id: "type",
         effect: "read",
         args: { q: { default: "filled" } },
+        provenance: { recentSince: "1h", escaped: true },
         run: [
           {
             using: "workflow",
@@ -213,15 +223,51 @@ describe("the escape token and template names", () => {
     );
   });
 
-  it("sends {{!}} as {{ and %{!} as %{, which no name can be", () => {
-    expect(renderRequest({ url: "https://api.test/", body: "{{!}}q}} {{!}}" }, {}).body).toBe(
-      "{{q}} {{",
-    );
-    expect(workflowRuntime.resolveVar("%{!}q} %{!}", { q: "filled" })).toBe("%{q} %{");
-    expect(workflowRuntime.resolveVar("%{!}", { "!": "filled" })).toBe("%{");
+  it("sends {{!}} as {{ and %{!} as %{ in an op pb save made, which no name can be", () => {
+    const body = "{{!}}q}} {{!}}";
+    expect(renderRequest({ url: "https://api.test/", body }, {}, saved).body).toBe("{{q}} {{");
+    expect(workflowRuntime.resolveVar("%{!}q} %{!}", { q: "filled" }, saved)).toBe("%{q} %{");
+    expect(workflowRuntime.resolveVar("%{!}", { "!": "filled" }, saved)).toBe("%{");
     expect(escapeStepArgs("%{_open} {{_open}} %{!} {{!}}")).toBe(
       "%{!}_open} {{!}}_open}} %{!}!} {{!}}!}}",
     );
+  });
+
+  // A hand-written op and surf do never held the escape, so they send it as written.
+  it("sends {{!}} and %{!} as written anywhere else", async () => {
+    const body = "{{!}}q}} {{!}}";
+    expect(renderRequest({ url: "https://api.test/", body }, { q: "filled" }).body).toBe(body);
+    expect(workflowRuntime.resolveVar("%{!}q} %{!}", { q: "filled" })).toBe("%{!}q} %{!}");
+    const typed: unknown[] = [];
+    const { fetchImpl, executeTool } = fakeTab();
+    await runtime.runPlaybookOp({
+      playbook: { id: "manual", provenance: {} },
+      op: {
+        id: "find",
+        effect: "read",
+        run: [
+          {
+            using: "network",
+            request: { url: "https://api.test/x{{!}}", query: { q: "{{!}}" } },
+            // Fails, so the op goes on to its steps.
+            verify: { status: 201 },
+          },
+          { using: "workflow", steps: [{ cmd: "type", args: { text: "a{{!}}b%{!}c" } }] },
+        ],
+      },
+      executeTool: async (tool: string, args: Record<string, unknown>) => {
+        if (tool === "type") {
+          typed.push(args.text);
+          return { output: "{}" };
+        }
+        return executeTool(tool, args);
+      },
+      sleep: async () => undefined,
+    });
+    const sent = new URL(fetchImpl.mock.calls[0][0]);
+    expect(decodeURIComponent(sent.pathname)).toBe("/x{{!}}");
+    expect(sent.searchParams.get("q")).toBe("{{!}}");
+    expect(typed).toEqual(["a{{!}}b%{!}c"]);
   });
 });
 

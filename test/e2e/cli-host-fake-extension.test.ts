@@ -68,6 +68,8 @@ type FakeHostOptions = {
   scriptResponse?: Record<string, unknown>;
   // Answers a playbook record's page context and network capture, and clicks.
   recording?: boolean;
+  // Runs each script in the tab instead of answering it, as the tab would.
+  runScript?: (code: string) => Promise<Record<string, unknown>>;
 };
 
 // What the extension answers for a playbook record, a click and typing, with `recording` on.
@@ -176,6 +178,7 @@ function buildExtensionResponse(
   currentUrl: string,
   targetActive: boolean,
   captured: CapturedRequest[],
+  scriptOutput: Record<string, unknown>,
 ) {
   switch (message.type) {
     case "TARGET_RESOLVE":
@@ -234,6 +237,7 @@ function buildExtensionResponse(
           headers: {},
           sentAt: Date.now(),
           doneAt: Date.now(),
+          ...scriptOutput,
         }),
       };
     // Network capture holds what each script sent; its body is the fixture API's.
@@ -273,6 +277,10 @@ function startHost(socketPath: string, options: FakeHostOptions = {}) {
   let currentUrl = "about:blank";
   const captured: CapturedRequest[] = [...(options.pageTraffic ?? [])];
   const targetActive = options.targetActive !== false;
+  // Merged into what each script answers (a status, say); setScriptOutput changes it.
+  let scriptOutput: Record<string, unknown> = {};
+  // Answers go out in the order their messages came, a script the tab runs included.
+  let answering = Promise.resolve();
   let stderr = "";
   let closed = false;
 
@@ -313,9 +321,15 @@ function startHost(socketPath: string, options: FakeHostOptions = {}) {
     }
   };
 
-  const respond = (message: NativeMessage) =>
-    (options.recording ? recordingResponse(message, currentUrl) : null) ??
-    buildExtensionResponse(message, currentUrl, targetActive, captured);
+  const respond = async (message: NativeMessage) => {
+    if (options.runScript && message.type === "EXECUTE_JAVASCRIPT") {
+      return { id: message.id, ...(await options.runScript(String(message.code))) };
+    }
+    return (
+      (options.recording ? recordingResponse(message, currentUrl) : null) ??
+      buildExtensionResponse(message, currentUrl, targetActive, captured, scriptOutput)
+    );
+  };
 
   child.stdout.on("data", (chunk: unknown) => {
     stdoutBuffer = BufferCtor.concat([stdoutBuffer, chunk as BufferLike]);
@@ -348,7 +362,9 @@ function startHost(socketPath: string, options: FakeHostOptions = {}) {
         currentUrl = message.url;
       }
       captureTraffic(message);
-      writeNativeMessage(child.stdin, respond(message));
+      answering = answering.then(async () => {
+        writeNativeMessage(child.stdin, await respond(message));
+      });
     }
   });
 
@@ -368,6 +384,9 @@ function startHost(socketPath: string, options: FakeHostOptions = {}) {
     child,
     stateDir,
     messages,
+    setScriptOutput(output: Record<string, unknown>) {
+      scriptOutput = output;
+    },
     waitForMessage(
       predicate: (message: NativeMessage) => boolean,
       timeoutMs = 5000,
@@ -713,7 +732,8 @@ describe("CLI/native-host/fake-extension E2E contract", () => {
     // pb save reads the record from the CLI's own process.
     const cli = (args: string[]) =>
       runCli(socketPath, args, project, { SURF_STATE_DIR: host.stateDir });
-    const selector = '[data-x="{{review_key}}"]';
+    // Text that reads like an input or an escape, which the saved op clicks as recorded.
+    const selector = '[data-x="{{review_key}}"] .y-%{review_key} [data-z="{{!}}%{!}"]';
     const clicks = () => host.messages.filter((message) => message.type === "CLICK_SELECTOR");
 
     try {
@@ -733,6 +753,7 @@ describe("CLI/native-host/fake-extension E2E contract", () => {
         effect?: string;
         safety: Record<string, unknown>;
         args: Record<string, unknown>;
+        provenance?: Record<string, unknown>;
       };
       const save = (change: (op: Draft) => void) => {
         const op = JSON.parse(original);
@@ -765,8 +786,12 @@ describe("CLI/native-host/fake-extension E2E contract", () => {
       );
       expect(clicks()).toHaveLength(1);
 
-      // As drafted, it saves a write that needs --write and clicks the selector as recorded.
-      expect((await save(() => undefined)).code).toBe(0);
+      // As drafted, it saves a write that needs --write and clicks the selector as recorded: pb
+      // save, not the draft, marks the op as holding escaped text.
+      const drafted = await save((op) => {
+        op.provenance = { escaped: false };
+      });
+      expect(drafted.code).toBe(0);
       const unwritten = await cli(["use", "fixture", "save", "--review_key", "deleteAll"]);
       expect(unwritten.stderr).toMatch(/write op fixture save requires --write/);
       expect(clicks()).toHaveLength(1);
@@ -854,7 +879,165 @@ describe("CLI/native-host/fake-extension E2E contract", () => {
     }
   }, 60000);
 
-  it("stops a recorded read at a failed check instead of running its recorded steps", async () => {
+  // A network-only write's inputs and duplicate key come from what it sends, never from its checks.
+  it("keeps a recorded write's duplicate key when a draft's check names a step's input", async () => {
+    const socketPath = createSocketPath();
+    const project = fs.mkdtempSync(path.join(os.tmpdir(), "surf-record-key-"));
+    tempDirs.push(project);
+    const host = startHost(socketPath, { recording: true });
+    const cli = (args: string[]) =>
+      runCli(socketPath, args, project, { SURF_STATE_DIR: host.stateDir });
+    const posts = () => host.messages.filter((message) => message.type === "EXECUTE_JAVASCRIPT");
+    const savedOp = () =>
+      JSON.parse(
+        fs.readFileSync(
+          path.join(project, ".surf", "playbooks", "fixture", "ops", "submit.json"),
+          "utf8",
+        ),
+      );
+
+    try {
+      await host.waitForMessage((message) => message.type === "HOST_READY");
+      expect((await cli(["navigate", "https://fixture.test/form"])).code).toBe(0);
+      expect(
+        (await cli(["pb", "record", "start", "fixture", "--op", "submit", "--network"])).code,
+      ).toBe(0);
+      expect((await cli(["type", "dummy text", "--selector", "#q"])).code).toBe(0);
+      expect((await cli(["js", 'fetch("/api", { method: "POST" })'])).code).toBe(0);
+      expect((await cli(["click", "--selector", "#commit", "--no-screenshot"])).code).toBe(0);
+      const stopped = await cli(["pb", "record", "stop", "--draft", "--json"]);
+      expect(stopped.code).toBe(0);
+      const { record } = JSON.parse(stopped.stdout);
+      const file = path.join(host.stateDir, "records", record.id, "draft", "op.json");
+      const original = JSON.parse(fs.readFileSync(file, "utf8"));
+      const save = async (op: Record<string, unknown>) => {
+        fs.writeFileSync(file, JSON.stringify(op));
+        const saved = await cli(["pb", "save", "--from-record", record.id, "--project", "--json"]);
+        expect(saved.code).toBe(0);
+        return savedOp();
+      };
+
+      const drafted = await save(original);
+      expect(drafted.safety.key).toEqual(["review_key"]);
+      const checked = structuredClone(original);
+      checked.run[0].verify = { truthy: true, note: "{{text}}" };
+      const withCheck = await save(checked);
+      expect({ safety: withCheck.safety, args: withCheck.args }).toEqual({
+        safety: drafted.safety,
+        args: drafted.args,
+      });
+
+      const before = posts().length;
+      const use = (key: string) =>
+        cli(["use", "fixture", "submit", "--review_key", key, "--write", "--json"]);
+      expect((await use("one")).code).toBe(0);
+      const again = await use("one");
+      expect(again.code).toBe(1);
+      expect(again.stderr).toMatch(/write blocked by verified receipt/);
+      const byText = await cli(["use", "fixture", "submit", "--text", "two", "--write"]);
+      expect(byText.stderr).toMatch(/Unknown input --text/);
+      expect(posts().length - before).toBe(1);
+    } finally {
+      await host.dispose();
+    }
+  }, 60000);
+
+  // A draft's extract runs in the tab after the answer; a failure anywhere in it, the page it
+  // prepares from the response included, is final.
+  it("stops a recorded read whose extract can't prepare the response", async () => {
+    const socketPath = createSocketPath();
+    const project = fs.mkdtempSync(path.join(os.tmpdir(), "surf-record-extract-"));
+    tempDirs.push(project);
+    const vm = require("node:vm") as {
+      runInNewContext(code: string, context: Record<string, unknown>): unknown;
+    };
+    const html = '<html><head><base href="http://["></head><body>ok</body></html>';
+    // The tab's fetch answers with that page, and its DOMParser keeps the base as written.
+    const tab = {
+      URL,
+      location: { href: "https://fixture.test/form" },
+      fetch: async (url: string) => ({
+        status: 200,
+        ok: true,
+        url,
+        redirected: false,
+        headers: new Map([["content-type", "text/html"]]),
+        text: async () => html,
+        arrayBuffer: async () => new ArrayBuffer(0),
+      }),
+      DOMParser: class {
+        parseFromString() {
+          const base = { getAttribute: () => "http://[", setAttribute: () => undefined };
+          return { querySelector: (selector: string) => (selector === "base[href]" ? base : null) };
+        }
+      },
+    };
+    const api = {
+      id: "r_api",
+      method: "GET",
+      url: "https://fixture.test/api",
+      status: 200,
+      type: "XHR",
+      responseHeaders: {},
+      flags: [],
+      _loadingFinished: true,
+    };
+    let running = false;
+    const host = startHost(socketPath, {
+      recording: true,
+      navigationTraffic: [api],
+      runScript: async (code) => {
+        if (!running) {
+          return { output: "{}" };
+        }
+        try {
+          return { output: JSON.stringify(await vm.runInNewContext(code, { ...tab })) };
+        } catch (error) {
+          return { error: error instanceof Error ? error.message : String(error) };
+        }
+      },
+    });
+    const cli = (args: string[]) =>
+      runCli(socketPath, args, project, { SURF_STATE_DIR: host.stateDir });
+    const sent = () =>
+      host.messages
+        .filter((message) =>
+          ["EXECUTE_JAVASCRIPT", "EXECUTE_NAVIGATE"].includes(String(message.type)),
+        )
+        .map((message) => message.type);
+
+    try {
+      await host.waitForMessage((message) => message.type === "HOST_READY");
+      expect((await cli(["navigate", "https://fixture.test/form"])).code).toBe(0);
+      expect(
+        (await cli(["pb", "record", "start", "fixture", "--op", "page", "--network"])).code,
+      ).toBe(0);
+      expect((await cli(["navigate", "https://fixture.test/extra"])).code).toBe(0);
+      const stopped = await cli(["pb", "record", "stop", "--draft", "--json"]);
+      expect(stopped.code).toBe(0);
+      const { record } = JSON.parse(stopped.stdout);
+      const file = path.join(host.stateDir, "records", record.id, "draft", "op.json");
+      const op = JSON.parse(fs.readFileSync(file, "utf8"));
+      op.run[0].extract = { html: { value: "body" } };
+      fs.writeFileSync(file, JSON.stringify(op));
+      expect(
+        (await cli(["pb", "save", "--from-record", record.id, "--project", "--json"])).code,
+      ).toBe(0);
+      running = true;
+      const before = sent().length;
+      const run = await cli(["use", "fixture", "page", "--json"]);
+      expect(run.code).toBe(1);
+      expect(run.stderr).toContain("network strategy failed after its request was answered: ");
+      expect(run.stderr).toContain("Invalid URL");
+      expect(sent().slice(before)).toEqual(["EXECUTE_JAVASCRIPT"]);
+    } finally {
+      await host.dispose();
+    }
+  }, 60000);
+
+  // A read's recorded steps are its fallback when the request is answered with a failure the
+  // runtime sees itself, as a 401; a draft's check failing is final.
+  it("runs a recorded read's steps after a 401, and stops it at a failed check", async () => {
     const socketPath = createSocketPath();
     const project = fs.mkdtempSync(path.join(os.tmpdir(), "surf-record-check-"));
     tempDirs.push(project);
@@ -894,12 +1077,25 @@ describe("CLI/native-host/fake-extension E2E contract", () => {
         "workflow",
       ]);
       const file = path.join(host.stateDir, "records", record.id, "draft", "op.json");
+      const save = async () =>
+        expect(
+          (await cli(["pb", "save", "--from-record", record.id, "--project", "--json"])).code,
+        ).toBe(0);
+
+      // As drafted, a 401 sends the recorded navigate instead.
+      await save();
+      host.setScriptOutput({ status: 401, ok: false });
+      const unauthorized = sent().length;
+      const fellBack = await cli(["use", "fixture", "search", "--json"]);
+      expect(fellBack.code).toBe(0);
+      expect(JSON.parse(fellBack.stdout)).toMatchObject({ strategy: "workflow" });
+      expect(sent().slice(unauthorized)).toEqual(["EXECUTE_JAVASCRIPT", "EXECUTE_NAVIGATE"]);
+      host.setScriptOutput({});
+
       const op = JSON.parse(fs.readFileSync(file, "utf8"));
       op.run[0].verify = { status: 201 };
       fs.writeFileSync(file, JSON.stringify(op));
-      expect(
-        (await cli(["pb", "save", "--from-record", record.id, "--project", "--json"])).code,
-      ).toBe(0);
+      await save();
       const before = sent().length;
       const run = await cli(["use", "fixture", "search", "--json"]);
       expect(run.code).toBe(1);
@@ -912,11 +1108,37 @@ describe("CLI/native-host/fake-extension E2E contract", () => {
     }
   }, 60000);
 
-  // `%{!}` is the escape for `%{`: `!` can't be in a var name, so a var named _open is filled.
-  it("fills a surf do var named _open and types %{!} as %{", async () => {
+  // `{{!}}` and `%{!}` stand for `{{` and `%{` only in an op pb save made from a record or recent
+  // activity: surf do and a hand-written op send them as written, as before.
+  it("sends {{!}} and %{!} as written from surf do and a hand-written op", async () => {
     const socketPath = createSocketPath();
     const project = fs.mkdtempSync(path.join(os.tmpdir(), "surf-do-escape-"));
     tempDirs.push(project);
+    const opsDir = path.join(project, ".surf", "playbooks", "manual", "ops");
+    fs.mkdirSync(opsDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(project, ".surf", "playbooks", "manual", "playbook.json"),
+      JSON.stringify({ id: "manual", version: "1.0.0", origins: ["https://fixture.test"] }),
+    );
+    // Its request fails its check, so the op goes on to its steps.
+    fs.writeFileSync(
+      path.join(opsDir, "find.json"),
+      JSON.stringify({
+        id: "find",
+        effect: "read",
+        run: [
+          {
+            using: "network",
+            request: { method: "GET", url: "https://fixture.test/api", query: { q: "x{{!}}y" } },
+            verify: { status: 201 },
+          },
+          {
+            using: "workflow",
+            steps: [{ cmd: "type", args: { text: "x{{!}}y%{!}z", selector: "#field" } }],
+          },
+        ],
+      }),
+    );
     const host = startHost(socketPath, { recording: true });
     const typed = () =>
       host.messages
@@ -925,7 +1147,8 @@ describe("CLI/native-host/fake-extension E2E contract", () => {
 
     try {
       await host.waitForMessage((message) => message.type === "HOST_READY");
-      for (const text of ["%{_open}", "pre%{_open}post", "{{_open}}", "%{!}", "%{!}_open}"]) {
+      const texts = ["%{_open}", "pre%{_open}post", "{{_open}}", "%{!}", "%{!}_open}", "{{!}}"];
+      for (const text of texts) {
         const result = await runCli(
           socketPath,
           [
@@ -942,7 +1165,20 @@ describe("CLI/native-host/fake-extension E2E contract", () => {
         );
         expect(result.code).toBe(0);
       }
-      expect(typed()).toEqual(["INTENDED", "preINTENDEDpost", "{{_open}}", "%{", "%{_open}"]);
+      expect(typed()).toEqual([
+        "INTENDED",
+        "preINTENDEDpost",
+        "{{_open}}",
+        "%{!}",
+        "%{!}_open}",
+        "{{!}}",
+      ]);
+
+      const found = await runCli(socketPath, ["use", "manual", "find", "--json"], project);
+      expect(found.code).toBe(0);
+      const script = host.messages.find((message) => message.type === "EXECUTE_JAVASCRIPT");
+      expect(String(script?.code)).toContain('{"q":"x{{!}}y"}');
+      expect(typed().at(-1)).toBe("x{{!}}y%{!}z");
     } finally {
       await host.dispose();
     }

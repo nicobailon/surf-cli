@@ -25,10 +25,11 @@ function resolveArgValues(specs, provided) {
 // A string that is only `{{name}}` takes the input's own value (left out when it is unset). Inside
 // a longer string the value is encoded for where it lands: the URL and urlencoded bodies get
 // percent-encoding; query params, headers and other bodies get the text as is. Object and array
-// query params are sent as JSON. `{{!}}` is sent as `{{` (see escapeTemplates).
-function renderRequest(request, args) {
+// query params are sent as JSON. With `escapes` (an op pb save escaped, see escapedOp), `{{!}}` is
+// sent as `{{` (see escapeTemplates); any other request sends it as written.
+function renderRequest(request, args, { escapes = false } = {}) {
   const EXACT = /^\{\{([a-zA-Z0-9._-]+)\}\}$/;
-  const ANY = /\{\{([a-zA-Z0-9._-]+|!)\}\}/g;
+  const ANY = escapes ? /\{\{([a-zA-Z0-9._-]+|!)\}\}/g : /\{\{([a-zA-Z0-9._-]+)\}\}/g;
   const keep = (text) => text;
   const embed = (text, encode) => text.replace(ANY, (_, name) => {
     if (name === "!") return "{{";
@@ -62,7 +63,7 @@ function renderRequest(request, args) {
 }
 
 // Captured text that reads like an input (`{{action}}` in a recorded body) is kept as text: each
-// `{{` that opens one becomes `{{!}}`, which renderRequest sends as `{{`. `!` is in no name either
+// `{{` that opens one becomes `{{!}}`, which renderRequest sends as `{{` in an op marked escaped. `!` is in no name either
 // template takes: a `{{name}}` is [a-zA-Z0-9._-]+ (renderRequest, applyTemplate in
 // playbook-runtime.cjs) and a `%{name}` is \w+ (resolveVar in workflow-runtime.cjs), so every name
 // is filled as before. The escape is reversible: a captured `{{!}}` opens one too, so it is stored as
@@ -95,4 +96,11 @@ function unescapeTemplates(text) {
   return text.replaceAll(LITERAL_OPEN, "{{");
 }
 
-module.exports = { LITERAL_OPEN, escapeStepArgs, escapeTemplates, renderRequest, resolveArgValues, unescapeTemplates };
+// Whether an op holds escaped text: pb save --from-record and --from-recent set provenance.escaped
+// on the op they save, whatever its draft said, and only there do `{{!}}` and `%{!}` stand for `{{`
+// and `%{`. A hand-written op, and surf do, send them as written.
+function escapedOp(op) {
+  return op?.provenance?.escaped === true;
+}
+
+module.exports = { LITERAL_OPEN, escapeStepArgs, escapeTemplates, escapedOp, renderRequest, resolveArgValues, unescapeTemplates };

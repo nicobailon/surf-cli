@@ -9,7 +9,11 @@ const journal = require("../../native/activity-journal.cjs");
 const authoring = require("../../native/playbook-authoring.cjs");
 const records = require("../../native/playbook-records.cjs");
 const { paramOp } = require("../../native/playbook-param.cjs");
-const { renderRequest, resolveArgValues } = require("../../native/playbook-template.cjs");
+const {
+  escapedOp,
+  renderRequest,
+  resolveArgValues,
+} = require("../../native/playbook-template.cjs");
 const roots: string[] = [];
 
 afterEach(() => {
@@ -1232,6 +1236,30 @@ describe("activity and explicit record evidence", () => {
       });
     });
 
+    // Its inputs and duplicate key come from what it sends: a check naming {{text}} keeps neither.
+    it.each([
+      ["verify", { verify: { truthy: true, note: "{{text}}" } }],
+      ["expect", { expect: { truthy: true, note: "{{text}}" } }],
+      ["extract", { extract: { jsonPath: "$.{{text}}" } }],
+    ])("keeps the record's key and inputs whatever its %s names", (_case, check) => {
+      const saveWith = (checks: Entry) => {
+        const { root, stopped } = recordFlow({ commands: [typed, "click"], trace: [page, create] });
+        const { record } = stopped();
+        const file = path.join(records.recordsRoot(root), record.id, "draft", "op.json");
+        const draft = JSON.parse(fs.readFileSync(file, "utf8"));
+        Object.assign(draft.run[0], checks);
+        fs.writeFileSync(file, JSON.stringify(draft));
+        return savedOp(
+          authoring.saveFromRecord({ recordId: record.id, root, home: path.dirname(root) }),
+        );
+      };
+      const plain = saveWith({});
+      const checked = saveWith(check);
+      expect(checked.safety).toEqual(plain.safety);
+      expect(checked.args).toEqual(plain.args);
+      expect(checked.safety.key).toEqual(["review_key"]);
+    });
+
     it("allows the page's origin and the replayed request's, and no other captured origin", () => {
       const search = {
         ...create,
@@ -2044,11 +2072,17 @@ describe("activity and explicit record evidence", () => {
           edit(
             flow.root,
             record.id,
-            (op) => (op.provenance = { recordId: "rec-0-forged", requestId: "r_forged" }),
+            (op) =>
+              (op.provenance = { recordId: "rec-0-forged", requestId: "r_forged", escaped: false }),
           );
           const saved = save(flow.root, record.id);
           expect(saved.origins).toEqual([origin, "https://bob.github.io"]);
-          expect(savedOp(saved).provenance).toEqual({ recordId: record.id, requestId: "r_other" });
+          // The saver marks the op's text as escaped, whatever the draft says.
+          expect(savedOp(saved).provenance).toEqual({
+            recordId: record.id,
+            requestId: "r_other",
+            escaped: true,
+          });
         });
       });
     });
@@ -2069,8 +2103,11 @@ describe("activity and explicit record evidence", () => {
         });
         return { root: recorded.root, record: recorded.stopped().record };
       };
+      // Rendered as the runtime renders the saved op, with the escape its provenance marks.
       const sent = (op: Op, provided: Entry) =>
-        renderRequest(strategyOf(op, "network").request, resolveArgValues(op.args, provided));
+        renderRequest(strategyOf(op, "network").request, resolveArgValues(op.args, provided), {
+          escapes: escapedOp(op),
+        });
 
       describe.each(shapes)("with %s", (_shape, commands) => {
         it("is sent as the record captured it, whatever the review key", () => {
@@ -2698,9 +2735,16 @@ describe("what a hand-edited draft can't change", () => {
     const readFlow = () =>
       flow({ commands: [step("navigate", { url: `${origin}/extra` })], trace: [read] });
     const answered = `${origin}/answered`;
-    // A tab whose requests come back 200 and show in network capture, or fail before reaching the
-    // server (`unreached`). It notes each tool that sends something: capture reads send nothing.
-    const fakeTab = (unreached: boolean) => {
+    // A tab whose requests come back with `status` (200) and show in network capture, or fail
+    // before reaching the server (`unreached`). It notes each tool that sends something: capture
+    // reads send nothing.
+    const fakeTab = ({
+      unreached = false,
+      status = 200,
+    }: {
+      unreached?: boolean;
+      status?: number;
+    }) => {
       const calls: string[] = [];
       const captured: Entry[] = [];
       const send = (code: unknown) => {
@@ -2713,12 +2757,13 @@ describe("what a hand-edited draft can't change", () => {
           id: "c_1",
           method,
           url: answered,
-          status: 200,
+          status,
           ts: now,
           flags: [],
           _loadingFinished: true,
         });
-        const head = { status: 200, ok: true, requestUrl: answered, url: answered, headers: {} };
+        const ok = status >= 200 && status < 300;
+        const head = { status, ok, requestUrl: answered, url: answered, headers: {} };
         return { output: JSON.stringify({ ...head, sentAt: now, doneAt: now }) };
       };
       const reads: Record<string, () => unknown> = {
@@ -2737,8 +2782,8 @@ describe("what a hand-edited draft can't change", () => {
       };
       return { calls, executeTool };
     };
-    const run = async (saved: Op, args: Entry = {}, unreached = false) => {
-      const tab = fakeTab(unreached);
+    const run = async (saved: Op, args: Entry = {}, answer: Parameters<typeof fakeTab>[0] = {}) => {
+      const tab = fakeTab(answer);
       let error = "";
       await runtime
         .runPlaybookOp({
@@ -2775,10 +2820,27 @@ describe("what a hand-edited draft can't change", () => {
 
     it("still lets a read whose request never reached the server run the recorded workflow", async () => {
       const saved = readFlow().saved((op) => ((op.run[0] as Entry).verify = { status: 201 }));
-      expect(await run(saved, {}, true)).toEqual({
+      expect(await run(saved, {}, { unreached: true })).toEqual({
         calls: ["javascript_tool", "navigate"],
         error: "",
       });
+    });
+
+    // The runtime's own status check isn't a draft's: the recorded workflow is the read's fallback.
+    it.each([401, 500])("lets a read answered %i run the recorded workflow", async (status) => {
+      expect(await run(readFlow().saved(), {}, { status })).toEqual({
+        calls: ["javascript_tool", "navigate"],
+        error: "",
+      });
+    });
+
+    it("in a read's extract is final", async () => {
+      const saved = readFlow().saved(
+        (op) => ((op.run[0] as Entry).extract = { jsonPath: "$.missing" }),
+      );
+      const { calls, error } = await run(saved);
+      expect(calls).toEqual(["javascript_tool"]);
+      expect(error).toMatch(/^network strategy failed after its request was answered: /);
     });
   });
 
