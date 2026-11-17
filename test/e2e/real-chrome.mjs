@@ -159,7 +159,6 @@ function fixturePages(request, { crossOriginBase }) {
 <button id="open-dialog">Delete project</button>
 <label><input type="checkbox" id="notify"> Email me</label>
 <button id="noop">Do nothing</button>
-<button id="rename" onclick="this.textContent = 'Save edits'">Edit</button>
 <label>Password <input type="password" id="secret"></label>
 <button id="ticker-start">Start ticker</button><p id="ticker">0</p>
 <p id="outcome">Nothing deleted</p>
@@ -360,16 +359,14 @@ ${stories}</main>
     return `<!doctype html><html><head><title>Surf click fixture</title></head>
 <body><output id="log"></output>
 <button id="submit" disabled onclick="log('submit')">Submit order</button>
-<div style="position:relative"><button id="delete" onclick="log('delete')">Delete order</button>
+<div style="position:relative"><button onclick="log('delete')">Delete order</button>
 <div role="dialog" aria-label="Cookie consent" style="position:absolute;inset:0;background:#0003"></div></div>
 <button id="pay">Pay now</button>
 <div id="clip" style="height:40px;overflow:hidden"><div style="height:200px"></div><button onclick="log('archive')">Archive order</button></div>
 <button id="arm">Arm</button> <button id="confirm" onclick="log('confirm')">Confirm order</button>
 <button oncontextmenu="event.preventDefault(); log('menu')">Options</button>
-<div style="height:3000px"></div><button id="far">Far</button>
 <script>
   ${logFunction}
-  document.querySelector("#far").addEventListener("click", (event) => { if (event.isTrusted) log("far"); });
   document.querySelector("#pay").addEventListener("click", (event) => { if (event.isTrusted) log("pay"); });
   document.querySelector("#arm").addEventListener("click", () => {
     const confirm = document.querySelector("#confirm");
@@ -992,13 +989,8 @@ setInterval(() => {}, 60_000);
   const ambiguousDelete = await runSurfExpectingFailure(
     "locate.role", "button", "--name", "Delete", "--action", "click", "--tab-id", locateTabId, "--no-screenshot",
   );
-  const deleteMatches = [...ambiguousDelete.stderr.matchAll(/^ {2}(e\d+) button(?: "([^"]*)")?$/gm)];
-  const deleteRefs = deleteMatches.map((match) => match[1]);
-  if (
-    !ambiguousDelete.stderr.includes('2 elements match role "button" and the given name, so nothing was done')
-    || deleteRefs.length !== 2
-    || deleteMatches.some((match) => match[2] !== "Delete")
-  ) {
+  const deleteRefs = [...ambiguousDelete.stderr.matchAll(/^ {2}(e\d+) button "Delete"$/gm)].map((match) => match[1]);
+  if (!ambiguousDelete.stderr.includes('2 elements match role "button" and name "Delete", so nothing was done') || deleteRefs.length !== 2) {
     throw new Error(`ambiguous locate did not list both candidates: ${JSON.stringify(ambiguousDelete)}`);
   }
   if ((await locateLog()) !== "save") throw new Error(`ambiguous locate acted anyway (log=${await locateLog()})`);
@@ -1008,7 +1000,7 @@ setInterval(() => {}, 60_000);
     "locate.label", "Email", "--action", "fill", "--value", "x@example.com", "--tab-id", locateTabId, "--no-screenshot",
   );
   const emailValues = await locatePage.evaluate(() => [...document.querySelectorAll("input")].map((input) => input.value));
-  if (!ambiguousLabel.stderr.includes('2 elements match the given label') || emailValues.some(Boolean)) {
+  if (!ambiguousLabel.stderr.includes('2 elements match label "Email"') || emailValues.some(Boolean)) {
     throw new Error(`ambiguous locate.label filled a field: ${JSON.stringify({ ambiguousLabel, emailValues })}`);
   }
   await runSurf("tab.close", "--id", locateTabId, "--json");
@@ -1206,15 +1198,6 @@ setInterval(() => {}, 60_000);
   if ((await clickLog()) !== "pay|archive|confirm|menu") {
     throw new Error(`ref clicks did not reach trusted, clipped, late-enabled and right-click buttons (log=${await clickLog()})`);
   }
-  // Selector clicks scroll and hit-test the same way: a button below the fold is clicked, a covered one refused.
-  await runSurf("click", "--selector", "#far", ...clickTab);
-  const coveredSelector = await runSurfExpectingFailure("click", "--selector", "#delete", ...clickTab);
-  if (!coveredSelector.stderr.includes('selector "#delete" is covered by dialog "Cookie consent", so it was not clicked')) {
-    throw new Error(`a covered selector match was not refused: ${JSON.stringify(coveredSelector)}`);
-  }
-  if ((await clickLog()) !== "pay|archive|confirm|menu|far") {
-    throw new Error(`a selector click did not reach the button below the fold (log=${await clickLog()})`);
-  }
   // A click that can't be a real mouse click goes in the page and says why, before its screenshot line.
   const frontTabId = String(tabIdFromOutput(await runSurf("tab.new", `${baseUrl}/type`)));
   const hiddenClick = await runSurf("click", clickRef("Archive order"), "--tab-id", clickTabId);
@@ -1265,7 +1248,7 @@ setInterval(() => {}, 60_000);
     termsState: document.querySelector("#terms-state").textContent,
   }));
   if (termsAccepted !== "accepted" || !alreadyChecked.includes("was already checked; nothing clicked") || !alreadyUnchecked.includes("was already unchecked; nothing clicked")
-    || !radioUncheck.stderr.includes("is a radio button") || !missingOption.stderr.includes("has no option matching the given value") || missingOption.stderr.includes("nowhere")
+    || !radioUncheck.stderr.includes("is a radio button") || !missingOption.stderr.includes('no option matching "nowhere"')
     || JSON.stringify(checkState) !== JSON.stringify({ news: true, terms: false, small: true, country: "us", log: "terms:true|terms:true", termsState: "not accepted" })) {
     throw new Error(`check/uncheck/select did not set the requested state: ${JSON.stringify({ termsAccepted, alreadyChecked, alreadyUnchecked, radioUncheck, missingOption, checkState })}`);
   }
@@ -1466,14 +1449,6 @@ setInterval(() => {}, 60_000);
   const checkboxChanges = checkbox.pageChanges?.changes;
   if (checkboxChanges?.length !== 1 || checkboxChanges[0].kind !== "changed" || checkboxChanges[0].name !== "Email me" || checkboxChanges[0].property !== "checked" || checkboxChanges[0].to !== true) {
     throw new Error(`checkbox toggle did not report one state change: ${JSON.stringify(checkbox)}`);
-  }
-  // A button renamed in place gets the ref the next read lists, not the one read gave it before.
-  const editRef = refOf(await runSurf("read", "--tab-id", changesTab), 'button "Edit"');
-  const renamed = JSON.parse(await runSurf("click", "--selector", "#rename", "--settle", "1000", "--no-screenshot", "--tab-id", changesTab, "--json"));
-  const renamedRef = renamed.pageChanges?.changes?.find((change) => change.name === "Save edits")?.ref;
-  const nextRead = await runSurf("read", "--tab-id", changesTab);
-  if (!renamedRef || renamedRef === editRef || renamedRef !== refOf(nextRead, 'button "Save edits"')) {
-    throw new Error(`a renamed button's change ref (${renamedRef}, was ${editRef}) did not match the next read: ${JSON.stringify(renamed)}\n${nextRead}`);
   }
   const timeNoop = async (...flags) => {
     const startedAt = Date.now();

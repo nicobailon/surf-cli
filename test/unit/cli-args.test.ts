@@ -139,12 +139,6 @@ function createCliFixtureResult(request: any) {
     fs.writeFileSync(request.params.args.output, "[]");
     return { path: request.params.args.output, format: "json", count: 0 };
   }
-  if (request.params.tool === "network" && request.params.args.format === "json") {
-    return {
-      requests: [{ id: "r_1_1", method: "GET", status: 200, url: "https://example.test/" }],
-      warnings: ["gap"],
-    };
-  }
   if (request.params.tool === "screenshot") {
     return {
       base64: require("node:buffer").Buffer.from("local-screenshot").toString("base64"),
@@ -161,7 +155,6 @@ function createCliFixtureResult(request: any) {
 function runCli(
   args: string[],
   extraEnv: Record<string, string | undefined> = {},
-  cwd: string = process.cwd(),
 ): Promise<{ request: any; stdout: string; stderr: string }> {
   return new Promise((resolve, reject) => {
     const socketPath = createSocketPath();
@@ -191,8 +184,8 @@ function runCli(
 
     server.on("error", reject);
     server.listen(socketPath, () => {
-      const child = spawn(process.execPath, [path.join(process.cwd(), "native/cli.cjs"), ...args], {
-        cwd,
+      const child = spawn(process.execPath, ["native/cli.cjs", ...args], {
+        cwd: process.cwd(),
         env: { ...createCliEnv(socketPath), ...extraEnv },
         stdio: ["ignore", "pipe", "pipe"],
       });
@@ -704,39 +697,6 @@ describe("CLI argument parsing", () => {
     fs.rmSync(directory, { recursive: true, force: true });
   });
 
-  it("asks the host for the JSON request listing with --json, keeping an explicit format", async () => {
-    expect((await runCli(["network", "--json"])).request.params.args.format).toBe("json");
-    expect(
-      (await runCli(["network", "--json", "--format", "curl"])).request.params.args.format,
-    ).toBe("curl");
-    expect((await runCli(["network", "--last", "5"])).request.params.args.format).toBeUndefined();
-  });
-
-  it("sends SURF_SESSION with tab and window commands so a session's record can hold them", async () => {
-    const { request } = await runCli(["tab.new", "https://example.test/"], {
-      SURF_SESSION: "alpha",
-    });
-    expect(request).toMatchObject({ recordSession: "alpha" });
-    expect(request).not.toHaveProperty("session");
-  });
-
-  it.each([
-    ["tab.new", "https://example.test/"],
-    ["tab.unname", "docs"],
-  ])("sends an explicit --session with %s for the record, not as a target", async (...command) => {
-    const { request } = await runCli(["--session", "alpha", ...command]);
-    expect(request).toMatchObject({ recordSession: "alpha" });
-    expect(request).not.toHaveProperty("session");
-  });
-
-  it("prints --format json network listings as JSON, ids and warnings included", async () => {
-    const { stdout } = await runCli(["network", "--format", "json"]);
-    expect(JSON.parse(stdout)).toEqual({
-      requests: [{ id: "r_1_1", method: "GET", status: 200, url: "https://example.test/" }],
-      warnings: ["gap"],
-    });
-  });
-
   it("writes local-prefixed screenshot output to the normalized path", async () => {
     const output = path.join(os.tmpdir(), `surf-local-screenshot-${process.pid}-${Date.now()}.png`);
     try {
@@ -1106,108 +1066,6 @@ describe("CLI argument parsing", () => {
 
     expect(request.params.tool).toBe("page.read");
     expect(request.params.args).toMatchObject({ compact: true, "max-bytes": 1200 });
-  });
-
-  it("asks for typed values back only with --echo-value or echoValue in surf.json", async () => {
-    const home = fs.mkdtempSync(path.join(os.tmpdir(), "surf-echo-home-"));
-    try {
-      const fill = ["locate.label", "Name", "--action", "fill", "--value", "dummy-typed"];
-      const select = ["select", "e5", "dummy-option"];
-      const plain = { HOME: home };
-      expect((await runCli(fill, plain)).request.params.args["echo-value"]).toBeUndefined();
-      expect((await runCli(select, plain)).request.params.args["echo-value"]).toBeUndefined();
-      const flagged = await runCli([...select.slice(0, 2), "--echo-value", "dummy-option"], plain);
-      expect(flagged.request.params.args).toMatchObject({
-        "echo-value": true,
-        values: "dummy-option",
-      });
-      fs.writeFileSync(path.join(home, "surf.json"), JSON.stringify({ echoValue: true }));
-      expect((await runCli(fill, plain)).request.params.args["echo-value"]).toBe(true);
-      expect((await runCli(select, plain)).request.params.args["echo-value"]).toBe(true);
-      expect(
-        (await runCli(["click", "e1"], plain)).request.params.args["echo-value"],
-      ).toBeUndefined();
-    } finally {
-      fs.rmSync(home, { recursive: true, force: true });
-    }
-  });
-
-  it("never takes echoValue from a project's surf.json, only from the user's", async () => {
-    const home = fs.mkdtempSync(path.join(os.tmpdir(), "surf-echo-home-"));
-    const project = fs.mkdtempSync(path.join(os.tmpdir(), "surf-echo-project-"));
-    try {
-      fs.writeFileSync(path.join(project, "surf.json"), JSON.stringify({ echoValue: true }));
-      const fill = ["locate.label", "Name", "--action", "fill", "--value", "dummy-typed"];
-      const fromProject = await runCli(fill, { HOME: home }, project);
-      expect(fromProject.request.params.args["echo-value"]).toBeUndefined();
-      const perCall = await runCli([...fill, "--echo-value"], { HOME: home }, project);
-      expect(perCall.request.params.args["echo-value"]).toBe(true);
-      // The user's own setting still applies when a project has a surf.json without it.
-      fs.writeFileSync(path.join(project, "surf.json"), JSON.stringify({ settleMs: 0 }));
-      fs.writeFileSync(path.join(home, "surf.json"), JSON.stringify({ echoValue: true }));
-      expect((await runCli(fill, { HOME: home }, project)).request.params.args["echo-value"]).toBe(
-        true,
-      );
-    } finally {
-      fs.rmSync(home, { recursive: true, force: true });
-      fs.rmSync(project, { recursive: true, force: true });
-    }
-  });
-
-  it("drops the opt-ins a --script file's steps set", async () => {
-    const directory = fs.mkdtempSync(path.join(os.tmpdir(), "surf-script-optin-"));
-    const steps = [
-      {
-        tool: "network.export",
-        args: {
-          output: path.join(directory, "x.har"),
-          "raw-bodies": true,
-          rawBodies: true,
-          raw: true,
-        },
-      },
-      { tool: "network.curl", args: { id: "r_1", raw: true } },
-      {
-        tool: "playbook.record.start",
-        args: { site: "s", op: "o", includeInputValues: true, "include-input-values": true },
-      },
-      {
-        tool: "locate.label",
-        args: {
-          label: "Name",
-          action: "fill",
-          value: "dummy-juliet",
-          echoValue: true,
-          "echo-value": true,
-        },
-      },
-    ];
-    try {
-      for (const [index, step] of steps.entries()) {
-        const scriptPath = path.join(directory, `${index}.json`);
-        fs.writeFileSync(scriptPath, JSON.stringify({ steps: [step] }));
-        for (const args of [
-          ["--script", scriptPath],
-          ["do", "--script", scriptPath],
-        ]) {
-          const { request } = await runCli(args);
-          expect(request.params.tool).toBe(step.tool);
-          for (const name of [
-            "raw",
-            "raw-bodies",
-            "rawBodies",
-            "includeInputValues",
-            "include-input-values",
-            "echoValue",
-            "echo-value",
-          ]) {
-            expect(request.params.args).not.toHaveProperty(name);
-          }
-        }
-      }
-    } finally {
-      fs.rmSync(directory, { recursive: true, force: true });
-    }
   });
 
   it("requests and prints rendered page HTML", async () => {

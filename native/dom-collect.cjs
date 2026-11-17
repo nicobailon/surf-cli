@@ -1,8 +1,7 @@
 // Scroll-and-harvest for virtualized lists: read the visible items each round, merge by key on
 // the host (so a page reload does not lose records), stop when scrolling stops adding items.
 
-const { checkPattern, createFieldRegexBudget, runTabScript, tabBudgetSource, tabSource } = require("./bounded-regex.cjs");
-const { assertFieldName, filterRecords } = require("./records.cjs");
+const { filterRecords } = require("./records.cjs");
 
 const COLLECT_KEYS = ["open", "item", "key", "fields", "maxItems", "idleRounds", "scrollDelayMs", "expand", "keep"];
 const FIELD_KEYS = ["selector", "attr", "all", "match", "template"];
@@ -34,7 +33,14 @@ function parseDomField(spec, where) {
   if (typeof spec.selector !== "string" || !spec.selector.trim()) throw new Error(`${where} needs a selector`);
   if (spec.attr !== undefined && (typeof spec.attr !== "string" || !spec.attr)) throw new Error(`${where}.attr must be a string`);
   if (spec.all !== undefined && typeof spec.all !== "boolean") throw new Error(`${where}.all must be a boolean`);
-  if (spec.match !== undefined) checkPattern(spec.match, `${where}.match`);
+  if (spec.match !== undefined) {
+    if (typeof spec.match !== "string") throw new Error(`${where}.match must be a regex string`);
+    try {
+      new RegExp(spec.match);
+    } catch (error) {
+      throw new Error(`${where}.match is not a valid regex: ${error.message}`);
+    }
+  }
   return { ...spec };
 }
 
@@ -59,10 +65,7 @@ function validateCollectSpec(spec) {
     open: spec.open,
     item: spec.item,
     key: parseDomField(spec.key, "collect key"),
-    fields: Object.fromEntries(Object.entries(spec.fields).map(([name, field]) => {
-      assertFieldName(name, "collect field");
-      return [name, parseDomField(field, `collect field ${name}`)];
-    })),
+    fields: Object.fromEntries(Object.entries(spec.fields).map(([name, field]) => [name, parseDomField(field, `collect field ${name}`)])),
     maxItems: optionalInteger(spec.maxItems, "collect maxItems", 1) ?? 500,
     idleRounds: optionalInteger(spec.idleRounds, "collect idleRounds", 1) ?? 3,
     scrollDelayMs: optionalInteger(spec.scrollDelayMs, "collect scrollDelayMs", 0) ?? 800,
@@ -71,10 +74,15 @@ function validateCollectSpec(spec) {
   };
 }
 
-// Page-side helpers shared by collect and playbook HTML extraction. The script defines `textOf`, and
-// `boundedRegex` (tabSource()), whose tabExtract runs them: readItem reads an item's raw values off
-// the page once, and buildItem makes its record from them, running match patterns, without the page.
-const PICK_SOURCE = `// Dotted field names ("quoted.text") build nested objects.
+// Runs in the page. Reads unseen items, then scrolls the last item to the top for the next round.
+function roundScript(spec, seenKeys) {
+  const input = JSON.stringify({ item: spec.item, key: spec.key, fields: spec.fields, expand: spec.expand, seen: seenKeys });
+  return `(async () => {
+const spec = ${input};
+// Background tabs and minimized windows do not render virtualized lists.
+if (document.visibilityState === "hidden") return { hidden: true };
+const seen = new Set(spec.seen);
+// Dotted field names ("quoted.text") build nested objects.
 const assign = (record, name, value) => {
   if (value === undefined) return;
   const parts = name.split(".");
@@ -82,20 +90,7 @@ const assign = (record, name, value) => {
   for (const part of parts.slice(0, -1)) node = node[part] ??= {};
   node[parts[parts.length - 1]] = value;
 };
-// A field's raw values: what each element it selects reads as (text or attribute), or null for a
-// template, which reads the record instead.
-const readField = (item, field) => {
-  if (field.template !== undefined) return null;
-  const elements = field.selector === ":scope" ? [item] : field.all ? [...item.querySelectorAll(field.selector)] : [item.querySelector(field.selector)].filter(Boolean);
-  const read = (element) => {
-    if (!field.attr) return textOf(element);
-    const property = element[field.attr];
-    return typeof property === "string" ? property : element.getAttribute(field.attr) ?? undefined;
-  };
-  return field.all ? elements.map(read) : elements.slice(0, 1).map(read);
-};
-// A field's value from its raw values and the record so far. \`where\` names it in a pattern's error.
-const buildField = (field, raw, record, where) => {
+const pick = (item, field, record) => {
   if (field.template !== undefined) {
     let missing = false;
     const text = field.template.replace(/\\{\\{([a-zA-Z0-9._-]+)\\}\\}/g, (_, name) => {
@@ -105,43 +100,24 @@ const buildField = (field, raw, record, where) => {
     });
     return missing ? undefined : text;
   }
+  const elements = field.selector === ":scope" ? [item] : field.all ? [...item.querySelectorAll(field.selector)] : [item.querySelector(field.selector)].filter(Boolean);
+  const read = (element) => {
+    if (!field.attr) return element.innerText.trim();
+    const property = element[field.attr];
+    return typeof property === "string" ? property : element.getAttribute(field.attr) ?? undefined;
+  };
   const apply = (value) => {
     if (!field.match || typeof value !== "string") return value;
-    const found = boundedRegex.boundedExec({ pattern: field.match, text: value, label: \`\${where} match\` });
+    const found = value.match(new RegExp(field.match));
     return found ? (found.length > 1 ? found[1] : found[0]) : undefined;
   };
   if (field.all) {
-    const values = raw.map(apply).filter((value) => value !== undefined && value !== null);
+    const values = elements.map(read).map(apply).filter((value) => value !== undefined && value !== null);
     return values.length ? values : undefined;
   }
-  return raw.length ? apply(raw[0]) : undefined;
+  return elements.length ? apply(read(elements[0])) : undefined;
 };
-const readItem = (item, fields) => Object.entries(fields).map(([name, field]) => [name, readField(item, field)]);
-// Templates run last, so they can use the item's other fields.
-const buildItem = (raws, fields) => {
-  const record = {};
-  for (const [name, raw] of raws) {
-    if (fields[name].template === undefined) assign(record, name, buildField(fields[name], raw, record, \`field \${name}\`));
-  }
-  for (const [name, raw] of raws) {
-    if (fields[name].template !== undefined) assign(record, name, buildField(fields[name], raw, record, \`field \${name}\`));
-  }
-  return record;
-};
-`;
-
-// Runs in the page. Reads unseen items, then scrolls the last item to the top for the next round.
-function roundScript(spec, seenKeys, budget) {
-  const input = JSON.stringify({ item: spec.item, key: spec.key, fields: spec.fields, expand: spec.expand, seen: seenKeys });
-  return `(async () => {
-${tabSource()}
-${tabBudgetSource(budget)}
-const spec = ${input};
-// Background tabs and minimized windows do not render virtualized lists.
-if (document.visibilityState === "hidden") return { hidden: true };
-const seen = new Set(spec.seen);
-const textOf = (element) => element.innerText.trim();
-${PICK_SOURCE}if (spec.expand) {
+if (spec.expand) {
   const clicked = [];
   for (const item of document.querySelectorAll(spec.item)) {
     for (const element of item.querySelectorAll(spec.expand)) {
@@ -159,109 +135,26 @@ ${PICK_SOURCE}if (spec.expand) {
   }
 }
 const items = [...document.querySelectorAll(spec.item)];
-return boundedRegex.tabExtract({
-  budget: regexBudget,
-  read: () => items.map((item) => ({ raws: readItem(item, spec.fields), key: readField(item, spec.key) })),
-  extract: (rows) => rows.map(({ raws, key }) => {
-    const record = buildItem(raws, spec.fields);
-    return { record, key: buildField(spec.key, key, record, "key") };
-  }),
-  onValue: (read) => {
-    const records = [];
-    for (const { record, key } of read) {
-      if (key === undefined || key === null || key === "") continue;
-      const id = JSON.stringify(key);
-      if (seen.has(id)) continue;
-      seen.add(id);
-      records.push({ id, record });
-    }
-    if (items.length) items[items.length - 1].scrollIntoView({ block: "start" });
-    else window.scrollBy(0, window.innerHeight);
-    return { records };
-  },
-  onError: (error) => ({ error: error.message }),
-});
+const records = [];
+for (const item of items) {
+  const record = {};
+  const templates = [];
+  for (const [name, field] of Object.entries(spec.fields)) {
+    if (field.template !== undefined) templates.push([name, field]);
+    else assign(record, name, pick(item, field, record));
+  }
+  for (const [name, field] of templates) assign(record, name, pick(item, field, record));
+  const key = pick(item, spec.key, record);
+  if (key === undefined || key === null || key === "") continue;
+  const id = JSON.stringify(key);
+  if (seen.has(id)) continue;
+  seen.add(id);
+  records.push({ id, record });
+}
+if (items.length) items[items.length - 1].scrollIntoView({ block: "start" });
+else window.scrollBy(0, window.innerHeight);
+return { records };
 })()`;
-}
-
-// Node has no CSS parser, so this only catches what it can: unbalanced brackets, parentheses and
-// quotes, and an @ outside them (sel@attr with no attribute). The page reports any other bad selector.
-function assertSelector(selector, where) {
-  const closers = [];
-  let quote = null;
-  for (const char of selector) {
-    if (quote) {
-      if (char === quote) quote = null;
-    } else if (char === '"' || char === "'") quote = char;
-    else if (char === "[" || char === "(") closers.push(char === "[" ? "]" : ")");
-    else if ((char === "]" || char === ")") && closers.pop() !== char) throw new Error(`${where} has an unbalanced selector: ${selector}`);
-    else if (char === "@" && closers.length === 0) throw new Error(`${where} has a stray @ (write selector@attribute): ${selector}`);
-  }
-  if (quote || closers.length) throw new Error(`${where} has an unbalanced selector: ${selector}`);
-}
-
-function htmlField(spec, where) {
-  const field = parseDomField(spec, where);
-  if (field.selector !== undefined && field.selector !== ":scope") assertSelector(field.selector, where);
-  return field;
-}
-
-/** A playbook extract.html spec: { item, fields } for records, or { value } for one value. */
-function parseHtmlExtract(spec) {
-  if (!isPlainObject(spec)) throw new Error("html must be an object");
-  for (const key of Object.keys(spec)) {
-    if (!["item", "fields", "value"].includes(key)) throw new Error(`html has unknown key "${key}" (allowed: item, fields, value)`);
-  }
-  if (spec.value !== undefined) {
-    if (spec.item !== undefined || spec.fields !== undefined) throw new Error("html takes item and fields, or value");
-    return { value: htmlField(spec.value, "html value") };
-  }
-  if (typeof spec.item !== "string" || !spec.item.trim()) throw new Error("html needs an item selector, or a value");
-  assertSelector(spec.item, "html item");
-  if (!isPlainObject(spec.fields) || Object.keys(spec.fields).length === 0) throw new Error("html fields must map at least one field");
-  const fields = Object.entries(spec.fields).map(([name, field]) => {
-    assertFieldName(name, "html field");
-    return [name, htmlField(field, `html field ${name}`)];
-  });
-  return { item: spec.item, fields: Object.fromEntries(fields) };
-}
-
-/**
- * Page-side function `(doc) => ({ read, extract })` for an extract.html spec, the reading and the
- * building of its records or value, for boundedRegex.tabExtract (the script defines `boundedRegex`
- * with tabSource()). Text is the element's text
- * with whitespace collapsed, the same in a parsed response body (which has no layout) and a live page.
- */
-function htmlExtractFunction(spec) {
-  return `((doc) => {
-const spec = ${JSON.stringify(parseHtmlExtract(spec))};
-const textOf = (element) => (element.textContent || "").replace(/\\s+/g, " ").trim();
-${PICK_SOURCE}const check = (where, field) => {
-  if (field.selector === undefined || field.selector === ":scope") return;
-  try {
-    doc.querySelector(field.selector);
-  } catch {
-    throw new Error(\`extract \${where} has an invalid selector: \${field.selector}\`);
-  }
-};
-if (spec.value) {
-  return {
-    read: () => {
-      check("value", spec.value);
-      return readField(doc, spec.value);
-    },
-    extract: (raw) => buildField(spec.value, raw, {}, "value") ?? null,
-  };
-}
-return {
-  read: () => {
-    check("item", { selector: spec.item });
-    for (const [name, field] of Object.entries(spec.fields)) check(\`field \${name}\`, field);
-    return [...doc.querySelectorAll(spec.item)].map((item) => readItem(item, spec.fields));
-  },
-  extract: (items) => items.map((raws) => buildItem(raws, spec.fields)),
-};
-})`;
 }
 
 /** Background tabs and minimized windows neither render virtualized lists nor load more on scroll. */
@@ -272,11 +165,8 @@ function hiddenTabError(what = "collect") {
   );
 }
 
-/**
- * Collects records from a virtualized list. Returns records in first-seen order, deduped by key.
- * Every round's field match patterns spend from `regexBudget` (an op run's, or one for the collect).
- */
-async function runCollect({ spec, executeTool, sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms)), regexBudget = createFieldRegexBudget(), now = () => performance.now() }) {
+/** Collects records from a virtualized list. Returns records in first-seen order, deduped by key. */
+async function runCollect({ spec, executeTool, sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms)) }) {
   const options = validateCollectSpec(spec);
   if (options.open) await executeTool("navigate", { url: options.open });
   const visibility = await executeTool("javascript_tool", { code: "document.visibilityState" });
@@ -285,20 +175,19 @@ async function runCollect({ spec, executeTool, sleep = (ms) => new Promise((reso
   const byKey = new Map();
   let idle = 0;
   while (byKey.size < options.maxItems && idle < options.idleRounds) {
-    const round = await runTabScript({
-      budget: regexBudget,
-      now,
-      script: (budget) => roundScript(options, [...byKey.keys()], budget),
-      execute: (code) => executeTool("javascript_tool", { code }),
-      unreadable: (size) =>
-        new Error(
-          size >= OUTPUT_LIMIT
-            ? `collect round output reached the ${OUTPUT_LIMIT}-character script limit; narrow the fields`
-            : "collect round returned no records",
-        ),
-    });
+    const result = await executeTool("javascript_tool", { code: roundScript(options, [...byKey.keys()]) });
+    let round;
+    try {
+      round = JSON.parse(result?.output);
+    } catch {
+      const size = typeof result?.output === "string" ? result.output.length : 0;
+      throw new Error(
+        size >= OUTPUT_LIMIT
+          ? `collect round output reached the ${OUTPUT_LIMIT}-character script limit; narrow the fields`
+          : "collect round returned no records",
+      );
+    }
     if (round?.hidden === true) throw hiddenTabError();
-    if (typeof round?.error === "string") throw new Error(`collect round failed: ${round.error}`);
     if (!Array.isArray(round?.records)) throw new Error("collect round returned no records");
     let added = 0;
     for (const { id, record } of round.records) {
@@ -312,4 +201,4 @@ async function runCollect({ spec, executeTool, sleep = (ms) => new Promise((reso
   return filterRecords([...byKey.values()], options.keep);
 }
 
-module.exports = { hiddenTabError, htmlExtractFunction, parseHtmlExtract, runCollect, validateCollectSpec };
+module.exports = { hiddenTabError, runCollect, validateCollectSpec };

@@ -1,4 +1,4 @@
-const { redactArgValues, redactCommandArgs } = require("./workflow-definition.cjs");
+const { redactCommandArgs } = require("./workflow-definition.cjs");
 
 const MAX_LOOP_ITERATIONS = 100;
 const AUTO_WAIT_COMMANDS = ["go", "navigate", "click", "key", "form.fill", "submit", "tab.switch", "tab.new", "back", "forward"];
@@ -27,41 +27,21 @@ function getAutoWaitCommand(cmd) {
   return null;
 }
 
-function varText(vars, name) {
-  const value = vars[name];
-  if (value === undefined) return `%{${name}}`;
-  return typeof value === "object" ? JSON.stringify(value) : String(value);
-}
-
-// The steps of an op pb save escaped (`escapes`) are read in one pass: `{{name}}` takes the op's
-// input (`inputs`), `%{name}` a var, and `{{!}}` and `%{!}` stand for `{{` and `%{` (see
-// escapeStepArgs in playbook-template.cjs). One pass, so a value it puts in is never read again:
-// an input or var holding `%{!}` or `%{name}` is sent as given. `!` is in no name, so every name
-// is filled. surf do and other ops fill only `%{name}` here and send `%{!}` as written.
-const ESCAPED_TEXT = /\{\{([a-zA-Z0-9._-]+|!)\}\}|%\{(\w+|!)\}/g;
-// A var any op's step reads: `%{!}` is none, since `!` is in no name.
-const VAR_TEXT = /%\{(\w+)\}/g;
-
-function resolveVar(template, vars, { escapes = false, inputs = {} } = {}) {
+function resolveVar(template, vars) {
   if (typeof template !== "string") return template;
-  const input = escapes && template.match(/^\{\{([a-zA-Z0-9._-]+)\}\}$/);
-  if (input) return inputs[input[1]];
   const match = template.match(/^%\{(\w+)\}$/);
   if (match) return vars[match[1]] !== undefined ? vars[match[1]] : template;
-  if (!escapes) return template.replace(VAR_TEXT, (_, name) => varText(vars, name));
-  return template.replace(ESCAPED_TEXT, (_, inputName, varName) => {
-    if (inputName === "!") return "{{";
-    if (varName === "!") return "%{";
-    if (varName !== undefined) return varText(vars, varName);
-    if (inputs[inputName] === undefined) throw new Error(`missing template argument: ${inputName}`);
-    return String(inputs[inputName]);
+  return template.replace(/%\{(\w+)\}/g, (_, name) => {
+    const value = vars[name];
+    if (value === undefined) return `%{${name}}`;
+    return typeof value === "object" ? JSON.stringify(value) : String(value);
   });
 }
 
-function substituteVars(value, vars, options) {
-  if (!value || typeof value !== "object") return typeof value === "string" ? resolveVar(value, vars, options) : value;
-  if (Array.isArray(value)) return value.map((item) => substituteVars(item, vars, options));
-  return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, substituteVars(item, vars, options)]));
+function substituteVars(value, vars) {
+  if (!value || typeof value !== "object") return typeof value === "string" ? resolveVar(value, vars) : value;
+  if (Array.isArray(value)) return value.map((item) => substituteVars(item, vars));
+  return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, substituteVars(item, vars)]));
 }
 
 function extractStepOutput(response) {
@@ -150,28 +130,24 @@ async function executeSemanticStep(step, semanticContext, options) {
 async function executeSingleStep(step, vars, options) {
   const {
     autoWait = true,
-    escapes = false,
     executeTool,
     includeInputValues = false,
-    inputs,
     onEvent = () => {},
     signal,
     sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
     stepDelay = 100,
   } = options;
   if (typeof executeTool !== "function") throw new Error("workflow runtime requires executeTool");
-  const args = substituteVars(step.args || {}, vars, { escapes, inputs });
+  const args = substituteVars(step.args || {}, vars);
   const startedAt = new Date().toISOString();
   const baseEvent = { command: step.cmd, argsRedacted: redactCommandArgs(step.cmd, args, includeInputValues), startedAt };
-  // An error that quotes what the step typed keeps it out of the step's events and result.
-  const redactInputs = (text) => (includeInputValues ? text : redactArgValues(step.cmd, args, text));
   onEvent({ type: "tool.started", ...baseEvent });
   try {
     assertNotAborted(signal);
     const response = await executeTool(step.cmd, args, { signal });
     assertNotAborted(signal);
     if (response?.error) {
-      const error = redactInputs(response.error.content?.[0]?.text || (typeof response.error === "string" ? response.error : JSON.stringify(response.error)));
+      const error = response.error.content?.[0]?.text || (typeof response.error === "string" ? response.error : JSON.stringify(response.error));
       onEvent({ type: "tool.failed", ...baseEvent, endedAt: new Date().toISOString(), resultSummary: error });
       return { success: false, error };
     }
@@ -193,7 +169,7 @@ async function executeSingleStep(step, vars, options) {
     onEvent({ type: "tool.completed", ...baseEvent, endedAt: new Date().toISOString(), resultSummary: "success" });
     return { success: true, ...(step.as ? { output: vars[step.as] } : {}) };
   } catch (error) {
-    const message = redactInputs(error?.message || String(error));
+    const message = error?.message || String(error);
     onEvent({ type: "tool.failed", ...baseEvent, endedAt: new Date().toISOString(), resultSummary: message });
     return { success: false, error: message };
   }
@@ -208,20 +184,20 @@ async function executeStep(step, vars, options) {
     return { ...result, stepsExecuted: 1 };
   }
   if (step.repeat !== undefined) {
-    let max = resolveVar(step.repeat, vars, { escapes: options.escapes, inputs: options.inputs });
+    let max = resolveVar(step.repeat, vars);
     if (typeof max === "string") max = Number.parseInt(max, 10);
     if (typeof max !== "number" || Number.isNaN(max)) max = 1;
     max = Math.min(max, MAX_LOOP_ITERATIONS);
     if (!Array.isArray(step.steps) || step.steps.length === 0) return { success: false, error: "repeat: steps array required", stepsExecuted: 0 };
     let stepsExecuted = 0;
     for (let index = 0; index < max; index++) {
-      const { vars: loopVars, captured } = trackedVars({ ...vars, _index: index, _iteration: index + 1 });
+      const loopVars = { ...vars, _index: index, _iteration: index + 1 };
       for (const nestedStep of step.steps) {
         const result = await executeStep(nestedStep, loopVars, options);
         stepsExecuted += result.stepsExecuted || 1;
         if (!result.success && onError === "stop") return { success: false, error: result.error, stepsExecuted };
       }
-      copyCapturedVars(step.steps, loopVars, vars, captured);
+      copyCapturedVars(step.steps, loopVars, vars);
       if (step.until) {
         const untilResult = await executeSingleStep(step.until, loopVars, options);
         stepsExecuted++;
@@ -231,71 +207,38 @@ async function executeStep(step, vars, options) {
     return { success: true, stepsExecuted };
   }
   if (step.each !== undefined) {
-    // An escaped op's inline list is read like its args, every string at any depth once; an input
-    // or var that is the whole value comes in as is. Any other op's list was filled before the run.
-    const fill = options.escapes ? substituteVars : resolveVar;
-    const items = fill(step.each, vars, { escapes: options.escapes, inputs: options.inputs });
+    const items = resolveVar(step.each, vars);
     if (!Array.isArray(items)) return { success: false, error: `each: expected array, got ${typeof items}${items === undefined ? " (undefined)" : ""}`, stepsExecuted: 0 };
     if (!Array.isArray(step.steps) || step.steps.length === 0) return { success: false, error: "each: steps array required", stepsExecuted: 0 };
     const itemVar = step.as || "item";
     let stepsExecuted = 0;
     for (let index = 0; index < Math.min(items.length, MAX_LOOP_ITERATIONS); index++) {
-      const { vars: loopVars, captured } = trackedVars({ ...vars, [itemVar]: items[index], _index: index, _iteration: index + 1 });
+      const loopVars = { ...vars, [itemVar]: items[index], _index: index, _iteration: index + 1 };
       for (const nestedStep of step.steps) {
         const result = await executeStep(nestedStep, loopVars, options);
         stepsExecuted += result.stepsExecuted || 1;
         if (!result.success && onError === "stop") return { success: false, error: result.error, stepsExecuted };
       }
-      copyCapturedVars(step.steps, loopVars, vars, captured);
+      copyCapturedVars(step.steps, loopVars, vars);
     }
     return { success: true, stepsExecuted };
   }
   return { ...(await executeSingleStep(step, vars, options)), stepsExecuted: 1 };
 }
 
-// Variables that record the names a step sets, so an input never passes for a capture.
-function trackedVars(initial) {
-  const captured = new Set();
-  const vars = new Proxy(initial, {
-    set(target, name, value) {
-      captured.add(name);
-      target[name] = value;
-      return true;
-    },
-  });
-  return { vars, captured };
-}
-
-// Copies out of a loop's variables only what its steps captured this iteration, never an input
-// a failed step left under its capture name.
-function copyCapturedVars(steps, source, target, captured) {
+function copyCapturedVars(steps, source, target) {
   for (const step of steps) {
     const isLoop = step.repeat !== undefined || step.each !== undefined;
-    if (!isLoop && step.as && captured.has(step.as) && source[step.as] !== undefined) target[step.as] = source[step.as];
+    if (!isLoop && step.as && source[step.as] !== undefined) target[step.as] = source[step.as];
   }
-}
-
-// A workflow returns what its steps captured with `as` (a loop's direct steps included, as
-// copyCapturedVars copies them out), never the inputs it ran with: those stay private to the run.
-// `captured` names the variables a step set, so a capture equal to a same-named input still counts.
-function capturedOutputs(steps, vars, captured) {
-  const names = steps.flatMap((step) => {
-    if (step.repeat === undefined && step.each === undefined) return step.as ? [step.as] : [];
-    return (step.steps || []).filter((child) => child.repeat === undefined && child.each === undefined && child.as).map((child) => child.as);
-  });
-  const outputs = {};
-  for (const name of names) {
-    if (captured.has(name) && vars[name] !== undefined) outputs[name] = vars[name];
-  }
-  return Object.keys(outputs).length > 0 ? { vars: outputs } : {};
 }
 
 async function executeWorkflow(steps, options = {}) {
   const semanticEnabled = steps.some((step) => step.cmd === "semantic.step");
   if (semanticEnabled && (options.onError || "stop") !== "stop") {
-    return { status: "failed", completedSteps: 0, totalSteps: steps.length, results: [], error: "semantic workflows require onError='stop'", totalMs: 0 };
+    return { status: "failed", completedSteps: 0, totalSteps: steps.length, results: [], error: "semantic workflows require onError='stop'", totalMs: 0, vars: { ...(options.vars || {}), ...(options.context?.vars || {}) } };
   }
-  const { vars, captured } = trackedVars({ ...(options.vars || {}), ...(options.context?.vars || {}) });
+  const vars = { ...(options.vars || {}), ...(options.context?.vars || {}) };
   const semanticContext = semanticEnabled ? (options.createSemanticContext?.() || Object.create(null)) : undefined;
   const executionOptions = semanticEnabled ? { ...options, semanticContext } : options;
   const results = [];
@@ -322,104 +265,14 @@ async function executeWorkflow(steps, options = {}) {
       results.push({ step: index + 1, ...(type === "loop" ? { type: "loop" } : { cmd: step.cmd }), status: "error", error: result.error, ...(result.semantic ? { semantic: result.semantic } : {}), ms });
       options.onProgress?.({ phase: "fail", index, total: steps.length, step, type, ms, error: result.error });
       if ((options.onError || "stop") === "stop") {
-        return { status: "failed", completedSteps: type === "loop" ? stepsExecuted : stepsExecuted - 1, totalSteps: steps.length, results, error: result.error, ...(semantic ? { semantic } : {}), totalMs: Date.now() - startTotal, ...capturedOutputs(steps, vars, captured) };
+        return { status: "failed", completedSteps: type === "loop" ? stepsExecuted : stepsExecuted - 1, totalSteps: steps.length, results, error: result.error, ...(semantic ? { semantic } : {}), totalMs: Date.now() - startTotal, vars };
       }
     } else {
       results.push({ step: index + 1, ...(type === "loop" ? { type: "loop", stepsExecuted: result.stepsExecuted } : { cmd: step.cmd }), status: "ok", ...(result.semantic ? { semantic: result.semantic } : {}), ms });
       options.onProgress?.({ phase: "ok", index, total: steps.length, step, type, ms, stepsExecuted: result.stepsExecuted });
     }
   }
-  return { status: failed > 0 ? "partial" : "completed", completedSteps: stepsExecuted, totalSteps: steps.length, results, failed, ...(semantic ? { semantic } : {}), totalMs: Date.now() - startTotal, ...capturedOutputs(steps, vars, captured) };
-}
-
-// The vars a workflow's steps read from the ones it starts with (an op's inputs), walked as
-// executeStep reads them: a step's args (an until step's too), and a loop's repeat and each, in
-// loops at any depth. Never a loop's own vars (its each item, _index, _iteration), a capture (as)
-// an earlier step of the same body made under onError stop (a failed step stops the run), a
-// semantic step's args (its executor reads them), a loop's args or any other field. A list each
-// is read only in an escaped op: any other op's was filled before the run. `rename(name, field,
-// maybe)` gives the name each such var is to read, `field` saying where it is (`hover selector`,
-// `loop each`) and `maybe` the vars a step or loop may have set there: a capture under onError
-// continue, one made in a loop, one a later step of the loop makes on an earlier pass, a loop's
-// own vars. Returns the steps so renamed.
-function mapStartingVars(steps, { escapes = false, onError = "stop" } = {}, rename) {
-  const renameText = (text, scope, field) => text.replace(VAR_TEXT, (token, name) => {
-    if (scope.bound.has(name)) return token;
-    const next = rename(name, field, scope.maybe);
-    return next === name ? token : `%{${next}}`;
-  });
-  const renameValue = (value, scope, field) => {
-    if (typeof value === "string") return renameText(value, scope, field);
-    if (Array.isArray(value)) return value.map((item) => renameValue(item, scope, field));
-    if (value && typeof value === "object") return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, renameValue(item, scope, field)]));
-    return value;
-  };
-  const single = (step, scope) => {
-    if (!step || typeof step !== "object" || step.args === undefined) return step;
-    const named = step.args && typeof step.args === "object" && !Array.isArray(step.args);
-    const args = named
-      ? Object.fromEntries(Object.entries(step.args).map(([key, value]) => [key, renameValue(value, scope, `${step.cmd} ${key}`)]))
-      : renameValue(step.args, scope, String(step.cmd));
-    return { ...step, args };
-  };
-  // The names a step in `list` may capture, in loops at any depth; a loop's own vars stay in it.
-  const captures = (list) => (Array.isArray(list) ? list : []).flatMap((step) => {
-    if (!step || typeof step !== "object") return [];
-    if (step.repeat !== undefined || step.each !== undefined) return captures(step.steps);
-    return typeof step.as === "string" && step.as ? [step.as] : [];
-  });
-  const walk = (list, outer) => {
-    if (!Array.isArray(list)) return { steps: list, scope: outer };
-    const scope = { bound: new Set(outer.bound), maybe: new Set([...outer.maybe, ...outer.bound]) };
-    // A loop's body starts with its own vars and, from its second pass, what its steps captured.
-    const body = (step, own) => walk(step.steps, {
-      bound: new Set([...scope.bound, ...own]),
-      maybe: new Set([...scope.maybe, ...own, ...captures(step.steps)]),
-    });
-    const mapped = list.map((step) => {
-      if (!step || typeof step !== "object") return step;
-      if (step.cmd === "semantic.step") {
-        if (typeof step.as === "string" && step.as) scope.maybe.add(step.as);
-        return step;
-      }
-      if (step.repeat !== undefined) {
-        const loop = body(step, ["_index", "_iteration"]);
-        const next = {
-          ...step,
-          repeat: typeof step.repeat === "string" ? renameText(step.repeat, scope, "loop repeat") : step.repeat,
-          ...(Array.isArray(step.steps) ? { steps: loop.steps } : {}),
-          ...(step.until ? { until: single(step.until, loop.scope) } : {}),
-        };
-        for (const name of captures(step.steps)) scope.maybe.add(name);
-        return next;
-      }
-      if (step.each !== undefined) {
-        const loop = body(step, [step.as || "item", "_index", "_iteration"]);
-        const fill = escapes || typeof step.each === "string" ? renameValue : (value) => value;
-        const next = { ...step, each: fill(step.each, scope, "loop each"), ...(Array.isArray(step.steps) ? { steps: loop.steps } : {}) };
-        for (const name of captures(step.steps)) scope.maybe.add(name);
-        return next;
-      }
-      const next = single(step, scope);
-      if (typeof step.as === "string" && step.as) {
-        scope.maybe.add(step.as);
-        if (onError === "stop") scope.bound.add(step.as);
-      }
-      return next;
-    });
-    return { steps: mapped, scope };
-  };
-  return walk(steps, { bound: new Set(), maybe: new Set() }).steps;
-}
-
-// The names of the vars mapStartingVars finds.
-function startingVars(steps, options) {
-  const names = new Set();
-  mapStartingVars(steps, options, (name) => {
-    names.add(name);
-    return name;
-  });
-  return names;
+  return { status: failed > 0 ? "partial" : "completed", completedSteps: stepsExecuted, totalSteps: steps.length, results, failed, ...(semantic ? { semantic } : {}), totalMs: Date.now() - startTotal, vars };
 }
 
 module.exports = {
@@ -432,9 +285,7 @@ module.exports = {
   executeWorkflow,
   extractStepOutput,
   getAutoWaitCommand,
-  mapStartingVars,
   resolveVar,
   shouldAutoWait,
-  startingVars,
   substituteVars,
 };

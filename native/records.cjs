@@ -1,8 +1,6 @@
 // Maps third-party JSON into records. Missing data reads as undefined; malformed specs throw.
 
 const { isDeepStrictEqual } = require("node:util");
-// Field match patterns come from op files: each run is bounded, and one extract's runs share a budget.
-const { EXTRACT_REGEX_BUDGET_MS, boundedExec, checkPattern, createRegexBudget } = require("./bounded-regex.cjs");
 
 const SEGMENT = /^([^[\]\s?*]*)((?:\[(?:\d+|\*)\])*)$/;
 const TEMPLATE_NAME = /\{\{([a-zA-Z0-9._-]+)\}\}/g;
@@ -13,15 +11,6 @@ const ISO_DATETIME = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})(?::(\d{2})(?:\.(\
 const X_DATETIME = new RegExp(
   `^(?:Sun|Mon|Tue|Wed|Thu|Fri|Sat) (${MONTHS.join("|")}) (\\d{2}) (\\d{2}):(\\d{2}):(\\d{2}) ([+-]\\d{4}) (\\d{4})$`,
 );
-
-// Output field names build objects, so these segments could reach Object.prototype.
-const RESERVED_SEGMENTS = ["__proto__", "constructor", "prototype"];
-
-function assertFieldName(name, where) {
-  if (name.split(".").some((part) => RESERVED_SEGMENTS.includes(part))) {
-    throw new Error(`${where} name "${name}" uses a reserved segment (${RESERVED_SEGMENTS.join(", ")})`);
-  }
-}
 
 function isPlainObject(value) {
   return value !== null && typeof value === "object" && !Array.isArray(value);
@@ -161,24 +150,29 @@ function compileField(spec, where) {
   const get = compilePath(spec.path);
   let read = get;
   if (spec.match !== undefined) {
-    const label = `${where}.match`;
-    checkPattern(spec.match, label);
-    read = (object, budget) => {
+    if (typeof spec.match !== "string") throw new Error(`${where}.match must be a regex string`);
+    let regex;
+    try {
+      regex = new RegExp(spec.match);
+    } catch (error) {
+      throw new Error(`${where}.match is not a valid regex: ${error.message}`);
+    }
+    read = (object) => {
       const value = get(object);
-      const found = typeof value === "string" ? boundedExec({ pattern: spec.match, text: value, budget, label }) : null;
+      const found = typeof value === "string" ? value.match(regex) : null;
       if (!found) return undefined;
       return found.length > 1 ? found[1] : found[0];
     };
   }
   if (spec.fields !== undefined) {
     const map = compileFields(spec.fields, `${where}.fields`);
-    return (object, budget) => {
+    return (object) => {
       const value = get(object);
-      if (Array.isArray(value)) return value.filter(isPlainObject).map((item) => map(item, budget));
-      return isPlainObject(value) ? map(value, budget) : undefined;
+      if (Array.isArray(value)) return value.filter(isPlainObject).map(map);
+      return isPlainObject(value) ? map(value) : undefined;
     };
   }
-  return spec.as === undefined ? read : (object, budget) => toDatetime(read(object, budget));
+  return spec.as === undefined ? read : (object) => toDatetime(read(object));
 }
 
 function compileFields(fields, where) {
@@ -186,7 +180,6 @@ function compileFields(fields, where) {
   const paths = [];
   const templates = [];
   for (const [name, spec] of Object.entries(fields)) {
-    assertFieldName(name, "field");
     if (isPlainObject(spec) && spec.template !== undefined) {
       checkKeys(spec, ["template"], `${where}.${name}`);
       templates.push([name, compileTemplate(spec.template, `${where}.${name}`)]);
@@ -194,10 +187,10 @@ function compileFields(fields, where) {
       paths.push([name, compileField(spec, `${where}.${name}`)]);
     }
   }
-  return (object, budget) => {
+  return (object) => {
     const record = {};
     for (const [name, get] of paths) {
-      const value = get(object, budget);
+      const value = get(object);
       if (value !== undefined) record[name] = value;
     }
     for (const [name, render] of templates) {
@@ -219,11 +212,8 @@ function filterRecords(records, keep) {
   return records.filter((record) => rules.every(([get, value]) => isDeepStrictEqual(get(record), value)));
 }
 
-/**
- * Collects records across pages: dedupes by key (first seen wins), applies `keep` on read. Every
- * page's field match patterns spend from `regexBudget` (an op run's, or a fresh one for the set).
- */
-function createRecordSet(spec, { regexBudget = extractBudget("run") } = {}) {
+/** Collects records across pages: dedupes by key (first seen wins), applies `keep` on read. */
+function createRecordSet(spec) {
   checkKeys(spec, ["find", "key", "fields", "keep"], "records");
   if (spec.find === undefined) throw new Error("records needs find");
   if (spec.key === undefined) throw new Error("records needs key");
@@ -242,7 +232,7 @@ function createRecordSet(spec, { regexBudget = extractBudget("run") } = {}) {
         }
         const id = JSON.stringify(key);
         if (byKey.has(id)) continue;
-        byKey.set(id, map(object, regexBudget));
+        byKey.set(id, map(object));
         added++;
       }
       return added;
@@ -260,84 +250,4 @@ function readCursor(doc, cursor) {
   return first === undefined ? undefined : get(first);
 }
 
-/** "$", "$.data.items" or "$[0].title" as a path for compilePath; "" is the document itself. */
-function fromJsonPath(source, where) {
-  const usage = `${where} must be $, $.path or $[n]..., such as $.data.items (got ${JSON.stringify(source)})`;
-  if (typeof source !== "string" || !/^\$(?:$|\.[^.]|\[)/.test(source)) throw new Error(usage);
-  const path = source.slice(1).replace(/^\./, "");
-  if (path) {
-    try {
-      compilePath(path);
-    } catch {
-      throw new Error(usage);
-    }
-  }
-  return path;
-}
-
-function compileJsonPath(source, where) {
-  const path = fromJsonPath(source, where);
-  return path ? compilePath(path) : (value) => value;
-}
-
-/**
- * For each character of a $-path compileJsonPath accepts, what it is: "syntax" for the leading $,
- * each . (fromJsonPath, parseAlternative), the brackets and * of each [n] or [*] (SEGMENT), and
- * each ?? with the space trimmed around it (compilePath); "index" for the digits of an [n], which
- * the path's author wrote; else "key". SEGMENT keeps [, ], ?, * and space out of keys, so outside
- * an index those are syntax wherever they stand; anything else outside an index is key text,
- * quotes, digits and a $ after the first included.
- */
-function jsonPathSyntax(source) {
-  let index = false;
-  return Array.from(source.split(""), (char, at) => {
-    if (char === "[") index = true;
-    const kind = at === 0 ? "syntax" : index ? (/\d/.test(char) ? "index" : "syntax") : /[.?*\s]/.test(char) ? "syntax" : "key";
-    if (char === "]") index = false;
-    return kind;
-  });
-}
-
-function extractBudget(scope = "extract") {
-  return createRegexBudget({ ms: EXTRACT_REGEX_BUDGET_MS, scope });
-}
-
-/**
- * A playbook extract over JSON: `records` picks the array, `filter` keeps records whose path equals
- * a value (compared as text), `fields` maps output names to paths. Without `records`, `fields` maps
- * the whole document. Malformed specs throw when compiled. A call's field match patterns share
- * `regexBudget`, a fresh 2 s one when not given.
- */
-function compileJsonExtract({ records, fields, filter }) {
-  const getRecords = records === undefined ? undefined : compileJsonPath(records, "records");
-  const map = fields === undefined ? undefined : compileFields(fields, "fields");
-  let rules;
-  if (filter !== undefined) {
-    if (!isPlainObject(filter) || Object.keys(filter).length === 0) throw new Error("filter must map a path to a value");
-    rules = Object.entries(filter).map(([path, value]) => [compilePath(path), String(value)]);
-  }
-  return (doc, { regexBudget = extractBudget() } = {}) => {
-    const mapRecord = (record) => map(record, regexBudget);
-    let value = doc;
-    if (getRecords) {
-      value = getRecords(doc);
-      if (!Array.isArray(value)) throw new Error(`extract records ${records} is not an array (found ${value === null ? "null" : typeof value})`);
-    }
-    if (rules) {
-      if (!Array.isArray(value)) throw new Error("extract filter needs an array of records");
-      value = value.filter((record) => rules.every(([get, expected]) => {
-        const found = get(record);
-        return found !== undefined && found !== null && String(found) === expected;
-      }));
-    }
-    if (!map) return value;
-    if (Array.isArray(value)) return value.map((record) => (isPlainObject(record) ? mapRecord(record) : record));
-    return isPlainObject(value) ? mapRecord(value) : value;
-  };
-}
-
-function extractRecords(doc, spec, options) {
-  return compileJsonExtract(spec)(doc, options);
-}
-
-module.exports = { assertFieldName, compileJsonExtract, compileJsonPath, createRecordSet, extractRecords, filterRecords, findObjects, getPath, jsonPathSyntax, readCursor };
+module.exports = { createRecordSet, filterRecords, findObjects, getPath, readCursor };

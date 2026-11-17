@@ -1,7 +1,5 @@
 const fs = require("fs");
 const networkFormatters = require("./formatters/network.cjs");
-const { publicEntry, redactHeaders } = require("./network-export.cjs");
-const { bodyContentType, redactEchoBody, redactEchoJson, redactEchoUrl, redactUrlIfSecret, redactValues, secretHeaderEchoes } = require("./redaction.cjs");
 const { recoveryFor } = require("./surf-error.cjs");
 
 function buildProviderUploadMessage(provider, tabId, filePaths, id) {
@@ -59,49 +57,6 @@ function truncatePageText(text, { maxBytes, maxChars = 50_000, fullPath } = {}) 
   return { text: `${kept}\n\n${note}`, truncated };
 }
 
-// Tools that print captured requests: their entries are shown as an export holds them (secret
-// headers as <redacted>, URL credentials and echoes of a secret header's value redacted). Only what
-// is sent back to the caller is redacted; network.replay reads the raw entry inside the host.
-// `raw` (--raw on the command line) shows them as captured.
-const NETWORK_VIEW_TOOLS = new Set(["network", "get_network_entries", "read_network_requests", "network.get", "get_network_entry", "network.curl"]);
-const isEntry = (value) => Boolean(value) && typeof value === "object" && !Array.isArray(value);
-
-function publicNetworkResult(tool, result, { raw = false } = {}) {
-  if (!NETWORK_VIEW_TOOLS.has(tool) || !isEntry(result)) return result;
-  const view = { ...result };
-  if (isEntry(result.entry)) view.entry = publicEntry(result.entry, { raw });
-  for (const key of ["entries", "requests"]) {
-    if (Array.isArray(result[key])) view[key] = result[key].map((entry) => (isEntry(entry) ? publicEntry(entry, { raw }) : entry));
-  }
-  return view;
-}
-
-// A response the host read from capture for network.wait, network.replay or network.body: its URL,
-// body, JSON or content type echoing a secret header value of `entries` (the request it answers) with <redacted>
-// in its place, as network.get shows it: the whole value, an auth parameter's or cookie's value, in
-// every spelling (see secretHeaderEchoes); the URL also without credentials, as an export has it.
-// The body is read by its own content type, else by the one its request's capture gave the response
-// (network.body sends the body alone), so an XML body isn't read as HTML. `raw` (--raw) keeps it as captured.
-function publicResponse(response, entries, { raw = false } = {}) {
-  if (!isEntry(response) || raw) return response;
-  const captured = entries.filter(isEntry);
-  const secrets = secretHeaderEchoes(captured.flatMap((entry) => [entry.requestHeaders, entry.responseHeaders]));
-  const view = { ...response };
-  if (typeof view.url === "string") view.url = redactEchoUrl(redactUrlIfSecret(view.url), secrets);
-  const contentType =
-    bodyContentType(view.headers, view.mimeType || view.contentType) ||
-    captured.map((entry) => bodyContentType(entry.responseHeaders, entry.mimeType)).find(Boolean) ||
-    "";
-  if (typeof view.body === "string" && view.base64Encoded !== true) view.body = redactEchoBody(view.body, secrets, { contentType });
-  // A parsed body (network.wait, network.replay) by the same content type, so an HTML or XML one
-  // that parses as JSON is read as markup too.
-  if (view.json !== undefined) view.json = redactEchoJson(view.json, secrets, { contentType });
-  // The content type printed with it (network.wait, network.replay), redacted as network.get
-  // shows the header, after the body was read by it as captured.
-  if (typeof view.contentType === "string") view.contentType = redactHeaders({ "content-type": view.contentType }, new Set(), secrets)["content-type"];
-  return view;
-}
-
 /**
  * Format tool result content for MCP response
  * @param {*} result - The result object from the extension
@@ -149,10 +104,7 @@ function formatToolContent(result, log = () => {}) {
     return text(output || "No elements found");
   }
   
-  // Handle select response (selectedCount when withoutTypedEcho kept the options out)
-  if (result.selectedCount !== undefined) {
-    return text(`Selected ${result.selectedCount} option${result.selectedCount === 1 ? "" : "s"}${result.warning ? `\n[Warning: ${result.warning}]` : ""}`);
-  }
+  // Handle select response
   if (result.selected !== undefined) {
     // An extension older than this host reports missing options as a warning instead of an error.
     return text(`Selected: ${result.selected.join(', ')}${result.warning ? `\n[Warning: ${result.warning}]` : ""}`);
@@ -233,14 +185,8 @@ function formatToolContent(result, log = () => {}) {
   // Handle both requests (basic) and entries (full) formats
   const items = result.requests || result.entries;
   if (items && Array.isArray(items)) {
-    const warnings = networkFormatters.describeCaptureGaps(result.capture);
-    if (result.format === 'json') {
-      const requests = items.map(({ id, method, status, type, mimeType, url }) => ({ id, method, status, type, mimeType, url }));
-      return text(JSON.stringify({ requests, ...(warnings.length > 0 ? { warnings } : {}) }, null, 2));
-    }
-    const gaps = warnings.map((line) => `\nWarning: ${line}`).join("");
     if (items.length === 0) {
-      return text(`No network requests captured${gaps}`);
+      return text("No network requests captured");
     }
     let formatted;
     if (result.format === 'curl') {
@@ -248,23 +194,21 @@ function formatToolContent(result, log = () => {}) {
     } else if (result.format === 'urls') {
       formatted = networkFormatters.formatUrls(items);
     } else if (result.format === 'raw') {
-      formatted = networkFormatters.formatRaw(items, result.capture);
+      formatted = networkFormatters.formatRaw(items);
     } else if (result.verbose > 0) {
       formatted = networkFormatters.formatVerbose(items, result.verbose);
     } else if (result.entries) {
       // entries format means full data was requested - use verbose level 1
       formatted = networkFormatters.formatVerbose(items, 1);
     } else {
-      const idWidth = Math.max(...items.map(r => (r.id || '-').length));
       formatted = items.map(r => {
-        const id = (r.id || '-').padEnd(idWidth);
         const status = String(r.status || '-').padStart(3);
         const method = (r.method || 'GET').padEnd(7);
         const type = (r.type || '').padEnd(10);
-        return `${id}  ${status} ${method} ${type} ${r.url}`;
+        return `${status} ${method} ${type} ${r.url}`;
       }).join("\n");
     }
-    return text(result.format === 'raw' ? formatted : `${formatted}${gaps}`);
+    return text(formatted);
   }
 
   if (result.output !== undefined) {
@@ -532,7 +476,6 @@ function formatToolContent(result, log = () => {}) {
     }
     // Include _hint handling here instead of unreachable code below
     let msg = "OK";
-    if (result.action === "fill" && typeof result.value === "string") msg += `\nValue: ${JSON.stringify(result.value)}`;
     if (result._hint) msg += `\n[hint] ${result._hint}`;
     return text(msg);
   }
@@ -547,48 +490,6 @@ function formatToolContent(result, log = () => {}) {
     return text(JSON.stringify(cleanResult) + `\n[hint] ${_hint}`);
   }
   return text(JSON.stringify(cleanResult));
-}
-
-const { encodedForms, typedValues } = require("./record-typed-values.cjs");
-
-const echoesValue = (args) => args?.["echo-value"] === true || args?.echoValue === true || args?.raw === true;
-
-// A fill or select result carries the value typed or the options chosen. It reaches the caller
-// only with --echo-value (or echoValue in surf.json); otherwise the result says only that it worked.
-function withoutTypedEcho(result, args) {
-  if (!result || typeof result !== "object" || echoesValue(args)) return result;
-  if (result.action === "fill" && Object.hasOwn(result, "value")) {
-    const { value: _value, ...rest } = result;
-    return rest;
-  }
-  if (Array.isArray(result.selected)) {
-    const { selected, ...rest } = result;
-    return { ...rest, selectedCount: selected.length };
-  }
-  return result;
-}
-
-// The page diff after a command that typed or chose something (type, form.fill, select...) would
-// show the value: a field's value change becomes "value changed", and the value is taken out of
-// names and URLs, unless --echo-value.
-function withoutTypedPageChanges(pageChanges, tool, args) {
-  if (!pageChanges || typeof pageChanges !== "object" || echoesValue(args)) return pageChanges;
-  const values = typedValues(tool, args).flatMap(({ value }) => encodedForms(value));
-  if (values.length === 0) return pageChanges;
-  const scrub = (text) => (typeof text === "string" ? redactValues(text, values) : text);
-  const changes = Array.isArray(pageChanges.changes) ? pageChanges.changes.map((change) => {
-    if (change.property === "value") {
-      const { from: _from, to: _to, ...rest } = change;
-      return { ...rest, redacted: true };
-    }
-    return { ...change, ...(typeof change.name === "string" ? { name: scrub(change.name) } : {}), ...(typeof change.from === "string" ? { from: scrub(change.from), to: scrub(change.to) } : {}) };
-  }) : pageChanges.changes;
-  const { navigated } = pageChanges;
-  return {
-    ...pageChanges,
-    changes,
-    ...(navigated ? { navigated: { ...navigated, from: scrub(navigated.from), to: scrub(navigated.to), ...(navigated.title ? { title: scrub(navigated.title) } : {}) } } : {}),
-  };
 }
 
 /**
@@ -1187,7 +1088,6 @@ function mapToolToMessage(tool, args, tabId) {
         name: a.name,
         action: a.action,
         value: a.value,
-        echoValue: echoesValue(a),
         all: a.all || false,
         ...baseMsg 
       };
@@ -1199,7 +1099,6 @@ function mapToolToMessage(tool, args, tabId) {
         exact: a.exact || false,
         action: a.action,
         value: a.value,
-        echoValue: echoesValue(a),
         ...baseMsg 
       };
     case "locate.label":
@@ -1209,7 +1108,6 @@ function mapToolToMessage(tool, args, tabId) {
         label: a.label,
         action: a.action,
         value: a.value,
-        echoValue: echoesValue(a),
         ...baseMsg 
       };
     case "element.styles":
@@ -1534,4 +1432,4 @@ function applySemanticExpectedIdentity(request, extensionMessage, args) {
   };
 }
 
-module.exports = { mapToolToMessage, mapComputerAction, formatToolContent, withoutTypedEcho, withoutTypedPageChanges, publicNetworkResult, publicResponse, formatToolError, buildProviderUploadMessage, readinessExpectations, applySemanticExpectedIdentity, truncatePageText };
+module.exports = { mapToolToMessage, mapComputerAction, formatToolContent, formatToolError, buildProviderUploadMessage, readinessExpectations, applySemanticExpectedIdentity, truncatePageText };

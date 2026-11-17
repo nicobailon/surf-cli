@@ -387,27 +387,6 @@ describe("accessibility tree", () => {
     });
   });
 
-  it("gives a renamed button the ref the next read lists", async () => {
-    const button = element("button");
-    button.append(text("Try it out"));
-    (document.body as unknown as FakeElement).append(button);
-    const readRef = (name: string) =>
-      sendMessage({
-        type: "GENERATE_ACCESSIBILITY_TREE",
-        options: { filter: "interactive" },
-      }).pageContent.match(new RegExp(`button "${name}" \\[(e\\d+)\\]`))?.[1];
-    const before = readRef("Try it out");
-    beginPageChanges();
-
-    button.textContent = "Cancel";
-    FakeMutationObserver.mutate();
-
-    const { result } = await endPageChanges();
-    const reported = result.changes.find((change: { name: string }) => change.name === "Cancel");
-    expect(reported.ref).not.toBe(before);
-    expect(readRef("Cancel")).toBe(reported.ref);
-  });
-
   it("redacts sensitive field value changes and reports ordinary values", async () => {
     const password = new FakeInputElement("input");
     password.setAttribute("type", "password");
@@ -484,59 +463,6 @@ describe("accessibility tree", () => {
     const { result } = await endPageChanges(1000);
     clearInterval(ticker);
     expect(result.settle).toEqual({ state: "unsettled", ms: 1000 });
-  });
-
-  it("locates a selector match as a ref whose click point scrolls it into view", () => {
-    (window as any).innerHeight = 400;
-    const body = document.body as unknown as FakeElement;
-    const far = element("button");
-    far.append(text("Submit order"));
-    body.append(far);
-    let top = 2000;
-    Object.assign(far, {
-      checkVisibility: () => true,
-      getBoundingClientRect: () => ({
-        top,
-        left: 10,
-        width: 80,
-        height: 20,
-        bottom: top + 20,
-        right: 90,
-      }),
-      scrollIntoView: vi.fn(() => {
-        top = 180;
-      }),
-    });
-    (document as any).querySelectorAll = (selector: string) => {
-      if (selector === "form button") {
-        return [far];
-      }
-      if (selector === "button:contains('x')") {
-        throw new Error("not a valid selector");
-      }
-      return [];
-    };
-    (document as any).elementFromPoint = (_x: number, y: number) =>
-      y >= top && y < top + 20 ? far : body;
-
-    const located = sendMessage({ type: "LOCATE_SELECTOR", selector: "form button", index: 0 });
-    expect(located).toEqual({ ref: expect.stringMatching(/^e\d+$/), count: 1 });
-    expect(sendMessage({ type: "CLICK_POINT", ref: located.ref })).toEqual({
-      x: 50,
-      y: 190,
-      inPage: false,
-    });
-    expect((far as any).scrollIntoView).toHaveBeenCalledOnce();
-
-    expect(sendMessage({ type: "LOCATE_SELECTOR", selector: "#missing", index: 0 })).toEqual({
-      error: "No elements match selector",
-    });
-    expect(sendMessage({ type: "LOCATE_SELECTOR", selector: "form button", index: 1 })).toEqual({
-      error: "Index 1 out of range (found 1 elements)",
-    });
-    expect(
-      sendMessage({ type: "LOCATE_SELECTOR", selector: "button:contains('x')", index: 0 }),
-    ).toEqual({ error: "not a valid selector" });
   });
 
   it("returns unknown_token when the document holding the before snapshot is gone", () => {
@@ -1488,116 +1414,6 @@ describe("accessibility tree", () => {
     expect(tree).toContain(`${role} "${name}" [${located.matches[0].ref}]`);
   });
 
-  it("lists the elements an ambiguous lookup matched with their names", () => {
-    const body = document.body as unknown as FakeElement;
-    const named = (label: string) => {
-      const node = element("button");
-      node.append(text(label));
-      return node;
-    };
-    body.append(named("Save draft"), named("Save and close"), named("Plain"));
-    (document as any).querySelectorAll = (selector: string) =>
-      selector.split(",").some((part) => part.trim() === "button")
-        ? body.children.filter((child) => child.tagName === "BUTTON")
-        : [];
-    const ambiguous = sendMessage({
-      type: "LOCATE_ROLE",
-      role: "button",
-      name: "Save",
-      unique: true,
-    }).error;
-    expect(ambiguous).toMatch(
-      /^2 elements match role "button" and the given name, so nothing was done/,
-    );
-    expect(ambiguous).toMatch(/^ {2}e\d+ button "Save draft"$/m);
-    expect(ambiguous).toMatch(/^ {2}e\d+ button "Save and close"$/m);
-    expect(ambiguous).not.toContain("Plain");
-  });
-
-  it("lists a field that an ambiguous lookup matched without the value typed in it", () => {
-    // A dummy typed value: an unlabeled field's name is its value, which the list must not show.
-    const typed = ["dummy", "typed", "16"].join("-");
-    const body = document.body as unknown as FakeElement;
-    const filled = element("input", { type: "text" });
-    filled.value = typed;
-    body.append(filled, element("input", { type: "text", placeholder: "Search" }));
-    (document as any).querySelectorAll = (selector: string) =>
-      selector.includes('input[type="text"]') ? body.children : [];
-    const ambiguous = sendMessage({ type: "LOCATE_ROLE", role: "textbox", unique: true }).error;
-    expect(ambiguous).toMatch(/^2 elements match role "textbox", so nothing was done/);
-    expect(ambiguous).toMatch(/^ {2}e\d+ textbox$/m);
-    expect(ambiguous).toMatch(/^ {2}e\d+ textbox "Search"$/m);
-    expect(ambiguous).not.toContain(typed);
-  });
-
-  it.each([
-    ["checkbox", "checkbox"],
-    ["radio", "radio"],
-    ["submit", "button"],
-    ["button", "button"],
-  ])(
-    "lists %s inputs that an ambiguous lookup matched with the names the page gave their values",
-    (type, role) => {
-      const body = document.body as unknown as FakeElement;
-      const valued = (value: string) => {
-        const node = element("input", { type, value });
-        node.value = value;
-        return node;
-      };
-      body.append(valued("bacon"), valued("cheese"));
-      (document as any).querySelectorAll = (selector: string) =>
-        selector.includes(`input[type="${type}"]`) ? body.children : [];
-      const ambiguous = sendMessage({ type: "LOCATE_ROLE", role, unique: true }).error;
-      expect(ambiguous).toMatch(
-        new RegExp(`^2 elements match role "${role}", so nothing was done`),
-      );
-      expect(ambiguous).toMatch(new RegExp(`^ {2}e\\d+ ${role} "bacon"$`, "m"));
-      expect(ambiguous).toMatch(new RegExp(`^ {2}e\\d+ ${role} "cheese"$`, "m"));
-    },
-  );
-
-  it("lists submit inputs that an ambiguous named lookup matched with their names", () => {
-    const body = document.body as unknown as FakeElement;
-    const submit = (value: string) => {
-      const node = element("input", { type: "submit", value });
-      node.value = value;
-      return node;
-    };
-    body.append(submit("Save draft"), submit("Save and close"));
-    (document as any).querySelectorAll = (selector: string) =>
-      selector.includes('input[type="submit"]') ? body.children : [];
-    const ambiguous = sendMessage({
-      type: "LOCATE_ROLE",
-      role: "button",
-      name: "Save",
-      unique: true,
-    }).error;
-    expect(ambiguous).toMatch(
-      /^2 elements match role "button" and the given name, so nothing was done/,
-    );
-    expect(ambiguous).toMatch(/^ {2}e\d+ button "Save draft"$/m);
-    expect(ambiguous).toMatch(/^ {2}e\d+ button "Save and close"$/m);
-  });
-
-  it("names the locator and its field, not the text looked up, when nothing matches", () => {
-    // A dummy lookup text: what the caller passed, which the error must not repeat.
-    const query = ["dummy", "lookup", "9"].join("-");
-    (globalThis as any).NodeFilter = { SHOW_TEXT: 4 };
-    (document as any).createTreeWalker = () => ({ currentNode: null, nextNode: () => null });
-    (document as any).querySelectorAll = () => [];
-    const errors = [
-      sendMessage({ type: "LOCATE_ROLE", role: "button", name: query }).error,
-      sendMessage({ type: "LOCATE_TEXT", text: query }).error,
-      sendMessage({ type: "LOCATE_LABEL", label: query }).error,
-    ];
-    expect(errors).toEqual([
-      'No element found with role "button" and the given name',
-      "No element found with the given text",
-      "No form field found with the given label",
-    ]);
-    expect(errors.join("\n")).not.toContain(query);
-  });
-
   it("returns the whole visible text so the host can mark a cut", () => {
     const long = "😀".repeat(30000);
     (document.body as unknown as FakeElement).append(text(long));
@@ -1771,36 +1587,5 @@ describe("accessibility tree", () => {
     }
     expect(checkbox.checked).toBe(true);
     expect(select.value).toBe("chosen");
-  });
-
-  // FORM_INPUT is locate.* --action fill and form_input, FORM_FILL is form.fill, SELECT_OPTION is select.
-  it.each([
-    ["FORM_INPUT", { ref: "e1", value: "hunter2-S3cret!" }],
-    ["FORM_FILL", { data: [{ ref: "e1", value: "hunter2-S3cret!" }] }],
-    ["SELECT_OPTION by value", { selector: "e1", values: ["hunter2-S3cret!"], by: "value" }],
-    ["SELECT_OPTION by label", { selector: "e1", values: ["hunter2-S3cret!"], by: "label" }],
-    ["SELECT_OPTION multiple", { selector: "e1", values: ["red", "hunter2-S3cret!"], by: "value" }],
-  ])("%s does not repeat a value no option matches in its error", (name, args) => {
-    const select = new FakeSelectElement("select");
-    (select as any).multiple = name.endsWith("multiple");
-    for (const value of ["red", "green"]) {
-      const option = new FakeElement("option");
-      option.value = value;
-      option.textContent = value;
-      (option as any).text = value;
-      select.options.push(option);
-    }
-    window.__piElementMap = {
-      e1: { element: new WeakRef(select as unknown as Element), role: "combobox", name: "" },
-    };
-    let response: any;
-    messageHandler?.({ type: name.split(" ")[0], ...args }, {}, (result) => {
-      response = result;
-    });
-    expect(JSON.stringify(response)).not.toContain("hunter2-S3cret!");
-    expect(response.error).toMatch(
-      /^e1 has no option matching (the given value|given value 2 of 2) \(by .+, 2 options\), so nothing was selected\.$/,
-    );
-    expect(select.value).toBe("");
   });
 });

@@ -12,7 +12,6 @@ const {
 } = require("./windows-interop.cjs");
 const { parseListenEndpoint } = require("../native/listener.cjs");
 const { normalizeSocketConfig } = require("../native/socket-permissions.cjs");
-const { findFfmpeg } = require("../native/video-recorder.cjs");
 const { getStateDir, loadHostIdentity, loadRegistry } = require("../native/remote-auth.cjs");
 const {
   renderWslWrapper,
@@ -145,29 +144,6 @@ function wslPathToWindowsPath(wslPath) {
   return convertWslPath(wslPath);
 }
 
-function shellQuote(value) {
-  return `'${value.replace(/'/g, "'\\''")}'`;
-}
-
-// The SURF_FFMPEG an earlier install wrote, when it is an absolute path that still runs, so a
-// refresh from a shell that doesn't find ffmpeg (an updater with a bare PATH) keeps it. A relative
-// pin would be read against whatever folder the browser starts the host in.
-function previousFfmpeg(shPath) {
-  let previous;
-  try { previous = fs.readFileSync(shPath, "utf8"); } catch { return null; }
-  const quoted = /^export SURF_FFMPEG='((?:[^']|'\\'')*)'$/m.exec(previous)?.[1];
-  const pinned = quoted?.replace(/'\\''/g, "'");
-  return pinned !== undefined && path.isAbsolute(pinned) ? findFfmpeg({ SURF_FFMPEG: pinned }) : null;
-}
-
-// A browser launched from the Dock starts the host with PATH=/usr/bin:/bin:/usr/sbin:/sbin,
-// so the wrapper adds node's and Homebrew's bin folders and the ffmpeg this shell finds.
-function macosEnvironment(nodePath, shPath) {
-  const dirs = [...new Set([path.dirname(nodePath), "/opt/homebrew/bin", "/usr/local/bin"])];
-  const ffmpeg = findFfmpeg(process.env) || previousFfmpeg(shPath);
-  return `export PATH=${dirs.map(shellQuote).join(":")}\${PATH:+:"$PATH"}\n${ffmpeg ? `export SURF_FFMPEG=${shellQuote(ffmpeg)}\n` : ""}`;
-}
-
 function createWrapper(wrapperDir, nodePath, hostPath, target = process.platform, listen, socketMode, socketGroup, distro = process.env.WSL_DISTRO_NAME, convertPath = wslPathToWindowsPath) {
   const socketConfig = normalizeSocketConfig(socketMode, socketGroup);
   assertSocketAccessTargetSupported(socketConfig.mode, socketConfig.group, target);
@@ -195,7 +171,7 @@ function createWrapper(wrapperDir, nodePath, hostPath, target = process.platform
   ].join("");
   const content = `#!/usr/bin/env bash
 cd "${hostDir}"
-${target === "darwin" ? macosEnvironment(nodePath, shPath) : ""}${listen ? `: "\${SURF_LISTEN:=${listen}}"\nexport SURF_LISTEN\n` : ""}${socketEnvironment}exec "${nodePath}" "${hostPath}" "$@"
+${listen ? `: "\${SURF_LISTEN:=${listen}}"\nexport SURF_LISTEN\n` : ""}${socketEnvironment}exec "${nodePath}" "${hostPath}" "$@"
 `;
   fs.writeFileSync(shPath, content);
   fs.chmodSync(shPath, "755");

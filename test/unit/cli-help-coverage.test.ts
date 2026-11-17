@@ -29,45 +29,17 @@ describe("CLI help for commands outside the main tool list", () => {
     [["pb", "--help"], "playbook - Reusable site operations"],
     [["playbook", "--help"], "playbook record start <playbook>"],
     [["pb", "record", "start", "--help"], "Usage: surf playbook record start <playbook>"],
-    // An optional argument shows in brackets, in usage, the argument list and the group listing.
-    [
-      ["pb", "record", "candidates", "--help"],
-      "Usage: surf playbook record candidates [record-id]\n",
-    ],
-    [["pb", "record", "candidates", "--help"], "Arguments:\n  [record-id]\n"],
-    [["pb", "--help"], "playbook record candidates [record-id]"],
     [["semantic", "auth", "--help"], "surf semantic auth set"],
     [["remote", "--help"], "remote authorize <label>"],
     [["remote", "authorize", "--help"], "--output"],
     [["oracle", "ask", "--help"], "Usage: surf oracle <ask|status|result|follow|list>"],
     [["oracle", "result", "--help"], "--effort <effort>"],
     [["config", "--help"], "Usage: surf config"],
-    // --save says what its env-value check covers and what it doesn't.
-    [
-      ["pb", "test", "--help"],
-      "refuses an assertion that would store an accidental copy of an env header's value",
-    ],
-    [["pb", "test", "--help"], "doesn't stop a pattern written to encode one on purpose"],
   ])("surf %j prints usage", (args, expected) => {
     const { code, stdout, stderr } = surf(...args);
     expect(code).toBe(0);
     expect(stderr).toBe("");
     expect(stdout).toContain(expected);
-  });
-
-  it.each([
-    "tab.new",
-    "tab.switch",
-    "tab.close",
-    "tab.unname",
-    "window.new",
-    "window.focus",
-    "window.close",
-    "history.search",
-  ])("surf %s --help says --session only picks the playbook record", (command) => {
-    const { code, stdout } = surf(command, "--help");
-    expect(code).toBe(0);
-    expect(stdout).toMatch(/--session\s+.*picks the playbook record/);
   });
 
   it.each([

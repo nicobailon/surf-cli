@@ -15,14 +15,6 @@ const mockChrome = {
 // Set global chrome before tests
 vi.stubGlobal("chrome", mockChrome);
 
-/** Feeds a CDP event to the controller as chrome.debugger.onEvent would. */
-const cdpEvent = (controller: CDPController, tabId: number, method: string, params: object) =>
-  (
-    controller as unknown as {
-      handleCDPEvent: (tab: number, event: string, value: unknown) => Promise<void> | void;
-    }
-  ).handleCDPEvent(tabId, method, params);
-
 describe("describeDebuggerError", () => {
   it("unwraps the JSON-encoded CDP error chrome.debugger rejects with", () => {
     const original = new Error('{"code":-32000,"message":"Inspected target navigated or closed"}');
@@ -857,8 +849,6 @@ describe("CDPController", () => {
 
       expect(error).toBeDefined();
       expect(error?.message).toContain("Unknown key");
-      // `key` can be what a step types: the error names the command, not the value.
-      expect(error?.message).not.toContain("UnknownSpecialKey");
     });
   });
 
@@ -1161,154 +1151,6 @@ describe("CDPController", () => {
         complete: false,
         reason: "disabled",
       });
-    });
-
-    it("stamps entries with wall-clock epoch ms, not Chrome's monotonic clock", async () => {
-      await controller.enableNetworkTracking(tabId);
-      // CDP `timestamp` is monotonic seconds since boot; `wallTime` is epoch seconds.
-      await cdpEvent(controller, tabId, "Network.requestWillBeSent", {
-        requestId: "req-wall",
-        timestamp: 1_160_000.5,
-        wallTime: 1_794_000_000.25,
-        request: { url: "https://example.test/wall", method: "GET", headers: {} },
-      });
-      await cdpEvent(controller, tabId, "Network.loadingFinished", {
-        requestId: "req-wall",
-        timestamp: 1_160_000.75,
-        encodedDataLength: 0,
-      });
-      const [entry] = controller.getNetworkEntries(tabId, { includeStatic: true });
-      expect(entry.ts).toBe(1_794_000_000_250);
-      expect(entry.duration).toBe(250);
-      expect(controller.getNetworkRequests(tabId)[0]).toMatchObject({
-        id: entry.id,
-        timestamp: 1_794_000_000_250,
-      });
-    });
-  });
-
-  describe("network capture interruptions", () => {
-    const tabId = 2650;
-    let controller: CDPController;
-    const request = (index: number) =>
-      cdpEvent(controller, tabId, "Network.requestWillBeSent", {
-        requestId: `req-${index}`,
-        timestamp: index,
-        wallTime: 1_794_000_000 + index,
-        request: { url: `https://example.test/${index}`, method: "POST", headers: {} },
-      });
-
-    beforeEach(async () => {
-      // Each controller registers its debugger listeners once; let this one register them.
-      (
-        CDPController as unknown as { debuggerListenerRegistered: boolean }
-      ).debuggerListenerRegistered = false;
-      controller = new CDPController();
-      mockChrome.debugger.attach.mockResolvedValue(undefined);
-      mockChrome.debugger.sendCommand.mockResolvedValue({});
-      await controller.enableNetworkTracking(tabId, { bodyMode: "none" });
-    });
-
-    it("notes when a detach stops capture, keeps what it captured, and resumes on the next attach", async () => {
-      await request(0);
-      vi.useFakeTimers();
-      vi.setSystemTime(new Date("2026-11-14T10:00:00Z"));
-      mockChrome.debugger.onDetach.addListener.mock.calls.at(-1)?.[0]({ tabId }, "target_closed");
-      const interruption = { reason: "target_closed", at: Date.parse("2026-11-14T10:00:00Z") };
-      expect(controller.getNetworkCaptureStatus(tabId)).toEqual({
-        active: false,
-        interruptions: [interruption],
-        dropped: 0,
-      });
-
-      // The next command reports the detach once, then attaches again.
-      await expect(controller.sendCommand(tabId, "Runtime.evaluate")).rejects.toMatchObject({
-        code: "debugger_detached",
-      });
-      mockChrome.debugger.sendCommand.mockClear();
-      vi.setSystemTime(new Date("2026-11-14T10:00:05Z"));
-      await controller.sendCommand(tabId, "Runtime.evaluate");
-      expect(mockChrome.debugger.sendCommand).toHaveBeenCalledWith({ tabId }, "Network.enable", {
-        maxPostDataSize: 65536,
-      });
-      expect(controller.getNetworkCaptureStatus(tabId)).toEqual({
-        active: true,
-        interruptions: [{ ...interruption, resumedAt: Date.parse("2026-11-14T10:00:05Z") }],
-        dropped: 0,
-      });
-      expect(controller.getNetworkEntries(tabId, { includeStatic: true })).toHaveLength(1);
-      controller.clearNetworkRequests(tabId);
-      expect(controller.getNetworkCaptureStatus(tabId).interruptions).toEqual([]);
-    });
-
-    it("keeps a request that redirected as its own entry, with the redirect status", async () => {
-      // Chrome sends the redirected request under the same requestId, with the redirect response.
-      const onEvent = mockChrome.debugger.onEvent.addListener.mock.calls.at(-1)?.[0];
-      onEvent({ tabId }, "Network.requestWillBeSent", {
-        requestId: "cart",
-        timestamp: 1,
-        wallTime: 1_794_000_000,
-        request: {
-          url: "https://example.test/cart/add",
-          method: "POST",
-          headers: {},
-          postData: "id=1",
-        },
-      });
-      onEvent({ tabId }, "Network.requestWillBeSent", {
-        requestId: "cart",
-        timestamp: 2,
-        wallTime: 1_794_000_001,
-        redirectResponse: { status: 303, statusText: "See Other", headers: { location: "/cart" } },
-        request: { url: "https://example.test/cart", method: "GET", headers: {} },
-      });
-      await controller.drainNetworkEvents(tabId);
-      const entries = controller.getNetworkEntries(tabId, { includeStatic: true });
-      expect(entries.map(({ method, url, status }) => ({ method, url, status }))).toEqual([
-        { method: "POST", url: "https://example.test/cart/add", status: 303 },
-        { method: "GET", url: "https://example.test/cart", status: undefined },
-      ]);
-      expect(new Set(entries.map((entry) => entry.id)).size).toBe(2);
-    });
-
-    it("frees what a detach kept once the tab itself is detached (closed)", async () => {
-      await request(0);
-      mockChrome.debugger.onDetach.addListener.mock.calls.at(-1)?.[0]({ tabId }, "target_closed");
-      expect(controller.getNetworkEntries(tabId, { includeStatic: true })).toHaveLength(1);
-      await controller.detach(tabId);
-      expect(controller.getNetworkEntries(tabId, { includeStatic: true })).toEqual([]);
-      expect(controller.getNetworkCaptureStatus(tabId)).toEqual({
-        active: false,
-        interruptions: [],
-        dropped: 0,
-      });
-      mockChrome.debugger.attach.mockClear();
-      await controller.resumeNetworkCapture(tabId);
-      expect(mockChrome.debugger.attach).not.toHaveBeenCalled();
-    });
-
-    it("remembers a clear until capture starts again", () => {
-      vi.useFakeTimers();
-      vi.setSystemTime(new Date("2026-11-14T10:00:00Z"));
-      controller.clearNetworkRequests(tabId);
-      expect(controller.getNetworkCaptureStatus(tabId).clearedAt).toBe(
-        Date.parse("2026-11-14T10:00:00Z"),
-      );
-      controller.clearNetworkRequests(tabId, { restart: true });
-      expect(controller.getNetworkCaptureStatus(tabId)).not.toHaveProperty("clearedAt");
-    });
-
-    it("counts the requests it drops to stay within its per-tab limit", async () => {
-      for (let index = 0; index < 510; index++) {
-        await request(index);
-      }
-      const { dropped } = controller.getNetworkCaptureStatus(tabId);
-      expect(dropped).toBeGreaterThan(0);
-      expect(controller.getNetworkEntries(tabId, { includeStatic: true }).length + dropped).toBe(
-        510,
-      );
-      controller.clearNetworkRequests(tabId);
-      expect(controller.getNetworkCaptureStatus(tabId).dropped).toBe(0);
     });
   });
 

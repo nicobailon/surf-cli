@@ -13,7 +13,7 @@ const os = require("node:os");
 const path = require("node:path");
 const net = require("node:net");
 const { spawnSync } = require("node:child_process");
-const { formatDoctorReport, parseDoctorArgs, runDoctor } = require("../../native/doctor.cjs");
+const { parseDoctorArgs, runDoctor } = require("../../native/doctor.cjs");
 const remoteAuth = require("../../native/remote-auth.cjs");
 const { version: cliVersion } = require("../../package.json");
 
@@ -241,69 +241,6 @@ describe("surf doctor", () => {
       ]),
     );
   });
-  it("reports whether the native host can find ffmpeg", async () => {
-    const homeDir = makeTempDir();
-    const socketPath = path.join(homeDir, "surf.sock");
-    const doctorWithHostFfmpeg = (ffmpeg: any) =>
-      runDoctor(
-        { browser: "chrome", socket: socketPath },
-        {
-          platform: "darwin",
-          homeDir,
-          env: {},
-          fs: {
-            existsSync: (filePath: string) => filePath === socketPath || fs.existsSync(filePath),
-            statSync: (filePath: string) =>
-              filePath === socketPath ? { isSocket: () => true } : fs.statSync(filePath),
-            readFileSync: fs.readFileSync,
-          },
-          connectSocket: async () => ({
-            ok: true,
-            message: "connected",
-            versions: { host: cliVersion, extension: cliVersion },
-            ffmpeg,
-          }),
-        },
-      );
-
-    const found = await doctorWithHostFfmpeg({
-      path: "/opt/homebrew/bin/ffmpeg",
-      searchedPath: "/opt/homebrew/bin:/usr/bin",
-    });
-    expect(found.checks).toContainEqual(
-      expect.objectContaining({
-        id: "host-ffmpeg",
-        status: "pass",
-        message: expect.stringContaining("/opt/homebrew/bin/ffmpeg"),
-      }),
-    );
-
-    const missing = await doctorWithHostFfmpeg({
-      path: null,
-      searchedPath: "/usr/bin:/bin:/usr/sbin:/sbin",
-    });
-    const check = missing.checks.find((item: any) => item.id === "host-ffmpeg");
-    expect(check.status).toBe("warn");
-    expect(check.message).toContain("/usr/bin:/bin:/usr/sbin:/sbin");
-    expect(check.message).toContain(
-      "rerun `surf install` from a shell that finds it, or `SURF_FFMPEG=/path/to/ffmpeg surf install`, then reload",
-    );
-    expect(check.message).not.toContain("wrapper");
-    expect(formatDoctorReport(missing)).toContain("[WARN] The native host can't find ffmpeg");
-
-    const pinned = await doctorWithHostFfmpeg({
-      path: null,
-      searchedPath: "/usr/bin",
-      pinned: "/gone/ffmpeg",
-    });
-    expect(pinned.checks.find((item: any) => item.id === "host-ffmpeg").message).toContain(
-      "at SURF_FFMPEG (/gone/ffmpeg) or on its PATH (/usr/bin)",
-    );
-
-    const older = await doctorWithHostFfmpeg(undefined);
-    expect(older.checks.some((item: any) => item.id === "host-ffmpeg")).toBe(false);
-  });
-
   it("fails with a version-skew check and fix when the host reports a different version", async () => {
     const homeDir = makeTempDir();
     const wrapperPath = path.join(homeDir, "wrapper.sh");

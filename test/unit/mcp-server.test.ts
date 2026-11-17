@@ -29,7 +29,7 @@ describe("MCP file-backed tool schemas", () => {
     expect(TOOL_SCHEMAS.kimi.schema.query.safeParse(undefined).success).toBe(true);
     expect(TOOL_SCHEMAS.kimi.schema.validate.safeParse(true).success).toBe(true);
     expect(Object.keys(TOOL_SCHEMAS["network.export"].schema)).toEqual(
-      expect.arrayContaining(["output", "jsonl", "har", "raw-bodies", "raw"]),
+      expect.arrayContaining(["output", "jsonl", "har"]),
     );
   });
 });
