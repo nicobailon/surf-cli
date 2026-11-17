@@ -10,6 +10,7 @@ const { validateMarkdownSpec } = require("./record-format.cjs");
 const { assertNoEmbeddedSecrets, assertUrlHasNoEmbeddedSecrets } = require("./redaction.cjs");
 const { READ_OP_METHODS } = require("./request-kinds.cjs");
 const { normalizeStep } = require("./workflow-definition.cjs");
+const { compileJsonPath, getPath } = require("./records.cjs");
 
 const BUILTIN_DIR = path.join(__dirname, "..", "playbooks");
 const PINNED_BUILTINS = new Set(["chatgpt", "aistudio", "x"]);
@@ -148,11 +149,148 @@ function validateStrategy(strategy, effect, opId) {
   throw new Error(`unsupported playbook strategy: ${strategy.using}`);
 }
 
+// A chain op's bounds. `each` runs a step once per record of an earlier step: at most `eachMax`
+// records (`eachLimit` when unset), `delayMs` apart. One chain run calls at most `runs` ops.
+const CHAIN_LIMITS = Object.freeze({ steps: 10, eachLimit: 5, eachMax: 50, delayMs: 2000, delayMax: 60000, runs: 100 });
+const CHAIN_STEP_KEYS = ["id", "op", "with", "each"];
+const BINDING_KEYS = ["from", "path", "segment"];
+const EACH_KEYS = ["from", "limit", "delayMs"];
+const TEMPLATE = /\{\{([a-zA-Z0-9._-]+)\}\}/g;
+const WRITES_LATER = "chains with write steps come later";
+
+const isObject = (value) => Boolean(value) && typeof value === "object" && !Array.isArray(value);
+
+function checkKeys(value, allowed, where) {
+  for (const key of Object.keys(value)) {
+    if (!allowed.includes(key)) throw new Error(`${where} has unknown key ${key} (allowed: ${allowed.join(", ")})`);
+  }
+}
+
+/** A binding's path into a record or a step's value: `$`-JSON path (`$.data.id`) or a record path (`url`, `links[0].href`). */
+function compileBindingPath(path) {
+  return path.startsWith("$") ? compileJsonPath(path, "binding path") : (value) => getPath(value, path);
+}
+
+// An each bound: an integer in [min, max], or a `{{input}}` the run fills.
+function checkEachBound(value, { min, max, name, where }) {
+  if (typeof value === "string" && /^\{\{[a-zA-Z0-9._-]+\}\}$/.test(value)) return;
+  if (!Number.isInteger(value) || value < min || value > max) throw new Error(`${where} each.${name} must be an integer from ${min} to ${max}, or {{input}}`);
+}
+
+/**
+ * A chain op's own shape: its steps, bindings and output. Which ops its steps name, what they take
+ * and whether they write needs the whole playbook: checkChainOps.
+ */
+function validateChainOp(value, id, effect) {
+  const where = `chain ${id}`;
+  if (value.run !== undefined) throw new Error(`op ${id} has both run and chain`);
+  if (effect !== "read") throw new Error(`${where}: ${WRITES_LATER}`);
+  if (!Array.isArray(value.chain) || value.chain.length === 0) throw new Error(`${where} needs at least one step`);
+  if (value.chain.length > CHAIN_LIMITS.steps) throw new Error(`${where} has ${value.chain.length} steps; a chain takes at most ${CHAIN_LIMITS.steps}`);
+  const args = validateArgSpecs(value.args);
+  const all = new Set(value.chain.map((step) => step?.id));
+  const earlier = new Set();
+  const source = (from, stepId, what) => {
+    if (typeof from !== "string") throw new Error(`${where} step ${stepId} ${what} needs from: a step id or item`);
+    if (from === stepId) throw new Error(`${where} step ${stepId} ${what} itself`);
+    if (earlier.has(from)) return;
+    if (all.has(from)) throw new Error(`${where} step ${stepId} ${what} step ${from}, which comes later`);
+    throw new Error(`${where} step ${stepId} ${what} ${from}, which is no step`);
+  };
+  const templates = (text, stepId) => {
+    for (const [, name] of text.matchAll(TEMPLATE)) {
+      if (!Object.hasOwn(args, name)) throw new Error(`${where} step ${stepId} uses {{${name}}}, which is no input of the chain`);
+    }
+  };
+  for (const step of value.chain) {
+    if (!isObject(step)) throw new Error(`${where} steps must be objects`);
+    const stepId = assertId(step.id, `${where} step id`);
+    if (stepId === "item") throw new Error(`${where}: item is a binding source, not a step id`);
+    if (earlier.has(stepId)) throw new Error(`${where} has two steps named ${stepId}`);
+    checkKeys(step, CHAIN_STEP_KEYS, `${where} step ${stepId}`);
+    assertId(step.op, `${where} step ${stepId} op`);
+    if (step.each !== undefined) {
+      if (!isObject(step.each)) throw new Error(`${where} step ${stepId} each must be an object`);
+      checkKeys(step.each, EACH_KEYS, `${where} step ${stepId} each`);
+      if (step.each.from === "item") throw new Error(`${where} step ${stepId} each.from must be an earlier step`);
+      source(step.each.from, stepId, "runs each over");
+      if (step.each.limit !== undefined) checkEachBound(step.each.limit, { min: 1, max: CHAIN_LIMITS.eachMax, name: "limit", where: `${where} step ${stepId}` });
+      if (step.each.delayMs !== undefined) checkEachBound(step.each.delayMs, { min: 0, max: CHAIN_LIMITS.delayMax, name: "delayMs", where: `${where} step ${stepId}` });
+      for (const bound of [step.each.limit, step.each.delayMs]) if (typeof bound === "string") templates(bound, stepId);
+    }
+    if (step.with !== undefined && !isObject(step.with)) throw new Error(`${where} step ${stepId} with must be an object`);
+    for (const [input, binding] of Object.entries(step.with || {})) {
+      assertId(input, `${where} step ${stepId} input name`);
+      if (typeof binding === "string") templates(binding, stepId);
+      else if (isObject(binding)) {
+        checkKeys(binding, BINDING_KEYS, `${where} step ${stepId} binding ${input}`);
+        if (binding.from === "item") {
+          if (step.each === undefined) throw new Error(`${where} step ${stepId} binds ${input} from item, which only a step with each has`);
+        } else source(binding.from, stepId, `binds ${input} from`);
+        if (binding.path !== undefined) {
+          if (typeof binding.path !== "string" || !binding.path) throw new Error(`${where} step ${stepId} binding ${input} path must be a string`);
+          try {
+            compileBindingPath(binding.path);
+          } catch (error) {
+            throw new Error(`${where} step ${stepId} binding ${input}: ${error.message}`);
+          }
+        }
+        if (binding.segment !== undefined && (!Number.isInteger(binding.segment) || binding.segment < 1)) {
+          throw new Error(`${where} step ${stepId} binding ${input} segment must be a URL path segment number from 1`);
+        }
+      } else if (typeof binding !== "number" && typeof binding !== "boolean") {
+        throw new Error(`${where} step ${stepId} input ${input} must be text, a number, true or false, or a binding { from, path?, segment? }`);
+      }
+    }
+    earlier.add(stepId);
+  }
+  if (typeof value.output !== "string" || !all.has(value.output)) throw new Error(`${where} output ${value.output} is no step`);
+  if (value.markdown !== undefined) {
+    try {
+      validateMarkdownSpec(value.markdown);
+    } catch (error) {
+      throw new Error(`op ${id} ${error.message}`);
+    }
+  }
+  return { ...value, id, effect, args };
+}
+
+/**
+ * Checks each chain op against the playbook's ops: every step names one of them, passes only
+ * inputs it takes and reads (chains with write steps come later), and no chain runs itself.
+ */
+function checkChainOps(ops, playbookId) {
+  for (const op of ops.values()) {
+    if (!op.chain) continue;
+    for (const step of op.chain) {
+      const target = ops.get(step.op);
+      if (!target) throw new Error(`chain ${op.id} step ${step.id} names op ${step.op}, which playbook ${playbookId} doesn't have`);
+      if (target.effect === "write") throw new Error(`chain ${op.id} step ${step.id} runs write op ${step.op}; ${WRITES_LATER}`);
+      for (const input of Object.keys(step.with || {})) {
+        if (!Object.hasOwn(target.args || {}, input)) throw new Error(`chain ${op.id} step ${step.id} passes --${input}, which ${step.op} doesn't take`);
+      }
+    }
+  }
+  const done = new Set();
+  const visiting = [];
+  const visit = (op) => {
+    if (done.has(op.id) || !op.chain) return;
+    const at = visiting.indexOf(op.id);
+    if (at !== -1) throw new Error(`chain ${op.id} runs itself: ${[...visiting.slice(at), op.id].join(" → ")}`);
+    visiting.push(op.id);
+    for (const step of op.chain) visit(ops.get(step.op));
+    visiting.pop();
+    done.add(op.id);
+  };
+  for (const op of ops.values()) visit(op);
+}
+
 function validateOp(value, manifest) {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("playbook op must be an object");
   const id = assertId(value.id, "op id");
   const effect = value.effect || "read";
   if (effect !== "read" && effect !== "write") throw new Error(`op ${id} effect must be read or write`);
+  if (value.chain !== undefined) return validateChainOp(value, id, effect);
   if (!Array.isArray(value.run) || value.run.length === 0) throw new Error(`op ${id} requires at least one strategy`);
   let safety = value.safety;
   if (effect === "write") {
@@ -224,6 +362,7 @@ function loadPlaybookDirectory(directory, scope) {
     ops.set(op.id, op);
   }
   if (ops.size === 0) throw new Error(`playbook ${id} has no ops`);
+  checkChainOps(ops, id);
   return { ...manifest, id, origins, directory, ops, provenance: { scope, path: directory, version: manifest.version } };
 }
 
@@ -357,6 +496,9 @@ function importPlaybookDirectory(source, { scope = "user", cwd = process.cwd(), 
 }
 
 module.exports = {
+  CHAIN_LIMITS,
+  checkChainOps,
+  compileBindingPath,
   editSavedOp,
   envBackedHeaders,
   exportPlaybookDirectory,

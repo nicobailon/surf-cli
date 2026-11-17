@@ -69,6 +69,7 @@ const {
 const { visibleText } = require("./record-candidates.cjs");
 const { validateAssertions } = require("./playbook-assertions.cjs");
 const { authInputs, previewPlaybookOp, resolveArgs, runPlaybookOp, testPlaybookOp } = require("./playbook-runtime.cjs");
+const { eachFromChain, previewChainOp, runChainOp } = require("./chain-runtime.cjs");
 const { envBackedHeaders, resolveOp } = require("./playbooks.cjs");
 const { replay, waitForResponse } = require("./api-harvest.cjs");
 const { runCollect } = require("./dom-collect.cjs");
@@ -1587,15 +1588,21 @@ async function executeNativePlaybook(request, handler, args, options = {}) {
 
 async function runHostPlaybook(msg, request) {
   const params = msg.params?.args || {};
-  const { playbook, op } = resolveOp(params.playbook, params.op, {
+  const resolved = resolveOp(params.playbook, params.op, {
     cwd: request.context?.isRemote ? process.cwd() : params.projectDir || process.cwd(),
     pinBuiltIn: params.pinBuiltIn === true,
   });
+  const { playbook } = resolved;
+  // surf use <op> --each-from <list-op>:<path> runs op once per list record, as a chain made here.
+  const op = params.eachFrom === undefined ? resolved.op : eachFromChain({ playbook, op: resolved.op, eachFrom: params.eachFrom, given: Object.keys(params.args || {}) });
+  if (params.test === true && op.chain) throw new Error(`${playbook.id} ${op.id} is a chain op; pb test runs single ops, so test each step's op`);
   const runArgs = resolveArgs(op, params.args || {}, { playbookId: playbook.id });
   if (params.test === true && op.effect === "write" && params.write !== true) {
     throw new Error(`${playbook.id} ${op.id} is a write op; pb test runs it only with --write`);
   }
-  const preview = () => previewPlaybookOp({ playbook, op, args: runArgs, secrets: params.secret || {}, ...(params.strategy !== undefined ? { strategy: params.strategy } : {}) });
+  const preview = () => op.chain
+    ? previewChainOp({ playbook, op, args: runArgs })
+    : previewPlaybookOp({ playbook, op, args: runArgs, secrets: params.secret || {}, ...(params.strategy !== undefined ? { strategy: params.strategy } : {}) });
   if (op.effect === "write" && op.safety.authorization === "explicit" && params.write !== true && params.dryRun !== true) {
     // Say what --write would agree to; a request that can't render yet fails on its own once --write is given.
     let sends = "";
@@ -1636,7 +1643,8 @@ async function runHostPlaybook(msg, request) {
     appendRecordEvent(event, { target: recordEventTarget(request) });
   };
   // pb test: the same run, but a failed one comes back as a result with each attempt's assertions.
-  const run = params.test === true ? testPlaybookOp : runPlaybookOp;
+  // A chain runs its steps' ops through runPlaybookOp, in this tab, one after another.
+  const run = op.chain ? runChainOp : params.test === true ? testPlaybookOp : runPlaybookOp;
   const result = await run({
     playbook,
     op,
@@ -1668,7 +1676,7 @@ async function runHostPlaybook(msg, request) {
   });
   if (params.format === undefined) return result;
   // The run's result went through redactResult; rendered records sit next to surf's own fields anew.
-  const values = authInputs(op).map((input) => params.secret?.[input.env] ?? process.env[input.env]).filter(Boolean);
+  const values = authInputs(op, playbook).map((input) => params.secret?.[input.env] ?? process.env[input.env]).filter(Boolean);
   return redactResult({ ...result, value: formatRecords(result.value, params.format, { markdown: op.markdown, args: runArgs }) }, values);
 }
 

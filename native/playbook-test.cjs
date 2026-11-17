@@ -152,6 +152,7 @@ async function runPlaybookTest({ argv, cwd = process.cwd(), home, env = process.
   const spec = parseTestArgs(argv);
   const { options } = spec;
   const op = localOp(spec.playbook, spec.op, { cwd, home });
+  if (op?.chain) throw new Error(`${spec.playbook} ${spec.op} is a chain op; pb test runs single ops, so test each step's op`);
   if (op?.effect === "write" && options.write !== true) throw new Error(`${spec.playbook} ${spec.op} is a write op; pb test runs it only with --write`);
   // The same input check as surf use, here so a typo is a usage error rather than a failed test.
   // The host checks again (and alone, when the op lives only on a remote browser host).
