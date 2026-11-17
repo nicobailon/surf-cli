@@ -1772,6 +1772,7 @@ async function handleRecordRequest(tool, args, msg, request) {
         attachNetworkTrace(record.id, entries, undefined, {
           capture,
           pageText,
+          includeInputValues: args.includeInputValues === true,
           ...(truncated ? { truncatedAt: RECORD_TRACE_LIMIT } : {}),
         });
       } catch (error) {
@@ -1780,7 +1781,7 @@ async function handleRecordRequest(tool, args, msg, request) {
       }
     }
     // Capture stops only once the record has: a refused --read leaves both running, to stop again.
-    const stopped = stopRecord({ target, draft: args.draft === true, read: args.read === true, requestId: args.requestId });
+    const stopped = stopRecord({ target, draft: args.draft === true, read: args.read === true, requestId: args.requestId, includeInputValues: args.includeInputValues === true });
     await stopCapture(record);
     return stopped;
   }

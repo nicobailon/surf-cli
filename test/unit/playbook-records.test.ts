@@ -3248,7 +3248,7 @@ describe("values typed during a record, in captured URLs", () => {
     const placeholder = findRedactedPlaceholder(request);
     expect(placeholder).toEqual({ field: "query.v", placeholder: "<text>", inUrl: true });
     expect(placeholderError(placeholder).message).toMatch(
-      /query\.v holds <text> in the request URL.*include-input-values/,
+      /query\.v holds <text> in the request URL.*pb record stop --draft --include-input-values/,
     );
     expect(() => paramOp(draft, { fields: ["query.v.year"], as: "year" })).toThrow(
       'query.v.year: query param "v" repeats (2 values), so it stays in the request URL as captured and can\'t be an input',
@@ -3344,6 +3344,53 @@ describe("values typed during a record, in captured URLs", () => {
     expect(warnings.join("\n")).toMatch(
       /1 typing step entered a value this Surf host no longer holds \(it restarted during the record\), so it may remain in the trace's URLs/,
     );
+  });
+
+  // The host reads capture at stop, so pb record stop --include-input-values keeps the body and
+  // URL even when the host restarted during the record and holds none of the typed values. The
+  // typing step stays an input, as it does with the start flag.
+  it("keeps the body and URL at stop with --include-input-values after a host restart", () => {
+    const root = tempRoot();
+    const record = records.startRecord({
+      site: "fixture",
+      op: "search",
+      tabId: 1,
+      origin: "https://example.test",
+      network: true,
+      root,
+    });
+    // No args: the host that held this step's value is gone.
+    records.appendRecordEvent(hostEvent("type", typeArgs), { target: TAB, root });
+    const body = JSON.stringify({ q: TYPED });
+    const post = {
+      ...search,
+      method: "POST",
+      requestHeaders: { ...search.requestHeaders, "content-type": "application/json" },
+      requestBody: body,
+    };
+    records.attachNetworkTrace(record.id, [post], root, {
+      capture: COMPLETE,
+      includeInputValues: true,
+    });
+    const { draft, warnings } = records.stopRecord({
+      target: TAB,
+      draft: true,
+      includeInputValues: true,
+      root,
+    });
+    const trace = JSON.parse(
+      fs.readFileSync(
+        path.join(records.recordsRoot(root), record.id, "network", "trace.json"),
+        "utf8",
+      ),
+    );
+    expect(trace.entries[0]).toMatchObject({ url: search.url, requestBody: body });
+    const network = draft.run.find((strategy: { using: string }) => strategy.using === "network");
+    expect(network.request).toMatchObject({ method: "POST", query: { q: TYPED, page: "1" }, body });
+    const workflow = draft.run.find((strategy: { using: string }) => strategy.using === "workflow");
+    expect(workflow.steps[0].args.text).toBe("{{text}}");
+    expect(draft.args).toHaveProperty("text");
+    expect(warnings?.join("\n") ?? "").not.toMatch(/no longer holds/);
   });
 });
 

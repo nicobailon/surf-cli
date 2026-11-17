@@ -1,4 +1,5 @@
 const path = require("path");
+const { loadUserConfig } = require("./config.cjs");
 const { openClientTransport } = require("./client-transport.cjs");
 const { resolveRequestDeadlineMs } = require("./host-sessions.cjs");
 const { exportRecordHar, saveFromRecent, saveFromRecord, suggestions } = require("./playbook-authoring.cjs");
@@ -58,6 +59,10 @@ function parseParamArgs(argv) {
   if (!playbook || !op) throw new Error("Usage: surf pb param <playbook> <op> <field>... --as <name> [--required | --default <v>] [--desc <text>] [--value <text>] [--link <input>], or <field> --env <VAR>");
   return { playbook, op, fields, options };
 }
+
+// --include-input-values (or --raw), on the command line only. pb record start also reads
+// includeInputValues from the user's own ~/surf.json, never a project's.
+const keepsInputValues = (options) => options["include-input-values"] === true || options.raw === true;
 
 function unwrapResponse(response) {
   if (response.error) throw new Error(response.error.content?.[0]?.text || JSON.stringify(response.error));
@@ -224,9 +229,9 @@ async function handlePlaybookCli(argv, { endpoint, cwd = process.cwd(), session,
     const action = parsed.positional[0];
     const tool = `playbook.record.${action}`;
     let args = {};
-    if (action === "start") args = { site: parsed.positional[1], op: parsed.options.op, watch: parsed.options.watch === true, network: parsed.options.network === true, includeInputValues: parsed.options["include-input-values"] === true || parsed.options.raw === true };
+    if (action === "start") args = { site: parsed.positional[1], op: parsed.options.op, watch: parsed.options.watch === true, network: parsed.options.network === true, includeInputValues: keepsInputValues(parsed.options) || loadUserConfig().includeInputValues === true };
     else if (action === "mark") args = { label: parsed.positional.slice(1).join(" ") };
-    else if (action === "stop") args = { draft: parsed.options.draft === true, read: parsed.options.read === true, ...(parsed.options["request-id"] ? { requestId: String(parsed.options["request-id"]) } : {}) };
+    else if (action === "stop") args = { draft: parsed.options.draft === true, read: parsed.options.read === true, includeInputValues: keepsInputValues(parsed.options), ...(parsed.options["request-id"] ? { requestId: String(parsed.options["request-id"]) } : {}) };
     else if (action === "candidates") args = { ...(parsed.positional[1] ? { recordId: parsed.positional[1] } : {}), ...(parsed.options.limit !== undefined ? { limit: parsed.options.limit } : {}) };
     else if (!["status", "pause", "resume", "discard"].includes(action)) throw new Error("Unknown record command");
     const value = await requestHost(endpoint, tool, args, {

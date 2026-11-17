@@ -326,7 +326,7 @@ function formSlot(request, field, name, body) {
 function bodySlot(request, field, parts, escapes) {
   const body = request.body;
   if (body === undefined || body === null || body === "") throw new Error(`${field}: the request has no body`);
-  if (body === REDACTED_BODY) throw new Error(`${field}: the recorded body was redacted; record again with pb record start --include-input-values to keep it`);
+  if (body === REDACTED_BODY) throw new Error(`${field}: the recorded body was redacted; to keep it, record again and stop with pb record stop --draft --include-input-values (or start with --include-input-values)`);
   if (parts.length === 0) throw new Error(`${field}: name a field inside the body, as in body.<name>`);
   const slot = { onStore: (root) => { request.body = root; }, keyText: keyReader(escapes) };
   if (typeof body === "object") return jsonSlot(field, body, parts, slot);
