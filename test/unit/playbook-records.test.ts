@@ -884,7 +884,7 @@ describe("choosing the draft's request", () => {
     const update = {
       id: "r_put",
       method: "PUT",
-      status: 200,
+      status: 500,
       type: "XHR",
       url: "https://example.test/api/employees/7",
     };
@@ -893,7 +893,7 @@ describe("choosing the draft's request", () => {
     expect(draft.effect).toBe("write");
     expect(draft.run.map((strategy: { using: string }) => strategy.using)).toEqual(["workflow"]);
     expect(warnings).toEqual([
-      "the draft has no network strategy: it is a write because of PUT https://example.test/api/employees/7, which is a PUT (a draft replays only GET, HEAD and POST), and a write draft never replays a read in its place",
+      "the draft has no network strategy: it is a write because of PUT https://example.test/api/employees/7, which is a PUT answered with status 500, and a write draft never replays a read in its place",
     ]);
     const chooseRead = recordFlow({
       commands: ["click"],
@@ -909,7 +909,7 @@ describe("choosing the draft's request", () => {
       stop: { draft: true, requestId: "r_put" },
     });
     expect(choosePut.stopped).toThrow(
-      "request r_put (PUT https://example.test/api/employees/7) is a PUT (a draft replays only GET, HEAD and POST); a draft never replays it",
+      "request r_put (PUT https://example.test/api/employees/7) is a PUT answered with status 500; a draft never replays it",
     );
   });
 
@@ -1506,6 +1506,7 @@ describe("activity and explicit record evidence", () => {
         ...create,
         id: "r_put",
         method: "PUT",
+        status: 500,
         url: "https://example.test/api/employees/7",
       };
       const { root, stopped } = recordFlow({ commands: ["navigate"], trace: [update] });
@@ -1522,6 +1523,7 @@ describe("activity and explicit record evidence", () => {
         ...create,
         id: "r_put",
         method: "PUT",
+        status: 500,
         url: "https://example.test/api/employees/7",
       };
       const heartbeat = {
