@@ -611,7 +611,7 @@ describe("pb param: validation", () => {
       body: "<request-body>",
     });
     expect(() => paramOp(redacted, { fields: ["body.q"], as: "q" })).toThrow(
-      /--include-input-values/,
+      /pb record stop --draft --include-input-values/,
     );
   });
 

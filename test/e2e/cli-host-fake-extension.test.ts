@@ -2498,6 +2498,135 @@ describe("CLI/native-host/fake-extension E2E contract", () => {
     }
   }, 60000);
 
+  // A record started without --include-input-values can still keep its values: the host reads
+  // capture at stop, so pb record stop --include-input-values (or --raw) keeps the POST's body
+  // and the typed value in its URL, and surf use --write sends that body.
+  it.each([["--include-input-values"], ["--raw"]])(
+    "keeps a record's request body and URL when stopped with %s",
+    async (flag) => {
+      const socketPath = createSocketPath();
+      const project = fs.mkdtempSync(path.join(os.tmpdir(), "surf-record-stop-values-"));
+      tempDirs.push(project);
+      const typedText = ["dummy", "stop", "words"].join(" ");
+      const body = JSON.stringify({ note: typedText, keep: "literal" });
+      const capturedUrl = `https://fixture.test/api?q=${encodeURIComponent(typedText)}`;
+      const page = {
+        url: capturedUrl,
+        requestHeaders: { "content-type": "application/json" },
+        requestBody: body,
+      };
+      const host = startHost(socketPath, { recording: true, scriptResponse: page });
+      const scripts = () =>
+        host.messages
+          .filter((message) => message.type === "EXECUTE_JAVASCRIPT")
+          .map((message) => String(message.code));
+      const cli = (args: string[]) =>
+        runCli(socketPath, args, project, { SURF_STATE_DIR: host.stateDir });
+
+      try {
+        await host.waitForMessage((message) => message.type === "HOST_READY");
+        expect((await cli(["navigate", "https://fixture.test/form"])).code).toBe(0);
+        const started = await cli([
+          "pb",
+          "record",
+          "start",
+          "fixture",
+          "--op",
+          "submit",
+          "--network",
+          "--json",
+        ]);
+        expect(started.code).toBe(0);
+        expect(JSON.parse(started.stdout).redaction).toEqual({ includeInputValues: false });
+        expect((await cli(["type", typedText, "--selector", "#note"])).code).toBe(0);
+        expect((await cli(["js", 'fetch("/api", { method: "POST" })'])).code).toBe(0);
+        const stopped = await cli(["pb", "record", "stop", "--draft", flag, "--json"]);
+        expect(stopped.code).toBe(0);
+        const { record, draft } = JSON.parse(stopped.stdout);
+        const trace = JSON.parse(
+          fs.readFileSync(
+            path.join(host.stateDir, "records", record.id, "network", "trace.json"),
+            "utf8",
+          ),
+        );
+        const post = trace.entries.find((entry: { method: string }) => entry.method === "POST");
+        expect(post).toMatchObject({ url: capturedUrl, requestBody: body });
+        const network = draft.run.find(
+          (strategy: { using: string }) => strategy.using === "network",
+        );
+        expect(network.request).toMatchObject({ method: "POST", query: { q: typedText }, body });
+        expect(record.redaction).toEqual({ includeInputValues: true });
+
+        page.url = "https://fixture.test/api";
+        const saved = await cli(["pb", "save", "--from-record", record.id, "--project", "--json"]);
+        expect(saved).toMatchObject({ code: 0, stderr: "" });
+        const before = scripts().length;
+        const used = await cli([
+          "use",
+          "fixture",
+          "submit",
+          "--text",
+          "dummy run",
+          "--write",
+          "--json",
+        ]);
+        expect(used.code).toBe(0);
+        expect(JSON.parse(used.stdout)).toMatchObject({ strategy: "network" });
+        // The one script surf use ran fetches with the recorded body.
+        const posts = scripts().slice(before);
+        expect(posts).toHaveLength(1);
+        expect(posts[0]).toContain('method: "POST"');
+        expect(posts[0]).toContain(`body: ${JSON.stringify(body)},`);
+        expect(posts[0]).toContain(JSON.stringify({ q: typedText }));
+      } finally {
+        await host.dispose();
+      }
+    },
+    60000,
+  );
+
+  // includeInputValues in the user's own ~/surf.json sets pb record start's default; the same key
+  // in the project's surf.json, where surf runs, changes nothing.
+  it("keeps a record's values by default only from ~/surf.json, never the project's", async () => {
+    const socketPath = createSocketPath();
+    const scratch = fs.mkdtempSync(path.join(os.tmpdir(), "surf-record-config-"));
+    tempDirs.push(scratch);
+    const home = path.join(scratch, "home");
+    const project = path.join(scratch, "project");
+    for (const directory of [home, project]) {
+      fs.mkdirSync(directory, { recursive: true });
+    }
+    fs.writeFileSync(path.join(project, "surf.json"), JSON.stringify({ includeInputValues: true }));
+    const host = startHost(socketPath, { recording: true });
+    const cli = (args: string[]) =>
+      runCli(socketPath, args, project, { SURF_STATE_DIR: host.stateDir, HOME: home });
+    const startKeeps = async () => {
+      const started = await cli([
+        "pb",
+        "record",
+        "start",
+        "fixture",
+        "--op",
+        "read",
+        "--network",
+        "--json",
+      ]);
+      expect(started.code).toBe(0);
+      expect((await cli(["pb", "record", "discard"])).code).toBe(0);
+      return JSON.parse(started.stdout).redaction.includeInputValues;
+    };
+
+    try {
+      await host.waitForMessage((message) => message.type === "HOST_READY");
+      expect((await cli(["navigate", "https://fixture.test/form"])).code).toBe(0);
+      expect(await startKeeps()).toBe(false);
+      fs.writeFileSync(path.join(home, "surf.json"), JSON.stringify({ includeInputValues: true }));
+      expect(await startKeeps()).toBe(true);
+    } finally {
+      await host.dispose();
+    }
+  }, 60000);
+
   it("sends an env-supplied header from the caller's shell and writes its value nowhere", async () => {
     const socketPath = createSocketPath();
     const scratch = fs.mkdtempSync(path.join(os.tmpdir(), "surf-secret-header-"));

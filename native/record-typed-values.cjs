@@ -1279,9 +1279,9 @@ function findRedactedPlaceholder(request) {
 
 /** The error for a request that holds a placeholder, naming the pb param command that fixes it. */
 function placeholderError({ field, placeholder, inUrl = false }, label = "<playbook> <op>") {
-  if (inUrl) return new Error(`${field} holds ${placeholder} in the request URL, a value the record redacted under a query name sent more than once, which pb param can't make an input; record again with pb record start --include-input-values to keep it`);
-  if (placeholder === "<request-body>") return new Error(`${field} holds ${placeholder}: the record redacted the request body; record again with pb record start --include-input-values to keep it`);
-  return new Error(`${field} holds ${placeholder}, a value the record redacted; run surf pb param ${label} ${field} --as <name> to make it an input (or record again with pb record start --include-input-values)`);
+  if (inUrl) return new Error(`${field} holds ${placeholder} in the request URL, a value the record redacted under a query name sent more than once, which pb param can't make an input; to keep it, record again and stop with pb record stop --draft --include-input-values (or start with --include-input-values)`);
+  if (placeholder === "<request-body>") return new Error(`${field} holds ${placeholder}: the record redacted the request body; to keep it, record again and stop with pb record stop --draft --include-input-values (or start with --include-input-values)`);
+  return new Error(`${field} holds ${placeholder}, a value the record redacted; run surf pb param ${label} ${field} --as <name> to make it an input (or record again and stop with pb record stop --draft --include-input-values to keep it)`);
 }
 
 module.exports = {
