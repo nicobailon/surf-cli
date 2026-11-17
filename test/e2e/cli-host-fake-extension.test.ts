@@ -2448,6 +2448,71 @@ describe("CLI/native-host/fake-extension E2E contract", () => {
     }
   }, 60000);
 
+  it("saves a recent type and click as a write op that types and clicks once with --write", async () => {
+    const socketPath = createSocketPath();
+    const project = fs.mkdtempSync(path.join(os.tmpdir(), "surf-recent-type-click-"));
+    tempDirs.push(project);
+    const host = startHost(socketPath, { recording: true });
+    const cli = (args: string[]) =>
+      runCli(socketPath, args, project, { SURF_STATE_DIR: host.stateDir });
+    const steps = () =>
+      host.messages.filter((message) =>
+        ["SMART_TYPE", "CLICK_SELECTOR"].includes(String(message.type)),
+      );
+
+    try {
+      await host.waitForMessage((message) => message.type === "HOST_READY");
+      expect((await cli(["type", "dummy text", "--selector", "#comment"])).code).toBe(0);
+      expect((await cli(["click", "--selector", "#send", "--no-screenshot"])).code).toBe(0);
+      const saved = await cli([
+        "pb",
+        "save",
+        "recent",
+        "--op",
+        "comment",
+        "--from-recent",
+        "--project",
+        "--json",
+      ]);
+      expect(saved).toMatchObject({ code: 0, stderr: "" });
+      const op = JSON.parse(
+        fs.readFileSync(
+          path.join(project, ".surf", "playbooks", "recent", "ops", "comment.json"),
+          "utf8",
+        ),
+      );
+      expect(op).toMatchObject({
+        effect: "write",
+        safety: { duplicate: "repeatable-window", windowMs: 300000 },
+        args: { text: { required: true } },
+      });
+      expect(op.safety.key).toBeUndefined();
+      expect(op.run[0].steps.map((step: { cmd: string }) => step.cmd)).toEqual(["type", "click"]);
+
+      const before = steps().length;
+      const unwritten = await cli(["use", "recent", "comment", "--text", "first"]);
+      expect(unwritten.code).toBe(1);
+      expect(unwritten.stderr).toMatch(
+        /write op recent comment requires --write; it runs type, click/,
+      );
+      expect(steps()).toHaveLength(before);
+      const use = () => cli(["use", "recent", "comment", "--text", "first", "--write", "--json"]);
+      expect(await use()).toMatchObject({ code: 0, stderr: "" });
+      expect(steps().slice(before)).toEqual([
+        expect.objectContaining({ type: "SMART_TYPE", text: "first" }),
+        expect.objectContaining({ type: "CLICK_SELECTOR", selector: "#send" }),
+      ]);
+      const again = await use();
+      expect(again.code).toBe(1);
+      expect(again.stderr).toMatch(
+        /write blocked: attempt \S+ was sent at .+ and succeeded\. Add --repeat to send it again\./,
+      );
+      expect(steps()).toHaveLength(before + 2);
+    } finally {
+      await host.dispose();
+    }
+  }, 60000);
+
   // A saved op (pb save, provenance.escaped) whose workflow runs the given steps for each op id;
   // `run` returns the terms the steps searched for.
   async function startSavedOps(
