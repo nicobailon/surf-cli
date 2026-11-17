@@ -1548,11 +1548,12 @@ async function executeMappedHostTool(request, tool, args, tabId) {
 }
 
 // network.body as it prints: echoes of its request's secret headers redacted unless `raw`. The body
-// can come from Chrome when capture has no entry for it; then no secret values are known.
+// can come from Chrome when capture has no entry for it; then no secret values are known. Its id is
+// read as mapToolToMessage reads it: `id`, else the first positional arg.
 async function publicNetworkBody(request, args, tabId, { raw = false } = {}) {
   const [body, loaded] = await Promise.all([
     executeMappedHostTool(request, "network.body", args, tabId),
-    executeMappedHostTool(request, "network.get", { id: args.id }, tabId).catch(() => null),
+    executeMappedHostTool(request, "network.get", { id: args.id || args[0] }, tabId).catch(() => null),
   ]);
   return publicResponse(body, [loaded?.entry], { raw });
 }

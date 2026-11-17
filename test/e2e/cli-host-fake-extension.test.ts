@@ -2954,15 +2954,16 @@ describe("CLI/native-host/fake-extension E2E contract", () => {
     const socketPath = createSocketPath();
     const { auth, entry, scratch, env, secrets } = rawFixture();
     // Each view as a step, without and with raw; network.body prints the response, which
-    // echoes only the Authorization value.
+    // echoes only the Authorization value. A step can give the id as its first positional arg.
     const views = [
-      { tool: "network", args: { v: true }, hidden: secrets },
-      { tool: "network.get", args: { id: "r_auth" }, hidden: secrets },
-      { tool: "network.curl", args: { id: "r_auth" }, hidden: secrets },
-      { tool: "network.body", args: { id: "r_auth" }, hidden: [auth] },
+      { name: "network", tool: "network", args: { v: true }, hidden: secrets },
+      { name: "network-get", tool: "network.get", args: { id: "r_auth" }, hidden: secrets },
+      { name: "network-curl", tool: "network.curl", args: { id: "r_auth" }, hidden: secrets },
+      { name: "network-body", tool: "network.body", args: { id: "r_auth" }, hidden: [auth] },
+      { name: "network-body-arg", tool: "network.body", args: { "0": "r_auth" }, hidden: [auth] },
     ].flatMap((view) => [
-      { ...view, id: view.tool.replace(".", "-") },
-      { ...view, id: `${view.tool.replace(".", "-")}-raw`, args: { ...view.args, raw: true } },
+      { ...view, id: view.name },
+      { ...view, id: `${view.name}-raw`, args: { ...view.args, raw: true } },
     ]);
     for (const view of views) {
       writeWorkflowOp(scratch, view.id, [{ tool: view.tool, args: view.args, as: "view" }]);
