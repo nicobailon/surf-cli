@@ -1985,7 +1985,7 @@ function capturePageSnapshot(): { snapshot: PageSnapshot; elements: Element[] } 
 // Ref identity uses the same name as `surf read` so stale-ref suggestions match.
 function registerPageRef(element: Element, role: string): string {
   const name = getName(element);
-  const ref = elementRefs.get(element)?.ref ?? getOrAssignRef(element, role, name);
+  const ref = getOrAssignRef(element, role, name);
   window.__piRefs = window.__piRefs || {};
   window.__piRefs[ref] = element;
   getElementMap()[ref] = { element: new WeakRef(element), role, name };
@@ -2509,6 +2509,23 @@ function handleContentMessage(
         }
         
         sendResponse({ ref: registerLocatedRef(narrowed[0]), label });
+      } catch (err) {
+        sendResponse({ error: err instanceof Error ? err.message : String(err) });
+      }
+      break;
+    }
+    // `click --selector` clicks its match through a ref, so it scrolls and hit-tests like a ref click.
+    case "LOCATE_SELECTOR": {
+      try {
+        const { selector, index } = message;
+        const matches = document.querySelectorAll(selector);
+        if (matches.length === 0) {
+          sendResponse({ error: "No elements match selector" });
+        } else if (index >= matches.length) {
+          sendResponse({ error: `Index ${index} out of range (found ${matches.length} elements)` });
+        } else {
+          sendResponse({ ref: registerLocatedRef(matches[index]), count: matches.length });
+        }
       } catch (err) {
         sendResponse({ error: err instanceof Error ? err.message : String(err) });
       }
