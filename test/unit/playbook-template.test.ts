@@ -3,6 +3,7 @@ import { captureTab } from "../fixtures/capture-tab";
 
 const runtime = require("../../native/playbook-runtime.cjs");
 const {
+  escapeStepArgs,
   escapeTemplates,
   renderRequest,
   resolveArgValues,
@@ -130,6 +131,63 @@ describe("request templates", () => {
       executeTool,
     });
     expect(fetchImpl.mock.calls[0][0]).toBe("https://api.test/save?note=%7B%7Bq%7D%7D");
+  });
+
+  // Every string over these pieces, up to four of them: the escapes must undo to the same text.
+  const pieces = [
+    "{{",
+    "}}",
+    "{",
+    "}",
+    "%{",
+    "%",
+    "_open",
+    "q",
+    "{{_open}}",
+    "%{_open}",
+    "{{q}}",
+    "%{q}",
+  ];
+  const texts = (depth: number): string[] =>
+    depth === 0
+      ? [""]
+      : texts(depth - 1).flatMap((text) => ["", ...pieces].map((piece) => text + piece));
+  const literals = [...new Set([...texts(3), "{{{", "{{{{q}}}}", "%{{q}}", "{%{q}}", "%{%{q}}"])];
+
+  it("sends every escaped captured request text as captured", () => {
+    for (const text of literals) {
+      const escaped = escapeTemplates(text);
+      expect(renderRequest({ url: "https://api.test/", body: escaped }, { q: "filled" }).body).toBe(
+        text,
+      );
+      expect(unescapeTemplates(escaped)).toBe(text);
+    }
+  });
+
+  it("runs every escaped recorded step argument as recorded, inputs and workflow vars set", async () => {
+    const calls: Record<string, unknown>[] = [];
+    await runtime.runPlaybookOp({
+      playbook: { id: "steps", provenance: {} },
+      op: {
+        id: "type",
+        effect: "read",
+        args: { q: { default: "filled" } },
+        run: [
+          {
+            using: "workflow",
+            steps: literals.map((text) => ({ cmd: "type", args: { text: escapeStepArgs(text) } })),
+          },
+        ],
+      },
+      executeTool: async (tool: string, args: Record<string, unknown>) => {
+        if (tool === "type") {
+          calls.push(args);
+        }
+        return { output: "{}" };
+      },
+      sleep: async () => undefined,
+    });
+    expect(calls.map((args) => args.text)).toEqual(literals);
   });
 });
 

@@ -5,7 +5,7 @@ const { execFile } = require("child_process");
 const { atomicWriteFile, atomicWriteJson, ensurePrivateDir, getPrivateStateRoot, readPrivateJson } = require("./private-state.cjs");
 const { LITERAL_OPEN, renderRequest, resolveArgValues } = require("./playbook-template.cjs");
 const { resolveOp } = require("./playbooks.cjs");
-const { isReplayCandidate, readRecord, recordsRoot, requestEffect } = require("./playbook-records.cjs");
+const { isReplayCandidate, readRecord, recordsRoot, requestEffect, requestFromEntry } = require("./playbook-records.cjs");
 const { WINNER_MARGIN, isWeak, scoreEntries } = require("./record-candidates.cjs");
 const { assertNoEmbeddedSecrets, assertUrlHasNoEmbeddedSecrets, redactObject, redactValues, safeHeaders } = require("./redaction.cjs");
 const { version: PACKAGE_VERSION } = require("../package.json");
@@ -228,11 +228,9 @@ function deriveClient(site, opId, out, options = {}) {
   if (!options.requestId && candidates.length > 1 && !entry) throw new Error(`record ${record.id} has several read endpoints and no clear winner; run surf pb record candidates ${record.id} and pass --request-id`);
   if (!entry) throw new Error(`record ${record.id} has no validated read endpoint`);
   const op = { id: opId, effect: requestEffect(entry), run: [] };
-  const url = new URL(entry.url);
-  const query = Object.fromEntries(url.searchParams.entries());
-  url.search = "";
   const extract = savedExtract(site, opId, options);
-  const strategy = { using: "network", request: { method: entry.method, url: url.toString(), query, headers: safeHeaders(entry.requestHeaders), ...(entry.requestBody !== undefined ? { body: entry.requestBody } : {}) }, ...(extract ? { extract } : {}) };
+  // Escaped as pb save escapes it, so captured text like {{x}} is sent as captured, not an input.
+  const strategy = { using: "network", request: requestFromEntry(entry), ...(extract ? { extract } : {}) };
   return generateClient({ playbookId: site, op, strategy, provenance: { type: "record", recordId: record.id }, out, allowWrite: options.allowWrite });
 }
 

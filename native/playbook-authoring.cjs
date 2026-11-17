@@ -4,7 +4,7 @@ const { isDeepStrictEqual } = require("util");
 const { readRecent } = require("./activity-journal.cjs");
 const { writeNetworkExport } = require("./network-export.cjs");
 const { getPrivateStateRoot, readPrivateJson } = require("./private-state.cjs");
-const { REVIEW_KEY_ARG, draftFromRecord, neverReplayed, readRecord, recordedSteps, recordsRoot, requestFromEntry } = require("./playbook-records.cjs");
+const { REVIEW_KEY_ARG, buildDraft, draftFromRecord, neverReplayed, readRecord, recordedSteps, recordsRoot, requestFromEntry } = require("./playbook-records.cjs");
 const { isCommitWorkflow, savePlaybook, validateOp } = require("./playbooks.cjs");
 const { isTelemetryRequest, requestEffect, shownUrl } = require("./request-kinds.cjs");
 const { commandMetadata, normalizeStep, promoteRedactedStepArgs } = require("./workflow-definition.cjs");
@@ -44,10 +44,9 @@ function firstPartyWrite({ record, entry, chosen, request, fail }) {
   }
 }
 
-// The request an op's network strategy sends, with the method validateOp gives it.
+// The request an op's network strategy sends.
 function replayedRequest(op) {
-  const request = op.run.find((strategy) => strategy.using === "network")?.request;
-  return request && { ...request, method: String(request.method || "GET").toUpperCase() };
+  return op.run.find((strategy) => strategy.using === "network")?.request;
 }
 
 // The strategies a draft is made of: an op saved from a record holds no other kind.
@@ -61,11 +60,10 @@ const PLACEHOLDER = /\{\{[a-zA-Z0-9._-]+\}\}/g;
 // captured), so what the draft file says about its method, URL, query, headers or body is never
 // sent. The write must be one the draft builder replays, in a write op, on the record page's
 // origin unless --request-id names it (`chosen`: pb save's, else the one pb record stop kept in the
-// record, never the draft's provenance). The strategies decide, not the op's effect label or its
-// workflow: none (a record with no steps), a one-click fallback (its network strategy runs
-// before the click), or one fitWriteWorkflow drops. A read op never replays a captured write, as
-// --read refuses a record that captured one. Reads stay as drafted. pb param makes inputs after
-// save, on the saved op.
+// record, never the draft's provenance). The strategies decide, not the op's workflow: none (a
+// record with no steps), a one-click fallback (its network strategy runs before the click), or one
+// fitWriteWorkflow drops. A read op never replays a write: the record of a read captured none.
+// holdEffect has rebuilt the reads. pb param makes inputs after save, on the saved op.
 function rebuildWrites(op, { record, trace, chosen }) {
   const write = op.effect === "write";
   const workflow = op.run.find((strategy) => strategy.using === "workflow");
@@ -75,19 +73,16 @@ function rebuildWrites(op, { record, trace, chosen }) {
   const other = op.run.find((strategy) => strategy && typeof strategy === "object" && !DRAFTED_KINDS.has(strategy.using));
   if (other) throw fail(`an op saved from a record runs only network and workflow strategies, and this draft has a ${other.using} strategy`);
   const writes = capturedWrites(record, trace);
-  let rebuilt = false;
   const run = op.run.map((strategy) => {
     if (strategy?.using !== "network" || typeof strategy.request?.url !== "string") return strategy;
-    const method = String(strategy.request.method || "GET").toUpperCase();
+    const method = strategy.request.method.toUpperCase();
     if (requestEffect({ method }) !== "write") return strategy;
     const url = absoluteUrl(strategy.request.url, record.origin);
     if (!url) throw fail(`its network write's URL (${strategy.request.url}) isn't a URL`);
     const sent = shownUrl({ method, url });
     const uncaptured = () => fail(`it would replay ${sent}, which isn't a write the record captured`);
-    if (!write) {
-      if (!writes.some((entry) => shownUrl(entry) === sent)) throw uncaptured();
-      throw fail(`it replays ${sent}, a write the record captured, and a read op never replays a write (pb record stop --draft --read refuses a record that captured one); save it as a write op ("effect": "write")`);
-    }
+    // holdEffect has made a read op's effect the record's, so its record captured no write.
+    if (!write) throw uncaptured();
     if (!chosen && writes.length > 1) {
       const listed = writes.map((entry) => `${entry.id} ${shownUrl(entry)}`).join(", ");
       throw fail(`the record captured ${writes.length} writes (${listed}); name the one the op replays with pb save --from-record <id> --request-id <r_…>`);
@@ -101,14 +96,58 @@ function rebuildWrites(op, { record, trace, chosen }) {
     const placeholder = JSON.stringify(strategy.request).match(PLACEHOLDER)?.find((found) => !captured.includes(found));
     if (placeholder) throw fail(`its network write ${sent} holds ${placeholder}, and a write is saved as the record captured it; save it as drafted, then make the input with surf pb param`);
     firstPartyWrite({ record, entry, chosen, request, fail });
-    rebuilt = true;
-    const kept = KEPT_FIELDS.filter((field) => strategy[field] !== undefined).map((field) => [field, strategy[field]]);
-    return { using: "network", request, ...Object.fromEntries(kept) };
+    return { using: "network", request, ...keptFields(strategy) };
   });
-  if (rebuilt && op.safety?.serverIdempotency !== undefined) {
-    throw fail("safety.serverIdempotency would change the write it replays; save the op as drafted, then add serverIdempotency to the saved op");
-  }
   return { ...op, run };
+}
+
+const keptFields = (strategy) => Object.fromEntries(KEPT_FIELDS.filter((field) => strategy[field] !== undefined).map((field) => [field, strategy[field]]));
+
+// What the record decides about an op, which a draft can't change: its effect (the draft
+// builder's, with --read when pb record stop had it), its safety, that it replays the request the
+// record drafts, and that request itself when it is a read. Every network strategy that sends a
+// read (or no method) is rebuilt from the request the builder drafts (the one --request-id names,
+// else its pick), so the draft's method, URL, query, headers or body are never sent; rebuildWrites
+// does the same for writes. `because` says why the record drafts a write.
+function holdEffect(op, { reference, because, record }) {
+  const fail = (why) => new Error(`${op.effect === "write" ? "write op" : "op"} ${op.id} can't be saved: ${why}`);
+  if ((op.effect ?? "read") !== reference.effect) {
+    const given = op.effect === undefined ? "missing" : JSON.stringify(op.effect);
+    throw fail(`the record drafts a ${reference.effect} op${because && reference.effect === "write" ? ` (${because})` : ""}, and the draft's effect is ${given}; a draft can't change an op's effect`);
+  }
+  if (!isDeepStrictEqual(op.safety, reference.safety)) {
+    const drafted = reference.safety ? `its safety is drafted as ${JSON.stringify(reference.safety)}` : "the record drafts no safety";
+    throw fail(`${drafted}, and a draft can't change it; change it on the saved op`);
+  }
+  const replayed = reference.run.find((strategy) => strategy.using === "network")?.request;
+  const drafts = replayed ? `the record drafts ${shownUrl(replayed)}` : "the record drafts no network strategy";
+  const networks = op.run.filter((strategy) => strategy?.using === "network");
+  if (replayed && networks.length === 0) {
+    throw fail(`it drops the network strategy the record drafts (${shownUrl(replayed)}); a draft holds the record's strategies`);
+  }
+  const run = op.run.map((strategy) => {
+    if (strategy?.using !== "network" || typeof strategy.request?.url !== "string") return strategy;
+    const { method } = strategy.request;
+    if (typeof method !== "string" || !method) {
+      throw fail(`its network strategy has no method, and ${replayed ? `a draft keeps the method the record captured (${shownUrl(replayed)})` : "the record drafts no network strategy"}`);
+    }
+    if (requestEffect({ method: method.toUpperCase() }) === "write") return strategy;
+    const url = absoluteUrl(strategy.request.url, record.origin);
+    const sent = url ? shownUrl({ method: method.toUpperCase(), url }) : `${method} ${strategy.request.url}`;
+    if (!replayed) throw fail(`its network strategy sends ${sent}, and ${drafts}`);
+    if (sent !== shownUrl(replayed)) {
+      throw fail(`its network strategy sends ${sent}, and ${drafts}; save again with --request-id <r_…> to replay another captured request`);
+    }
+    return { using: "network", request: replayed, ...keptFields(strategy) };
+  });
+  return { ...op, run };
+}
+
+// The origins an op saved from a record sends to are the record's (allowedOrigins); a draft may
+// write them out, not change them.
+function holdOrigins(op, origins) {
+  const same = (op.origins === undefined || isDeepStrictEqual(op.origins, origins)) && (op.auth === undefined || isDeepStrictEqual(op.auth, { origins }));
+  if (!same) throw new Error(`${op.effect === "write" ? "write op" : "op"} ${op.id} can't be saved: its origins come from the record (${origins.join(", ")}), and a draft can't change them`);
 }
 
 // An op saved from a record runs the steps the record ran, rebuilt from the record as
@@ -128,8 +167,7 @@ function holdToRecord(op, { steps }) {
   if (workflows.length === 1) checkWorkflow(workflows[0], steps, fail);
   const run = op.run.map((strategy) => {
     if (strategy?.using !== "workflow") return strategy;
-    const kept = KEPT_FIELDS.filter((field) => strategy[field] !== undefined).map((field) => [field, strategy[field]]);
-    return { using: "workflow", steps: recorded.steps, ...Object.fromEntries(kept) };
+    return { using: "workflow", steps: recorded.steps, ...keptFields(strategy) };
   });
   return { op: { ...op, run }, rebuild };
 }
@@ -230,20 +268,25 @@ function allowedOrigins(record, op, warnings) {
   return [...new Set([record.origin, replayed].filter(Boolean))];
 }
 
-// `requestId` redrafts the op to replay that request, keeping a read draft a read (its checks rerun).
+// The record decides what the saved op sends and whether it needs --write; the draft file names
+// and describes it. `requestId` redrafts the op to replay that request, a read when pb record stop
+// had --read (its checks rerun).
 function saveFromRecord({ recordId, requestId, scope = "user", cwd, home, root = getPrivateStateRoot() }) {
   const record = readRecord(recordId, root);
   if (!record) throw new Error(`record not found: ${recordId}`);
   const draftPath = path.join(recordsRoot(root), recordId, "draft", "op.json");
   const draft = fs.existsSync(draftPath) ? readPrivateJson(draftPath, null, { root }) : null;
   const warnings = [];
-  const drafted = draft && !requestId ? draft : draftFromRecord(recordId, root, { read: draft?.effect === "read", requestId, warnings });
-  const trace = readPrivateJson(path.join(recordsRoot(root), recordId, "network", "trace.json"), null, { root });
   const chosen = requestId ?? record.requestId;
-  const held = holdToRecord(drafted, { steps: recordedSteps(recordId, root) });
+  const read = record.read === true;
+  const drafted = draft && !requestId ? draft : draftFromRecord(recordId, root, { read, requestId: chosen, warnings });
+  const { op: reference, because } = buildDraft(record, { read, requestId: chosen, root });
+  const trace = readPrivateJson(path.join(recordsRoot(root), recordId, "network", "trace.json"), null, { root });
+  const held = holdToRecord(holdEffect(drafted, { reference, because, record }), { steps: recordedSteps(recordId, root) });
   const provenance = { recordId: record.id, ...(chosen ? { requestId: chosen } : {}) };
   const op = fitWriteWorkflow(held.rebuild(rebuildWrites({ ...held.op, provenance }, { record, trace, chosen })), warnings);
   const origins = allowedOrigins(record, op, warnings);
+  holdOrigins(op, origins);
   validateOp(op, { origins });
   const saved = savePlaybook({ manifest: { id: record.site, name: record.site, version: "1.0.0", origins }, op, scope, cwd, home });
   return { ...saved, origins, ...(warnings.length > 0 ? { warnings } : {}) };

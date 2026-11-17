@@ -184,6 +184,35 @@ describe("pb param: field locations", () => {
     );
   });
 
+  it("templates a --value that holds a captured {{…}}, the text around it kept as captured", () => {
+    const { escapeTemplates } = require("../../native/playbook-template.cjs");
+    const captured = { note: "a {{x}} b {{y}}", whole: "{{x}}" };
+    const { op } = paramOp(
+      networkOp({ url: "https://shop.test/save", query: escapeTemplates(captured) }),
+      {
+        fields: ["query.note"],
+        as: "v",
+        value: "{{x}}",
+      },
+    );
+    expect(op.args.v).toEqual({ type: "string", default: "{{x}}" });
+    expect(renderRequest(requestOf(op), { v: "Z" }).query).toEqual({
+      note: "a Z b {{y}}",
+      whole: "{{x}}",
+    });
+    const whole = paramOp(op, { fields: ["query.whole"], as: "w", value: "{{x}}" }).op;
+    expect(renderRequest(requestOf(whole), { v: "Z", w: "W" }).query).toEqual({
+      note: "a Z b {{y}}",
+      whole: "W",
+    });
+    // A second part of the same field keeps the first input and the captured text around both.
+    const second = paramOp(op, { fields: ["query.note"], as: "u", value: "b" }).op;
+    expect(renderRequest(requestOf(second), { v: "Z", u: "U" }).query.note).toBe("a Z U {{y}}");
+    expect(() => paramOp(op, { fields: ["query.note"], as: "t", value: "v}} b" })).toThrow(
+      'query.note: "v}} b" overlaps an input in "a {{v}} b {{_open}}y}}"',
+    );
+  });
+
   it("templates a plain header", () => {
     const { op } = paramOp(
       networkOp({ url: "https://api.test/x", headers: { "X-Origin": "https://resy.test" } }),

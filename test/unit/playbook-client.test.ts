@@ -6,6 +6,7 @@ const path = require("node:path");
 
 const clients = require("../../native/playbook-client.cjs");
 const records = require("../../native/playbook-records.cjs");
+const { renderRequest, resolveArgValues } = require("../../native/playbook-template.cjs");
 const directories: string[] = [];
 
 afterEach(() => {
@@ -122,6 +123,40 @@ describe("playbook client projection", () => {
     });
     expect(result.manifest.endpoint.url).toBe("https://example.test/api/search");
   });
+
+  it.each(["{{x}}", "prefix {{x}}", "{{_open}}", "{{", "{{{x}}}"])(
+    "derives a client that sends a captured %s as captured, not as an input",
+    (literal) => {
+      const parent = fs.mkdtempSync(path.join(os.tmpdir(), "surf-client-"));
+      directories.push(parent);
+      const root = path.join(parent, "state");
+      const record = records.startRecord({ site: "fixture", op: "search", tabId: 1, root });
+      records.attachNetworkTrace(
+        record.id,
+        [
+          {
+            id: "r-1",
+            method: "GET",
+            status: 200,
+            type: "XHR",
+            url: `https://example.test/api/search?q=${encodeURIComponent(literal)}`,
+            requestHeaders: { "x-note": literal },
+          },
+        ],
+        root,
+      );
+      const { manifest } = clients.deriveClient("fixture", "search", path.join(parent, "client"), {
+        root,
+        recordId: record.id,
+      });
+      expect(manifest.args).toEqual({});
+      const sent = renderRequest(
+        manifest.endpoint,
+        resolveArgValues(manifest.args, { x: "deleteAll" }),
+      );
+      expect(sent).toMatchObject({ query: { q: literal }, headers: { "x-note": literal } });
+    },
+  );
 
   it("derives from the one clear winner of the ranking, and asks for --request-id when there is none", () => {
     const parent = fs.mkdtempSync(path.join(os.tmpdir(), "surf-client-"));

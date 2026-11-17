@@ -66,7 +66,30 @@ type FakeHostOptions = {
   navigationTraffic?: CapturedRequest[];
   // Merged into what capture holds for each script's request (a response body, say).
   scriptResponse?: Record<string, unknown>;
+  // Answers a playbook record's page context and network capture, and clicks.
+  recording?: boolean;
 };
+
+// What the extension answers for a playbook record and a click, with `recording` on.
+function recordingResponse(message: NativeMessage, currentUrl: string) {
+  switch (message.type) {
+    case "GET_PLAYBOOK_RECORD_CONTEXT":
+      return { id: message.id, origin: new URL(currentUrl).origin, _resolvedTabId: 42 };
+    case "START_NETWORK_CAPTURE":
+    case "STOP_NETWORK_CAPTURE":
+      return {
+        id: message.id,
+        success: true,
+        _resolvedTabId: 42,
+        active: message.type === "START_NETWORK_CAPTURE",
+        interruptions: [],
+      };
+    case "CLICK_SELECTOR":
+      return { id: message.id, success: true, output: "{}", _resolvedTabId: 42 };
+    default:
+      return null;
+  }
+}
 
 type CliResult = {
   code: number | null;
@@ -289,6 +312,10 @@ function startHost(socketPath: string, options: FakeHostOptions = {}) {
     }
   };
 
+  const respond = (message: NativeMessage) =>
+    (options.recording ? recordingResponse(message, currentUrl) : null) ??
+    buildExtensionResponse(message, currentUrl, targetActive, captured);
+
   child.stdout.on("data", (chunk: unknown) => {
     stdoutBuffer = BufferCtor.concat([stdoutBuffer, chunk as BufferLike]);
 
@@ -320,10 +347,7 @@ function startHost(socketPath: string, options: FakeHostOptions = {}) {
         currentUrl = message.url;
       }
       captureTraffic(message);
-      writeNativeMessage(
-        child.stdin,
-        buildExtensionResponse(message, currentUrl, targetActive, captured),
-      );
+      writeNativeMessage(child.stdin, respond(message));
     }
   });
 
@@ -679,6 +703,87 @@ describe("CLI/native-host/fake-extension E2E contract", () => {
       await host.dispose();
     }
   });
+
+  it("saves a recorded op as the record made it, whatever its draft file says", async () => {
+    const socketPath = createSocketPath();
+    const project = fs.mkdtempSync(path.join(os.tmpdir(), "surf-record-save-"));
+    tempDirs.push(project);
+    const host = startHost(socketPath, { recording: true });
+    // pb save reads the record from the CLI's own process.
+    const cli = (args: string[]) =>
+      runCli(socketPath, args, project, { SURF_STATE_DIR: host.stateDir });
+    const selector = '[data-x="{{review_key}}"]';
+    const clicks = () => host.messages.filter((message) => message.type === "CLICK_SELECTOR");
+
+    try {
+      await host.waitForMessage((message) => message.type === "HOST_READY");
+      expect((await cli(["navigate", "https://fixture.test/form"])).code).toBe(0);
+      expect(
+        (await cli(["pb", "record", "start", "fixture", "--op", "save", "--network"])).code,
+      ).toBe(0);
+      expect((await cli(["click", "--selector", selector, "--no-screenshot"])).code).toBe(0);
+      const stopped = await cli(["pb", "record", "stop", "--draft", "--json"]);
+      expect(stopped.code).toBe(0);
+      const { record, draft } = JSON.parse(stopped.stdout);
+      expect(draft).toMatchObject({ effect: "write", safety: { authorization: "explicit" } });
+      const file = path.join(host.stateDir, "records", record.id, "draft", "op.json");
+      const original = fs.readFileSync(file, "utf8");
+      type Draft = {
+        effect?: string;
+        safety: Record<string, unknown>;
+        args: Record<string, unknown>;
+      };
+      const save = (change: (op: Draft) => void) => {
+        const op = JSON.parse(original);
+        change(op);
+        fs.writeFileSync(file, JSON.stringify(op));
+        return cli(["pb", "save", "--from-record", record.id, "--project", "--json"]);
+      };
+
+      // A draft that makes the write implicit and repeatable, or a read, doesn't save.
+      const repeatable = await save((op) =>
+        Object.assign(op.safety, {
+          authorization: "implicit",
+          duplicate: "repeatable-window",
+          windowMs: 0,
+        }),
+      );
+      expect(repeatable.code).toBe(1);
+      expect(repeatable.stderr).toContain("its safety is drafted as");
+      const asRead = await save((op) => {
+        op.effect = "read";
+        Reflect.deleteProperty(op, "safety");
+        Reflect.deleteProperty(op.args, "review_key");
+      });
+      expect(asRead.code).toBe(1);
+      expect(asRead.stderr).toContain(
+        'the record drafts a write op (it ran click, a page write), and the draft\'s effect is "read"',
+      );
+      expect((await cli(["use", "fixture", "save", "--review_key", "k-1"])).stderr).toMatch(
+        /Playbook not found: fixture/,
+      );
+      expect(clicks()).toHaveLength(1);
+
+      // As drafted, it saves a write that needs --write and clicks the selector as recorded.
+      expect((await save(() => undefined)).code).toBe(0);
+      const unwritten = await cli(["use", "fixture", "save", "--review_key", "deleteAll"]);
+      expect(unwritten.stderr).toMatch(/write op fixture save requires --write/);
+      expect(clicks()).toHaveLength(1);
+      const run = await cli([
+        "use",
+        "fixture",
+        "save",
+        "--review_key",
+        "deleteAll",
+        "--write",
+        "--json",
+      ]);
+      expect(run).toMatchObject({ code: 0, stderr: "" });
+      expect(clicks().slice(1)).toEqual([expect.objectContaining({ selector })]);
+    } finally {
+      await host.dispose();
+    }
+  }, 60000);
 
   it("sends an env-supplied header from the caller's shell and writes its value nowhere", async () => {
     const socketPath = createSocketPath();

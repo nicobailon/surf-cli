@@ -65,15 +65,30 @@ function renderRequest(request, args) {
 // Captured text that reads like an input (`{{action}}` in a recorded body) is kept as text: each
 // `{{` that opens one becomes `{{_open}}`, which renderRequest sends as `{{`. No input can take the
 // name _open (an input name starts with a lowercase letter or a digit), and a Surf without this
-// escape stops at it as a missing input instead of sending something else.
+// escape stops at it as a missing input instead of sending something else. The escape is
+// reversible: a captured `{{_open}}` opens a placeholder too, so it is stored as `{{_open}}_open}}`,
+// and every `{{name}}` an escaped text holds is `{{_open}}`.
 const LITERAL_OPEN = "{{_open}}";
 const OPENS_PLACEHOLDER = /\{\{(?=[a-zA-Z0-9._-]+\}\})/g;
+// A workflow also fills `%{name}` from its vars (an op's inputs), so a recorded step argument
+// keeps `%{` as `%{_open}`, which the workflow runtime sends as `%{`.
+const LITERAL_PERCENT_OPEN = "%{_open}";
+const OPENS_VAR = /%\{(?=\w+\})/g;
+
+function escapeText(value, escape) {
+  if (typeof value === "string") return escape(value);
+  if (Array.isArray(value)) return value.map((item) => escapeText(item, escape));
+  if (value && typeof value === "object") return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, escapeText(item, escape)]));
+  return value;
+}
 
 function escapeTemplates(value) {
-  if (typeof value === "string") return value.replace(OPENS_PLACEHOLDER, LITERAL_OPEN);
-  if (Array.isArray(value)) return value.map(escapeTemplates);
-  if (value && typeof value === "object") return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, escapeTemplates(item)]));
-  return value;
+  return escapeText(value, (text) => text.replace(OPENS_PLACEHOLDER, LITERAL_OPEN));
+}
+
+// A recorded step's arguments, every string at any depth kept as recorded when the op runs.
+function escapeStepArgs(value) {
+  return escapeText(value, (text) => text.replace(OPENS_VAR, LITERAL_PERCENT_OPEN).replace(OPENS_PLACEHOLDER, LITERAL_OPEN));
 }
 
 // The text an escaped string stands for, its inputs left in place.
@@ -81,4 +96,4 @@ function unescapeTemplates(text) {
   return text.replace(/\{\{([a-zA-Z0-9._-]+)\}\}/g, (match) => (match === LITERAL_OPEN ? "{{" : match));
 }
 
-module.exports = { LITERAL_OPEN, escapeTemplates, renderRequest, resolveArgValues, unescapeTemplates };
+module.exports = { LITERAL_OPEN, escapeStepArgs, escapeTemplates, renderRequest, resolveArgValues, unescapeTemplates };

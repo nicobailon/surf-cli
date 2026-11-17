@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it } from "vitest";
+import { captureTab } from "../fixtures/capture-tab";
 
 const fs = require("node:fs");
 const os = require("node:os");
@@ -1516,17 +1517,18 @@ describe("activity and explicit record evidence", () => {
       ["several steps", ["navigate", "click"], "write op search can't be saved network-only"],
     ];
     const asRead = [
-      ["read", (op: Op) => (op.effect = "read")],
+      ['"read"', (op: Op) => (op.effect = "read")],
       ["missing", (op: Op) => Reflect.deleteProperty(op, "effect")],
     ] as const;
-    const readRefusal = `op search can't be saved: it replays ${bob}, a write the record captured, and a read op never replays a write (pb record stop --draft --read refuses a record that captured one); save it as a write op ("effect": "write")`;
+    const readRefusal = (effect: string) =>
+      `op search can't be saved: the record drafts a write op (it captured ${bob}), and the draft's effect is ${effect}; a draft can't change an op's effect`;
 
     describe.each(shapes)("with %s", (_shape, commands, prefix) => {
       it.each(asRead)("refuses a captured write when its effect is %s", (_effect, change) => {
         const flow = recordFlow({ commands, origin, trace });
         const { record } = flow.stopped();
         edit(flow.root, record.id, change);
-        expect(() => save(flow.root, record.id)).toThrow(readRefusal);
+        expect(() => save(flow.root, record.id)).toThrow(readRefusal(_effect));
       });
 
       it.each(asRead)(
@@ -1540,17 +1542,18 @@ describe("activity and explicit record evidence", () => {
           });
           const { record } = flow.stopped();
           edit(flow.root, record.id, change);
-          expect(() => save(flow.root, record.id)).toThrow(readRefusal);
+          expect(() => save(flow.root, record.id)).toThrow(readRefusal(_effect));
         },
       );
 
-      it("redrafts with --request-id at save: a read stays refused, a missing effect saves as a write", () => {
+      it("redrafts with --request-id at save from the record: a write, whatever the draft's effect", () => {
         const flow = recordFlow({ commands, origin, trace });
         const { record } = flow.stopped();
         edit(flow.root, record.id, (op) => (op.effect = "read"));
-        expect(() => save(flow.root, record.id, "r_other")).toThrow(
-          `--read refused: the record captured ${bob}, which can change data`,
-        );
+        expect(save(flow.root, record.id, "r_other").origins).toEqual([
+          origin,
+          "https://bob.github.io",
+        ]);
         edit(flow.root, record.id, (op) => Reflect.deleteProperty(op, "effect"));
         const saved = save(flow.root, record.id, "r_other");
         expect(saved.origins).toEqual([origin, "https://bob.github.io"]);
@@ -1572,7 +1575,7 @@ describe("activity and explicit record evidence", () => {
         edit(flow.root, record.id, uncaptured);
         expect(() => save(flow.root, record.id)).toThrow(`${prefix}: ${why}`);
         edit(flow.root, record.id, (op) => (op.effect = "read"));
-        expect(() => save(flow.root, record.id)).toThrow(`op search can't be saved: ${why}`);
+        expect(() => save(flow.root, record.id)).toThrow(readRefusal('"read"'));
         // --request-id at stop names Bob's write, not the edited request.
         const named = recordFlow({
           commands,
@@ -1591,7 +1594,7 @@ describe("activity and explicit record evidence", () => {
       });
     });
 
-    it("takes a request without a method for the GET it sends, not a write", () => {
+    it("refuses a request without a method, which would send a GET", () => {
       const flow = recordFlow({ commands: ["navigate"], trace: [page, create] });
       const { record } = flow.stopped();
       edit(flow.root, record.id, (op) => {
@@ -1599,7 +1602,7 @@ describe("activity and explicit record evidence", () => {
         Reflect.deleteProperty(network?.request ?? {}, "method");
       });
       expect(() => save(flow.root, record.id)).toThrow(
-        "write op search can't be saved: a write op's workflow fallback must be one page-write step, and this draft's is navigate, and its network strategy replays GET https://example.test/api/employees, a read, not the write",
+        "write op search can't be saved: its network strategy has no method, and a draft keeps the method the record captured (POST https://example.test/api/employees)",
       );
     });
   });
@@ -1758,39 +1761,37 @@ describe("activity and explicit record evidence", () => {
             Object.assign(op.safety as Entry, { serverIdempotency: { query: "action" } }),
           ),
         ).toThrow(
-          `${prefix}: safety.serverIdempotency would change the write it replays; save the op as drafted, then add serverIdempotency to the saved op`,
+          `write op search can't be saved: its safety is drafted as {"authorization":"explicit","duplicate":"transactional","key":["review_key"]}, and a draft can't change it; change it on the saved op`,
         );
       });
     });
 
-    it("refuses a read op's second network strategy when it's a write, captured or not", () => {
-      const read = {
-        using: "network",
-        request: { method: "GET", url: `${origin}/read` },
-        verify: { status: 201 },
-      };
-      const uncaptured = {
-        using: "network",
-        request: { method: "POST", url: `${origin}/uncaptured-delete` },
-      };
-      const { save } = flow([]);
+    it("refuses a write network strategy in a read op, which the record never captured", () => {
+      const reading = recordFlow({
+        origin,
+        trace: [{ ...page, id: "r_read", type: "XHR", url: `${origin}/read` }],
+      });
+      const { record, draft } = reading.stopped();
+      expect(draft.effect).toBe("read");
+      const file = path.join(records.recordsRoot(reading.root), record.id, "draft", "op.json");
+      fs.writeFileSync(
+        file,
+        JSON.stringify({
+          ...draft,
+          run: [
+            ...draft.run,
+            { using: "network", request: { method: "POST", url: `${origin}/uncaptured-delete` } },
+          ],
+        }),
+      );
       expect(() =>
-        save((op) => {
-          op.effect = "read";
-          op.run = [read, uncaptured];
+        authoring.saveFromRecord({
+          recordId: record.id,
+          root: reading.root,
+          home: path.dirname(reading.root),
         }),
       ).toThrow(
         `op search can't be saved: it would replay POST ${origin}/uncaptured-delete, which isn't a write the record captured`,
-      );
-      expect(() =>
-        save((op) => {
-          op.run = [
-            read,
-            { using: "network", request: { ...captured, query: { action: "deleteAll" } } },
-          ];
-        }),
-      ).toThrow(
-        `op search can't be saved: it replays POST ${origin}/save, a write the record captured, and a read op never replays a write`,
       );
     });
 
@@ -1827,13 +1828,8 @@ describe("activity and explicit record evidence", () => {
       ["a script strategy", { using: "script", script: "fetch('/delete', { method: 'POST' })" }],
     ])("refuses %s, which the draft builder never makes", (_case, strategy) => {
       const { save } = flow([]);
-      expect(() =>
-        save((op) => {
-          op.effect = "read";
-          op.run.push(strategy);
-        }),
-      ).toThrow(
-        `op search can't be saved: an op saved from a record runs only network and workflow strategies, and this draft has a ${strategy.using} strategy`,
+      expect(() => save((op) => op.run.push(strategy))).toThrow(
+        `write op search can't be saved network-only: an op saved from a record runs only network and workflow strategies, and this draft has a ${strategy.using} strategy`,
       );
     });
   });
@@ -2296,4 +2292,347 @@ describe("values typed with locate.* --action fill", () => {
       );
     },
   );
+});
+
+// pb save --from-record takes what an op sends, and whether it needs --write, from the record:
+// its effect, safety, inputs, strategies, steps and requests. draft/op.json only names and
+// describes the op.
+describe("what a hand-edited draft can't change", () => {
+  const runtime = require("../../native/playbook-runtime.cjs");
+  const origin = "https://alice.github.io";
+  const home = { ...page, url: `${origin}/` };
+  const write = {
+    id: "r_save",
+    method: "POST",
+    status: 200,
+    type: "XHR",
+    url: `${origin}/save?action=preview`,
+    requestHeaders: { "content-type": "application/json", "x-action": "preview" },
+    requestBody: '{"action":"preview"}',
+  };
+  const read = {
+    id: "r_read",
+    method: "GET",
+    status: 200,
+    type: "XHR",
+    url: `${origin}/read?q=shoes`,
+    requestHeaders: { accept: "application/json" },
+  };
+  const DRAFTED_SAFETY = {
+    authorization: "explicit",
+    duplicate: "transactional",
+    key: ["review_key"],
+  };
+  type Request = Entry & { url: string; method?: string; headers?: Entry };
+  type Strategy = Entry & { using: string; request?: Request; steps?: Entry[] };
+  type Op = Entry & {
+    effect?: string;
+    args?: Record<string, Entry>;
+    safety?: Entry;
+    run: Strategy[];
+  };
+  const flow = (options: Parameters<typeof recordFlow>[0]) => {
+    const recorded = recordFlow({ origin, includeInputValues: true, ...options });
+    const { record, draft } = recorded.stopped();
+    const file = path.join(records.recordsRoot(recorded.root), record.id, "draft", "op.json");
+    const save = (change: (op: Op) => void = () => undefined, requestId?: string) => {
+      const op = JSON.parse(fs.readFileSync(file, "utf8"));
+      change(op);
+      fs.writeFileSync(file, JSON.stringify(op));
+      return authoring.saveFromRecord({
+        recordId: record.id,
+        root: recorded.root,
+        home: path.dirname(recorded.root),
+        ...(requestId ? { requestId } : {}),
+      });
+    };
+    const saved = (change?: (op: Op) => void, requestId?: string): Op => {
+      const result = save(change, requestId);
+      return JSON.parse(fs.readFileSync(path.join(result.directory, "ops", "search.json"), "utf8"));
+    };
+    return { root: recorded.root, record, draft: draft as Op, save, saved };
+  };
+  const networkOf = (op: Op) => op.run.find((strategy) => strategy.using === "network") as Strategy;
+  const shapes: [string, Step[], string][] = [
+    ["no steps", [], "write op search can't be saved"],
+    ["one click", ["click"], "write op search can't be saved"],
+    [
+      "navigate + click",
+      [step("navigate", { url: `${origin}/` }), "click"],
+      "write op search can't be saved",
+    ],
+  ];
+  // What the op dispatches: each tool and its arguments, run with a fake tab.
+  const dispatched = async (op: Op, args: Entry = {}) => {
+    const calls: { tool: string; args: Entry }[] = [];
+    // The fake tab answers every tool with {}, so a network strategy fails after it sends.
+    await runtime
+      .runPlaybookOp({
+        playbook: { id: "fixture", origins: [origin] },
+        op,
+        args,
+        executeTool: async (tool: string, toolArgs: Entry) => {
+          if (!tool.startsWith("wait")) {
+            calls.push({ tool, args: toolArgs });
+          }
+          return { output: "{}" };
+        },
+        sleep: async () => undefined,
+      })
+      .catch(() => undefined);
+    return calls;
+  };
+
+  describe.each(shapes)("a write record with %s", (_shape, commands, prefix) => {
+    const writeFlow = () => flow({ commands, trace: [home, write] });
+
+    it.each([
+      [
+        "an implicit, repeatable safety",
+        (op: Op) =>
+          Object.assign(op.safety as Entry, {
+            authorization: "implicit",
+            duplicate: "repeatable-window",
+            windowMs: 0,
+          }),
+      ],
+      ["no safety", (op: Op) => Reflect.deleteProperty(op, "safety")],
+      ["another safety key", (op: Op) => ((op.safety as Entry).key = ["other"])],
+    ])("refuses %s", (_case, change) => {
+      expect(() => writeFlow().save(change)).toThrow(
+        `${prefix}: its safety is drafted as ${JSON.stringify(DRAFTED_SAFETY)}, and a draft can't change it; change it on the saved op`,
+      );
+    });
+
+    it.each([
+      ["read", (op: Op) => (op.effect = "read")],
+      ["missing", (op: Op) => Reflect.deleteProperty(op, "effect")],
+    ])("refuses an effect of %s, whatever else the draft drops", (_case, change) => {
+      const refusal = `op search can't be saved: the record drafts a write op (it captured POST ${origin}/save), and the draft's effect is ${_case === "read" ? '"read"' : "missing"}; a draft can't change an op's effect`;
+      expect(() => writeFlow().save(change)).toThrow(refusal);
+      expect(() =>
+        writeFlow().save((op) => {
+          change(op);
+          op.run = op.run.filter((strategy) => strategy.using !== "network");
+          Reflect.deleteProperty(op, "safety");
+          Reflect.deleteProperty(op.args ?? {}, "review_key");
+        }),
+      ).toThrow(refusal);
+    });
+
+    it("refuses a draft that drops the network strategy the record drafts", () => {
+      expect(() =>
+        writeFlow().save((op) => {
+          op.run = op.run.filter((strategy) => strategy.using !== "network");
+          if (op.run.length === 0) {
+            op.run.push({ using: "workflow", steps: [] });
+          }
+        }),
+      ).toThrow(
+        `${prefix}: it drops the network strategy the record drafts (POST ${origin}/save); a draft holds the record's strategies`,
+      );
+    });
+
+    it("refuses a network request without a method", () => {
+      expect(() =>
+        writeFlow().save((op) => Reflect.deleteProperty(networkOf(op).request ?? {}, "method")),
+      ).toThrow(
+        `${prefix}: its network strategy has no method, and a draft keeps the method the record captured (POST ${origin}/save)`,
+      );
+    });
+
+    it("refuses a read network strategy the draft adds", () => {
+      expect(() =>
+        writeFlow().save((op) =>
+          op.run.splice(1, 0, {
+            using: "network",
+            request: { method: "GET", url: `${origin}/delete-all` },
+          }),
+        ),
+      ).toThrow(
+        `${prefix}: its network strategy sends GET ${origin}/delete-all, and the record drafts POST ${origin}/save`,
+      );
+    });
+
+    it("saves the record's effect and safety with the draft's names and descriptions", () => {
+      const saved = writeFlow().saved((op) => {
+        op.description = "Save the form";
+        (op.args as Record<string, Entry>).review_key.desc = "Order key";
+      });
+      expect(saved).toMatchObject({
+        description: "Save the form",
+        effect: "write",
+        safety: DRAFTED_SAFETY,
+        args: { review_key: { required: true, desc: "Order key" } },
+      });
+    });
+  });
+
+  it("refuses a click-only write op saved as a read, without its safety", () => {
+    const click = flow({ commands: [step("click", { selector: "#submit" })], trace: [home] });
+    expect(click.draft.effect).toBe("write");
+    expect(() =>
+      click.save((op) => {
+        op.effect = "read";
+        Reflect.deleteProperty(op, "safety");
+        op.args = {};
+      }),
+    ).toThrow(
+      "op search can't be saved: the record drafts a write op (it ran click, a page write), and the draft's effect is \"read\"; a draft can't change an op's effect",
+    );
+  });
+
+  it("refuses a read record's draft saved as a write", () => {
+    const reading = flow({ commands: [step("navigate", { url: `${origin}/` })], trace: [read] });
+    expect(reading.draft.effect).toBe("read");
+    expect(() =>
+      reading.save((op) => {
+        op.effect = "write";
+        op.safety = DRAFTED_SAFETY;
+        op.args = { review_key: { required: true } };
+      }),
+    ).toThrow(
+      "write op search can't be saved: the record drafts a read op, and the draft's effect is \"write\"; a draft can't change an op's effect",
+    );
+  });
+
+  it("keeps a read pb record stop --read drafted, at save and with --request-id at save", () => {
+    const other = { ...read, id: "r_other", url: `${origin}/other?q=boots` };
+    const reading = flow({
+      commands: ["click"],
+      trace: [read, other],
+      stop: { draft: true, read: true },
+    });
+    expect(reading.draft.effect).toBe("read");
+    expect(records.readRecord(reading.record.id, reading.root).read).toBe(true);
+    expect(reading.saved()).toMatchObject({ effect: "read" });
+    // The redraft takes --read from the record, not from the draft's effect.
+    const redrafted = reading.saved((op) => Reflect.deleteProperty(op, "effect"), "r_other");
+    expect(redrafted.effect).toBe("read");
+    expect(networkOf(redrafted).request?.url).toBe(`${origin}/other`);
+  });
+
+  it("refuses an origin the draft adds to origins or auth.origins", () => {
+    const both = [origin, "https://bob.github.io"];
+    for (const change of [
+      (draft: Op) => (draft.origins = both),
+      (draft: Op) => (draft.auth = { origins: both }),
+      (draft: Op) => Object.assign(draft, { origins: both, auth: { origins: both } }),
+    ]) {
+      const reading = flow({ trace: [read] });
+      expect(() => reading.save(change)).toThrow(
+        `op search can't be saved: its origins come from the record (${origin}), and a draft can't change them`,
+      );
+      expect(fs.existsSync(path.join(path.dirname(reading.root), ".surf"))).toBe(false);
+    }
+    // The record's own origins, written out, save.
+    const saved = flow({ trace: [read] }).saved((draft) =>
+      Object.assign(draft, { origins: [origin], auth: { origins: [origin] } }),
+    );
+    expect(saved).toMatchObject({ origins: [origin], auth: { origins: [origin] } });
+  });
+
+  describe("a read's network request", () => {
+    const captured = {
+      method: "GET",
+      url: `${origin}/read`,
+      query: { q: "shoes" },
+      headers: { accept: "application/json" },
+    };
+
+    it.each([
+      ["no steps", [] as Step[]],
+      ["a navigate", [step("navigate", { url: `${origin}/` })]],
+    ])("is the captured request with %s, whatever the draft edits", async (_shape, commands) => {
+      const reading = flow({ commands, trace: [read] });
+      expect(reading.draft.effect).toBe("read");
+      const op = reading.saved((draft) => {
+        const request = networkOf(draft).request as Request;
+        request.url = `${origin}/read?q=deleteAll`;
+        request.headers = { ...request.headers, "x-edited": "yes" };
+        request.body = "edited";
+      });
+      expect(networkOf(op).request).toEqual(captured);
+      expect(op.origins).toEqual([origin]);
+      const tab = captureTab();
+      await runtime.runPlaybookOp({
+        playbook: { id: "fixture", origins: [origin] },
+        op: { ...op, run: [networkOf(op)] },
+        executeTool: tab.executeTool,
+      });
+      const [url, init] = tab.fetchImpl.mock.calls[0] as [string, Entry];
+      expect(url).toBe(`${origin}/read?q=shoes`);
+      expect(init).toMatchObject({ method: "GET", headers: { accept: "application/json" } });
+      expect(init.body).toBeUndefined();
+    });
+
+    it.each([
+      ["another site", "https://bob.github.io/uncaptured"],
+      ["another path", `${origin}/uncaptured`],
+    ])("refuses a URL on %s", (_case, url) => {
+      expect(() =>
+        flow({ trace: [read] }).save((op) => {
+          const request = networkOf(op).request as Request;
+          request.url = url;
+          request.headers = { "x-edited": "yes" };
+        }),
+      ).toThrow(
+        `op search can't be saved: its network strategy sends GET ${url}, and the record drafts GET ${origin}/read; save again with --request-id <r_…> to replay another captured request`,
+      );
+    });
+
+    it("refuses a request without a method", () => {
+      expect(() =>
+        flow({ trace: [read] }).save((op) =>
+          Reflect.deleteProperty(networkOf(op).request ?? {}, "method"),
+        ),
+      ).toThrow(
+        `op search can't be saved: its network strategy has no method, and a draft keeps the method the record captured (GET ${origin}/read)`,
+      );
+    });
+
+    it("refuses a network strategy a record that drafts none gets", () => {
+      expect(() =>
+        flow({
+          commands: [step("navigate", { url: `${origin}/` })],
+          trace: [{ ...home, type: "Image", url: `${origin}/logo.png` }],
+        }).save((op) =>
+          op.run.unshift({ using: "network", request: { method: "GET", url: `${origin}/` } }),
+        ),
+      ).toThrow(
+        `op search can't be saved: its network strategy sends GET ${origin}/, and the record drafts no network strategy`,
+      );
+    });
+  });
+
+  describe("recorded step arguments", () => {
+    it("are sent as recorded, a selector holding {{review_key}} or %{review_key} too", async () => {
+      const selector = '[data-x="{{review_key}}"] .a-%{review_key}';
+      const click = flow({ commands: [step("click", { selector })] });
+      const op = click.saved();
+      expect(op.args).toEqual({ review_key: records.REVIEW_KEY_ARG });
+      expect(await dispatched(op, { review_key: "deleteAll" })).toEqual([
+        { tool: "click", args: { selector } },
+      ]);
+    });
+
+    it("are sent as recorded in a URL and a locate name", async () => {
+      const url = `${origin}/p?q={{x}}&r=%{x}&s={{_open}}`;
+      const reading = flow({
+        commands: [step("navigate", { url }), step("locate.role", { role: "link", name: "{{x}}" })],
+      });
+      expect(reading.draft.effect).toBe("read");
+      const calls = await dispatched(reading.saved());
+      expect(calls.map((call) => call.args)).toEqual([{ url }, { role: "link", name: "{{x}}" }]);
+    });
+
+    it("keep a recorded input as an input", async () => {
+      const typed = flow({ commands: [step("type", { text: "<text>", selector: "#q{{text}}" })] });
+      const op = typed.saved();
+      expect(op.args).toEqual({ text: { required: true, desc: "Recorded text" } });
+      expect(await dispatched(op, { text: "hello" })).toEqual([
+        { tool: "type", args: { text: "hello", selector: "#q{{text}}" } },
+      ]);
+    });
+  });
 });

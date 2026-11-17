@@ -4,7 +4,7 @@
 const os = require("os");
 const { editSavedOp, validateOp } = require("./playbooks.cjs");
 const { isSecretHeader, isSensitiveName } = require("./redaction.cjs");
-const { unescapeTemplates } = require("./playbook-template.cjs");
+const { LITERAL_OPEN, escapeTemplates, unescapeTemplates } = require("./playbook-template.cjs");
 const { lineDiff } = require("./text-diff.cjs");
 const { commandMetadata } = require("./workflow-definition.cjs");
 
@@ -208,18 +208,59 @@ function templateSlot(slot, name, literal) {
   const current = slot.value;
   if (typeof current === "string" && current.includes(placeholder)) return { status: "already" };
   if (typeof current === "string" && TEMPLATE_ONLY.test(current)) throw new Error(`${slot.field}: already the input ${current}`);
-  if (literal === undefined || String(current) === literal) {
+  // A recorded `{{…}}` is stored escaped; --value and the input's default are the text it stands
+  // for, and the text around a templated part stays escaped.
+  const text = typeof current === "string" ? unescapeTemplates(current) : current;
+  if (literal === undefined || String(text) === literal) {
     slot.store(placeholder);
-    // A recorded `{{…}}` is stored escaped; the input's value is the text it stands for.
-    return { status: "templated", literal: typeof current === "string" ? unescapeTemplates(current) : current, whole: true, stored: placeholder };
+    return { status: "templated", literal: text, whole: true, stored: placeholder };
   }
-  if (typeof current !== "string") throw new Error(`${slot.field}: "${literal}" not found in ${JSON.stringify(current)}`);
-  const first = current.indexOf(literal);
-  if (first < 0) throw new Error(`${slot.field}: "${literal}" not found in "${current}"`);
-  if (current.indexOf(literal, first + literal.length) >= 0) throw new Error(`${slot.field}: "${literal}" appears more than once in "${current}"; template the whole value instead`);
-  const stored = `${slot.encode(current.slice(0, first))}${placeholder}${slot.encode(current.slice(first + literal.length))}`;
+  if (typeof text !== "string") throw new Error(`${slot.field}: "${literal}" not found in ${JSON.stringify(text)}`);
+  const first = text.indexOf(literal);
+  if (first < 0) throw new Error(`${slot.field}: "${literal}" not found in "${text}"`);
+  if (text.indexOf(literal, first + literal.length) >= 0) throw new Error(`${slot.field}: "${literal}" appears more than once in "${text}"; template the whole value instead`);
+  const pieces = templatePieces(current);
+  const last = first + literal.length;
+  if (pieces.some((piece) => piece.input && piece.start < last && piece.end > first)) throw new Error(`${slot.field}: "${literal}" overlaps an input in "${current}"`);
+  const stored = `${restorePieces(pieces, 0, first, slot.encode)}${placeholder}${restorePieces(pieces, last, text.length, slot.encode)}`;
   slot.store(stored);
   return { status: "templated", literal, whole: false, stored };
+}
+
+// A stored string as pieces of its text (unescapeTemplates'): recorded text, and the inputs in it,
+// each with where it sits in that text.
+function templatePieces(stored) {
+  const pieces = [];
+  let at = 0;
+  let last = 0;
+  const add = (piece, length) => {
+    pieces.push({ ...piece, start: at, end: at + length });
+    at += length;
+  };
+  for (const match of stored.matchAll(/\{\{[a-zA-Z0-9._-]+\}\}/g)) {
+    const before = stored.slice(last, match.index);
+    add({ text: before }, before.length);
+    if (match[0] === LITERAL_OPEN) add({ text: "{{" }, 2);
+    else add({ input: match[0] }, match[0].length);
+    last = match.index + match[0].length;
+  }
+  add({ text: stored.slice(last) }, stored.length - last);
+  return pieces;
+}
+
+// The stored form of the text from `start` to `end`: its recorded text encoded and escaped again,
+// its inputs as they were.
+function restorePieces(pieces, start, end, encode) {
+  let stored = "";
+  let text = "";
+  for (const piece of pieces) {
+    if (piece.end <= start || piece.start >= end) continue;
+    if (piece.input) {
+      stored += escapeTemplates(encode(text)) + piece.input;
+      text = "";
+    } else text += piece.text.slice(Math.max(start - piece.start, 0), Math.min(end, piece.end) - piece.start);
+  }
+  return stored + escapeTemplates(encode(text));
 }
 
 function coerce(value, type, label) {

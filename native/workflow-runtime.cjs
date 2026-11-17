@@ -27,11 +27,14 @@ function getAutoWaitCommand(cmd) {
   return null;
 }
 
+// `%{_open}` is sent as `%{`: a step argument recorded with `%{name}` in it keeps it as text (see
+// escapeStepArgs in playbook-template.cjs), so no var can take the name _open.
 function resolveVar(template, vars) {
   if (typeof template !== "string") return template;
   const match = template.match(/^%\{(\w+)\}$/);
-  if (match) return vars[match[1]] !== undefined ? vars[match[1]] : template;
+  if (match && match[1] !== "_open") return vars[match[1]] !== undefined ? vars[match[1]] : template;
   return template.replace(/%\{(\w+)\}/g, (_, name) => {
+    if (name === "_open") return "%{";
     const value = vars[name];
     if (value === undefined) return `%{${name}}`;
     return typeof value === "object" ? JSON.stringify(value) : String(value);

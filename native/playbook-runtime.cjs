@@ -6,17 +6,19 @@ const { runApiHarvest, watchCapture } = require("./api-harvest.cjs");
 const { htmlExtractFunction, runCollect } = require("./dom-collect.cjs");
 const { editDistance } = require("./edit-distance.cjs");
 const { GLOBAL_OPTIONS } = require("./global-options.cjs");
-const { renderRequest, resolveArgValues } = require("./playbook-template.cjs");
+const { LITERAL_OPEN, renderRequest, resolveArgValues } = require("./playbook-template.cjs");
 const { checkAssertions, createRegexBudget, describeAssertion } = require("./playbook-assertions.cjs");
 const { redactObject } = require("./redaction.cjs");
 const boundedRegex = require("./bounded-regex.cjs");
 const { extractRecords } = require("./records.cjs");
 
+// Fills an op's inputs into its workflow steps. `{{_open}}` is sent as `{{` (see escapeStepArgs).
 function applyTemplate(value, args) {
   if (typeof value === "string") {
     const exact = value.match(/^\{\{([a-zA-Z0-9._-]+)\}\}$/);
-    if (exact) return args[exact[1]];
-    return value.replace(/\{\{([a-zA-Z0-9._-]+)\}\}/g, (_, name) => {
+    if (exact && value !== LITERAL_OPEN) return args[exact[1]];
+    return value.replace(/\{\{([a-zA-Z0-9._-]+)\}\}/g, (match, name) => {
+      if (match === LITERAL_OPEN) return "{{";
       if (args[name] === undefined) throw new Error(`missing template argument: ${name}`);
       return String(args[name]);
     });
