@@ -64,6 +64,7 @@ const {
   startRecord,
   stopRecord,
   traceEntriesForRecord,
+  typedValues,
   updateRecordContext,
 } = require("./playbook-records.cjs");
 const { visibleText } = require("./record-candidates.cjs");
@@ -1797,7 +1798,7 @@ async function handleRecordRequest(tool, args, msg, request) {
       // Bindings are found in the response bodies, which only the live entries hold.
       if (args.draft === true) {
         try {
-          chain = proposeChain({ record, entries: live.entries });
+          chain = proposeChain({ record, entries: live.entries, typed: typedValues(record) });
         } catch (error) {
           log(`record ${record.id}: no chain proposed: ${error.message}`);
         }

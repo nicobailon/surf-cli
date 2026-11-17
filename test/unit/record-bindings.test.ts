@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 const { proposeChain } = require("../../native/record-bindings.cjs");
+const { validateOp } = require("../../native/playbooks.cjs");
 
 type Entry = Record<string, unknown>;
 const record = { id: "rec-1", site: "jobs", op: "postings", origin: "https://jobs.test" };
@@ -208,6 +209,92 @@ describe("proposeChain", () => {
     for (const value of ["posting-1002", "posting-1001", "Jane-Austen", "Albert-Einstein"]) {
       expect(text).not.toContain(value);
     }
+  });
+
+  // A key can be data (a post's id, a session's): no path or field name goes through one.
+  it("never reads through a key that is data", () => {
+    const postId = ["abc", "12345"].join("");
+    const session = ["sess", "kqzx", "wvut"].join("-");
+    const user = ["romeo", "quill"].join("-");
+    const ref = ["ref", "alpha", "beta"].join("-");
+    const proposals = [
+      // A key with a digit.
+      proposeChain({
+        record,
+        entries: [
+          get("r_1", "https://jobs.test/api/feed", json({ posts: { [postId]: { id: postId } } })),
+          get("r_2", `https://jobs.test/api/posts/${postId}`, "{}"),
+        ],
+      }),
+      // A session-like key another request sent in its URL.
+      proposeChain({
+        record,
+        entries: [
+          get("r_0", `https://jobs.test/api/whoami?sid=${session}`, "{}"),
+          get("r_1", "https://jobs.test/api/state", json({ sessions: { [session]: { ref } } })),
+          get("r_2", `https://jobs.test/api/refs/${ref}`, "{}"),
+        ],
+      }),
+      // A key that is also a value in the same body.
+      proposeChain({
+        record,
+        entries: [
+          get(
+            "r_1",
+            "https://jobs.test/api/team",
+            json({ users: { [user]: { login: user, ref } } }),
+          ),
+          get("r_2", `https://jobs.test/api/refs/${ref}`, "{}"),
+        ],
+      }),
+    ];
+    const text = JSON.stringify(proposals);
+    for (const value of [postId, session, user]) {
+      expect(text).not.toContain(value);
+    }
+  });
+
+  // A URL segment the record typed, or a cookie's value, names no input, step or op.
+  it("names nothing after a typed or cookie value in the URL", () => {
+    const typed = ["romeo", "search"].join("-");
+    const crumb = ["velvet", "mode"].join("-");
+    const typedRun = proposeChain({
+      record,
+      typed: [typed],
+      entries: [
+        get("r_1", "https://jobs.test/api/list", postings),
+        get("r_2", `https://jobs.test/api/${typed}/posting-1002`, "{}"),
+      ],
+    });
+    const cookieRun = proposeChain({
+      record,
+      entries: [
+        get("r_1", "https://jobs.test/api/list", postings),
+        get("r_2", `https://jobs.test/api/${crumb}/posting-1002`, "{}", {
+          requestHeaders: { cookie: `pref=${crumb}` },
+        }),
+      ],
+    });
+    for (const [proposal, value] of [
+      [typedRun, typed],
+      [cookieRun, crumb],
+    ]) {
+      expect(proposal.steps[1]).toMatchObject({ id: "page", inputs: { id: "path.3" } });
+      expect(JSON.stringify(proposal)).not.toContain(value.split("-")[0]);
+    }
+  });
+
+  // item is the binding source of an each step, so no step can take it as its id.
+  it("names a step of /items/<id> item_2, as item is no step id", () => {
+    const proposal = proposeChain({
+      record,
+      entries: [
+        get("r_1", "https://jobs.test/api/list", postings),
+        get("r_2", "https://jobs.test/api/items/posting-1002", "{}"),
+      ],
+    });
+    expect(proposal.steps[1]).toMatchObject({ id: "item_2", op: "postings_item_2" });
+    expect(() => validateOp(proposal.op, { origins: [] })).not.toThrow();
   });
 
   it("proposes nothing from a secret-named field, a credential-like value, a header or a cookie", () => {

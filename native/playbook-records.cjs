@@ -149,6 +149,11 @@ function typedSoFar(record, root) {
   return typedValuesForTrace(readEvents(record.id, root), calls).typed;
 }
 
+// Every value the record's steps typed and this host still holds, kept or not (chain names skip them).
+function typedValues(record) {
+  return heldTypingCalls(record.id).flatMap((call) => call.values).map(String);
+}
+
 // A watch event carries the page's URL, which can hold a value a step typed (a results page's ?q=).
 // `urlMarkers` lists the markers surf put in it, so a later pass leaves them as they are.
 function redactWatchEvent(event, typed) {
@@ -634,5 +639,6 @@ module.exports = {
   startRecord,
   stopRecord,
   traceEntriesForRecord,
+  typedValues,
   updateRecordContext,
 };

@@ -68,13 +68,13 @@ function sameValues(values) {
  * place is { kind: "json", steps, segment? } or { kind: "html", selector, attr, segment? }, with
  * `varies`: whether the list the place is in holds other values there too.
  */
-function placesIn(entry) {
+function placesIn(entry, urlData) {
   const body = entry.responseBody;
   if (typeof body !== "string" || body.length > MAX_BODY) return new Map();
   const mime = String(entry.mimeType || entry.responseHeaders?.["content-type"] || "").toLowerCase();
   if (/^\s*[[{]/.test(body)) {
     try {
-      return jsonPlaces(JSON.parse(body), entry.url);
+      return jsonPlaces(JSON.parse(body), entry.url, urlData);
     } catch {}
   }
   if (mime.includes("html") || entry.type === "Document") return htmlPlaces(body, entry.url);
@@ -88,14 +88,31 @@ function addPlace(places, value, place) {
   places.set(value, list);
 }
 
-function jsonPlaces(root, base) {
+// The text of each string or number leaf in a JSON value.
+function leafValues(root) {
+  const values = new Set();
+  const stack = [root];
+  while (stack.length > 0 && values.size <= MAX_LEAVES) {
+    const value = stack.pop();
+    if (typeof value === "string" || typeof value === "number") values.add(String(value));
+    else if (value && typeof value === "object") stack.push(...Object.values(value));
+  }
+  return values;
+}
+
+// `urlData` holds the query values the record's requests sent. A key that holds a digit
+// (as stableId reads ids) or is a value of the body or of `urlData` is data, such as a post's or a
+// session's id: no path goes through it, so no path or field name holds it.
+function jsonPlaces(root, base, urlData = new Set()) {
   const places = new Map();
+  const values = leafValues(root);
+  const isDataKey = (key) => /\d/.test(key) || values.has(key) || urlData.has(key);
   let leaves = 0;
   const visit = (value, steps) => {
     if (leaves > MAX_LEAVES) return;
     if (Array.isArray(value)) return value.forEach((item, index) => visit(item, [...steps, index]));
     if (value && typeof value === "object") {
-      for (const [key, item] of Object.entries(value)) if (KEY.test(key) && !isSensitiveName(key)) visit(item, [...steps, key]);
+      for (const [key, item] of Object.entries(value)) if (KEY.test(key) && !isSensitiveName(key) && !isDataKey(key)) visit(item, [...steps, key]);
       return;
     }
     if (typeof value !== "string" && typeof value !== "number") return;
@@ -192,11 +209,13 @@ function htmlPlaces(html, base) {
 }
 
 // The URL path segments and query values a request sends, each a place a binding can fill.
-function slotsOf(entry) {
+// `nameable` says whether a segment can name an input: not a typed, cookie or secret-looking value.
+function slotsOf(entry, nameable) {
   const url = parseUrl(entry.url);
   if (!url) return [];
   const segments = segmentsOf(url);
-  const slots = segments.map((value, index) => ({ field: `path.${index + 1}`, value, name: nameAfter(segments[index - 1]) || "id", secret: isSensitiveName(segments[index - 1]) }));
+  const nameFrom = (before) => (before !== undefined && nameable(before) ? nameAfter(before) : undefined);
+  const slots = segments.map((value, index) => ({ field: `path.${index + 1}`, value, name: nameFrom(segments[index - 1]) || "id", secret: isSensitiveName(segments[index - 1]) }));
   const keys = [...url.searchParams.keys()];
   for (const [key, value] of url.searchParams) {
     // A repeated key stays in the drafted URL (draftQuery), where no input can take it.
@@ -249,16 +268,17 @@ function uniqueName(base, taken) {
 
 // A step's id: "list" for one that each runs over, else a route word of its path, singular
 // (postings → posting): the one before its first bound segment, or its last. A segment that could
-// be a value (digits, underscores, a slug's case) names no step.
-function stepId(step) {
+// be a value (digits, underscores, a slug's case; one `nameable` refuses) names no step.
+function stepId(step, nameable) {
   if (step.shape?.kind === "list") return "list";
   const url = parseUrl(step.entry.url);
-  const segments = url ? segmentsOf(url).map((segment) => segment.replace(/\.html?$/i, "")) : [];
-  const isWord = (segment) => typeof segment === "string" && /^[a-z][a-z-]{0,29}$/.test(segment) && !PLAIN_SEGMENT.test(segment);
+  const segments = url ? segmentsOf(url) : [];
+  const bare = (segment) => segment.replace(/\.html?$/i, "");
+  const isWord = (segment) => typeof segment === "string" && nameable(segment) && /^[a-z][a-z-]{0,29}$/.test(bare(segment)) && !PLAIN_SEGMENT.test(bare(segment));
   const bound = step.bindings.map((binding) => /^path\.(\d+)$/.exec(binding.slot.field)?.[1]).filter(Boolean).map(Number);
   const before = bound.length > 0 ? segments[Math.min(...bound) - 2] : undefined;
   const word = isWord(before) ? before : segments.filter((segment, index) => isWord(segment) && !bound.includes(index + 1)).at(-1);
-  return snake(singular(word ?? "")) || "page";
+  return snake(singular(bare(word ?? ""))) || "page";
 }
 
 // Whether `target` was already bound in this chain: the same method, origin, path and query keys
@@ -282,15 +302,25 @@ function describeBinding(binding) {
  * pb save --from-record --chain saves, `steps` the op each step runs (its request, the inputs its
  * URL takes, the extract the steps after it read) and `bindings` one line per binding.
  */
-function proposeChain({ record, entries }) {
+function proposeChain({ record, entries, typed = [] }) {
   const reads = entries.filter((entry) => !neverReplayed(entry, record.origin) && requestEffect(entry) === "read" && entry.status >= 200 && entry.status < 300);
   if (reads.length < 2) return null;
   const echoes = secretHeaderEchoes(entries.flatMap((entry) => [entry.requestHeaders, entry.responseHeaders]));
   const secrets = [...echoes.long, ...echoes.short];
   const looksSecret = (value) => redactCredentialLiterals(value) !== value || secrets.some((secret) => secret === value || (secret.length >= 8 && (secret.includes(value) || value.includes(secret))));
+  const typedValues = new Set(typed.map(String));
+  const nameable = (segment) => !typedValues.has(segment) && !looksSecret(segment);
+  const urlCache = new Map();
+  const urlValuesOf = (entry) => {
+    if (!urlCache.has(entry)) urlCache.set(entry, urlValues(entry));
+    return urlCache.get(entry);
+  };
+  // The query values the record sent. Path segments stay out: a route word (items, postings) is
+  // a JSON key too, and an id in a path holds a digit or is a value of the body.
+  const urlData = new Set(entries.flatMap((entry) => [...(parseUrl(entry.url)?.searchParams.values() ?? [])]));
   const placeCache = new Map();
   const places = (entry) => {
-    if (!placeCache.has(entry)) placeCache.set(entry, placesIn(entry));
+    if (!placeCache.has(entry)) placeCache.set(entry, placesIn(entry, urlData));
     return placeCache.get(entry);
   };
 
@@ -302,13 +332,13 @@ function proposeChain({ record, entries }) {
     const sources = [...earlier.filter((other) => steps.has(other)), ...earlier.filter((other) => !steps.has(other))];
     const pending = { each: null, shapes: new Map() };
     const bindings = [];
-    for (const slot of slotsOf(entry)) {
+    for (const slot of slotsOf(entry, nameable)) {
       if (looksSecret(slot.value)) continue;
       for (const source of sources) {
         const step = steps.get(source);
         // An each step's result is a list of its runs, not the response it recorded.
         if (step?.each) continue;
-        if (urlValues(source).has(slot.value)) continue;
+        if (urlValuesOf(source).has(slot.value)) continue;
         const place = (places(source).get(slot.value) ?? []).find((candidate) => (candidate.kind === "html" ? candidate.varies : !candidate.list || candidate.list.varies));
         if (!place) continue;
         const shape = shapeOf(place);
@@ -344,9 +374,10 @@ function proposeChain({ record, entries }) {
   if (steps.size === 0) return null;
 
   const ordered = reads.filter((entry) => steps.has(entry)).map((entry) => steps.get(entry));
-  const ids = new Set();
+  // item is the record an each step runs for (playbooks.cjs), never a step id.
+  const ids = new Set(["item"]);
   for (const step of ordered) {
-    step.id = uniqueName(stepId(step), ids);
+    step.id = uniqueName(stepId(step, nameable), ids);
     step.op = `${record.op}_${step.id}`.slice(0, 64);
   }
   const extractOf = (step) => {
