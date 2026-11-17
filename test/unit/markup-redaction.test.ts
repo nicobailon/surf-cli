@@ -348,7 +348,8 @@ describe("markup contexts a browser or an XML parser reads differently from the 
       [
         SHOP,
         '<!DOCTYPE r [<!ENTITY x "sh&#111;p">]><r a="&x;">&x;</r>',
-        `<!DOCTYPE r [<!ENTITY x "${MARK}">]><r a="${MARK}">${MARK}</r>`,
+        // A reference in a declared value is read again where it's used, which this doesn't model.
+        "<redacted/>",
       ],
       // The declared value holds part of it; the reference completes it.
       [
@@ -433,6 +434,61 @@ describe("markup a browser or an XML parser reads past the tokenizer fails close
     expect(redact(SHOP, "sh&#111;p", XML)).toBe(MARK);
     // Plain text has no entities to its readers.
     expect(redact(SHOP, "sh&#111;p", { "content-type": "text/plain" })).toBe("sh&#111;p");
+  });
+
+  it("redacts an HTML or XML body as markup though it also parses as JSON", () => {
+    const encoded = `sh&#${"111"};p`;
+    const encodedLong = `${LONG_SECRET.slice(0, 9)}&#${"111"};${LONG_SECRET.slice(10)}`;
+    const cases: [string, string, Record<string, string>][] = [
+      [SHOP, JSON.stringify(encoded), HTML],
+      [SHOP, JSON.stringify({ x: encoded }), HTML],
+      [SHOP, JSON.stringify([encoded]), HTML],
+      [LONG_SECRET, JSON.stringify(encodedLong), HTML],
+      [LONG_SECRET, JSON.stringify({ x: encodedLong }), HTML],
+      [SHOP, JSON.stringify({ x: encoded }), XML],
+    ];
+    // Still JSON, as it came: the body a browser would read the secret from goes whole.
+    expect(cases.map(([secret, body, type]) => redact(secret, body, type))).toEqual(
+      cases.map(() => JSON.stringify("<redacted>")),
+    );
+    // A JSON value that is the secret goes as JSON redaction has it; the markup pass keeps the rest.
+    expect(redact(SHOP, JSON.stringify({ x: SHOP, y: "ok" }), HTML)).toBe(
+      JSON.stringify({ x: "<redacted>", y: "ok" }),
+    );
+    expect(redact(SHOP, JSON.stringify({ x: `a ${SHOP} b` }), HTML)).toBe(
+      JSON.stringify({ x: `a ${MARK} b` }),
+    );
+  });
+
+  it("reads HTML text with U+0000 dropped, as a browser builds it", () => {
+    const NUL = String.fromCharCode(0);
+    const split = `${SHOP.slice(0, 2)}${NUL}${SHOP.slice(2)}`;
+    const splitLong = `${LONG_SECRET.slice(0, 5)}${NUL}${LONG_SECRET.slice(5)}`;
+    expect(redact(SHOP, `<r>${split}</r>`, HTML)).toBe(`<r>${MARK}</r>`);
+    expect(redact(SHOP, `<p>a ${split} b</p>`)).toBe(`<p>a ${MARK} b</p>`);
+    expect(redact(SHOP, `<r>${NUL}${SHOP}</r>`)).toBe(`<r>${NUL}${MARK}</r>`);
+    expect(redact(LONG_SECRET, `<r>${splitLong}</r>`)).toBe(`<r>${MARK}</r>`);
+    // A browser reads U+0000 as U+FFFD in a value and in raw text, but the final check doesn't tell
+    // contexts apart, so a word split there masks the body.
+    for (const body of [`<r v="${split}"/>`, `<script>${split}</script>`]) {
+      expect(redact(SHOP, body)).toBe(WHOLE);
+    }
+    // Not a word once joined: `x` + `shop`.
+    expect(redact(SHOP, `<r>x${NUL}${SHOP}</r>`)).toBe(`<r>x${NUL}${SHOP}</r>`);
+  });
+
+  it("masks the document when a declared entity's value holds markup or a reference", () => {
+    const bodies = [
+      `<!DOCTYPE r [<!ENTITY x "<q ${SHOP}='v'>ok</q>">]><r>&x;</r>`,
+      `<!DOCTYPE r [<!ENTITY x "<q ${SHOP}='v'/>">]><r>&x;</r>`,
+      `<!DOCTYPE r [<!ENTITY x "<![CDATA[${SHOP}]]>">]><r>&x;</r>`,
+      `<!DOCTYPE r [<!ENTITY x "<?${SHOP} ok?>">]><r>&x;</r>`,
+      `<!DOCTYPE r [<!ENTITY x "&#60;q/&#62;${SHOP}">]><r>&x;</r>`,
+    ];
+    expect(bodies.map((body) => redact(SHOP, body, XML))).toEqual(bodies.map(() => WHOLE));
+    // One that can't spell the secret in any reading stays.
+    const plain = '<!DOCTYPE r [<!ENTITY x "<q/>">]><r>ok</r>';
+    expect(redact(SHOP, plain, XML)).toBe(plain);
   });
 
   it("fails closed on a closing svg or math tag that doesn't match the open foreign element", () => {
@@ -553,6 +609,30 @@ describe("markup a browser or an XML parser reads past the tokenizer fails close
         [LONG_SECRET, "<r>alpha-ech&amp;#111;-4826</r>"],
       ];
       expect(leaks.map(([secret, body]) => check(secret, body))).toEqual(leaks.map(() => WHOLE));
+    });
+
+    it("reads HTML text with U+0000 dropped, but not surf's own markers", () => {
+      const NUL = String.fromCharCode(0);
+      const split = (value: string, at: number) => `${value.slice(0, at)}${NUL}${value.slice(at)}`;
+      for (const [secret, body] of [
+        [SHOP, `<r>${split(SHOP, 2)}</r>`],
+        [SHOP, `<r>${split(`sh&#${"111"};p`, 2)}</r>`],
+        [SHOP, `<r>&${NUL}#${"111"};</r>`.replace("<r>", "<r>sh").replace("</r>", "p</r>")],
+        [LONG_SECRET, `<r>${split(LONG_SECRET, 5)}</r>`],
+      ]) {
+        expect(check(secret, body)).toBe(WHOLE);
+      }
+      // XML has no such rule (a parser rejects U+0000).
+      expect(
+        missesAll(`<r>${split(LONG_SECRET, 5)}</r>`, rulesOf([LONG_SECRET]), { xml: true }),
+      ).toBe(`<r>${split(LONG_SECRET, 5)}</r>`);
+      // A marker between two halves is no NUL a browser drops.
+      const halves = `<r>${SHOP.slice(0, 2)}${MARK}${SHOP.slice(2)}</r>`;
+      const marked = markup.backstopped((text: string) => ({
+        output: text,
+        markers: [[5, 5 + MARK.length]],
+      }));
+      expect(marked(halves, rulesOf([SHOP]))).toBe(halves);
     });
 
     it("keeps a short secret that isn't a word, and anything inside its own markers", () => {

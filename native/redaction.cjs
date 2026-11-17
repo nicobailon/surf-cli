@@ -152,8 +152,15 @@ function redactEchoString(text, rules) {
 // A parsed JSON value: "<redacted>" when it is a secret whole (see isEchoedJson); else its strings by
 // redactEchoString and its secret keys renamed, at any depth; numbers and other keys as they are. A
 // bare number, boolean or null is "<redacted>" when its text holds a secret, as redactEchoBody has it.
-function redactEchoJson(value, secrets) {
+// The parsed body of an HTML or XML response (by `contentType`) is redacted as its JSON text is, by
+// redactEchoBody, which reads it as markup too.
+function redactEchoJson(value, secrets, { contentType = "" } = {}) {
   if (isEchoedJson(value, secrets)) return "<redacted>";
+  if (isMarkupType(contentType)) {
+    const text = JSON.stringify(value);
+    const redacted = redactEchoBody(text, secrets, { contentType });
+    return redacted === text ? value : JSON.parse(redacted);
+  }
   if (value === null || typeof value === "number" || typeof value === "boolean") {
     const text = JSON.stringify(value);
     return redactEchoBody(text, secrets) === text ? value : "<redacted>";
@@ -307,7 +314,9 @@ const FORM_PATTERN = /^[^=&\s<>]+=[^&\s<>]*(?:&[^=&\s<>]+=[^&\s<>]*)*$/;
 // JSON goes through redactEchoBody. A text that is a secret whole, as written, goes whole, though
 // it parses as JSON that holds something else (`"a"` for the secret `"a"`), as `<redacted/>` when
 // it holds markup or is HTML or XML by `contentType` (the body's), which goes by its tokens though
-// it has no tag. `contentType` also tells XML from HTML; so does an XML declaration.
+// it has no tag. `contentType` also tells XML from HTML; so does an XML declaration. An HTML or XML
+// body that parses as JSON is still markup to its readers: after JSON redaction it goes by its tokens
+// too, so the final check (see markup-redaction.cjs) always reads it.
 function redactEchoText(text, secrets, { contentType = "" } = {}) {
   const rules = echoRules(secrets);
   const source = String(text);
@@ -319,9 +328,13 @@ function redactEchoText(text, secrets, { contentType = "" } = {}) {
     const parsed = JSON.parse(source);
     json = typeof parsed === "string" || (parsed !== null && typeof parsed === "object");
   } catch {}
-  if (json) return redactEchoJsonText(source, rules);
+  const xml = isXmlBody(source, contentType);
+  if (json) {
+    const redacted = redactEchoJsonText(source, rules);
+    return markup ? redactEchoWords(redacted, rules, { xml, markup }) : redacted;
+  }
   if (!markup && FORM_PATTERN.test(source)) return redactEchoQuery(source, rules);
-  return redactEchoWords(source, rules, { xml: isXmlBody(source, contentType), markup });
+  return redactEchoWords(source, rules, { xml, markup });
 }
 
 // A body's content type: its `content-type` header, else the `mimeType` capture gave it.

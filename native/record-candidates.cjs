@@ -141,7 +141,8 @@ function summarizeResponse(entry, page, { sample: withSample = false, redact = [
     const whole = withSample && isEchoedJson(parsed.value, secrets);
     Object.assign(summary, fieldsOf(parsed.value, { names: withSample && !whole, hide }));
     if (whole) sample = JSON.stringify("<redacted>");
-    else if (withSample) sample = JSON.stringify(redactEchoJson(redactSensitiveFields(parsed.value), secrets));
+    // By its content type too, so a JSON body served as XML is read as markup.
+    else if (withSample) sample = JSON.stringify(redactEchoJson(redactSensitiveFields(parsed.value), secrets, { contentType: mimeOf(entry) }));
   } else if (kind === "html") {
     text = visibleText(body);
     if (withSample) sample = redactEchoText(text, secrets);

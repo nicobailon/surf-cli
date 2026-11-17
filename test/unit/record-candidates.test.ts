@@ -60,6 +60,25 @@ describe("summarizeResponse", () => {
     expect(summary).not.toHaveProperty("fieldNames");
   });
 
+  it("samples a JSON body served as XML by the markup rules, which decode its entities", () => {
+    const SHOP = ["sh", "op"].join("");
+    const encoded = `sh&#${"111"};p`;
+    const sample = (mimeType: string) =>
+      candidates.summarizeResponse(
+        get("r_1", "XHR", `${ORIGIN}/api/books`, {
+          mimeType,
+          requestHeaders: { "x-csrf-token": SHOP },
+          responseBody: JSON.stringify({ note: encoded, title: "Sharp Objects" }),
+        }),
+        candidates.pageWords(PAGE_TEXT),
+        { sample: true },
+      ).sample;
+    expect(sample("application/xml")).toBe(JSON.stringify("<redacted>"));
+    expect(sample("application/json")).toBe(
+      JSON.stringify({ note: encoded, title: "Sharp Objects" }),
+    );
+  });
+
   it("samples a whole-secret JSON body as <redacted> though it holds a secret-named field", () => {
     const secret = JSON.stringify({ [["to", "ken"].join("")]: ["sh", "op"].join("") });
     const summary = candidates.summarizeResponse(

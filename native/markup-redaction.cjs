@@ -10,7 +10,8 @@
 //   whitespace or the content's edges, `>` before it or `<` after it, or a matching quote on each
 //   side, as in free text). Every content is also matched with its entities decoded, raw text and
 //   comments too, since a later reader may decode them; a match that isn't written out plainly
-//   masks the whole content.
+//   masks the whole content. HTML text is read with U+0000 dropped, as a browser drops it, so a
+//   secret it splits goes as a word.
 // - Contents a browser may read otherwise than the tokenizer (text and comments inside `<svg>` or
 //   `<math>`, CDATA in HTML, bogus comments such as `<?x>`) go whole on any hit, read as written or
 //   decoded, with a word bounded by any character that can end one in a text, a tag or a value. So
@@ -25,7 +26,8 @@
 // - An XML doctype is read by scanDoctype, internal subset included: a secret in a quoted value goes
 //   as in text (a short one bounded loosely); one elsewhere in it masks the body. A reference to an
 //   entity it declares counts as the entity's text. A subset with parameter entities, attribute
-//   lists or processing instructions masks the body when any reading could spell a secret.
+//   lists, processing instructions or an entity value that holds `<` or `&` masks the body when
+//   any reading could spell a secret.
 // - The XML declaration and a namespace declaration's value are never rewritten: a secret in either
 //   masks the body.
 // - A secret that crosses tokens masks every token content it touches: a long one always, a short
@@ -36,7 +38,8 @@
 //   whole body.
 // - Last, a check that doesn't trust the tokenizer (see exposes): an output that shows a secret
 //   outside its markers in any reading, as written or decoded by HTML's or XML's rules up to three
-//   times, a long one anywhere and a short one as a whole word, masks the whole body.
+//   times (in HTML, each also with U+0000 dropped), a long one anywhere and a short one as a whole
+//   word, masks the whole body.
 
 const RAW_TEXT_TAGS = new Set(["iframe", "noembed", "noframes", "plaintext", "script", "style", "xmp"]);
 // HTML elements whose content a browser reads as foreign (SVG, MathML), not as HTML.
@@ -151,7 +154,8 @@ function xmlEntities(source, start, end, expand, work, declaredOnly = false) {
 // spans: its quoted values and comments as `literal`, the rest as `dtd`; the general entities it
 // declares, by name, each the place of its value; and `unsupported` when its internal subset uses
 // what this reading doesn't model: parameter entities (`<!ENTITY % x ...>`, `%x;`), attribute
-// lists (`<!ATTLIST`, with their defaults and normalized values) or processing instructions.
+// lists (`<!ATTLIST`, with their defaults and normalized values), processing instructions, or a
+// general entity whose value holds `<` or `&` (markup or a reference, parsed again where it's used).
 // Null when the prolog has none.
 function scanDoctype(source, work) {
   let at = source.charCodeAt(0) === 0xfeff ? 1 : 0;
@@ -186,6 +190,9 @@ function scanDoctype(source, work) {
       const end = close < 0 ? source.length : close;
       cut("literal", at + 1, end);
       if (pending !== null && !entities.has(pending)) entities.set(pending, { start: at + 1, end });
+      // A general entity's value that holds markup or a reference is parsed again where it is used,
+      // as elements, CDATA or more references, which this reading doesn't model.
+      if (pending !== null && /[<&]/.test(source.slice(at + 1, end))) unsupported = true;
       pending = null;
       at = end + 1;
     } else if (!subset && char === "[") {
@@ -530,6 +537,10 @@ function tokenize(source, xml, work) {
   }
   found = found.filter((span) => span.end > span.start);
   const expand = entityExpander(source, doctype, work);
+  // Where U+0000 stands, for HTML text (below); found once, so no span looks past its end.
+  const nuls = [];
+  if (!xml) for (let at = source.indexOf("\0"); at >= 0; at = source.indexOf("\0", at + 1)) nuls.push(at);
+  work.steps += nuls.length;
   for (const span of found) {
     if (!span.entities && DECODED_APART.has(span.kind)) {
       span.entities = xml ? xmlEntities(source, span.start, span.end, expand, work) : htmlEntities(source, span.start, span.end, work);
@@ -537,9 +548,30 @@ function tokenize(source, xml, work) {
       // The tokenizer decodes characters' and predefined entities, not those the doctype declares.
       const declared = xmlEntities(source, span.start, span.end, expand, work, true);
       if (declared) span.entities = [...(span.entities || []), ...declared].sort((a, b) => a.start - b.start);
+    } else if (nuls.length > 0 && span.kind === "text" && !span.ambiguous) {
+      // A browser drops U+0000 from HTML text, so `sh\0op` reads as one word: each is a piece that
+      // reads as nothing, written out as it is (see piecesOf).
+      const dropped = [];
+      for (let index = firstAtOrAfter(nuls, span.start); index < nuls.length && nuls[index] < span.end; index++) {
+        work.steps++;
+        dropped.push({ start: nuls[index], end: nuls[index] + 1, text: "", dropped: true });
+      }
+      if (dropped.length > 0) span.entities = [...(span.entities || []), ...dropped].sort((a, b) => a.start - b.start);
     }
   }
   return { spans: found, kinds, tags, doctype, expand, unsure };
+}
+
+// The index of the first of `sorted` (ascending) at or after `value`, by binary search.
+function firstAtOrAfter(sorted, value) {
+  let low = 0;
+  let high = sorted.length;
+  while (low < high) {
+    const mid = (low + high) >> 1;
+    if (sorted[mid] < value) low = mid + 1;
+    else high = mid;
+  }
+  return low;
 }
 
 // Every start of `pattern` in `text`, overlapping ones included, in linear time (Knuth-Morris-Pratt).
@@ -715,13 +747,14 @@ function plan(source, tokens, rules, work) {
 }
 
 // A span's content as pieces in order, each { start, end, text, entity }: its literal runs as
-// written and its entities decoded.
+// written and its entities decoded. A U+0000 HTML text drops (`dropped`) reads as nothing, but is
+// written out plainly, so a word it splits goes as a word.
 function piecesOf(source, span) {
   const pieces = [];
   let at = span.start;
-  for (const { start, end, text } of span.entities) {
+  for (const { start, end, text, dropped } of span.entities) {
     if (start > at) pieces.push({ start: at, end: start, text: source.slice(at, start), entity: false });
-    pieces.push({ start, end, text, entity: true });
+    pieces.push({ start, end, text, entity: !dropped });
     at = end;
   }
   if (span.end > at) pieces.push({ start: at, end: span.end, text: source.slice(at, span.end), entity: false });
@@ -874,27 +907,35 @@ function srcdocHolds(source, span, found, rules, work) {
 // Whether a secret of `rules` shows in `text` outside `markers` in any reading, whatever the
 // tokenizer took the text for: as written, and decoded by HTML's rules and by XML's, each up to
 // DECODE_LEVELS times (an srcdoc's document is decoded twice); a long one anywhere, a short one as
-// a whole word (see isWord, `loose` for its loose bounds). It is the final check on every output.
-function exposes(text, rules, markers, work, loose = false) {
+// a whole word (see isWord, `loose` for its loose bounds). In `html`, each reading is also read
+// with U+0000 dropped, as a browser drops it from text, and decoded from there. It is the final
+// check on every output.
+function exposes(text, rules, markers, work, { loose = false, html = false } = {}) {
   let hidden = text;
   if (markers.length > 0) {
+    // Hidden by a character no reading drops or decodes, which joins no word.
     const parts = [];
     let last = 0;
     for (const [start, end] of markers) {
-      parts.push(text.slice(last, start), "\u0000".repeat(end - start));
+      parts.push(text.slice(last, start), "\uFFFF".repeat(end - start));
       last = end;
     }
     parts.push(text.slice(last));
     hidden = parts.join("");
   }
-  if (matchesIn(hidden, rules, work, loose).length > 0) return true;
-  for (const decode of [decodeHtml, decodeXml]) {
-    let reading = hidden;
-    for (let level = 0; level < DECODE_LEVELS && reading.includes("&"); level++) {
-      const next = decode(reading, work);
-      if (next === reading) break;
-      if (matchesIn(next, rules, work, loose).length > 0) return true;
-      reading = next;
+  const shows = (reading) => matchesIn(reading, rules, work, loose).length > 0 || (html && reading.includes("\0") && matchesIn(reading.replaceAll("\0", ""), rules, work, loose).length > 0);
+  const starts = [hidden];
+  if (html && hidden.includes("\0")) starts.push(hidden.replaceAll("\0", ""));
+  for (const start of starts) {
+    if (shows(start)) return true;
+    for (const decode of [decodeHtml, decodeXml]) {
+      let reading = start;
+      for (let level = 0; level < DECODE_LEVELS && reading.includes("&"); level++) {
+        const next = decode(reading, work);
+        if (next === reading) break;
+        if (shows(next)) return true;
+        reading = next;
+      }
     }
   }
   return false;
@@ -1062,7 +1103,7 @@ function redactByTokens(text, rules, { xml, work }) {
   // A doctype this reading doesn't model can make any text of its pieces; a page a browser reads
   // otherwise than the tokenizer, any of its words.
   if (tokens.doctype?.unsupported && couldSpell(text, rules, work)) return whole;
-  if (tokens.unsure && exposes(text, rules, [], work, true)) return whole;
+  if (tokens.unsure && exposes(text, rules, [], work, { loose: true, html: !xml })) return whole;
   const planned = plan(text, tokens, rules, work);
   if (planned.whole) return whole;
   if (planned.masked.size === 0 && planned.ranges.length === 0) return { output: text, markers: [] };
@@ -1083,7 +1124,7 @@ function backstopped(redact) {
     try {
       const { output, markers } = redact(text, rules, { xml, work });
       if (output === MARKUP_WHOLE_MARKER) return output;
-      return exposes(output, rules, markers, work) ? MARKUP_WHOLE_MARKER : output;
+      return exposes(output, rules, markers, work, { html: !xml }) ? MARKUP_WHOLE_MARKER : output;
     } catch {
       // No tokenizer (it failed to load, or to read the text): only a text that holds no secret
       // and no entity can be shown as it is.

@@ -87,14 +87,14 @@ function publicResponse(response, entries) {
   const secrets = secretHeaderEchoes(captured.flatMap((entry) => [entry.requestHeaders, entry.responseHeaders]));
   const view = { ...response };
   if (typeof view.url === "string") view.url = redactEchoUrl(redactUrlIfSecret(view.url), secrets);
-  if (typeof view.body === "string" && view.base64Encoded !== true) {
-    const contentType =
-      bodyContentType(view.headers, view.mimeType || view.contentType) ||
-      captured.map((entry) => bodyContentType(entry.responseHeaders, entry.mimeType)).find(Boolean) ||
-      "";
-    view.body = redactEchoBody(view.body, secrets, { contentType });
-  }
-  if (view.json !== undefined) view.json = redactEchoJson(view.json, secrets);
+  const contentType =
+    bodyContentType(view.headers, view.mimeType || view.contentType) ||
+    captured.map((entry) => bodyContentType(entry.responseHeaders, entry.mimeType)).find(Boolean) ||
+    "";
+  if (typeof view.body === "string" && view.base64Encoded !== true) view.body = redactEchoBody(view.body, secrets, { contentType });
+  // A parsed body (network.wait, network.replay) by the same content type, so an HTML or XML one
+  // that parses as JSON is read as markup too.
+  if (view.json !== undefined) view.json = redactEchoJson(view.json, secrets, { contentType });
   // The content type printed with it (network.wait, network.replay), redacted as network.get
   // shows the header, after the body was read by it as captured.
   if (typeof view.contentType === "string") view.contentType = redactHeaders({ "content-type": view.contentType }, new Set(), secrets)["content-type"];

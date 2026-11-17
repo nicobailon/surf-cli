@@ -1215,6 +1215,55 @@ describe("publicResponse", () => {
     },
   );
 
+  it("redacts the parsed JSON of an HTML or XML response as markup, as its body is", async () => {
+    const encoded = `sh&#${"111"};p`;
+    for (const [type, body] of [
+      ["text/html", JSON.stringify(encoded)],
+      ["text/html; charset=utf-8", JSON.stringify({ x: encoded })],
+      ["application/xml", JSON.stringify([encoded])],
+    ]) {
+      const entry = {
+        id: "r_1",
+        url: "https://example.test/api",
+        method: "GET",
+        status: 200,
+        type: "Fetch",
+        requestHeaders: { "x-csrf-token": SHOP },
+        responseHeaders: { "content-type": type },
+        _loadingFinished: true,
+        flags: [],
+      };
+      let listed = 0;
+      const executeTool = async (tool: string) => {
+        if (tool === "network") {
+          return { entries: listed++ === 0 ? [] : [entry] };
+        }
+        if (tool === "network.body") {
+          return { body };
+        }
+        throw new Error(`unexpected tool ${tool}`);
+      };
+      const response = await harvest.waitForResponse({
+        executeTool,
+        sleep: async () => undefined,
+        match: "/api",
+      });
+      expect(response).toMatchObject({ json: JSON.parse(body) });
+      expect(helpers.publicResponse(response, [entry]).json).toBe("<redacted>");
+    }
+    // JSON served as JSON keeps its parsed view as JSON redaction has it.
+    const plain = helpers.publicResponse(
+      { url: "https://example.test/api", json: { x: encoded } },
+      [
+        {
+          requestHeaders: { "x-csrf-token": SHOP },
+          responseHeaders: { "content-type": "application/json" },
+        },
+      ],
+    );
+    expect(plain.json).toEqual({ x: encoded });
+  });
+
   it("keeps the parsed JSON that only holds the secret inside it, as the body keeps it", () => {
     const requestHeaders = { "x-csrf-token": "[1]" };
     const view = helpers.publicResponse({ url: "https://example.test/api", json: { v: [1] } }, [
