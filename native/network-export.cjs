@@ -155,6 +155,7 @@ module.exports = {
   INTERNAL_FIELDS,
   MAX_NETWORK_EXPORT_FILE_BYTES,
   publicEntry,
+  redactHeaders,
   serializeNetworkExport,
   writeNetworkExport,
 };

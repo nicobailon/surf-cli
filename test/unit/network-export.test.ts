@@ -863,13 +863,14 @@ describe("echo redaction that keeps every structure parseable", () => {
   it("replaces a short secret in markup only as a whole word, with a marker that opens no tag", () => {
     const cases: [Record<string, string>, string, string][] = [
       // A value that is the secret goes; a name only when the secret has 4 characters or more.
-      [{ "x-csrf-token": "a" }, "<a a >link</a>", "<a a >link</a>"],
+      [{ "x-csrf-token": "a" }, "<a a>link</a>", "<a a>link</a>"],
       [{ Authorization: resy }, `<input value= ${TRUE} >`, `<input value= ${MARK} >`],
       [{ "x-csrf-token": "a" }, "<p>a</p> a <b> a </b>", `<p>${MARK}</p> ${MARK} <b> ${MARK} </b>`],
+      // A word inside a value goes too (the value rule: a whole value, or a word in one).
       [
         { Authorization: resy },
         `<input value="${SHOP}" title='${SHOP}' alt="${SHOP} x">`,
-        `<input value="${MARK}" title='${MARK}' alt="${SHOP} x">`,
+        `<input value="${MARK}" title='${MARK}' alt="${MARK} x">`,
       ],
       // A comment, a script and a stray quote hide nothing; the marker can't end them.
       [{ Authorization: resy }, `<!-- ${SHOP} -->`, `<!-- ${MARK} -->`],
@@ -893,6 +894,10 @@ describe("echo redaction that keeps every structure parseable", () => {
       expect(kept).toBe(expected);
       expect(tagNames(kept)).toEqual(tagNames(body));
     }
+    // A short name followed by a space reads as a word to the final check, which masks the body.
+    expect(entry({ "x-csrf-token": "a" }, { responseBody: "<a a >link</a>" }).responseBody).toBe(
+      "<redacted/>",
+    );
   });
 
   it("finds words in one linear pass, so an unfinished tag or a large page can't stall it", () => {
@@ -985,12 +990,18 @@ describe("echo redaction that keeps every structure parseable", () => {
 
   it("replaces an attribute name only for a secret of 4 characters or more", () => {
     const doctype = "<!DOCTYPE r [<!ELEMENT r EMPTY>]> ";
-    const short = [`${doctype}<r a = "x"/>`, '<r a ="x"/>', '<r b="1" a\n= "x"/>'];
+    const short = [`${doctype}<r a="x"/>`, '<r a="x"/>', '<r b="1"\na="x"/>'];
     const kept = short.map(
       (body) => entry({ "x-csrf-token": "a" }, { responseBody: body }).responseBody,
     );
     expect(kept).toEqual(short);
     expect(parseMarkup(kept).map(({ xml }) => xml)).toEqual(short.map(() => "valid"));
+    // One spaced from its `=` stands as a word, which the final check can't tell from text: the
+    // body goes whole, still never renamed.
+    const spaced = [`${doctype}<r a = "x"/>`, '<r a ="x"/>', '<r b="1" a\n= "x"/>'];
+    expect(
+      spaced.map((body) => entry({ "x-csrf-token": "a" }, { responseBody: body }).responseBody),
+    ).toEqual(spaced.map(() => "<redacted/>"));
     // A key-length secret goes as a name, as a JSON key does.
     const named = entry(
       { Authorization: resy },
@@ -1041,7 +1052,8 @@ describe("an XML body on every surface that prints it", () => {
   // Bodies HTML and XML read differently: XML decodes the script's entity and reads its tags.
   const BODIES: [string, string][] = [
     ["<r><script>sh&#111;p</script></r>", "<r><script>(redacted)</script></r>"],
-    [`<r><script>a<b>${SHOP}</b></script></r>`, "<r><script>a<b>(redacted)</b></script></r>"],
+    // HTML reads the script's text as raw text, where the name is no word; XML renames it.
+    [`<r><script><b ${SHOP}="1"/></script></r>`, '<r><script><b redacted="1"/></script></r>'],
   ];
 
   // A host's tools over one captured request: `network` lists `listed` after a first, empty
@@ -1171,5 +1183,42 @@ describe("an XML body on every surface that prints it", () => {
     });
     expect(response.contentType).toBe(XML_TYPE);
     expect(helpers.publicResponse(response, [original]).body).toBe(expected);
+  });
+
+  it("redacts a secret echoed in the contentType network.wait and network.replay print, as network.get does", async () => {
+    const helpers = require("../../native/host-helpers.cjs");
+    const harvest = require("../../native/api-harvest.cjs");
+    const secret = ["sfuhv", "jpci", "24"].join("-");
+    const [body, expected] = BODIES[1];
+    const echoed = { "x-csrf-token": SHOP, authorization: secret };
+    const entry = {
+      id: "r_1",
+      method: "POST",
+      url: "https://example.test/api",
+      status: 200,
+      type: "Fetch",
+      _loadingFinished: true,
+      flags: [],
+      requestHeaders: echoed,
+      responseHeaders: { "content-type": `${XML_TYPE}; profile="${secret}"` },
+      responseBody: body,
+    };
+    const shown = exporter.publicEntry(entry).responseHeaders["content-type"];
+    expect(shown).not.toContain(secret);
+    const { executeTool, reset } = fakeTools({ got: entry, listed: entry, body });
+    const sleep = async () => undefined;
+    const wait = helpers.publicResponse(
+      await harvest.waitForResponse({ executeTool, sleep, match: "/api" }),
+      [entry],
+    );
+    reset();
+    const replay = helpers.publicResponse(
+      await harvest.replay({ executeTool, sleep, id: entry.id, allowPost: true }),
+      [entry],
+    );
+    for (const response of [wait, replay]) {
+      // The body is still read by the content type as captured: as XML.
+      expect(response).toMatchObject({ contentType: shown, body: expected });
+    }
   });
 });

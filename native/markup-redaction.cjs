@@ -1,36 +1,55 @@
 // Echoes of secret values in markup (HTML or XML), redacted by its tokens rather than its words:
 // htmlparser2's tokenizer gives each token's place in the text, and a secret is replaced only
 // inside the content of one token, so every tag, comment, CDATA section and quote stays where it
-// was. Required lazily by redaction.cjs, and only for a text that holds markup, so nothing else
-// loads htmlparser2.
+// was. Required lazily by redaction.cjs, and only for a text that holds markup or an HTML or XML
+// body, so nothing else loads htmlparser2.
 //
 // The rules, applied to each token's content (`rules` as redaction.cjs's echoRules builds them):
 // - Text, comment, CDATA, processing-instruction and declaration contents and raw text (`<script>`,
 //   `<style>`...): a long secret goes anywhere in it, a short one only as a whole word (bounded by
-//   whitespace, the content's edges, or a matching quote on each side). Every content is also
-//   matched with its entities decoded, raw text and comments too, since a later reader may decode
-//   them; a match that isn't written out plainly masks the whole content.
+//   whitespace or the content's edges, `>` before it or `<` after it, or a matching quote on each
+//   side, as in free text). Every content is also matched with its entities decoded, raw text and
+//   comments too, since a later reader may decode them; a match that isn't written out plainly
+//   masks the whole content.
 // - Contents a browser may read otherwise than the tokenizer (text and comments inside `<svg>` or
 //   `<math>`, CDATA in HTML, bogus comments such as `<?x>`) go whole on any hit, read as written or
-//   decoded, with a word bounded by any character that can end one in a text, a tag or a value.
+//   decoded, with a word bounded by any character that can end one in a text, a tag or a value. So
+//   does an `srcdoc` value, decoded as many times as it decodes. A closing tag that matches no open
+//   SVG or MathML element, or an HTML tag that ends foreign content, masks the body when it holds a
+//   secret so bounded.
 // - An attribute value goes whole when, with its entities decoded, it is a secret; a long secret
-//   also goes inside one.
+//   also goes inside one, and a short one where it stands as a word in it, as in text.
 // - An attribute name is renamed `redacted` (`redacted-2`... when that name is taken) when it is a
 //   secret of 4 characters or more whole, or holds a long one; a namespace declaration (`xmlns`,
 //   `xmlns:p`) is never renamed, as the prefix it binds is still used. A tag name is never touched.
 // - An XML doctype is read by scanDoctype, internal subset included: a secret in a quoted value goes
 //   as in text (a short one bounded loosely); one elsewhere in it masks the body. A reference to an
-//   entity it declares counts as the entity's text.
+//   entity it declares counts as the entity's text. A subset with parameter entities, attribute
+//   lists or processing instructions masks the body when any reading could spell a secret.
+// - The XML declaration and a namespace declaration's value are never rewritten: a secret in either
+//   masks the body.
 // - A secret that crosses tokens masks every token content it touches: a long one always, a short
 //   one when it stands as a whole word, and then only text, comment, CDATA and raw-text contents.
 // - Anything that can't be placed this way (a long secret in a tag name, a secret in a namespace
 //   declaration's name or a processing instruction's target, an output that tokenizes differently
-//   from its input, still holds a secret, or shows a long one anywhere, as written or decoded, or XML
-//   that was well formed and no longer is) masks the whole body.
+//   from its input or still holds a secret, or XML that was well formed and no longer is) masks the
+//   whole body.
+// - Last, a check that doesn't trust the tokenizer (see exposes): an output that shows a secret
+//   outside its markers in any reading, as written or decoded by HTML's or XML's rules up to three
+//   times, a long one anywhere and a short one as a whole word, masks the whole body.
 
 const RAW_TEXT_TAGS = new Set(["iframe", "noembed", "noframes", "plaintext", "script", "style", "xmp"]);
 // HTML elements whose content a browser reads as foreign (SVG, MathML), not as HTML.
 const FOREIGN_TAGS = new Set(["svg", "math"]);
+// Foreign elements whose content a browser reads as HTML again, by namespace.
+const INTEGRATION_POINTS = { svg: new Set(["foreignobject", "desc", "title"]), math: new Set(["mi", "mo", "mn", "ms", "mtext"]) };
+// HTML tags that end foreign content when a browser meets them in it (`<font>` with some
+// attributes too); and `annotation-xml`, which a browser reads as HTML or not by its encoding.
+const LEAVE_FOREIGN = new Set([
+  ..."b big blockquote body br center code dd div dl dt em embed h1 h2 h3 h4 h5 h6 head hr i img li listing menu meta nobr ol p pre ruby s small span strike strong sub sup table tt u ul var font annotation-xml".split(" "),
+]);
+// HTML elements that never have a closing tag.
+const VOID_TAGS = new Set(["area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta", "param", "source", "track", "wbr"]);
 // The one marker, in text, values, raw text, comments, CDATA, processing instructions and
 // declarations alike: it has no `<`, `>`, quote, `&`, `]`, `-`, `/`, `=`, backtick or space, so it
 // can't open a tag, end a comment, CDATA section, value or declaration, or start an entity, wherever
@@ -43,7 +62,9 @@ const NAME_MARKER = "redacted";
 const TEXT_LIKE = new Set(["text", "raw", "comment", "cdata"]);
 // Contents the tokenizer leaves undecoded, decoded apart, since a browser or a later reader may
 // decode them: a script's or style's text, comments, CDATA, processing instructions, declarations.
-const DECODED_APART = new Set(["raw", "comment", "cdata", "pi", "decl", "literal"]);
+const DECODED_APART = new Set(["raw", "comment", "cdata", "pi", "xmldecl", "decl", "literal"]);
+// How many times the final check decodes the output by each entity rule (see exposes).
+const DECODE_LEVELS = 3;
 // Whether a character is whitespace, as `\s` reads it.
 const isSpace = (char) => {
   if (char === undefined) return false;
@@ -67,6 +88,11 @@ function loadTokenizer() {
 // Whether a body is XML: by its content type, or by an XML declaration at its start.
 function isXmlBody(text, contentType) {
   return /[/+]xml\b/i.test(String(contentType || "")) || /^\uFEFF?\s*<\?xml[\s?]/.test(text);
+}
+
+// Whether a content type is HTML or XML, whose readers decode entities in any text.
+function isMarkupType(contentType) {
+  return /[/+]xml\b|\bhtml\b/i.test(String(contentType || ""));
 }
 
 // The entities in `source`[start, end) as a browser decodes HTML text, each { start, end, text }, or
@@ -122,8 +148,11 @@ function xmlEntities(source, start, end, expand, work, declaredOnly = false) {
 
 // An XML document's DOCTYPE, which the tokenizer ends at its first `>` though an internal subset
 // (`[<!ENTITY x "a>b">]`) holds more: where it stands in the prolog, { start, end, closed }, as
-// spans: its quoted values and comments as `literal`, the rest as `dtd`; and the general entities
-// it declares, by name, each the place of its value. Null when the prolog has none.
+// spans: its quoted values and comments as `literal`, the rest as `dtd`; the general entities it
+// declares, by name, each the place of its value; and `unsupported` when its internal subset uses
+// what this reading doesn't model: parameter entities (`<!ENTITY % x ...>`, `%x;`), attribute
+// lists (`<!ATTLIST`, with their defaults and normalized values) or processing instructions.
+// Null when the prolog has none.
 function scanDoctype(source, work) {
   let at = source.charCodeAt(0) === 0xfeff ? 1 : 0;
   for (;;) {
@@ -147,6 +176,7 @@ function scanDoctype(source, work) {
   let pending = null;
   let subset = false;
   let closed = false;
+  let unsupported = false;
   at += "<!DOCTYPE".length;
   while (at < source.length) {
     work.steps++;
@@ -179,12 +209,23 @@ function scanDoctype(source, work) {
       const end = close < 0 ? source.length : close;
       cut("literal", at + 4, end);
       at = end + 3;
+    } else if (subset && source.startsWith("<?", at)) {
+      // Its data may hold `]>` or a quote; it is read past whole.
+      const close = source.indexOf("?>", at + 2);
+      unsupported = true;
+      at = close < 0 ? source.length : close + 2;
+    } else if (subset && (source.startsWith("<!ATTLIST", at) || char === "%")) {
+      unsupported = true;
+      at++;
     } else if (subset && source.startsWith("<!ENTITY", at)) {
       // `<!ENTITY name "value">` declares a general entity; `<!ENTITY % name ...>` one for the DTD.
       let next = at + "<!ENTITY".length;
       while (isSpace(source[next])) next++;
       const parameter = source[next] === "%";
-      if (parameter) next++;
+      if (parameter) {
+        unsupported = true;
+        next++;
+      }
       while (isSpace(source[next])) next++;
       let nameEnd = next;
       while (nameEnd < source.length && !isSpace(source[nameEnd]) && !isQuote(source[nameEnd]) && source[nameEnd] !== ">") nameEnd++;
@@ -196,7 +237,7 @@ function scanDoctype(source, work) {
   }
   const end = Math.min(at, source.length);
   if (end > stretch) spans.push({ kind: "dtd", start: stretch, end });
-  return { start, end, closed, spans, entities };
+  return { start, end, closed, spans, entities, unsupported };
 }
 
 // The declared entities' text, references expanded, for `doctype` in `source`: a function from a
@@ -234,7 +275,10 @@ function entityExpander(source, doctype, work) {
 // { start, end, text }, `text` decoded) for contents that hold any, `tag` for names, `ambiguous`
 // for contents a browser may read otherwise than the tokenizer (see planSpan) and `outside` for
 // XML text outside the root; the kinds of every token, to compare one tokenization with another;
-// each tag's names, attributes and end, for the XML check (see wellFormed); and the doctype.
+// each tag's names, attributes and end, for the XML check (see wellFormed); the doctype and its
+// entities' expansion; and `unsure` when HTML leaves foreign content where a browser wouldn't, or
+// stays in it where a browser leaves (a closing tag that matches no open SVG or MathML element, an
+// HTML tag that ends foreign content): then the tokenizer's reading can't be trusted.
 function tokenize(source, xml, work) {
   const Tokenizer = loadTokenizer();
   const doctype = xml ? scanDoctype(source, work) : null;
@@ -248,9 +292,13 @@ function tokenize(source, xml, work) {
   let attr = null;
   let openName = "";
   let raw = false;
-  // How deep in SVG or MathML (HTML), or in elements (XML), the tokenizer stands.
-  let foreign = 0;
+  // The elements open in and under SVG or MathML (HTML), innermost last, each { name, ns, html }:
+  // `ns` the element's foreign namespace, or null for an HTML element in an integration point;
+  // `html` when its content is read as HTML. And how deep in elements the tokenizer stands (XML).
+  const foreign = [];
+  let unsure = false;
   let level = 0;
+  const inForeign = () => foreign.length > 0 && !foreign.at(-1).html;
   // Within a tag the body may end in, how far its names and values reach.
   let inTag = false;
   let tagEnd = 0;
@@ -266,7 +314,7 @@ function tokenize(source, xml, work) {
     if (text && text.end === start) text.end = end;
     else {
       flushText();
-      text = { kind: raw ? "raw" : "text", start, end, entities: null, ambiguous: foreign > 0, outside: level === 0 };
+      text = { kind: raw ? "raw" : "text", start, end, entities: null, ambiguous: foreign.length > 0, outside: level === 0 };
     }
   };
   const textEntity = (codepoint, end) => {
@@ -283,7 +331,16 @@ function tokenize(source, xml, work) {
     (text.entities ||= []).push({ start, end, text: decoded });
   };
   const endValue = (end) => {
-    spans.push({ kind: "value", start: attr.start ?? end, end, entities: attr.entities });
+    const name = input.slice(...attr.name);
+    // An srcdoc value is a document of its own; a namespace declaration's value names one.
+    spans.push({
+      kind: "value",
+      start: attr.start ?? end,
+      end,
+      entities: attr.entities,
+      srcdoc: name.toLowerCase() === "srcdoc",
+      namespace: xml && /^xmlns(?::|$)/.test(name),
+    });
     kinds.push("value");
     attr.value = [attr.start ?? end, end];
   };
@@ -292,10 +349,43 @@ function tokenize(source, xml, work) {
     flushText();
     kinds.push(kind);
   };
+  // An HTML tag the tokenizer has read to its end, kept on `foreign` as a browser keeps it.
+  const openElement = (selfClosing) => {
+    const top = foreign.at(-1);
+    if (!top || top.html) {
+      // In HTML, <svg> and <math> start foreign content (closing at once when self-closing); an
+      // HTML element in an integration point stays open until its closing tag, `/>` or not.
+      if (FOREIGN_TAGS.has(openName)) {
+        if (!selfClosing) foreign.push({ name: openName, ns: openName, html: false });
+      } else if (top && !VOID_TAGS.has(openName)) foreign.push({ name: openName, ns: null, html: true });
+      return;
+    }
+    // In foreign content, `/>` closes an element; an integration point holds HTML.
+    if (!selfClosing) foreign.push({ name: openName, ns: top.ns, html: INTEGRATION_POINTS[top.ns].has(openName) });
+  };
+  // A closing tag in or under foreign content closes the innermost foreign element of its name,
+  // and every one inside it, as a browser does; one a browser reads otherwise (`</math>` in <svg>)
+  // makes the reading unsure, and the stack is no longer kept.
+  const closeElement = (name) => {
+    if (unsure || foreign.length === 0) return;
+    if (foreign.at(-1).ns === null) {
+      if (foreign.at(-1).name === name) foreign.pop();
+      else unsure = true;
+      return;
+    }
+    for (let at = foreign.length - 1; at >= 0 && foreign[at].ns !== null; at--) {
+      step();
+      if (foreign[at].name === name) {
+        foreign.length = at;
+        return;
+      }
+    }
+    unsure = true;
+  };
   const tokenizer = new Tokenizer(
     { xmlMode: xml, decodeEntities: true },
     {
-      isInForeignContext: () => foreign > 0,
+      isInForeignContext: inForeign,
       ontext: textPiece,
       ontextentity: textEntity,
       onopentagname: (start, end) => {
@@ -306,6 +396,7 @@ function tokenize(source, xml, work) {
         raw = false;
         inTag = true;
         tagEnd = end;
+        if (!xml && inForeign() && LEAVE_FOREIGN.has(openName)) unsure = true;
       },
       onattribname: (start, end) => {
         step();
@@ -357,8 +448,8 @@ function tokenize(source, xml, work) {
         inTag = false;
         if (tag) tag.ended = true;
         if (xml) level++;
-        else if (FOREIGN_TAGS.has(openName)) foreign++;
-        raw = !xml && foreign === 0 && RAW_TEXT_TAGS.has(openName);
+        else openElement(false);
+        raw = !xml && !inForeign() && RAW_TEXT_TAGS.has(openName);
       },
       onselfclosingtag: () => {
         structure("selfclose");
@@ -366,14 +457,15 @@ function tokenize(source, xml, work) {
         if (tag) Object.assign(tag, { ended: true, selfClosing: true });
         // HTML reads `<script/>` as an open tag, so raw text follows it all the same; an SVG or
         // MathML element closes there.
-        raw = !xml && foreign === 0 && RAW_TEXT_TAGS.has(openName);
+        if (!xml) openElement(true);
+        raw = !xml && !inForeign() && RAW_TEXT_TAGS.has(openName);
       },
       onclosetag: (start, end) => {
         structure("close");
         tags.push({ kind: "close", name: [start, end] });
         raw = false;
         if (xml) level = Math.max(0, level - 1);
-        else if (foreign > 0 && FOREIGN_TAGS.has(input.slice(start, end).toLowerCase())) foreign--;
+        else closeElement(input.slice(start, end).toLowerCase());
       },
       oncomment: (start, end, offset) => {
         structure("comment");
@@ -381,7 +473,7 @@ function tokenize(source, xml, work) {
         // `>`: a bogus one, which a reader may take otherwise. Its `?` stays, so it stays one.
         const bogus = !input.startsWith("<!--", start - 4);
         const from = bogus && input[start] === "?" ? start + 1 : start;
-        spans.push({ kind: "comment", start: from, end: end - offset, ambiguous: bogus || foreign > 0 });
+        spans.push({ kind: "comment", start: from, end: end - offset, ambiguous: bogus || foreign.length > 0 });
       },
       oncdata: (start, end, offset) => {
         structure("cdata");
@@ -390,13 +482,14 @@ function tokenize(source, xml, work) {
       },
       onprocessinginstruction: (start, end) => {
         structure("pi");
-        // Its target (`<?target data?>`) is a name; its data, text.
+        // Its target (`<?target data?>`) is a name; its data, text, but for the XML declaration
+        // (`<?xml version="1.0"?>`), whose fields a parser takes as syntax.
         let target = start;
         while (target < end && !isSpace(input[target])) target++;
         spans.push({ kind: "target", start, end: target });
         let data = target;
         while (data < end && isSpace(input[data])) data++;
-        spans.push({ kind: "pi", start: data, end });
+        spans.push({ kind: xml && input.slice(start, target).toLowerCase() === "xml" ? "xmldecl" : "pi", start: data, end });
       },
       ondeclaration: (start, end) => {
         structure("decl");
@@ -446,7 +539,7 @@ function tokenize(source, xml, work) {
       if (declared) span.entities = [...(span.entities || []), ...declared].sort((a, b) => a.start - b.start);
     }
   }
-  return { spans: found, kinds, tags, doctype };
+  return { spans: found, kinds, tags, doctype, expand, unsure };
 }
 
 // Every start of `pattern` in `text`, overlapping ones included, in linear time (Knuth-Morris-Pratt).
@@ -482,30 +575,29 @@ function occurrences(text, pattern, work) {
   return found;
 }
 
-// Whether text[start, end) stands as a whole word within [from, to): whitespace or an edge on each
-// side, or the same quote on both; or, when `loose`, any character that can end a word in a text,
-// a tag or a value (see isLooseEdge).
+// Whether text[start, end) stands as a whole word within [from, to), as in free text: whitespace
+// or an edge on each side, `>` before it or `<` after it, or the same quote on both; or, when
+// `loose`, any character that can end a word in a text, a tag or a value (see isLooseEdge).
 function isWord(text, start, end, from, to, loose = false) {
   const before = start > from ? text[start - 1] : undefined;
   const after = end < to ? text[end] : undefined;
   if (loose) return isLooseEdge(before) && isLooseEdge(after);
   if (isQuote(before) && before === after) return true;
-  return (before === undefined || isSpace(before)) && (after === undefined || isSpace(after));
+  return (before === undefined || before === ">" || isSpace(before)) && (after === undefined || after === "<" || isSpace(after));
 }
 
-// The matches of `rules` in `text` (a token's decoded content): each long secret anywhere, each
-// short one as a whole word when `short` (see isWord for `loose`); as [start, end) pairs.
-function matchesIn(text, rules, short, work, loose = false) {
+// The matches of `rules` in `text` (a token's decoded content, or a whole reading of a body): each
+// long secret anywhere, each short one as a whole word (see isWord for `loose`); as [start, end)
+// pairs.
+function matchesIn(text, rules, work, loose = false) {
   const hits = [];
   for (const value of rules.long) {
     if (value.length <= text.length) for (const at of occurrences(text, value, work)) hits.push([at, at + value.length]);
   }
-  if (short) {
-    for (const value of rules.short) {
-      for (let at = text.indexOf(value); at >= 0; at = text.indexOf(value, at + 1)) {
-        work.steps++;
-        if (isWord(text, at, at + value.length, 0, text.length, loose)) hits.push([at, at + value.length]);
-      }
+  for (const value of rules.short) {
+    for (let at = text.indexOf(value); at >= 0; at = text.indexOf(value, at + 1)) {
+      work.steps++;
+      if (isWord(text, at, at + value.length, 0, text.length, loose)) hits.push([at, at + value.length]);
     }
   }
   return hits;
@@ -520,10 +612,16 @@ function disjoint(hits) {
   return result;
 }
 
-// Contents that can't be masked in place: a processing instruction's target and a doctype's own
-// syntax are names, and a namespace declaration's name binds a prefix the document still uses.
+// Contents that can't be masked in place: a processing instruction's target, the XML declaration
+// and a doctype's own syntax are names and syntax; a namespace declaration's name binds a prefix
+// the document still uses, and its value names the namespace, which a new value could make
+// another's.
 const cantMask = (source, span) =>
-  span.kind === "target" || span.kind === "dtd" || (span.kind === "name" && /^xmlns(?::|$)/i.test(source.slice(span.start, span.end)));
+  span.kind === "target" ||
+  span.kind === "xmldecl" ||
+  span.kind === "dtd" ||
+  (span.kind === "value" && span.namespace) ||
+  (span.kind === "name" && /^xmlns(?::|$)/i.test(source.slice(span.start, span.end)));
 
 // Where `rules` would redact `source`: { whole: true } when it can't be placed, else each token
 // content that goes whole (`masked`, by span index) and the ranges replaced within the others.
@@ -639,10 +737,11 @@ function planSpan(source, span, found, rules, work) {
     if (!rules.keys.has(name) && !found.some((hit) => hit.long)) return [];
     return cantMask(source, span) ? "whole" : "mask";
   }
+  if (span.srcdoc) return srcdocHolds(source, span, found, rules, work) ? "mask" : [];
   // Content a browser may read otherwise than the tokenizer goes whole on any hit, read as written
   // or decoded, with words bounded loosely; so do a target's or a doctype's names, with the body.
   if (span.ambiguous || cantMask(source, span)) {
-    const hit = (text) => matchesIn(text, rules, true, work, true).length > 0;
+    const hit = (text) => matchesIn(text, rules, work, true).length > 0;
     const decoded = span.entities ? piecesOf(source, span).map((piece) => piece.text).join("") : null;
     if (!found.some((hit) => hit.long) && !hit(source.slice(start, end)) && !(decoded !== null && hit(decoded))) return [];
     return cantMask(source, span) ? "whole" : "mask";
@@ -656,12 +755,11 @@ function planSpan(source, span, found, rules, work) {
       return [[start, end - 1]];
     }
   }
-  // A short secret goes from a value only whole (above); from a doctype's quoted value as a word
-  // bounded loosely, as the text it may become.
-  const short = kind !== "value";
+  // A short secret goes from a value whole (above) or as a word in it, as from text; from a
+  // doctype's quoted value as a word bounded loosely, as the text it may become.
   const loose = kind === "literal";
   const hits = [];
-  for (const hit of found) if (hit.long || (short && isWord(source, hit.start, hit.end, start, end, loose))) hits.push([hit.start, hit.end]);
+  for (const hit of found) if (hit.long || isWord(source, hit.start, hit.end, start, end, loose)) hits.push([hit.start, hit.end]);
   if (span.entities) {
     const pieces = piecesOf(source, span);
     const decoded = pieces.map((piece) => piece.text).join("");
@@ -672,7 +770,7 @@ function planSpan(source, span, found, rules, work) {
       return offset;
     });
     let piece = 0;
-    for (const [from, to] of disjoint(matchesIn(decoded, rules, short, work, loose)).sort((a, b) => a[0] - b[0])) {
+    for (const [from, to] of disjoint(matchesIn(decoded, rules, work, loose)).sort((a, b) => a[0] - b[0])) {
       while (offsets[piece] + pieces[piece].text.length <= from) piece++;
       let last = piece;
       while (offsets[last] + pieces[last].text.length < to) last++;
@@ -742,10 +840,42 @@ function newName(source, span, renamed) {
   return name;
 }
 
-// Whether a long secret of `rules` shows in `text` outside `markers`, as written or with every
-// entity decoded, wherever the tokenizer put it: a check that doesn't trust its reading of the page.
-function showsLong(text, xml, markers, rules, work) {
-  if (rules.long.length === 0) return false;
+// `text` decoded once as a browser decodes HTML text, or as an XML parser does (characters' and the
+// five predefined entities).
+function decodeHtml(text, work) {
+  const entities = htmlEntities(text, 0, text.length, work);
+  return entities ? piecesOf(text, { start: 0, end: text.length, entities }).map((piece) => piece.text).join("") : text;
+}
+function decodeXml(text, work) {
+  const entities = xmlEntities(text, 0, text.length, () => null, work);
+  return entities ? piecesOf(text, { start: 0, end: text.length, entities }).map((piece) => piece.text).join("") : text;
+}
+
+// Whether an srcdoc value holds a secret: as written, and decoded as many times as it decodes (the
+// document it holds may hold another), a short one bounded loosely, as a page's text or a tag's
+// value. Decoding that keeps going past a budget for its length counts as holding one.
+function srcdocHolds(source, span, found, rules, work) {
+  if (found.some((hit) => hit.long)) return true;
+  let text = source.slice(span.start, span.end);
+  if (matchesIn(text, rules, work, true).length > 0) return true;
+  if (span.entities) text = piecesOf(source, span).map((piece) => piece.text).join("");
+  let budget = 8 * text.length + 1024;
+  for (;;) {
+    if (matchesIn(text, rules, work, true).length > 0) return true;
+    if (!text.includes("&")) return false;
+    const next = decodeHtml(text, work);
+    if (next === text) return false;
+    budget -= next.length;
+    if (budget < 0) return true;
+    text = next;
+  }
+}
+
+// Whether a secret of `rules` shows in `text` outside `markers` in any reading, whatever the
+// tokenizer took the text for: as written, and decoded by HTML's rules and by XML's, each up to
+// DECODE_LEVELS times (an srcdoc's document is decoded twice); a long one anywhere, a short one as
+// a whole word (see isWord, `loose` for its loose bounds). It is the final check on every output.
+function exposes(text, rules, markers, work, loose = false) {
   let hidden = text;
   if (markers.length > 0) {
     const parts = [];
@@ -757,13 +887,30 @@ function showsLong(text, xml, markers, rules, work) {
     parts.push(text.slice(last));
     hidden = parts.join("");
   }
-  const entities = xml ? xmlEntities(hidden, 0, hidden.length, () => null, work) : htmlEntities(hidden, 0, hidden.length, work);
-  const decoded = entities ? piecesOf(hidden, { start: 0, end: hidden.length, entities }).map((piece) => piece.text).join("") : hidden;
-  return rules.long.some((value) => occurrences(hidden, value, work).length > 0 || occurrences(decoded, value, work).length > 0);
+  if (matchesIn(hidden, rules, work, loose).length > 0) return true;
+  for (const decode of [decodeHtml, decodeXml]) {
+    let reading = hidden;
+    for (let level = 0; level < DECODE_LEVELS && reading.includes("&"); level++) {
+      const next = decode(reading, work);
+      if (next === reading) break;
+      if (matchesIn(next, rules, work, loose).length > 0) return true;
+      reading = next;
+    }
+  }
+  return false;
+}
+
+// Whether any reading of `text` could spell a secret of `rules`: it has a reference, which can
+// stand for any character, or every character of a secret is in it.
+function couldSpell(text, rules, work) {
+  work.steps += text.length;
+  if (text.includes("&")) return true;
+  const characters = new Set(text);
+  return [...rules.long, ...rules.short].some((value) => [...value].every((char) => characters.has(char)));
 }
 
 // The tokens of `output` when it tokenizes as `tokens` did and holds no secret but inside its
-// markers; else null.
+// markers, by the redaction's own reading; else null.
 function verified(output, xml, tokens, markers, rules, work) {
   const again = tokenize(output, xml, work);
   if (again.kinds.length !== tokens.kinds.length || again.kinds.some((kind, index) => kind !== tokens.kinds[index])) return null;
@@ -778,26 +925,31 @@ function verified(output, xml, tokens, markers, rules, work) {
     while (marker < markers.length && markers[marker][1] <= start) marker++;
     if (marker === markers.length || markers[marker][0] > start || markers[marker][1] < end) return null;
   }
-  return showsLong(output, xml, markers, rules, work) ? null : again;
+  return again;
 }
 
 // An XML 1.0 name, with a prefix or not (letters past ASCII taken as name characters).
 const XML_NAME = /^[A-Za-z_\u00C0-\uFFFF][\w.\-\u00B7\u00C0-\uFFFF]*$/;
 const XML_NAMESPACE = "http://www.w3.org/XML/1998/namespace";
+const UNBOUND = Symbol("unbound");
 
 // Whether `source`, tokenized as `tokens` (XML), is well formed as expat reads it, as far as a
 // redaction could change it: one root and nothing but space, comments and processing instructions
 // outside it; tags that nest and close; names that are XML names with at most one prefix, every
-// prefix bound and no attribute twice, by name or by namespace; values quoted, after a space; no
-// `<` in text or values and every `&` a known reference; comments without `--`; sections closed.
-function wellFormed(source, tokens) {
-  const { spans, tags, doctype } = tokens;
+// prefix bound and no attribute twice, by name or by namespace (namespaces read with their
+// references decoded and their whitespace normalized); values quoted, after a space; no `<` in text
+// or values and every `&` a known reference; comments without `--`; sections closed. The prefixes
+// in scope are one map, each element's declarations undone at its end, so nesting costs no more
+// than the declarations themselves.
+function wellFormed(source, tokens, work = { steps: 0 }) {
+  const { spans, tags, doctype, expand } = tokens;
   if (doctype && !doctype.closed) return false;
   const declared = doctype?.entities || new Map();
   // Its own sticky copy, so no other reader's place in a text is moved.
   const reference = new RegExp(XML_REFERENCE.source, "y");
   const references = (start, end) => {
     for (let at = source.indexOf("&", start); at >= 0 && at < end; at = source.indexOf("&", at + 1)) {
+      work.steps++;
       reference.lastIndex = at;
       const match = reference.exec(source);
       if (!match || at + match[0].length > end) return false;
@@ -807,6 +959,7 @@ function wellFormed(source, tokens) {
     return true;
   };
   for (const span of spans) {
+    work.steps++;
     const content = source.slice(span.start, span.end);
     if (span.kind === "text") {
       if (content.includes("<") || content.includes("]]>") || !references(span.start, span.end)) return false;
@@ -823,31 +976,51 @@ function wellFormed(source, tokens) {
     const parts = name.split(":");
     return parts.length <= 2 && parts.every((part) => XML_NAME.test(part));
   };
+  // A value as a parser reads it: references decoded, each literal tab, newline or return a space.
+  const valueOf = ([start, end]) => {
+    const entities = xmlEntities(source, start, end, expand, work);
+    if (!entities) return source.slice(start, end).replace(/[\t\n\r]/g, " ");
+    return piecesOf(source, { start, end, entities }).map((piece) => (piece.entity ? piece.text : piece.text.replace(/[\t\n\r]/g, " "))).join("");
+  };
+  const scope = new Map([["xml", XML_NAMESPACE]]);
+  // Each open element's name, and the bindings its declarations replaced, to restore at its end.
   const stack = [];
+  const restore = (undo) => {
+    for (let index = undo.length - 1; index >= 0; index--) {
+      work.steps++;
+      const [prefix, previous] = undo[index];
+      if (previous === UNBOUND) scope.delete(prefix);
+      else scope.set(prefix, previous);
+    }
+  };
   let roots = 0;
   let closed = false;
   for (const tag of tags) {
+    work.steps++;
     const name = source.slice(...tag.name);
     if (tag.kind === "close") {
       const open = stack.pop();
       let after = tag.name[1];
       while (isSpace(source[after])) after++;
       if (!open || open.name !== name || source[after] !== ">") return false;
+      restore(open.undo);
       if (stack.length === 0) closed = true;
       continue;
     }
     if (closed || !tag.ended || !qualified(name)) return false;
     if (stack.length === 0) roots++;
-    const scope = new Map(stack.at(-1)?.scope || [["xml", XML_NAMESPACE]]);
+    const undo = [];
     const names = new Set();
     for (const attr of tag.attrs) {
+      work.steps++;
       const attrName = source.slice(...attr.name);
       if (attr.quote < 2 || !isSpace(source[attr.name[0] - 1]) || !qualified(attrName) || names.has(attrName)) return false;
       names.add(attrName);
-      const value = attr.value ? source.slice(...attr.value) : "";
       if (attrName.startsWith("xmlns:")) {
         const prefix = attrName.slice("xmlns:".length);
+        const value = attr.value ? valueOf(attr.value) : "";
         if (value === "" || prefix === "xmlns" || (prefix === "xml") !== (value === XML_NAMESPACE)) return false;
+        undo.push([prefix, scope.has(prefix) ? scope.get(prefix) : UNBOUND]);
         scope.set(prefix, value);
       }
     }
@@ -863,8 +1036,9 @@ function wellFormed(source, tokens) {
       expanded.add(key);
     }
     if (tag.selfClosing) {
+      restore(undo);
       if (stack.length === 0) closed = true;
-    } else stack.push({ name, scope });
+    } else stack.push({ name, undo });
   }
   return roots === 1 && stack.length === 0;
 }
@@ -872,35 +1046,55 @@ function wellFormed(source, tokens) {
 // Whether `text` is a well-formed XML document (see wellFormed).
 function isWellFormedXml(text) {
   try {
-    return wellFormed(text, tokenize(text, true, { steps: 0 }));
+    const work = { steps: 0 };
+    return wellFormed(text, tokenize(text, true, work), work);
   } catch {
     return false;
   }
 }
 
-// `text` (which holds markup) with each secret of `rules` redacted by its tokens (see above). `xml`
-// picks XML tokenizing over HTML; `work`, when given, counts the steps taken.
-function redactMarkup(text, rules, { xml = false, work = { steps: 0 } } = {}) {
-  try {
-    const tokens = tokenize(text, xml, work);
-    const planned = plan(text, tokens, rules, work);
-    if (planned.whole) return MARKUP_WHOLE_MARKER;
-    if (planned.masked.size === 0 && planned.ranges.length === 0) {
-      return showsLong(text, xml, [], rules, work) ? MARKUP_WHOLE_MARKER : text;
-    }
-    const { output, markers } = apply(text, tokens, planned);
-    const again = verified(output, xml, tokens, markers, rules, work);
-    if (!again) return MARKUP_WHOLE_MARKER;
-    // XML a parser read before must still read: a namespace, a reference or a tag the redaction
-    // broke would otherwise lose the whole document for whoever reads it next.
-    if (xml && wellFormed(text, tokens) && !wellFormed(output, again)) return MARKUP_WHOLE_MARKER;
-    return output;
-  } catch {
-    // No tokenizer (it failed to load, or to read the text): only a text that holds no secret and
-    // no entity can be shown as it is.
-    const secret = [...rules.long, ...rules.short].some((value) => text.includes(value));
-    return secret || text.includes("&") ? MARKUP_WHOLE_MARKER : text;
-  }
+// `text` (which holds markup) with each secret of `rules` redacted by its tokens (see above), and
+// where its markers stand: { output, markers }, the output `<redacted/>` when the body goes whole.
+// `xml` picks XML tokenizing over HTML; `work` counts the steps taken.
+function redactByTokens(text, rules, { xml, work }) {
+  const whole = { output: MARKUP_WHOLE_MARKER, markers: [] };
+  const tokens = tokenize(text, xml, work);
+  // A doctype this reading doesn't model can make any text of its pieces; a page a browser reads
+  // otherwise than the tokenizer, any of its words.
+  if (tokens.doctype?.unsupported && couldSpell(text, rules, work)) return whole;
+  if (tokens.unsure && exposes(text, rules, [], work, true)) return whole;
+  const planned = plan(text, tokens, rules, work);
+  if (planned.whole) return whole;
+  if (planned.masked.size === 0 && planned.ranges.length === 0) return { output: text, markers: [] };
+  const { output, markers } = apply(text, tokens, planned);
+  const again = verified(output, xml, tokens, markers, rules, work);
+  if (!again) return whole;
+  // XML a parser read before must still read: a namespace, a reference or a tag the redaction
+  // broke would otherwise lose the whole document for whoever reads it next.
+  if (xml && wellFormed(text, tokens, work) && !wellFormed(output, again, work)) return whole;
+  return { output, markers };
 }
 
-module.exports = { MARKUP_WHOLE_MARKER, isWellFormedXml, isXmlBody, redactMarkup };
+// `redact` (a redactor that gives { output, markers }, as redactByTokens does) with the final check
+// that doesn't trust it: an output that shows a secret in any reading outside its markers (see
+// exposes) goes whole, as `<redacted/>`.
+function backstopped(redact) {
+  return (text, rules, { xml = false, work = { steps: 0 } } = {}) => {
+    try {
+      const { output, markers } = redact(text, rules, { xml, work });
+      if (output === MARKUP_WHOLE_MARKER) return output;
+      return exposes(output, rules, markers, work) ? MARKUP_WHOLE_MARKER : output;
+    } catch {
+      // No tokenizer (it failed to load, or to read the text): only a text that holds no secret
+      // and no entity can be shown as it is.
+      const secret = [...rules.long, ...rules.short].some((value) => text.includes(value));
+      return secret || text.includes("&") ? MARKUP_WHOLE_MARKER : text;
+    }
+  };
+}
+
+// `text` (which holds markup, or is an HTML or XML body) with each secret of `rules` redacted by its
+// tokens (see above). `xml` picks XML tokenizing over HTML; `work`, when given, counts the steps.
+const redactMarkup = backstopped(redactByTokens);
+
+module.exports = { MARKUP_WHOLE_MARKER, backstopped, isMarkupType, isWellFormedXml, isXmlBody, redactMarkup };

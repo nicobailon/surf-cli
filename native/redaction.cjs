@@ -10,7 +10,7 @@ const SECRET_HEADERS = new Set([
 
 const SECRET_NAME_PATTERN = /(?:^|[-_.])(authorization|cookie|password|passwd|secret|session|token|api[-_]?key|access[-_]?token|refresh[-_]?token|id[-_]?token|csrf|xsrf)(?:$|[-_.])/i;
 const TEMPLATE_PATTERN = /\{\{[a-zA-Z0-9._-]+\}\}/;
-const { MARKUP_WHOLE_MARKER, isXmlBody, redactMarkup } = require("./markup-redaction.cjs");
+const { MARKUP_WHOLE_MARKER, isMarkupType, isXmlBody, redactMarkup } = require("./markup-redaction.cjs");
 
 const CREDENTIAL_LITERAL_PATTERN = /\bbearer\s+[a-z0-9._~-]+|\bsk-[a-z0-9_-]{12,}|\bgh[pousr]_[a-z0-9_]{12,}|\beyj[a-z0-9_-]+\.[a-z0-9_-]+\.[a-z0-9_-]+/i;
 
@@ -207,9 +207,10 @@ const [LT, GT, DOUBLE_QUOTE, SINGLE_QUOTE] = ["<", ">", '"', "'"].map((char) => 
 // it can't rewrite a word around it. A word has on each side whitespace or an end of the text, `>`
 // before it or `<` after it, or a matching quote on both sides (a whole quoted value); it is never
 // part of a longer run. Words are found in one pass over the text. Text that holds markup goes by
-// its tokens instead (see markup-redaction.cjs), in XML mode when `xml`.
-function redactEchoWords(text, rules, { xml = false } = {}) {
-  if (MARKUP_PATTERN.test(text)) return redactMarkup(text, rules, { xml });
+// its tokens instead (see markup-redaction.cjs), in XML mode when `xml`, and so does any text
+// when `markup` (an HTML or XML body, whose readers decode its entities though it has no tag).
+function redactEchoWords(text, rules, { xml = false, markup = false } = {}) {
+  if (markup || MARKUP_PATTERN.test(text)) return redactMarkup(text, rules, { xml });
   const marker = "<redacted>";
   const byLength = (list) => [...list].filter(Boolean).sort((a, b) => b.length - a.length);
   const source = byLength(rules.long).reduce((result, value) => (result.includes(value) ? result.split(value).join(marker) : result), text);
@@ -305,20 +306,22 @@ const FORM_PATTERN = /^[^=&\s<>]+=[^&\s<>]*(?:&[^=&\s<>]+=[^&\s<>]*)*$/;
 // structure to keep, so it counts as text and goes when it is a secret whole; a body that must stay
 // JSON goes through redactEchoBody. A text that is a secret whole, as written, goes whole, though
 // it parses as JSON that holds something else (`"a"` for the secret `"a"`), as `<redacted/>` when
-// it holds markup. `contentType` (the body's) tells XML from HTML; so does an XML declaration.
+// it holds markup or is HTML or XML by `contentType` (the body's), which goes by its tokens though
+// it has no tag. `contentType` also tells XML from HTML; so does an XML declaration.
 function redactEchoText(text, secrets, { contentType = "" } = {}) {
   const rules = echoRules(secrets);
   const source = String(text);
   if (rules.empty) return source;
-  if (rules.whole.has(source.trim())) return MARKUP_PATTERN.test(source) ? MARKUP_WHOLE_MARKER : "<redacted>";
+  const markup = isMarkupType(contentType);
+  if (rules.whole.has(source.trim())) return markup || MARKUP_PATTERN.test(source) ? MARKUP_WHOLE_MARKER : "<redacted>";
   let json = false;
   try {
     const parsed = JSON.parse(source);
     json = typeof parsed === "string" || (parsed !== null && typeof parsed === "object");
   } catch {}
   if (json) return redactEchoJsonText(source, rules);
-  if (FORM_PATTERN.test(source)) return redactEchoQuery(source, rules);
-  return redactEchoWords(source, rules, { xml: isXmlBody(source, contentType) });
+  if (!markup && FORM_PATTERN.test(source)) return redactEchoQuery(source, rules);
+  return redactEchoWords(source, rules, { xml: isXmlBody(source, contentType), markup });
 }
 
 // A body's content type: its `content-type` header, else the `mimeType` capture gave it.

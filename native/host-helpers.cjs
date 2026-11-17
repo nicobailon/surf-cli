@@ -1,6 +1,6 @@
 const fs = require("fs");
 const networkFormatters = require("./formatters/network.cjs");
-const { publicEntry } = require("./network-export.cjs");
+const { publicEntry, redactHeaders } = require("./network-export.cjs");
 const { bodyContentType, redactEchoBody, redactEchoJson, redactEchoUrl, redactUrlIfSecret, redactValues, secretHeaderEchoes } = require("./redaction.cjs");
 const { recoveryFor } = require("./surf-error.cjs");
 
@@ -76,7 +76,7 @@ function publicNetworkResult(tool, result) {
 }
 
 // A response the host read from capture for network.wait, network.replay or network.body: its URL,
-// body or JSON echoing a secret header value of `entries` (the request it answers) with <redacted>
+// body, JSON or content type echoing a secret header value of `entries` (the request it answers) with <redacted>
 // in its place, as network.get shows it: the whole value, an auth parameter's or cookie's value, in
 // every spelling (see secretHeaderEchoes); the URL also without credentials, as an export has it.
 // The body is read by its own content type, else by the one its request's capture gave the response
@@ -95,6 +95,9 @@ function publicResponse(response, entries) {
     view.body = redactEchoBody(view.body, secrets, { contentType });
   }
   if (view.json !== undefined) view.json = redactEchoJson(view.json, secrets);
+  // The content type printed with it (network.wait, network.replay), redacted as network.get
+  // shows the header, after the body was read by it as captured.
+  if (typeof view.contentType === "string") view.contentType = redactHeaders({ "content-type": view.contentType }, new Set(), secrets)["content-type"];
   return view;
 }
 

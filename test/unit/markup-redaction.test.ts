@@ -105,13 +105,17 @@ describe("markup echoes redacted by their tokens", () => {
 
   it("never renames a name shorter than 4 characters, bare or before a value", () => {
     const cases: [string, string, string][] = [
-      ["a", "<r a >y</r>", "<r a >y</r>"],
-      ["a", '<r a="x" a >y</r>', '<r a="x" a >y</r>'],
-      ["a b", '<r a b = "x"/>', '<r a b = "x"/>'],
+      ["a", '<r a="x">y</r>', '<r a="x">y</r>'],
+      ["a", "<r a>y</r>", "<r a>y</r>"],
       ["r", `<r>${SHOP}</r>`, `<r>${SHOP}</r>`],
     ];
     const { actual, expected } = redactCases(cases);
     expect(actual).toEqual(expected);
+    // One that stands between spaces reads as a word to the final check, which can't tell a name
+    // from text: the body goes whole rather than the name being renamed.
+    expect(redact("a", "<r a >y</r>")).toBe("<redacted/>");
+    expect(redact("a", '<r a="x" a >y</r>')).toBe("<redacted/>");
+    expect(redact("a b", '<r a b = "x"/>')).toBe("<redacted/>");
   });
 
   it("masks the text a long secret touches across tags, keeping every tag", () => {
@@ -129,15 +133,21 @@ describe("markup echoes redacted by their tokens", () => {
 
   it("keeps a comment or CDATA terminator a short secret shares, masking only the content it touches", () => {
     const { actual, expected } = redactCases([
-      ["-->x", '<r><!-- ="-->x" <q/></r>', '<r><!-- ="-->x" <q/></r>'],
       ["--", "<r><!-- --><q/></r>", "<r><!-- --><q/></r>"],
-      ["-->", "<r><!-- --> <q/></r>", "<r><!-- --> <q/></r>"],
       ["]]", "<r><![CDATA[ ]]><q/></r>", "<r><![CDATA[ ]]><q/></r>"],
-      ["]]>x", '<r><![CDATA[ ="]]>x" <q/></r>', '<r><![CDATA[ ="]]>x" <q/></r>'],
       ["x--", "<r><!-- x--><q/></r>", `<r><!--${PLAIN}--><q/></r>`],
       ["x]]", "<r><![CDATA[ x]]><q/></r>", `<r><![CDATA[${PLAIN}]]><q/></r>`],
     ]);
     expect(actual).toEqual(expected);
+    // Quoted or spaced, the shared terminator reads as a word to the final check, which can't
+    // tell it from text: the body goes whole, the delimiters never cut.
+    for (const [secret, body] of [
+      ["-->x", '<r><!-- ="-->x" <q/></r>'],
+      ["-->", "<r><!-- --> <q/></r>"],
+      ["]]>x", '<r><![CDATA[ ="]]>x" <q/></r>'],
+    ]) {
+      expect(redact(secret, body)).toBe("<redacted/>");
+    }
   });
 
   it("matches text with its entities decoded, masking text that doesn't write the secret plainly", () => {
@@ -160,7 +170,8 @@ describe("markup echoes redacted by their tokens", () => {
     const { actual, expected } = redactCases([
       ["a", "<r>say a = z</r>", `<r>say ${MARK} = z</r>`],
       ["a", "<r>a = a</r>", `<r>${MARK} = ${MARK}</r>`],
-      ["a", '<r v="a = z"/>', '<r v="a = z"/>'],
+      // In a value it is a word too (the value rule: a whole value, or a word in one).
+      ["a", '<r v="a = z"/>', `<r v="${MARK} = z"/>`],
     ]);
     expect(actual).toEqual(expected);
   });
@@ -190,12 +201,12 @@ describe("markup echoes redacted by their tokens", () => {
   });
 
   it("reads XML by its content type or declaration, and HTML otherwise", () => {
-    const body = `<r><script>a<b>${SHOP}</b></script></r>`;
-    // HTML reads a script's text as raw text, where the secret is no whole word; XML reads tags in it.
+    const body = `<r><script><b ${SHOP}="1"/></script></r>`;
+    // HTML reads a script's text as raw text, where the name is no word; XML reads tags in it.
     expect(redact(SHOP, body)).toBe(body);
-    expect(redact(SHOP, body, XML)).toBe(`<r><script>a<b>${MARK}</b></script></r>`);
+    expect(redact(SHOP, body, XML)).toBe('<r><script><b redacted="1"/></script></r>');
     expect(redact(SHOP, `<?xml version="1.0"?>${body}`)).toBe(
-      `<?xml version="1.0"?><r><script>a<b>${MARK}</b></script></r>`,
+      `<?xml version="1.0"?><r><script><b redacted="1"/></script></r>`,
     );
   });
 
@@ -401,6 +412,168 @@ describe("markup contexts a browser or an XML parser reads differently from the 
     ]) {
       expect(isWellFormedXml(bad)).toBe(false);
     }
+  });
+});
+
+describe("markup a browser or an XML parser reads past the tokenizer fails closed", () => {
+  const WHOLE = "<redacted/>";
+  const LONG_SECRET = ["alpha", "echo", "4826"].join("-");
+  const HTML = { "content-type": "text/html" };
+  const rulesOf = (secrets: string[]) => ({
+    long: secrets.filter((value) => value.length >= 8),
+    short: secrets.filter((value) => value.length < 8),
+    whole: new Set(secrets),
+    keys: new Set(secrets.filter((value) => value.length >= 4)),
+  });
+  const markup = require("../../native/markup-redaction.cjs");
+
+  it("reads an HTML or XML body as markup by its content type, though it has no tag", () => {
+    expect(redact(SHOP, "sh&#111;p", HTML)).toBe(MARK);
+    expect(redact(LONG_SECRET, "alpha-ech&#111;-4826", HTML)).toBe(MARK);
+    expect(redact(SHOP, "sh&#111;p", XML)).toBe(MARK);
+    // Plain text has no entities to its readers.
+    expect(redact(SHOP, "sh&#111;p", { "content-type": "text/plain" })).toBe("sh&#111;p");
+  });
+
+  it("fails closed on a closing svg or math tag that doesn't match the open foreign element", () => {
+    // A browser ignores `</math>` inside <svg>, so the script is SVG and its <r> a real element.
+    expect(redact(SHOP, `<svg></math><script><r a=${SHOP}></r></script>`)).toBe(WHOLE);
+    expect(redact(SHOP, `<svg></math><script><r>${SHOP}</r></script>`)).toBe(WHOLE);
+    // One that matches an open foreign element closes it and those inside it, as a browser does.
+    expect(redact(SHOP, `<svg><g></svg><p>${SHOP}</p>`)).toBe(`<svg><g></svg><p>${MARK}</p>`);
+    expect(redact(SHOP, "<svg></math><p>ok</p>")).toBe("<svg></math><p>ok</p>");
+  });
+
+  it("masks an srcdoc value whose document holds a secret, decoded any number of times", () => {
+    const frame = (value: string) => `<iframe srcdoc="${value}"></iframe>`;
+    const cases: [string, string, string][] = [
+      [SHOP, frame("&lt;r&gt;sh&amp;#111;p&lt;/r&gt;"), frame(MARK)],
+      [LONG_SECRET, frame("&lt;r&gt;alpha-ech&amp;#111;-4826&lt;/r&gt;"), frame(MARK)],
+      [SHOP, frame("&lt;r&gt;sh&amp;amp;amp;#111;p&lt;/r&gt;"), frame(MARK)],
+      [SHOP, frame(`&lt;p title=${SHOP}&gt;`), frame(MARK)],
+      [SHOP, frame("&lt;p&gt;ok&lt;/p&gt;"), frame("&lt;p&gt;ok&lt;/p&gt;")],
+    ];
+    const outputs = cases.map(([secret, body]) => redact(secret, body));
+    expect(outputs).toEqual(cases.map(([, , expected]) => expected));
+  });
+
+  it("masks the whole document when its doctype uses a feature it doesn't model", () => {
+    const bodies = [
+      // A parameter entity declares another entity.
+      `<!DOCTYPE r [<!ENTITY % x "<!ENTITY y 'sh'>">%x;]><r>&y;op</r>`,
+      `<!DOCTYPE r [<!ENTITY % x "<!ENTITY y 'sh&#111;p'>">%x;]><r>&y;</r>`,
+      // An NMTOKEN attribute's value is read with its spaces trimmed.
+      `<!DOCTYPE r [<!ATTLIST r v NMTOKEN #IMPLIED>]><r v=" sh&#111;p "/>`,
+      // A processing instruction whose data holds `]>`.
+      `<!DOCTYPE r [<?pi ]> ?><!ENTITY x "sh">]><r>&x;op</r>`,
+      `<!DOCTYPE r [<?pi ]> ?><!ENTITY x "sh&#111;p">]><r>&x;</r>`,
+    ];
+    expect(bodies.map((body) => redact(SHOP, body, XML))).toEqual(bodies.map(() => WHOLE));
+    // One that can't spell the secret in any reading stays.
+    const plain = '<!DOCTYPE r [<!ATTLIST r v CDATA "x">]><r v="y"/>';
+    expect(redact(SHOP, plain, XML)).toBe(plain);
+  });
+
+  it("never rewrites the XML declaration, masking the body instead", () => {
+    const cases: [string, string][] = [
+      ["1.0", '<?xml version="1.0"?><r/>'],
+      ["UTF-8", '<?xml version="1.0" encoding="UTF-8"?><r/>'],
+      ["yes", '<?xml version="1.0" standalone="yes"?><r/>'],
+    ];
+    expect(cases.map(([secret, body]) => redact(secret, body, XML))).toEqual(
+      cases.map(() => WHOLE),
+    );
+  });
+
+  it("masks the body when a secret touches a namespace declaration's value", () => {
+    // Rewritten, `p` would bind the namespace `q` binds, written with entities.
+    const collide = `<r xmlns:p="${SHOP}" xmlns:q="&#40;redacted&#41;" p:x="1" q:x="2"/>`;
+    expect(redact(SHOP, collide, XML)).toBe(WHOLE);
+    const space = ["http://www.w3.org/XML/1998/", "namespace"].join("");
+    const encoded = `<r xmlns:xml="${space.replace("namespace", "name&#115;pace")}" xml:lang="en"/>`;
+    expect(redact(space, encoded, XML)).toBe(WHOLE);
+    // The checker reads a namespace as decoded.
+    expect(markup.isWellFormedXml(encoded)).toBe(true);
+    expect(markup.isWellFormedXml('<r xmlns:p="u" xmlns:q="&#117;" p:a="1" q:a="2"/>')).toBe(false);
+  });
+
+  it("checks nested namespace declarations in linear time and memory", () => {
+    const nested = (count: number) =>
+      `${Array.from({ length: count }, (_, index) => `<r xmlns:p${index}="u${index}">`).join("")}${SHOP}${"</r>".repeat(count)}`;
+    const [small, large] = [1500, 6000].map((count) => {
+      const work = { steps: 0 };
+      const started = performance.now();
+      const output = markup.redactMarkup(nested(count), rulesOf([SHOP]), { xml: true, work });
+      return { output, steps: work.steps, ms: performance.now() - started };
+    });
+    expect(large.output).toBe(nested(6000).replace(SHOP, MARK));
+    // Four times the declarations take about four times the steps; a scope copied per element
+    // took 5.5 s or more for 6,000.
+    expect(large.steps / small.steps).toBeLessThan(5);
+    expect(large.ms).toBeLessThan(2000);
+  });
+
+  it("redacts a short secret that stands as a word inside a quoted value", () => {
+    // The value rule: a short secret goes from a value when it is the whole value, and also where
+    // it stands as a word in it, as in free text (this replaces keeping a quoted subword, as in
+    // the reviewer's worker-quoted-subword and extra-boundary-9).
+    const { actual, expected } = redactCases([
+      [SHOP, `<r title="a ${SHOP} b"/>`, `<r title="a ${MARK} b"/>`],
+      [SHOP, `<r x="abc'${SHOP}'def"/>`, `<r x="abc'${MARK}'def"/>`],
+      [SHOP, `<r x="&quot;${SHOP}&quot;"/>`, `<r x="&quot;${MARK}&quot;"/>`],
+      [SHOP, `<r x="a-${SHOP}"/>`, `<r x="a-${SHOP}"/>`],
+    ]);
+    expect(actual).toEqual(expected);
+  });
+
+  it("redacts the secret 0 from an SVG viewBox word by word, and the page still parses", () => {
+    const body = '<svg viewBox="0 0 24 24"><path d="M0 0h24v24H0z"/></svg>';
+    const { actual, expected } = redactCases([
+      ["0", body, `<svg viewBox="${MARK} ${MARK} 24 24"><path d="M0 0h24v24H0z"/></svg>`],
+    ]);
+    expect(actual).toEqual(expected);
+    expect(actual.xml).toEqual(["valid"]);
+  });
+
+  describe("the final check, which doesn't trust the tokenizer", () => {
+    // A redactor that misses everything, or that marks what it was told to.
+    const missesAll = (text: string, rules: object, options?: object) =>
+      markup.backstopped((body: string) => ({ output: body, markers: [] }))(text, rules, options);
+    const check = (secret: string, body: string) => missesAll(body, rulesOf([secret]));
+
+    it("masks the body when a secret shows in any reading of the output", () => {
+      const leaks: [string, string][] = [
+        [SHOP, `<r>${SHOP}</r>`],
+        [SHOP, `<p>a ${SHOP} b</p>`],
+        [SHOP, `<r v="${SHOP}"/>`],
+        [SHOP, "<r>sh&#111;p</r>"],
+        [SHOP, "<r>sh&#x6F;p</r>"],
+        [SHOP, '<iframe srcdoc="&lt;r&gt;sh&amp;#111;p&lt;/r&gt;"></iframe>'],
+        [LONG_SECRET, `x${LONG_SECRET}y`],
+        [LONG_SECRET, "<r>alpha-ech&amp;#111;-4826</r>"],
+      ];
+      expect(leaks.map(([secret, body]) => check(secret, body))).toEqual(leaks.map(() => WHOLE));
+    });
+
+    it("keeps a short secret that isn't a word, and anything inside its own markers", () => {
+      const kept = [`<r>${SHOP}x</r>`, `<${SHOP}>`, `<r a=${SHOP}x/>`];
+      expect(kept.map((body) => check(SHOP, body))).toEqual(kept);
+      const marked = markup.backstopped((text: string) => ({
+        output: text,
+        markers: [[3, 3 + LONG_SECRET.length]],
+      }));
+      const inMarker = `<r>${LONG_SECRET}</r>`;
+      expect(marked(inMarker, rulesOf([LONG_SECRET]))).toBe(inMarker);
+    });
+
+    it("grows linearly with the output", () => {
+      const steps = (count: number) => {
+        const work = { steps: 0 };
+        missesAll("<p>a &amp;amp;lt; b</p>".repeat(count), rulesOf([SHOP, LONG_SECRET]), { work });
+        return work.steps;
+      };
+      expect(steps(800) / steps(100)).toBeLessThan(10);
+    });
   });
 });
 
