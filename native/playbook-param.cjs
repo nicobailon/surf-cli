@@ -691,7 +691,7 @@ function paramOp(op, { fields, as: name, env, required = false, default: default
   // A query key the recorded URL sent more than once: the record kept no type for what it masked there.
   for (const key of request.repeatedQuery || []) {
     if (!fields.some((field) => field === `query.${key}` || field.startsWith(`query.${key}.`))) continue;
-    notes.push(`query.${key} was sent more than once in the recorded URL; the draft keeps the last, and the record keeps no type for a number or boolean it masked under a repeated key, so --${name} is a ${type}`);
+    notes.push(`query.${key} was sent more than once in the recorded URL, and the record keeps no type for a number or boolean it masked under a repeated key, so --${name} is a ${type}`);
   }
   // The record masks every path segment that is the typed value; one of them may be a fixed route piece.
   if (redacted) {

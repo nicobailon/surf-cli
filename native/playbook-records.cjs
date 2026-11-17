@@ -374,16 +374,32 @@ function pickRequest({ record, trace, effect, requestId, warnings }) {
   return top.entry;
 }
 
-// The request a network strategy sends to replay a captured trace entry: its query apart, its
-// headers without secrets, and its body as captured (`<request-body>` without input values). Text
-// that reads like an input (`{{action}}`) is escaped, so it is sent as captured. A typed number or
-// boolean the record masked in a JSON query value is kept as redactedTypes: pb param gives its
-// input that type. One masked under a query key sent more than once has no type, and its key is
-// kept in repeatedQuery: the request keeps only the last pair.
-function requestFromEntry(entry) {
-  const url = new URL(entry.url);
-  const query = Object.fromEntries(url.searchParams.entries());
-  url.search = "";
+// The request's URL and its query as inputs. The query format holds one value a name, so a name
+// that repeats (`?tag=1&tag=2`) stays in the URL as captured, with a warning, and goes out with
+// every value.
+function draftQuery(captured, warnings) {
+  const url = new URL(captured);
+  const counts = new Map();
+  for (const name of url.searchParams.keys()) counts.set(name, (counts.get(name) || 0) + 1);
+  const repeated = new Set([...counts].filter(([, count]) => count > 1).map(([name]) => name));
+  const query = Object.fromEntries([...url.searchParams].filter(([name]) => !repeated.has(name)));
+  const nameOf = (part) => new URLSearchParams(part).keys().next().value ?? "";
+  url.search = url.search.slice(1).split("&").filter((part) => part && repeated.has(nameOf(part))).join("&");
+  for (const name of repeated) {
+    warnings.push(`query param "${name}" repeats (${counts.get(name)} values), so the draft keeps it in the request URL, where pb param can't make it an input`);
+  }
+  return { url, query };
+}
+
+// The request a network strategy sends to replay a captured trace entry: its query apart (see
+// draftQuery), its headers without secrets, and its body as captured (`<request-body>` without
+// input values). Text that reads like an input (`{{action}}`) is escaped, so it is sent as
+// captured. A typed number or boolean the record masked in a JSON query value is kept as
+// redactedTypes: pb param gives its input that type. One masked under a query key sent more than
+// once has no type, and its key is kept in repeatedQuery, a note that is never sent: the key stays
+// in the URL with every value. `warnings` collects why the request keeps a query name in its URL.
+function requestFromEntry(entry, warnings = []) {
+  const { url, query } = draftQuery(entry.url, warnings);
   const typedMarkers = (entry.urlMarkers || []).filter((marker) => marker.type);
   const redactedTypes = Object.fromEntries(typedMarkers.filter((marker) => marker.field).map((marker) => [marker.field, marker.type]));
   const repeatedQuery = [...new Set(typedMarkers.filter((marker) => marker.repeatedKey).map((marker) => marker.repeatedKey))];
@@ -416,7 +432,7 @@ function buildDraft(record, { read = false, requestId, warnings = [], root = get
   if (warning) warnings.push(warning);
   const strategies = [];
   const observed = pickRequest({ record, trace, effect, requestId, warnings });
-  if (observed) strategies.push({ using: "network", request: requestFromEntry(observed) });
+  if (observed) strategies.push({ using: "network", request: requestFromEntry(observed, warnings) });
   let args = {};
   if (steps.length > 0) {
     const promoted = promoteRedactedStepArgs(steps);

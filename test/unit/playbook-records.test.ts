@@ -2949,7 +2949,10 @@ describe("what a hand-edited draft can't change", () => {
 
 describe("values typed during a record, in captured URLs", () => {
   const { redactCommandArgs } = require("../../native/workflow-definition.cjs");
-  const { findRedactedPlaceholder } = require("../../native/record-typed-values.cjs");
+  const {
+    findRedactedPlaceholder,
+    placeholderError,
+  } = require("../../native/record-typed-values.cjs");
   const runtime = require("../../native/playbook-runtime.cjs");
   const TYPED = "dummy echo words";
   const FILLED = "dummyfoxtrot";
@@ -3212,21 +3215,29 @@ describe("values typed during a record, in captured URLs", () => {
     expect(workflow.steps.map((item: { args: Entry }) => item.args.text)).toEqual(["{{year}}"]);
   });
 
-  it("records no type for a query key the URL sends twice, and pb param says so", () => {
+  it("keeps a query key the URL sends twice in the URL, masked, with no type, and never sends it", () => {
     const pair = (year: string) => `v=${encodeURIComponent(`{"year":${year}}`)}`;
     const { draft, trace } = draftTyping(
       ["2024"],
       `https://example.test/g?${pair("2024")}&${pair('"2024"')}`,
     );
-    // The draft keeps the last pair, whose 2024 was a string; the first pair's number says nothing of it.
+    // Both pairs stay in the URL as the record masked them; the first pair's number says nothing
+    // of the second's string, so the key gets no type.
     expect(trace.entries[0].urlMarkers).toHaveLength(2);
-    expect(networkOf(draft).query).toEqual({ v: '{"year":"<text>"}' });
-    expect(networkOf(draft)).not.toHaveProperty("redactedTypes");
-    expect(networkOf(draft).repeatedQuery).toEqual(["v"]);
-    const { op, notes } = paramOp(draft, { fields: ["query.v.year"], as: "year" });
-    expect(op.args.year).toEqual({ type: "string", required: true });
-    expect(notes.join("\n")).toMatch(/query\.v was sent more than once.*keeps the last.*no type/);
-    expect(renderRequest(networkOf(op), { year: "2031" }).query).toEqual({ v: '{"year":"2031"}' });
+    const request = networkOf(draft);
+    expect(request.query).toEqual({});
+    expect(new URL(request.url).searchParams.getAll("v")).toEqual([
+      '{"year":"<text>"}',
+      '{"year":"<text>"}',
+    ]);
+    expect(request).not.toHaveProperty("redactedTypes");
+    expect(request.repeatedQuery).toEqual(["v"]);
+    expect(JSON.stringify(draft)).not.toContain("2024");
+    const placeholder = findRedactedPlaceholder(request);
+    expect(placeholder).toEqual({ field: "query.v", placeholder: "<text>", inUrl: true });
+    expect(placeholderError(placeholder).message).toMatch(
+      /query\.v holds <text> in the request URL.*include-input-values/,
+    );
   });
 
   it("masks a JSON string leaf encoded once more in the trace and the draft", () => {
@@ -3758,6 +3769,54 @@ describe("a record's trace, when a secret header holds a short value", () => {
     expect(request.query).toEqual({ "<redacted>": "", "<redacted-2>": "two" });
     expect(JSON.parse(kept.requestBody)).toBe("<redacted>");
     expect(JSON.parse(request.body)).toBe("<redacted>");
+  });
+});
+
+describe("a draft of a request whose query repeats a name", () => {
+  function draftOf(url: string) {
+    const root = tempRoot();
+    const record = records.startRecord({
+      site: "fixture",
+      op: "search",
+      tabId: 1,
+      origin: "https://example.test",
+      network: true,
+      root,
+    });
+    records.attachNetworkTrace(
+      record.id,
+      [{ id: "r_1", method: "GET", status: 200, type: "Fetch", mimeType: "application/json", url }],
+      root,
+      { capture: COMPLETE },
+    );
+    const { draft, warnings } = records.stopRecord({ target: TAB, draft: true, root });
+    return {
+      request: draft.run.find((s: Entry) => s.using === "network").request,
+      warnings: warnings || [],
+    };
+  }
+
+  it("keeps every value of a repeated name in the URL, and the other names as query inputs", () => {
+    const { request, warnings } = draftOf("https://example.test/api/search?tag=1&q=x&tag=2&tag");
+    const sent = new URL(request.url);
+    for (const [name, value] of Object.entries(request.query)) {
+      sent.searchParams.set(name, String(value));
+    }
+    expect([...sent.searchParams.entries()].sort()).toEqual([
+      ["q", "x"],
+      ["tag", ""],
+      ["tag", "1"],
+      ["tag", "2"],
+    ]);
+    expect(request.query).toEqual({ q: "x" });
+    expect(warnings.join("\n")).toContain('query param "tag" repeats');
+  });
+
+  it("keeps the query as before when no name repeats", () => {
+    const { request, warnings } = draftOf("https://example.test/api/search?a=1&b=2");
+    expect(request.url).toBe("https://example.test/api/search");
+    expect(request.query).toEqual({ a: "1", b: "2" });
+    expect(warnings.join("\n")).not.toContain("repeats");
   });
 });
 

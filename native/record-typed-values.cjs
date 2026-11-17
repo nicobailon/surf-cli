@@ -1258,6 +1258,13 @@ function findRedactedPlaceholder(request) {
     const hit = found(`path.${index + 1}`, segment);
     if (hit) return hit;
   }
+  // A query name that repeats stays in the URL with every value, as the record masked them.
+  const search = String(request?.url || "").split("#")[0].split("?").slice(1).join("?");
+  for (const pair of search ? search.split("&") : []) {
+    const [name, ...value] = pair.split("=");
+    const hit = found(`query.${decodeLeniently(name.replace(/\+/g, " "))}`, value.join("="));
+    if (hit) return { ...hit, inUrl: true };
+  }
   for (const [name, value] of Object.entries(request?.query || {})) {
     const hit = found(`query.${name}`, value);
     if (hit) return hit;
@@ -1271,7 +1278,8 @@ function findRedactedPlaceholder(request) {
 }
 
 /** The error for a request that holds a placeholder, naming the pb param command that fixes it. */
-function placeholderError({ field, placeholder }, label = "<playbook> <op>") {
+function placeholderError({ field, placeholder, inUrl = false }, label = "<playbook> <op>") {
+  if (inUrl) return new Error(`${field} holds ${placeholder} in the request URL, a value the record redacted under a query name sent more than once, which pb param can't make an input; record again with pb record start --include-input-values to keep it`);
   if (placeholder === "<request-body>") return new Error(`${field} holds ${placeholder}: the record redacted the request body; record again with pb record start --include-input-values to keep it`);
   return new Error(`${field} holds ${placeholder}, a value the record redacted; run surf pb param ${label} ${field} --as <name> to make it an input (or record again with pb record start --include-input-values)`);
 }
