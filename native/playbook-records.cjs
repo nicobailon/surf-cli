@@ -306,6 +306,15 @@ function pickRequest({ record, trace, effect, requestId, warnings }) {
   return top.entry;
 }
 
+// The request a network strategy sends to replay a captured trace entry: its query apart, its
+// headers without secrets, and its body as captured (`<request-body>` without input values).
+function requestFromEntry(entry) {
+  const url = new URL(entry.url);
+  const query = Object.fromEntries(url.searchParams.entries());
+  url.search = "";
+  return { method: entry.method, url: url.toString(), query, headers: safeHeaders(entry.requestHeaders), ...(entry.requestBody !== undefined ? { body: entry.requestBody } : {}) };
+}
+
 // The input a write op without other inputs takes as its semantic safety key.
 const REVIEW_KEY_ARG = { required: true, desc: "Semantic key for reviewed write replay" };
 
@@ -325,12 +334,7 @@ function draftFromRecord(recordId, root = getPrivateStateRoot(), { read = false,
   if (warning) warnings.push(warning);
   const strategies = [];
   const observed = pickRequest({ record, trace, effect, requestId, warnings });
-  if (observed) {
-    const url = new URL(observed.url);
-    const query = Object.fromEntries(url.searchParams.entries());
-    url.search = "";
-    strategies.push({ using: "network", request: { method: observed.method, url: url.toString(), query, headers: safeHeaders(observed.requestHeaders), ...(observed.requestBody !== undefined ? { body: observed.requestBody } : {}) } });
-  }
+  if (observed) strategies.push({ using: "network", request: requestFromEntry(observed) });
   let args = {};
   if (steps.length > 0) {
     const promoted = promoteRedactedStepArgs(steps);
@@ -441,6 +445,7 @@ module.exports = {
   findCandidatesRecord,
   isActive,
   markRecord,
+  neverReplayed,
   pauseRecord: (options) => updateStatus("paused", options),
   readEvents,
   isReplayCandidate,
@@ -449,6 +454,7 @@ module.exports = {
   recordStatus,
   requestEffect,
   recordsRoot,
+  requestFromEntry,
   requireRecordFor,
   resumeRecord: (options) => updateStatus("recording", options),
   startRecord,

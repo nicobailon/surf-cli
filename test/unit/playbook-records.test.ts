@@ -46,6 +46,7 @@ function recordFlow({
   truncatedAt,
   origin = "https://example.test",
   pageText,
+  includeInputValues = false,
   stop = { draft: true },
 }: {
   commands?: Step[];
@@ -54,6 +55,7 @@ function recordFlow({
   truncatedAt?: number;
   origin?: string;
   pageText?: string;
+  includeInputValues?: boolean;
   stop?: { draft?: boolean; read?: boolean; requestId?: string };
 }) {
   const root = tempRoot();
@@ -63,6 +65,7 @@ function recordFlow({
     tabId: 1,
     origin,
     network: trace !== undefined,
+    includeInputValues,
     root,
   });
   for (const command of commands) {
@@ -1595,6 +1598,240 @@ describe("activity and explicit record evidence", () => {
       });
       expect(() => save(flow.root, record.id)).toThrow(
         "write op search can't be saved: a write op's workflow fallback must be one page-write step, and this draft's is navigate, and its network strategy replays GET https://example.test/api/employees, a read, not the write",
+      );
+    });
+  });
+
+  // Save rebuilds every network write from the trace entry it stands for, so what a draft file says
+  // about a write's method, URL, query, headers or body is never sent.
+  describe("a draft's network writes, rebuilt from the trace", () => {
+    const origin = "https://alice.github.io";
+    const preview = {
+      id: "r_preview",
+      method: "POST",
+      status: 200,
+      type: "XHR",
+      url: `${origin}/save?action=preview`,
+      requestHeaders: { "content-type": "application/json", "x-action": "preview" },
+      requestBody: '{"action":"preview"}',
+    };
+    const captured = {
+      method: "POST",
+      url: `${origin}/save`,
+      query: { action: "preview" },
+      headers: { "content-type": "application/json", "x-action": "preview" },
+      body: '{"action":"preview"}',
+    };
+    type Request = Entry & { url: string; query?: Entry; headers?: Entry; body?: unknown };
+    type Strategy = Entry & { using: string; request?: Request };
+    type Op = Entry & { effect?: string; run: Strategy[] };
+    const flow = (commands: Step[], options: { includeInputValues?: boolean } = {}) => {
+      const recorded = recordFlow({
+        commands,
+        origin,
+        trace: [{ ...page, url: `${origin}/` }, preview],
+        includeInputValues: options.includeInputValues ?? true,
+      });
+      const { record, draft } = recorded.stopped();
+      const file = path.join(records.recordsRoot(recorded.root), record.id, "draft", "op.json");
+      const save = (change: (op: Op) => void) => {
+        const op = JSON.parse(fs.readFileSync(file, "utf8"));
+        change(op);
+        fs.writeFileSync(file, JSON.stringify(op));
+        return authoring.saveFromRecord({
+          recordId: record.id,
+          root: recorded.root,
+          home: path.dirname(recorded.root),
+        });
+      };
+      return { draft: draft as Op, save };
+    };
+    const savedRun = (saved: { directory: string }): Strategy[] =>
+      JSON.parse(fs.readFileSync(path.join(saved.directory, "ops", "search.json"), "utf8")).run;
+    const networkOf = (op: Op) =>
+      op.run.find((strategy) => strategy.using === "network") as Strategy;
+    const shapes: [string, Step[], string][] = [
+      ["no steps", [], "write op search can't be saved network-only"],
+      ["one click", ["click"], "write op search can't be saved"],
+      ["navigate + click", ["navigate", "click"], "write op search can't be saved network-only"],
+    ];
+    const edits: [string, (request: Request) => void][] = [
+      [
+        "the URL's query",
+        (request) => {
+          request.url += "?action=deleteAll";
+          Reflect.deleteProperty(request, "query");
+        },
+      ],
+      ["the query object", (request) => (request.query = { action: "deleteAll" })],
+      ["the body", (request) => (request.body = '{"action":"deleteAll"}')],
+      [
+        "a header",
+        (request) => (request.headers = { ...request.headers, "x-action": "deleteAll" }),
+      ],
+      ["an added header", (request) => (request.headers = { ...request.headers, "x-extra": "1" })],
+    ];
+
+    describe.each(shapes)("with %s", (_shape, commands, prefix) => {
+      it("drafts the captured request", () => {
+        expect(networkOf(flow(commands).draft).request).toEqual(captured);
+      });
+
+      it.each(edits)("saves the captured request, not an edit to %s", (_edit, change) => {
+        const saved = flow(commands).save((op) => change(networkOf(op).request as Request));
+        const run = savedRun(saved);
+        expect(networkOf({ run }).request).toEqual(captured);
+        expect(run.filter((strategy) => strategy.using === "network")).toHaveLength(1);
+      });
+
+      it("keeps <request-body> when the record captured no input values", () => {
+        const { draft, save } = flow(commands, { includeInputValues: false });
+        const drafted = networkOf(draft).request;
+        expect(drafted?.body).toBe("<request-body>");
+        const saved = save(
+          (op) =>
+            (networkOf(op).request = { ...drafted, body: '{"action":"deleteAll"}' } as Request),
+        );
+        expect(networkOf({ run: savedRun(saved) }).request).toEqual(drafted);
+      });
+
+      it("keeps the strategy's extract, verify and acceptStatus, and drops other fields", () => {
+        const saved = flow(commands).save((op) => {
+          Object.assign(networkOf(op), {
+            extract: { jsonPath: "$.id" },
+            verify: { status: 200 },
+            acceptStatus: [409],
+            stray: "dropped",
+          });
+        });
+        expect(networkOf({ run: savedRun(saved) })).toEqual({
+          using: "network",
+          request: captured,
+          extract: { jsonPath: "$.id" },
+          verify: { status: 200 },
+          acceptStatus: [409],
+        });
+      });
+
+      it("refuses a write whose method the record didn't capture on that path", () => {
+        const { save } = flow(commands);
+        expect(() => save((op) => ((networkOf(op).request as Request).method = "PATCH"))).toThrow(
+          `${prefix}: it would replay PATCH ${origin}/save, which isn't a write the record captured`,
+        );
+      });
+
+      it("refuses a second network write the record didn't capture", () => {
+        const { save } = flow(commands);
+        const why = `it would replay POST ${origin}/uncaptured-delete, which isn't a write the record captured`;
+        const second = {
+          using: "network",
+          request: { method: "POST", url: `${origin}/uncaptured-delete`, body: '{"all":true}' },
+        };
+        expect(() => save((op) => op.run.splice(1, 0, second))).toThrow(`${prefix}: ${why}`);
+      });
+
+      it("rebuilds a second network write that stands for the captured one", () => {
+        const saved = flow(commands).save((op) => {
+          const copy = structuredClone(networkOf(op));
+          (copy.request as Request).query = { action: "deleteAll" };
+          op.run.splice(1, 0, copy);
+        });
+        const writes = savedRun(saved).filter((strategy) => strategy.using === "network");
+        expect(writes.map((strategy) => strategy.request)).toEqual([captured, captured]);
+      });
+
+      it("refuses a {{…}} placeholder in a write, which pb param adds after save", () => {
+        const { save } = flow(commands);
+        expect(() =>
+          save((op) => (networkOf(op).request = { ...captured, body: '{"action":"{{action}}"}' })),
+        ).toThrow(
+          `${prefix}: its network write POST ${origin}/save holds {{action}}, and a write is saved as the record captured it; save it as drafted, then make the input with surf pb param`,
+        );
+      });
+
+      it("refuses safety.serverIdempotency, which changes the write it replays", () => {
+        const { save } = flow(commands);
+        expect(() =>
+          save((op) =>
+            Object.assign(op.safety as Entry, { serverIdempotency: { query: "action" } }),
+          ),
+        ).toThrow(
+          `${prefix}: safety.serverIdempotency would change the write it replays; save the op as drafted, then add serverIdempotency to the saved op`,
+        );
+      });
+    });
+
+    it("refuses a read op's second network strategy when it's a write, captured or not", () => {
+      const read = {
+        using: "network",
+        request: { method: "GET", url: `${origin}/read` },
+        verify: { status: 201 },
+      };
+      const uncaptured = {
+        using: "network",
+        request: { method: "POST", url: `${origin}/uncaptured-delete` },
+      };
+      const { save } = flow([]);
+      expect(() =>
+        save((op) => {
+          op.effect = "read";
+          op.run = [read, uncaptured];
+        }),
+      ).toThrow(
+        `op search can't be saved: it would replay POST ${origin}/uncaptured-delete, which isn't a write the record captured`,
+      );
+      expect(() =>
+        save((op) => {
+          op.run = [
+            read,
+            { using: "network", request: { ...captured, query: { action: "deleteAll" } } },
+          ];
+        }),
+      ).toThrow(
+        `op search can't be saved: it replays POST ${origin}/save, a write the record captured, and a read op never replays a write`,
+      );
+    });
+
+    it("refuses a write the draft builder never replays, though the record captured it", () => {
+      const put = { ...preview, id: "r_put", method: "PUT", url: `${origin}/items/7` };
+      const recorded = recordFlow({
+        commands: ["navigate"],
+        origin,
+        trace: [{ ...page, url: `${origin}/` }, put],
+      });
+      const { record, draft } = recorded.stopped();
+      expect(draft.run.map((strategy: Strategy) => strategy.using)).toEqual(["workflow"]);
+      const file = path.join(records.recordsRoot(recorded.root), record.id, "draft", "op.json");
+      fs.writeFileSync(
+        file,
+        JSON.stringify({
+          ...draft,
+          run: [{ using: "network", request: { method: "PUT", url: `${origin}/items/7` } }],
+        }),
+      );
+      expect(() =>
+        authoring.saveFromRecord({
+          recordId: record.id,
+          root: recorded.root,
+          home: path.dirname(recorded.root),
+        }),
+      ).toThrow(
+        `write op search can't be saved network-only: it would replay PUT ${origin}/items/7, a PUT (a draft replays only GET, HEAD and POST)`,
+      );
+    });
+
+    it.each([
+      ["an api strategy that may POST", { using: "api", allowPost: true, url: `${origin}/delete` }],
+      ["a script strategy", { using: "script", script: "fetch('/delete', { method: 'POST' })" }],
+    ])("refuses %s, which the draft builder never makes", (_case, strategy) => {
+      const { save } = flow([]);
+      expect(() =>
+        save((op) => {
+          op.effect = "read";
+          op.run.push(strategy);
+        }),
+      ).toThrow(
+        `op search can't be saved: an op saved from a record runs only network and workflow strategies, and this draft has a ${strategy.using} strategy`,
       );
     });
   });
