@@ -477,6 +477,33 @@ describe("markup a browser or an XML parser reads past the tokenizer fails close
     expect(redact(SHOP, `<r>x${NUL}${SHOP}</r>`)).toBe(`<r>x${NUL}${SHOP}</r>`);
   });
 
+  it("reads U+0000 as U+FFFD where a browser does: values, names, raw text, foreign content", () => {
+    const NUL = String.fromCharCode(0);
+    const FFFD = String.fromCharCode(0xfffd);
+    for (const [first, rest] of [
+      [LONG, "secret"],
+      ["sh", "op"],
+    ]) {
+      const secret = `${first}${FFFD}${rest}`;
+      const written = `${first}${NUL}${rest}`;
+      const cases: [string, string][] = [
+        [`<r v="${written}"/>`, `<r v="${MARK}"/>`],
+        [`<r v="a ${written} b"/>`, `<r v="a ${MARK} b"/>`],
+        [`<script>${written}</script>`, `<script>${MARK}</script>`],
+        [`<svg><![CDATA[${written}]]></svg>`, `<svg><![CDATA[${MARK}]]></svg>`],
+        [`<svg>${written}</svg>`, `<svg>${MARK}</svg>`],
+        [`<!--${written}-->`, `<!--${MARK}-->`],
+      ];
+      const outputs = cases.map(([body]) => redact(secret, body, HTML));
+      expect(outputs).toEqual(cases.map(([, expected]) => expected));
+      // An attribute name is renamed when it is the secret (4 characters or more).
+      expect(redact(secret, `<r ${written}="x"/>`, HTML)).toBe('<r redacted="x"/>');
+    }
+    // Text a browser drops U+0000 from shows no U+FFFD, but the final check can't tell.
+    const secret = `${LONG}${FFFD}secret`;
+    expect(redact(secret, `<r>${LONG}${NUL}secret</r>`, HTML)).toBe(WHOLE);
+  });
+
   it("masks the document when a declared entity's value holds markup or a reference", () => {
     const bodies = [
       `<!DOCTYPE r [<!ENTITY x "<q ${SHOP}='v'>ok</q>">]><r>&x;</r>`,
@@ -633,6 +660,34 @@ describe("markup a browser or an XML parser reads past the tokenizer fails close
         markers: [[5, 5 + MARK.length]],
       }));
       expect(marked(halves, rulesOf([SHOP]))).toBe(halves);
+    });
+
+    it("reads HTML with U+0000 as U+FFFD too, and a page without one only as written", () => {
+      const NUL = String.fromCharCode(0);
+      const FFFD = String.fromCharCode(0xfffd);
+      const secret = `${LONG}${FFFD}secret`;
+      const written = `${LONG}${NUL}secret`;
+      for (const body of [
+        `<r v="${written}"/>`,
+        `<r ${written}="x"/>`,
+        `<script>${written}</script>`,
+        `<svg><![CDATA[${written}]]></svg>`,
+        `<r>${LONG}${NUL}&#115;ecret</r>`,
+      ]) {
+        expect(check(secret, body)).toBe(WHOLE);
+      }
+      // XML has no such rule.
+      const xmlBody = `<r v="${written}"/>`;
+      expect(missesAll(xmlBody, rulesOf([secret]), { xml: true })).toBe(xmlBody);
+      // A page without U+0000 is read once, a long secret's search a step per character.
+      const page = "<p>a b</p>".repeat(100);
+      const steps = (text: string) => {
+        const work = { steps: 0 };
+        missesAll(text, rulesOf([secret]), { work });
+        return work.steps;
+      };
+      expect(steps(page)).toBe(page.length);
+      expect(steps(`${page}${NUL}`)).toBeGreaterThan(3 * page.length);
     });
 
     it("keeps a short secret that isn't a word, and anything inside its own markers", () => {

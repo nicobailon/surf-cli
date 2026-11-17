@@ -537,7 +537,7 @@ function tokenize(source, xml, work) {
   }
   found = found.filter((span) => span.end > span.start);
   const expand = entityExpander(source, doctype, work);
-  // Where U+0000 stands, for HTML text (below); found once, so no span looks past its end.
+  // Where U+0000 stands, for HTML (below); found once, so no span looks past its end.
   const nuls = [];
   if (!xml) for (let at = source.indexOf("\0"); at >= 0; at = source.indexOf("\0", at + 1)) nuls.push(at);
   work.steps += nuls.length;
@@ -548,15 +548,23 @@ function tokenize(source, xml, work) {
       // The tokenizer decodes characters' and predefined entities, not those the doctype declares.
       const declared = xmlEntities(source, span.start, span.end, expand, work, true);
       if (declared) span.entities = [...(span.entities || []), ...declared].sort((a, b) => a.start - b.start);
-    } else if (nuls.length > 0 && span.kind === "text" && !span.ambiguous) {
-      // A browser drops U+0000 from HTML text, so `sh\0op` reads as one word: each is a piece that
-      // reads as nothing, written out as it is (see piecesOf).
-      const dropped = [];
+    }
+    if (nuls.length > 0) {
+      // A browser drops U+0000 from HTML text, so `sh\0op` reads as one word, and reads it as U+FFFD
+      // everywhere else (a value, a name, raw text, a comment, foreign content): each is a piece
+      // that reads so, written out as it is (see piecesOf).
+      const text = span.kind === "text" && !span.ambiguous ? "" : "\uFFFD";
+      const read = [];
+      const entities = span.entities || [];
+      // Both in order, so one walk skips any inside an entity.
+      let entity = 0;
       for (let index = firstAtOrAfter(nuls, span.start); index < nuls.length && nuls[index] < span.end; index++) {
         work.steps++;
-        dropped.push({ start: nuls[index], end: nuls[index] + 1, text: "", dropped: true });
+        const at = nuls[index];
+        while (entity < entities.length && entities[entity].end <= at) entity++;
+        if (entity === entities.length || entities[entity].start > at) read.push({ start: at, end: at + 1, text, plain: true });
       }
-      if (dropped.length > 0) span.entities = [...(span.entities || []), ...dropped].sort((a, b) => a.start - b.start);
+      if (read.length > 0) span.entities = [...(span.entities || []), ...read].sort((a, b) => a.start - b.start);
     }
   }
   return { spans: found, kinds, tags, doctype, expand, unsure };
@@ -747,14 +755,14 @@ function plan(source, tokens, rules, work) {
 }
 
 // A span's content as pieces in order, each { start, end, text, entity }: its literal runs as
-// written and its entities decoded. A U+0000 HTML text drops (`dropped`) reads as nothing, but is
-// written out plainly, so a word it splits goes as a word.
+// written and its entities decoded. An HTML U+0000 reads as nothing or as U+FFFD, but is written
+// out plainly (`plain`), so a word it splits or holds goes as a word.
 function piecesOf(source, span) {
   const pieces = [];
   let at = span.start;
-  for (const { start, end, text, dropped } of span.entities) {
+  for (const { start, end, text, plain } of span.entities) {
     if (start > at) pieces.push({ start: at, end: start, text: source.slice(at, start), entity: false });
-    pieces.push({ start, end, text, entity: !dropped });
+    pieces.push({ start, end, text, entity: !plain });
     at = end;
   }
   if (span.end > at) pieces.push({ start: at, end: span.end, text: source.slice(at, span.end), entity: false });
@@ -767,7 +775,10 @@ function planSpan(source, span, found, rules, work) {
   const { kind, start, end } = span;
   if (kind === "name") {
     const name = source.slice(start, end);
-    if (!rules.keys.has(name) && !found.some((hit) => hit.long)) return [];
+    // As a browser reads it (U+0000 as U+FFFD) too.
+    const read = span.entities ? piecesOf(source, span).map((piece) => piece.text).join("") : name;
+    const long = found.some((hit) => hit.long) || (read !== name && matchesIn(read, { long: rules.long, short: [] }, work).length > 0);
+    if (!rules.keys.has(name) && !rules.keys.has(read) && !long) return [];
     return cantMask(source, span) ? "whole" : "mask";
   }
   if (span.srcdoc) return srcdocHolds(source, span, found, rules, work) ? "mask" : [];
@@ -907,9 +918,9 @@ function srcdocHolds(source, span, found, rules, work) {
 // Whether a secret of `rules` shows in `text` outside `markers` in any reading, whatever the
 // tokenizer took the text for: as written, and decoded by HTML's rules and by XML's, each up to
 // DECODE_LEVELS times (an srcdoc's document is decoded twice); a long one anywhere, a short one as
-// a whole word (see isWord, `loose` for its loose bounds). In `html`, each reading is also read
-// with U+0000 dropped, as a browser drops it from text, and decoded from there. It is the final
-// check on every output.
+// a whole word (see isWord, `loose` for its loose bounds). In `html`, a reading that holds U+0000
+// is also read with each dropped, as a browser drops it from text, and with each as U+FFFD, as a
+// browser reads it everywhere else, and decoded from there. It is the final check on every output.
 function exposes(text, rules, markers, work, { loose = false, html = false } = {}) {
   let hidden = text;
   if (markers.length > 0) {
@@ -923,9 +934,9 @@ function exposes(text, rules, markers, work, { loose = false, html = false } = {
     parts.push(text.slice(last));
     hidden = parts.join("");
   }
-  const shows = (reading) => matchesIn(reading, rules, work, loose).length > 0 || (html && reading.includes("\0") && matchesIn(reading.replaceAll("\0", ""), rules, work, loose).length > 0);
-  const starts = [hidden];
-  if (html && hidden.includes("\0")) starts.push(hidden.replaceAll("\0", ""));
+  const readings = (reading) => (html && reading.includes("\0") ? [reading, reading.replaceAll("\0", ""), reading.replaceAll("\0", "\uFFFD")] : [reading]);
+  const shows = (reading) => readings(reading).some((each) => matchesIn(each, rules, work, loose).length > 0);
+  const starts = readings(hidden);
   for (const start of starts) {
     if (shows(start)) return true;
     for (const decode of [decodeHtml, decodeXml]) {
