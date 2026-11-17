@@ -141,6 +141,8 @@ async function handlePlaybookCli(argv, { endpoint, cwd = process.cwd(), session,
   if (argv[0] === "use" || argv[1] === "run") {
     const spec = runSpec(argv);
     if (spec.options["retry-attempt"] !== undefined) assertAttemptId(spec.options["retry-attempt"], "--retry-attempt");
+    // `--dry-run true` would read as "no dry run" and send the op: a flag with a value is refused.
+    if (spec.options["dry-run"] !== undefined && spec.options["dry-run"] !== true) throw new Error("--dry-run takes no value");
     const format = spec.options.format;
     if (format !== undefined && format !== "md" && format !== "jsonl") throw new Error("--format must be md or jsonl");
     const timeout = resolveRunTimeout(spec, cwd);

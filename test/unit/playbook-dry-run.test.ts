@@ -66,6 +66,41 @@ describe("surf use --dry-run preview", () => {
     expect(preview.refused).toMatch(/body holds <request-body>/);
   });
 
+  it("gives an absolute URL off the op's origins the refusal the run would give", async () => {
+    const op = {
+      id: "post",
+      effect: "read",
+      args: { host: { type: "string", required: true } },
+      run: [{ using: "network", request: { method: "POST", url: "https://{{host}}/api" } }],
+    };
+    const preview = runtime.previewPlaybookOp({
+      playbook,
+      op,
+      args: { host: "evil.test" },
+      env: {},
+    });
+    expect(preview).toMatchObject({
+      url: "https://evil.test/api",
+      refused: "playbook network origin is not allowed: https://evil.test",
+    });
+    const sent: string[] = [];
+    const run = runtime.runPlaybookOp({
+      playbook,
+      op,
+      args: { host: "evil.test" },
+      env: {},
+      executeTool: async (cmd: string) => {
+        sent.push(cmd);
+        return {};
+      },
+    });
+    await expect(run).rejects.toThrow(preview.refused);
+    expect(sent).toEqual([]);
+    expect(
+      runtime.previewPlaybookOp({ playbook, op, args: { host: "example.test" }, env: {} }),
+    ).not.toHaveProperty("refused");
+  });
+
   it("prints a workflow op's first step instead of a request", () => {
     const preview = runtime.previewPlaybookOp({
       playbook,
@@ -94,5 +129,66 @@ describe("surf use --dry-run preview", () => {
       step: { cmd: "type", args: { selector: "#q", text: "surf" } },
       allowedOrigins: ["https://example.test"],
     });
+  });
+
+  // The step the real run sends first, by its tool and args.
+  async function firstDispatch(op: unknown, args: Record<string, string | undefined>) {
+    const calls: Array<{ cmd: string; args: unknown }> = [];
+    await runtime.runPlaybookOp({
+      playbook,
+      op,
+      args,
+      env: {},
+      sleep: () => Promise.resolve(),
+      executeTool: async (cmd: string, toolArgs: unknown) => {
+        calls.push({ cmd, args: toolArgs });
+        return { result: { content: [{ type: "text", text: "ok" }] } };
+      },
+    });
+    return calls[0];
+  }
+
+  it.each([
+    {
+      name: "an op pb save escaped",
+      op: {
+        id: "search",
+        effect: "read",
+        provenance: { escaped: true },
+        args: { text: { type: "string", required: true } },
+        run: [
+          {
+            using: "workflow",
+            autoWait: false,
+            steps: [
+              { cmd: "type", args: { selector: "#q", text: "{{text}} costs {{!}}price}} %{!}y}" } },
+            ],
+          },
+        ],
+      },
+      args: { text: "hello" },
+      text: "hello costs {{price}} %{y}",
+    },
+    {
+      name: "a hand-written op reading its input as a var",
+      op: {
+        id: "search",
+        effect: "read",
+        args: { query: { type: "string", required: true } },
+        run: [
+          {
+            using: "workflow",
+            autoWait: false,
+            steps: [{ cmd: "type", args: { selector: "#q", text: "{{query}} %{query}" } }],
+          },
+        ],
+      },
+      args: { query: "surf" },
+      text: "surf surf",
+    },
+  ])("prints the first step of $name as the run sends it", async ({ op, args, text }) => {
+    const preview = runtime.previewPlaybookOp({ playbook, op, args, env: {} });
+    expect(preview.step).toEqual({ cmd: "type", args: { selector: "#q", text } });
+    expect(await firstDispatch(op, args)).toEqual(preview.step);
   });
 });

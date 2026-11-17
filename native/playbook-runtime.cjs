@@ -231,13 +231,16 @@ function previewPlaybookOp({ playbook, op, args: providedArgs = {}, secrets = {}
   const preview = { playbook: playbook.id, op: op.id, effect: op.effect, strategy: strategy.using };
   const allowedOrigins = op.origins || playbook.origins || [];
   if (strategy.using === "workflow") {
-    const steps = escapes ? fillEscapedSteps(strategy.steps, args) : applyTemplate(strategy.steps, args);
-    return { ...preview, step: steps[0], allowedOrigins };
+    // The first step as the workflow runtime sends it: its args filled with the op's inputs and vars.
+    const [first] = escapes ? fillEscapedSteps(strategy.steps, args) : applyTemplate(strategy.steps, args);
+    const step = first?.args ? { ...first, args: substituteVars(first.args, args, { escapes, inputs: args }) } : first;
+    return { ...preview, step, allowedOrigins };
   }
   if (strategy.using !== "network") return { ...preview, allowedOrigins };
   const placeholder = findRedactedPlaceholder(sentRequest(strategy.request));
   const serverIdempotency = op.effect === "write" ? op.safety?.serverIdempotency : undefined;
   const request = renderNetworkRequest(strategy, { args, authValues, escapes, serverIdempotency, attemptId: "<attempt-id>" });
+  const refused = placeholder ? placeholderError(placeholder, `${playbook.id} ${op.id}`).message : absoluteUrlRefusal(request.url, allowedOrigins);
   return {
     ...preview,
     method: String(request.method || "GET").toUpperCase(),
@@ -246,7 +249,7 @@ function previewPlaybookOp({ playbook, op, args: providedArgs = {}, secrets = {}
     headers: Object.keys(request.headers || {}),
     ...(request.body !== undefined ? { body: request.body } : {}),
     allowedOrigins,
-    ...(placeholder ? { refused: placeholderError(placeholder, `${playbook.id} ${op.id}`).message } : {}),
+    ...(refused ? { refused } : {}),
   };
 }
 
@@ -400,7 +403,25 @@ async function assertAllowedOrigin(url, { allowedOrigins = [], executeTool, sign
     if (page?.error) throw new Error(typeof page.error === "string" ? page.error : JSON.stringify(page.error));
     resolved = new URL(url, page?.output !== undefined ? JSON.parse(page.output) : page?.value);
   }
-  if (!allowedOrigins.includes(resolved.origin)) throw new Error(`playbook network origin is not allowed: ${resolved.origin}`);
+  const refusal = originRefusal(resolved.origin, allowedOrigins);
+  if (refusal) throw new Error(refusal);
+}
+
+function originRefusal(origin, allowedOrigins) {
+  if (allowedOrigins.length === 0 || allowedOrigins.includes(origin)) return undefined;
+  return `playbook network origin is not allowed: ${origin}`;
+}
+
+// The refusal the run gives an absolute URL off the op's origins. A relative URL resolves against
+// the tab's page, which a dry run doesn't read.
+function absoluteUrlRefusal(url, allowedOrigins) {
+  let origin;
+  try {
+    origin = new URL(url).origin;
+  } catch {
+    return undefined;
+  }
+  return originRefusal(origin, allowedOrigins);
 }
 
 async function runStrategy(strategy, context) {

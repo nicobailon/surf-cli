@@ -833,6 +833,18 @@ describe("CLI/native-host/fake-extension E2E contract", () => {
       expect(host.messages.length).toBe(before);
       expect(receipts()).toEqual([]);
 
+      // A value after --dry-run is refused, not read as "no dry run".
+      for (const flags of [
+        ["--dry-run", "true"],
+        ["--write", "--dry-run", "true"],
+      ]) {
+        const valued = await use(...flags);
+        expect(valued.code).toBe(1);
+        expect(valued.stderr).toContain("--dry-run takes no value");
+      }
+      expect(host.messages.length).toBe(before);
+      expect(receipts()).toEqual([]);
+
       const unwritten = await use();
       expect(unwritten.code).toBe(1);
       expect(unwritten.stderr).toMatch(
