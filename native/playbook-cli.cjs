@@ -254,11 +254,12 @@ async function handlePlaybookCli(argv, { endpoint, cwd = process.cwd(), session,
   if (command === "client") {
     const action = parsed.positional[0];
     let value;
-    if (action === "derive") value = deriveClient(parsed.positional[1], parsed.options.op, parsed.options.out, { recordId: parsed.options["from-record"], requestId: parsed.options["request-id"], cwd });
+    const allowWrite = parsed.options.write === true;
+    if (action === "derive") value = deriveClient(parsed.positional[1], parsed.options.op, parsed.options.out, { recordId: parsed.options["from-record"], requestId: parsed.options["request-id"], allowWrite, cwd });
     else if (action === "export") {
       const playbook = parsed.positional[1];
       const resolved = resolvePlaybook(playbook, { cwd });
-      value = exportClient(playbook, parsed.options.op || [...resolved.ops.keys()][0], parsed.options.out, { cwd });
+      value = exportClient(playbook, parsed.options.op || [...resolved.ops.keys()][0], parsed.options.out, { allowWrite, cwd });
     }
     if (value) {
       for (const warning of value.warnings) console.error(`Warning: ${warning}`);

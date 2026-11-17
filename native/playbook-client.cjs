@@ -152,10 +152,10 @@ function endpointArgs(op, endpoint, escapes) {
 // `escapes`: the request holds escaped text (pb save's, or a record's), whose `{{!}}` the client
 // sends as `{{`.
 function generateClient({ playbookId, op, strategy, provenance, out, allowWrite = false, origins = [], escapes = false }) {
-  if (op.effect === "write" && !allowWrite) throw new Error(`op ${op.id} can write, and pb client derive and export refuse write requests for now (only GET, HEAD or OPTIONS)`);
+  const request = strategy.request;
+  if (op.effect === "write" && !allowWrite) throw new Error(`op ${op.id} is a write request (${request.method || "GET"} ${request.url}); add --write to make a client for it`);
   if (typeof out !== "string" || !out) throw new Error("client projection requires --out <directory>");
   const directory = path.resolve(out);
-  const request = strategy.request;
   const placeholder = findRedactedPlaceholder(request);
   if (placeholder) throw placeholderError(placeholder, `${playbookId} ${op.id}`);
   const endpoint = {
