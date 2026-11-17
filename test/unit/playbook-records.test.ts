@@ -1597,6 +1597,17 @@ describe("activity and explicit record evidence", () => {
         );
       });
 
+      it("leaves a read saved from a record with no page origin without that warning", () => {
+        const flow = recordFlow({ origin: "", trace: [page] });
+        const { record, draft } = flow.stopped();
+        expect(draft.effect).toBe("read");
+        const saved = save(flow.root, record.id);
+        expect(saved.origins).toEqual(["https://example.test"]);
+        expect(saved.warnings ?? []).not.toContainEqual(
+          expect.stringContaining("no page origin to compare it with"),
+        );
+      });
+
       it("refuses several writes on another origin until --request-id names one", () => {
         const origin = "https://shop.example";
         const cart = { ...create, id: "r_cart", url: "https://api.shop.example/cart" };
