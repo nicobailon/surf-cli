@@ -107,7 +107,7 @@ function eachFromSpec(options) {
     if (options["each-into"] !== undefined) throw new Error("--each-into goes with --each-from");
     return undefined;
   }
-  if (typeof options["each-from"] !== "string") throw new Error("--each-from needs <list-op>:<path>, such as list_postings:id");
+  if (typeof options["each-from"] !== "string") throw new Error("--each-from needs <list-op>:<path>, such as list_quotes:author_url@path.2");
   if (options["each-into"] !== undefined && typeof options["each-into"] !== "string") throw new Error("--each-into needs an input name");
   return {
     ...parseEachFrom(options["each-from"]),

@@ -483,15 +483,15 @@ describe("chain op runs", () => {
     }
   });
 
-  it("fills the one required input the caller didn't pass, as on a Lever posting", () => {
-    const leverDetail = {
+  it("fills the one required input the caller didn't pass, with a list input typed too", () => {
+    const twoInputDetail = {
       ...detailOp,
       args: {
         company: { type: "string", required: true },
         posting_id: { type: "string", required: true },
       },
     };
-    const playbook = load([listOp, leverDetail]);
+    const playbook = load([listOp, twoInputDetail]);
     const op = playbook.ops.get("get_posting");
     const built = chain.eachFromChain({
       playbook,

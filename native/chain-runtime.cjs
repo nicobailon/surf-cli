@@ -143,7 +143,7 @@ function previewChainOp({ playbook, op, args: provided = {} }) {
 /** `--each-from <op>[:<path>][@path.<n>]`: the list op, the path into each of its records and the URL path segment to take. */
 function parseEachFrom(text) {
   const match = typeof text === "string" ? /^([^:@]+)(?::([^@]+))?(?:@path\.([1-9]\d*))?$/.exec(text) : null;
-  if (!match) throw new Error(`--each-from must be <op>, <op>:<path> or <op>:<path>@path.<n>, such as list_postings:id or list_postings:url@path.2 (got ${text})`);
+  if (!match) throw new Error(`--each-from must be <op>, <op>:<path> or <op>:<path>@path.<n>, such as list_books:url or list_quotes:author_url@path.2 (got ${text})`);
   return { op: match[1], ...(match[2] ? { path: match[2] } : {}), ...(match[3] ? { segment: Number(match[3]) } : {}) };
 }
 

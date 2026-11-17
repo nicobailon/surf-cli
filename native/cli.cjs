@@ -1704,7 +1704,7 @@ const TOOLS = {
           "retry-attempt": "Retry this write attempt (its UUID); the claim must already hold it",
           "override-in-doubt": "Old name of --repeat",
           "pin-built-in": "Use the built-in playbook even if a user or project copy exists",
-          "each-from": "Run the op once per record of another op: <list-op>:<path>, such as list_postings:id; add @path.<n> to take the nth URL path segment of the value (list_postings:url@path.2). Read ops only; it runs as a two-step chain op",
+          "each-from": "Run the op once per record of another op: <list-op>:<path>, such as list_books:url; add @path.<n> to take the nth URL path segment of the value (list_quotes:author_url@path.2). Read ops only; it runs as a two-step chain op",
           "each-into": "With --each-from: the input each record's value fills (default: the op's one required input you didn't pass)",
           limit: "With --each-from: at most this many records (default 5, at most 50)",
           "delay-ms": "With --each-from: milliseconds to wait before each record's run (default 2000)",
@@ -1713,7 +1713,7 @@ const TOOLS = {
         examples: [
           { cmd: "use x thread --url https://x.com/<user>/status/<id> --format md", desc: "Whole X thread as Markdown" },
           { cmd: "use page read --json", desc: "Read the current page" },
-          { cmd: "use lever get_posting --company palantir --each-from list_postings:id --limit 3", desc: "The first 3 listed postings in detail: each record's id fills --posting_id" },
+          { cmd: "use quotes get_author --page 2 --each-from list_quotes:author_url@path.2 --limit 3", desc: "The authors of the first 3 quotes on page 2: each quote's author_url fills --author" },
         ],
       },
       parse: {
