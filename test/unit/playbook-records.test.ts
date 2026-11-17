@@ -3722,12 +3722,26 @@ describe("a record's trace, when a secret header holds a short value", () => {
     expect(JSON.parse(request.body)).toEqual({ id: "<redacted>" });
   });
 
-  it("keeps a query pair that reads like the cookie", () => {
+  it("redacts a short cookie value as a whole query or JSON value, keeping the query name", () => {
     const url = "https://example.test/api/search?lang=en&q=x";
     const { kept, request } = traceAndDraft(sent({ Cookie: "lang=en" }, url, { lang: "en" }));
-    expect(kept.url).toBe(url);
-    expect(JSON.parse(kept.requestBody)).toEqual({ lang: "en" });
-    expect(request.query).toEqual({ lang: "en", q: "x" });
+    expect(kept.url).toBe("https://example.test/api/search?lang=<redacted>&q=x");
+    expect(JSON.parse(kept.requestBody)).toEqual({ lang: "<redacted>" });
+    expect(request.query).toEqual({ lang: "<redacted>", q: "x" });
+  });
+
+  it("keeps both query parameters whose names are short auth parameters, numbered", () => {
+    const shop = ["sh", "op"].join("");
+    const realm = ["tr", "ue"].join("");
+    const { kept, request } = traceAndDraft(
+      sent(
+        { Authorization: `ResyAPI api_key="${shop}", realm="${realm}"` },
+        `https://example.test/anything?${shop}=first&${realm}=second`,
+        { q: "x" },
+      ),
+    );
+    expect(kept.url).toBe("https://example.test/anything?<redacted>=first&<redacted-2>=second");
+    expect(request.query).toEqual({ "<redacted>": "first", "<redacted-2>": "second" });
   });
 });
 

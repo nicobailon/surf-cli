@@ -645,7 +645,104 @@ describe("echo redaction that keeps an export's structure", () => {
       requestBody: "<root>lang=en</root>",
       responseBody: "lang=en x=1",
     });
-    expect(kept.requestBody).toBe("<root><redacted></root>");
+    expect(kept.requestBody).toBe("<root>lang=en</root>");
     expect(kept.responseBody).toBe("<redacted> x=1");
+  });
+});
+
+describe("echo redaction by each secret's own length", () => {
+  // Short dummy values, built from parts so no literal here reads as a credential.
+  const SHOP = ["sh", "op"].join("");
+  const TRUE = ["tr", "ue"].join("");
+  const resy = `ResyAPI api_key="${SHOP}", realm="${TRUE}"`;
+
+  it("numbers secret query keys so none collide with each other or a key already there", () => {
+    const url = (query: string) =>
+      exporter.publicEntry({
+        id: "r-q",
+        url: `https://example.test/anything?${query}`,
+        requestHeaders: { Authorization: resy },
+      }).url;
+    expect(url(`${SHOP}=first&${TRUE}=second`)).toBe(
+      "https://example.test/anything?<redacted>=first&<redacted-2>=second",
+    );
+    expect(url(`%3Credacted%3E=zero&${SHOP}=first`)).toBe(
+      "https://example.test/anything?%3Credacted%3E=zero&<redacted-2>=first",
+    );
+    expect(url(`${SHOP}=1&${SHOP}=2`)).toBe(
+      "https://example.test/anything?<redacted>=1&<redacted>=2",
+    );
+  });
+
+  it("redacts a URL held in a JSON string by the URL rules, as httpbin's url echoes the request", () => {
+    const sent = `https://example.test/anything?${SHOP}=first&${TRUE}=second`;
+    const kept = exporter.publicEntry({
+      id: "r-e",
+      url: sent,
+      requestHeaders: { Authorization: resy },
+      responseBody: JSON.stringify({ url: sent, note: `see ${sent}` }),
+    });
+    expect(JSON.parse(kept.responseBody)).toEqual({
+      url: "https://example.test/anything?<redacted>=first&<redacted-2>=second",
+      note: `see ${sent}`,
+    });
+  });
+
+  it("redacts a header or body that is the short secret whole, though it reads as a JSON scalar", () => {
+    const kept = exporter.publicEntry({
+      id: "r-b",
+      url: "https://example.test/anything",
+      requestHeaders: { Authorization: resy },
+      responseHeaders: { "access-control-allow-credentials": TRUE, "x-count": "2" },
+      responseBody: JSON.stringify({ ok: true, realm: TRUE }),
+    });
+    expect(kept.responseHeaders).toEqual({
+      "access-control-allow-credentials": "<redacted>",
+      "x-count": "2",
+    });
+    expect(JSON.parse(kept.responseBody)).toEqual({ ok: true, realm: "<redacted>" });
+  });
+
+  it("judges a secret short or key-length by its own length, not by an encoded spelling's", () => {
+    const comma = ["a", "b"].join(",");
+    const kept = exporter.publicEntry({
+      id: "r-l",
+      url: `https://example.test/api?${encodeURIComponent(comma)}=1&q=${encodeURIComponent(comma)}`,
+      requestHeaders: { "x-csrf-token": comma },
+    });
+    expect(kept.url).toBe("https://example.test/api?a%2Cb=1&q=<redacted>");
+
+    const slashes = ["a", "b", "c", "d"].join("/");
+    const encoded = encodeURIComponent(slashes);
+    const body = exporter.publicEntry({
+      id: "r-l2",
+      url: "https://example.test/api",
+      requestHeaders: { "x-csrf-token": slashes },
+      responseBody: JSON.stringify({ note: `x ${encoded} y`, [encoded]: 1, v: encoded }),
+    }).responseBody;
+    expect(JSON.parse(body)).toEqual({ note: `x ${encoded} y`, "<redacted>": 1, v: "<redacted>" });
+  });
+
+  it("replaces a short secret in other text only as a token between spaces, never inside markup", () => {
+    const kept = exporter.publicEntry({
+      id: "r-m",
+      url: "https://example.test/api",
+      requestHeaders: { "x-csrf-token": "a" },
+      requestBody: "<a>lang=en</a>",
+      responseBody: "a <b>a</b> word a",
+    });
+    expect(kept.requestBody).toBe("<a>lang=en</a>");
+    expect(kept.responseBody).toBe("<redacted> <b>a</b> word <redacted>");
+  });
+
+  it("redacts a short cookie value as a whole value, never a key", () => {
+    const kept = exporter.publicEntry({
+      id: "r-c",
+      url: "https://example.test/api?lang=en&q=x",
+      requestHeaders: { Cookie: ["lang", "en"].join("=") },
+      responseBody: JSON.stringify({ lang: "en", en: 1 }),
+    });
+    expect(kept.url).toBe("https://example.test/api?lang=<redacted>&q=x");
+    expect(JSON.parse(kept.responseBody)).toEqual({ lang: "<redacted>", en: 1 });
   });
 });

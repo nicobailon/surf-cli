@@ -65,44 +65,58 @@ function redactSecretValues(text, values, options = {}) {
   return redactValues(text, values.flatMap(valueSpellings), options);
 }
 
-// Echoes of secret header values (see secretHeaderEchoes) are redacted without changing what holds
-// them. `secrets` is { values, wholeOnly }: each spelling of a whole header value or a long
-// parameter, and of a short auth parameter. A value of 8 characters or more goes wherever it
-// appears; a shorter one only as a whole value (a whole JSON string, or a whole query or form
-// value), never inside a number or the structure around it; in other text a short whole header
-// value only where it stands alone, and a short parameter never. A key goes only when it is a
-// whole secret of 4 characters or more. So a JSON text stays valid JSON, and a URL keeps its form.
-function echoRules({ values = [], wholeOnly = [] } = {}) {
-  const texts = values.map(String).filter(Boolean);
-  const params = wholeOnly.map(String).filter(Boolean);
-  const all = [...texts, ...params];
+// The secrets an echo can't hold, from `values` (secret values as written), each in every spelling
+// (see valueSpellings) and judged by its own length, whatever a spelling's: `long` holds those of 8
+// characters or more, `short` the shorter ones, `keys` those of 4 or more.
+function echoSecrets(values) {
+  const texts = [...new Set(values.map(String).filter(Boolean))];
+  const spell = (list) => [...new Set(list.flatMap(valueSpellings))];
   return {
-    empty: all.length === 0,
-    long: texts.filter((value) => value.length >= 8),
-    whole: new Set(all),
-    keys: new Set(all.filter((value) => value.length >= 4)),
-    text: texts,
+    long: spell(texts.filter((text) => text.length >= 8)),
+    short: spell(texts.filter((text) => text.length < 8)),
+    keys: spell(texts.filter((text) => text.length >= 4)),
   };
 }
 
-// The names `keys` take: a secret one <redacted>, or <redacted-2>, <redacted-3>... when the name is
-// taken, so no entry is lost; the others as they are.
+// Echoes of secret values (see echoSecrets) are redacted without changing what holds them. A long
+// secret goes wherever it appears; a short one only as a whole value (a whole JSON string, or a whole
+// query or form value), never inside a number or the structure around it, and in other text only as
+// a token between spaces. A key goes only when it is a whole key-length secret. So a JSON text stays
+// valid JSON, a URL keeps its form and markup its tags.
+function echoRules({ long = [], short = [], keys = [] } = {}) {
+  return {
+    empty: long.length + short.length === 0,
+    long,
+    short,
+    whole: new Set([...long, ...short]),
+    keys: new Set(keys),
+  };
+}
+
+// The names `keys` take: a secret one (in `secretKeys`) <redacted>, or <redacted-2>, <redacted-3>...
+// when that name is taken by another key, so no entry is lost; the others as they are. A secret key
+// that repeats (a query's `a=1&a=2`) keeps one name.
 function renamedKeys(keys, secretKeys) {
   const taken = new Set(keys.filter((key) => !secretKeys.has(key)));
+  const names = new Map();
   return keys.map((key) => {
     if (!secretKeys.has(key)) return key;
-    let name = "<redacted>";
-    for (let index = 2; taken.has(name); index++) name = `<redacted-${index}>`;
-    taken.add(name);
-    return name;
+    if (!names.has(key)) {
+      let name = "<redacted>";
+      for (let index = 2; taken.has(name); index++) name = `<redacted-${index}>`;
+      taken.add(name);
+      names.set(key, name);
+    }
+    return names.get(key);
   });
 }
 
 // A string value: <redacted> when it is a secret whole; a JSON object or array held as text (httpbin's
-// `data`) by redactEchoJsonText, so its own strings and keys follow the same rules; else with each
-// long value replaced.
+// `data`) by redactEchoJsonText, so its own strings and keys follow the same rules; an absolute URL
+// (httpbin's `url`) by redactUrlBy; else with each long value replaced.
 function redactEchoString(text, rules) {
   if (rules.whole.has(text)) return "<redacted>";
+  if (/^[a-zA-Z][a-zA-Z0-9+.-]*:\/\/\S+$/.test(text)) return redactUrlBy(text, rules);
   if (/^\s*[{[]/.test(text)) {
     try {
       JSON.parse(text);
@@ -129,7 +143,8 @@ function redactEchoJson(value, secrets) {
 
 // A query or form-encoded text (`a=1&b=2`): a value that is a secret whole, by its encoded or
 // decoded spelling, whatever its length; each long value within any other; a name only when it is a
-// key-length secret whole. `&` and `=` stay as they are.
+// key-length secret whole, renamed as JSON keys are (see renamedKeys) by the names as decoded. `&`
+// and `=` stay as they are.
 function redactEchoQuery(query, rules) {
   const decode = (text) => {
     try {
@@ -139,20 +154,41 @@ function redactEchoQuery(query, rules) {
     }
   };
   const value = (raw) => (rules.whole.has(raw) || rules.whole.has(decode(raw)) ? "<redacted>" : redactValues(raw, rules.long));
-  return query.split("&").map((pair) => {
+  const pairs = query.split("&").map((pair) => {
     const equals = pair.indexOf("=");
-    if (equals < 0) return value(pair);
-    const name = pair.slice(0, equals);
-    const kept = rules.keys.has(name) || rules.keys.has(decode(name)) ? "<redacted>" : name;
-    return `${kept}=${value(pair.slice(equals + 1))}`;
+    return equals < 0 ? { value: pair } : { name: pair.slice(0, equals), value: pair.slice(equals + 1) };
+  });
+  const named = pairs.filter((pair) => pair.name !== undefined);
+  const decoded = named.map((pair) => decode(pair.name));
+  const secret = new Set(decoded.filter((name, index) => rules.keys.has(named[index].name) || rules.keys.has(name)));
+  const names = renamedKeys(decoded, secret);
+  let index = 0;
+  return pairs.map((pair) => {
+    if (pair.name === undefined) return value(pair.value);
+    const name = secret.has(decoded[index]) ? names[index] : pair.name;
+    index++;
+    return `${name}=${value(pair.value)}`;
   }).join("&");
+}
+
+// Free text: each long value replaced wherever it appears, each short one only as a token between
+// spaces or the text's ends, so it can't rewrite a word or a tag around it.
+function redactEchoWords(text, rules) {
+  const sorted = [...rules.short].sort((a, b) => b.length - a.length);
+  return sorted.reduce(
+    (result, value) => result.replace(new RegExp(`(?<!\\S)${value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(?!\\S)`, "g"), "<redacted>"),
+    redactValues(text, rules.long),
+  );
 }
 
 // A URL: its query by redactEchoQuery, and long values anywhere else in it.
 function redactEchoUrl(url, secrets) {
   if (typeof url !== "string") return url;
   const rules = echoRules(secrets);
-  if (rules.empty) return url;
+  return rules.empty ? url : redactUrlBy(url, rules);
+}
+
+function redactUrlBy(url, rules) {
   const hash = url.indexOf("#") < 0 ? url.length : url.indexOf("#");
   const question = url.indexOf("?");
   if (question < 0 || question > hash) return redactValues(url, rules.long);
@@ -197,19 +233,20 @@ function redactEchoJsonText(source, rules) {
 const FORM_PATTERN = /^[^=&\s<>]+=[^&\s<>]*(?:&[^=&\s<>]+=[^&\s<>]*)*$/;
 
 // A body or header text: JSON by redactEchoJsonText, a strict form-encoded text by redactEchoQuery,
-// and any other text with long values anywhere and a short whole header value where it stands alone.
+// and any other text by redactEchoWords. A bare number, boolean or null (a header's `true`) has no
+// structure to keep, so it counts as text and goes when it is a secret whole.
 function redactEchoText(text, secrets) {
   const rules = echoRules(secrets);
   const source = String(text);
   if (rules.empty) return source;
   let json = false;
   try {
-    JSON.parse(source);
-    json = true;
+    const parsed = JSON.parse(source);
+    json = typeof parsed === "string" || (parsed !== null && typeof parsed === "object");
   } catch {}
   if (json) return redactEchoJsonText(source, rules);
   if (FORM_PATTERN.test(source)) return redactEchoQuery(source, rules);
-  return redactValues(source, rules.text);
+  return redactEchoWords(source, rules);
 }
 
 function isTemplate(value) {
@@ -247,17 +284,14 @@ function headerParams(text) {
 }
 
 // The values of the secret headers in `headerSets` (and of the headers named in `names`), in the
-// forms a body or another header can echo, each in every spelling (see valueSpellings): `values`
-// holds each whole value and each piece of 8 characters or more, `wholeOnly` each shorter auth
-// parameter. A piece is the credential after an auth scheme, or a cookie's or parameter's value, a
-// quoted one inside its quotes, as written and unescaped (so redacting an echo leaves a JSON
-// string's quotes alone). A short cookie value (`lang=en`) is no secret by itself and isn't kept.
-// Redact echoes with redactEchoText, redactEchoJson or redactEchoUrl, which keep a short value
-// from rewriting keys, numbers or structure.
+// forms a body or another header can echo, as echoSecrets: each whole value and each piece of one.
+// A piece is the credential after an auth scheme, or a cookie's or parameter's value, a quoted one
+// inside its quotes, as written and unescaped (so redacting an echo leaves a JSON string's quotes
+// alone). Redact echoes with redactEchoText, redactEchoJson or redactEchoUrl, which keep a short
+// value from rewriting keys, numbers or structure.
 function secretHeaderEchoes(headerSets, names = []) {
   const named = new Set(names.map((name) => String(name).toLowerCase()));
   const values = [];
-  const wholeOnly = [];
   for (const headers of headerSets) {
     if (!headers || typeof headers !== "object" || Array.isArray(headers)) continue;
     for (const [name, value] of Object.entries(headers)) {
@@ -273,19 +307,10 @@ function secretHeaderEchoes(headerSets, names = []) {
         const quoted = assigned.match(/^"((?:[^"\\]|\\.)*)"$/s);
         pieces.push(...(quoted ? [quoted[1], quoted[1].replace(/\\(.)/gs, "$1")] : [assigned]));
       }
-      const cookie = lower === "cookie" || lower === "set-cookie";
-      values.push(text, ...pieces.filter((piece) => piece.length >= 8));
-      if (!cookie) wholeOnly.push(...pieces.filter((piece) => piece && piece.length < 8));
+      values.push(text, ...pieces);
     }
   }
-  const spell = (list) => [...new Set(list.flatMap(valueSpellings))];
-  return { values: spell(values), wholeOnly: spell(wholeOnly) };
-}
-
-// secretHeaderEchoes(...).values of one header set: what free text, such as a response sample,
-// can't hold.
-function secretHeaderValues(headers, names = []) {
-  return secretHeaderEchoes([headers], names).values;
+  return echoSecrets(values);
 }
 
 function redactSensitiveFields(value) {
@@ -402,6 +427,5 @@ module.exports = {
   redactValues,
   safeHeaders,
   secretHeaderEchoes,
-  secretHeaderValues,
   valueSpellings,
 };
