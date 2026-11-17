@@ -1,5 +1,6 @@
 const fs = require("fs");
 const path = require("path");
+const { canCommit } = require("./workflow-definition.cjs");
 const { executeSingleStep, executeWorkflow, substituteVars } = require("./workflow-runtime.cjs");
 const { runWorkflowScript } = require("./workflow-script-runtime.cjs");
 const { runApiHarvest, watchCapture } = require("./api-harvest.cjs");
@@ -451,8 +452,10 @@ async function runStrategy(strategy, context) {
       autoWait: strategy.autoWait !== false,
       escapes: context.escapes,
       inputs: context.args,
+      // A write's receipt starts at its first step that can commit: a fill, a navigation or a
+      // read that fails before it leaves none.
       executeTool: async (tool, args, options) => {
-        await context.markDispatched?.();
+        if (canCommit(tool, args)) await context.markDispatched?.();
         return context.executeStep(tool, args, options);
       },
       onError: strategy.onError || "stop",

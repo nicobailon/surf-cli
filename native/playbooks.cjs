@@ -8,7 +8,7 @@ const { ASSERTION_LIMIT, validateAssertions } = require("./playbook-assertions.c
 const { validateExtract } = require("./playbook-extract.cjs");
 const { validateMarkdownSpec } = require("./record-format.cjs");
 const { assertNoEmbeddedSecrets, assertUrlHasNoEmbeddedSecrets } = require("./redaction.cjs");
-const { commandMetadata, normalizeStep } = require("./workflow-definition.cjs");
+const { normalizeStep } = require("./workflow-definition.cjs");
 
 const BUILTIN_DIR = path.join(__dirname, "..", "playbooks");
 const PINNED_BUILTINS = new Set(["chatgpt", "aistudio", "x"]);
@@ -91,22 +91,6 @@ function validateServerIdempotency(value, opId) {
   return result;
 }
 
-function validateWriteWorkflowSteps(steps, opId) {
-  if (steps.length !== 1 || steps[0].repeat !== undefined || steps[0].each !== undefined) {
-    throw new Error(`write op ${opId} workflow strategy must contain exactly one commit step`);
-  }
-  const metadata = commandMetadata(steps[0].cmd, steps[0].args);
-  if (metadata.effect !== "page-write") {
-    throw new Error(`write op ${opId} workflow commit step must be page-write`);
-  }
-}
-
-// A write op's workflow fallback is one page-write step: the commit.
-function isCommitWorkflow(steps) {
-  const [step] = steps;
-  return steps.length === 1 && step.repeat === undefined && step.each === undefined && commandMetadata(step.cmd, step.args).effect === "page-write";
-}
-
 function normalizeScript(value) {
   if (typeof value === "string") return value;
   if (Array.isArray(value) && value.every((line) => typeof line === "string")) return value.join("\n");
@@ -131,9 +115,7 @@ function validateStrategy(strategy, effect, opId) {
   }
   if (strategy.using === "workflow") {
     if (!Array.isArray(strategy.steps) || strategy.steps.length === 0) throw new Error("workflow strategy requires steps");
-    const steps = strategy.steps.map(normalizeStep);
-    if (effect === "write") validateWriteWorkflowSteps(steps, opId);
-    return { ...strategy, steps };
+    return { ...strategy, steps: strategy.steps.map(normalizeStep) };
   }
   if (strategy.using === "network") {
     const request = strategy.request;
@@ -378,7 +360,6 @@ module.exports = {
   envBackedHeaders,
   exportPlaybookDirectory,
   importPlaybookDirectory,
-  isCommitWorkflow,
   listPlaybooks,
   resolveEditablePlaybook,
   resolveOp,
