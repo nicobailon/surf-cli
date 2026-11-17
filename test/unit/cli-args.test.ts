@@ -1159,7 +1159,12 @@ describe("CLI argument parsing", () => {
     const steps = [
       {
         tool: "network.export",
-        args: { output: path.join(directory, "x.har"), "raw-bodies": true, rawBodies: true, raw: true },
+        args: {
+          output: path.join(directory, "x.har"),
+          "raw-bodies": true,
+          rawBodies: true,
+          raw: true,
+        },
       },
       { tool: "network.curl", args: { id: "r_1", raw: true } },
       {
