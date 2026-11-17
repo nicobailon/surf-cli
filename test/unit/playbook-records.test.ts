@@ -1580,28 +1580,67 @@ describe("activity and explicit record evidence", () => {
           "https://alice.github.io",
           "https://bob.github.io/api/save",
         ],
-        ["the site's api. subdomain", "https://example.test", "https://api.example.test/save"],
+        ["the site's api. subdomain", "https://shop.example", "https://api.shop.example/cart"],
       ])(
-        "replays a write on %s only when --request-id names it, at stop or at save",
+        "replays a lone write on %s without --request-id, and warns of its origin",
         (_case, origin, url) => {
           const write = { ...create, id: "r_other", url };
           const trace = [{ ...page, url: `${origin}/` }, write];
           const other = new URL(url).origin;
-          expect(() => recordFlow({ commands: ["navigate"], origin, trace }).stopped()).toThrow(
-            `the draft would replay POST ${url}, whose origin (${other}) isn't the record's page origin (${origin}); name it with --request-id r_other to replay it anyway`,
+          const flow = recordFlow({ commands: ["navigate"], origin, trace });
+          const { record, draft } = flow.stopped();
+          const network = draft.run.find(
+            (strategy: { using: string }) => strategy.using === "network",
           );
-          const flow = recordFlow({ commands: ["navigate"], origin, trace, stop: {} });
-          const { record } = flow.stopped();
-          expect(() => save(flow.root, record.id)).toThrow(
-            /whose origin .* isn't the record's page origin/,
-          );
-          const saved = save(flow.root, record.id, "r_other");
+          expect(network.request).toMatchObject({ method: "POST", url });
+          const saved = save(flow.root, record.id);
           expect(saved.origins).toEqual([origin, other]);
           expect(saved.warnings).toContain(
             `the op may also send to ${other}, the origin of the request it replays (POST ${url}), which isn't the origin of the record's page (${origin}); if that is the wrong request, save again with --request-id <r_…> from pb record candidates`,
           );
         },
       );
+
+      it("warns of a lone write's origin when the record had no page origin", () => {
+        // A record started on about:blank has no page origin to compare the write's with.
+        const url = "https://api.shop.example/cart";
+        const write = { ...create, id: "r_cart", url };
+        const flow = recordFlow({ commands: ["navigate"], origin: "", trace: [write] });
+        const { record } = flow.stopped();
+        const saved = save(flow.root, record.id);
+        expect(saved.origins).toEqual(["https://api.shop.example"]);
+        expect(saved.warnings).toContain(
+          `the op sends to https://api.shop.example, the origin of the request it replays (POST ${url}), and the record had no page origin to compare it with; if that is the wrong request, save again with --request-id <r_…> from pb record candidates`,
+        );
+      });
+
+      it("leaves a read saved from a record with no page origin without that warning", () => {
+        const flow = recordFlow({ origin: "", trace: [page] });
+        const { record, draft } = flow.stopped();
+        expect(draft.effect).toBe("read");
+        const saved = save(flow.root, record.id);
+        expect(saved.origins).toEqual(["https://example.test"]);
+        expect(saved.warnings ?? []).not.toContainEqual(
+          expect.stringContaining("no page origin to compare it with"),
+        );
+      });
+
+      it("refuses several writes on another origin until --request-id names one", () => {
+        const origin = "https://shop.example";
+        const cart = { ...create, id: "r_cart", url: "https://api.shop.example/cart" };
+        const order = { ...create, id: "r_order", url: "https://api.shop.example/order" };
+        const trace = [{ ...page, url: `${origin}/` }, cart, order];
+        const refused =
+          "the record captured 2 writes (r_cart POST https://api.shop.example/cart, r_order POST https://api.shop.example/order); name the one the op replays with --request-id <r_…>";
+        expect(() => recordFlow({ commands: ["navigate"], origin, trace }).stopped()).toThrow(
+          refused,
+        );
+        const flow = recordFlow({ commands: ["navigate"], origin, trace, stop: {} });
+        const { record } = flow.stopped();
+        expect(() => save(flow.root, record.id)).toThrow(refused);
+        const saved = save(flow.root, record.id, "r_order");
+        expect(saved.origins).toEqual([origin, "https://api.shop.example"]);
+      });
 
       it("saves the write named with --request-id at stop", () => {
         const atStop = recordFlow({

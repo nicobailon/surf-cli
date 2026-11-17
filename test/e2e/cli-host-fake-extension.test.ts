@@ -2871,6 +2871,58 @@ describe("CLI/native-host/fake-extension E2E contract", () => {
     60000,
   );
 
+  // A lone write on another origin than the page, such as the site's api. host, drafts and saves
+  // without --request-id: the save warns of that origin, and surf use --write sends to it.
+  it("saves a lone write on another origin with a warning and replays it with surf use --write", async () => {
+    const socketPath = createSocketPath();
+    const project = fs.mkdtempSync(path.join(os.tmpdir(), "surf-record-origin-"));
+    tempDirs.push(project);
+    const api = "https://api.fixture.test";
+    const body = JSON.stringify({ note: ["dummy", "origin", "words"].join(" ") });
+    const page = {
+      url: `${api}/items`,
+      requestHeaders: { "content-type": "application/json" },
+      requestBody: body,
+    };
+    const host = startHost(socketPath, { recording: true, scriptResponse: page });
+    const scripts = () =>
+      host.messages
+        .filter((message) => message.type === "EXECUTE_JAVASCRIPT")
+        .map((message) => String(message.code));
+    const cli = (args: string[]) =>
+      runCli(socketPath, args, project, { SURF_STATE_DIR: host.stateDir });
+
+    try {
+      await host.waitForMessage((message) => message.type === "HOST_READY");
+      expect((await cli(["navigate", "https://fixture.test/form"])).code).toBe(0);
+      const start = ["pb", "record", "start", "fixture", "--op", "submit", "--network"];
+      expect((await cli([...start, "--include-input-values"])).code).toBe(0);
+      expect((await cli(["js", `fetch("${api}/items", { method: "POST" })`])).code).toBe(0);
+      const stopped = await cli(["pb", "record", "stop", "--draft", "--json"]);
+      expect(stopped).toMatchObject({ code: 0, stderr: "" });
+      const { record } = JSON.parse(stopped.stdout);
+
+      const saved = await cli(["pb", "save", "--from-record", record.id, "--project", "--json"]);
+      expect(saved).toMatchObject({ code: 0, stderr: "" });
+      const result = JSON.parse(saved.stdout);
+      expect(result.origins).toEqual(["https://fixture.test", api]);
+      expect(result.warnings.join("\n")).toContain(`the op may also send to ${api}`);
+      // The tab answers the op's send from the write's own origin.
+      host.setScriptOutput({ url: `${api}/items` });
+      const before = scripts().length;
+      const used = await cli(["use", "fixture", "submit", "--write", "--json"]);
+      expect(used).toMatchObject({ code: 0, stderr: "" });
+      expect(JSON.parse(used.stdout)).toMatchObject({ strategy: "network" });
+      // The one script surf use ran posts to the write's own origin.
+      const sent = scripts().slice(before);
+      expect(sent).toHaveLength(1);
+      expect(sent[0]).toContain(`${api}/items`);
+      expect(sent[0]).toContain('method: "POST"');
+    } finally {
+      await host.dispose();
+    }
+  }, 60000);
+
   // includeInputValues in the user's own ~/surf.json sets pb record start's default; the same key
   // in the project's surf.json, where surf runs, changes nothing.
   it("keeps a record's values by default only from ~/surf.json, never the project's", async () => {
