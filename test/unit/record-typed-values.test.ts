@@ -32,13 +32,48 @@ describe("typed values in a captured URL", () => {
         "dummy romeo",
       ),
     ).toBe(
-      `https://example.test/graphql/abc/SearchTimeline?variables=${encodeURIComponent('{"rawQuery":"<text>","count":20}')}&f=1`,
+      `https://example.test/graphql/abc/SearchTimeline?variables=${encodeURIComponent('{"rawQuery":"')}<text>${encodeURIComponent('","count":20}')}&f=1`,
     );
     expect(redact("https://example.test/s?q=pizza+near+me", "pizza")).toBe(
       "https://example.test/s?q=<text>+near+me",
     );
     expect(redact("https://example.test/api?q=dummy-username&n=myname1&page=1", "name", "1")).toBe(
       "https://example.test/api?q=dummy-username&n=myname1&page=1",
+    );
+  });
+
+  it("replaces every typed value inside one value", () => {
+    expect(redact("https://example.test/s?q=pizza+dummy+romeo", "pizza", "dummy romeo")).toBe(
+      "https://example.test/s?q=<text>+<text-2>",
+    );
+    expect(
+      redact("https://example.test/s?q=dummy%2520romeo%2520pizza", "pizza", "dummy romeo"),
+    ).toBe("https://example.test/s?q=<text-2>%2520<text>");
+  });
+
+  it("matches a decoded value only: never escape syntax, path pieces or JSON keys", () => {
+    expect(redact("https://example.test/search-users/list?q=1", "users")).toBe(
+      "https://example.test/search-users/list?q=1",
+    );
+    expect(redact("https://example.test/users/list", "users")).toBe(
+      "https://example.test/<text>/list",
+    );
+    expect(redact("https://example.test/s?q=hello%20abc", "20abc")).toBe(
+      "https://example.test/s?q=hello%20abc",
+    );
+    expect(redact("https://example.test/s?q=hello%20abcd", "abcd")).toBe(
+      "https://example.test/s?q=hello%20<text>",
+    );
+    const json = encodeURIComponent('{"query":"romeo","q":"dummy query"}');
+    expect(redact(`https://example.test/graphql?variables=${json}`, "query")).toBe(
+      `https://example.test/graphql?variables=${encodeURIComponent('{"query":"romeo","q":"dummy ')}<text>${encodeURIComponent('"}')}`,
+    );
+  });
+
+  it("replaces a typed value that is a whole JSON number or boolean", () => {
+    const json = encodeURIComponent('{"year":2024,"live":true,"n":20245}');
+    expect(redact(`https://example.test/graphql?variables=${json}`, "2024", "true")).toBe(
+      `https://example.test/graphql?variables=${encodeURIComponent('{"year":')}<text>${encodeURIComponent(',"live":')}<text-2>${encodeURIComponent(',"n":20245}')}`,
     );
   });
 

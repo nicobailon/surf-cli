@@ -59,11 +59,14 @@ function typedValues(command, args) {
     .map((value) => ({ value: String(value), marker: `<${name}>` }));
 }
 
-/** Holds what one typing call entered. `paused`: the record was paused, so the call gets no event. */
-function rememberTypedValues(recordId, command, args, { paused = false } = {}) {
+/**
+ * Holds what one typing call entered. `evented: false`: the call gets no typing event of its own
+ * (the record was paused, or a batch ran it), so no drafted step names its values.
+ */
+function rememberTypedValues(recordId, command, args, { evented = true } = {}) {
   if (!typedArg(command, args)) return;
   const calls = held.get(recordId) || [];
-  calls.push({ command, values: typedValues(command, args).map(({ value }) => value), paused });
+  calls.push({ command, values: typedValues(command, args).map(({ value }) => value), evented });
   held.set(recordId, calls);
 }
 
@@ -117,7 +120,7 @@ function typedValuesForTrace(events, calls) {
     return [event, typeof marker === "string" && REDACTED_MARKER.test(marker) ? marker : "<redacted>"];
   }));
   const typing = events.filter((event) => ["tool.completed", "tool.failed"].includes(event.type) && typedArg(event.command, event.argsRedacted));
-  const evented = calls.filter((call) => !call.paused);
+  const evented = calls.filter((call) => call.evented);
   const paired = Math.min(typing.length, evented.length);
   const markerOf = new Map();
   for (let offset = 1; offset <= paired; offset++) {
@@ -163,26 +166,122 @@ function encodedForms(value) {
 
 const escapeRegExp = (text) => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
+// The character a well-formed run of 1 to 4 %XX escapes at `index` encodes (UTF-8), or null.
+function escapedChar(text, index) {
+  for (let count = 1; count <= 4; count++) {
+    const run = text.slice(index, index + 3 * count);
+    if (!/^(?:%[0-9a-fA-F]{2})+$/.test(run) || run.length !== 3 * count) return null;
+    try {
+      return { char: decodeURIComponent(run), size: run.length };
+    } catch {}
+  }
+  return null;
+}
+
+// One decode of `text`, with where each decoded character came from: `starts[i]` is the index in
+// `text` where character i begins, `starts[length]` the end. An escape decodes whole or not at all.
+function decodeOnce(text, plusIsSpace) {
+  let decoded = "";
+  const starts = [];
+  for (let index = 0; index < text.length;) {
+    const escaped = text[index] === "%" ? escapedChar(text, index) : null;
+    const char = escaped ? escaped.char : plusIsSpace && text[index] === "+" ? " " : text[index];
+    for (let offset = 0; offset < char.length; offset++) starts.push(index);
+    decoded += char;
+    index += escaped ? escaped.size : 1;
+  }
+  starts.push(text.length);
+  return { decoded, starts };
+}
+
+// The fully decoded reading of a value, with each of its character positions mapped back to
+// `raw`. `+` is a space only in the outermost encoding, or, with `plusEveryLevel`, in every one.
+function deepestReading(raw, plusEveryLevel) {
+  let text = raw;
+  let toRaw = (index) => index;
+  for (let depth = 1; depth <= MAX_DECODES; depth++) {
+    const { decoded, starts } = decodeOnce(text, depth === 1 || plusEveryLevel);
+    if (decoded === text) break;
+    const outer = toRaw;
+    toRaw = (index) => outer(starts[index]);
+    text = decoded;
+  }
+  return { text, toRaw };
+}
+
+// Where a JSON object or array's values sit in `text`: the inside of each string value (never a
+// key) and each number, true, false or null, which only a whole match may replace. Null if
+// `text` isn't one.
+function jsonValueSpans(text) {
+  try {
+    const parsed = JSON.parse(text);
+    if (!parsed || typeof parsed !== "object") return null;
+  } catch {
+    return null;
+  }
+  const spans = [];
+  const token = /"(?:[^"\\]|\\.)*"|-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?|true|false|null|[{}[\]:,]|\s+/y;
+  const colon = /\s*:/y;
+  for (let match = token.exec(text); match; match = token.exec(text)) {
+    const [found] = match;
+    if (/^[\s{}[\]:,]/.test(found)) continue;
+    if (!found.startsWith('"')) {
+      spans.push({ start: match.index, end: token.lastIndex, whole: true });
+      continue;
+    }
+    colon.lastIndex = token.lastIndex;
+    if (!colon.test(text)) spans.push({ start: match.index + 1, end: token.lastIndex - 1, whole: false });
+  }
+  return spans;
+}
+
+// The ranges of `raw` where a typed value of 4 or more characters sits inside the decoded value,
+// between non-alphanumeric characters (`"rawQuery":"…"`, `pizza near me`, but not `name` in
+// `username`), and in JSON only in values. Each range spans whole escapes of `raw`.
+function insideRanges(raw, typed) {
+  const values = typed.filter(({ value }) => value.length >= MIN_INSIDE_LENGTH).sort((a, b) => b.value.length - a.value.length);
+  const ranges = [];
+  for (const { text, toRaw } of [deepestReading(raw, false), deepestReading(raw, true)]) {
+    const spans = jsonValueSpans(text);
+    const allowed = (start, end) => !spans || spans.some((span) => (span.whole ? start === span.start && end === span.end : start >= span.start && end <= span.end));
+    for (const { value, marker } of values) {
+      const forms = spans ? [...new Set([value, JSON.stringify(value).slice(1, -1)])] : [value];
+      for (const form of forms) {
+        for (const match of text.matchAll(new RegExp(`(?<![\\p{L}\\p{N}])${escapeRegExp(form)}(?![\\p{L}\\p{N}])`, "gu"))) {
+          const start = match.index;
+          const end = start + form.length;
+          if (allowed(start, end)) ranges.push({ start: toRaw(start), end: toRaw(end), marker });
+        }
+      }
+    }
+  }
+  return ranges;
+}
+
 /**
- * One URL part with the typed values in it replaced: the whole part becomes the marker when it
- * is a value; otherwise a value of 4 or more characters inside it, between non-alphanumeric
- * characters (`"rawQuery":"…"`, but not `name` in `username`), becomes the marker, in the
- * shallowest reading that holds one, encoded again as many times as it was decoded.
+ * One URL part with the typed values in it replaced. The whole part becomes the marker when it
+ * decodes to a typed value. Otherwise, with `inside` (a query or fragment value, not a path
+ * segment), every typed value found inside the decoded value becomes its marker, and the rest of
+ * the part is kept exactly as it was encoded.
  */
-function redactPart(raw, typed) {
+function redactPart(raw, typed, { inside = true } = {}) {
   if (!raw) return raw;
   const readings = decodings(raw);
   const whole = typed.find(({ value }) => value.length >= MIN_LENGTH && readings.some(({ text }) => text === value));
   if (whole) return whole.marker;
-  const inside = typed.filter(({ value }) => value.length >= MIN_INSIDE_LENGTH).sort((a, b) => b.value.length - a.value.length);
-  for (const { text, depth } of readings) {
-    const replaced = inside.reduce((current, { value, marker }) => current.replace(new RegExp(`(?<![\\p{L}\\p{N}])${escapeRegExp(value)}(?![\\p{L}\\p{N}])`, "gu"), marker), text);
-    if (replaced === text) continue;
-    let encoded = replaced;
-    for (let round = 0; round < depth; round++) encoded = encodeURIComponent(encoded);
-    return encoded;
+  if (!inside) return raw;
+  const kept = [];
+  for (const range of insideRanges(raw, typed)) {
+    if (!kept.some((other) => range.start < other.end && other.start < range.end)) kept.push(range);
   }
-  return raw;
+  kept.sort((a, b) => a.start - b.start);
+  let result = "";
+  let index = 0;
+  for (const { start, end, marker } of kept) {
+    result += raw.slice(index, start) + marker;
+    index = end;
+  }
+  return result + raw.slice(index);
 }
 
 // Pairs (key=value) keep their keys; a part without `=` is a value.
@@ -194,24 +293,28 @@ function redactPairs(text, typed) {
   }).join("&");
 }
 
+// Path segments are route pieces as well as values, so only a whole segment is replaced.
+const redactPath = (text, typed) => text.split("/").map((segment) => redactPart(segment, typed, { inside: false })).join("/");
+
 /**
  * Replaces each typed value in `url` with its marker in query values, path segments, the
- * fragment and fragment values, however many times it was encoded: a whole value, or one of 4 or
- * more characters inside a longer value at word boundaries. Keys and the origin are never changed.
+ * fragment and fragment values, however many times it was encoded: a whole value or path
+ * segment, or one of 4 or more characters inside a longer query or fragment value. Keys, JSON
+ * keys, escapes and the origin are never changed.
  */
 function redactTypedValuesInUrl(url, typed) {
   if (typeof url !== "string" || typed.length === 0) return url;
   const match = url.match(/^([a-zA-Z][a-zA-Z0-9+.-]*:\/\/[^/?#]*)?([^?#]*)(\?[^#]*)?(#.*)?$/s);
   if (!match) return url;
   const [, origin = "", pathname, query, fragment] = match;
-  const path = pathname.split("/").map((segment) => redactPart(segment, typed)).join("/");
   const search = query === undefined ? "" : `?${redactPairs(query.slice(1), typed)}`;
   let hash = "";
   if (fragment !== undefined) {
     const body = fragment.slice(1);
-    hash = `#${body.includes("=") ? redactPairs(body, typed) : redactPart(body, typed)}`;
+    // A hash route (#/users/list) is a path; #tab=a&q=b holds values.
+    hash = `#${body.includes("=") ? redactPairs(body, typed) : body.includes("/") ? redactPath(body, typed) : redactPart(body, typed)}`;
   }
-  return `${origin}${path}${search}${hash}`;
+  return `${origin}${redactPath(pathname, typed)}${search}${hash}`;
 }
 
 // A placeholder a body holds as the whole body or a whole field value: a JSON string or a

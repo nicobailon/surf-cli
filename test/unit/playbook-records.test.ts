@@ -3052,3 +3052,69 @@ describe("values typed during a record, in captured URLs", () => {
     );
   });
 });
+
+describe("values typed during a record, in watch events", () => {
+  const { redactCommandArgs } = require("../../native/workflow-definition.cjs");
+  const TYPED = "dummy golf words";
+  const typeArgs = { selector: "#q", text: TYPED };
+  const watchEvent = (event: string, url: string) => ({
+    type: "browser.event",
+    event,
+    url,
+    tabId: 1,
+    timestamp: new Date().toISOString(),
+  });
+
+  it.each([false, true])(
+    "puts <text> in the page URLs a watch event carries (includeInputValues %s)",
+    (includeInputValues) => {
+      const root = tempRoot();
+      const record = records.startRecord({
+        site: "fixture",
+        op: "search",
+        tabId: 1,
+        origin: "https://example.test",
+        watch: true,
+        includeInputValues,
+        root,
+      });
+      const pageTarget = { tabId: 1, page: true };
+      const url = "https://example.test/get?q=dummy+golf+words&x=1";
+      // A navigation the typing itself caused (type --submit) can arrive before the typing step ends.
+      records.appendRecordEvent(watchEvent("navigation", url), { target: pageTarget, root });
+      records.appendRecordEvent(
+        {
+          type: "tool.completed",
+          command: "type",
+          argsRedacted: redactCommandArgs("type", typeArgs, includeInputValues),
+          startedAt: new Date().toISOString(),
+        },
+        { target: TAB, root, args: typeArgs },
+      );
+      records.appendRecordEvent(watchEvent("click", url), { target: pageTarget, root });
+      const before = records
+        .readEvents(record.id, root)
+        .filter((e: Entry) => e.type === "browser.event");
+      if (!includeInputValues) {
+        expect(before[1].url).toBe("https://example.test/get?q=<text>&x=1");
+      }
+      records.stopRecord({ target: TAB, root });
+      const events = records
+        .readEvents(record.id, root)
+        .filter((e: Entry) => e.type === "browser.event");
+      const file = fs.readFileSync(
+        path.join(records.recordsRoot(root), record.id, "events.jsonl"),
+        "utf8",
+      );
+      if (includeInputValues) {
+        expect(events.map((e: Entry) => e.url)).toEqual([url, url]);
+      } else {
+        expect(events.map((e: Entry) => e.url)).toEqual([
+          "https://example.test/get?q=<text>&x=1",
+          "https://example.test/get?q=<text>&x=1",
+        ]);
+        expect(file).not.toContain("golf");
+      }
+    },
+  );
+});

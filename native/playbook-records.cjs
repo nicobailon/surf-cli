@@ -4,6 +4,7 @@ const path = require("path");
 const {
   appendPrivateJsonLine,
   assertWithin,
+  atomicWriteFile,
   atomicWriteJson,
   ensurePrivateDir,
   getPrivateStateRoot,
@@ -135,9 +136,22 @@ function appendToRecord(record, event, root) {
 
 // Holds the values a command types for the caller's record, in memory (see
 // record-typed-values.cjs), even while paused, so the trace's URLs can be redacted at stop.
-function rememberRecordInput(command, args, { target, root = getPrivateStateRoot() } = {}) {
+// `evented: false`: no typing event of its own follows (a batch's actions).
+function rememberRecordInput(command, args, { target, evented = true, root = getPrivateStateRoot() } = {}) {
   const record = recordFor(target, root);
-  if (record) rememberTypedValues(record.id, command, args, { paused: record.status !== "recording" });
+  if (record) rememberTypedValues(record.id, command, args, { evented: evented && record.status === "recording" });
+}
+
+// The values the record's steps typed so far, each with its marker; none with --include-input-values.
+function typedSoFar(record, root) {
+  const calls = heldTypingCalls(record.id);
+  if (record.redaction?.includeInputValues === true || calls.length === 0) return [];
+  return typedValuesForTrace(readEvents(record.id, root), calls).typed;
+}
+
+// A watch event carries the page's URL, which can hold a value a step typed (a results page's ?q=).
+function redactWatchEvent(event, typed) {
+  return event.type === "browser.event" && typeof event.url === "string" ? { ...event, url: redactTypedValuesInUrl(event.url, typed) } : event;
 }
 
 // `args` are the command's arguments as given, for rememberRecordInput. A host-owned workflow
@@ -146,8 +160,19 @@ function appendRecordEvent(event, { target, args, root = getPrivateStateRoot() }
   if (args) rememberRecordInput(event.command, args, { target, root });
   const record = recordFor(target, root);
   if (!record || record.status !== "recording") return false;
-  appendToRecord(record, event, root);
+  appendToRecord(record, redactWatchEvent(event, typedSoFar(record, root)), root);
   return true;
+}
+
+// At stop, redacts the watch events again with every value typed: a navigation the typing itself
+// caused (type --submit) can be written before the typing step ends.
+function redactWatchEvents(record, root) {
+  const typed = typedSoFar(record, root);
+  if (typed.length === 0) return;
+  const events = readEvents(record.id, root);
+  const redacted = events.map((event) => redactWatchEvent(event, typed));
+  if (redacted.every((event, index) => event.url === events[index].url)) return;
+  atomicWriteFile(path.join(recordDirectory(record.id, root), "events.jsonl"), redacted.map((event) => `${JSON.stringify(event)}\n`).join(""), { root, encoding: "utf8" });
 }
 
 function updateStatus(status, { target, root = getPrivateStateRoot() } = {}) {
@@ -403,6 +428,7 @@ function stopRecord({ target, draft = false, read = false, requestId, root = get
   const op = draft ? draftFromRecord(record.id, root, { read, requestId, warnings: draftWarnings }) : undefined;
   record = updateStatus("stopping", { target, root });
   record = readRecord(record.id, root);
+  redactWatchEvents(record, root);
   forgetTypedValues(record.id);
   record.status = draft ? "draft_created" : "stopped";
   record.stoppedAt = new Date().toISOString();
