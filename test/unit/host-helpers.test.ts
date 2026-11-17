@@ -1,6 +1,8 @@
 // @ts-expect-error - CommonJS module without type definitions
 import * as helpers from "../../native/host-helpers.cjs";
 
+const harvest = require("../../native/api-harvest.cjs");
+
 describe("buildProviderUploadMessage", () => {
   it("builds provider-aware ChatGPT upload messages", () => {
     expect(helpers.buildProviderUploadMessage("chatgpt", 123, ["/tmp/file.txt"], 7)).toEqual({
@@ -1176,5 +1178,48 @@ describe("publicResponse", () => {
     );
     expect(JSON.parse(view.body)).toBe("<redacted>");
     expect(view.json).toBe("<redacted>");
+  });
+
+  it.each([
+    ["[1]", "[ 1 ]"],
+    ['{"x":1}', '{"x":1}'],
+  ])(
+    "redacts the parsed JSON of a response that is the secret %s whole, as network.wait prints it",
+    async (secret, body) => {
+      const entry = {
+        id: "r_1",
+        url: "https://example.test/api",
+        method: "GET",
+        status: 200,
+        type: "Fetch",
+        requestHeaders: { "x-csrf-token": secret },
+        _loadingFinished: true,
+        flags: [],
+      };
+      let listed = 0;
+      const executeTool = async (tool: string) => {
+        if (tool === "network") {
+          return { entries: listed++ === 0 ? [] : [entry] };
+        }
+        if (tool === "network.body") {
+          return { body };
+        }
+        throw new Error(`unexpected tool ${tool}`);
+      };
+      const sleep = async () => undefined;
+      const response = await harvest.waitForResponse({ executeTool, sleep, match: "/api" });
+      expect(response).toMatchObject({ json: JSON.parse(body) });
+      const view = helpers.publicResponse(response, [entry]);
+      expect(view.json).toBe("<redacted>");
+      expect(JSON.stringify(view)).not.toContain(JSON.stringify(JSON.parse(secret)));
+    },
+  );
+
+  it("keeps the parsed JSON that only holds the secret inside it, as the body keeps it", () => {
+    const requestHeaders = { "x-csrf-token": "[1]" };
+    const view = helpers.publicResponse({ url: "https://example.test/api", json: { v: [1] } }, [
+      { requestHeaders },
+    ]);
+    expect(view.json).toEqual({ v: [1] });
   });
 });

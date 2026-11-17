@@ -83,15 +83,25 @@ function echoSecrets(values) {
 // secret goes wherever it appears; a short one only as a whole value (a whole JSON string, or a whole
 // query or form value), never inside a number or the structure around it, and in other text only as
 // a whole word. A key goes only when it is a whole key-length secret. So a JSON text stays valid
-// JSON, a URL keeps its form and markup its tags.
+// JSON, a URL keeps its form and markup its tags. `parsed` holds the JSON text, as JSON.stringify
+// writes it, of each spelling that parses as JSON, so a parsed body can be matched against them.
 function echoRules({ long = [], short = [], keys = [] } = {}) {
-  return {
-    empty: long.length + short.length === 0,
-    long,
-    short,
-    whole: new Set([...long, ...short]),
-    keys: new Set(keys),
-  };
+  const whole = new Set([...long, ...short]);
+  const parsed = new Set();
+  for (const text of whole) {
+    try {
+      parsed.add(JSON.stringify(JSON.parse(text)));
+    } catch {}
+  }
+  return { empty: whole.size === 0, long, short, whole, keys: new Set(keys), parsed };
+}
+
+// Whether a parsed JSON value is a secret whole: its JSON text is the one a secret parses to, so
+// `[1]` read from the body `[ 1 ]` counts for the secret `[1]`. A parsed view shows it as "<redacted>",
+// as the body it came from is shown.
+function isEchoedJson(value, secrets) {
+  const { parsed } = echoRules(secrets);
+  return parsed.size > 0 && value !== undefined && parsed.has(JSON.stringify(value));
 }
 
 // The names `keys` take: a secret one (in `secretKeys`) <redacted>, or <redacted-2>, <redacted-3>...
@@ -137,10 +147,11 @@ function redactEchoString(text, rules) {
   return redactValues(text, rules.long);
 }
 
-// A parsed JSON value: its strings by redactEchoString and its secret keys renamed, at any depth;
-// numbers and other keys as they are. A bare number, boolean or null is "<redacted>" when its text
-// holds a secret, as redactEchoBody has it.
+// A parsed JSON value: "<redacted>" when it is a secret whole (see isEchoedJson); else its strings by
+// redactEchoString and its secret keys renamed, at any depth; numbers and other keys as they are. A
+// bare number, boolean or null is "<redacted>" when its text holds a secret, as redactEchoBody has it.
 function redactEchoJson(value, secrets) {
+  if (isEchoedJson(value, secrets)) return "<redacted>";
   if (value === null || typeof value === "number" || typeof value === "boolean") {
     const text = JSON.stringify(value);
     return redactEchoBody(text, secrets) === text ? value : "<redacted>";
@@ -490,6 +501,7 @@ module.exports = {
   assertUrlHasNoEmbeddedSecrets,
   isSecretHeader,
   isSensitiveName,
+  isEchoedJson,
   isTemplate,
   redactCredentialLiterals,
   redactEchoBody,

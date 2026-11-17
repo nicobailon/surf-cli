@@ -1,7 +1,7 @@
 // Ranks a record's captured requests by how likely each is the one that carries the page's data.
 // Scores are integers from fixed rules, so the same trace always ranks the same way.
 
-const { redactCredentialLiterals, redactEchoJson, redactEchoText, redactSensitiveFields, redactValues, secretHeaderEchoes, valueSpellings } = require("./redaction.cjs");
+const { isEchoedJson, redactCredentialLiterals, redactEchoJson, redactEchoText, redactSensitiveFields, redactValues, secretHeaderEchoes, valueSpellings } = require("./redaction.cjs");
 const { ASSET_TYPES, hostname, isReplayCandidate, isTelemetryRequest, requestEffect } = require("./request-kinds.cjs");
 
 const SAMPLE_CHARS = 200;
@@ -133,7 +133,8 @@ function summarizeResponse(entry, page, { sample: withSample = false, redact = [
   if (parsed) {
     const records = recordCount(parsed.value);
     if (records > 0) summary.records = records;
-    Object.assign(summary, fieldsOf(parsed.value, { names: withSample, hide }));
+    // A body that is a secret whole lists no field names, as its sample shows none.
+    Object.assign(summary, fieldsOf(parsed.value, { names: withSample && !isEchoedJson(parsed.value, secrets), hide }));
     if (withSample) sample = JSON.stringify(redactEchoJson(redactSensitiveFields(parsed.value), secrets));
   } else if (kind === "html") {
     text = visibleText(body);
