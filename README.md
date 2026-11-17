@@ -1134,6 +1134,22 @@ surf use books get_book --page 2 --each-from list_books:url@path.2 --each-into b
 
 Without `--each-into`, each record fills the detail op's one required input you didn't pass; when none or several are left, surf asks for `--each-into`. The other inputs go to whichever of the two ops takes them. A binding (here, the record's `author_url`) must find a string, number or boolean: an object, a list or nothing stops the chain, naming the step, input and path. `--dry-run` lists a chain's steps and sends nothing.
 
+#### Filtering records
+
+`--where`, `--fields` and `--limit` trim what `surf use` and `surf pb test` print, after the op ran:
+
+```bash
+surf use books list_books --page 2 --where star_rating~=Three --fields title,price --limit 3
+```
+
+- `--where field=value` keeps records whose field, read as trimmed text, equals the value; `field!=value` keeps the others and `field~=text` those that contain the text, case-insensitive. Repeat it to need several; a dotted field (`stock.count`) reads a nested one.
+- `--fields a,b.c` keeps only those fields; a dotted one stays nested, `{ "b": { "c": … } }`.
+- `--limit n` keeps the first n records left after `--where`. With `--each-from` it bounds the each, as above, and keeps every record.
+- An unknown field in `--where` or `--fields` fails, listing the first record's fields (nested ones dotted).
+- A single-object result is kept or becomes `null`. The kept records replace `value`, next to `filter: { where, fields, limit, before, after }`. `--format` and `--dry-run` don't take filters.
+- An op that has an input of the same name (an op with a `limit` input, say) gets the flag as that input, and that filter isn't applied. `--limit` is a filter only when the op is in a playbook on this machine, so with `--remote` and a playbook only the browser host has, it still goes to the op.
+- `pb test` prints the kept records under its result; its assertions check the whole result, so a filter can't make a failing test pass.
+
 ### Threads and Feeds
 
 Get a whole thread or feed as clean records in seconds, instead of having an agent scroll and re-read the page. Sites like X and Bluesky keep only a few posts on screen at a time, so scrolling takes dozens of calls and long posts can come back cut short. The page itself gets its posts as data from the site's own API, a page at a time. Surf reads that data directly through your logged-in browser, so sites that need you signed in work and you don't need API keys.
