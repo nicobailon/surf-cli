@@ -246,7 +246,7 @@ describe("running an op with assertions", () => {
     ]);
     expect(result.attempts[0]).toMatchObject({
       using: "network",
-      error: "assertion failed: $ array_min_len",
+      error: "assertion failed: $ array_min_len; run surf pb test books get_books to see the value",
       assertions: [{ path: "$", op: "array_min_len", value: 1, pass: false, actual: "array(0)" }],
     });
   });
@@ -311,9 +311,13 @@ describe("running an op with assertions", () => {
           }
         },
       }),
-    ).rejects.toThrow(/^assertion failed: \$\.bodyJson\.created equals$/);
+    ).rejects.toThrow(
+      /^assertion failed: \$\.bodyJson\.created equals; run surf pb test hr create to see the value$/,
+    );
     // The receipt records the failure without the value the response held.
-    expect(errors).toEqual(["assertion failed: $.bodyJson.created equals"]);
+    expect(errors).toEqual([
+      "assertion failed: $.bodyJson.created equals; run surf pb test hr create to see the value",
+    ]);
     expect(executeTool.mock.calls.filter(([tool]) => tool === "javascript_tool")).toHaveLength(1);
     expect(statuses).toEqual(["dispatched", "indeterminate"]);
   });
@@ -343,12 +347,19 @@ describe("running an op with assertions", () => {
     const failed = await hostRun({ assert: [{ path: "$.bodyJson.n", op: "equals", value: 1 }] });
     expect(failed).toMatchObject({
       status: "failed",
-      error: "assertion failed: $.bodyJson.n equals",
+      error: "assertion failed: $.bodyJson.n equals; run surf pb test hr create to see the value",
       attempts: [
-        { using: "network", error: "assertion failed: $.bodyJson.n equals", assertions: [failing] },
+        {
+          using: "network",
+          error:
+            "assertion failed: $.bodyJson.n equals; run surf pb test hr create to see the value",
+          assertions: [failing],
+        },
       ],
     });
-    expect(errors).toEqual(["assertion failed: $.bodyJson.n equals"]);
+    expect(errors).toEqual([
+      "assertion failed: $.bodyJson.n equals; run surf pb test hr create to see the value",
+    ]);
     // pb test reports it, as it does for a read.
     const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "surf-pbtest-"));
     tempDirs.push(cwd);
@@ -433,7 +444,7 @@ describe("running an op with assertions", () => {
     });
     expect(failed.attempts[0]).toEqual({
       using: "network",
-      error: "assertion failed: $.note equals",
+      error: "assertion failed: $.note equals; run surf pb test books get_books to see the value",
       // pb test's own report still shows it.
       assertions: [
         { path: "$.note", op: "equals", value: "expected", pass: false, actual: echoed },
@@ -441,9 +452,24 @@ describe("running an op with assertions", () => {
     });
     expect(failed.error).not.toContain(echoed);
     expect(events.find((event) => event.type === "strategy.failed")).toMatchObject({
-      error: "assertion failed: $.note equals",
+      error: "assertion failed: $.note equals; run surf pb test books get_books to see the value",
     });
     expect(JSON.stringify(events)).not.toContain(echoed);
+  });
+
+  it("points surf use's failed assertion at pb test for the value it keeps out", async () => {
+    const echoed = "dummy-echoed-input";
+    const run = runtime.runPlaybookOp({
+      playbook: { id: "books", provenance: { scope: "test" } },
+      op: op([{ ...network, extract: { jsonPath: "$" } }]),
+      assertions: [{ path: "$.note", op: "equals", value: "expected" }],
+      executeTool: tab({ note: echoed }),
+    });
+    const error = await run.catch((caught: Error) => caught);
+    expect(error.message).toBe(
+      "All strategies failed (network: assertion failed: $.note equals; run surf pb test books get_books to see the value)",
+    );
+    expect(error.message).not.toContain(echoed);
   });
 });
 

@@ -165,9 +165,10 @@ function extractResult(result, extract, regexBudget) {
 /**
  * Throws on the first failed check; returns the assertion results (expect.assert), if any. The
  * results are redacted against `secrets`. A failure's message goes to the journal and receipts, so
- * it names the assertion's path and op only, never a value: the error's `assertions` hold the rest.
+ * it names the assertion's path and op only, never a value: the error's `assertions` hold the rest,
+ * which `surf pb test <label>` (the playbook and op) shows.
  */
-function verifyResult(value, expect = {}, raw = value, secrets = [], budget = undefined) {
+function verifyResult(value, expect = {}, raw = value, secrets = [], budget = undefined, label) {
   if (expect.status !== undefined && raw?.status !== expect.status) throw new Error(`expected status ${expect.status}`);
   if (expect.minItems !== undefined && (!Array.isArray(value) || value.length < expect.minItems)) throw new Error(`expected at least ${expect.minItems} items`);
   if (expect.truthy && !value) throw new Error("expected a truthy result");
@@ -175,7 +176,7 @@ function verifyResult(value, expect = {}, raw = value, secrets = [], budget = un
   const results = checkAssertions(value, expect.assert, secrets, budget);
   const failed = results.find((result) => !result.pass);
   if (failed) {
-    const error = new Error(`assertion failed: ${failed.path} ${failed.op}${failed.error ? ` (${failed.error})` : ""}`);
+    const error = new Error(`assertion failed: ${failed.path} ${failed.op}${failed.error ? ` (${failed.error})` : ""}; run surf pb test ${label} to see the value`);
     error.assertions = results;
     throw error;
   }
@@ -542,7 +543,7 @@ async function runPlaybookOp({ playbook, op, args: providedArgs = {}, secrets = 
         value = extractResult(raw, strategy.extract, fieldRegexBudget);
         const expect = strategy.verify || strategy.expect || op.on?.success?.expect;
         // Saved assertions hold for every strategy, even one with its own verify.
-        checked = verifyResult(value, assert ? { ...expect, assert } : expect, raw, Object.values(authValues), regexBudget);
+        checked = verifyResult(value, assert ? { ...expect, assert } : expect, raw, Object.values(authValues), regexBudget, `${playbook.id} ${op.id}`);
       } catch (error) {
         throw checkFailure(error);
       }
