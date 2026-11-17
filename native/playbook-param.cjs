@@ -469,10 +469,29 @@ function templateStepUrl(value, { origin, segments, queries, placeholder, litera
   return joinUrl({ ...url, rest });
 }
 
-// Whether a strategy, or any of a list, takes `input`: of a network strategy's request, only where
-// renderRequest fills it (never the record's notes, and a JSON key only in an escaped op).
+// The inputs a strategy takes where the runtime fills them before it runs (runStrategy): a network
+// strategy's request where renderRequest fills it (never the record's notes, and a JSON key only in
+// an escaped op), a workflow's steps, an api or collect spec but its record fields. Never an
+// extract, verify or expect, which only read the result. A script or native strategy is given
+// every input: null.
+function filledInputs(strategy, escapes) {
+  const { using, extract: _extract, verify: _verify, expect: _expect, ...spec } = strategy;
+  if (using === "network") return spec.request === undefined ? new Set() : requestInputs(sentRequest(spec.request), { escapes });
+  if (using === "workflow") return templateInputs(spec.steps);
+  if (using === "api") {
+    const { records: { fields: _fields, ...records } = {}, ...rest } = spec;
+    return templateInputs([rest, records]);
+  }
+  if (using === "collect") {
+    const { fields: _fields, key: _key, ...rest } = spec;
+    return templateInputs(rest);
+  }
+  return null;
+}
+
+// Whether a strategy, or any of a list, takes `input` (filledInputs).
 function usesInput(strategies, input, { escapes }) {
-  return [strategies].flat().some(({ request, ...strategy }) => templateInputs(strategy).has(input) || (request !== undefined && requestInputs(sentRequest(request), { escapes }).has(input)));
+  return [strategies].flat().some((strategy) => filledInputs(strategy, escapes)?.has(input) ?? true);
 }
 
 // Inputs only workflow steps take, such as the {{text}} a draft makes of a typed value (it never

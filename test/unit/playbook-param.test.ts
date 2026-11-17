@@ -592,6 +592,81 @@ describe("pb param: validation", () => {
   });
 });
 
+describe("pb param: the input a typed step drafted", () => {
+  // A record masks the typed value (<text>) in the request; pb param gives it an input, and the
+  // step's own input {{text}} goes once nothing the op runs fills or sends it.
+  const check = { truthy: true, note: "{{text}}" };
+  const typed = (strategies: Array<Record<string, unknown>>) => ({
+    id: "search",
+    effect: "read",
+    args: { text: { required: true } },
+    provenance: { recordId: "rec-1", escaped: true },
+    on: { success: { expect: check } },
+    run: [
+      {
+        using: "network",
+        request: { method: "GET", url: "https://shop.test/s", query: { q: "<text>" } },
+        verify: check,
+        expect: check,
+        extract: { path: "{{text}}" },
+      },
+      ...strategies,
+    ],
+  });
+  const inputs = (strategies: Array<Record<string, unknown>>) =>
+    Object.keys(paramOp(typed(strategies), { fields: ["query.q"], as: "q" }).op.args).sort();
+  // The same op with no checks, so only the strategy given keeps the input.
+  const unchecked = (strategy: Record<string, unknown>) => {
+    const op = typed([strategy]);
+    const { verify: _verify, expect: _expect, extract: _extract, ...network } = op.run[0];
+    return Object.keys(
+      paramOp({ ...op, on: {}, run: [network, strategy] }, { fields: ["query.q"], as: "q" }).op
+        .args,
+    ).sort();
+  };
+
+  it("drops it when only a check names it", () => {
+    expect(inputs([])).toEqual(["q"]);
+    const workflow = {
+      using: "workflow",
+      steps: [{ cmd: "click", args: { ref: "e1" } }],
+      verify: check,
+    };
+    expect(inputs([workflow])).toEqual(["q"]);
+    const api = {
+      using: "api",
+      match: "https://shop.test/s*",
+      records: { path: "items", fields: { t: "{{text}}" } },
+      verify: check,
+    };
+    expect(inputs([api])).toEqual(["q"]);
+    const collect = { using: "collect", item: ".row", key: "{{text}}", fields: { t: "{{text}}" } };
+    expect(inputs([collect])).toEqual(["q"]);
+  });
+
+  it("keeps it while a strategy fills it or is given every input", () => {
+    const steps = [
+      [{ cmd: "click", args: { ref: "e1" }, each: "{{text}}" }],
+      [{ cmd: "click", args: { ref: "e1" }, as: "{{text}}" }],
+      [{ repeat: 2, steps: [{ cmd: "click" }], until: { cmd: "js", args: { code: "{{text}}" } } }],
+    ];
+    for (const body of steps) {
+      expect(unchecked({ using: "workflow", steps: body })).toEqual(["q", "text"]);
+    }
+    expect(
+      unchecked({ using: "api", match: "https://shop.test/{{text}}", records: { path: "items" } }),
+    ).toEqual(["q", "text"]);
+    expect(
+      unchecked({ using: "collect", item: "{{text}}", key: "id", fields: { t: "a" } }),
+    ).toEqual(["q", "text"]);
+    expect(unchecked({ using: "script", script: "return input" })).toEqual(["q", "text"]);
+    expect(unchecked({ using: "native", handler: "h" })).toEqual(["q", "text"]);
+    expect(
+      unchecked({ using: "workflow", steps: [{ cmd: "click", args: { ref: "e1" } }] }),
+    ).toEqual(["q"]);
+  });
+});
+
 describe("pb param --link: a drafted typed-value input", () => {
   // A draft never stores a typed value, so the workflow types {{text}}, an input of its own.
   const drafted = (extra: Record<string, unknown> = {}) => ({
