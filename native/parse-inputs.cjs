@@ -118,4 +118,11 @@ function planInputs({ request, goal, overrides = [] }) {
   return { detail, inputs };
 }
 
-module.exports = { goalNeedsRecipe, opName, planInputs, siteName };
+/** The input a path segment takes from the route word before it (author for /author/<x>), or nothing. */
+function nameAfter(before) {
+  const word = String(before ?? "").toLowerCase();
+  if (!word) return undefined;
+  return AFTER[word] || ID_AFTER[word] || (word.length > 1 && /^[a-z-]+$/.test(word) ? snake(singular(word)) : undefined);
+}
+
+module.exports = { goalNeedsRecipe, nameAfter, opName, planInputs, siteName };

@@ -2,7 +2,7 @@ const path = require("path");
 const { loadUserConfig } = require("./config.cjs");
 const { openClientTransport } = require("./client-transport.cjs");
 const { resolveRequestDeadlineMs } = require("./host-sessions.cjs");
-const { exportRecordHar, saveFromRecent, saveFromRecord, suggestions } = require("./playbook-authoring.cjs");
+const { exportRecordHar, saveChainFromRecord, saveFromRecent, saveFromRecord, suggestions } = require("./playbook-authoring.cjs");
 const { deriveClient, exportClient, verifyClient } = require("./playbook-client.cjs");
 const { formatCandidates } = require("./record-candidates.cjs");
 const { RESERVED_RUN_OPTIONS, applyParam, formatParamResult } = require("./playbook-param.cjs");
@@ -287,8 +287,14 @@ async function handlePlaybookCli(argv, { endpoint, cwd = process.cwd(), session,
   if (command === "suggest") return { handled: true, value: suggestions({ since: parsed.options.since || "1h" }), json: parsed.options.json === true };
   if (command === "save") {
     let value;
-    if (parsed.options["from-record"]) value = saveFromRecord({ recordId: parsed.options["from-record"], ...(parsed.options["request-id"] ? { requestId: String(parsed.options["request-id"]) } : {}), scope: parsed.options.project ? "project" : "user", cwd });
-    else if (parsed.options["from-recent"] || parsed.positional[0]) value = saveFromRecent({ site: parsed.positional[0], op: parsed.options.op, since: parsed.options["from-recent"] === true ? "1h" : parsed.options["from-recent"] || "1h", scope: parsed.options.project ? "project" : "user", cwd });
+    const scope = parsed.options.project ? "project" : "user";
+    if (parsed.options.chain !== undefined) {
+      if (parsed.options.chain !== true) throw new Error("--chain takes no value");
+      if (!parsed.options["from-record"]) throw new Error("--chain goes with --from-record <id>");
+      if (parsed.options["request-id"]) throw new Error("--chain saves the requests the proposed chain names; it takes no --request-id");
+      value = saveChainFromRecord({ recordId: String(parsed.options["from-record"]), scope, cwd });
+    } else if (parsed.options["from-record"]) value = saveFromRecord({ recordId: parsed.options["from-record"], ...(parsed.options["request-id"] ? { requestId: String(parsed.options["request-id"]) } : {}), scope, cwd });
+    else if (parsed.options["from-recent"] || parsed.positional[0]) value = saveFromRecent({ site: parsed.positional[0], op: parsed.options.op, since: parsed.options["from-recent"] === true ? "1h" : parsed.options["from-recent"] || "1h", scope, cwd });
     else throw new Error("save requires --from-record <id> or <site> --op <name> --from-recent");
     return { handled: true, value, json: parsed.options.json === true };
   }
