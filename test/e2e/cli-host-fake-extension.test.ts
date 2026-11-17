@@ -979,6 +979,64 @@ describe("CLI/native-host/fake-extension E2E contract", () => {
     }
   }, 60000);
 
+  // The record keeps the type of a number it masked (redactedTypes) under the JSON key it sat at,
+  // here a key reading {{text}}. That note is never sent, so it gives the op no input: the safety
+  // key is review_key, and the same review key is blocked as a duplicate whatever else is given.
+  for (const [label, field, input, value] of [
+    ["the masked number", "query.variables.{{text}}", "year", "2031"],
+    ["the whole JSON param", "query.variables", "variables", '{"{{text}}":2031}'],
+  ]) {
+    it(`keys a recorded write on what it sends, not the record's notes, after pb param on ${label}`, async () => {
+      const socketPath = createSocketPath();
+      const project = fs.mkdtempSync(path.join(os.tmpdir(), "surf-record-notes-"));
+      tempDirs.push(project);
+      const page = { url: jsonQueryUrl({ "{{text}}": 2024 }) };
+      const host = startHost(socketPath, { recording: true, scriptResponse: page });
+      const cli = (args: string[]) =>
+        runCli(socketPath, args, project, { SURF_STATE_DIR: host.stateDir });
+      const posts = () => host.messages.filter((message) => message.type === "EXECUTE_JAVASCRIPT");
+
+      try {
+        await host.waitForMessage((message) => message.type === "HOST_READY");
+        await saveRecordedWrite({ cli, page, typed: ["2024"] });
+        const param = await cli([
+          "pb",
+          "param",
+          "fixture",
+          "submit",
+          field,
+          "--as",
+          input,
+          "--required",
+          "--json",
+        ]);
+        expect(param).toMatchObject({ code: 0, stderr: "" });
+        const op = JSON.parse(
+          fs.readFileSync(
+            path.join(project, ".surf", "playbooks", "fixture", "ops", "submit.json"),
+            "utf8",
+          ),
+        );
+        expect(op.safety.key).toEqual(["review_key"]);
+        expect(Object.keys(op.args).sort()).toEqual([input, "review_key"].sort());
+
+        const before = posts().length;
+        const use = (...args: string[]) =>
+          cli(["use", "fixture", "submit", `--${input}`, value, ...args, "--write", "--json"]);
+        const byText = await use("--text", "one", "--review_key", "k");
+        expect(byText.code).toBe(1);
+        expect(byText.stderr).toMatch(/Unknown input --text/);
+        expect((await use("--review_key", "k")).code).toBe(0);
+        const again = await use("--review_key", "k");
+        expect(again.code).toBe(1);
+        expect(again.stderr).toMatch(/write blocked by verified receipt/);
+        expect(posts().length - before).toBe(1);
+      } finally {
+        await host.dispose();
+      }
+    }, 60000);
+  }
+
   // A JSON query param is stored escaped as one string, its keys with it. pb param names a key by
   // the text it was captured as, so a masked number there keeps its type, and every key goes out
   // as captured; an input's value is sent as given, {{!}} and %{!} included. (The CLI types `true`

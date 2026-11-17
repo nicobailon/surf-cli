@@ -4,7 +4,7 @@
 const os = require("os");
 const { editSavedOp, validateOp } = require("./playbooks.cjs");
 const { isSecretHeader, isSensitiveName } = require("./redaction.cjs");
-const { LITERAL_OPEN, escapeTemplates, escapedOp, unescapeTemplates } = require("./playbook-template.cjs");
+const { LITERAL_OPEN, escapeTemplates, escapedOp, sentRequest, templateInputs, unescapeTemplates } = require("./playbook-template.cjs");
 const { lineDiff } = require("./text-diff.cjs");
 const { commandMetadata } = require("./workflow-definition.cjs");
 
@@ -362,7 +362,9 @@ function templateStepUrl(value, { origin, segments, queries, placeholder, litera
   return joinUrl({ ...url, rest });
 }
 
-const usesInput = (value, input) => JSON.stringify(value).includes(`{{${input}}}`);
+// Whether a strategy, or any of a list, takes `input`: of a network strategy's request, only in
+// what it sends (the record's notes and a JSON key never take one).
+const usesInput = (strategies, input) => templateInputs([strategies].flat().map((strategy) => (strategy.request ? { ...strategy, request: sentRequest(strategy.request) } : strategy))).has(input);
 
 // Inputs only workflow steps take, such as the {{text}} a draft makes of a typed value (it never
 // stores the value, so pb param can't match it to a request field).
@@ -536,7 +538,7 @@ function paramOp(op, { fields, as: name, env, required = false, default: default
   }
   // The draft's input for that step (--text, --value) goes once nothing uses it, so it isn't still required.
   const replaced = redacted?.[1];
-  if (replaced && replaced !== name && next.args?.[replaced] && !JSON.stringify(next.run).includes(`{{${replaced}}}`)) {
+  if (replaced && replaced !== name && next.args?.[replaced] && !usesInput(next.run, replaced)) {
     const { [replaced]: _replaced, ...rest } = next.args;
     next.args = rest;
     if (next.safety?.key?.includes(replaced)) next.safety = { ...next.safety, key: [...new Set(next.safety.key.map((key) => (key === replaced ? name : key)))] };

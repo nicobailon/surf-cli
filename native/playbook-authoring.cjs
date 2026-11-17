@@ -5,7 +5,7 @@ const { readRecent } = require("./activity-journal.cjs");
 const { writeNetworkExport } = require("./network-export.cjs");
 const { getPrivateStateRoot, readPrivateJson } = require("./private-state.cjs");
 const { REVIEW_KEY_ARG, buildDraft, draftFromRecord, neverReplayed, readRecord, recordedSteps, recordsRoot, requestFromEntry } = require("./playbook-records.cjs");
-const { escapeStepArgs } = require("./playbook-template.cjs");
+const { escapeStepArgs, sentRequest, templateInputs } = require("./playbook-template.cjs");
 const { isCommitWorkflow, savePlaybook, validateOp } = require("./playbooks.cjs");
 const { isTelemetryRequest, requestEffect, shownUrl } = require("./request-kinds.cjs");
 const { commandMetadata, normalizeStep, promoteRedactedStepArgs } = require("./workflow-definition.cjs");
@@ -244,10 +244,11 @@ function originOf(url) {
 // A write draft whose workflow can't be its fallback (a navigate first, or a type and a click)
 // saves with its network strategy alone when that replays the site's own captured write. The
 // workflow's inputs go with it, and the review key takes their place as the safety key when none
-// is left. Which inputs are left is read from the requests rebuilt from the record, never from a
-// draft's checks (extract, verify, expect), so a check naming {{text}} can't make the safety key
-// one the request never sends. A one-click draft keeps its workflow. rebuildWrites has already
-// rebuilt the write.
+// is left. Which inputs are left is read from what the requests rebuilt from the record send,
+// never from a draft's checks (extract, verify, expect) or the record's notes for pb param
+// (redactedTypes), so a check naming {{text}}, or a masked value under a JSON key reading
+// {{text}}, can't make the safety key one the request never sends. A one-click draft keeps its
+// workflow. rebuildWrites has already rebuilt the write.
 function fitWriteWorkflow(op, warnings) {
   const workflow = op.effect === "write" && op.run.find((strategy) => strategy.using === "workflow");
   if (!workflow) return op;
@@ -262,8 +263,8 @@ function fitWriteWorkflow(op, warnings) {
   if (requestEffect(request) !== "write") throw new Error(`write op ${op.id} can't be saved: ${why}, and its network strategy replays ${shown}, a read, not the write`);
   warnings.push(`saved network-only: ${why}, so the op replays ${shown} alone`);
   const run = op.run.filter((strategy) => strategy !== workflow);
-  const used = JSON.stringify(run.map((strategy) => strategy.request));
-  const args = Object.fromEntries(Object.entries(op.args || {}).filter(([name]) => used.includes(`{{${name}}}`)));
+  const used = templateInputs(run.map((strategy) => sentRequest(strategy.request)));
+  const args = Object.fromEntries(Object.entries(op.args || {}).filter(([name]) => used.has(name)));
   let key = op.safety.key.filter((name) => Object.hasOwn(args, name));
   if (key.length === 0) {
     key = ["review_key"];

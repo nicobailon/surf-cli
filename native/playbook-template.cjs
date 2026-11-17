@@ -96,6 +96,25 @@ function unescapeTemplates(text) {
   return text.replaceAll(LITERAL_OPEN, "{{");
 }
 
+// What a network strategy's request sends as written: authInputs name headers read from the
+// environment at run time, and redactedTypes and repeatedQuery are the record's notes for pb param.
+function sentRequest({ authInputs: _auth, redactedTypes: _types, repeatedQuery: _repeated, ...sent }) {
+  return sent;
+}
+
+// The inputs a value takes: each {{name}} in its strings at any depth. Keys are never filled, so a
+// key that reads {{name}} takes none.
+function templateInputs(value, names = new Set()) {
+  if (typeof value === "string") {
+    for (const match of value.matchAll(/\{\{([a-zA-Z0-9._-]+)\}\}/g)) names.add(match[1]);
+  } else if (Array.isArray(value)) {
+    for (const item of value) templateInputs(item, names);
+  } else if (value && typeof value === "object") {
+    for (const item of Object.values(value)) templateInputs(item, names);
+  }
+  return names;
+}
+
 // Whether an op holds escaped text: pb save --from-record and --from-recent set provenance.escaped
 // on the op they save, whatever its draft said, and only there do `{{!}}` and `%{!}` stand for `{{`
 // and `%{`. A hand-written op, and surf do, send them as written.
@@ -103,4 +122,4 @@ function escapedOp(op) {
   return op?.provenance?.escaped === true;
 }
 
-module.exports = { LITERAL_OPEN, escapeStepArgs, escapeTemplates, escapedOp, renderRequest, resolveArgValues, unescapeTemplates };
+module.exports = { LITERAL_OPEN, escapeStepArgs, escapeTemplates, escapedOp, renderRequest, resolveArgValues, sentRequest, templateInputs, unescapeTemplates };

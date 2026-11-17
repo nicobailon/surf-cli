@@ -6,7 +6,7 @@ const { runApiHarvest, watchCapture } = require("./api-harvest.cjs");
 const { htmlExtractFunction, runCollect } = require("./dom-collect.cjs");
 const { editDistance } = require("./edit-distance.cjs");
 const { GLOBAL_OPTIONS } = require("./global-options.cjs");
-const { LITERAL_OPEN, escapedOp, renderRequest, resolveArgValues } = require("./playbook-template.cjs");
+const { LITERAL_OPEN, escapedOp, renderRequest, resolveArgValues, sentRequest } = require("./playbook-template.cjs");
 const { findRedactedPlaceholder, placeholderError } = require("./record-typed-values.cjs");
 const { checkAssertions, createRegexBudget, describeAssertion } = require("./playbook-assertions.cjs");
 const { redactObject } = require("./redaction.cjs");
@@ -399,8 +399,8 @@ async function runStrategy(strategy, context) {
     return { ...result, extracted: found?.extracted };
   }
   if (strategy.using === "network") {
-    // redactedTypes and repeatedQuery only tell pb param about values the record masked; they are never sent.
-    const { authInputs: inputs = [], redactedTypes: _types, repeatedQuery: _repeated, ...template } = strategy.request;
+    const inputs = strategy.request.authInputs || [];
+    const template = sentRequest(strategy.request);
     // A draft's request can hold <text> where the record redacted a typed value: never send it.
     const placeholder = findRedactedPlaceholder(template);
     if (placeholder) throw placeholderError(placeholder, context.label);

@@ -3124,6 +3124,29 @@ describe("values typed during a record, in captured URLs", () => {
     );
   });
 
+  // pb param stores the parsed JSON with its key as captured, {{text}}; a key is never filled, so
+  // the drafted --text input still goes once its typing step takes --year.
+  it("drops the drafted input when a JSON key that reads like it holds the masked value", () => {
+    const variables = JSON.stringify({ "{{text}}": 2024 });
+    const { record, root } = draftTyping(
+      ["2024"],
+      `https://example.test/g?v=${encodeURIComponent(variables)}`,
+    );
+    const { directory } = authoring.saveFromRecord({
+      recordId: record.id,
+      root,
+      home: path.dirname(root),
+    });
+    const saved = JSON.parse(fs.readFileSync(path.join(directory, "ops", "search.json"), "utf8"));
+    expect(Object.keys(saved.args)).toEqual(["text"]);
+    const { op, notes } = paramOp(saved, { fields: ["query.v.{{text}}"], as: "year" });
+    expect(networkOf(op).query).toEqual({ v: { "{{text}}": "{{year}}" } });
+    expect(Object.keys(op.args)).toEqual(["year"]);
+    expect(notes).toContain("input text is now year");
+    const workflow = op.run.find((strategy: { using: string }) => strategy.using === "workflow");
+    expect(workflow.steps.map((item: { args: Entry }) => item.args.text)).toEqual(["{{year}}"]);
+  });
+
   it("records no type for a query key the URL sends twice, and pb param says so", () => {
     const pair = (year: string) => `v=${encodeURIComponent(`{"year":${year}}`)}`;
     const { draft, trace } = draftTyping(
