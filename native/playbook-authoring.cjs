@@ -1,9 +1,10 @@
 const fs = require("fs");
 const path = require("path");
+const { isDeepStrictEqual } = require("util");
 const { readRecent } = require("./activity-journal.cjs");
 const { writeNetworkExport } = require("./network-export.cjs");
 const { getPrivateStateRoot, readPrivateJson } = require("./private-state.cjs");
-const { REVIEW_KEY_ARG, draftFromRecord, neverReplayed, readRecord, recordsRoot, requestFromEntry } = require("./playbook-records.cjs");
+const { REVIEW_KEY_ARG, draftFromRecord, neverReplayed, readRecord, recordedSteps, recordsRoot, requestFromEntry } = require("./playbook-records.cjs");
 const { isCommitWorkflow, savePlaybook, validateOp } = require("./playbooks.cjs");
 const { isTelemetryRequest, requestEffect, shownUrl } = require("./request-kinds.cjs");
 const { commandMetadata, normalizeStep, promoteRedactedStepArgs } = require("./workflow-definition.cjs");
@@ -32,8 +33,8 @@ function capturedWrites(record, trace) {
 }
 
 // A write op's network strategy replays a write on the record's page origin, unless --request-id
-// (at stop or at save) names it. Origins are compared exactly: a host's last labels don't make a
-// site (alice.github.io and bob.github.io are different sites).
+// (at stop or at save, `chosen`) names it. Origins are compared exactly: a host's last labels
+// don't make a site (alice.github.io and bob.github.io are different sites).
 function firstPartyWrite({ record, entry, chosen, request, fail }) {
   const sent = `${request.method} ${request.url}`;
   const page = originOf(record.origin || entry?.tabUrl);
@@ -59,12 +60,13 @@ const PLACEHOLDER = /\{\{[a-zA-Z0-9._-]+\}\}/g;
 // is rebuilt from the trace entry it stands for (the one --request-id names, else the only one
 // captured), so what the draft file says about its method, URL, query, headers or body is never
 // sent. The write must be one the draft builder replays, in a write op, on the record page's
-// origin unless --request-id names it. The strategies decide, not the op's effect label or its
+// origin unless --request-id names it (`chosen`: pb save's, else the one pb record stop kept in the
+// record, never the draft's provenance). The strategies decide, not the op's effect label or its
 // workflow: none (a record with no steps), a one-click fallback (its network strategy runs
 // before the click), or one fitWriteWorkflow drops. A read op never replays a captured write, as
 // --read refuses a record that captured one. Reads stay as drafted. pb param makes inputs after
 // save, on the saved op.
-function rebuildWrites(op, { record, trace, requestId }) {
+function rebuildWrites(op, { record, trace, chosen }) {
   const write = op.effect === "write";
   const workflow = op.run.find((strategy) => strategy.using === "workflow");
   const networkOnly = write && !(workflow && isCommitWorkflow(workflow.steps.map(normalizeStep)));
@@ -73,7 +75,6 @@ function rebuildWrites(op, { record, trace, requestId }) {
   const other = op.run.find((strategy) => strategy && typeof strategy === "object" && !DRAFTED_KINDS.has(strategy.using));
   if (other) throw fail(`an op saved from a record runs only network and workflow strategies, and this draft has a ${other.using} strategy`);
   const writes = capturedWrites(record, trace);
-  const chosen = requestId ?? op.provenance?.requestId;
   let rebuilt = false;
   const run = op.run.map((strategy) => {
     if (strategy?.using !== "network" || typeof strategy.request?.url !== "string") return strategy;
@@ -110,6 +111,74 @@ function rebuildWrites(op, { record, trace, requestId }) {
   return { ...op, run };
 }
 
+// An op saved from a record runs the steps the record ran, rebuilt from the record as
+// draftFromRecord makes them, so what the draft file says about a step or its arguments is never
+// run: a step no record holds (js, javascript_tool, frame.js or any other unrecordable tool, at any
+// depth), a loop, or steps other than the record's are refused. The workflow keeps only
+// KEPT_FIELDS. `rebuild` then holds the op's inputs, once rebuildWrites has refused a write the
+// effect doesn't allow: they are the ones the record drafts, and review_key for a write. A draft
+// may describe an input (desc), not add one or change what it takes. pb param and --link make
+// inputs after save, on the saved op.
+function holdToRecord(op, { steps }) {
+  const fail = (why) => new Error(`${op.effect === "write" ? "write op" : "op"} ${op.id} can't be saved: ${why}`);
+  const recorded = promoteRedactedStepArgs(steps);
+  const rebuild = (rebuilt) => ({ ...rebuilt, args: draftedArgs(rebuilt, recorded.args, fail) });
+  const workflows = op.run.filter((strategy) => strategy?.using === "workflow");
+  if (workflows.length > 1) throw fail(`it has ${workflows.length} workflow strategies, and a record drafts one`);
+  if (workflows.length === 1) checkWorkflow(workflows[0], steps, fail);
+  const run = op.run.map((strategy) => {
+    if (strategy?.using !== "workflow") return strategy;
+    const kept = KEPT_FIELDS.filter((field) => strategy[field] !== undefined).map((field) => [field, strategy[field]]);
+    return { using: "workflow", steps: recorded.steps, ...Object.fromEntries(kept) };
+  });
+  return { op: { ...op, run }, rebuild };
+}
+
+const UNRECORDED = "an op saved from a record runs only the steps the record ran";
+
+function checkWorkflow(workflow, steps, fail) {
+  const ran = [];
+  let loop = false;
+  const visit = (step) => {
+    if (!step || typeof step !== "object" || Array.isArray(step)) throw fail(`its workflow holds ${JSON.stringify(step)}, which isn't a step`);
+    if (step.steps !== undefined || step.repeat !== undefined || step.each !== undefined) {
+      loop = true;
+      for (const inner of Array.isArray(step.steps) ? step.steps : []) visit(inner);
+      if (step.until) visit(step.until);
+      return;
+    }
+    const tool = step.tool ?? step.cmd;
+    const metadata = commandMetadata(String(tool));
+    if (!metadata.recordable) throw fail(`its workflow runs ${tool}, a step no record holds; ${UNRECORDED}`);
+    ran.push(metadata.name);
+  };
+  for (const step of Array.isArray(workflow.steps) ? workflow.steps : []) visit(step);
+  if (loop) throw fail(`its workflow repeats steps in a loop, and a record holds no loop; ${UNRECORDED}`);
+  const expected = steps.map((step) => commandMetadata(step.tool).name);
+  if (expected.length === 0 || !isDeepStrictEqual(ran, expected)) {
+    throw fail(`its workflow runs ${ran.join(" + ") || "no steps"}, and the record ran ${expected.join(" + ") || "no steps"}; ${UNRECORDED}`);
+  }
+}
+
+// The inputs the draft builder makes (the review key when the steps make none), with the draft's
+// descriptions. A write may also take review_key.
+function draftedArgs(op, recorded, fail) {
+  const write = op.effect === "write";
+  const drafted = write && Object.keys(recorded).length === 0 ? { ...recorded, review_key: REVIEW_KEY_ARG } : recorded;
+  const allowed = write ? { ...drafted, review_key: REVIEW_KEY_ARG } : drafted;
+  const args = { ...drafted };
+  for (const [name, spec] of Object.entries(op.args ?? {})) {
+    if (!Object.hasOwn(allowed, name)) {
+      throw fail(`its input ${name} isn't one the record drafts (${Object.keys(allowed).join(", ") || "none"}); make inputs after save with surf pb param`);
+    }
+    const { desc, ...given } = spec && typeof spec === "object" ? spec : { invalid: spec };
+    const { desc: _desc, ...expected } = allowed[name];
+    if (!isDeepStrictEqual(given, expected)) throw fail(`its input ${name} is drafted as ${JSON.stringify(expected)}, and a draft may change only an input's desc`);
+    args[name] = { ...allowed[name], ...(desc !== undefined ? { desc } : {}) };
+  }
+  return args;
+}
+
 // A relative network URL is sent from the page, so it is read against the record's origin.
 function absoluteUrl(url, origin) {
   try { return new URL(url, origin || undefined).href; } catch { return ""; }
@@ -142,7 +211,7 @@ function fitWriteWorkflow(op, warnings) {
   let key = op.safety.key.filter((name) => Object.hasOwn(args, name));
   if (key.length === 0) {
     key = ["review_key"];
-    args.review_key = REVIEW_KEY_ARG;
+    args.review_key = op.args?.review_key ?? REVIEW_KEY_ARG;
   }
   return { ...op, args, safety: { ...op.safety, key }, run };
 }
@@ -170,7 +239,10 @@ function saveFromRecord({ recordId, requestId, scope = "user", cwd, home, root =
   const warnings = [];
   const drafted = draft && !requestId ? draft : draftFromRecord(recordId, root, { read: draft?.effect === "read", requestId, warnings });
   const trace = readPrivateJson(path.join(recordsRoot(root), recordId, "network", "trace.json"), null, { root });
-  const op = fitWriteWorkflow(rebuildWrites(drafted, { record, trace, requestId }), warnings);
+  const chosen = requestId ?? record.requestId;
+  const held = holdToRecord(drafted, { steps: recordedSteps(recordId, root) });
+  const provenance = { recordId: record.id, ...(chosen ? { requestId: chosen } : {}) };
+  const op = fitWriteWorkflow(held.rebuild(rebuildWrites({ ...held.op, provenance }, { record, trace, chosen })), warnings);
   const origins = allowedOrigins(record, op, warnings);
   validateOp(op, { origins });
   const saved = savePlaybook({ manifest: { id: record.site, name: record.site, version: "1.0.0", origins }, op, scope, cwd, home });

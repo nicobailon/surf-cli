@@ -25,19 +25,21 @@ function resolveArgValues(specs, provided) {
 // A string that is only `{{name}}` takes the input's own value (left out when it is unset). Inside
 // a longer string the value is encoded for where it lands: the URL and urlencoded bodies get
 // percent-encoding; query params, headers and other bodies get the text as is. Object and array
-// query params are sent as JSON.
+// query params are sent as JSON. `{{_open}}` is sent as `{{` (see escapeTemplates).
 function renderRequest(request, args) {
   const EXACT = /^\{\{([a-zA-Z0-9._-]+)\}\}$/;
   const ANY = /\{\{([a-zA-Z0-9._-]+)\}\}/g;
+  const OPEN = "_open";
   const keep = (text) => text;
   const embed = (text, encode) => text.replace(ANY, (_, name) => {
+    if (name === OPEN) return "{{";
     if (args[name] === undefined) throw new Error(`missing template argument: ${name}`);
     return encode(String(args[name]));
   });
   const fill = (value, encode = keep) => {
     if (typeof value === "string") {
       const exact = value.match(EXACT);
-      return exact ? args[exact[1]] : embed(value, encode);
+      return exact && exact[1] !== OPEN ? args[exact[1]] : embed(value, encode);
     }
     if (Array.isArray(value)) return value.map((item) => fill(item));
     if (value && typeof value === "object") return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, fill(item)]));
@@ -60,4 +62,23 @@ function renderRequest(request, args) {
   return rendered;
 }
 
-module.exports = { renderRequest, resolveArgValues };
+// Captured text that reads like an input (`{{action}}` in a recorded body) is kept as text: each
+// `{{` that opens one becomes `{{_open}}`, which renderRequest sends as `{{`. No input can take the
+// name _open (an input name starts with a lowercase letter or a digit), and a Surf without this
+// escape stops at it as a missing input instead of sending something else.
+const LITERAL_OPEN = "{{_open}}";
+const OPENS_PLACEHOLDER = /\{\{(?=[a-zA-Z0-9._-]+\}\})/g;
+
+function escapeTemplates(value) {
+  if (typeof value === "string") return value.replace(OPENS_PLACEHOLDER, LITERAL_OPEN);
+  if (Array.isArray(value)) return value.map(escapeTemplates);
+  if (value && typeof value === "object") return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, escapeTemplates(item)]));
+  return value;
+}
+
+// The text an escaped string stands for, its inputs left in place.
+function unescapeTemplates(text) {
+  return text.replace(/\{\{([a-zA-Z0-9._-]+)\}\}/g, (match) => (match === LITERAL_OPEN ? "{{" : match));
+}
+
+module.exports = { LITERAL_OPEN, escapeTemplates, renderRequest, resolveArgValues, unescapeTemplates };

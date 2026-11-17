@@ -7,6 +7,8 @@ const path = require("node:path");
 const journal = require("../../native/activity-journal.cjs");
 const authoring = require("../../native/playbook-authoring.cjs");
 const records = require("../../native/playbook-records.cjs");
+const { paramOp } = require("../../native/playbook-param.cjs");
+const { renderRequest, resolveArgValues } = require("../../native/playbook-template.cjs");
 const roots: string[] = [];
 
 afterEach(() => {
@@ -1833,6 +1835,300 @@ describe("activity and explicit record evidence", () => {
       ).toThrow(
         `op search can't be saved: an op saved from a record runs only network and workflow strategies, and this draft has a ${strategy.using} strategy`,
       );
+    });
+  });
+
+  // The record decides what an op saved from it sends: its steps, the request --request-id names
+  // and the text it captured. draft/op.json only names and describes the op.
+  describe("a hand-edited draft, held to the record", () => {
+    const origin = "https://alice.github.io";
+    type Strategy = Entry & { using: string; request?: Entry; steps?: Entry[] };
+    type Op = Entry & {
+      effect?: string;
+      args?: Record<string, Entry>;
+      provenance?: Entry;
+      run: Strategy[];
+    };
+    const edit = (root: string, recordId: string, change: (op: Op) => void) => {
+      const file = path.join(records.recordsRoot(root), recordId, "draft", "op.json");
+      const op = JSON.parse(fs.readFileSync(file, "utf8"));
+      change(op);
+      fs.writeFileSync(file, JSON.stringify(op));
+    };
+    const save = (root: string, recordId: string) =>
+      authoring.saveFromRecord({ recordId, root, home: path.dirname(root) });
+    const savedOp = (saved: { directory: string }): Op =>
+      JSON.parse(fs.readFileSync(path.join(saved.directory, "ops", "search.json"), "utf8"));
+    const strategyOf = (op: Op, using: string) =>
+      op.run.find((strategy) => strategy.using === using) as Strategy;
+    const shapes: [string, Step[]][] = [
+      ["no steps", []],
+      ["one click", ["click"]],
+      ["navigate + click", [step("navigate", { url: `${origin}/` }), "click"]],
+    ];
+    const write = {
+      id: "r_save",
+      method: "POST",
+      status: 200,
+      type: "XHR",
+      url: `${origin}/save`,
+      requestHeaders: { "content-type": "application/json" },
+      requestBody: '{"action":"preview"}',
+    };
+    const bobDelete =
+      "fetch('https://bob.github.io/uncaptured-delete', { method: 'POST', body: 'deleteAll' })";
+
+    describe("its workflow", () => {
+      // Adds `added` to the draft's workflow, making one when the draft has none.
+      const addStep = (added: Entry) => (op: Op) => {
+        const workflow = op.run.find((strategy) => strategy.using === "workflow");
+        if (workflow) {
+          (workflow.steps as Entry[]).push(added);
+        } else {
+          op.run.push({ using: "workflow", steps: [added] });
+        }
+      };
+      const unrecordable = ["js", "javascript_tool", "frame.js"];
+
+      describe.each(shapes)("with %s", (_shape, commands) => {
+        const label = "write op search can't be saved";
+
+        it.each(unrecordable)("refuses a %s step the draft adds", (tool) => {
+          const flow = recordFlow({
+            commands,
+            origin,
+            trace: [{ ...page, url: `${origin}/` }, write],
+          });
+          const { record } = flow.stopped();
+          edit(flow.root, record.id, addStep({ tool, args: { code: bobDelete } }));
+          expect(() => save(flow.root, record.id)).toThrow(
+            `${label}: its workflow runs ${tool}, a step no record holds; an op saved from a record runs only the steps the record ran`,
+          );
+        });
+
+        it.each(unrecordable)("refuses a %s step inside a repeat loop", (tool) => {
+          const flow = recordFlow({
+            commands,
+            origin,
+            trace: [{ ...page, url: `${origin}/` }, write],
+          });
+          const { record } = flow.stopped();
+          edit(
+            flow.root,
+            record.id,
+            addStep({ repeat: 2, steps: [{ tool, args: { code: bobDelete } }] }),
+          );
+          expect(() => save(flow.root, record.id)).toThrow(
+            `${label}: its workflow runs ${tool}, a step no record holds`,
+          );
+        });
+
+        it("refuses a loop of recorded steps, which no record holds", () => {
+          const flow = recordFlow({
+            commands,
+            origin,
+            trace: [{ ...page, url: `${origin}/` }, write],
+          });
+          const { record } = flow.stopped();
+          edit(flow.root, record.id, addStep({ repeat: 2, steps: [{ tool: "click", args: {} }] }));
+          expect(() => save(flow.root, record.id)).toThrow(
+            `${label}: its workflow repeats steps in a loop, and a record holds no loop`,
+          );
+        });
+
+        it("refuses a recordable step the record didn't run", () => {
+          const flow = recordFlow({
+            commands,
+            origin,
+            trace: [{ ...page, url: `${origin}/` }, write],
+          });
+          const { record } = flow.stopped();
+          edit(
+            flow.root,
+            record.id,
+            addStep({ tool: "navigate", args: { url: "https://bob.github.io/uncaptured-delete" } }),
+          );
+          const ran = commands.map((item) => (typeof item === "string" ? item : item[0]));
+          expect(() => save(flow.root, record.id)).toThrow(
+            `${label}: its workflow runs ${[...ran, "navigate"].join(" + ")}, and the record ran ${ran.join(" + ") || "no steps"}`,
+          );
+        });
+      });
+
+      // The reviewer's case: a read record's draft, its effect kept, with a script step added.
+      it.each([
+        ["no steps", []],
+        ["a navigate", [step("navigate", { url: `${origin}/` })]],
+      ] as [string, Step[]][])("refuses a script step in a read op with %s", (_shape, commands) => {
+        const read = { ...page, id: "r_read", url: `${origin}/read`, type: "XHR" };
+        const flow = recordFlow({ commands, origin, trace: [read] });
+        const { record, draft } = flow.stopped();
+        expect(draft.effect).toBe("read");
+        for (const added of [
+          { tool: "javascript_tool", args: { code: bobDelete } },
+          { repeat: 2, steps: [{ tool: "javascript_tool", args: { code: bobDelete } }] },
+        ]) {
+          edit(flow.root, record.id, (op) => {
+            op.run = op.run.filter((strategy) => strategy.using !== "workflow");
+            addStep(added)(op);
+          });
+          expect(() => save(flow.root, record.id)).toThrow(
+            "op search can't be saved: its workflow runs javascript_tool, a step no record holds",
+          );
+        }
+      });
+
+      it("saves the recorded steps' arguments, not the draft's", () => {
+        const recorded = [step("navigate", { url: `${origin}/` })];
+        const read = { ...page, id: "r_read", url: `${origin}/read`, type: "XHR" };
+        const flow = recordFlow({ commands: recorded, origin, trace: [read] });
+        const { record } = flow.stopped();
+        edit(flow.root, record.id, (op) => {
+          (strategyOf(op, "workflow").steps as Entry[])[0].args = { url: "https://bob.github.io/" };
+          Object.assign(strategyOf(op, "workflow"), { onError: "continue", stepDelay: 0 });
+        });
+        expect(strategyOf(savedOp(save(flow.root, record.id)), "workflow")).toEqual({
+          using: "workflow",
+          steps: [{ cmd: "navigate", args: { url: `${origin}/` } }],
+        });
+        const click = recordFlow({
+          commands: ["click"],
+          origin,
+          trace: [{ ...page, url: `${origin}/` }, write],
+        });
+        const stopped = click.stopped();
+        edit(click.root, stopped.record.id, (op) => {
+          (strategyOf(op, "workflow").steps as Entry[])[0].args = { selector: "#delete-all" };
+        });
+        expect(strategyOf(savedOp(save(click.root, stopped.record.id)), "workflow").steps).toEqual([
+          { cmd: "click", args: {} },
+        ]);
+      });
+    });
+
+    describe("the request --request-id names", () => {
+      const trace = [
+        { ...page, url: `${origin}/` },
+        { ...write, id: "r_other", url: "https://bob.github.io/save" },
+      ];
+      const prefixes: Record<string, string> = {
+        "no steps": "write op search can't be saved network-only",
+        "one click": "write op search can't be saved",
+        "navigate + click": "write op search can't be saved network-only",
+      };
+
+      describe.each(shapes)("with %s", (shape, commands) => {
+        it("takes it from pb save or pb record stop, not from the draft's provenance", () => {
+          const flow = recordFlow({ commands, origin, trace });
+          const { record } = flow.stopped();
+          edit(
+            flow.root,
+            record.id,
+            (op) => (op.provenance = { recordId: record.id, requestId: "r_other" }),
+          );
+          expect(() => save(flow.root, record.id)).toThrow(
+            `${prefixes[shape]}: it would replay POST https://bob.github.io/save, whose origin (https://bob.github.io) isn't the record's page origin (${origin}); name it with --request-id r_other to replay it anyway`,
+          );
+        });
+
+        it("keeps the one pb record stop --request-id named in the record", () => {
+          const flow = recordFlow({
+            commands,
+            origin,
+            trace,
+            stop: { draft: true, requestId: "r_other" },
+          });
+          const { record } = flow.stopped();
+          expect(records.readRecord(record.id, flow.root).requestId).toBe("r_other");
+          edit(
+            flow.root,
+            record.id,
+            (op) => (op.provenance = { recordId: "rec-0-forged", requestId: "r_forged" }),
+          );
+          const saved = save(flow.root, record.id);
+          expect(saved.origins).toEqual([origin, "https://bob.github.io"]);
+          expect(savedOp(saved).provenance).toEqual({ recordId: record.id, requestId: "r_other" });
+        });
+      });
+    });
+
+    describe("a captured {{…}}", () => {
+      const literal = {
+        ...write,
+        url: `${origin}/save?note={{review_key}}`,
+        requestHeaders: { "content-type": "application/json", "x-note": "{{review_key}}" },
+        requestBody: '{"action":"{{action}}","key":"{{review_key}}"}',
+      };
+      const flow = (commands: Step[]) => {
+        const recorded = recordFlow({
+          commands,
+          origin,
+          trace: [{ ...page, url: `${origin}/` }, literal],
+          includeInputValues: true,
+        });
+        return { root: recorded.root, record: recorded.stopped().record };
+      };
+      const sent = (op: Op, provided: Entry) =>
+        renderRequest(strategyOf(op, "network").request, resolveArgValues(op.args, provided));
+
+      describe.each(shapes)("with %s", (_shape, commands) => {
+        it("is sent as the record captured it, whatever the review key", () => {
+          const { root, record } = flow(commands);
+          const request = sent(savedOp(save(root, record.id)), { review_key: "k-1" });
+          expect(request).toMatchObject({
+            url: `${origin}/save`,
+            query: { note: "{{review_key}}" },
+            headers: { "x-note": "{{review_key}}" },
+            body: '{"action":"{{action}}","key":"{{review_key}}"}',
+          });
+        });
+
+        it("refuses an input the record didn't draft", () => {
+          const { root, record } = flow(commands);
+          edit(
+            root,
+            record.id,
+            (op) => (op.args = { ...op.args, action: { default: "deleteAll" } }),
+          );
+          expect(() => save(root, record.id)).toThrow(
+            "write op search can't be saved: its input action isn't one the record drafts (review_key); make inputs after save with surf pb param",
+          );
+        });
+
+        it("refuses a drafted input changed beyond its desc, and keeps a new desc", () => {
+          const { root, record } = flow(commands);
+          edit(root, record.id, (op) =>
+            Object.assign(op.args?.review_key ?? {}, { default: "deleteAll" }),
+          );
+          expect(() => save(root, record.id)).toThrow(
+            "write op search can't be saved: its input review_key is drafted as {\"required\":true}, and a draft may change only an input's desc",
+          );
+          edit(
+            root,
+            record.id,
+            (op) => (op.args = { review_key: { required: true, desc: "Order key" } }),
+          );
+          expect(savedOp(save(root, record.id)).args).toEqual({
+            review_key: { required: true, desc: "Order key" },
+          });
+        });
+      });
+
+      it("stays literal after pb param makes another field an input", () => {
+        const { root, record } = flow(["click"]);
+        const saved = savedOp(save(root, record.id));
+        const { op } = paramOp(saved, { fields: ["body.action"], as: "verb" });
+        expect(op.args.verb).toEqual({ type: "string", default: "{{action}}" });
+        expect(sent(op, { review_key: "k-1" }).body).toEqual({
+          action: "{{action}}",
+          key: "{{review_key}}",
+        });
+        expect(sent(op, { review_key: "k-1", verb: "archive" })).toMatchObject({
+          query: { note: "{{review_key}}" },
+          headers: { "x-note": "{{review_key}}" },
+          body: { action: "archive", key: "{{review_key}}" },
+        });
+      });
     });
   });
 

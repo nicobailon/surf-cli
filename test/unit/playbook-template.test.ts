@@ -2,7 +2,12 @@ import { describe, expect, it, vi } from "vitest";
 import { captureTab } from "../fixtures/capture-tab";
 
 const runtime = require("../../native/playbook-runtime.cjs");
-const { renderRequest, resolveArgValues } = require("../../native/playbook-template.cjs");
+const {
+  escapeTemplates,
+  renderRequest,
+  resolveArgValues,
+  unescapeTemplates,
+} = require("../../native/playbook-template.cjs");
 const playbooks = require("../../native/playbooks.cjs");
 
 type FetchCall = [
@@ -87,6 +92,44 @@ describe("request templates", () => {
     expect(fetchImpl.mock.calls[0][0]).toBe(
       "https://api.test/catalogue/page-3.html?v=%7B%22page%22%3A3%7D",
     );
+  });
+
+  it("sends escaped captured text as captured, inputs beside it filled", async () => {
+    const captured = {
+      method: "POST",
+      url: "https://api.test/save#{{q}}",
+      query: { note: "{{q}}", whole: "{{_open}}", nested: "{{{{q}}}}", open: "{{" },
+      headers: { "x-note": "{{q}} and {{q" },
+      body: '{"q":"{{q}}","n":"{{n}}"}',
+    };
+    const escaped = escapeTemplates(captured);
+    expect(escaped.query).toEqual({
+      note: "{{_open}}q}}",
+      whole: "{{_open}}_open}}",
+      nested: "{{{{_open}}q}}}}",
+      open: "{{",
+    });
+    expect(unescapeTemplates(escaped.body)).toBe(captured.body);
+    expect(renderRequest(escaped, { q: "filled" })).toMatchObject(captured);
+    // A field pb param made an input is filled; the captured text beside it is not.
+    const form = renderRequest(
+      {
+        url: "https://api.test/",
+        headers: { "content-type": "application/x-www-form-urlencoded" },
+        body: `${escapeTemplates("a={{q}}")}&b={{q}}`,
+      },
+      { q: "x&y" },
+    );
+    expect(form.body).toBe("a={{q}}&b=x%26y");
+    const { fetchImpl, executeTool } = fakeTab();
+    await runtime.runPlaybookOp({
+      playbook: { id: "books", provenance: {} },
+      op: op(escapeTemplates({ url: "https://api.test/save", query: { note: "{{q}}" } }), {
+        q: { default: "filled" },
+      }),
+      executeTool,
+    });
+    expect(fetchImpl.mock.calls[0][0]).toBe("https://api.test/save?note=%7B%7Bq%7D%7D");
   });
 });
 

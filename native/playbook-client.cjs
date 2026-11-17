@@ -3,7 +3,7 @@ const http = require("http");
 const path = require("path");
 const { execFile } = require("child_process");
 const { atomicWriteFile, atomicWriteJson, ensurePrivateDir, getPrivateStateRoot, readPrivateJson } = require("./private-state.cjs");
-const { renderRequest, resolveArgValues } = require("./playbook-template.cjs");
+const { LITERAL_OPEN, renderRequest, resolveArgValues } = require("./playbook-template.cjs");
 const { resolveOp } = require("./playbooks.cjs");
 const { isReplayCandidate, readRecord, recordsRoot, requestEffect } = require("./playbook-records.cjs");
 const { WINNER_MARGIN, isWeak, scoreEntries } = require("./record-candidates.cjs");
@@ -238,7 +238,7 @@ function deriveClient(site, opId, out, options = {}) {
 
 function collectTemplateArgs(value, names = new Set()) {
   if (typeof value === "string") {
-    for (const match of value.matchAll(/\{\{([a-zA-Z0-9._-]+)\}\}/g)) names.add(match[1]);
+    for (const match of value.matchAll(/\{\{([a-zA-Z0-9._-]+)\}\}/g)) if (match[0] !== LITERAL_OPEN) names.add(match[1]);
   } else if (Array.isArray(value)) {
     for (const item of value) collectTemplateArgs(item, names);
   } else if (value && typeof value === "object") {

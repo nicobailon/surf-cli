@@ -4,6 +4,7 @@
 const os = require("os");
 const { editSavedOp, validateOp } = require("./playbooks.cjs");
 const { isSecretHeader, isSensitiveName } = require("./redaction.cjs");
+const { unescapeTemplates } = require("./playbook-template.cjs");
 const { lineDiff } = require("./text-diff.cjs");
 const { commandMetadata } = require("./workflow-definition.cjs");
 
@@ -209,7 +210,8 @@ function templateSlot(slot, name, literal) {
   if (typeof current === "string" && TEMPLATE_ONLY.test(current)) throw new Error(`${slot.field}: already the input ${current}`);
   if (literal === undefined || String(current) === literal) {
     slot.store(placeholder);
-    return { status: "templated", literal: current, whole: true, stored: placeholder };
+    // A recorded `{{…}}` is stored escaped; the input's value is the text it stands for.
+    return { status: "templated", literal: typeof current === "string" ? unescapeTemplates(current) : current, whole: true, stored: placeholder };
   }
   if (typeof current !== "string") throw new Error(`${slot.field}: "${literal}" not found in ${JSON.stringify(current)}`);
   const first = current.indexOf(literal);

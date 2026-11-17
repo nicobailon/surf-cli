@@ -12,6 +12,7 @@ const {
 } = require("./private-state.cjs");
 const { redactSensitiveFields, redactUrlSecrets, safeHeaders } = require("./redaction.cjs");
 const { commandMetadata, promoteRedactedStepArgs } = require("./workflow-definition.cjs");
+const { escapeTemplates } = require("./playbook-template.cjs");
 const { describeCaptureGaps } = require("./formatters/network.cjs");
 const { ASSET_TYPES, isReplayCandidate, isTelemetryRequest, requestEffect, shownUrl } = require("./request-kinds.cjs");
 const { WINNER_MARGIN, isWeak, pageWords, rankCandidates, scoreEntries, summarizeResponse } = require("./record-candidates.cjs");
@@ -307,27 +308,30 @@ function pickRequest({ record, trace, effect, requestId, warnings }) {
 }
 
 // The request a network strategy sends to replay a captured trace entry: its query apart, its
-// headers without secrets, and its body as captured (`<request-body>` without input values).
+// headers without secrets, and its body as captured (`<request-body>` without input values). Text
+// that reads like an input (`{{action}}`) is escaped, so it is sent as captured.
 function requestFromEntry(entry) {
   const url = new URL(entry.url);
   const query = Object.fromEntries(url.searchParams.entries());
   url.search = "";
-  return { method: entry.method, url: url.toString(), query, headers: safeHeaders(entry.requestHeaders), ...(entry.requestBody !== undefined ? { body: entry.requestBody } : {}) };
+  return escapeTemplates({ method: entry.method, url: url.toString(), query, headers: safeHeaders(entry.requestHeaders), ...(entry.requestBody !== undefined ? { body: entry.requestBody } : {}) });
 }
 
 // The input a write op without other inputs takes as its semantic safety key.
 const REVIEW_KEY_ARG = { required: true, desc: "Semantic key for reviewed write replay" };
 
+// The steps a record ran that a draft replays: its completed recordable commands, in order.
+function recordedSteps(recordId, root = getPrivateStateRoot()) {
+  return readEvents(recordId, root)
+    .filter((event) => event.type === "tool.completed" && commandMetadata(event.command).recordable)
+    .map((event) => ({ tool: event.command, args: event.argsRedacted || {} }));
+}
+
 // `warnings` collects why the draft left something out. `requestId` picks the request to replay.
 function draftFromRecord(recordId, root = getPrivateStateRoot(), { read = false, requestId, warnings = [] } = {}) {
   const record = readRecord(recordId, root);
   if (!record) throw new Error(`record not found: ${recordId}`);
-  const events = readEvents(recordId, root).filter((event) => event.type === "tool.completed");
-  const steps = [];
-  for (const event of events) {
-    if (!commandMetadata(event.command).recordable) continue;
-    steps.push({ tool: event.command, args: event.argsRedacted || {} });
-  }
+  const steps = recordedSteps(recordId, root);
   const tracePath = path.join(recordDirectory(recordId, root), "network", "trace.json");
   const trace = readPrivateJson(tracePath, null, { root });
   const { effect, warning } = draftEffect({ record, steps, trace, read });
@@ -352,7 +356,9 @@ function draftFromRecord(recordId, root = getPrivateStateRoot(), { read = false,
   return op;
 }
 
-// The draft is made before the record stops, so a refused draft (--read) leaves it recording.
+// The draft is made before the record stops, so a refused draft (--read) leaves it recording. The
+// request --request-id names is kept in the record, which pb save reads it from: the draft file is
+// only a suggestion.
 function stopRecord({ target, draft = false, read = false, requestId, root = getPrivateStateRoot() } = {}) {
   if (read && !draft) throw new Error("--read applies only with --draft");
   if (requestId && !draft) throw new Error("--request-id applies only with --draft");
@@ -363,6 +369,7 @@ function stopRecord({ target, draft = false, read = false, requestId, root = get
   record = readRecord(record.id, root);
   record.status = draft ? "draft_created" : "stopped";
   record.stoppedAt = new Date().toISOString();
+  if (requestId) record.requestId = requestId;
   writeRecord(record, root);
   writeActiveIds(activeIds(root).filter((id) => id !== record.id), root);
   const warnings = [...(record.trace?.warnings || []), ...draftWarnings];
@@ -452,6 +459,7 @@ module.exports = {
   readRecord,
   recordCandidates,
   recordStatus,
+  recordedSteps,
   requestEffect,
   recordsRoot,
   requestFromEntry,
