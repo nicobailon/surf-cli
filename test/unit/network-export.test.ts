@@ -647,7 +647,7 @@ describe("echo redaction that keeps an export's structure", () => {
       requestBody: "<root>lang=en</root>",
       responseBody: "lang=en x=1",
     });
-    expect(kept.requestBody).toBe("<root>&lt;redacted&gt;</root>");
+    expect(kept.requestBody).toBe("<root>(redacted)</root>");
     expect(kept.responseBody).toBe("<redacted> x=1");
   });
 });
@@ -734,9 +734,7 @@ describe("echo redaction by each secret's own length", () => {
       responseBody: "a <b>a</b> word a",
     });
     expect(kept.requestBody).toBe("<a>lang=en</a>");
-    expect(kept.responseBody).toBe(
-      "&lt;redacted&gt; <b>&lt;redacted&gt;</b> word &lt;redacted&gt;",
-    );
+    expect(kept.responseBody).toBe("(redacted) <b>(redacted)</b> word (redacted)");
   });
 
   it("redacts a short cookie value as a whole value, never a key", () => {
@@ -860,7 +858,7 @@ describe("echo redaction that keeps every structure parseable", () => {
   // The tag names of markup, in order, so a test can tell a tag opened or closed.
   const tagNames = (html: string) =>
     [...html.matchAll(/<\/?([A-Za-z][\w-]*)/g)].map(([, tag]) => tag);
-  const MARK = "&lt;redacted&gt;";
+  const MARK = "(redacted)";
 
   it("replaces a short secret in markup only as a whole word, with a marker that opens no tag", () => {
     const cases: [Record<string, string>, string, string][] = [
@@ -873,13 +871,12 @@ describe("echo redaction that keeps every structure parseable", () => {
         `<input value="${SHOP}" title='${SHOP}' alt="${SHOP} x">`,
         `<input value="${MARK}" title='${MARK}' alt="${SHOP} x">`,
       ],
-      // A comment, a script and a stray quote hide nothing; where entities aren't read, the marker
-      // is <redacted>, which can't end them.
-      [{ Authorization: resy }, `<!-- ${SHOP} -->`, "<!-- <redacted> -->"],
+      // A comment, a script and a stray quote hide nothing; the marker can't end them.
+      [{ Authorization: resy }, `<!-- ${SHOP} -->`, `<!-- ${MARK} -->`],
       [
         { Authorization: resy },
         `<script>if (n<max && ${SHOP} > 0) run()</script>`,
-        "<script>if (n<max && <redacted> > 0) run()</script>",
+        `<script>if (n<max && ${MARK} > 0) run()</script>`,
       ],
       [{ Authorization: resy }, `<div data=x=" > ${SHOP} > ">`, `<div data=x=" > ${MARK} > ">`],
       [{ Authorization: resy }, `<p a="x" ${SHOP}`, '<p a="x" redacted'],
@@ -894,8 +891,7 @@ describe("echo redaction that keeps every structure parseable", () => {
     for (const [headers, body, expected] of cases) {
       const kept = entry(headers, { responseBody: body }).responseBody;
       expect(kept).toBe(expected);
-      // The plain marker in a comment or script reads as a tag to this pattern, not to a parser.
-      expect(tagNames(kept.replaceAll("<redacted>", ""))).toEqual(tagNames(body));
+      expect(tagNames(kept)).toEqual(tagNames(body));
     }
   });
 
@@ -1016,16 +1012,16 @@ describe("echo redaction that keeps every structure parseable", () => {
       const body = template.replace("_", SHOP);
       const kept = entry({ Authorization: resy }, { responseBody: body }).responseBody;
       expect(kept).toBe(template.replace("_", MARK));
-      // One tag, as in the input, whose value now reads <redacted>.
+      // One tag, as in the input, whose value now reads as the marker.
       const [input, output] = parseMarkup([body, kept]).map(({ html: events }) =>
         JSON.stringify(events),
       );
-      expect(output).toBe(input.replace(SHOP, "<redacted>"));
+      expect(output).toBe(input.replace(SHOP, MARK));
     }
     const amp = ["a", "&", "b"].join("");
     const long = ["alpha", "&", "beta"].join("");
     const xml: [Record<string, string>, string, string][] = [
-      [{ Authorization: resy }, `<r><![CDATA[${SHOP}]]></r>`, "<r><![CDATA[<redacted>]]></r>"],
+      [{ Authorization: resy }, `<r><![CDATA[${SHOP}]]></r>`, `<r><![CDATA[${MARK}]]></r>`],
       [{ "x-csrf-token": amp }, '<r value="a&amp;b"/>', `<r value="${MARK}"/>`],
       [{ Authorization: resy }, "<r value='sh&#111;p'/>", `<r value='${MARK}'/>`],
       [{ Authorization: resy }, '<r value = "sh&#x6F;p"/>', `<r value = "${MARK}"/>`],

@@ -196,8 +196,9 @@ function redactEchoQuery(query, rules) {
   }).join("&");
 }
 
-// Text that holds markup: a `<` followed by a letter, `/`, `!` or `?`.
-const MARKUP_PATTERN = /<[A-Za-z/!?]/;
+// Text that may hold markup: a `<` followed by anything but space or another `<` (XML takes any
+// letter, not only ASCII, to start a tag name).
+const MARKUP_PATTERN = /<[^\s<]/;
 // Whether a character code is whitespace, as `\s` reads it.
 const isSpaceCode = (code) => code === 32 || (code >= 9 && code <= 13) || (code > 127 && /\s/.test(String.fromCharCode(code)));
 const [LT, GT, DOUBLE_QUOTE, SINGLE_QUOTE] = ["<", ">", '"', "'"].map((char) => char.charCodeAt(0));

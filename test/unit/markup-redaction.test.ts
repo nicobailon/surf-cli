@@ -7,8 +7,10 @@ const exporter = require("../../native/network-export.cjs");
 // Dummy values, built from parts so no literal here reads as a credential.
 const SHOP = ["sh", "op"].join("");
 const LONG = ["lo", "ng"].join("");
-const MARK = "&lt;redacted&gt;";
-const PLAIN = "<redacted>";
+// The one marker markup gets, in every context: it has no `<`, `>`, quote, `&`, `]`, `-`, `/`, `=`,
+// backtick or space, so it can't open, close or end anything wherever it stands.
+const MARK = "(redacted)";
+const PLAIN = MARK;
 
 const redact = (secret: string, body: string, responseHeaders: Record<string, string> = {}) =>
   exporter.publicEntry({
@@ -188,12 +190,12 @@ describe("markup echoes redacted by their tokens", () => {
   });
 
   it("reads XML by its content type or declaration, and HTML otherwise", () => {
-    const body = "<r><script>sh&#111;p</script></r>";
-    // HTML shows a script's text as written, so its entity is no secret; XML decodes it.
+    const body = `<r><script>a<b>${SHOP}</b></script></r>`;
+    // HTML reads a script's text as raw text, where the secret is no whole word; XML reads tags in it.
     expect(redact(SHOP, body)).toBe(body);
-    expect(redact(SHOP, body, XML)).toBe(`<r><script>${MARK}</script></r>`);
+    expect(redact(SHOP, body, XML)).toBe(`<r><script>a<b>${MARK}</b></script></r>`);
     expect(redact(SHOP, `<?xml version="1.0"?>${body}`)).toBe(
-      `<?xml version="1.0"?><r><script>${MARK}</script></r>`,
+      `<?xml version="1.0"?><r><script>a<b>${MARK}</b></script></r>`,
     );
   });
 
@@ -232,6 +234,173 @@ describe("markup echoes redacted by their tokens", () => {
     const result = spawnSync(process.execPath, ["-e", script], { encoding: "utf8" });
     expect(result.stderr).toBe("");
     expect(JSON.parse(result.stdout)).toEqual(["<redacted/>", "<redacted/>", "<p>other</p>"]);
+  });
+});
+
+// What expat reads in each XML text: its text and every attribute value, entities expanded, or the
+// error that stops it.
+const readXml = (texts: string[]): ({ text: string } | { error: string })[] => {
+  const script = [
+    "import json, sys, xml.etree.ElementTree as ET",
+    "out = []",
+    "for text in json.load(sys.stdin):",
+    "    try:",
+    "        root = ET.fromstring(text)",
+    "        values = [v for e in root.iter() for v in e.attrib.values()]",
+    "        out.append({'text': ' '.join([''.join(root.itertext())] + values)})",
+    "    except ET.ParseError as error:",
+    "        out.append({'error': str(error)})",
+    "print(json.dumps(out))",
+  ].join("\n");
+  const result = spawnSync("python3", ["-I", "-c", script], {
+    input: JSON.stringify(texts),
+    encoding: "utf8",
+  });
+  if (result.status !== 0) {
+    throw new Error(`python3 failed: ${result.error || result.stderr}`);
+  }
+  return JSON.parse(result.stdout);
+};
+
+describe("markup contexts a browser or an XML parser reads differently from the tokenizer", () => {
+  const HTML_CASES: [string, string, string][] = [
+    // A browser reads <script> inside <svg> or <math> as a foreign element: its entities decode.
+    [SHOP, `<svg><script>${SHOP}</script></svg>`, `<svg><script>${MARK}</script></svg>`],
+    [SHOP, "<svg><script>sh&#111;p</script></svg>", `<svg><script>${MARK}</script></svg>`],
+    [SHOP, "<math><style>a sh&#111;p</style></math>", `<math><style>${MARK}</style></math>`],
+    // In SVG a script holds tags, as the tokenizer reads them there.
+    [
+      SHOP,
+      `<svg><g><script>x>${SHOP}<y</script></g></svg>`,
+      `<svg><g><script>${MARK}<y</script></g></svg>`,
+    ],
+    // HTML reads <![CDATA[ as a comment that ends at the first `>`, so what follows it is page text.
+    [SHOP, `<![CDATA[${SHOP}]]><b>ok</b>`, `<![CDATA[${MARK}]]><b>ok</b>`],
+    [SHOP, "<![CDATA[x> sh&#111;p <b>ok</b>]]>", `<![CDATA[${MARK}]]>`],
+    [SHOP, `<![CDATA[x>${SHOP}<b>ok</b>]]>`, `<![CDATA[${MARK}]]>`],
+    // Bogus comments: `<?`, `<!x`, `</ x`.
+    [SHOP, "<?x sh&#111;p>", `<?${MARK}>`],
+    [SHOP, `<!x ${SHOP}>`, `<!${MARK}>`],
+    [SHOP, `</ ${SHOP}>`, `</${MARK}>`],
+  ];
+
+  it("masks a secret, raw or decoded, in foreign content, HTML CDATA and bogus comments", () => {
+    const outputs = HTML_CASES.map(([secret, body]) => redact(secret, body));
+    expect(outputs).toEqual(HTML_CASES.map(([, , expected]) => expected));
+  });
+
+  it("decodes entities in every span, raw text and comments included", () => {
+    const cases: [string, string, string, Record<string, string>?][] = [
+      [SHOP, "<script>sh&#111;p</script>", `<script>${MARK}</script>`],
+      [SHOP, "<style>a{} sh&#111;p</style>", `<style>${MARK}</style>`],
+      [SHOP, "<!-- sh&#111;p -->", `<!--${MARK}-->`],
+      [SHOP, "<r><![CDATA[ sh&#111;p ]]></r>", `<r><![CDATA[${MARK}]]></r>`, XML],
+      [SHOP, '<r><?pi a="sh&#111;p"?></r>', `<r><?pi ${MARK}?></r>`, XML],
+      [SHOP, `<r><?pi ${SHOP}?></r>`, `<r><?pi ${MARK}?></r>`, XML],
+    ];
+    const outputs = cases.map(([secret, body, , headers]) => redact(secret, body, headers));
+    expect(outputs).toEqual(cases.map(([, , expected]) => expected));
+  });
+
+  it("uses one marker that can't open a tag or end a section in any context", () => {
+    const outputs = [
+      redact(SHOP, `<r>${SHOP}</r>`),
+      redact(SHOP, `<r v="${SHOP}"/>`),
+      redact(SHOP, `<script>${SHOP}</script>`),
+      redact(SHOP, `<!-- ${SHOP} -->`),
+      redact(SHOP, `<r><![CDATA[${SHOP}]]></r>`, XML),
+      redact(SHOP, `<r><?pi ${SHOP}?></r>`, XML),
+      redact(SHOP, `<!DOCTYPE html PUBLIC "${SHOP}">`),
+    ];
+    for (const output of outputs) {
+      expect(output).toContain(MARK);
+    }
+    expect(MARK).not.toMatch(/[<>"'&\]\-/=`\s]/);
+  });
+
+  it("tokenizes XML whose tag names aren't ASCII", () => {
+    const body = '<é v="sh&#111;p"/>';
+    const output = redact(SHOP, body, XML);
+    expect(output).toBe(`<é v="${MARK}"/>`);
+    expect(readXml([output])).toEqual([{ text: ` ${MARK}` }]);
+    // HTML reads it as text, whose entity decodes to the secret.
+    expect(redact(SHOP, body)).toBe(MARK);
+  });
+
+  it("redacts a secret declared in an XML doctype, and the references to it", () => {
+    const cases: [string, string, string][] = [
+      [
+        SHOP,
+        `<!DOCTYPE r [<!ENTITY x "${SHOP}">]><r>&x;</r>`,
+        `<!DOCTYPE r [<!ENTITY x "${MARK}">]><r>${MARK}</r>`,
+      ],
+      [
+        SHOP,
+        '<!DOCTYPE r [<!ENTITY x "sh&#111;p">]><r a="&x;">&x;</r>',
+        `<!DOCTYPE r [<!ENTITY x "${MARK}">]><r a="${MARK}">${MARK}</r>`,
+      ],
+      // The declared value holds part of it; the reference completes it.
+      [
+        SHOP,
+        '<!DOCTYPE r [<!ENTITY x "sh">]><r>&x;op</r>',
+        `<!DOCTYPE r [<!ENTITY x "sh">]><r>${MARK}</r>`,
+      ],
+      [
+        SHOP,
+        '<!DOCTYPE r [<!ENTITY x "sh">]><r v="&x;op"/>',
+        `<!DOCTYPE r [<!ENTITY x "sh">]><r v="${MARK}"/>`,
+      ],
+      // A `>` inside a declared value doesn't end the doctype.
+      [
+        `${LONG}-secret-1`,
+        `<!DOCTYPE r [<!ENTITY x "a>b">]><r>&x; ${LONG}-secret-1</r>`,
+        `<!DOCTYPE r [<!ENTITY x "a>b">]><r>&x; ${MARK}</r>`,
+      ],
+      // A secret outside a quoted value can't be taken out of the doctype: the body goes.
+      [SHOP, `<!DOCTYPE r [<!ENTITY ${SHOP} "x">]><r>&${SHOP};</r>`, "<redacted/>"],
+    ];
+    const outputs = cases.map(([secret, body]) => redact(secret, body, XML));
+    expect(outputs).toEqual(cases.map(([, , expected]) => expected));
+    const read = readXml(outputs);
+    for (const [index, result] of read.entries()) {
+      expect(result).not.toHaveProperty("error");
+      expect("text" in result && result.text.includes(cases[index][0])).toBe(false);
+    }
+  });
+
+  it("never renames a namespace declaration, masking the body instead", () => {
+    const prefix = ["xml", "ns:p"].join("");
+    const body = `<p:r ${prefix}="urn:x"/>`;
+    expect(redact(prefix, body, XML)).toBe("<redacted/>");
+    const bare = ["xml", "ns"].join("");
+    expect(redact(bare, `<r ${bare}="urn:x"/>`, XML)).toBe("<redacted/>");
+    // A prefixed attribute that isn't a declaration is renamed, and stays valid XML.
+    const named = `p:${SHOP}`;
+    const output = redact(named, `<r ${prefix}="urn:x" ${named}="1"/>`, XML);
+    expect(output).toBe(`<r ${prefix}="urn:x" redacted="1"/>`);
+    expect(readXml([output])[0]).not.toHaveProperty("error");
+  });
+
+  it("checks redacted XML is still well formed, with every prefix bound", () => {
+    const { isWellFormedXml } = require("../../native/markup-redaction.cjs");
+    expect(isWellFormedXml('<?xml version="1.0"?><r xmlns:p="u" a="1"><p:q/><!-- c --></r>')).toBe(
+      true,
+    );
+    expect(isWellFormedXml('<!DOCTYPE r [<!ENTITY x "a>b">]><r>&x;&amp;&#49;</r>')).toBe(true);
+    for (const bad of [
+      '<p:r redacted="urn:x"/>',
+      "<r><q></r>",
+      "<r>",
+      '<r a="1" a="2"/>',
+      "<r a=1/>",
+      "<r>&x;</r>",
+      "<r><!-- a -- b --></r>",
+      "<r/><r/>",
+      "<r>a < b</r>",
+      '<r xmlns:p="u" xmlns:q="u" p:a="1" q:a="2"/>',
+    ]) {
+      expect(isWellFormedXml(bad)).toBe(false);
+    }
   });
 });
 
@@ -357,9 +526,14 @@ describe("markup redaction on unfinished and malformed markup", () => {
       ...(output.text.some((text) => shows(text, secret)) ? ["text"] : []),
       ...shown(secret, output),
     ];
+    // HTML reads CDATA as a comment that ends at its first `>`, SVG as CDATA to `]]>`: one that
+    // holds the secret is masked whole, with the tags the tokenizer read inside it.
+    const masksCdata = (body: string, output: string) =>
+      body.includes("<![CDATA[") && /<!(\[CDATA\[)?\(redacted\)/.test(output);
     const failures = parsed.flatMap((output, index) => {
       const [secret, body] = bodies[index];
-      const found = problems(secret, inputs[index], output, outputs[index] === "<redacted/>");
+      const whole = outputs[index] === "<redacted/>" || masksCdata(body, outputs[index]);
+      const found = problems(secret, inputs[index], output, whole);
       return found.length > 0 ? [{ secret, body, output: outputs[index], found }] : [];
     });
     expect(failures).toEqual([]);
