@@ -1,6 +1,7 @@
 // Assertions and env-header values: what pb test may save, and what a run reports and journals.
 import { afterAll, afterEach, describe, expect, it, vi } from "vitest";
 import { captureTab } from "../fixtures/capture-tab";
+import { corpusPatterns, corpusValues } from "../fixtures/pattern-corpus";
 
 const fs = require("node:fs");
 const http = require("node:http");
@@ -1263,8 +1264,9 @@ describe("an env value in any JSON spelling the decoder reads", () => {
     expect(redaction.redactValues("undefined null", [undefined, null])).toBe("undefined null");
   });
 
-  it("refuses a pattern with more readings than it can list, whichever of them spells the value", async () => {
+  it("refuses a pattern with more readings than it can list when a listed one shares 6 characters with the value", async () => {
     // The reviewer's shape: 17 × 17 readings, the value in a reading that is neither side's first.
+    // The listed readings hold each side's half next to the other side's first.
     const side = (name: string) =>
       Array.from({ length: 17 }, (_, index) => [name, String(index).padStart(2, "0")].join(""));
     const left = side(["head", "a"].join("-"));
@@ -1273,10 +1275,10 @@ describe("an env value in any JSON spelling the decoder reads", () => {
     const pattern = `^(?:ok|(?:${left.join("|")})(?:${right.join("|")})X)$`;
     expect(new RegExp(pattern).test(`${secret}X`)).toBe(true);
     expect(assertions.patternTexts(pattern).exact).toBe(false);
-    expect(assertions.patternSecretIn(pattern, [secret])).toBe("too many readings");
+    expect(assertions.patternSecretIn(pattern, [secret])).toBe("shares");
     const saves = await bothSaves(secret, pattern);
     expect(saves.caller).toContain(
-      "--save refused: assertion 1's pattern has too many readings to check against SURF_TEST_ITEMS_KEY; simplify it",
+      "--save refused: assertion 1's pattern shares 6 or more characters in a row with the value of SURF_TEST_ITEMS_KEY; assert on something else",
     );
     expect(saves).toMatchObject({ ranBeforeCaller: false, unchanged: true });
     expect(saves.host).toMatch(HOST_REFUSAL);
@@ -1345,5 +1347,95 @@ describe("an env value in any JSON spelling the decoder reads", () => {
       expect(saves, pattern).toMatchObject({ ranBeforeCaller: false, unchanged: true });
       expect(saves.host, pattern).toMatch(HOST_REFUSAL);
     }
+  });
+  it("refuses a pattern that shares 6 characters in a row with any spelling of the value", async () => {
+    const secret = ["dummy", "shared", "run", "value", "for", "tests"].join("-");
+    const quoted = join("dummy", '"', "quoted", "-shared-run-value");
+    const slashed = ["dummy", "slashed", "run", "value", "for", "tests"].join("/");
+    const hex = (text: string) =>
+      [...text].map((char) => `\\x${char.charCodeAt(0).toString(16)}`).join("");
+    const unicode = (text: string) =>
+      [...text].map((char) => `\\\\u${char.charCodeAt(0).toString(16).padStart(4, "0")}`).join("");
+    const refused = [
+      // Six characters of the value, as they are and as regex escapes.
+      { secret, pattern: `^(?:ok|${secret.slice(6, 12)}X)$` },
+      { secret, pattern: `^(?:ok|${hex(secret.slice(6, 12))}X)$` },
+      // Six characters of its JSON-escaped, \/ and \uXXXX spellings, which the value lacks.
+      { secret: quoted, pattern: `^(?:ok|y\\\\"quoX)$` },
+      { secret: slashed, pattern: `^(?:ok|y\\\\\\/sla)$` },
+      { secret, pattern: `^(?:ok|${unicode("sh")}X)$` },
+    ];
+    for (const { secret: value, pattern } of refused) {
+      expect(assertions.patternSecretIn(pattern, [value]), pattern).toBe("shares");
+      const saves = await bothSaves(value, pattern);
+      expect(saves.caller, pattern).toContain(
+        "--save refused: assertion 1's pattern shares 6 or more characters in a row with the value of SURF_TEST_ITEMS_KEY; assert on something else",
+      );
+      expect(saves, pattern).toMatchObject({ ranBeforeCaller: false, unchanged: true });
+      expect(saves.host, pattern).toMatch(HOST_REFUSAL);
+    }
+    // Five characters, or six split by a class, are not a shared run.
+    const kept = [
+      `^(?:ok|${secret.slice(6, 11)}X)$`,
+      `^(?:ok|${secret.slice(6, 9)}[ab]${secret.slice(9, 12)}X)$`,
+    ];
+    for (const pattern of kept) {
+      expect(assertions.patternSecretIn(pattern, [secret]), pattern).toBeNull();
+      expect((await bothSaves(secret, pattern)).caller, pattern).toBe("saved");
+    }
+  });
+
+  it("saves a pattern whose readings overflow the listing, checking what it lists", async () => {
+    // Without an a: a{1,300} matches any value holding one, which the spelling test still refuses.
+    const secret = ["dummy", "env", "text", "for", "overflow"].join("-");
+    const overflowing = [
+      ["^(?i:ok)$", "OK"],
+      ["a{1,300}", "aaa"],
+      ["^(?:red|green|blue|orange){6}!$", "redgreenblueorangeredred!"],
+      ["^(?:ok|(?:red|green|blue|orange){6}!)$", "ok"],
+      ["^https://api\\.example\\.com(?:/[a-z0-9-]+){0,300}$", "https://api.example.com/v1/items"],
+    ];
+    for (const [pattern, text] of overflowing) {
+      expect(new RegExp(pattern).test(text), pattern).toBe(true);
+      expect(assertions.patternTexts(pattern).exact, pattern).toBe(false);
+      expect(assertions.patternSecretIn(pattern, [secret]), pattern).toBeNull();
+      const body = JSON.stringify({ text });
+      const asserts = ["--assert", "$.bodyJson.text", "matches", pattern];
+      const { cwd, file } = tempShop(rawOp);
+      expect(
+        (await save(cwd, asserts, { [ENV]: secret }, hostedRun(secret, body))).saved,
+        pattern,
+      ).toBe(file);
+      const hosted = tempShop(rawOp);
+      expect((await save(hosted.cwd, asserts, {}, hostedRun(secret, body))).saved, pattern).toBe(
+        hosted.file,
+      );
+    }
+  });
+
+  it("refuses none of the review corpus's guard patterns, and few of its ordinary ones", () => {
+    // 44 patterns × 32 values: 1,408 pairs, each checked alone.
+    const values = corpusValues();
+    const counts: Record<string, number> = {};
+    const refused: string[] = [];
+    for (const [name, pattern] of corpusPatterns) {
+      for (const [valueName, value] of values) {
+        const found = assertions.patternSecretIn(pattern, [value]);
+        if (found !== null) {
+          const status = typeof found === "string" ? found : "around";
+          counts[status] = (counts[status] ?? 0) + 1;
+          refused.push(`${name} ${valueName} ${status}`);
+        }
+      }
+    }
+    expect(corpusPatterns.length * values.length).toBe(1408);
+    // A guard is refused only where the pattern matches the value itself (.*ok.* on a value
+    // holding ok), never by the 6-character rule.
+    expect(
+      refused.filter((pair) => pair.startsWith("guard-") && !pair.endsWith(" matches")),
+    ).toEqual([]);
+    // The spelling test refuses 28 pairs whose pattern matches the value; the 6-character rule
+    // 5 more (0.36%), each sharing a prefix such as https: or authen with a composite value.
+    expect(counts).toEqual({ matches: 28, shares: 5 });
   });
 });

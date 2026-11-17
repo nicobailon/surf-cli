@@ -42,6 +42,12 @@ describe("CLI help for commands outside the main tool list", () => {
     [["oracle", "ask", "--help"], "Usage: surf oracle <ask|status|result|follow|list>"],
     [["oracle", "result", "--help"], "--effort <effort>"],
     [["config", "--help"], "Usage: surf config"],
+    // --save says what its env-value check covers and what it doesn't.
+    [
+      ["pb", "test", "--help"],
+      "refuses an assertion that would store an accidental copy of an env header's value",
+    ],
+    [["pb", "test", "--help"], "doesn't stop a pattern written to encode one on purpose"],
   ])("surf %j prints usage", (args, expected) => {
     const { code, stdout, stderr } = surf(...args);
     expect(code).toBe(0);

@@ -405,18 +405,43 @@ function couldMatch(read, spelling, spend) {
   return read.texts.some((text) => text.split(MARKS).every((run) => run === "" || has(run)));
 }
 
+// How many characters in a row a pattern's text may share with a spelling of a value.
+const SHARED_RUN = 6;
+
+// Whether one of `texts` (patternTexts texts) holds SHARED_RUN characters in a row, between its
+// gaps and breaks, that one of `spellings` also holds. The texts' runs are collected first, so each
+// spelling is one pass; both are charged to `spend`.
+function sharesRun(texts, spellings, spend) {
+  const runs = new Set();
+  for (const text of texts) {
+    spend(text.length);
+    for (const part of text.split(MARKS)) {
+      for (let at = 0; at + SHARED_RUN <= part.length; at++) runs.add(part.slice(at, at + SHARED_RUN));
+    }
+  }
+  if (runs.size === 0) return false;
+  return spellings.some((spelling) => {
+    spend(spelling.length);
+    for (let at = 0; at + SHARED_RUN <= spelling.length; at++) if (runs.has(spelling.slice(at, at + SHARED_RUN))) return true;
+    return false;
+  });
+}
+
 // Whether a matches pattern could store or match one of `values`, for both --save checks:
 // "found" or "too deep" when secretIn finds one in a text the pattern can match or set aside
 // (patternTexts); "matches" when it matches a spelling of one (patternSpellings), which also
 // catches broad patterns such as .*; MATCH_TIMED_OUT or MATCH_SKIPPED when that test is cut short
-// (from bounded-regex.cjs, spending `budget`); "backreference" for a pattern with one; "too many
-// readings" when the texts don't list every reading (patternTexts' `exact`), as a reading left
-// out could spell one; { around } when a text spells most of a spelling around a gap
-// (spellsMost), `around` naming the gap's kind; else null. A lookaround matches no characters,
-// but the pattern's text spells it next to what is around it, so the texts are also read with
-// each lookaround's texts in place (`inline`), for the "found", "too many readings" and 3/4
-// tests. Ordinary patterns (^\d+$, .*ok.*, ^[A-Z]{3}$, (?:ok|done)) spell no value, and pass. Writing the texts, decoding them, the spelling tests (each a pass over its spelling) and
-// spellsMost all spend from `work` (patternWork): "too costly" when it runs out, or when a value
+// (from bounded-regex.cjs, spending `budget`); "backreference" for a pattern with one; { around }
+// when a text spells most of a spelling around a gap (spellsMost), `around` naming the gap's kind;
+// "shares" when a text, listed or set aside, holds SHARED_RUN characters in a row of a spelling
+// (sharesRun); else null. This finds an accidental copy of a value, not one a pattern's author
+// encodes on purpose: a pattern with more readings than patternTexts lists is checked on the
+// texts it lists. A lookaround matches no characters, but the pattern's text spells it next to
+// what is around it, so the texts are also read with each lookaround's texts in place (`inline`),
+// for the "found", 3/4 and shared-run tests. Ordinary patterns (^\d+$, .*ok.*, ^[A-Z]{3}$,
+// (?:ok|done)) spell no value, and pass. Writing the texts, decoding them, the spelling tests
+// (each a pass over its spelling), spellsMost and sharesRun all spend from `work` (patternWork):
+// "too costly" when it runs out, or when a value
 // is over MATCH_INPUT_LIMIT, longer than a run tests. A spelling test is skipped when the
 // spelling lacks a text every match of the pattern holds (couldMatch), so a broad pattern such as
 // .*ok.* never runs on a long spelling it can't match.
@@ -444,7 +469,6 @@ function patternSecretIn(pattern, values, { budget = createRegexBudget(), work =
       }
     }
     if (read.backreference) return "backreference";
-    if (!read.exact || !inPlace.exact) return "too many readings";
     for (const text of texts) {
       const gap = [...text].find(gapKind);
       if (gap === undefined) continue;
@@ -455,7 +479,7 @@ function patternSecretIn(pattern, values, { budget = createRegexBudget(), work =
         if (spellsMost(text, spelling)) return { around: gapKind(gap) };
       }
     }
-    return null;
+    return sharesRun([...new Set([...texts, ...read.setAside, ...inPlace.setAside])], spellings, spend) ? "shares" : null;
   } catch (error) {
     if (error === TOO_COSTLY) return "too costly";
     throw error;
