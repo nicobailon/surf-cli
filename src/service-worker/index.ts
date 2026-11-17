@@ -4136,6 +4136,19 @@ export async function handleMessage(
       };
     }
 
+    // surf use's direct tier: the browser's cookies and user agent for one request URL, for the
+    // native host only (a content script's message has a sender tab).
+    case "GET_DIRECT_REQUEST_CONTEXT": {
+      if (sender.tab) throw new Error("GET_DIRECT_REQUEST_CONTEXT is only for the native host");
+      const url = typeof message.url === "string" ? message.url : "";
+      if (!/^https?:\/\//i.test(url)) throw new Error("GET_DIRECT_REQUEST_CONTEXT needs an http or https URL");
+      const cookies = await chrome.cookies.getAll({ url });
+      return {
+        cookies: cookies.map(({ name, value }) => ({ name, value })),
+        userAgent: navigator.userAgent,
+      };
+    }
+
     case "GET_CHATGPT_COOKIES": {
       const cookies = await chrome.cookies.getAll({ domain: ".chatgpt.com" });
       const openaiCookies = await chrome.cookies.getAll({ domain: ".openai.com" });

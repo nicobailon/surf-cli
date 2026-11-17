@@ -70,6 +70,8 @@ type FakeHostOptions = {
   recording?: boolean;
   // Runs each script in the tab instead of answering it, as the tab would.
   runScript?: (code: string) => Promise<Record<string, unknown>>;
+  // What the extension answers surf use's direct tier: the browser's cookies and user agent.
+  directContext?: Record<string, unknown>;
 };
 
 // What the extension answers for a playbook record, a click and typing, with `recording` on.
@@ -129,6 +131,24 @@ const fs = require("node:fs") as {
   writeFileSync(targetPath: string, content: string, options?: { mode?: number }): void;
 };
 const os = require("node:os") as { tmpdir(): string };
+type DirectServerRequest = EventEmitterLike & {
+  url?: string;
+  headers: Record<string, string | undefined>;
+};
+type DirectServerResponse = {
+  writeHead(status: number, headers: Record<string, string>): void;
+  end(body?: string): void;
+};
+const http = require("node:http") as {
+  createServer(
+    handler: (request: DirectServerRequest, response: DirectServerResponse) => void,
+  ): {
+    listen(port: number, host: string, callback: () => void): void;
+    address(): { port: number };
+    closeAllConnections(): void;
+    close(callback: () => void): void;
+  };
+};
 const path = require("node:path") as { join(...paths: string[]): string };
 const { Buffer: BufferCtor } = require("node:buffer") as {
   Buffer: {
@@ -331,6 +351,9 @@ function startHost(socketPath: string, options: FakeHostOptions = {}) {
   };
 
   const respond = async (message: NativeMessage) => {
+    if (options.directContext && message.type === "GET_DIRECT_REQUEST_CONTEXT") {
+      return { id: message.id, ...options.directContext };
+    }
     if (options.runScript && message.type === "EXECUTE_JAVASCRIPT") {
       return { id: message.id, ...(await options.runScript(String(message.code))) };
     }
@@ -569,6 +592,112 @@ function jsonQueryUrl(variables: Record<string, unknown>) {
 }
 
 describe("CLI/native-host/fake-extension E2E contract", () => {
+  it("surf use sends a network op from the host with live cookies that no state file or log keeps", async () => {
+    const cookie = "sess-e2e-7d1c-live-cookie";
+    const seen: Array<{ url?: string; cookie?: string }> = [];
+    const server = http.createServer((request, response) => {
+      seen.push({ url: request.url, cookie: request.headers.cookie });
+      request.on("data", () => {});
+      request.on("end", () => {
+        response.writeHead(200, { "content-type": "application/json" });
+        response.end(JSON.stringify({ items: [{ id: 1 }], ok: true }));
+      });
+    });
+    await new Promise<void>((resolve) => {
+      server.listen(0, "127.0.0.1", resolve);
+    });
+    const origin = `http://127.0.0.1:${server.address().port}`;
+    const project = fs.mkdtempSync(path.join(os.tmpdir(), "surf-direct-project-"));
+    const surfTmp = fs.mkdtempSync(path.join(os.tmpdir(), "surf-direct-tmp-"));
+    tempDirs.push(project, surfTmp);
+    const opsDir = path.join(project, ".surf", "playbooks", "shop", "ops");
+    fs.mkdirSync(opsDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(project, ".surf", "playbooks", "shop", "playbook.json"),
+      JSON.stringify({ id: "shop", version: "1.0.0", origins: [origin] }),
+    );
+    fs.writeFileSync(
+      path.join(opsDir, "items.json"),
+      JSON.stringify({
+        id: "items",
+        effect: "read",
+        run: [{ using: "network", request: { method: "GET", url: `${origin}/items` }, expect: { truthy: true } }],
+      }),
+    );
+    fs.writeFileSync(
+      path.join(opsDir, "submit.json"),
+      JSON.stringify({
+        id: "submit",
+        effect: "write",
+        args: { action: { required: true } },
+        safety: { authorization: "explicit", duplicate: "transactional", key: ["action"] },
+        run: [
+          {
+            using: "network",
+            request: { method: "POST", url: `${origin}/submit`, body: { action: "{{action}}" } },
+            extract: { jsonPath: "$.ok" },
+            expect: { truthy: true },
+          },
+        ],
+      }),
+    );
+    const socketPath = createSocketPath();
+    const host = startHost(socketPath, {
+      env: { SURF_TMP: surfTmp },
+      directContext: { cookies: [{ name: "session", value: cookie }], userAgent: "Mozilla/5.0 (E2E)" },
+    });
+    const contextReads = () => host.messages.filter((message) => message.type === "GET_DIRECT_REQUEST_CONTEXT");
+    const tabSends = () => host.messages.filter((message) => message.type === "EXECUTE_JAVASCRIPT");
+
+    try {
+      await host.waitForMessage((message) => message.type === "HOST_READY");
+      const read = await runCli(socketPath, ["use", "shop", "items", "--json"], project);
+      expect(read).toMatchObject({ code: 0, stderr: "" });
+      expect(JSON.parse(read.stdout)).toMatchObject({ status: "completed", strategy: "network", tier: "direct" });
+      const write = await runCli(socketPath, ["use", "shop", "submit", "--action", "go", "--write", "--json"], project);
+      expect(write).toMatchObject({ code: 0, stderr: "" });
+      expect(JSON.parse(write.stdout)).toMatchObject({ tier: "direct", value: true });
+      expect(seen).toEqual([
+        { url: "/items", cookie: `session=${cookie}` },
+        { url: "/submit", cookie: `session=${cookie}` },
+      ]);
+      expect(contextReads()).toHaveLength(2);
+      expect(tabSends()).toHaveLength(0);
+
+      const skipped = await runCli(socketPath, ["use", "shop", "items", "--no-direct", "--json"], project);
+      expect(skipped).toMatchObject({ code: 0, stderr: "" });
+      expect(JSON.parse(skipped.stdout)).toMatchObject({ tier: "tab" });
+      expect(tabSends()).toHaveLength(1);
+      expect(contextReads()).toHaveLength(2);
+
+      const dryRun = await runCli(socketPath, ["use", "shop", "items", "--dry-run"], project);
+      expect(dryRun).toMatchObject({ code: 0, stderr: "" });
+      expect(dryRun.stdout).toContain("tier: direct, then tab");
+      expect(dryRun.stdout).toContain(`direct reads the browser's cookies for: ${origin} (never shown or stored)`);
+      expect(contextReads()).toHaveLength(2);
+
+      // The receipt, the journal, the tier memory and the host log were all written; none holds the cookie.
+      const filesUnder = (dir: string): string[] =>
+        fs.readdirSync(dir, { withFileTypes: true }).flatMap((entry) => {
+          const full = path.join(dir, entry.name);
+          return entry.isDirectory() ? filesUnder(full) : [full];
+        });
+      const written = [...filesUnder(host.stateDir), ...filesUnder(surfTmp)].filter((file) => !file.endsWith(".sock"));
+      expect(written.some((file) => file.endsWith("playbook-tiers.json"))).toBe(true);
+      expect(written.some((file) => file.includes("playbook-receipts"))).toBe(true);
+      expect(written.some((file) => file.endsWith("surf-host.log"))).toBe(true);
+      for (const file of written) {
+        expect(fs.readFileSync(file, "utf8"), file).not.toContain(cookie);
+      }
+    } finally {
+      await host.dispose();
+      server.closeAllConnections();
+      await new Promise<void>((resolve) => {
+        server.close(resolve);
+      });
+    }
+  });
+
   it("runs browser-like navigation, page text, and screenshot flows without Chrome", async () => {
     const socketPath = createSocketPath();
     const host = startHost(socketPath);

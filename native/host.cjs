@@ -69,6 +69,7 @@ const {
 const { visibleText } = require("./record-candidates.cjs");
 const { validateAssertions } = require("./playbook-assertions.cjs");
 const { authInputs, previewPlaybookOp, resolveArgs, runPlaybookOp, testPlaybookOp } = require("./playbook-runtime.cjs");
+const { directTier } = require("./playbook-direct.cjs");
 const { eachFromChain, previewChainOp, runChainOp } = require("./chain-runtime.cjs");
 const { envBackedHeaders, resolveOp } = require("./playbooks.cjs");
 const { replay, waitForResponse } = require("./api-harvest.cjs");
@@ -1586,6 +1587,14 @@ async function executeNativePlaybook(request, handler, args, options = {}) {
   return { response: result.response, model: result.model, tookMs: result.tookMs };
 }
 
+// The browser's cookies and user agent for one direct request's URL, read by the extension. They
+// stay in memory for that request: nothing here logs or stores them.
+async function readDirectContext(request, url) {
+  const reply = await requestCallExtension(request, "playbook.direct", { type: "GET_DIRECT_REQUEST_CONTEXT", url }, 10000);
+  if (reply?.error) throw new Error(typeof reply.error === "string" ? reply.error : "the extension could not read them");
+  return { cookies: Array.isArray(reply?.cookies) ? reply.cookies : [], userAgent: typeof reply?.userAgent === "string" ? reply.userAgent : undefined };
+}
+
 async function runHostPlaybook(msg, request) {
   const params = msg.params?.args || {};
   const resolved = resolveOp(params.playbook, params.op, {
@@ -1600,9 +1609,12 @@ async function runHostPlaybook(msg, request) {
   if (params.test === true && op.effect === "write" && params.write !== true) {
     throw new Error(`${playbook.id} ${op.id} is a write op; pb test runs it only with --write`);
   }
+  // A single op's network strategy sends from the host first (surf use --no-direct skips it); a
+  // chain's steps run in the tab.
+  const direct = op.chain ? undefined : params.noDirect === true ? { off: "--no-direct" } : directTier({ playbook, op, getContext: (url) => readDirectContext(request, url) });
   const preview = () => op.chain
     ? previewChainOp({ playbook, op, args: runArgs })
-    : previewPlaybookOp({ playbook, op, args: runArgs, secrets: params.secret || {}, ...(params.strategy !== undefined ? { strategy: params.strategy } : {}) });
+    : previewPlaybookOp({ playbook, op, args: runArgs, secrets: params.secret || {}, ...(params.strategy !== undefined ? { strategy: params.strategy } : {}), direct });
   if (op.effect === "write" && op.safety.authorization === "explicit" && params.write !== true && params.dryRun !== true) {
     // Say what --write would agree to; a request that can't render yet fails on its own once --write is given.
     let sends = "";
@@ -1673,6 +1685,7 @@ async function runHostPlaybook(msg, request) {
     },
     afterDispatch: async ({ status, error }) => updateReceipt(receipt, status, { error }),
     allowScript: params.allowScript === true,
+    ...(direct && !direct.off ? { direct } : {}),
   });
   if (params.format === undefined) return result;
   // The run's result went through redactResult; rendered records sit next to surf's own fields anew.

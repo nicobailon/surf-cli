@@ -88,6 +88,8 @@ async function requestHost(endpoint, tool, args, options = {}) {
   }
 }
 
+const skipsDirect = (options, env = process.env) => options["no-direct"] === true || env.SURF_NO_DIRECT === "1";
+
 function runSpec(argv) {
   const direct = argv[0] === "use";
   const offset = direct ? 1 : 2;
@@ -175,6 +177,7 @@ async function handlePlaybookCli(argv, { endpoint, cwd = process.cwd(), session,
     if (spec.options["retry-attempt"] !== undefined) assertAttemptId(spec.options["retry-attempt"], "--retry-attempt");
     // `--dry-run true` would read as "no dry run" and send the op: a flag with a value is refused.
     if (spec.options["dry-run"] !== undefined && spec.options["dry-run"] !== true) throw new Error("--dry-run takes no value");
+    if (spec.options["no-direct"] !== undefined && spec.options["no-direct"] !== true) throw new Error("--no-direct takes no value");
     const format = spec.options.format;
     if (format !== undefined && format !== "md" && format !== "jsonl") throw new Error("--format must be md or jsonl");
     const timeout = resolveRunTimeout(spec, cwd);
@@ -192,6 +195,8 @@ async function handlePlaybookCli(argv, { endpoint, cwd = process.cwd(), session,
       retryAttempt: spec.options["retry-attempt"],
       pinBuiltIn: spec.options["pin-built-in"] === true,
       allowScript: spec.options["allow-script"] === true,
+      // --no-direct (or SURF_NO_DIRECT=1) runs a network op in the tab, skipping the host's direct request.
+      ...(skipsDirect(spec.options) ? { noDirect: true } : {}),
       ...(spec.eachFrom ? { eachFrom: spec.eachFrom } : {}),
       ...(spec.options["dry-run"] === true ? { dryRun: true } : {}),
       ...(format ? { format } : {}),
@@ -316,6 +321,8 @@ function pagesText({ into, next, max, delayMs }) {
 function formatDryRun(preview) {
   const show = (value) => (typeof value === "string" ? value : JSON.stringify(value));
   const lines = [`Dry run of ${preview.playbook} ${preview.op} (${preview.effect}): nothing sent`, `strategy: ${preview.strategy}`];
+  if (preview.tiers) lines.push(`tier: ${preview.tiers.join(", then ")}${preview.directSkipped ? ` (direct skipped: ${preview.directSkipped})` : ""}`);
+  if (preview.cookieOrigins) lines.push(`direct reads the browser's cookies for: ${preview.cookieOrigins.join(", ") || "the request's origin"} (never shown or stored)`);
   if (preview.url !== undefined) lines.push(`${preview.method} ${preview.url}`);
   if (preview.query) lines.push(`query: ${show(preview.query)}`);
   if (preview.headers) lines.push(`headers: ${preview.headers.join(", ") || "none"}`);

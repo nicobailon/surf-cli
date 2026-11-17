@@ -6,10 +6,10 @@ const { authInputs, resolveArgs } = require("./playbook-runtime.cjs");
 const { editSavedOp, resolveEditablePlaybook, resolveOp } = require("./playbooks.cjs");
 
 const USAGE =
-  "Usage: surf pb test <playbook> <op> [--args <json> | --<input> <value>...] [--assert <path> <op> [value]]... [--strategy <using>] [--save] [--write [--repeat]] [--json]";
+  "Usage: surf pb test <playbook> <op> [--args <json> | --<input> <value>...] [--assert <path> <op> [value]]... [--strategy <using>] [--no-direct] [--save] [--write [--repeat]] [--json]";
 const VALUE_OPS = new Set(["equals", "array_min_len", "matches"]);
 // Options of pb test itself; any other --name is an op input, as with surf use.
-const FLAGS = new Set(["json", "save", "write", "repeat", "allow-script", "no-wait", "pin-built-in"]);
+const FLAGS = new Set(["json", "save", "write", "repeat", "allow-script", "no-wait", "pin-built-in", "no-direct"]);
 const OPTIONS = new Set(["strategy", "args", "session", "tab-id"]);
 
 function assertValue(op, text) {
@@ -184,6 +184,7 @@ async function runPlaybookTest({ argv, cwd = process.cwd(), home, env = process.
       write: options.write === true,
       ...(options.repeat ? { repeat: true } : {}),
       allowScript: options.allowScript === true,
+      ...(options["no-direct"] === true || env.SURF_NO_DIRECT === "1" ? { noDirect: true } : {}),
     });
   } catch (error) {
     result = { status: "failed", error: error.message, attempts: [] };
@@ -199,6 +200,7 @@ async function runPlaybookTest({ argv, cwd = process.cwd(), home, env = process.
     playbook: spec.playbook,
     op: spec.op,
     strategy: ok ? result.strategy : null,
+    tier: ok ? (result.tier ?? null) : null,
     forced: options.strategy ?? null,
     records: ok && Array.isArray(result.value) ? result.value.length : null,
     durationMs,
@@ -239,7 +241,7 @@ function redactReport(report, values) {
 }
 
 function formatTestReport(report) {
-  const answered = report.strategy ? `${report.strategy} answered` : "no strategy answered";
+  const answered = report.strategy ? `${report.strategy}${report.tier ? ` (${report.tier})` : ""} answered` : "no strategy answered";
   const records = report.records === null ? "" : `, ${report.records} record${report.records === 1 ? "" : "s"}`;
   const lines = [`${report.ok ? "PASS" : "FAIL"} ${report.playbook} ${report.op}: ${answered}${records}, ${report.durationMs} ms`];
   for (const assertion of report.assertions) lines.push(`  ${assertionLine(assertion)}`);

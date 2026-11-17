@@ -13,6 +13,7 @@ const { checkAssertions, createRegexBudget } = require("./playbook-assertions.cj
 const { redactJson, redactResult, redactSecretValues, spanningValues } = require("./redaction.cjs");
 const boundedRegex = require("./bounded-regex.cjs");
 const { extractRecords } = require("./records.cjs");
+const { directOrigins, directSkipReason, isChallenge, recordedAgainstPrivate, sendDirect } = require("./playbook-direct.cjs");
 
 // Fills an op's inputs into a hand-written op's workflow steps, and into an api or collect
 // strategy's spec. With `escapes` (an op pb save escaped, see escapedOp), `{{!}}` is sent as `{{`;
@@ -221,12 +222,16 @@ function renderNetworkRequest(strategy, { args, authValues, escapes, serverIdemp
 // surf use --dry-run: what the op's first strategy would do, with nothing sent. Env header values
 // are <redacted> before rendering, and only header names are listed. A placeholder the record left
 // prints as stored, with the refusal the run would give.
-function previewPlaybookOp({ playbook, op, args: providedArgs = {}, secrets = {}, env = process.env, strategy: forced }) {
+// `direct` (from the host) is the run's direct tier, `{ start }`, or `{ off }` with why it is off:
+// the preview then names the tiers in order and the origins whose cookies the direct tier would
+// read, never a cookie.
+function previewPlaybookOp({ playbook, op, args: providedArgs = {}, secrets = {}, env = process.env, strategy: forced, direct }) {
   const args = resolveArgs(op, providedArgs, { playbookId: playbook.id });
   const authValues = Object.fromEntries(Object.keys(resolveAuthValues(op, secrets, env)).map((name) => [name, "<redacted>"]));
   const strategy = strategiesToRun(op, forced)[0];
   const escapes = escapedOp(op);
-  const preview = { playbook: playbook.id, op: op.id, effect: op.effect, strategy: strategy.using };
+  const tiers = direct ? strategyTiers(strategy, direct.off ? undefined : direct) : undefined;
+  const preview = { playbook: playbook.id, op: op.id, effect: op.effect, strategy: strategy.using, ...(tiers ? { tier: tiers[0], tiers } : {}) };
   const allowedOrigins = op.origins || playbook.origins || [];
   if (strategy.using === "workflow") {
     // The first step as the workflow runtime sends it: its args filled with the op's inputs and vars.
@@ -239,6 +244,9 @@ function previewPlaybookOp({ playbook, op, args: providedArgs = {}, secrets = {}
   const serverIdempotency = op.effect === "write" ? op.safety?.serverIdempotency : undefined;
   const request = renderNetworkRequest(strategy, { args, authValues, escapes, serverIdempotency, attemptId: "<attempt-id>" });
   const refused = placeholder ? placeholderError(placeholder, `${playbook.id} ${op.id}`).message : absoluteUrlRefusal(request.url, allowedOrigins);
+  const skipped = direct && (direct.off || directSkipReason(strategy));
+  if (tiers?.includes("direct")) preview.cookieOrigins = directOrigins(request.url, allowedOrigins);
+  else if (skipped) preview.directSkipped = skipped;
   return {
     ...preview,
     method: String(request.method || "GET").toUpperCase(),
@@ -446,6 +454,42 @@ function absoluteUrlRefusal(url, allowedOrigins) {
   return originRefusal(origin, allowedOrigins);
 }
 
+// The tiers a strategy runs through, in order: a network strategy's direct tier (unless it can't
+// take one) and in-tab request, the remembered one first; any other strategy's own.
+function strategyTiers(strategy, direct, pageNext) {
+  const own = strategy.using === "workflow" ? "workflow" : "tab";
+  if (!direct || directSkipReason(strategy, { pageNext })) return [own];
+  return direct.start === "tab" ? ["tab", "direct"] : ["direct", "tab"];
+}
+
+// A network strategy's request sent from the host (playbook-direct.cjs), its response shaped as
+// the in-tab request's is. A failure after the request went out carries notSent: false.
+async function runDirect(strategy, context, direct) {
+  const placeholder = findRedactedPlaceholder(sentRequest(strategy.request));
+  if (placeholder) throw placeholderError(placeholder, context.label);
+  const request = renderNetworkRequest(strategy, context);
+  const response = await sendDirect({
+    request,
+    allowedOrigins: directOrigins(request.url, context.allowedOrigins),
+    allowPrivate: recordedAgainstPrivate(strategy.request.url),
+    getContext: direct.getContext,
+    markDispatched: context.markDispatched,
+    signal: context.signal,
+    ...(direct.lookup ? { lookup: direct.lookup } : {}),
+    ...(direct.isBlocked ? { isBlocked: direct.isBlocked } : {}),
+  });
+  const failed = (message) => Object.assign(new Error(message), { notSent: false });
+  const { status, ok, url, headers, body } = response;
+  if (isChallenge(response)) throw failed(`the site answered with a bot challenge (HTTP ${status})`);
+  if (!ok && (strategy.acceptStatus || []).includes(status) === false) throw failed(`network strategy returned ${status}`);
+  let bodyJson;
+  try {
+    bodyJson = JSON.parse(body);
+  } catch {}
+  if (isJsonExtract(strategy.extract) && bodyJson === undefined) throw failed(`the response is not JSON (${headers["content-type"] || "no content type"})`);
+  return { status, ok, url, headers, body, bodyJson };
+}
+
 async function runStrategy(strategy, context) {
   if (strategy.using === "script") {
     if (context.allowScript !== true) throw new Error("script strategy requires --allow-script");
@@ -555,8 +599,11 @@ async function runStrategy(strategy, context) {
 // strategies read capture through).
 // `assertions` replaces the op's saved on.success.expect.assert for this run (pb test --assert).
 // `strategy` runs only the strategies of that kind (pb test --strategy). `now` is the host's clock
-// for timing the tab's pattern calls.
-async function runPlaybookOp({ playbook, op, args: providedArgs = {}, secrets = {}, env = process.env, attemptId, executeTool, executeStep = executeTool, executeNative, signal, sleep, now = () => performance.now(), onEvent = () => {}, beforeDispatch = async () => {}, afterDispatch = async () => {}, allowScript = false, assertions, strategy: forced, pageNext }) {
+// for timing the tab's pattern calls. `direct` (playbook-direct.cjs's directTier) lets a network
+// strategy send its request from the host before, or after, the tab: a read goes on to the other
+// tier after any failure, a write only when nothing was sent. The result names the `tier` that
+// answered: direct, tab or workflow.
+async function runPlaybookOp({ playbook, op, args: providedArgs = {}, secrets = {}, env = process.env, attemptId, executeTool, executeStep = executeTool, executeNative, signal, sleep, now = () => performance.now(), onEvent = () => {}, beforeDispatch = async () => {}, afterDispatch = async () => {}, allowScript = false, assertions, strategy: forced, pageNext, direct }) {
   const args = resolveArgs(op, providedArgs, { playbookId: playbook.id });
   const authValues = resolveAuthValues(op, secrets, env);
   const run = strategiesToRun(op, forced);
@@ -571,6 +618,16 @@ async function runPlaybookOp({ playbook, op, args: providedArgs = {}, secrets = 
   // A read tries its next strategy after any failure, a failed check too. A write stops at any
   // failure: its next strategy could send it again.
   const escapes = escapedOp(op);
+  // Which tier answered goes to `direct.remember` once the direct tier has run, so the next run
+  // starts with it; a run whose direct tier failed starts in the tab.
+  let directRan = false;
+  let directFailed = false;
+  const remember = async (tier) => {
+    if (!directRan) return;
+    try {
+      await direct.remember?.(tier);
+    } catch {}
+  };
   for (let index = 0; index < run.length; index++) {
     const strategy = run[index];
     let dispatched = false;
@@ -579,59 +636,74 @@ async function runPlaybookOp({ playbook, op, args: providedArgs = {}, secrets = 
       dispatched = true;
       await beforeDispatch({ strategy, index, args });
     };
-    onEvent({ type: "strategy.started", playbook: playbook.id, op: op.id, using: strategy.using, index, startedAt: new Date().toISOString() });
-    try {
-      const refusal = pageNext && pageNextRefusal(strategy, pageNext);
-      if (refusal) throw new Error(refusal);
-      let raw = await runStrategy(strategy, {
-        args,
-        attemptId,
-        executeTool,
-        executeStep,
-        executeNative,
-        signal,
-        sleep,
-        onEvent: reportStep,
-        label: `${playbook.id} ${op.id}`,
-        allowedOrigins: op.origins || playbook.origins || [],
-        authValues,
-        fieldRegexBudget,
-        now,
-        markDispatched: op.effect === "write" ? markDispatched : undefined,
-        escapes,
-        serverIdempotency: op.effect === "write" ? op.safety?.serverIdempotency : undefined,
-        allowScript,
-        pageNext,
-      });
-      // A strategy that read a chain step's page.next hands it over beside the response, with the
-      // URL of the page it came from.
-      let next = { value: null };
-      if (pageNext) ({ pageNext: next = { value: null }, ...raw } = raw);
-      const value = extractResult(raw, strategy.extract, fieldRegexBudget);
-      const expect = strategy.verify || strategy.expect || op.on?.success?.expect;
-      // Saved assertions hold for every strategy, even one with its own verify.
-      const checked = verifyResult(value, assert ? { ...expect, assert } : expect, raw, Object.values(authValues), regexBudget, `${playbook.id} ${op.id}`);
-      if (op.effect === "write") await afterDispatch({ status: "verified", strategy, index });
-      onEvent({ type: "strategy.completed", playbook: playbook.id, op: op.id, using: strategy.using, index, endedAt: new Date().toISOString() });
-      // Its parts are redacted one by one; redactResult reads them next to surf's own fields.
-      // A chain step's page.next comes back as `next`: its value (null when the response has none) and `from`, the page's URL.
-      return redactResult({ status: "completed", playbook: playbook.id, op: op.id, strategy: strategy.using, value: redactSecrets(value, authValues), provenance: playbook.provenance, attempts, ...(checked ? { assertions: checked } : {}), ...(pageNext ? { next: { value: redactSecrets(next.value ?? null, authValues), ...(typeof next.from === "string" ? { from: next.from } : {}) } } : {}) }, Object.values(authValues));
-    } catch (caught) {
-      const message = redactSecrets(caught?.message || String(caught), authValues);
-      const error = message === caught?.message ? caught : new Error(message);
-      // checkAssertions redacted the assertions (an `actual` is a value from the response).
-      const checks = caught?.assertions;
-      attempts.push({ using: strategy.using, error: message, ...(checks ? { assertions: checks } : {}) });
-      onEvent({ type: "strategy.failed", playbook: playbook.id, op: op.id, using: strategy.using, index, error: message, endedAt: new Date().toISOString() });
-      if (op.effect === "write") {
-        await afterDispatch({ status: dispatched ? "indeterminate" : "not_dispatched", strategy, index, error: message });
-        // pb test reports the attempt (its assertions already redacted); the message stays short.
-        error.attempts = attempts;
-        throw error;
+    const tiers = strategyTiers(strategy, direct, pageNext);
+    // Events and attempts name their tier when the strategy has two.
+    const named = (tier) => (tiers.length > 1 ? { tier } : {});
+    for (let tierIndex = 0; tierIndex < tiers.length; tierIndex++) {
+      const tier = tiers[tierIndex];
+      onEvent({ type: "strategy.started", playbook: playbook.id, op: op.id, using: strategy.using, ...named(tier), index, startedAt: new Date().toISOString() });
+      try {
+        const refusal = pageNext && pageNextRefusal(strategy, pageNext);
+        if (refusal) throw new Error(refusal);
+        const context = {
+          args,
+          attemptId,
+          executeTool,
+          executeStep,
+          executeNative,
+          signal,
+          sleep,
+          onEvent: reportStep,
+          label: `${playbook.id} ${op.id}`,
+          allowedOrigins: op.origins || playbook.origins || [],
+          authValues,
+          fieldRegexBudget,
+          now,
+          markDispatched: op.effect === "write" ? markDispatched : undefined,
+          escapes,
+          serverIdempotency: op.effect === "write" ? op.safety?.serverIdempotency : undefined,
+          allowScript,
+          pageNext,
+        };
+        if (tier === "direct") directRan = true;
+        let raw = tier === "direct" ? await runDirect(strategy, context, direct) : await runStrategy(strategy, context);
+        // A strategy that read a chain step's page.next hands it over beside the response, with the
+        // URL of the page it came from.
+        let next = { value: null };
+        if (pageNext) ({ pageNext: next = { value: null }, ...raw } = raw);
+        const value = extractResult(raw, strategy.extract, fieldRegexBudget);
+        const expect = strategy.verify || strategy.expect || op.on?.success?.expect;
+        // Saved assertions hold for every strategy, even one with its own verify.
+        const checked = verifyResult(value, assert ? { ...expect, assert } : expect, raw, Object.values(authValues), regexBudget, `${playbook.id} ${op.id}`);
+        if (op.effect === "write") await afterDispatch({ status: "verified", strategy, index });
+        onEvent({ type: "strategy.completed", playbook: playbook.id, op: op.id, using: strategy.using, ...named(tier), index, endedAt: new Date().toISOString() });
+        await remember(tier);
+        // Its parts are redacted one by one; redactResult reads them next to surf's own fields.
+        // A chain step's page.next comes back as `next`: its value (null when the response has none) and `from`, the page's URL.
+        return redactResult({ status: "completed", playbook: playbook.id, op: op.id, strategy: strategy.using, tier, value: redactSecrets(value, authValues), provenance: playbook.provenance, attempts, ...(checked ? { assertions: checked } : {}), ...(pageNext ? { next: { value: redactSecrets(next.value ?? null, authValues), ...(typeof next.from === "string" ? { from: next.from } : {}) } } : {}) }, Object.values(authValues));
+      } catch (caught) {
+        const message = redactSecrets(caught?.message || String(caught), authValues);
+        const error = message === caught?.message ? caught : new Error(message);
+        // checkAssertions redacted the assertions (an `actual` is a value from the response).
+        const checks = caught?.assertions;
+        attempts.push({ using: strategy.using, ...named(tier), error: message, ...(checks ? { assertions: checks } : {}) });
+        onEvent({ type: "strategy.failed", playbook: playbook.id, op: op.id, using: strategy.using, ...named(tier), index, error: message, endedAt: new Date().toISOString() });
+        if (tier === "direct") directFailed = true;
+        if (op.effect === "write") {
+          // A write goes on to its other tier only when nothing of it can have been sent.
+          const unsent = !dispatched || caught?.notSent === true;
+          if (unsent && tierIndex < tiers.length - 1) continue;
+          await afterDispatch({ status: dispatched ? "indeterminate" : "not_dispatched", strategy, index, error: message });
+          if (directFailed) await remember("tab");
+          // pb test reports the attempt (its assertions already redacted); the message stays short.
+          error.attempts = attempts;
+          throw error;
+        }
       }
     }
   }
-  const detail = attempts.map((attempt) => `${attempt.using}: ${attempt.error}`).join("; ");
+  if (directFailed) await remember("tab");
+  const detail = attempts.map((attempt) => `${attempt.using}${attempt.tier ? ` (${attempt.tier})` : ""}: ${attempt.error}`).join("; ");
   // Each attempt's error is redacted; a value that can span them and surf's words is looked for in
   // the whole line, and surf's words stay as written for any other.
   const summary = `All strategies failed${detail ? ` (${detail})` : ""}`;

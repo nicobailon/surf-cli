@@ -1700,6 +1700,7 @@ const TOOLS = {
           write: "Authorize a write operation",
           "dry-run": "Print what the op would send (method, URL, header names, body, allowed origins) and the receipt check, or a chain op's steps with their each and page bounds; sends nothing, and a write needs no --write",
           "allow-script": "Allow the playbook's trusted script strategy",
+          "no-direct": "Run a network op's request in the tab, skipping the direct request from the host (also SURF_NO_DIRECT=1)",
           repeat: "Send a write again though an earlier one with the same inputs was sent, is in doubt or was cut off",
           "retry-attempt": "Retry this write attempt (its UUID); the claim must already hold it",
           "override-in-doubt": "Old name of --repeat",
