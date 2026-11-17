@@ -10,7 +10,7 @@ const { commandMetadata } = require("./workflow-definition.cjs");
 const { mapStartingVars, startingVars } = require("./workflow-runtime.cjs");
 
 // `surf use` options that never reach an op, so no input can take these names.
-const RESERVED_RUN_OPTIONS = new Set(["json", "no-lock", "no-wait", "session", "tab-id", "write", "repeat", "retry-attempt", "override-in-doubt", "pin-built-in", "allow-script", "format"]);
+const RESERVED_RUN_OPTIONS = new Set(["json", "no-lock", "no-wait", "session", "tab-id", "write", "dry-run", "repeat", "retry-attempt", "override-in-doubt", "pin-built-in", "allow-script", "format"]);
 const NAME_PATTERN = /^[a-z0-9][a-z0-9._-]{0,63}$/;
 const ENV_PATTERN = /^[A-Za-z_][A-Za-z0-9_]*$/;
 const TEMPLATE_ONLY = /^\{\{[a-zA-Z0-9._-]+\}\}$/;

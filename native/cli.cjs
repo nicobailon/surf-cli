@@ -1679,6 +1679,7 @@ const TOOLS = {
           timeout: "Seconds before the run gives up (default: the op's --timeout, else 600)",
           format: "md or jsonl instead of JSON",
           write: "Authorize a write operation",
+          "dry-run": "Print what the op would send (method, URL, header names, body, allowed origins) and the receipt check; sends nothing, and a write needs no --write",
           "allow-script": "Allow the playbook's trusted script strategy",
           repeat: "Repeat a write whose last attempt was verified",
           "retry-attempt": "Retry this write attempt (its UUID); the claim must already hold it",

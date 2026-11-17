@@ -158,6 +158,7 @@ async function handlePlaybookCli(argv, { endpoint, cwd = process.cwd(), session,
       overrideInDoubt: spec.options["override-in-doubt"] === true,
       pinBuiltIn: spec.options["pin-built-in"] === true,
       allowScript: spec.options["allow-script"] === true,
+      ...(spec.options["dry-run"] === true ? { dryRun: true } : {}),
       ...(format ? { format } : {}),
     };
     const sent = await requestHost(endpoint, "playbook.run", args, {
@@ -169,6 +170,7 @@ async function handlePlaybookCli(argv, { endpoint, cwd = process.cwd(), session,
     });
     // The host masked what its values touch in the result; this masks what this shell's touch.
     const value = redactResult(sent, Object.values(prepared.secret));
+    if (args.dryRun) return { handled: true, value: spec.options.json === true ? value : formatDryRun(value), json: spec.options.json === true };
     // With --format the host returns the rendered records as the value.
     if (format) return { handled: true, value: value.value, json: false };
     return { handled: true, value, json: spec.options.json === true };
@@ -265,6 +267,19 @@ async function handlePlaybookCli(argv, { endpoint, cwd = process.cwd(), session,
   if (command === "export") return { handled: true, value: exportPlaybookDirectory(parsed.positional[0], { out: parsed.options.out, cwd }), json: parsed.options.json === true };
   if (command === "import") return { handled: true, value: importPlaybookDirectory(parsed.positional[0], { scope: parsed.options.project ? "project" : "user", cwd }), json: parsed.options.json === true };
   throw new Error(`Unknown playbook command: ${command}`);
+}
+
+function formatDryRun(preview) {
+  const show = (value) => (typeof value === "string" ? value : JSON.stringify(value));
+  const lines = [`Dry run of ${preview.playbook} ${preview.op} (${preview.effect}): nothing sent`, `strategy: ${preview.strategy}`];
+  if (preview.url !== undefined) lines.push(`${preview.method} ${preview.url}`);
+  if (preview.query) lines.push(`query: ${show(preview.query)}`);
+  if (preview.headers) lines.push(`headers: ${preview.headers.join(", ") || "none"}`);
+  if (preview.body !== undefined) lines.push(`body: ${show(preview.body)}`);
+  if (preview.step) lines.push(`first step: ${show(preview.step)}`);
+  lines.push(`allowed origins: ${preview.allowedOrigins.join(", ") || "any"}`, `receipt: ${preview.receipt}`);
+  if (preview.refused) lines.push(`refused: ${preview.refused}`);
+  return lines.join("\n");
 }
 
 function formatPlaybookOutput(value, json = false) {
