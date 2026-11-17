@@ -1130,7 +1130,96 @@ describe("CLI/native-host/fake-extension E2E contract", () => {
     }
   }, 60000);
 
-  // A network-only write's inputs, and so its duplicate claim, come from what it sends, never from its checks.
+  // A recorded type and click save as a write op's whole workflow, which runs both. Its receipt
+  // starts at the click: a fill that fails leaves none, and a failure after the click is in doubt.
+  it("runs a recorded type and click write, its receipt starting at the click", async () => {
+    const socketPath = createSocketPath();
+    const project = fs.mkdtempSync(path.join(os.tmpdir(), "surf-record-steps-"));
+    tempDirs.push(project);
+    const host = startHost(socketPath, { recording: true });
+    const cli = (args: string[]) =>
+      runCli(socketPath, args, project, { SURF_STATE_DIR: host.stateDir });
+    const opsDir = path.join(project, ".surf", "playbooks", "fixture", "ops");
+    const receipts = (op: string) => {
+      const root = path.join(host.stateDir, "playbook-receipts");
+      if (!fs.existsSync(root)) {
+        return [];
+      }
+      return fs
+        .readdirSync(root, { withFileTypes: true })
+        .filter((entry) => entry.isDirectory())
+        .flatMap((claim) =>
+          fs
+            .readdirSync(path.join(root, claim.name), { withFileTypes: true })
+            .filter((entry) => entry.name.endsWith(".json"))
+            .map((entry) =>
+              JSON.parse(fs.readFileSync(path.join(root, claim.name, entry.name), "utf8")),
+            ),
+        )
+        .filter((receipt) => receipt.op === op)
+        .map((receipt) => receipt.status);
+    };
+    const steps = () =>
+      host.messages
+        .map((message) => String(message.type))
+        .filter((type) => ["SMART_TYPE", "CLICK_SELECTOR"].includes(type));
+    const use = (op: string, text: string) =>
+      cli(["use", "fixture", op, "--text", text, "--write", "--json"]);
+
+    try {
+      await host.waitForMessage((message) => message.type === "HOST_READY");
+      expect((await cli(["navigate", "https://fixture.test/form"])).code).toBe(0);
+      expect((await cli(["pb", "record", "start", "fixture", "--op", "comment"])).code).toBe(0);
+      expect((await cli(["type", "dummy text", "--selector", "#comment"])).code).toBe(0);
+      expect((await cli(["click", "--selector", "#send", "--no-screenshot"])).code).toBe(0);
+      const { record } = JSON.parse(
+        (await cli(["pb", "record", "stop", "--draft", "--json"])).stdout,
+      );
+      const saved = await cli(["pb", "save", "--from-record", record.id, "--project", "--json"]);
+      expect(saved.code).toBe(0);
+      expect(JSON.parse(saved.stdout).warnings).toBeUndefined();
+      const op = JSON.parse(fs.readFileSync(path.join(opsDir, "comment.json"), "utf8"));
+      expect(op.effect).toBe("write");
+      expect(op.run).toHaveLength(1);
+      expect(op.run[0].steps.map((step: { cmd: string }) => step.cmd)).toEqual(["type", "click"]);
+
+      const before = steps().length;
+      expect(await use("comment", "first")).toMatchObject({ code: 0, stderr: "" });
+      expect(steps().slice(before)).toEqual(["SMART_TYPE", "CLICK_SELECTOR"]);
+      expect(receipts("comment")).toEqual(["verified"]);
+      const again = await use("comment", "first");
+      expect(again.code).toBe(1);
+      expect(again.stderr).toMatch(/succeeded\. Add --repeat/);
+
+      // The same op with a fill the tab can't run first, and with a step it can't run after the click.
+      const withSteps = (id: string, run: Array<Record<string, unknown>>) =>
+        fs.writeFileSync(
+          path.join(opsDir, `${id}.json`),
+          JSON.stringify({ ...op, id, run: [{ ...op.run[0], steps: run }] }),
+        );
+      const [typed, click] = op.run[0].steps;
+      withSteps("fill-fails", [
+        { cmd: "form_input", args: { ref: "e9", value: "{{text}}" } },
+        click,
+      ]);
+      withSteps("after-click-fails", [typed, click, { cmd: "scroll.bottom", args: {} }]);
+      const fill = await use("fill-fails", "second");
+      expect(fill.code).toBe(1);
+      expect(receipts("fill-fails")).toEqual([]);
+      expect(await use("fill-fails", "second")).toMatchObject({ code: 1 });
+      expect(receipts("fill-fails")).toEqual([]);
+      const after = await use("after-click-fails", "third");
+      expect(after.code).toBe(1);
+      expect(receipts("after-click-fails")).toEqual(["indeterminate"]);
+      const blocked = await use("after-click-fails", "third");
+      expect(blocked.stderr).toMatch(/its result is unknown\. Check the site, then add --repeat/);
+    } finally {
+      await host.dispose();
+    }
+  }, 60000);
+
+  // A recorded type and click save with the whole workflow; the write's inputs, and so its
+  // duplicate claim, come from what it sends and types, never from its checks.
   it("keeps a recorded write's inputs when a draft's check names a step's input", async () => {
     const socketPath = createSocketPath();
     const project = fs.mkdtempSync(path.join(os.tmpdir(), "surf-record-key-"));
@@ -1169,8 +1258,16 @@ describe("CLI/native-host/fake-extension E2E contract", () => {
       };
 
       const drafted = await save(original);
+      expect(drafted.run.map((strategy: { using: string }) => strategy.using)).toEqual([
+        "network",
+        "workflow",
+      ]);
+      expect(drafted.run[1].steps.map((step: { cmd: string }) => step.cmd)).toEqual([
+        "type",
+        "click",
+      ]);
       expect(drafted.safety.key).toBeUndefined();
-      expect(drafted.args).toEqual({});
+      expect(Object.keys(drafted.args)).toEqual(["text"]);
       const checked = structuredClone(original);
       checked.run[0].verify = { truthy: true, note: "{{text}}" };
       const withCheck = await save(checked);
@@ -1180,16 +1277,16 @@ describe("CLI/native-host/fake-extension E2E contract", () => {
       });
 
       const before = posts().length;
-      const use = () => cli(["use", "fixture", "submit", "--write", "--json"]);
-      expect((await use()).code).toBe(0);
-      const again = await use();
+      const use = (text: string) =>
+        cli(["use", "fixture", "submit", "--text", text, "--write", "--json"]);
+      expect((await use("one")).code).toBe(0);
+      const again = await use("one");
       expect(again.code).toBe(1);
       expect(again.stderr).toMatch(
         /write blocked: attempt \S+ was sent at .+ and succeeded\. Add --repeat/,
       );
-      const byText = await cli(["use", "fixture", "submit", "--text", "two", "--write"]);
-      expect(byText.stderr).toMatch(/Unknown input --text/);
-      expect(posts().length - before).toBe(1);
+      expect((await use("two")).code).toBe(0);
+      expect(posts().length - before).toBe(2);
     } finally {
       await host.dispose();
     }
@@ -1353,12 +1450,13 @@ describe("CLI/native-host/fake-extension E2E contract", () => {
   }
 
   // The record keeps the type of a number it masked (redactedTypes) under the JSON key it sat at,
-  // here a key reading {{text}}. That note is never sent, so it gives the op no input: its one
-  // input is the one pb param names, and the same value of it is blocked as a duplicate.
-  for (const [label, field, input, value] of [
-    ["the masked number", "query.variables.{{text}}", "year", "2031"],
-    ["the whole JSON param", "query.variables", "variables", '{"{{text}}":2031}'],
-  ]) {
+  // here a key reading {{text}}. That note is never sent, so it gives the op no input: its inputs
+  // are the one pb param names and, when pb param leaves the typing step's own, that one (the
+  // workflow types it), and the same values are blocked as a duplicate.
+  for (const [label, field, input, value, stepInputs] of [
+    ["the masked number", "query.variables.{{text}}", "year", "2031", []],
+    ["the whole JSON param", "query.variables", "variables", '{"{{text}}":2031}', ["text"]],
+  ] as const) {
     it(`keys a recorded write on what it sends, not the record's notes, after pb param on ${label}`, async () => {
       const socketPath = createSocketPath();
       const project = fs.mkdtempSync(path.join(os.tmpdir(), "surf-record-notes-"));
@@ -1391,14 +1489,27 @@ describe("CLI/native-host/fake-extension E2E contract", () => {
           ),
         );
         expect(op.safety.key).toBeUndefined();
-        expect(Object.keys(op.args)).toEqual([input]);
+        expect(Object.keys(op.args)).toEqual([...stepInputs, input]);
 
         const before = posts().length;
+        const typedArgs = stepInputs.flatMap((name) => [`--${name}`, "typed"]);
         const use = (...args: string[]) =>
-          cli(["use", "fixture", "submit", `--${input}`, value, ...args, "--write", "--json"]);
-        const byText = await use("--text", "one");
-        expect(byText.code).toBe(1);
-        expect(byText.stderr).toMatch(/Unknown input --text/);
+          cli([
+            "use",
+            "fixture",
+            "submit",
+            `--${input}`,
+            value,
+            ...typedArgs,
+            ...args,
+            "--write",
+            "--json",
+          ]);
+        if (stepInputs.length === 0) {
+          const byText = await use("--text", "one");
+          expect(byText.code).toBe(1);
+          expect(byText.stderr).toMatch(/Unknown input --text/);
+        }
         expect((await use()).code).toBe(0);
         const again = await use();
         expect(again.code).toBe(1);
@@ -2234,6 +2345,8 @@ describe("CLI/native-host/fake-extension E2E contract", () => {
       expect((await cli(["navigate", "https://fixture.test/form"])).code).toBe(0);
       expect((await cli(["pb", "record", "start", "fixture", "--op", "type"])).code).toBe(0);
       expect((await cli(["type", "dummy text", "--selector", "#field"])).code).toBe(0);
+      // The click is the step that commits, where the write's receipt starts.
+      expect((await cli(["click", "--selector", "#send", "--no-screenshot"])).code).toBe(0);
       const stopped = await cli(["pb", "record", "stop", "--draft", "--json"]);
       expect(stopped.code).toBe(0);
       const { record } = JSON.parse(stopped.stdout);

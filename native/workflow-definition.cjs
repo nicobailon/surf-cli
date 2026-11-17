@@ -60,6 +60,9 @@ const COMMANDS = {
   search: { primaryArg: "term", effect: "read", argKinds: { term: "user-input" }, sensitiveArgs: ["term"] },
   "wait.element": { primaryArg: "selector", effect: "read", recordable: false, argKinds: { selector: "selector" } },
   "wait.url": { primaryArg: "pattern", effect: "read", recordable: false, argKinds: { pattern: "url-pattern" } },
+  // The waits a workflow runs after a click, key, submit or navigation (workflow-runtime AUTO_WAIT_MAP).
+  "wait.dom": { effect: "read", recordable: false },
+  "wait.load": { effect: "read", recordable: false },
   zoom: { primaryArg: "level", effect: "read", argKinds: { level: "number" } },
   "history.search": { primaryArg: "query", effect: "read", argKinds: { query: "user-input" }, sensitiveArgs: ["query"] },
   "network.get": { primaryArg: "id", effect: "read", argKinds: { id: "request-id" } },
@@ -138,6 +141,18 @@ function commandMetadata(command, args) {
     argKinds: metadata?.argKinds || {},
     sensitiveArgs: argumentSensitiveArgs(name, metadata?.sensitiveArgs || [], args),
   };
+}
+
+// Page writes that only fill a field: a write op's receipt starts after them, at the first step
+// that can commit.
+const FILL_STEPS = new Set(["type", "smart_type", "form_input", "form.fill", "select"]);
+
+// Whether a step can send a write op's change: any page-write or unknown step but a fill (type or
+// smart_type with --submit presses Enter, so it can). Navigation and reads can't.
+function canCommit(command, args = {}) {
+  const { name, effect } = commandMetadata(command, args);
+  if (effect !== "page-write" && effect !== "unknown") return false;
+  return !FILL_STEPS.has(name) || (args.submit !== undefined && args.submit !== false && args.submit !== "false");
 }
 
 function redactCommandArgs(command, args, includeInputValues = false) {
@@ -606,6 +621,7 @@ module.exports = {
   ECHO_COMMANDS,
   PRIMARY_ARG_MAP,
   applyArgDefaults,
+  canCommit,
   commandMetadata,
   formatStep,
   getWorkflowDirs,

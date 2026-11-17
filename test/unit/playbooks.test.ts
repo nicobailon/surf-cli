@@ -7,6 +7,7 @@ const path = require("node:path");
 
 const playbooks = require("../../native/playbooks.cjs");
 const runtime = require("../../native/playbook-runtime.cjs");
+const receipts = require("../../native/playbook-receipts.cjs");
 const tempDirs: string[] = [];
 
 function writePlaybook(base: string, id: string, marker: string) {
@@ -240,22 +241,6 @@ describe("playbook resolution and strategies", () => {
         ],
       }),
     ).toThrow(/auth input/);
-    expect(() =>
-      validate({
-        id: "mutate",
-        effect: "write",
-        safety: { duplicate: "transactional", key: ["id"] },
-        run: [
-          {
-            using: "workflow",
-            steps: [
-              { tool: "click", args: { selector: "#a" } },
-              { tool: "click", args: { selector: "#b" } },
-            ],
-          },
-        ],
-      }),
-    ).toThrow(/exactly one commit step/);
     expect(() =>
       validate({
         id: "mutate",
@@ -570,6 +555,134 @@ describe("playbook resolution and strategies", () => {
       }),
     ).rejects.toThrow(/timeout/);
     expect(statuses).toEqual(["dispatched", "indeterminate"]);
+  });
+
+  // A write op's workflow may type and then click. Its receipt starts at the first step that can
+  // commit (click, submit, key, type --submit…), so a failed fill leaves none and a failure at or
+  // after that step is in doubt.
+  describe("a write op whose workflow has several steps", () => {
+    const writeOp = (steps: Array<Record<string, unknown>>) =>
+      playbooks.validateOp(
+        {
+          id: "comment",
+          effect: "write",
+          args: { text: { required: true } },
+          safety: { duplicate: "repeatable-window", windowMs: 300_000 },
+          run: [{ using: "workflow", steps }],
+        },
+        { origins: ["https://example.test"] },
+      );
+    const typed = { tool: "type", args: { selector: "#comment", text: "{{text}}" } };
+    const send = { tool: "click", args: { selector: "#send" } };
+    const read = { tool: "page.text", args: {} };
+    // As host.cjs runs a write: checked first, a receipt reserved when a step can commit.
+    const run = async (steps: Array<Record<string, unknown>>, failing?: string) => {
+      const root = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "surf-multi-step-")), "state");
+      tempDirs.push(path.dirname(root));
+      const op = writeOp(steps);
+      const claim = {
+        playbookId: "fixture",
+        op,
+        args: { text: ["dummy", "note"].join("-") },
+        root,
+      };
+      receipts.checkReceipt(claim);
+      let receipt: unknown = null;
+      const tools: string[] = [];
+      const outcome = await runtime
+        .runPlaybookOp({
+          playbook: { id: "fixture", provenance: { scope: "test" } },
+          op,
+          args: claim.args,
+          executeTool: async (tool: string) => {
+            tools.push(tool);
+            return tool === failing ? { error: `${tool} failed` } : { success: true };
+          },
+          sleep: async () => undefined,
+          beforeDispatch: async () => {
+            receipt = receipts.reserveReceipt(claim);
+            receipts.updateReceipt(receipt, "dispatched", {}, root);
+          },
+          afterDispatch: async ({ status, error }: { status: string; error?: string }) =>
+            receipts.updateReceipt(receipt, status, { error }, root),
+        })
+        .then(
+          () => "completed",
+          (error: Error) => error.message,
+        );
+      const saved = (receipt as { receipt?: { status: string } } | null)?.receipt?.status ?? "none";
+      const again = (() => {
+        try {
+          receipts.checkReceipt(claim);
+          return "clear";
+        } catch (error) {
+          return (error as Error).message;
+        }
+      })();
+      return {
+        outcome,
+        tools: tools.filter((tool) => !tool.startsWith("wait.")),
+        receipt: saved,
+        again,
+      };
+    };
+
+    it("loads with a type and a click, and runs both", async () => {
+      expect(writeOp([typed, send]).run[0].steps.map((step: { cmd: string }) => step.cmd)).toEqual([
+        "type",
+        "click",
+      ]);
+      const result = await run([typed, send]);
+      expect(result).toMatchObject({
+        outcome: "completed",
+        tools: ["type", "click"],
+        receipt: "verified",
+      });
+      expect(result.again).toMatch(/succeeded\. Add --repeat/);
+    });
+
+    it("leaves no receipt when its type step fails", async () => {
+      expect(await run([typed, send], "type")).toEqual({
+        outcome: expect.stringContaining("type failed"),
+        tools: ["type"],
+        receipt: "none",
+        again: "clear",
+      });
+    });
+
+    it.each(["click", "page.text"])(
+      "leaves an in-doubt receipt when its %s step fails",
+      async (failing) => {
+        const result = await run([typed, send, read], failing);
+        expect(result.outcome).toContain(`${failing} failed`);
+        expect(result.receipt).toBe("indeterminate");
+        expect(result.again).toMatch(/its result is unknown\. .*--repeat/);
+      },
+    );
+
+    // Fills, reads and navigation come before the commit; any other page write or unknown step is it.
+    it.each([
+      ["smart_type", { selector: "#q", text: "{{text}}" }, "none"],
+      ["form_input", { ref: "e1", value: "{{text}}" }, "none"],
+      ["form.fill", { data: "{}" }, "none"],
+      ["select", { selector: "#size", values: "m" }, "none"],
+      ["navigate", { url: "https://example.test/" }, "none"],
+      ["scroll.bottom", {}, "none"],
+      ["type", { selector: "#q", text: "{{text}}", submit: true }, "indeterminate"],
+      ["key", { key: "Enter" }, "indeterminate"],
+      ["submit", {}, "indeterminate"],
+      ["check", { ref: "e1" }, "indeterminate"],
+      ["dialog.accept", {}, "indeterminate"],
+      ["js", { code: "1" }, "indeterminate"],
+    ])("a failed %s step %o leaves receipt %s", async (tool, args, receipt) => {
+      expect((await run([{ tool, args }, send], tool)).receipt).toBe(receipt);
+    });
+
+    it("loads when its only step is scroll.bottom", () => {
+      expect(writeOp([{ tool: "scroll.bottom", args: {} }]).run[0].steps).toEqual([
+        { cmd: "scroll.bottom", args: {} },
+      ]);
+    });
   });
 
   it("runs an api strategy with op args in its options and record fields in its templates", async () => {
