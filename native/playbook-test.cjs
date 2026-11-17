@@ -1,7 +1,7 @@
 // surf pb test: run an op the way `surf use` does and check assertions on its result.
 
-const { MATCH_INPUT_LIMIT, MATCH_SKIPPED, MATCH_TIMED_OUT, PATTERN_SPELLING_LEVELS, boundedMatch, createRegexBudget, describeAssertion, jsonSecretIn, validateAssertions } = require("./playbook-assertions.cjs");
-const { secretIn, secretSpellings } = require("./redaction.cjs");
+const { MATCH_INPUT_LIMIT, MATCH_SKIPPED, MATCH_TIMED_OUT, createRegexBudget, describeAssertion, jsonSecretIn, patternSecretIn, validateAssertions } = require("./playbook-assertions.cjs");
+const { redactResult } = require("./redaction.cjs");
 const { authInputs, resolveArgs } = require("./playbook-runtime.cjs");
 const { editSavedOp, resolveEditablePlaybook, resolveOp } = require("./playbooks.cjs");
 
@@ -88,43 +88,41 @@ function localOp(playbook, op, { cwd, home }) {
 }
 
 // pb test --save writes assertions to the op file, which must never hold an env header's value.
-// Before the run: refuse when secretIn finds one in the path, any key or leaf of the value, the
-// value as JSON (compact, or indented as the op file stores it) or a matches pattern's source, or
-// when the pattern matches one (which also refuses broad patterns such as .*). secretIn decodes
-// JSON escapes, so a value escaped any number of times, or written with \/ or \uXXXX, is found;
-// text escaped past its 8 levels is refused as too deep to check. A pattern is tested against
-// each value as is and JSON-escaped up to PATTERN_SPELLING_LEVELS times, and a value over
-// MATCH_INPUT_LIMIT is refused for any pattern: a run tests only its start.
-// Errors name the assertion's position and the variable, never the value.
+// Before the run: refuse when secretIn finds one in the assertion (its path, any key or leaf of
+// its value, or the assertion as JSON, compact or indented as the op file stores it), or when a
+// matches pattern could store or match one (patternSecretIn: a text the pattern can match holds
+// one, the pattern matches one, which also refuses broad patterns such as .*, it has a
+// backreference, or it spells most of one around a class or .). secretIn decodes JSON escapes, so a value escaped any number of times, or
+// written with \/ or \uXXXX, is found; text escaped past its 8 levels is refused as too deep to
+// check, and text too costly to decode as too large. A value over MATCH_INPUT_LIMIT is refused
+// for any pattern: a run tests only its start. Errors name the assertion's position and the
+// variable, never the value.
 function refuseSecretAssertions(assertions, secret) {
   const budget = createRegexBudget();
   assertions.forEach((assertion, index) => {
     const position = `assertion ${index + 1}`;
+    const refusals = {
+      found: (name) => `${position} contains the value of ${name}, which is never stored; assert on something else`,
+      "too deep": (name) => `${position} holds JSON escaped more than 8 times, too deep to check for ${name}; assert on something else`,
+      "too costly": (name) => `${position} is too large to check for ${name}; assert on something else`,
+    };
     for (const [name, raw] of Object.entries(secret)) {
-      const found = [secretIn(assertion.path, [raw]), jsonSecretIn(assertion.value, [raw])];
-      if (found.includes("found")) {
-        throw new Error(`--save refused: ${position} contains the value of ${name}, which is never stored; assert on something else`);
-      }
-      if (found.includes("too deep")) {
-        throw new Error(`--save refused: ${position} holds JSON escaped more than 8 times, too deep to check for ${name}; assert on something else`);
-      }
+      const found = jsonSecretIn(assertion, [raw]);
+      if (found) throw new Error(`--save refused: ${refusals[found](name)}`);
     }
     if (assertion.op !== "matches") return;
-    for (const [name, value] of Object.entries(secret).flatMap(([env, raw]) => secretSpellings([raw], PATTERN_SPELLING_LEVELS).map((spelling) => [env, spelling]))) {
-      if (value.length > MATCH_INPUT_LIMIT) {
+    for (const [name, raw] of Object.entries(secret)) {
+      if (raw.length > MATCH_INPUT_LIMIT) {
         throw new Error(`--save refused: the value of ${name} is over ${MATCH_INPUT_LIMIT / 1024} KB, too long to check ${position}'s pattern against; assert on something else`);
       }
-      let matched;
-      try {
-        matched = boundedMatch(assertion.value, value, budget);
-      } catch (error) {
-        if (error.code !== MATCH_TIMED_OUT && error.code !== MATCH_SKIPPED) throw error;
-        if (error.code === MATCH_SKIPPED) throw new Error(`--save refused: the 1 s regex budget was spent before assertion ${index + 1}'s pattern was checked against ${name}; use fewer or simpler patterns`);
-        throw new Error(`--save refused: ${position}'s pattern took too long (over 100 ms) on the value of ${name}; simplify it`);
-      }
-      if (matched) {
-        throw new Error(`--save refused: ${position}'s pattern matches the value of ${name}, which is never stored; use a narrower pattern`);
-      }
+      const found = patternSecretIn(assertion.value, [raw], budget);
+      if (found === null) continue;
+      if (Object.hasOwn(refusals, found)) throw new Error(`--save refused: ${refusals[found](name).replace(position, `${position}'s pattern`)}`);
+      if (found === MATCH_SKIPPED) throw new Error(`--save refused: the 1 s regex budget was spent before ${position}'s pattern was checked against ${name}; use fewer or simpler patterns`);
+      if (found === MATCH_TIMED_OUT) throw new Error(`--save refused: ${position}'s pattern took too long (over 100 ms) on the value of ${name}; simplify it`);
+      if (found === "matches") throw new Error(`--save refused: ${position}'s pattern matches the value of ${name}, which is never stored; use a narrower pattern`);
+      if (found === "backreference") throw new Error(`--save refused: ${position}'s pattern uses a backreference, which could repeat part of the value of ${name}; while env values are set, save a pattern without one`);
+      throw new Error(`--save refused: ${position}'s pattern spells most of the value of ${name} around ${found.around}; assert on something else`);
     }
   });
 }
@@ -181,6 +179,8 @@ async function runPlaybookTest({ argv, cwd = process.cwd(), home, env = process.
   } catch (error) {
     result = { status: "failed", error: error.message, attempts: [] };
   }
+  // The host masked what its values touch; this masks what this shell's values touch.
+  result = redactResult(result, Object.values(secret));
   const durationMs = now() - started;
   const ok = result.status === "completed";
   const attempts = result.attempts || [];

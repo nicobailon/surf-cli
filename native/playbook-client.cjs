@@ -8,7 +8,7 @@ const { findRedactedPlaceholder, placeholderError } = require("./record-typed-va
 const { resolveOp } = require("./playbooks.cjs");
 const { isReplayCandidate, readRecord, recordsRoot, requestEffect, requestFromEntry } = require("./playbook-records.cjs");
 const { WINNER_MARGIN, isWeak, scoreEntries } = require("./record-candidates.cjs");
-const { assertNoEmbeddedSecrets, assertUrlHasNoEmbeddedSecrets, redactJson, redactObject, redactText, redactValues, safeHeaders, secretIn, secretSpellings, spanningValues, valueSpellings } = require("./redaction.cjs");
+const { assertNoEmbeddedSecrets, assertUrlHasNoEmbeddedSecrets, decodeBudget, redactJson, redactObject, redactText, redactValues, safeHeaders, secretIn, secretSpellings, spanningValues, valueSpellings } = require("./redaction.cjs");
 const { version: PACKAGE_VERSION } = require("../package.json");
 
 // URL parsing would percent-encode `{{name}}` in a path, so placeholders (and, in escaped text, the
@@ -90,6 +90,7 @@ ${redactValues.toString()}
 ${redactObject.toString()}
 ${valueSpellings.toString()}
 ${secretSpellings.toString()}
+${decodeBudget.toString()}
 ${secretIn.toString()}
 ${redactText.toString()}
 ${spanningValues.toString()}

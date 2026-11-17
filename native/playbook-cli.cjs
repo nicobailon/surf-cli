@@ -9,6 +9,7 @@ const { assertAttemptId } = require("./playbook-receipts.cjs");
 const { authInputs } = require("./playbook-runtime.cjs");
 const { formatExtractResult, parseExtractArgs, saveExtract } = require("./playbook-extract.cjs");
 const { formatTestReport, runPlaybookTest } = require("./playbook-test.cjs");
+const { redactResult } = require("./redaction.cjs");
 const { exportPlaybookDirectory, importPlaybookDirectory, listPlaybooks, resolvePlaybook } = require("./playbooks.cjs");
 
 // `raw` keeps each option's text: `--id 2101.10010` is a number in `options`, a string in `raw`.
@@ -159,13 +160,15 @@ async function handlePlaybookCli(argv, { endpoint, cwd = process.cwd(), session,
       allowScript: spec.options["allow-script"] === true,
       ...(format ? { format } : {}),
     };
-    const value = await requestHost(endpoint, "playbook.run", args, {
+    const sent = await requestHost(endpoint, "playbook.run", args, {
       tabId: spec.options["tab-id"],
       session: spec.options.session || session,
       sessionSource: spec.options.session ? "explicit" : sessionSource,
       admission: spec.options["no-wait"] === true ? { wait: false } : admission,
       timeoutMs: resolveRequestDeadlineMs("playbook.run", args),
     });
+    // The host masked what its values touch in the result; this masks what this shell's touch.
+    const value = redactResult(sent, Object.values(prepared.secret));
     // With --format the host returns the rendered records as the value.
     if (format) return { handled: true, value: value.value, json: false };
     return { handled: true, value, json: spec.options.json === true };

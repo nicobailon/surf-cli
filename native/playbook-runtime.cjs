@@ -9,7 +9,7 @@ const { GLOBAL_OPTIONS } = require("./global-options.cjs");
 const { LITERAL_OPEN, escapedOp, renderRequest, resolveArgValues, sentRequest } = require("./playbook-template.cjs");
 const { findRedactedPlaceholder, placeholderError } = require("./record-typed-values.cjs");
 const { checkAssertions, createRegexBudget } = require("./playbook-assertions.cjs");
-const { redactJson, redactSecretValues } = require("./redaction.cjs");
+const { redactJson, redactResult, redactSecretValues, spanningValues } = require("./redaction.cjs");
 const boundedRegex = require("./bounded-regex.cjs");
 const { extractRecords } = require("./records.cjs");
 
@@ -548,7 +548,8 @@ async function runPlaybookOp({ playbook, op, args: providedArgs = {}, secrets = 
       }
       if (op.effect === "write") await afterDispatch({ status: "verified", strategy, index });
       onEvent({ type: "strategy.completed", playbook: playbook.id, op: op.id, using: strategy.using, index, endedAt: new Date().toISOString() });
-      return { status: "completed", playbook: playbook.id, op: op.id, strategy: strategy.using, value: redactSecrets(value, authValues), provenance: playbook.provenance, attempts, ...(checked ? { assertions: checked } : {}) };
+      // Its parts are redacted one by one; redactResult reads them next to surf's own fields.
+      return redactResult({ status: "completed", playbook: playbook.id, op: op.id, strategy: strategy.using, value: redactSecrets(value, authValues), provenance: playbook.provenance, attempts, ...(checked ? { assertions: checked } : {}) }, Object.values(authValues));
     } catch (caught) {
       const message = redactSecrets(caught?.message || String(caught), authValues);
       const error = message === caught?.message ? caught : new Error(message);
@@ -571,7 +572,11 @@ async function runPlaybookOp({ playbook, op, args: providedArgs = {}, secrets = 
     }
   }
   const detail = attempts.map((attempt) => `${attempt.using}: ${attempt.error}`).join("; ");
-  const error = new Error(`All strategies failed${detail ? ` (${detail})` : ""}`);
+  // Each attempt's error is redacted; a value that can span them and surf's words is looked for in
+  // the whole line, and surf's words stay as written for any other.
+  const summary = `All strategies failed${detail ? ` (${detail})` : ""}`;
+  const spanning = spanningValues(Object.values(authValues));
+  const error = new Error(spanning.length === 0 ? summary : redactJson(summary, spanning));
   error.attempts = attempts;
   throw error;
 }
@@ -582,7 +587,8 @@ async function testPlaybookOp(options) {
   try {
     return await runPlaybookOp(options);
   } catch (error) {
-    return { status: "failed", playbook: playbook.id, op: op.id, error: error.message, attempts: error.attempts || [] };
+    const values = authInputs(op).map((input) => options.secrets?.[input.env] ?? (options.env ?? process.env)[input.env]);
+    return redactResult({ status: "failed", playbook: playbook.id, op: op.id, error: error.message, attempts: error.attempts || [] }, values);
   }
 }
 

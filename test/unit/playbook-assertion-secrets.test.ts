@@ -878,4 +878,205 @@ describe("an env value in any JSON spelling the decoder reads", () => {
     expect(echoed.value.body).toBe('{"key":"<redacted>","n":1}');
     expect(echoed.value.bodyJson).toEqual({ key: "<redacted>", n: 1 });
   });
+
+  const MARKER = join("<", "redacted", ">");
+  const TAIL = join("dummy", "-envelope-", "tail");
+  // Each character as a regex \xNN escape, so the pattern's source spells nothing itself.
+  const hexEscaped = (text: string) =>
+    [...text].map((char) => `\\x${char.charCodeAt(0).toString(16).padStart(2, "0")}`).join("");
+  const escapeTimes = (text: string, times: number) => {
+    let spelled = text;
+    for (let level = 0; level < times; level++) {
+      spelled = JSON.stringify(spelled).slice(1, -1);
+    }
+    return spelled;
+  };
+  // The extracted value is the response's `tail`, or the whole response.
+  const tailOp = (jsonPath: string) => ({
+    ...rawOp,
+    run: [{ ...rawOp.run[0], extract: { jsonPath } }],
+  });
+
+  it("finds a value that reads as redaction's marker, and both --save checks refuse it", async () => {
+    expect(redaction.secretIn(MARKER, [MARKER])).toBe("found");
+    const { cwd, file } = tempShop(rawOp);
+    const before = fs.readFileSync(file, "utf8");
+    const hosted = hostedRun(MARKER, JSON.stringify({ echo: MARKER }));
+    const asserts = ["--assert", "$.bodyJson.echo", "equals", JSON.stringify(MARKER)];
+    await expect(save(cwd, asserts, { [ENV]: MARKER }, hosted)).rejects.toThrow(
+      /--save refused: assertion 1 contains the value of SURF_TEST_ITEMS_KEY/,
+    );
+    expect(hosted).not.toHaveBeenCalled();
+    await expect(save(cwd, asserts, {}, hosted)).rejects.toThrow(
+      /--save refused: assertion 1's value passed through env-header redaction/,
+    );
+    expect(fs.readFileSync(file, "utf8")).toBe(before);
+  });
+
+  it("refuses a matches pattern that spells the value with regex escapes, in both --save checks", async () => {
+    const level4 = escapeTimes(QUOTED, 4);
+    const patterns = [
+      ["escaped 4 times", QUOTED, `^(?:ok|${hexEscaped(level4)})$`],
+      ["written with \\/", SLASHED, `^(?:ok|${hexEscaped(SLASHED.replaceAll("/", "\\/"))})$`],
+      ["written with \\u escapes", UNICODE, `^(?:ok|${hexEscaped(unicodeEscaped)})$`],
+      // Escaped 4 times, its backslashes as {n} repeats and one letter in a group.
+      [
+        "with repeats and a group",
+        QUOTED,
+        "^(?:ok|dumm(?:y|z)\\x5c{15}\\x22quoted\\x5c{16}value)$",
+      ],
+    ];
+    for (const [name, secret, pattern] of patterns) {
+      expect(new RegExp(pattern).test("ok"), name).toBe(true);
+      const { cwd, file } = tempShop(rawOp);
+      const before = fs.readFileSync(file, "utf8");
+      const hosted = hostedRun(secret, JSON.stringify({ text: "ok" }));
+      const asserts = ["--assert", "$.bodyJson.text", "matches", pattern];
+      await expect(save(cwd, asserts, { [ENV]: secret }, hosted), name).rejects.toThrow(
+        /--save refused: assertion 1's pattern contains the value of SURF_TEST_ITEMS_KEY/,
+      );
+      expect(hosted, name).not.toHaveBeenCalled();
+      await expect(save(cwd, asserts, {}, hosted), name).rejects.toThrow(
+        /--save refused: assertion 1's value passed through env-header redaction/,
+      );
+      expect(fs.readFileSync(file, "utf8"), name).toBe(before);
+    }
+  });
+
+  it("saves ordinary patterns with an env value set", async () => {
+    const body = JSON.stringify({ text: "ok", n: "123", code: "ABC" });
+    const { cwd, file } = tempShop(rawOp);
+    const asserts = [
+      ["$.bodyJson.n", "^\\d+$"],
+      ["$.bodyJson.text", ".*ok.*"],
+      ["$.bodyJson.code", "^[A-Z]{3}$"],
+      ["$.bodyJson.text", "(?:ok|done)"],
+      ["$.bodyJson.text", "^(?=\\w+$)ok$"],
+    ].flatMap(([at, pattern]) => ["--assert", at, "matches", pattern]);
+    const report = await save(cwd, asserts, { [ENV]: QUOTED }, hostedRun(QUOTED, body));
+    expect(report.saved).toBe(file);
+    expect(JSON.parse(fs.readFileSync(file, "utf8")).on.success.expect.assert).toHaveLength(5);
+    // The browser host, holding the value alone, marks none of them.
+    const hosted = tempShop(rawOp);
+    expect((await save(hosted.cwd, asserts, {}, hostedRun(QUOTED, body))).saved).toBe(hosted.file);
+  });
+
+  it("refuses a pattern that spells the value with classes or groups, or around a class", async () => {
+    const body = JSON.stringify({ text: "ok" });
+    const refused = [
+      // One-character classes and groups stand for their characters.
+      [`^(?:ok|${[...UNICODE].map((char) => `[${char}]`).join("")})$`, "contains the value of"],
+      [`^(?:ok|${[...UNICODE].map((char) => `(?:${char})`).join("")})$`, "contains the value of"],
+      [`^(?:ok|[\\x64]ummy-unicode-value)$`, "contains the value of"],
+      // A class or . in place of a character the run doesn't reach still spells the rest.
+      [
+        "^(?:ok|dumm[xz]-unicode-valu.e)$",
+        "spells most of the value of SURF_TEST_ITEMS_KEY around a character class",
+      ],
+      ["^(o)\\1?k$", "uses a backreference, which could repeat part of the value of"],
+    ];
+    for (const [pattern, reason] of refused) {
+      expect(new RegExp(pattern).test("ok"), pattern).toBe(true);
+      const { cwd, file } = tempShop(rawOp);
+      const before = fs.readFileSync(file, "utf8");
+      const hosted = hostedRun(UNICODE, body);
+      const asserts = ["--assert", "$.bodyJson.text", "matches", pattern];
+      await expect(save(cwd, asserts, { [ENV]: UNICODE }, hosted), pattern).rejects.toThrow(
+        `--save refused: assertion 1's pattern ${reason}`,
+      );
+      expect(hosted, pattern).not.toHaveBeenCalled();
+      await expect(save(cwd, asserts, {}, hosted), pattern).rejects.toThrow(
+        /--save refused: assertion 1's value passed through env-header redaction/,
+      );
+      expect(fs.readFileSync(file, "utf8"), pattern).toBe(before);
+    }
+  });
+
+  it("masks the result when surf's own fields and the response spell an env value together", async () => {
+    // Compact (sent to the CLI, --json) and indented (printed): each spans the strategy or the key.
+    for (const [secret, jsonPath] of [
+      [join("network", '","value":"', TAIL), "$.tail"],
+      [join("network", '","value":{"tail":"', TAIL), "$"],
+      [join("value", '": "', TAIL), "$.tail"],
+    ]) {
+      const extractOp = tailOp(jsonPath);
+      const executeTool = captureTab({
+        reply: () => ({ body: JSON.stringify({ tail: TAIL }) }),
+      }).executeTool;
+      for (const run of [runtime.runPlaybookOp, runtime.testPlaybookOp]) {
+        const result = await run({ playbook, op: extractOp, env: { [ENV]: secret }, executeTool });
+        expect(result.value, secret).toBe("<redacted>");
+        for (const text of printed(result)) {
+          expect(text, secret).not.toContain(secret);
+        }
+      }
+    }
+    // A failed run's envelope, and the line pb test prints for its attempt.
+    const secret = join("network: ", TAIL);
+    const failed = await runtime.testPlaybookOp({
+      playbook,
+      op,
+      env: { [ENV]: secret },
+      executeTool: async () => ({ error: TAIL }),
+    });
+    expect(failed.status).toBe("failed");
+    for (const text of [
+      ...printed(failed),
+      ...failed.attempts.map(
+        (attempt: Record<string, unknown>) => `${attempt.using}: ${attempt.error}`,
+      ),
+    ]) {
+      expect(text).not.toContain(secret);
+    }
+  });
+
+  it("refuses an assertion whose op and value spell an env value together", async () => {
+    const secret = join("equals", '","value":"', TAIL);
+    const extractOp = tailOp("$.tail");
+    const { cwd, file } = tempShop(extractOp);
+    const before = fs.readFileSync(file, "utf8");
+    const hosted = hostedRun(secret, JSON.stringify({ tail: TAIL }), extractOp);
+    const asserts = ["--assert", "$", "equals", JSON.stringify(TAIL)];
+    await expect(save(cwd, asserts, { [ENV]: secret }, hosted)).rejects.toThrow(
+      /--save refused: assertion 1 contains the value of SURF_TEST_ITEMS_KEY/,
+    );
+    expect(hosted).not.toHaveBeenCalled();
+    await expect(save(cwd, asserts, {}, hosted)).rejects.toThrow(
+      /--save refused: assertion 1's value passed through env-header redaction/,
+    );
+    expect(fs.readFileSync(file, "utf8")).toBe(before);
+    const report = await pbTest.runPlaybookTest({
+      argv: ["shop", "items", ...asserts, "--json"],
+      cwd,
+      home: cwd,
+      env: {},
+      runOp: hosted,
+    });
+    expect(JSON.stringify(report)).not.toContain(secret);
+  });
+
+  it("spends decoding work in proportion to its input, and masks what its budget can't cover", () => {
+    // The reviewer's shape: a \u-escaped echo, then a long run of escaped quotes.
+    const prefix = `{"echo":"${unicodeEscaped}"}`;
+    const steps = [100_000, 200_000, 400_000, 800_000].map((size) => {
+      const body = `${prefix}"${'\\"'.repeat(size / 2)}`;
+      const budget = { steps: 0, limit: Number.POSITIVE_INFINITY };
+      const redacted = redaction.redactJson({ body }, [UNICODE], budget);
+      expect(redacted.body.startsWith('{"echo":"<redacted>"}"')).toBe(true);
+      expect(budget.steps).toBeLessThan(redaction.decodeBudget(body.length).limit);
+      return budget.steps;
+    });
+    for (let index = 1; index < steps.length; index++) {
+      const ratio = steps[index] / steps[index - 1];
+      expect(ratio).toBeGreaterThan(1.8);
+      expect(ratio).toBeLessThan(2.2);
+    }
+    // Text the budget can't cover counts as holding the value: masked, and refused for --save.
+    const spent = () => ({ steps: 0, limit: 10 });
+    const text = "x".repeat(100);
+    expect(redaction.secretIn(text, [UNICODE], { budget: spent() })).toBe("too costly");
+    expect(redaction.redactText(text, [UNICODE], spent())).toBe("<redacted>");
+    expect(redaction.redactJson({ text }, [UNICODE], spent())).toBe("<redacted>");
+    expect(assertions.jsonSecretIn(text, [UNICODE], spent())).toBe("too costly");
+  });
 });
