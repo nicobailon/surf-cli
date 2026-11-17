@@ -27,18 +27,32 @@ function getAutoWaitCommand(cmd) {
   return null;
 }
 
-// With `escapes` (the steps of an op pb save escaped), `%{!}` is sent as `%{`: a step argument
-// recorded with `%{name}` in it keeps it as text (see escapeStepArgs in playbook-template.cjs).
-// `!` is in no var name (\w+), so every var is filled. surf do and other ops send `%{!}` as written.
-function resolveVar(template, vars, { escapes = false } = {}) {
+function varText(vars, name) {
+  const value = vars[name];
+  if (value === undefined) return `%{${name}}`;
+  return typeof value === "object" ? JSON.stringify(value) : String(value);
+}
+
+// The steps of an op pb save escaped (`escapes`) are read in one pass: `{{name}}` takes the op's
+// input (`inputs`), `%{name}` a var, and `{{!}}` and `%{!}` stand for `{{` and `%{` (see
+// escapeStepArgs in playbook-template.cjs). One pass, so a value it puts in is never read again:
+// an input or var holding `%{!}` or `%{name}` is sent as given. `!` is in no name, so every name
+// is filled. surf do and other ops fill only `%{name}` here and send `%{!}` as written.
+const ESCAPED_TEXT = /\{\{([a-zA-Z0-9._-]+|!)\}\}|%\{(\w+|!)\}/g;
+
+function resolveVar(template, vars, { escapes = false, inputs = {} } = {}) {
   if (typeof template !== "string") return template;
+  const input = escapes && template.match(/^\{\{([a-zA-Z0-9._-]+)\}\}$/);
+  if (input) return inputs[input[1]];
   const match = template.match(/^%\{(\w+)\}$/);
   if (match) return vars[match[1]] !== undefined ? vars[match[1]] : template;
-  return template.replace(escapes ? /%\{(\w+|!)\}/g : /%\{(\w+)\}/g, (_, name) => {
-    if (name === "!") return "%{";
-    const value = vars[name];
-    if (value === undefined) return `%{${name}}`;
-    return typeof value === "object" ? JSON.stringify(value) : String(value);
+  if (!escapes) return template.replace(/%\{(\w+)\}/g, (_, name) => varText(vars, name));
+  return template.replace(ESCAPED_TEXT, (_, inputName, varName) => {
+    if (inputName === "!") return "{{";
+    if (varName === "!") return "%{";
+    if (varName !== undefined) return varText(vars, varName);
+    if (inputs[inputName] === undefined) throw new Error(`missing template argument: ${inputName}`);
+    return String(inputs[inputName]);
   });
 }
 
@@ -137,13 +151,14 @@ async function executeSingleStep(step, vars, options) {
     escapes = false,
     executeTool,
     includeInputValues = false,
+    inputs,
     onEvent = () => {},
     signal,
     sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
     stepDelay = 100,
   } = options;
   if (typeof executeTool !== "function") throw new Error("workflow runtime requires executeTool");
-  const args = substituteVars(step.args || {}, vars, { escapes });
+  const args = substituteVars(step.args || {}, vars, { escapes, inputs });
   const startedAt = new Date().toISOString();
   const baseEvent = { command: step.cmd, argsRedacted: redactCommandArgs(step.cmd, args, includeInputValues), startedAt };
   onEvent({ type: "tool.started", ...baseEvent });
@@ -189,7 +204,7 @@ async function executeStep(step, vars, options) {
     return { ...result, stepsExecuted: 1 };
   }
   if (step.repeat !== undefined) {
-    let max = resolveVar(step.repeat, vars, { escapes: options.escapes });
+    let max = resolveVar(step.repeat, vars, { escapes: options.escapes, inputs: options.inputs });
     if (typeof max === "string") max = Number.parseInt(max, 10);
     if (typeof max !== "number" || Number.isNaN(max)) max = 1;
     max = Math.min(max, MAX_LOOP_ITERATIONS);
@@ -212,7 +227,7 @@ async function executeStep(step, vars, options) {
     return { success: true, stepsExecuted };
   }
   if (step.each !== undefined) {
-    const items = resolveVar(step.each, vars, { escapes: options.escapes });
+    const items = resolveVar(step.each, vars, { escapes: options.escapes, inputs: options.inputs });
     if (!Array.isArray(items)) return { success: false, error: `each: expected array, got ${typeof items}${items === undefined ? " (undefined)" : ""}`, stepsExecuted: 0 };
     if (!Array.isArray(step.steps) || step.steps.length === 0) return { success: false, error: "each: steps array required", stepsExecuted: 0 };
     const itemVar = step.as || "item";

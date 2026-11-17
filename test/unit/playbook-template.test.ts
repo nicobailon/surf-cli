@@ -271,6 +271,101 @@ describe("the escape token and template names", () => {
   });
 });
 
+// pb save decodes only the text it stored, once: an input's value is sent as given, wherever the
+// op puts it.
+describe("an escaped op's input values", () => {
+  const values = ["%{!}", "{{!}}", "%{x}", "{{x}}", "%{!}_open}", "a%{q}b", "x{{q}}y"];
+  const escapedOp = (run: unknown[]) => ({
+    id: "save",
+    effect: "read",
+    args: { q: {}, items: {}, count: {} },
+    provenance: { recordId: "rec-1", escaped: true },
+    run,
+  });
+  const runSteps = async (steps: unknown[], args: Record<string, unknown>) => {
+    const typed: unknown[] = [];
+    await runtime.runPlaybookOp({
+      playbook: { id: "steps", provenance: {} },
+      op: escapedOp([{ using: "workflow", steps }]),
+      args,
+      executeTool: async (tool: string, toolArgs: Record<string, unknown>) => {
+        if (tool === "type") {
+          typed.push(toolArgs.text);
+        }
+        return { output: "{}" };
+      },
+      sleep: async () => undefined,
+    });
+    return typed;
+  };
+
+  it("types each value as given, beside stored text, as a workflow var and in loops", async () => {
+    for (const q of values) {
+      const typed = await runSteps(
+        [
+          { cmd: "type", args: { text: "{{q}}" } },
+          { cmd: "type", args: { text: escapeStepArgs("<%{q}>").replace("<", "<{{q}}") } },
+          { cmd: "type", args: { text: "%{q}|%{q}" } },
+          { repeat: "{{count}}", steps: [{ cmd: "type", args: { text: "%{_index}{{q}}" } }] },
+          { each: "{{items}}", steps: [{ cmd: "type", args: { text: "[%{item}]" } }] },
+        ],
+        { q, items: [q, `${q}!`], count: 2 },
+      );
+      expect(typed).toEqual([q, `<${q}%{q}>`, `${q}|${q}`, `0${q}`, `1${q}`, `[${q}]`, `[${q}!]`]);
+    }
+  });
+
+  it("stops before any step runs when a step embeds an input that isn't set", async () => {
+    await expect(
+      runSteps(
+        [
+          { cmd: "type", args: { text: "sent" } },
+          { each: "{{items}}", steps: [{ cmd: "type", args: { text: "a {{missing}} b" } }] },
+        ],
+        { items: ["x"] },
+      ),
+    ).rejects.toThrow(/missing template argument: missing/);
+    const typed: unknown[] = [];
+    await expect(
+      runtime.runPlaybookOp({
+        playbook: { id: "steps", provenance: {} },
+        op: escapedOp([
+          {
+            using: "workflow",
+            steps: [
+              { cmd: "type", args: { text: "sent" } },
+              { cmd: "type", args: { text: "a {{missing}} b" } },
+            ],
+          },
+        ]),
+        executeTool: async (_tool: string, toolArgs: Record<string, unknown>) => {
+          typed.push(toolArgs.text);
+          return { output: "{}" };
+        },
+        sleep: async () => undefined,
+      }),
+    ).rejects.toThrow(/missing template argument: missing/);
+    expect(typed).toEqual([]);
+  });
+
+  it("sends each value as given in a request's URL, query, header and body", () => {
+    const request = {
+      method: "POST",
+      url: "https://api.test/{{!}}x}}/{{q}}",
+      query: { q: "{{q}}", note: "{{!}}q}} {{q}}" },
+      headers: { "x-q": "pre {{q}}", "content-type": "application/json" },
+      body: `${escapeTemplates('{"keep":"{{q}}","v":"')}{{q}}"}`,
+    };
+    for (const q of values) {
+      const sent = renderRequest(request, { q }, saved);
+      expect(sent.url).toBe(`https://api.test/{{x}}/${encodeURIComponent(q)}`);
+      expect(sent.query).toEqual({ q, note: `{{q}} ${q}` });
+      expect(sent.headers["x-q"]).toBe(`pre ${q}`);
+      expect(JSON.parse(sent.body)).toEqual({ keep: "{{q}}", v: q });
+    }
+  });
+});
+
 describe("env-supplied headers", () => {
   const authOp = op({
     url: "https://api.test/search",

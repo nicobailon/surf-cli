@@ -88,6 +88,7 @@ function recordingResponse(message: NativeMessage, currentUrl: string) {
       };
     case "CLICK_SELECTOR":
     case "SMART_TYPE":
+    case "SEARCH_PAGE":
       return { id: message.id, success: true, output: "{}", _resolvedTabId: 42 };
     default:
       return null;
@@ -1179,6 +1180,220 @@ describe("CLI/native-host/fake-extension E2E contract", () => {
       const script = host.messages.find((message) => message.type === "EXECUTE_JAVASCRIPT");
       expect(String(script?.code)).toContain('{"q":"x{{!}}y"}');
       expect(typed().at(-1)).toBe("x{{!}}y%{!}z");
+    } finally {
+      await host.dispose();
+    }
+  }, 60000);
+
+  // pb save decodes the text it stored, never an input's value: each input is typed as given, and
+  // two inputs the escape would have made the same are two values to the duplicate guard.
+  it("types a saved op's input exactly as given, and keys its duplicate guard on that value", async () => {
+    const socketPath = createSocketPath();
+    const project = fs.mkdtempSync(path.join(os.tmpdir(), "surf-record-input-"));
+    tempDirs.push(project);
+    const host = startHost(socketPath, { recording: true });
+    const cli = (args: string[]) =>
+      runCli(socketPath, args, project, { SURF_STATE_DIR: host.stateDir });
+    const sent = (type: string, field: string) =>
+      host.messages.filter((message) => message.type === type).map((message) => message[field]);
+    // Escapes, inputs and vars as text, one naming the op's own input inside a longer value.
+    const values = ["%{!}", "{{!}}", "%{x}", "{{x}}", "%{!}_open}", "a%{text}b", "x{{text}}y"];
+
+    try {
+      await host.waitForMessage((message) => message.type === "HOST_READY");
+      expect((await cli(["navigate", "https://fixture.test/form"])).code).toBe(0);
+      expect((await cli(["pb", "record", "start", "fixture", "--op", "type"])).code).toBe(0);
+      expect((await cli(["type", "dummy text", "--selector", "#field"])).code).toBe(0);
+      const stopped = await cli(["pb", "record", "stop", "--draft", "--json"]);
+      expect(stopped.code).toBe(0);
+      const { record } = JSON.parse(stopped.stdout);
+      expect(
+        (await cli(["pb", "save", "--from-record", record.id, "--project", "--json"])).code,
+      ).toBe(0);
+
+      const before = sent("SMART_TYPE", "text").length;
+      const use = (text: string) =>
+        cli(["use", "fixture", "type", "--text", text, "--write", "--json"]);
+      for (const text of values) {
+        expect(await use(text)).toMatchObject({ code: 0, stderr: "" });
+      }
+      // `%{` is the text the escape stands for, and a value of its own.
+      expect(await use("%{")).toMatchObject({ code: 0, stderr: "" });
+      const again = await use("%{!}");
+      expect(again.code).toBe(1);
+      expect(again.stderr).toMatch(/write blocked by verified receipt/);
+      expect(sent("SMART_TYPE", "text").slice(before)).toEqual([...values, "%{"]);
+    } finally {
+      await host.dispose();
+    }
+  }, 60000);
+
+  it("searches for an input of an op saved from recent activity exactly as given", async () => {
+    const socketPath = createSocketPath();
+    const project = fs.mkdtempSync(path.join(os.tmpdir(), "surf-recent-input-"));
+    tempDirs.push(project);
+    const host = startHost(socketPath, { recording: true });
+    const cli = (args: string[]) =>
+      runCli(socketPath, args, project, { SURF_STATE_DIR: host.stateDir });
+    const searched = () =>
+      host.messages
+        .filter((message) => message.type === "SEARCH_PAGE")
+        .map((message) => message.term);
+    const values = ["%{!}", "{{!}}", "%{x}", "{{x}}", "%{!}_open}", "a%{term}b", "x{{term}}y"];
+
+    try {
+      await host.waitForMessage((message) => message.type === "HOST_READY");
+      expect((await cli(["search", "recorded"])).code).toBe(0);
+      expect(
+        (
+          await cli([
+            "pb",
+            "save",
+            "recent",
+            "--op",
+            "find",
+            "--from-recent",
+            "--project",
+            "--json",
+          ])
+        ).code,
+      ).toBe(0);
+      const before = searched().length;
+      for (const term of values) {
+        expect(await cli(["use", "recent", "find", "--term", term, "--json"])).toMatchObject({
+          code: 0,
+          stderr: "",
+        });
+      }
+      expect(searched().slice(before)).toEqual(values);
+    } finally {
+      await host.dispose();
+    }
+  }, 60000);
+
+  // An input --link joins sends its value as given from both strategies: typed by the workflow,
+  // in the network write's body.
+  it("sends a linked input exactly as given from a saved op's workflow and its request", async () => {
+    const socketPath = createSocketPath();
+    const project = fs.mkdtempSync(path.join(os.tmpdir(), "surf-record-link-"));
+    tempDirs.push(project);
+    const vm = require("node:vm") as {
+      runInNewContext(code: string, context: Record<string, unknown>): unknown;
+    };
+    const bodies: unknown[] = [];
+    const tab = {
+      URL,
+      location: { href: "https://fixture.test/form" },
+      fetch: async (url: string, init: { body?: unknown }) => {
+        bodies.push(init.body);
+        return {
+          status: 200,
+          ok: true,
+          url,
+          redirected: false,
+          headers: new Map([["content-type", "application/json"]]),
+          text: async () => '{"ok":true}',
+          arrayBuffer: async () => new ArrayBuffer(0),
+        };
+      },
+    };
+    let running = false;
+    const host = startHost(socketPath, {
+      recording: true,
+      // The page's POST, as capture holds it, with the body the input is linked into.
+      scriptResponse: {
+        requestHeaders: { "content-type": "application/json" },
+        requestBody: '{"value":"seed","keep":"literal"}',
+      },
+      runScript: async (code) => {
+        if (!running) {
+          return { output: "{}" };
+        }
+        try {
+          return { output: JSON.stringify(await vm.runInNewContext(code, { ...tab })) };
+        } catch (error) {
+          return { error: error instanceof Error ? error.message : String(error) };
+        }
+      },
+    });
+    const cli = (args: string[]) =>
+      runCli(socketPath, args, project, { SURF_STATE_DIR: host.stateDir });
+    const typed = () =>
+      host.messages
+        .filter((message) => message.type === "SMART_TYPE")
+        .map((message) => message.text);
+    const values = ["%{!}", "{{!}}", "%{x}", "{{x}}", "%{!}_open}", "a%{value}b", "x{{value}}y"];
+
+    try {
+      await host.waitForMessage((message) => message.type === "HOST_READY");
+      expect((await cli(["navigate", "https://fixture.test/form"])).code).toBe(0);
+      expect(
+        (
+          await cli([
+            "pb",
+            "record",
+            "start",
+            "fixture",
+            "--op",
+            "type",
+            "--network",
+            "--include-input-values",
+          ])
+        ).code,
+      ).toBe(0);
+      expect((await cli(["type", "dummy text", "--selector", "#field"])).code).toBe(0);
+      expect((await cli(["js", 'fetch("/api", { method: "POST" })'])).code).toBe(0);
+      const stopped = await cli(["pb", "record", "stop", "--draft", "--json"]);
+      expect(stopped.code).toBe(0);
+      const { record } = JSON.parse(stopped.stdout);
+      expect(
+        (await cli(["pb", "save", "--from-record", record.id, "--project", "--json"])).code,
+      ).toBe(0);
+      const linked = await cli([
+        "pb",
+        "param",
+        "fixture",
+        "type",
+        "body.value",
+        "--as",
+        "value",
+        "--link",
+        "text",
+        "--json",
+      ]);
+      expect(linked).toMatchObject({ code: 0, stderr: "" });
+
+      running = true;
+      const before = typed().length;
+      const test = (value: string, strategy: string) =>
+        cli([
+          "pb",
+          "test",
+          "fixture",
+          "type",
+          "--value",
+          value,
+          "--write",
+          "--strategy",
+          strategy,
+          "--json",
+        ]);
+      // Each run is a write the duplicate guard keys on its value, so the request gets its own.
+      const sentValues = values.map((value) => `${value} (sent)`);
+      for (const value of values) {
+        const workflow = await test(value, "workflow");
+        expect(workflow.code).toBe(0);
+        expect(JSON.parse(workflow.stdout)).toMatchObject({ ok: true, strategy: "workflow" });
+      }
+      for (const value of sentValues) {
+        const network = await test(value, "network");
+        expect(network.code).toBe(0);
+        expect(JSON.parse(network.stdout)).toMatchObject({ ok: true, strategy: "network" });
+      }
+      expect(typed().slice(before)).toEqual(values);
+      expect(bodies.map((body) => JSON.parse(String(body)))).toEqual(
+        sentValues.map((value) => ({ value, keep: "literal" })),
+      );
     } finally {
       await host.dispose();
     }

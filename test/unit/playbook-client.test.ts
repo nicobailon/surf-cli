@@ -440,6 +440,37 @@ describe("clients from parameterised ops", () => {
     });
   });
 
+  // The client decodes the op's stored text, never an input's value.
+  it("exports a client of an op pb save made that sends each input as given", async () => {
+    const values = ["%{!}", "{{!}}", "%{x}", "{{x}}", "%{!}_open}", "a{{q}}b"];
+    const cwd = writeOp({
+      id: "note",
+      effect: "read",
+      args: { q: { type: "string", required: true } },
+      provenance: { recordId: "rec-1", escaped: true },
+      run: [
+        {
+          using: "network",
+          request: {
+            method: "POST",
+            url: "https://books.test/note",
+            headers: { "x-q": "{{q}}" },
+            body: "{{!}}q}} {{q}}",
+          },
+        },
+      ],
+    });
+    const out = path.join(cwd, "client");
+    clients.exportClient("books", "note", out, { cwd, allowWrite: true });
+    const requests = await serve(async (origin) => {
+      for (const q of values) {
+        await runClient(out, ["--q", q], { SURF_CLIENT_ORIGIN: origin });
+      }
+    });
+    expect(requests.map((request) => request.body)).toEqual(values.map((q) => `{{q}} ${q}`));
+    expect(requests.map((request) => request.headers["x-q"])).toEqual(values);
+  });
+
   it('reads --x "" and --x= as the empty string, and a bare --flag only for a boolean', async () => {
     const cwd = writeOp({
       id: "search",

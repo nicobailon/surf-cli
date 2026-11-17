@@ -1,6 +1,6 @@
 const fs = require("fs");
 const path = require("path");
-const { executeSingleStep, executeWorkflow } = require("./workflow-runtime.cjs");
+const { executeSingleStep, executeWorkflow, substituteVars } = require("./workflow-runtime.cjs");
 const { runWorkflowScript } = require("./workflow-script-runtime.cjs");
 const { runApiHarvest, watchCapture } = require("./api-harvest.cjs");
 const { htmlExtractFunction, runCollect } = require("./dom-collect.cjs");
@@ -12,8 +12,9 @@ const { redactObject } = require("./redaction.cjs");
 const boundedRegex = require("./bounded-regex.cjs");
 const { extractRecords } = require("./records.cjs");
 
-// Fills an op's inputs into its workflow steps. With `escapes` (an op pb save escaped, see
-// escapedOp), `{{!}}` is sent as `{{` (see escapeStepArgs); any other op sends it as written.
+// Fills an op's inputs into a hand-written op's workflow steps, and into an api or collect
+// strategy's spec. With `escapes` (an op pb save escaped, see escapedOp), `{{!}}` is sent as `{{`;
+// any other op sends it as written. An escaped op's steps are filled by the workflow runtime.
 function applyTemplate(value, args, { escapes = false } = {}) {
   if (typeof value === "string") {
     const exact = value.match(/^\{\{([a-zA-Z0-9._-]+)\}\}$/);
@@ -336,9 +337,16 @@ async function runStrategy(strategy, context) {
     return result.value;
   }
   if (strategy.using === "workflow") {
-    const result = await executeWorkflow(applyTemplate(strategy.steps, context.args, { escapes: context.escapes }), {
+    // An escaped op's steps go to the workflow runtime as stored: it decodes their text and fills
+    // inputs in the same pass (resolveVar), as renderRequest does a request, so it never reads an
+    // input's value. This first pass only checks that every input they embed is set, before any
+    // step runs. Any other op gets its inputs first, then its workflow vars, as on main.
+    if (context.escapes) substituteVars(strategy.steps, {}, { escapes: true, inputs: context.args });
+    const steps = context.escapes ? strategy.steps : applyTemplate(strategy.steps, context.args);
+    const result = await executeWorkflow(steps, {
       autoWait: strategy.autoWait !== false,
       escapes: context.escapes,
+      inputs: context.args,
       executeTool: async (tool, args, options) => {
         await context.markDispatched?.();
         return context.executeTool(tool, args, options);
