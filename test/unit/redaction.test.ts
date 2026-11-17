@@ -342,3 +342,16 @@ describe("a short env value that names a field", () => {
     }
   });
 });
+
+describe("redactEchoJson", () => {
+  it("redacts a short auth parameter in a JSON text held in a string value, which still parses", () => {
+    const secrets = redaction.secretHeaderEchoes([{ Authorization: 'ResyAPI api_key="v"' }]);
+    const view = redaction.redactEchoJson(
+      { data: JSON.stringify({ echo: "v", n: 1 }), note: "v", other: "{v}" },
+      secrets,
+    );
+    expect(JSON.parse(view.data)).toEqual({ echo: "<redacted>", n: 1 });
+    expect(view.note).toBe("<redacted>");
+    expect(view.other).toBe("{v}");
+  });
+});

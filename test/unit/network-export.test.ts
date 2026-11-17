@@ -613,6 +613,19 @@ describe("echo redaction that keeps an export's structure", () => {
     }
   });
 
+  it("redacts a short auth parameter in a JSON body held as a string, as httpbin's data echoes it", () => {
+    const sentBody = JSON.stringify({ echo: "v", n: 1 });
+    const kept = exporter.publicEntry({
+      id: "r-d",
+      url: "https://example.test/anything",
+      requestHeaders: { Authorization: 'ResyAPI api_key="v"' },
+      responseBody: JSON.stringify({ data: sentBody, json: JSON.parse(sentBody) }, null, 2),
+    });
+    const echoed = JSON.parse(kept.responseBody);
+    expect(JSON.parse(echoed.data)).toEqual({ echo: "<redacted>", n: 1 });
+    expect(echoed.json).toEqual({ echo: "<redacted>", n: 1 });
+  });
+
   it("redacts a whole form value that equals a short numeric secret, and leaves other numbers", () => {
     const code = ["123", "4567"].join("");
     const kept = exporter.publicEntry({

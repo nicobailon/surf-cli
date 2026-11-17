@@ -98,9 +98,18 @@ function renamedKeys(keys, secretKeys) {
   });
 }
 
-// A string value: <redacted> when it is a secret whole, else with each long value replaced.
+// A string value: <redacted> when it is a secret whole; a JSON object or array held as text (httpbin's
+// `data`) by redactEchoJsonText, so its own strings and keys follow the same rules; else with each
+// long value replaced.
 function redactEchoString(text, rules) {
-  return rules.whole.has(text) ? "<redacted>" : redactValues(text, rules.long);
+  if (rules.whole.has(text)) return "<redacted>";
+  if (/^\s*[{[]/.test(text)) {
+    try {
+      JSON.parse(text);
+      return redactEchoJsonText(text, rules);
+    } catch {}
+  }
+  return redactValues(text, rules.long);
 }
 
 // A parsed JSON value: its strings by redactEchoString and its secret keys renamed, at any depth;
