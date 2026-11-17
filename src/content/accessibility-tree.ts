@@ -946,13 +946,18 @@ function registerLocatedRef(el: Element): string {
   return ref;
 }
 
+// Inputs whose value the page sets, not the user: their value is their name, so it stays listed.
+const PAGE_VALUE_INPUT_TYPES = new Set(["checkbox", "radio", "submit", "button", "reset", "image"]);
+
 // A match as an ambiguity lists it: its ref, role and name. An unlabeled field is named by what was
 // typed or chosen in it (getName), so a name drawn from the field's value is left out.
 function listedMatch(el: Element): string {
   const name = getName(el).replace(/\s+/g, " ");
   const tag = el.tagName.toLowerCase();
   const select = el as HTMLSelectElement;
-  const typed = tag === "input" || tag === "textarea" ? (el as HTMLInputElement).value
+  const userValue = tag === "textarea" ||
+    (tag === "input" && !PAGE_VALUE_INPUT_TYPES.has((el.getAttribute("type") || "").toLowerCase()));
+  const typed = userValue ? (el as HTMLInputElement).value
     : tag === "select" ? (select.selectedIndex >= 0 ? select.options[select.selectedIndex]?.textContent : "")
     : (el as HTMLElement).isContentEditable ? el.textContent : "";
   const fromValue = Boolean(typed?.trim()) && typed!.replace(/\s+/g, " ").includes(name.replace(/\.\.\.$/, ""));

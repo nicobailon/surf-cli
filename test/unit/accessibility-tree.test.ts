@@ -1456,6 +1456,55 @@ describe("accessibility tree", () => {
     expect(ambiguous).not.toContain(typed);
   });
 
+  it.each([
+    ["checkbox", "checkbox"],
+    ["radio", "radio"],
+    ["submit", "button"],
+    ["button", "button"],
+  ])(
+    "lists %s inputs that an ambiguous lookup matched with the names the page gave their values",
+    (type, role) => {
+      const body = document.body as unknown as FakeElement;
+      const valued = (value: string) => {
+        const node = element("input", { type, value });
+        node.value = value;
+        return node;
+      };
+      body.append(valued("bacon"), valued("cheese"));
+      (document as any).querySelectorAll = (selector: string) =>
+        selector.includes(`input[type="${type}"]`) ? body.children : [];
+      const ambiguous = sendMessage({ type: "LOCATE_ROLE", role, unique: true }).error;
+      expect(ambiguous).toMatch(
+        new RegExp(`^2 elements match role "${role}", so nothing was done`),
+      );
+      expect(ambiguous).toMatch(new RegExp(`^ {2}e\\d+ ${role} "bacon"$`, "m"));
+      expect(ambiguous).toMatch(new RegExp(`^ {2}e\\d+ ${role} "cheese"$`, "m"));
+    },
+  );
+
+  it("lists submit inputs that an ambiguous named lookup matched with their names", () => {
+    const body = document.body as unknown as FakeElement;
+    const submit = (value: string) => {
+      const node = element("input", { type: "submit", value });
+      node.value = value;
+      return node;
+    };
+    body.append(submit("Save draft"), submit("Save and close"));
+    (document as any).querySelectorAll = (selector: string) =>
+      selector.includes('input[type="submit"]') ? body.children : [];
+    const ambiguous = sendMessage({
+      type: "LOCATE_ROLE",
+      role: "button",
+      name: "Save",
+      unique: true,
+    }).error;
+    expect(ambiguous).toMatch(
+      /^2 elements match role "button" and the given name, so nothing was done/,
+    );
+    expect(ambiguous).toMatch(/^ {2}e\d+ button "Save draft"$/m);
+    expect(ambiguous).toMatch(/^ {2}e\d+ button "Save and close"$/m);
+  });
+
   it("names the locator and its field, not the text looked up, when nothing matches", () => {
     // A dummy lookup text: what the caller passed, which the error must not repeat.
     const query = ["dummy", "lookup", "9"].join("-");
