@@ -12,6 +12,7 @@ const {
 } = require("./windows-interop.cjs");
 const { parseListenEndpoint } = require("../native/listener.cjs");
 const { normalizeSocketConfig } = require("../native/socket-permissions.cjs");
+const { findFfmpeg } = require("../native/video-recorder.cjs");
 const { getStateDir, loadHostIdentity, loadRegistry } = require("../native/remote-auth.cjs");
 const {
   renderWslWrapper,
@@ -144,6 +145,18 @@ function wslPathToWindowsPath(wslPath) {
   return convertWslPath(wslPath);
 }
 
+function shellQuote(value) {
+  return `'${value.replace(/'/g, "'\\''")}'`;
+}
+
+// A browser launched from the Dock starts the host with PATH=/usr/bin:/bin:/usr/sbin:/sbin,
+// so the wrapper adds node's and Homebrew's bin folders and the ffmpeg this shell finds.
+function macosEnvironment(nodePath) {
+  const dirs = [...new Set([path.dirname(nodePath), "/opt/homebrew/bin", "/usr/local/bin"])];
+  const ffmpeg = findFfmpeg(process.env);
+  return `export PATH=${dirs.map(shellQuote).join(":")}\${PATH:+:"$PATH"}\n${ffmpeg ? `export SURF_FFMPEG=${shellQuote(ffmpeg)}\n` : ""}`;
+}
+
 function createWrapper(wrapperDir, nodePath, hostPath, target = process.platform, listen, socketMode, socketGroup, distro = process.env.WSL_DISTRO_NAME, convertPath = wslPathToWindowsPath) {
   const socketConfig = normalizeSocketConfig(socketMode, socketGroup);
   assertSocketAccessTargetSupported(socketConfig.mode, socketConfig.group, target);
@@ -171,7 +184,7 @@ function createWrapper(wrapperDir, nodePath, hostPath, target = process.platform
   ].join("");
   const content = `#!/usr/bin/env bash
 cd "${hostDir}"
-${listen ? `: "\${SURF_LISTEN:=${listen}}"\nexport SURF_LISTEN\n` : ""}${socketEnvironment}exec "${nodePath}" "${hostPath}" "$@"
+${target === "darwin" ? macosEnvironment(nodePath) : ""}${listen ? `: "\${SURF_LISTEN:=${listen}}"\nexport SURF_LISTEN\n` : ""}${socketEnvironment}exec "${nodePath}" "${hostPath}" "$@"
 `;
   fs.writeFileSync(shPath, content);
   fs.chmodSync(shPath, "755");

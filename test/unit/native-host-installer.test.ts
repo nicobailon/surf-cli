@@ -751,6 +751,63 @@ describe("native host installer", () => {
     expect(fs.readFileSync(clearedWrapper, "utf8")).not.toContain("unset SURF_LISTEN");
   });
 
+  it("bakes the installer's ffmpeg and a Homebrew PATH into the macOS wrapper", ({ skip }) => {
+    if (process.platform === "win32") {
+      skip();
+      return;
+    }
+    const tempDir = makeTempDir();
+    const binDir = path.join(tempDir, `fake bin's "dir" $HOME`);
+    fs.mkdirSync(binDir);
+    const ffmpegPath = path.join(binDir, "ffmpeg");
+    fs.writeFileSync(ffmpegPath, "#!/bin/sh\nexit 0\n");
+    fs.chmodSync(ffmpegPath, 0o755);
+    const hostPath = path.join(tempDir, "host.cjs");
+    fs.writeFileSync(
+      hostPath,
+      "process.stdout.write(JSON.stringify({ path: process.env.PATH, ffmpeg: process.env.SURF_FFMPEG ?? null }));",
+    );
+    const saved = { PATH: process.env.PATH, SURF_FFMPEG: process.env.SURF_FFMPEG };
+    const runFromGui = (wrapperPath: string) =>
+      JSON.parse(
+        spawnSync(wrapperPath, [], {
+          encoding: "utf8",
+          env: { PATH: "/usr/bin:/bin:/usr/sbin:/sbin" },
+        }).stdout,
+      );
+    const nodeDir = path.dirname(process.execPath);
+    try {
+      delete process.env.SURF_FFMPEG;
+      process.env.PATH = `${binDir}:${saved.PATH}`;
+      const found = createWrapper(tempDir, process.execPath, hostPath, "darwin");
+      const content = fs.readFileSync(found, "utf8");
+      expect(content).toContain("export PATH=");
+      expect(content).toContain("export SURF_FFMPEG=");
+      expect(runFromGui(found)).toEqual({
+        path: `${[...new Set([nodeDir, "/opt/homebrew/bin", "/usr/local/bin"])].join(":")}:/usr/bin:/bin:/usr/sbin:/sbin`,
+        ffmpeg: ffmpegPath,
+      });
+
+      process.env.PATH = path.join(tempDir, "empty");
+      const missing = createWrapper(tempDir, process.execPath, hostPath, "darwin");
+      expect(fs.readFileSync(missing, "utf8")).toContain("export PATH=");
+      expect(fs.readFileSync(missing, "utf8")).not.toContain("SURF_FFMPEG");
+      expect(runFromGui(missing).ffmpeg).toBeNull();
+
+      process.env.PATH = `${binDir}:${saved.PATH}`;
+      const linux = createWrapper(tempDir, process.execPath, hostPath, "linux");
+      expect(fs.readFileSync(linux, "utf8")).not.toContain("export PATH=");
+      expect(fs.readFileSync(linux, "utf8")).not.toContain("SURF_FFMPEG");
+    } finally {
+      process.env.PATH = saved.PATH;
+      if (saved.SURF_FFMPEG === undefined) {
+        delete process.env.SURF_FFMPEG;
+      } else {
+        process.env.SURF_FFMPEG = saved.SURF_FFMPEG;
+      }
+    }
+  });
+
   it("accepts only inclusive Tailscale IPv4 and IPv6 CIDR boundaries", () => {
     for (const host of ["100.64.0.0", "100.127.255.255"]) {
       expect(parseListenEndpoint(`${host}:1`).host).toBe(host);
