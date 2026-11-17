@@ -1811,7 +1811,7 @@ describe("CLI/native-host/fake-extension E2E contract", () => {
 
   // A workflow starts with the op's inputs as its vars, so a step's %{text} types --text: pb param
   // keeps that input, though the request no longer takes it and a check names it, in a hand-written
-  // op and in one marked escaped alike.
+  // op and in one marked escaped alike, until --link names it.
   for (const escaped of [false, true]) {
     it(`keeps an input a workflow step reads as a var after pb param${escaped ? ", in an escaped op" : ""}`, async () => {
       const socketPath = createSocketPath();
@@ -1883,6 +1883,31 @@ describe("CLI/native-host/fake-extension E2E contract", () => {
         ]);
         expect(found).toMatchObject({ code: 0 });
         expect(typed()).toEqual(["dummy-typed"]);
+
+        // --link gives the step the named input as a var too, so the page gets --q.
+        const linked = await cli([
+          "pb",
+          "param",
+          "manual",
+          "find",
+          "query.q",
+          "--as",
+          "q",
+          "--required",
+          "--link",
+          "text",
+          "--json",
+        ]);
+        expect(linked).toMatchObject({ code: 0, stderr: "" });
+        const op = JSON.parse(fs.readFileSync(file, "utf8"));
+        expect({ inputs: Object.keys(op.args), steps: op.run[1].steps }).toEqual({
+          inputs: ["q"],
+          steps: [{ cmd: "type", args: { text: "%{q}", selector: "#field" } }],
+        });
+        expect((await cli(["use", "manual", "find", "--q", "dummy-linked", "--json"])).code).toBe(
+          0,
+        );
+        expect(typed()).toEqual(["dummy-typed", "dummy-linked"]);
       } finally {
         await host.dispose();
       }

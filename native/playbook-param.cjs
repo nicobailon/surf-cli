@@ -7,7 +7,7 @@ const { isSecretHeader, isSensitiveName } = require("./redaction.cjs");
 const { LITERAL_OPEN, escapeTemplates, escapedOp, requestInputs, sentRequest, templateInputs, unescapeTemplates } = require("./playbook-template.cjs");
 const { lineDiff } = require("./text-diff.cjs");
 const { commandMetadata } = require("./workflow-definition.cjs");
-const { startingVars } = require("./workflow-runtime.cjs");
+const { mapStartingVars, startingVars } = require("./workflow-runtime.cjs");
 
 // `surf use` options that never reach an op, so no input can take these names.
 const RESERVED_RUN_OPTIONS = new Set(["json", "no-lock", "no-wait", "session", "tab-id", "write", "repeat", "retry-attempt", "override-in-doubt", "pin-built-in", "allow-script", "format"]);
@@ -549,9 +549,9 @@ function renameInSteps(steps, from, to, touched) {
   });
 }
 
-// --link: the workflow-only input `link` becomes `name`. Its steps take {{name}}, the input goes,
-// and a write's safety key follows. Returns the step arguments it changed; none when it is
-// already linked.
+// --link: the workflow-only input `link` becomes `name`. Its steps take {{name}}, and %{name}
+// where they read the input as a var, the input goes, and a write's safety key follows. Returns
+// the step arguments it changed; none when it is already linked.
 function linkInput(op, link, name) {
   const from = `{{${link}}}`;
   const render = { escapes: escapedOp(op) };
@@ -562,12 +562,21 @@ function linkInput(op, link, name) {
   const other = op.run.find((strategy) => strategy.using !== "workflow" && usesInput(strategy, link, render));
   if (other) throw new Error(`--link ${link}: the ${other.using} strategy uses ${from} too, so it is an input of its own; pick another --as`);
   const touched = [];
-  for (const workflow of op.run.filter((strategy) => strategy.using === "workflow")) workflow.steps = renameInSteps(workflow.steps, from, `{{${name}}}`, touched);
-  if (touched.length === 0) throw new Error(`--link ${link}: no workflow step takes ${from}`);
+  const renameVar = (input, field) => {
+    if (input !== link) return input;
+    if (!/^\w+$/.test(name)) throw new Error(`--link ${link}: a step reads %{${link}}, and --as ${name} can't be a var name; pick a name of letters, digits and _`);
+    touched.push(field);
+    return name;
+  };
+  for (const workflow of op.run.filter((strategy) => strategy.using === "workflow")) {
+    const steps = renameInSteps(workflow.steps, from, `{{${name}}}`, touched);
+    workflow.steps = mapStartingVars(steps, { escapes: render.escapes, onError: workflow.onError || "stop" }, renameVar);
+  }
+  if (touched.length === 0) throw new Error(`--link ${link}: no workflow step takes ${from} or %{${link}}`);
   if (usesInput(op.run, link, render)) throw new Error(`--link ${link}: ${from} is still in the op after renaming; edit it by hand`);
   delete op.args[link];
   if (op.safety?.key?.includes(link)) op.safety.key = [...new Set(op.safety.key.map((key) => (key === link ? name : key)))];
-  return touched;
+  return [...new Set(touched)];
 }
 
 // Adds a header read from an environment variable at run time; nothing about its value is stored.

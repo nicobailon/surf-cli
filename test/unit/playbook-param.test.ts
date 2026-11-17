@@ -888,6 +888,34 @@ describe("pb param --link: a drafted typed-value input", () => {
     expect(() => playbooks.validateOp(op, { origins: [] })).not.toThrow();
   });
 
+  it("renames the var a step reads from the input, not a loop's own or a capture", () => {
+    const vars = drafted();
+    (vars.run[1] as any).steps = [
+      { cmd: "type", args: { selector: "input.name", text: "{{text}} %{text}" } },
+      { each: "%{text}", as: "text", steps: [{ cmd: "type", args: { text: "%{text}" } }] },
+      { cmd: "js", args: { code: "1" }, as: "text" },
+      { cmd: "type", args: { text: "%{text} %{!}text}" } },
+    ];
+    const { op, notes } = paramOp(vars, { fields: ["query.nameOrId"], as: "name", link: "text" });
+    expect((op.run[1] as any).steps).toEqual([
+      { cmd: "type", args: { selector: "input.name", text: "{{name}} %{name}" } },
+      { each: "%{name}", as: "text", steps: [{ cmd: "type", args: { text: "%{text}" } }] },
+      { cmd: "js", args: { code: "1" }, as: "text" },
+      { cmd: "type", args: { text: "%{text} %{!}text}" } },
+    ]);
+    expect(notes).toEqual([
+      "workflow fallback takes --name in place of --text: type text, loop each",
+    ]);
+    // A name no var can take (%{name} is \w+) leaves the var to edit by hand.
+    const dashed = drafted();
+    (dashed.run[1] as any).steps = [{ cmd: "type", args: { text: "%{text}" } }];
+    expect(() =>
+      paramOp(dashed, { fields: ["query.nameOrId"], as: "full-name", link: "text" }),
+    ).toThrow(
+      "--link text: a step reads %{text}, and --as full-name can't be a var name; pick a name of letters, digits and _",
+    );
+  });
+
   it("moves a write's safety key to the named input", () => {
     const write = drafted({
       effect: "write",
