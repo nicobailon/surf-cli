@@ -12,7 +12,7 @@ const {
   readPrivateJson,
 } = require("./private-state.cjs");
 const { redactSensitiveFields, redactUrlSecrets, safeHeaders } = require("./redaction.cjs");
-const { draftedEvents, forgetTypedValues, heldTypingCalls, numberRedactedMarkers, redactTypedValuesInUrl, rememberTypedValues, typedValuesForTrace } = require("./record-typed-values.cjs");
+const { draftedEvents, forgetTypedValues, heldTypingCalls, maskTypedValuesInUrl, numberRedactedMarkers, redactTypedValuesInUrl, rememberTypedValues, typedValuesForTrace } = require("./record-typed-values.cjs");
 const { commandMetadata, promoteRedactedStepArgs } = require("./workflow-definition.cjs");
 const { escapeStepArgs, escapeTemplates } = require("./playbook-template.cjs");
 const { describeCaptureGaps } = require("./formatters/network.cjs");
@@ -150,8 +150,12 @@ function typedSoFar(record, root) {
 }
 
 // A watch event carries the page's URL, which can hold a value a step typed (a results page's ?q=).
+// `urlMarkers` lists the markers surf put in it, so a later pass leaves them as they are.
 function redactWatchEvent(event, typed) {
-  return event.type === "browser.event" && typeof event.url === "string" ? { ...event, url: redactTypedValuesInUrl(event.url, typed) } : event;
+  if (event.type !== "browser.event" || typeof event.url !== "string" || typed.length === 0) return event;
+  const { urlMarkers: _markers, ...rest } = event;
+  const { url, markers } = maskTypedValuesInUrl(event.url, typed, { markers: event.urlMarkers });
+  return { ...rest, url, ...(markers.length ? { urlMarkers: markers } : {}) };
 }
 
 // `args` are the command's arguments as given, for rememberRecordInput. A host-owned workflow
@@ -171,7 +175,7 @@ function redactWatchEvents(record, root) {
   if (typed.length === 0) return;
   const events = readEvents(record.id, root);
   const redacted = events.map((event) => redactWatchEvent(event, typed));
-  if (redacted.every((event, index) => event.url === events[index].url)) return;
+  if (redacted.every((event, index) => JSON.stringify(event) === JSON.stringify(events[index]))) return;
   atomicWriteFile(path.join(recordDirectory(record.id, root), "events.jsonl"), redacted.map((event) => `${JSON.stringify(event)}\n`).join(""), { root, encoding: "utf8" });
 }
 
@@ -212,10 +216,13 @@ function redactTypedHeaders(headers, typed) {
 }
 
 // `typed` lists the values the record's steps typed; each becomes its marker in the entry's URLs.
+// `urlMarkers` lists the markers in the entry's URL, with the JSON type of a number or boolean one.
 function sanitizeTraceEntry(entry, includeInputValues = false, typed = []) {
+  const { url, markers } = maskTypedValuesInUrl(redactUrlSecrets(entry.url), typed, { body: entry.requestBody });
   return {
     ...redactSensitiveFields(entry),
-    url: redactTypedValuesInUrl(redactUrlSecrets(entry.url), typed, { body: entry.requestBody }),
+    url,
+    ...(markers.length ? { urlMarkers: markers } : {}),
     ...(entry.tabUrl !== undefined ? { tabUrl: redactTypedValuesInUrl(redactUrlSecrets(entry.tabUrl), typed) } : {}),
     requestHeaders: redactTypedHeaders(safeHeaders(entry.requestHeaders), typed),
     responseHeaders: redactTypedHeaders(safeHeaders(entry.responseHeaders), typed),
@@ -362,12 +369,18 @@ function pickRequest({ record, trace, effect, requestId, warnings }) {
 
 // The request a network strategy sends to replay a captured trace entry: its query apart, its
 // headers without secrets, and its body as captured (`<request-body>` without input values). Text
-// that reads like an input (`{{action}}`) is escaped, so it is sent as captured.
+// that reads like an input (`{{action}}`) is escaped, so it is sent as captured. A typed number or
+// boolean the record masked in a JSON query value is kept as redactedTypes: pb param gives its
+// input that type.
 function requestFromEntry(entry) {
   const url = new URL(entry.url);
   const query = Object.fromEntries(url.searchParams.entries());
   url.search = "";
-  return escapeTemplates({ method: entry.method, url: url.toString(), query, headers: safeHeaders(entry.requestHeaders), ...(entry.requestBody !== undefined ? { body: entry.requestBody } : {}) });
+  const redactedTypes = Object.fromEntries((entry.urlMarkers || []).filter((marker) => marker.field && marker.type).map((marker) => [marker.field, marker.type]));
+  return {
+    ...escapeTemplates({ method: entry.method, url: url.toString(), query, headers: safeHeaders(entry.requestHeaders), ...(entry.requestBody !== undefined ? { body: entry.requestBody } : {}) }),
+    ...(Object.keys(redactedTypes).length ? { redactedTypes } : {}),
+  };
 }
 
 // The input a write op without other inputs takes as its semantic safety key.

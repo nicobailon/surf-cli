@@ -118,13 +118,20 @@ describe("typed values in a captured URL", () => {
     ).toBe("https://example.test/api/<text>");
   });
 
-  it("never matches inside a placeholder already in the URL", () => {
-    expect(redact("https://example.test/s?q=<text>&r=dummy+text+here", "romeo", "text")).toBe(
-      "https://example.test/s?q=<text>&r=dummy+<text-2>+here",
-    );
-    expect(redact("https://example.test/s?q=%3Cvalue%3E+%3Ctext-3%3E", "value", "text")).toBe(
-      "https://example.test/s?q=%3Cvalue%3E+%3Ctext-3%3E",
-    );
+  it("never matches inside a marker an earlier pass listed", () => {
+    const typed = [
+      { value: "romeo", marker: "<text>" },
+      { value: "text", marker: "<text-2>" },
+    ];
+    const url = "https://example.test/s?q=<text>&r=dummy+text+here";
+    const markers = [{ start: 25, end: 31 }];
+    expect(typedValues.maskTypedValuesInUrl(url, typed, { markers })).toEqual({
+      url: "https://example.test/s?q=<text>&r=dummy+<text-2>+here",
+      markers: [
+        { start: 25, end: 31 },
+        { start: 40, end: 48 },
+      ],
+    });
   });
 
   it("leaves values shorter than 3 characters alone", () => {
@@ -203,5 +210,132 @@ describe("placeholders in a request", () => {
       field: "query.q",
       placeholder: "<text>",
     });
+  });
+});
+
+describe("typed values in a URL's parsed parts", () => {
+  const typed = (...values: string[]) =>
+    values.map((value, index) => ({
+      value,
+      marker: index === 0 ? "<text>" : `<text-${index + 1}>`,
+    }));
+  const mask = (url: string, values: string[], options = {}) =>
+    typedValues.maskTypedValuesInUrl(url, typed(...values), options);
+
+  it("never touches a JSON key, even one holding the typed value", () => {
+    const json = encodeURIComponent('{"user-name":"other"}');
+    expect(redact(`https://example.test/api?v=${json}`, "name")).toBe(
+      `https://example.test/api?v=${json}`,
+    );
+    expect(redact('https://example.test/api?v={"user-name":"other"}', "name")).toBe(
+      'https://example.test/api?v={"user-name":"other"}',
+    );
+  });
+
+  it("masks a JSON number as a marker string and records that it was a number, where", () => {
+    const { url, markers } = mask("https://example.test/graphql?variables=%7B%22year%22:2024%7D", [
+      "2024",
+    ]);
+    expect(url).toBe("https://example.test/graphql?variables=%7B%22year%22:%22<text>%22%7D");
+    expect(JSON.parse(new URL(url).searchParams.get("variables") as string)).toEqual({
+      year: "<text>",
+    });
+    expect(markers).toEqual([
+      {
+        start: url.indexOf("<text>"),
+        end: url.indexOf("<text>") + 6,
+        type: "number",
+        field: "query.variables.year",
+      },
+    ]);
+    const live = mask('https://example.test/g?v={"live":true,"n":true}', ["true"]);
+    expect(live.url).toBe('https://example.test/g?v={"live":"<text>","n":"<text>"}');
+    expect(live.markers.map((item: { type: string }) => item.type)).toEqual(["boolean", "boolean"]);
+  });
+
+  it("keeps the page's JSON layout when it masks inside it", () => {
+    const spaced = encodeURIComponent('{"q": "dummy romeo", "n": 2}');
+    expect(redact(`https://example.test/g?v=${spaced}`, "dummy romeo")).toBe(
+      `https://example.test/g?v=${encodeURIComponent('{"q": "')}<text>${encodeURIComponent('", "n": 2}')}`,
+    );
+  });
+
+  it("reads + in a query value as a space, so a typed + matches only an encoded one", () => {
+    expect(redact("https://example.test/s?q=start+foo+bar+end", "foo+bar")).toBe(
+      "https://example.test/s?q=start+foo+bar+end",
+    );
+    expect(redact("https://example.test/s?q=start+foo%2Bbar+end", "foo+bar")).toBe(
+      "https://example.test/s?q=start+<text>+end",
+    );
+    expect(redact("https://example.test/s?q=start+foo+bar+end", "foo bar")).toBe(
+      "https://example.test/s?q=start+<text>+end",
+    );
+  });
+
+  it("masks typed text that looks like a marker, as any other value", () => {
+    expect(
+      redact("https://example.test/s?q=hi+Alice+%3Ctext%3E+secret+bye", "Alice <text> secret"),
+    ).toBe("https://example.test/s?q=hi+<text>+bye");
+    expect(redact("https://example.test/s?q=%3Ctext%3E", "<text>")).toBe(
+      "https://example.test/s?q=<text>",
+    );
+  });
+
+  it("skips only the markers it inserted, which it lists by position", () => {
+    const first = mask("https://example.test/get?q=romeo&r=x", ["romeo"]);
+    expect(first.url).toBe("https://example.test/get?q=<text>&r=x");
+    expect(first.markers).toEqual([{ start: 27, end: 33 }]);
+    const later = [
+      { value: "romeo", marker: "<text>" },
+      { value: "<text>", marker: "<text-2>" },
+    ];
+    const again = typedValues.maskTypedValuesInUrl(first.url, later, { markers: first.markers });
+    expect(again).toEqual(first);
+    // Without the list, the same text is a value the user typed.
+    expect(typedValues.maskTypedValuesInUrl(first.url, later).url).toBe(
+      "https://example.test/get?q=<text-2>&r=x",
+    );
+  });
+
+  it("leaves pairs it doesn't change byte for byte as captured", () => {
+    expect(redact("https://example.test/s?a=x%2cy&b=%7b%7d&q=pizza+now&c=a+b", "pizza")).toBe(
+      "https://example.test/s?a=x%2cy&b=%7b%7d&q=<text>+now&c=a+b",
+    );
+  });
+
+  it("masks two path segments holding the value, and lists both", () => {
+    const { url, markers } = mask("https://example.test/users/users", ["users"]);
+    expect(url).toBe("https://example.test/<text>/<text>");
+    expect(markers).toHaveLength(2);
+    expect(redact("https://example.test/search-users", "users")).toBe(
+      "https://example.test/search-users",
+    );
+  });
+
+  it("treats a #/route as path segments and its ?query as a query", () => {
+    expect(redact("https://example.test/app#/route/users", "users")).toBe(
+      "https://example.test/app#/route/<text>",
+    );
+    expect(redact("https://example.test/app#/users?q=users", "users")).toBe(
+      "https://example.test/app#/users?q=<text>",
+    );
+    expect(redact("https://example.test/app#/list?q=dummy+romeo+here", "dummy romeo")).toBe(
+      "https://example.test/app#/list?q=<text>+here",
+    );
+  });
+
+  it("learns from a JSON or form body which values the request sends, so the path keeps them", () => {
+    const users = [{ value: "users", marker: "<text>" }];
+    const url = "https://example.test/api/users";
+    for (const body of [
+      '{"filter":{"q":"all users"}}',
+      "q=all+users&n=1",
+      `variables=${encodeURIComponent('{"q":"users"}')}`,
+    ]) {
+      expect(typedValues.redactTypedValuesInUrl(url, users, { body })).toBe(url);
+    }
+    expect(typedValues.redactTypedValuesInUrl(url, users, { body: '{"users":1}' })).toBe(
+      "https://example.test/api/<text>",
+    );
   });
 });

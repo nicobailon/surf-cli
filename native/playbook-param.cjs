@@ -297,8 +297,10 @@ function coerce(value, type, label) {
   return String(value);
 }
 
-function inputType(results) {
-  const types = new Set(results.filter((result) => result.json && result.whole).map((result) => typeof result.literal));
+// `redactedTypes` maps a field whose number or boolean the record masked (as <text>) to that type.
+function inputType(results, redactedTypes = {}) {
+  const typeOf = (result) => (REDACTED_VALUE.test(String(result.literal)) && redactedTypes[result.field]) || typeof result.literal;
+  const types = new Set(results.filter((result) => result.json && result.whole).map(typeOf));
   if (types.size > 1) throw new Error(`the fields hold values of different types (${[...types].join(", ")}); give each its own input`);
   const [type] = types;
   return type === "number" || type === "boolean" ? type : "string";
@@ -469,7 +471,12 @@ function paramOp(op, { fields, as: name, env, required = false, default: default
   if (sensitive && !required) throw new Error(`${sensitive.field} looks secret: pass --required so its value isn't stored as a default`);
 
   const existing = next.args?.[name];
-  const type = templated.length ? inputType(templated) : existing?.type || "string";
+  const type = templated.length ? inputType(templated, request.redactedTypes) : existing?.type || "string";
+  if (request.redactedTypes) {
+    const left = Object.fromEntries(Object.entries(request.redactedTypes).filter(([field]) => !templated.some((result) => result.field === field)));
+    if (Object.keys(left).length) request.redactedTypes = left;
+    else delete request.redactedTypes;
+  }
   let fallback;
   if (defaultValue !== undefined) fallback = coerce(defaultValue, type, "--default");
   else if (!required && !redacted) fallback = templated.length ? coerce(templated[0].literal, type, `the value of ${templated[0].field}`) : existing?.default;
@@ -481,6 +488,12 @@ function paramOp(op, { fields, as: name, env, required = false, default: default
   next.args = { ...(next.args || {}), [name]: { ...(existing || {}), ...spec } };
 
   const notes = redacted && fallback === undefined ? [`the record redacted the value it typed here (${redacted[0]}), so --${name} is required`] : [];
+  // The record masks every path segment that is the typed value; one of them may be a fixed route piece.
+  if (redacted) {
+    const named = templated.filter((result) => result.segment).map((result) => result.field);
+    const others = named.length ? splitUrl(request.url).segments.map((segment, index) => [`path.${index + 1}`, decodePath(segment)]).filter(([field, value]) => value === redacted[0] && !named.includes(field)).map(([field]) => field) : [];
+    if (others.length) notes.push(`${others.join(", ")} holds ${redacted[0]} too, the same typed value: name every segment to template them with one input (surf pb param <playbook> <op> ${[...others, ...named].sort((a, b) => Number(a.slice(5)) - Number(b.slice(5))).join(" ")} --as ${name}), or put back the route text it held there`);
+  }
   const workflows = next.run.filter((candidate) => candidate.using === "workflow");
   const linked = link === undefined ? [] : linkInput(next, link, name);
   if (linked.length) notes.push(`workflow fallback takes --${name} in place of --${link}: ${linked.join(", ")}`);

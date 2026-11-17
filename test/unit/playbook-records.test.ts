@@ -2879,6 +2879,7 @@ describe("what a hand-edited draft can't change", () => {
 describe("values typed during a record, in captured URLs", () => {
   const { redactCommandArgs } = require("../../native/workflow-definition.cjs");
   const { findRedactedPlaceholder } = require("../../native/record-typed-values.cjs");
+  const runtime = require("../../native/playbook-runtime.cjs");
   const TYPED = "dummy echo words";
   const FILLED = "dummyfoxtrot";
   const hostEvent = (command: string, args: Entry) => ({
@@ -3048,9 +3049,59 @@ describe("values typed during a record, in captured URLs", () => {
     );
     expect(JSON.parse(networkOf(draft).query.variables)).toEqual({ year: "<text>", live: true });
     const { op } = paramOp(draft, { fields: ["query.variables.year"], as: "year" });
-    const rendered = renderRequest(networkOf(op), { year: "2031" });
-    expect(JSON.parse(rendered.query.variables)).toEqual({ year: "2031", live: true });
+    expect(op.args.year).toEqual({ type: "number", required: true });
+    expect(networkOf(op)).not.toHaveProperty("redactedTypes");
+    const rendered = renderRequest(networkOf(op), { year: 2031 });
+    expect(JSON.parse(rendered.query.variables)).toEqual({ year: 2031, live: true });
     expect(findRedactedPlaceholder(networkOf(op))).toBeNull();
+  });
+
+  it("replays a typed year it masked in GraphQL variables as a number", async () => {
+    const { draft } = draftTyping(
+      ["2024"],
+      "https://example.test/graphql?variables=%7B%22year%22:2024%7D&op=dummy",
+    );
+    expect(networkOf(draft).query).toEqual({ variables: '{"year":"<text>"}', op: "dummy" });
+    expect(networkOf(draft).redactedTypes).toEqual({ "query.variables.year": "number" });
+    const { op } = paramOp(draft, { fields: ["query.variables.year"], as: "year" });
+    // The endpoint refuses a year sent as a string.
+    const tab = captureTab({
+      reply: (url: string) => {
+        const year = JSON.parse(new URL(url).searchParams.get("variables") as string).year;
+        return Number.isInteger(year)
+          ? { body: JSON.stringify({ year }) }
+          : { status: 400, body: '{"error":"year must be an integer"}' };
+      },
+    });
+    const result = await runtime.runPlaybookOp({
+      playbook: { id: "fixture" },
+      op: {
+        ...op,
+        run: op.run.filter((strategy: { using: string }) => strategy.using === "network"),
+      },
+      args: { year: "2031" },
+      executeTool: tab.executeTool,
+    });
+    expect(result).toMatchObject({ status: "completed", strategy: "network" });
+    expect(result.value.bodyJson).toEqual({ year: 2031 });
+    const sent = new URL(tab.fetchImpl.mock.calls[0][0]);
+    expect(sent.searchParams.get("variables")).toBe('{"year":2031}');
+  });
+
+  it("masks two path segments holding a typed value; pb param templates both with one input", () => {
+    const { draft } = draftTyping(["users"], "https://example.test/users/users");
+    expect(networkOf(draft).url).toBe("https://example.test/%3Ctext%3E/%3Ctext%3E");
+    const one = paramOp(draft, { fields: ["path.2"], as: "who" });
+    expect(one.notes.join("\n")).toMatch(/path\.1 holds <text> too.*path\.1 path\.2/);
+    expect(findRedactedPlaceholder(networkOf(one.op))).toEqual({
+      field: "path.1",
+      placeholder: "<text>",
+    });
+    const both = paramOp(draft, { fields: ["path.1", "path.2"], as: "who" });
+    expect(findRedactedPlaceholder(networkOf(both.op))).toBeNull();
+    expect(renderRequest(networkOf(both.op), { who: "dummy" }).url).toBe(
+      "https://example.test/dummy/dummy",
+    );
   });
 
   it("keeps a route segment that also holds the typed value, so pb param leaves nothing redacted", () => {
@@ -3227,6 +3278,17 @@ describe("values typed during a record, in watch events", () => {
       "https://example.test/get?q=<text>",
       "https://example.test/get?q=<text>&r=<text-2>",
     ]);
+  });
+
+  it("keeps an event's marker when a later step types that marker's text", () => {
+    expect(
+      watchTyping([
+        { text: "romeo" },
+        { url: "https://example.test/get?q=romeo" },
+        { text: "<text>" },
+        { url: "https://example.test/get?r=%3Ctext%3E" },
+      ]),
+    ).toEqual(["https://example.test/get?q=<text>", "https://example.test/get?r=<text-2>"]);
   });
 
   it("replaces a whole fragment holding a slash in an event's URL", () => {

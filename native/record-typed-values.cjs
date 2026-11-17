@@ -194,166 +194,295 @@ function decodeOnce(text, plusIsSpace) {
   return { decoded, starts };
 }
 
-// Every reading of a value: as captured, then decoded once more at each depth, `+` a space only
-// in the outermost encoding or in every one. `toRaw` maps each position back to `raw`; `depth`
-// counts the decodes that gave it.
-function readingsOf(raw) {
-  const readings = [{ text: raw, toRaw: (index) => index, depth: 0 }];
-  for (const plusEveryLevel of [false, true]) {
-    let text = raw;
-    let toRaw = readings[0].toRaw;
-    for (let depth = 1; depth <= MAX_DECODES; depth++) {
-      const { decoded, starts } = decodeOnce(text, depth === 1 || plusEveryLevel);
-      if (decoded === text) break;
-      const outer = toRaw;
-      toRaw = (index) => outer(starts[index]);
-      text = decoded;
-      if (!readings.some((reading) => reading.text === text)) readings.push({ text, toRaw, depth });
-    }
-  }
-  return readings;
-}
-
 // Whether `index` falls inside a %XX escape of `text` (`20abc` in `hello%20abc`).
 const HEX = /[0-9a-fA-F]/;
 const insideEscape = (text, index) =>
   (text[index - 1] === "%" && HEX.test(text[index] || "") && HEX.test(text[index + 1] || "")) ||
   (text[index - 2] === "%" && HEX.test(text[index - 1]) && HEX.test(text[index] || ""));
 
-// Where a JSON object or array's values sit in `text`: the inside of each string value (never a
-// key) and each number, true, false or null, which only a whole match may replace. Null if
-// `text` isn't one.
-function jsonValueSpans(text) {
+// How a URL is masked: it is split into its parts (path segments, query pairs, fragment), each
+// value is decoded with its part's own rules, typed values are matched in the decoded value only,
+// and the part is rebuilt. While a URL is being masked, each marker (surf's own, or one an earlier
+// pass inserted and listed) stands in as one private-use character, a "token": no match can reach
+// into it, the encoders pass it through, and it becomes the marker's text at the end.
+const TOKEN_BLOCKS = [0xe000, 0xf000];
+const TOKEN_BLOCK_SIZE = 0x800;
+
+function createTokens(url) {
+  const readings = decodings(url).map(({ text }) => text).join("");
+  const base = TOKEN_BLOCKS.find((start) => ![...readings].some((char) => char.charCodeAt(0) >= start && char.charCodeAt(0) < start + TOKEN_BLOCK_SIZE)) ?? TOKEN_BLOCKS[0];
+  const list = [];
+  return {
+    /** A new token for `info` ({ marker, type?, field? }). */
+    add(info) {
+      if (list.length >= TOKEN_BLOCK_SIZE) throw new Error("too many typed values in one URL to redact");
+      list.push(info);
+      return String.fromCharCode(base + list.length - 1);
+    },
+    /** The token's info, or null for any other character. */
+    of(char) {
+      const index = char.charCodeAt(0) - base;
+      return index >= 0 && index < list.length ? list[index] : null;
+    },
+  };
+}
+
+// The decodings of one encoded value: level 0 as captured, level 1 decoded once (`+` a space in a
+// query or form value), each deeper level decoded once more while that changes it. `starts[i]` is
+// where character i of a level begins in the level above it.
+function levelsOf(raw, plusIsSpace) {
+  const levels = [{ text: raw }];
+  for (let depth = 1; depth <= MAX_DECODES; depth++) {
+    const above = levels[depth - 1].text;
+    const { decoded, starts } = decodeOnce(above, plusIsSpace && depth === 1);
+    if (depth > 1 && decoded === above) break;
+    levels.push({ text: decoded, starts });
+  }
+  return levels;
+}
+
+// Where position `index` of level `depth` begins in level 0.
+function toRaw(levels, depth, index) {
+  for (let level = depth; level > 0; level--) index = levels[level].starts[index];
+  return index;
+}
+
+// Where `value` sits in `text`: the whole text, or, for a value of 4 or more characters, each
+// occurrence between characters that are not letters or digits (`pizza near me`, not `name` in
+// `username`). With `escapes`, the text will be decoded again, so a match can't split a %XX.
+function matchesIn(text, value, { escapes = false } = {}) {
+  if (value.length >= MIN_LENGTH && text === value) return [{ start: 0, end: text.length }];
+  if (value.length < MIN_INSIDE_LENGTH) return [];
+  const found = [];
+  for (const match of text.matchAll(new RegExp(`(?<![\\p{L}\\p{N}])${escapeRegExp(value)}(?![\\p{L}\\p{N}])`, "gu"))) {
+    const start = match.index;
+    const end = start + value.length;
+    if (escapes && (insideEscape(text, start) || insideEscape(text, end))) continue;
+    found.push({ start, end });
+  }
+  return found;
+}
+
+const replaceRanges = (text, ranges, token) => {
+  let result = "";
+  let index = 0;
+  for (const { start, end } of ranges) {
+    result += text.slice(index, start) + token;
+    index = end;
+  }
+  return result + text.slice(index);
+};
+
+const parseJsonDocument = (text) => {
   try {
     const parsed = JSON.parse(text);
-    if (!parsed || typeof parsed !== "object") return null;
+    return parsed && typeof parsed === "object" ? { parsed } : null;
   } catch {
     return null;
   }
-  const spans = [];
-  const token = /"(?:[^"\\]|\\.)*"|-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?|true|false|null|[{}[\]:,]|\s+/y;
-  const colon = /\s*:/y;
-  for (let match = token.exec(text); match; match = token.exec(text)) {
-    const [found] = match;
-    if (/^[\s{}[\]:,]/.test(found)) continue;
-    if (!found.startsWith('"')) {
-      spans.push({ start: match.index, end: token.lastIndex, scalar: true });
-      continue;
-    }
-    colon.lastIndex = token.lastIndex;
-    if (!colon.test(text)) spans.push({ start: match.index + 1, end: token.lastIndex - 1, scalar: false });
-  }
-  return spans;
+};
+
+// JSON written with the given separators between items and after keys.
+function serializeJson(value, item, key) {
+  if (Array.isArray(value)) return `[${value.map((entry) => serializeJson(entry, item, key)).join(item)}]`;
+  if (value && typeof value === "object") return `{${Object.entries(value).map(([name, entry]) => `${JSON.stringify(name)}${key}${serializeJson(entry, item, key)}`).join(item)}}`;
+  return JSON.stringify(value);
 }
 
-// The ranges of `raw` where a typed value of 4 or more characters sits inside a reading of the
-// value, as typed, between non-alphanumeric characters (`"rawQuery":"…"`, `pizza near me`, but
-// not `name` in `username`), never splitting an escape or touching a placeholder already there,
-// and in JSON only in values. Each range spans whole escapes of `raw`. A JSON number or boolean
-// is replaced with a JSON string, its quotes encoded as the reading's depth encodes the rest.
-function insideRanges(raw, typed) {
-  const values = typed.filter(({ value }) => value.length >= MIN_INSIDE_LENGTH).sort((a, b) => b.value.length - a.value.length);
-  const ranges = [];
-  for (const { text, toRaw, depth } of readingsOf(raw)) {
-    const spans = jsonValueSpans(text);
-    const placeholders = [...text.matchAll(new RegExp(PLACEHOLDER.source, "g"))].map((match) => ({ start: match.index, end: match.index + match[0].length }));
-    const span = (start, end) => (spans ? spans.find((item) => (item.scalar ? start === item.start && end === item.end : start >= item.start && end <= item.end)) : {});
-    const clear = (start, end) => !insideEscape(text, start) && !insideEscape(text, end) && !placeholders.some((item) => start < item.end && item.start < end);
-    for (const { value, marker } of values) {
-      const forms = spans ? [...new Set([value, JSON.stringify(value).slice(1, -1)])] : [value];
-      for (const form of forms) {
-        for (const match of text.matchAll(new RegExp(`(?<![\\p{L}\\p{N}])${escapeRegExp(form)}(?![\\p{L}\\p{N}])`, "gu"))) {
-          const start = match.index;
-          const end = start + form.length;
-          const where = span(start, end);
-          if (!where || !clear(start, end)) continue;
-          let quote = '"';
-          for (let level = 0; level < depth; level++) quote = encodeURIComponent(quote);
-          ranges.push({ start: toRaw(start), end: toRaw(end), value, marker: where.scalar ? `${quote}${marker}${quote}` : marker });
-        }
-      }
+// The layout the page wrote its JSON in, when it is compact or Python's default; else compact.
+const JSON_LAYOUTS = [[",", ":"], [", ", ": "]];
+const jsonLayout = (parsed, text) => JSON_LAYOUTS.find(([item, key]) => serializeJson(parsed, item, key) === text) || JSON_LAYOUTS[0];
+
+/**
+ * Replaces `value` in a parsed JSON document's values, never its keys: a string that is the value
+ * or holds it (see matchesIn), and a number or boolean that is the value, which becomes a marker
+ * string whose token records its JSON type and `field` path. Returns the new document, or null.
+ */
+function maskJsonValues(node, { value, marker }, tokens, field) {
+  let changed = false;
+  const visit = (item, path) => {
+    if (typeof item === "string") {
+      const ranges = matchesIn(item, value);
+      if (ranges.length === 0) return item;
+      changed = true;
+      return replaceRanges(item, ranges, tokens.add({ marker }));
+    }
+    if ((typeof item === "number" || typeof item === "boolean") && value.length >= MIN_LENGTH && String(item) === value) {
+      changed = true;
+      return tokens.add({ marker, type: typeof item, ...(field ? { field: [field, ...path].join(".") } : {}) });
+    }
+    if (Array.isArray(item)) return item.map((entry, index) => visit(entry, [...path, index]));
+    if (item && typeof item === "object") return Object.fromEntries(Object.entries(item).map(([key, entry]) => [key, visit(entry, [...path, key])]));
+    return item;
+  };
+  const result = visit(node, []);
+  return changed ? result : null;
+}
+
+// Encodes `text` back to the level above it, as `original` (that level as captured) encoded the
+// same characters: what it wrote as is stays as is, what it escaped is escaped (in its hex case),
+// and a space is `+` where it wrote one. Tokens pass through.
+function encodeLike(text, original, plusIsSpace, tokens) {
+  const literal = new Set();
+  let lowerHex = false;
+  for (let index = 0; index < original.length;) {
+    const escape = original[index] === "%" && /^%[0-9a-fA-F]{2}$/.test(original.slice(index, index + 3));
+    if (escape) {
+      if (/[a-f]/.test(original.slice(index + 1, index + 3))) lowerHex = true;
+      index += 3;
+      continue;
+    }
+    literal.add(original[index]);
+    index += 1;
+  }
+  literal.delete("%");
+  const space = plusIsSpace && literal.has("+") ? "+" : literal.has(" ") ? " " : "%20";
+  if (plusIsSpace) literal.delete("+");
+  let result = "";
+  for (const char of text) {
+    if (tokens.of(char) || /[A-Za-z0-9\-_.~]/.test(char) || literal.has(char)) result += char;
+    else if (char === " ") result += space;
+    else {
+      const escaped = encodeURIComponent(char).replace(/[!'()*]/g, (mark) => `%${mark.charCodeAt(0).toString(16).toUpperCase()}`);
+      result += lowerHex ? escaped.toLowerCase() : escaped;
     }
   }
-  return ranges;
+  return result;
 }
 
 /**
- * One URL part with the typed values in it replaced. The whole part becomes the marker when it
- * decodes to a typed value. Otherwise, with `inside` (a query or fragment value, not a path
- * segment), every typed value found inside a decoding of the value becomes its marker, and the
- * rest of the part is kept exactly as it was encoded. Each value replaced is added to `found`.
+ * One encoded value (a query or form value, a plain fragment or a body) with one typed value
+ * replaced by its marker's token: the whole value when a decoding of it is the typed value, a
+ * JSON document's values when a decoding of it is JSON, else each occurrence inside the deepest
+ * decoding that holds one. The rest of the value is kept as captured; a JSON document is written
+ * again in the page's layout and encoded as the value was. `field` names the value for pb param
+ * (`query.variables`). Returns `{ raw, matched }`.
  */
-function redactPart(raw, typed, { inside = true, found = new Set() } = {}) {
-  if (!raw) return raw;
-  const readings = decodings(raw);
-  const whole = typed.find(({ value }) => value.length >= MIN_LENGTH && readings.some(({ text }) => text === value));
-  if (whole) {
-    found.add(whole.value);
-    return whole.marker;
+function maskValue(raw, typed, tokens, { plusIsSpace, field, inside = true }) {
+  const levels = levelsOf(raw, plusIsSpace);
+  const decoded = levels.slice(1);
+  if (typed.value.length >= MIN_LENGTH && decoded.some(({ text }) => text === typed.value)) return { raw: tokens.add({ marker: typed.marker }), matched: true };
+  if (!inside) return { raw, matched: false };
+  const json = decoded.findIndex(({ text }) => parseJsonDocument(text));
+  if (json >= 0) {
+    const depth = json + 1;
+    const original = levels[depth].text;
+    const { parsed } = parseJsonDocument(original);
+    const masked = maskJsonValues(parsed, typed, tokens, field);
+    if (!masked) return { raw, matched: false };
+    let text = serializeJson(masked, ...jsonLayout(parsed, original));
+    for (let level = depth; level > 0; level--) text = encodeLike(text, levels[level - 1].text, plusIsSpace && level === 1, tokens);
+    return { raw: text, matched: true };
   }
-  if (!inside) return raw;
-  const kept = [];
-  for (const range of insideRanges(raw, typed)) {
-    if (!kept.some((other) => range.start < other.end && other.start < range.end)) kept.push(range);
+  for (let depth = levels.length - 1; depth > 0; depth--) {
+    const ranges = matchesIn(levels[depth].text, typed.value, { escapes: depth < levels.length - 1 });
+    if (ranges.length === 0) continue;
+    const token = tokens.add({ marker: typed.marker });
+    return { raw: replaceRanges(raw, ranges.map(({ start, end }) => ({ start: toRaw(levels, depth, start), end: toRaw(levels, depth, end) })), token), matched: true };
   }
-  kept.sort((a, b) => a.start - b.start);
-  let result = "";
-  let index = 0;
-  for (const { start, end, value, marker } of kept) {
-    found.add(value);
-    result += raw.slice(index, start) + marker;
-    index = end;
-  }
-  return result + raw.slice(index);
+  return { raw, matched: false };
 }
 
-// Pairs (key=value) keep their keys; a part without `=` is a value.
-function redactPairs(text, typed, found) {
+// Each typed value in turn, the longest first, so `dummy romeo` is found before `romeo`.
+function maskEach(raw, typed, tokens, options, found) {
+  let result = raw;
+  for (const item of typed) {
+    const masked = maskValue(result, item, tokens, options);
+    if (masked.matched) found?.add(item.value);
+    result = masked.raw;
+  }
+  return result;
+}
+
+// Query pairs (`k=v&…`): keys are never touched, and a pair it doesn't change stays as captured.
+function maskPairs(text, typed, tokens, found, { query = false } = {}) {
   return text.split("&").map((pair) => {
     const split = pair.indexOf("=");
-    if (split < 0) return redactPart(pair, typed, { found });
-    return `${pair.slice(0, split + 1)}${redactPart(pair.slice(split + 1), typed, { found })}`;
+    if (split < 0) return maskEach(pair, typed, tokens, { plusIsSpace: true }, found);
+    const key = pair.slice(0, split);
+    const field = query ? `query.${levelsOf(key, true)[1].text}` : undefined;
+    return `${key}=${maskEach(pair.slice(split + 1), typed, tokens, { plusIsSpace: true, field }, found)}`;
   }).join("&");
 }
 
-// Path segments are route pieces as well as values, so only a whole segment is replaced.
-const redactPath = (text, typed) => text.split("/").map((segment) => redactPart(segment, typed, { inside: false })).join("/");
+// Path segments are route pieces as well as values: a segment is masked only when it is a typed value.
+const maskSegments = (text, typed, tokens) =>
+  text.split("/").map((segment) => maskEach(segment, typed, tokens, { plusIsSpace: false, inside: false })).join("/");
+
+// Which typed values a request body sends, read as JSON, a form or text, the way a URL value is.
+// The body isn't rewritten, so its matches need no tokens of their own.
+const SCAN_TOKENS = { add: () => "\uFFFF", of: () => null };
+function bodyHolds(body, typed, found) {
+  const tokens = SCAN_TOKENS;
+  if (typeof body !== "string" || !body) return;
+  if (!parseJsonDocument(body) && /^[^=&]+=/.test(body)) maskPairs(body, typed, tokens, found);
+  else maskEach(body, typed, tokens, { plusIsSpace: false }, found);
+}
 
 /**
- * Replaces each typed value in `url` with its marker in query values, path segments, the
- * fragment and fragment values, however many times it was encoded: a whole value or path
- * segment, or one of 4 or more characters inside a longer query or fragment value. Keys, JSON
- * keys, escapes, placeholders and the origin are never changed. A value that is also a query,
- * fragment or `body` value leaves the path as captured: there it is a fixed route piece
- * (/api/users?q=users), and naming the value with pb param leaves a request that replays.
+ * `url` with each typed value ({ value, marker }) replaced by its marker, as `{ url, markers }`.
+ * `markers` lists every marker in the result, as `{ start, end }` in it, with `type` (number or
+ * boolean) and `field` (`query.variables.year`) for a JSON scalar it replaced. Pass the list a
+ * previous pass returned as `markers`, and those stay as they are; any other text that looks like
+ * a marker is text a page or the user wrote, matched as any other.
+ *
+ * Query values (and a fragment's `?k=v` or `k=v` pairs) are form-decoded and matched whole or
+ * inside, a JSON value only in its values. A path segment, or a `#/route`'s, is masked only when it
+ * is a typed value no query, fragment or `body` value holds: there it is a fixed route piece
+ * (/api/users?q=users). A plain fragment is masked only whole. Keys and the origin never change.
  */
-function redactTypedValuesInUrl(url, typed, { body } = {}) {
-  if (typeof url !== "string" || typed.length === 0) return url;
-  const match = url.match(/^([a-zA-Z][a-zA-Z0-9+.-]*:\/\/[^/?#]*)?([^?#]*)(\?[^#]*)?(#.*)?$/s);
-  if (!match) return url;
-  const [, origin = "", pathname, query, fragment] = match;
-  const found = new Set();
-  if (typeof body === "string" && body) {
-    if (body.includes("=") && !jsonValueSpans(body)) redactPairs(body, typed, found);
-    else redactPart(body, typed, { found });
+function maskTypedValuesInUrl(url, typed, { body, markers = [] } = {}) {
+  if (typeof url !== "string") return { url, markers };
+  const match = url.match(/^([a-zA-Z][a-zA-Z0-9+.-]*:\/\/[^/?#]*)?([^?#]*)(?:\?([^#]*))?(?:#(.*))?$/s);
+  if (!match || typed.length === 0) return { url, markers };
+  const tokens = createTokens(url);
+  // The markers an earlier pass inserted become tokens first, so nothing matches inside them.
+  let source = "";
+  let index = 0;
+  for (const { start, end, ...info } of [...markers].sort((a, b) => a.start - b.start)) {
+    if (start < index || !REDACTED_MARKER.test(url.slice(start, end))) continue;
+    source += url.slice(index, start) + tokens.add({ marker: url.slice(start, end), ...info });
+    index = end;
   }
-  const search = query === undefined ? "" : `?${redactPairs(query.slice(1), typed, found)}`;
+  source += url.slice(index);
+  const [, origin = "", pathname, query, fragment] = source.match(/^([a-zA-Z][a-zA-Z0-9+.-]*:\/\/[^/?#]*)?([^?#]*)(?:\?([^#]*))?(?:#(.*))?$/s);
+  const values = typed.filter(({ value }) => value).sort((a, b) => b.value.length - a.value.length);
+  const found = new Set();
+  bodyHolds(body, values, found);
+  const search = query === undefined ? "" : `?${maskPairs(query, values, tokens, found, { query: true })}`;
   let hash = "";
   let route = null;
   if (fragment !== undefined) {
-    const value = fragment.slice(1);
-    // #tab=a&q=b holds values; #a/b is one value or else a hash route (#/users/list), a path.
-    if (value.includes("=")) hash = `#${redactPairs(value, typed, found)}`;
-    else {
-      const whole = redactPart(value, typed, { inside: !value.includes("/"), found });
-      if (whole === value && value.includes("/")) route = value;
-      else hash = `#${whole}`;
-    }
+    const whole = maskEach(fragment, values, tokens, { plusIsSpace: false, inside: false }, found);
+    const split = fragment.indexOf("?");
+    if (whole !== fragment) hash = `#${whole}`;
+    else if (split >= 0) {
+      route = fragment.slice(0, split);
+      hash = `?${maskPairs(fragment.slice(split + 1), values, tokens, found)}`;
+    } else if (fragment.startsWith("/")) route = fragment;
+    else if (fragment.includes("=")) hash = `#${maskPairs(fragment, values, tokens, found)}`;
+    else hash = `#${fragment}`;
   }
-  const pathTyped = typed.filter(({ value }) => !found.has(value));
-  if (route !== null) hash = `#${redactPath(route, pathTyped)}`;
-  return `${origin}${redactPath(pathname, pathTyped)}${search}${hash}`;
+  const pathTyped = values.filter(({ value }) => !found.has(value));
+  if (route !== null) hash = `#${maskSegments(route, pathTyped, tokens)}${hash}`;
+  const masked = `${origin}${maskSegments(pathname, pathTyped, tokens)}${search}${hash}`;
+  let result = "";
+  const listed = [];
+  for (const char of masked) {
+    const info = tokens.of(char);
+    if (!info) {
+      result += char;
+      continue;
+    }
+    const { marker, ...rest } = info;
+    listed.push({ start: result.length, end: result.length + marker.length, ...rest });
+    result += marker;
+  }
+  return { url: result, markers: listed };
 }
+
+/** `url` with the typed values in it replaced by their markers (see maskTypedValuesInUrl). */
+const redactTypedValuesInUrl = (url, typed, options) => maskTypedValuesInUrl(url, typed, options).url;
 
 // A placeholder a body holds as the whole body or a whole field value: a JSON string or a
 // urlencoded value. Markup such as XML-RPC's <value> is part of a longer value, so isn't one.
@@ -420,6 +549,7 @@ module.exports = {
   findRedactedPlaceholder,
   forgetTypedValues,
   heldTypingCalls,
+  maskTypedValuesInUrl,
   numberRedactedMarkers,
   placeholderError,
   redactTypedValuesInUrl,
