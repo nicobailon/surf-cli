@@ -5,7 +5,7 @@ const { readRecent } = require("./activity-journal.cjs");
 const { writeNetworkExport } = require("./network-export.cjs");
 const { getPrivateStateRoot, readPrivateJson } = require("./private-state.cjs");
 const { REVIEW_KEY_ARG, buildDraft, draftFromRecord, neverReplayed, readRecord, recordedSteps, recordsRoot, requestFromEntry } = require("./playbook-records.cjs");
-const { escapeStepArgs, sentRequest, templateInputs } = require("./playbook-template.cjs");
+const { escapeStepArgs, requestInputs, sentRequest } = require("./playbook-template.cjs");
 const { isCommitWorkflow, savePlaybook, validateOp } = require("./playbooks.cjs");
 const { isTelemetryRequest, requestEffect, shownUrl } = require("./request-kinds.cjs");
 const { commandMetadata, normalizeStep, promoteRedactedStepArgs } = require("./workflow-definition.cjs");
@@ -263,7 +263,8 @@ function fitWriteWorkflow(op, warnings) {
   if (requestEffect(request) !== "write") throw new Error(`write op ${op.id} can't be saved: ${why}, and its network strategy replays ${shown}, a read, not the write`);
   warnings.push(`saved network-only: ${why}, so the op replays ${shown} alone`);
   const run = op.run.filter((strategy) => strategy !== workflow);
-  const used = templateInputs(run.map((strategy) => sentRequest(strategy.request)));
+  // The requests are rebuilt from the record, so they hold escaped text.
+  const used = new Set(run.flatMap((strategy) => [...requestInputs(sentRequest(strategy.request), { escapes: true })]));
   const args = Object.fromEntries(Object.entries(op.args || {}).filter(([name]) => used.has(name)));
   let key = op.safety.key.filter((name) => Object.hasOwn(args, name));
   if (key.length === 0) {

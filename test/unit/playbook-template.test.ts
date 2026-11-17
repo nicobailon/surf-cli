@@ -164,6 +164,32 @@ describe("request templates", () => {
       : texts(depth - 1).flatMap((text) => ["", ...pieces].map((piece) => text + piece));
   const literals = [...new Set([...texts(3), "{{{", "{{{{q}}}}", "%{{q}}", "{%{q}}", "%{%{q}}"])];
 
+  // pb param stores a JSON param's keys escaped, as its values, so an escaped op's key can take an
+  // input; any other op sends its keys as written, as it always has.
+  it("fills an escaped op's JSON keys as its values, and leaves any other op's keys as written", () => {
+    const { requestInputs } = require("../../native/playbook-template.cjs");
+    const request = {
+      url: "https://api.test/",
+      query: { v: { "{{k}}": "{{n}}", "{{!}}k}}": [{ "a{{k}}": 1 }] } },
+      body: { "{{k}}": { "{{!}}!}}": "x" } },
+    };
+    const args = { k: "K{{!}}%{!}", n: 5 };
+    const sent = renderRequest(request, args, saved);
+    expect(JSON.parse(sent.query.v)).toEqual({
+      "K{{!}}%{!}": 5,
+      "{{k}}": [{ "aK{{!}}%{!}": 1 }],
+    });
+    expect(sent.body).toEqual({ "K{{!}}%{!}": { "{{!}}": "x" } });
+    expect(requestInputs(request, { escapes: true })).toEqual(new Set(["k", "n"]));
+
+    const plain = renderRequest(request, args);
+    expect(JSON.parse(plain.query.v)).toEqual({
+      "{{k}}": 5,
+      "{{!}}k}}": [{ "a{{k}}": 1 }],
+    });
+    expect(requestInputs(request)).toEqual(new Set(["n"]));
+  });
+
   it("sends every escaped captured request text as captured", () => {
     for (const text of literals) {
       const escaped = escapeTemplates(text);

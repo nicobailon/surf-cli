@@ -26,7 +26,8 @@ function resolveArgValues(specs, provided) {
 // a longer string the value is encoded for where it lands: the URL and urlencoded bodies get
 // percent-encoding; query params, headers and other bodies get the text as is. Object and array
 // query params are sent as JSON. With `escapes` (an op pb save escaped, see escapedOp), `{{!}}` is
-// sent as `{{` (see escapeTemplates); any other request sends it as written.
+// sent as `{{` (see escapeTemplates), and an object's keys are filled as text too: pb param stores
+// them escaped, as it does values. Any other request sends `{{!}}` and its keys as written.
 function renderRequest(request, args, { escapes = false } = {}) {
   const EXACT = /^\{\{([a-zA-Z0-9._-]+)\}\}$/;
   const ANY = escapes ? /\{\{([a-zA-Z0-9._-]+|!)\}\}/g : /\{\{([a-zA-Z0-9._-]+)\}\}/g;
@@ -42,7 +43,7 @@ function renderRequest(request, args, { escapes = false } = {}) {
       return exact ? args[exact[1]] : embed(value, encode);
     }
     if (Array.isArray(value)) return value.map((item) => fill(item));
-    if (value && typeof value === "object") return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, fill(item)]));
+    if (value && typeof value === "object") return Object.fromEntries(Object.entries(value).map(([key, item]) => [escapes ? embed(key, keep) : key, fill(item)]));
     return value;
   };
   const headers = {};
@@ -102,17 +103,34 @@ function sentRequest({ authInputs: _auth, redactedTypes: _types, repeatedQuery: 
   return sent;
 }
 
-// The inputs a value takes: each {{name}} in its strings at any depth. Keys are never filled, so a
-// key that reads {{name}} takes none.
-function templateInputs(value, names = new Set()) {
-  if (typeof value === "string") {
-    for (const match of value.matchAll(/\{\{([a-zA-Z0-9._-]+)\}\}/g)) names.add(match[1]);
-  } else if (Array.isArray(value)) {
-    for (const item of value) templateInputs(item, names);
-  } else if (value && typeof value === "object") {
-    for (const item of Object.values(value)) templateInputs(item, names);
-  }
+// The inputs a value takes: each {{name}} in its strings at any depth, and with `keys` in its keys
+// too.
+function templateInputs(value, { keys = false } = {}) {
+  const names = new Set();
+  const add = (text) => {
+    for (const match of text.matchAll(/\{\{([a-zA-Z0-9._-]+)\}\}/g)) names.add(match[1]);
+  };
+  const visit = (item) => {
+    if (typeof item === "string") add(item);
+    else if (Array.isArray(item)) item.forEach(visit);
+    else if (item && typeof item === "object") {
+      for (const [key, inner] of Object.entries(item)) {
+        if (keys) add(key);
+        visit(inner);
+      }
+    }
+  };
+  visit(value);
   return names;
+}
+
+// The inputs a request (sentRequest's) takes where renderRequest fills them: with `escapes`, the
+// keys inside a query value or the body too, never a query param's or header's name.
+function requestInputs({ query, headers, body, ...rest }, { escapes = false } = {}) {
+  return new Set([
+    ...templateInputs([rest, Object.values(headers || {})]),
+    ...templateInputs([Object.values(query || {}), body], { keys: escapes }),
+  ]);
 }
 
 // Whether an op holds escaped text: pb save --from-record and --from-recent set provenance.escaped
@@ -122,4 +140,4 @@ function escapedOp(op) {
   return op?.provenance?.escaped === true;
 }
 
-module.exports = { LITERAL_OPEN, escapeStepArgs, escapeTemplates, escapedOp, renderRequest, resolveArgValues, sentRequest, templateInputs, unescapeTemplates };
+module.exports = { LITERAL_OPEN, escapeStepArgs, escapeTemplates, escapedOp, renderRequest, requestInputs, resolveArgValues, sentRequest, templateInputs, unescapeTemplates };

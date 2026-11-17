@@ -3,7 +3,7 @@ const http = require("http");
 const path = require("path");
 const { execFile } = require("child_process");
 const { atomicWriteFile, atomicWriteJson, ensurePrivateDir, getPrivateStateRoot, readPrivateJson } = require("./private-state.cjs");
-const { escapedOp, renderRequest, resolveArgValues, templateInputs } = require("./playbook-template.cjs");
+const { escapedOp, renderRequest, requestInputs, resolveArgValues } = require("./playbook-template.cjs");
 const { findRedactedPlaceholder, placeholderError } = require("./record-typed-values.cjs");
 const { resolveOp } = require("./playbooks.cjs");
 const { isReplayCandidate, readRecord, recordsRoot, requestEffect, requestFromEntry } = require("./playbook-records.cjs");
@@ -134,8 +134,8 @@ process.stdout.write("\\n");
 }
 
 // The op's inputs the request uses; inputs only its browser steps take aren't asked for.
-function endpointArgs(op, endpoint) {
-  const used = templateInputs(endpoint);
+function endpointArgs(op, endpoint, escapes) {
+  const used = requestInputs(endpoint, { escapes });
   return Object.fromEntries(Object.entries(op.args || {}).filter(([name]) => used.has(name)));
 }
 
@@ -175,7 +175,7 @@ function generateClient({ playbookId, op, strategy, provenance, out, allowWrite 
     effect: op.effect,
     endpoint,
     ...(escapes ? { escapes: true } : {}),
-    args: endpointArgs(op, endpoint),
+    args: endpointArgs(op, endpoint, escapes),
     extract,
     // surf use returns these records; this client prints the raw HTML body instead.
     ...(extractHtml ? { extractHtml } : {}),
@@ -246,7 +246,7 @@ function deriveClient(site, opId, out, options = {}) {
 function sampleArgs(manifest) {
   const specs = manifest.args || {};
   const samples = { string: "verify", number: 1, boolean: true };
-  return Object.fromEntries([...templateInputs(manifest.endpoint)].map((name) => [name, specs[name]?.default ?? samples[specs[name]?.type] ?? "verify"]));
+  return Object.fromEntries([...requestInputs(manifest.endpoint, { escapes: manifest.escapes === true })].map((name) => [name, specs[name]?.default ?? samples[specs[name]?.type] ?? "verify"]));
 }
 
 // Values go as --name=value, so one starting with -- stays a value. Clients made before

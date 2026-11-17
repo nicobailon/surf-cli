@@ -492,6 +492,52 @@ describe("clients from parameterised ops", () => {
     expect(requests.map((request) => request.headers["x-q"])).toEqual(values);
   });
 
+  // pb param stores a JSON param's keys escaped, as its values: one may take an input.
+  it("exports a client of an op pb save made that fills a JSON key's input and sends a captured key as captured", async () => {
+    const cwd = writeOp({
+      id: "keyed",
+      effect: "read",
+      args: {
+        key: { type: "string", required: true },
+        n: { type: "number", default: 1 },
+      },
+      provenance: { recordId: "rec-1", escaped: true },
+      run: [
+        {
+          using: "network",
+          request: {
+            method: "GET",
+            url: "https://books.test/keyed",
+            query: {
+              v: {
+                "{{key}}": "kept",
+                "{{!}}key}}": "literal",
+                "{{!}}!}}k": "{{n}}",
+              },
+            },
+          },
+        },
+      ],
+    });
+    const out = path.join(cwd, "client");
+    const { manifest } = clients.exportClient("books", "keyed", out, { cwd });
+    expect(Object.keys(manifest.args)).toEqual(["key", "n"]);
+    const requests = await serve(async (origin) => {
+      await runClient(out, ["--key", "live{{!}}%{!}", "--n", "2"], {
+        SURF_CLIENT_ORIGIN: origin,
+      });
+    });
+    const sent = new URL(requests[0].url, "http://client.test").searchParams.get("v");
+    expect(JSON.parse(sent as string)).toEqual({
+      "live{{!}}%{!}": "kept",
+      "{{key}}": "literal",
+      "{{!}}k": 2,
+    });
+    await expect(clients.verifyClient(out, { live: false })).resolves.toMatchObject({
+      valid: true,
+    });
+  });
+
   it('reads --x "" and --x= as the empty string, and a bare --flag only for a boolean', async () => {
     const cwd = writeOp({
       id: "search",

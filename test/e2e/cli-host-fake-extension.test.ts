@@ -1274,6 +1274,156 @@ describe("CLI/native-host/fake-extension E2E contract", () => {
     }
   }, 60000);
 
+  // pb param on part of a JSON query param's text can put an input in a key, beside a captured
+  // key that reads the same, {{key}}. A field templated next keeps both keys: the replay sends the
+  // input's key as given and the captured one as captured, and a field naming {{key}} is refused.
+  it("keeps an input in a JSON param's key when a field inside it is templated next", async () => {
+    const socketPath = createSocketPath();
+    const project = fs.mkdtempSync(path.join(os.tmpdir(), "surf-record-json-key-"));
+    tempDirs.push(project);
+    const vm = require("node:vm") as {
+      runInNewContext(code: string, context: Record<string, unknown>): unknown;
+    };
+    const sent: string[] = [];
+    const tab = {
+      URL,
+      location: { href: "https://fixture.test/form" },
+      fetch: async (url: string) => {
+        sent.push(url);
+        return {
+          status: 200,
+          ok: true,
+          url,
+          redirected: false,
+          headers: new Map([["content-type", "application/json"]]),
+          text: async () => '{"ok":true}',
+          arrayBuffer: async () => new ArrayBuffer(0),
+        };
+      },
+    };
+    let running = false;
+    const raw = String.raw`{"seed-key":"kept","{{key}}":"literal","{{field}}":"f","\u007b\u007bx}}":"esc","n":"start","m":"other"}`;
+    const page = {
+      url: `https://fixture.test/api?v=${encodeURIComponent(raw)}`,
+    };
+    const host = startHost(socketPath, {
+      recording: true,
+      scriptResponse: page,
+      runScript: async (code) => {
+        if (running) {
+          await vm.runInNewContext(code, { ...tab });
+        }
+        const at = Date.now();
+        return {
+          output: JSON.stringify({
+            status: 200,
+            ok: true,
+            url: "https://fixture.test/api",
+            headers: {},
+            sentAt: at,
+            doneAt: at,
+          }),
+        };
+      },
+    });
+    const run = (args: string[]) =>
+      runCli(socketPath, args, project, { SURF_STATE_DIR: host.stateDir });
+    const cli = async (args: string[]) => {
+      const result = await run(args);
+      expect(result.code, `surf ${args.join(" ")}: ${result.stderr}`).toBe(0);
+      return result;
+    };
+    const opFile = path.join(project, ".surf", "playbooks", "fixture", "ops", "probe.json");
+    const given: Record<string, string> = {
+      key: "live-key{{!}}%{!}",
+      n: "N{{!}}%{!}",
+      m: "M",
+    };
+    // What the replay sends once `input` takes `field`: --value seed-key puts it in that key.
+    const sentAfter = (expected: Record<string, unknown>, field: string, input: string) => {
+      if (field === "query.v" && input === "key") {
+        const { "seed-key": kept, ...rest } = expected;
+        return { ...rest, [given.key]: kept };
+      }
+      return {
+        ...expected,
+        [field === "query.v" ? input : field.slice("query.v.".length)]: given[input],
+      };
+    };
+    // The reviewer's order, a key then a field, and a value in the text before the key.
+    const orders = [
+      [
+        ["query.v", "key", "seed-key"],
+        ["query.v.n", "n"],
+      ],
+      [
+        ["query.v", "n", "start"],
+        ["query.v", "key", "seed-key"],
+        ["query.v.m", "m"],
+      ],
+    ];
+
+    try {
+      await host.waitForMessage((message) => message.type === "HOST_READY");
+      await cli(["navigate", "https://fixture.test/form"]);
+      await cli(["pb", "record", "start", "fixture", "--op", "probe", "--network"]);
+      await cli(["js", 'fetch("/api")']);
+      const { record } = JSON.parse(
+        (await cli(["pb", "record", "stop", "--draft", "--read", "--json"])).stdout,
+      );
+      await cli(["pb", "save", "--from-record", record.id, "--project", "--json"]);
+      const saved = fs.readFileSync(opFile, "utf8");
+      page.url = "https://fixture.test/api";
+      running = true;
+      for (const steps of orders) {
+        fs.writeFileSync(opFile, saved);
+        let expected: Record<string, unknown> = JSON.parse(raw);
+        const inputs: string[] = [];
+        for (const [field, input, value] of steps) {
+          await cli([
+            "pb",
+            "param",
+            "fixture",
+            "probe",
+            field,
+            "--as",
+            input,
+            ...(value ? ["--value", value] : []),
+            "--json",
+          ]);
+          inputs.push(input);
+          expected = sentAfter(expected, field, input);
+          sent.length = 0;
+          await cli([
+            "use",
+            "fixture",
+            "probe",
+            ...inputs.flatMap((name) => [`--${name}`, given[name]]),
+            "--json",
+          ]);
+          expect(
+            sent.map((url) => JSON.parse(new URL(url).searchParams.get("v") ?? "")),
+            inputs.join(" then "),
+          ).toEqual([expected]);
+        }
+        const refused = await run([
+          "pb",
+          "param",
+          "fixture",
+          "probe",
+          "query.v.{{key}}",
+          "--as",
+          "k",
+          "--json",
+        ]);
+        expect(refused.code).not.toBe(0);
+        expect(refused.stderr).toContain('more than one key at the top level reads "{{key}}"');
+      }
+    } finally {
+      await host.dispose();
+    }
+  }, 60000);
+
   // The CLI types `true` as a boolean; the record holds it as the text it typed, as it does a
   // number, so a URL that sends it is masked in the trace, the saved op and the HAR, and a JSON
   // `true` there becomes a boolean input.

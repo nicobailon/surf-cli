@@ -324,6 +324,95 @@ describe("pb param: field locations", () => {
     }
   });
 
+  // Templating part of a JSON param's text can put an input in a key. Stored as an object, that
+  // key stays an input; a captured key that reads the same, {{key}}, stays captured beside it.
+  it("keeps an input in a stored JSON param's key when a field inside it is templated next", () => {
+    const { escapedOp } = require("../../native/playbook-template.cjs");
+    const raw = String.raw`{"seed-key":"kept","{{key}}":"literal","{{field}}":"f","\u007b\u007bx}}":"esc","n":"start","m":"other"}`;
+    const given: Record<string, string> = {
+      key: "live{{!}}%{!}",
+      n: "N{{!}}%{!}",
+      m: "M",
+    };
+    const captured = JSON.parse(raw);
+    const orders = {
+      // The reviewer's: the key, then a field.
+      forward: [
+        { fields: ["query.v"], as: "key", value: "seed-key" },
+        { fields: ["query.v.n"], as: "n" },
+      ],
+      // A value in the text first, then the key, then a field.
+      reverse: [
+        { fields: ["query.v"], as: "n", value: "start" },
+        { fields: ["query.v"], as: "key", value: "seed-key" },
+        { fields: ["query.v.m"], as: "m" },
+      ],
+    };
+    for (const [name, steps] of Object.entries(orders)) {
+      const op = steps.reduce((at, step) => paramOp(at, step).op, savedJsonOp(raw, "query"));
+      const inputs = steps.map((step) => step.as);
+      expect(Object.keys(op.args), name).toEqual(inputs);
+      const args = Object.fromEntries(inputs.map((input) => [input, given[input]]));
+      const { "seed-key": kept, ...rest } = captured;
+      const expected = {
+        ...rest,
+        [given.key]: kept,
+        ...(args.n ? { n: given.n } : {}),
+        ...(args.m ? { m: given.m } : {}),
+      };
+      const sent = renderRequest(requestOf(op), args, {
+        escapes: escapedOp(op),
+      });
+      expect(JSON.parse(sent.query.v), name).toEqual(expected);
+      // A field names a captured key by its captured text; the input's key and the captured
+      // key that reads the same are both named {{key}}, so pb param refuses to pick one.
+      expect(paramOp(op, { fields: ["query.v.{{field}}"], as: "f" }).op.args.f, name).toEqual({
+        type: "string",
+        default: "f",
+      });
+      expect(() => paramOp(op, { fields: ["query.v.{{key}}"], as: "k" }), name).toThrow(
+        'query.v.{{key}}: more than one key at the top level reads "{{key}}"',
+      );
+    }
+  });
+
+  // A masked number under a key that an input then takes keeps its type: the record's note on it
+  // follows the key.
+  it("keeps a masked number's type under a JSON key templated into an input", () => {
+    const { escapedOp, resolveArgValues } = require("../../native/playbook-template.cjs");
+    const saved = savedJsonOp('{"year":"<text>","n":"seed"}', "query");
+    requestOf(saved).redactedTypes = { "query.v.year": "number" };
+    const keyed = paramOp(saved, {
+      fields: ["query.v"],
+      as: "field",
+      value: "year",
+    }).op;
+    expect(requestOf(keyed).redactedTypes).toEqual({
+      "query.v.{{field}}": "number",
+    });
+    const { op } = paramOp(keyed, {
+      fields: ["query.v.{{field}}"],
+      as: "year",
+    });
+    expect(op.args.year).toEqual({ type: "number", required: true });
+    expect(requestOf(op)).not.toHaveProperty("redactedTypes");
+    const args = resolveArgValues(op.args, { field: "y{{!}}", year: "2031" });
+    const sent = renderRequest(requestOf(op), args, { escapes: escapedOp(op) });
+    expect(JSON.parse(sent.query.v)).toEqual({ "y{{!}}": 2031, n: "seed" });
+  });
+
+  // A hand-written op fills every {{name}} in a JSON param's text, keys too, but sends an object's
+  // keys as written: pb param won't turn one into the other.
+  it("refuses to store a hand-written JSON param whose key takes an input as an object", () => {
+    const op = networkOp({
+      url: "https://shop.test/s",
+      query: { v: '{"{{key}}":"kept","n":"seed"}' },
+    });
+    expect(() => paramOp(op, { fields: ["query.v.n"], as: "n" })).toThrow(
+      'query.v.n: the key "{{key}}" in query.v takes an input',
+    );
+  });
+
   // JSON.parse reads any depth; so does pb param.
   it("templates a field of a stored JSON param nested 5,000 levels deep", () => {
     const depth = 5000;
