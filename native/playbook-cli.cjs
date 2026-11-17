@@ -297,4 +297,4 @@ function formatPlaybookOutput(value, json = false) {
   return value;
 }
 
-module.exports = { formatPlaybookOutput, handlePlaybookCli, playbookCommandNeedsBrowser };
+module.exports = { formatPlaybookOutput, handlePlaybookCli, playbookCommandNeedsBrowser, requestHost };
