@@ -4071,12 +4071,12 @@ describe("surf parse", () => {
     }
   }
 
-  const fetched = (url: string, body: string, type: string) => ({
+  const fetched = (url: string, body: string, type: string, extra: [string, string][] = []) => ({
     status: 200,
     ok: true,
     url,
     redirected: false,
-    headers: new Map([["content-type", type]]),
+    headers: new Map([["content-type", type], ...extra]),
     text: async () => body,
     arrayBuffer: async () => new ArrayBuffer(0),
   });
@@ -4104,6 +4104,7 @@ describe("surf parse", () => {
   function parseFixture(
     traffic: ReturnType<typeof captured>[],
     replayed: ReturnType<typeof captured>,
+    headers: [string, string][] = [],
   ) {
     const home = fs.mkdtempSync(path.join(os.tmpdir(), "surf-parse-home-"));
     tempDirs.push(home);
@@ -4111,7 +4112,7 @@ describe("surf parse", () => {
       URL,
       location: { href: replayed.url },
       fetch: async (url: string) =>
-        fetched(url, String(replayed.responseBody), String(replayed.mimeType)),
+        fetched(url, String(replayed.responseBody), String(replayed.mimeType), headers),
       DOMParser,
     };
     const host = startHost(socketPath, {
@@ -4411,6 +4412,31 @@ describe("surf parse", () => {
       const op = JSON.parse(fs.readFileSync(opFile("local", "get_shop_items_with"), "utf8"));
       expect(op.run[0].extract.html.item).toBe("div.p-4");
       expect(op.on.success.expect.assert).toHaveLength(3);
+    } finally {
+      await host.dispose();
+    }
+  }, 60000);
+
+  it("fits the records under the cap left by the response's own headers", async () => {
+    // About 42,000 characters of records: under the fixed margin, over what a 10,000-character
+    // header leaves of the tab's 50,000.
+    const items = Array.from({ length: 320 }, (_, i) => ({
+      id: i,
+      title: `Dummy role ${i}`,
+      note: `note ${i} `.repeat(6),
+    }));
+    expect(JSON.stringify({ extracted: items }, null, 2).length).toBeGreaterThan(40000);
+    expect(JSON.stringify({ extracted: items }, null, 2).length).toBeLessThan(45000);
+    const api = captured("r_api", `${served.origin}/api/jobs`, JSON.stringify({ items }));
+    const page = captured("r_doc", `${served.origin}/jobs`, "<html><body>Jobs</body></html>");
+    const { host, cli, opFile } = parseFixture([page, api], api, [["x-dummy", "d".repeat(10000)]]);
+    try {
+      await host.waitForMessage((message) => message.type === "HOST_READY");
+      const parsed = await cli([`${served.origin}/jobs`, "--goal", "acme job postings", "--json"]);
+      expect(parsed.code).toBe(0);
+      expect(JSON.parse(parsed.stdout)).toMatchObject({ ok: true, extract: { dropped: ["note"] } });
+      const op = JSON.parse(fs.readFileSync(opFile("local", "get_acme_job_postings"), "utf8"));
+      expect(op.run[0].extract.fields).toEqual({ id: "id", title: "title" });
     } finally {
       await host.dispose();
     }

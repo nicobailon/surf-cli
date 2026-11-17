@@ -389,10 +389,14 @@ const CHROME = /(^|[-_\s])(header|breadcrumbs?|nav|navbar|masthead|banner)([-_\s
 const inChrome = (el) => [el, ...ancestors(el)].some((node) => ["header", "nav"].includes(node.name) || CHROME.test(node.attribs.id || "") || CHROME.test(node.attribs.class || ""));
 
 // The page's own heading: an h1 (one whose class says title first), else an h2, outside the site's
-// header, breadcrumbs and navigation and not a run of links; with a selector whose first match it is.
+// header, breadcrumbs and navigation and not a run of links (see below for an h1 inside a header);
+// with a selector whose first match it is.
 function mainHeading(doc) {
   for (const tag of ["h1", "h2"]) {
-    const headings = selectAll(doc, tag).filter((el) => textOf(el) && !inChrome(el) && selectAll(el, "a[href]").length < 2);
+    const outside = selectAll(doc, tag).filter((el) => textOf(el) && !inChrome(el) && selectAll(el, "a[href]").length < 2);
+    // With no h1 outside a header, an unlinked h1 inside one is the page's (a post's entry-header,
+    // a page-header, body.has-header); a linked one is the site's logo.
+    const headings = outside.length || tag !== "h1" ? outside : selectAll(doc, tag).filter((el) => textOf(el) && selectAll(el, "a[href]").length === 0);
     const titled = headings.find((el) => classesOf(el).some((name) => /title/i.test(name)));
     for (const el of titled ? [titled, ...headings] : headings) {
       const ancestorId = [...ancestors(el)].map(idOf).find(Boolean);

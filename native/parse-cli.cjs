@@ -14,12 +14,15 @@ const { formatTestReport, runPlaybookTest } = require("./playbook-test.cjs");
 const { resolveOp } = require("./playbooks.cjs");
 const { getPrivateStateRoot, readPrivateJson } = require("./private-state.cjs");
 const { WINNER_MARGIN, formatCandidates, siteOf } = require("./record-candidates.cjs");
-const { inferHtml, inferJson, keyFields } = require("./parse-infer.cjs");
+const { RESULT_LIMIT } = require("./bounded-regex.cjs");
+const { RECORDS_LIMIT, inferHtml, inferJson, keyFields } = require("./parse-infer.cjs");
 const { goalNeedsRecipe, opName, planInputs, siteName } = require("./parse-inputs.cjs");
 const { checkRobots } = require("./parse-robots.cjs");
 
 const RECIPE = "follow the parse recipe instead (surf skill, references/parse-recipe.md)";
 const USAGE = 'Usage: surf parse <url> --goal "<what you want>" [--op <name>] [--input name=field]... [--request-id r_…] [--json]';
+// Room for head headers that change between the probe and later runs (a date, an etag).
+const HEAD_SLACK = 1000;
 // Below this many ms apart the requests parse sends to a site (robots.txt's Crawl-delay wins when longer).
 const DEFAULT_GAP_MS = 3000;
 
@@ -202,7 +205,12 @@ async function finish({ spec, site, op, recorded, saved, cwd, gapMs, host, endpo
   const probe = await host("playbook.run", probeArgs);
   if (probe?.status !== "completed") throw new Error(`replaying its request failed: ${probe?.error || "no answer"}`);
   const response = probe.value || {};
-  const found = response.bodyJson !== undefined ? inferJson(response.bodyJson) : typeof response.body === "string" ? inferHtml(response.body, { baseUrl: response.url || spec.url, detail }) : undefined;
+  // The tab sends the records back inside { status, ok, url, headers, extracted }: what the
+  // response's own head takes leaves the rest of the tab's limit to the records.
+  const head = { status: response.status, ok: response.ok, url: response.url, headers: response.headers };
+  const headChars = JSON.stringify({ ...head, extracted: null }, null, 2).length - JSON.stringify({ extracted: null }, null, 2).length;
+  const limit = Math.min(RECORDS_LIMIT, RESULT_LIMIT - headChars - HEAD_SLACK);
+  const found = response.bodyJson !== undefined ? inferJson(response.bodyJson, { limit }) : typeof response.body === "string" ? inferHtml(response.body, { baseUrl: response.url || spec.url, detail, limit }) : undefined;
   if (!found) throw new Error("found no records or fields to extract from its response");
   saveExtract({ playbook: site, op, extract: found.extract, cwd });
   commands.push(extractCommand(site, op, found.extract));

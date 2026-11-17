@@ -416,6 +416,37 @@ describe("parse extract inference", () => {
     });
   });
 
+  it("takes an h1 inside the page's own header when no h1 is outside one", () => {
+    const sidebar = `<aside><h2 class="widget-title">Recent Posts</h2><ul><li><a href="/p/1">One</a></li></ul></aside>`;
+    const title = (html: string) =>
+      infer.inferHtml(html, { baseUrl: "https://blog.example/p/2", detail: true })?.extract.html
+        .fields.title;
+    expect(
+      title(
+        `<html><body><article><header class="entry-header"><h1 class="entry-title">A Dummy Post</h1></header><p>Body.</p></article>${sidebar}</body></html>`,
+      ),
+    ).toBe("h1");
+    expect(
+      title(
+        `<html><body><article><header><h1>A Dummy Post</h1></header><p>Body.</p></article>${sidebar}</body></html>`,
+      ),
+    ).toBe("h1");
+    expect(
+      title(
+        `<html><body><div class="container"><div class="page-header"><h1>A Dummy Page</h1></div></div>${sidebar}</body></html>`,
+      ),
+    ).toBe("h1");
+    expect(
+      title(`<html><body class="has-header"><h1>A Dummy Page</h1>${sidebar}</body></html>`),
+    ).toBe("h1");
+    // A site logo linked home is still not the page's heading.
+    expect(
+      title(
+        `<html><body><header><h1><a href="/">Dummy Site</a></h1></header><main><h2>A Dummy Page</h2></main></body></html>`,
+      ),
+    ).toBe("h2");
+  });
+
   it("measures records as the tab sends them back, inside the result", () => {
     const items = Array.from({ length: 50 }, (_, i) => ({ id: i, a: i }));
     const bare = JSON.stringify(items, null, 2).length;
