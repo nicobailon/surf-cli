@@ -70,10 +70,60 @@ describe("typed values in a captured URL", () => {
     );
   });
 
-  it("replaces a typed value that is a whole JSON number or boolean", () => {
+  it("replaces a typed value that is a whole JSON number or boolean with a JSON string", () => {
     const json = encodeURIComponent('{"year":2024,"live":true,"n":20245}');
     expect(redact(`https://example.test/graphql?variables=${json}`, "2024", "true")).toBe(
-      `https://example.test/graphql?variables=${encodeURIComponent('{"year":')}<text>${encodeURIComponent(',"live":')}<text-2>${encodeURIComponent(',"n":20245}')}`,
+      `https://example.test/graphql?variables=${encodeURIComponent('{"year":"')}<text>${encodeURIComponent('","live":"')}<text-2>${encodeURIComponent('","n":20245}')}`,
+    );
+    expect(redact('https://example.test/graphql?variables={"year":2024}', "2024")).toBe(
+      'https://example.test/graphql?variables={"year":"<text>"}',
+    );
+  });
+
+  it("compares the value as typed with every decoding of the captured value", () => {
+    expect(redact("https://example.test/s?q=start+foo%2520bar+end", "foo%20bar")).toBe(
+      "https://example.test/s?q=start+<text>+end",
+    );
+    expect(redact("https://example.test/s?q=start+foo%2520bar+end", "foo bar")).toBe(
+      "https://example.test/s?q=start+<text>+end",
+    );
+    expect(redact("https://example.test/s?q=hello%2520abcd", "20abcd")).toBe(
+      "https://example.test/s?q=hello%2520abcd",
+    );
+  });
+
+  it("keeps a path segment when the value is also a query or fragment value", () => {
+    expect(redact("https://example.test/api/users?q=users", "users")).toBe(
+      "https://example.test/api/users?q=<text>",
+    );
+    expect(redact("https://example.test/api/users?q=all+users", "users")).toBe(
+      "https://example.test/api/users?q=all+<text>",
+    );
+    expect(redact("https://example.test/?q=users#/users", "users")).toBe(
+      "https://example.test/?q=<text>#/users",
+    );
+    expect(redact("https://example.test/search/pizza?page=2", "pizza")).toBe(
+      "https://example.test/search/<text>?page=2",
+    );
+    const typed = [{ value: "users", marker: "<text>" }];
+    for (const body of ['{"q":"users"}', "q=users&n=1"]) {
+      expect(
+        typedValues.redactTypedValuesInUrl("https://example.test/api/users", typed, { body }),
+      ).toBe("https://example.test/api/users");
+    }
+    expect(
+      typedValues.redactTypedValuesInUrl("https://example.test/api/users", typed, {
+        body: '{"users":1}',
+      }),
+    ).toBe("https://example.test/api/<text>");
+  });
+
+  it("never matches inside a placeholder already in the URL", () => {
+    expect(redact("https://example.test/s?q=<text>&r=dummy+text+here", "romeo", "text")).toBe(
+      "https://example.test/s?q=<text>&r=dummy+<text-2>+here",
+    );
+    expect(redact("https://example.test/s?q=%3Cvalue%3E+%3Ctext-3%3E", "value", "text")).toBe(
+      "https://example.test/s?q=%3Cvalue%3E+%3Ctext-3%3E",
     );
   });
 
@@ -99,6 +149,12 @@ describe("typed values in a captured URL", () => {
     expect(redact("https://example.test/page#abc", "abc")).toBe("https://example.test/page#<text>");
     expect(redact("https://example.test/page#tab=abc&x=1", "abc")).toBe(
       "https://example.test/page#tab=<text>&x=1",
+    );
+    expect(redact("https://example.test/page#dummy/slash", "dummy/slash")).toBe(
+      "https://example.test/page#<text>",
+    );
+    expect(redact("https://example.test/page#/list/dummy", "dummy")).toBe(
+      "https://example.test/page#/list/<text>",
     );
   });
 });

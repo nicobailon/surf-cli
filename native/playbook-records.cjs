@@ -215,7 +215,7 @@ function redactTypedHeaders(headers, typed) {
 function sanitizeTraceEntry(entry, includeInputValues = false, typed = []) {
   return {
     ...redactSensitiveFields(entry),
-    url: redactTypedValuesInUrl(redactUrlSecrets(entry.url), typed),
+    url: redactTypedValuesInUrl(redactUrlSecrets(entry.url), typed, { body: entry.requestBody }),
     ...(entry.tabUrl !== undefined ? { tabUrl: redactTypedValuesInUrl(redactUrlSecrets(entry.tabUrl), typed) } : {}),
     requestHeaders: redactTypedHeaders(safeHeaders(entry.requestHeaders), typed),
     responseHeaders: redactTypedHeaders(safeHeaders(entry.responseHeaders), typed),

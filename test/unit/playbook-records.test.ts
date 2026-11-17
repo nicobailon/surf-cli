@@ -2878,6 +2878,7 @@ describe("what a hand-edited draft can't change", () => {
 
 describe("values typed during a record, in captured URLs", () => {
   const { redactCommandArgs } = require("../../native/workflow-definition.cjs");
+  const { findRedactedPlaceholder } = require("../../native/record-typed-values.cjs");
   const TYPED = "dummy echo words";
   const FILLED = "dummyfoxtrot";
   const hostEvent = (command: string, args: Entry) => ({
@@ -3009,6 +3010,66 @@ describe("values typed during a record, in captured URLs", () => {
     expect(Object.keys(named.args).sort()).toEqual(["first", "second"]);
   });
 
+  // Types each text, captures `url` (and `tabUrl`), and stops with a draft.
+  function draftTyping(texts: string[], url: string, tabUrl?: string) {
+    const root = tempRoot();
+    const record = records.startRecord({
+      site: "fixture",
+      op: "search",
+      tabId: 1,
+      origin: "https://example.test",
+      network: true,
+      root,
+    });
+    for (const text of texts) {
+      const args = { selector: "#q", text };
+      records.appendRecordEvent(hostEvent("type", args), { target: TAB, root, args });
+    }
+    records.attachNetworkTrace(record.id, [{ ...search, url, tabUrl }], root, {
+      capture: COMPLETE,
+    });
+    const { draft } = records.stopRecord({ target: TAB, draft: true, read: true, root });
+    const trace = JSON.parse(
+      fs.readFileSync(
+        path.join(records.recordsRoot(root), record.id, "network", "trace.json"),
+        "utf8",
+      ),
+    );
+    return { draft, trace };
+  }
+  const networkOf = (op: { run: Array<{ using: string; request?: Entry }> }) =>
+    op.run.find((strategy) => strategy.using === "network")?.request as Record<string, any>;
+
+  it("keeps a JSON query param valid when a typed number is redacted, so pb param can name it", () => {
+    const variables = JSON.stringify({ year: 2024, live: true });
+    const { draft } = draftTyping(
+      ["2024"],
+      `https://example.test/graphql?variables=${encodeURIComponent(variables)}`,
+    );
+    expect(JSON.parse(networkOf(draft).query.variables)).toEqual({ year: "<text>", live: true });
+    const { op } = paramOp(draft, { fields: ["query.variables.year"], as: "year" });
+    const rendered = renderRequest(networkOf(op), { year: "2031" });
+    expect(JSON.parse(rendered.query.variables)).toEqual({ year: "2031", live: true });
+    expect(findRedactedPlaceholder(networkOf(op))).toBeNull();
+  });
+
+  it("keeps a route segment that also holds the typed value, so pb param leaves nothing redacted", () => {
+    const { draft } = draftTyping(["users"], "https://example.test/api/users?q=users");
+    expect(networkOf(draft).url).toBe("https://example.test/api/users");
+    expect(networkOf(draft).query).toEqual({ q: "<text>" });
+    const { op } = paramOp(draft, { fields: ["query.q"], as: "q" });
+    expect(findRedactedPlaceholder(networkOf(op))).toBeNull();
+  });
+
+  it("replaces a whole fragment holding a slash in the trace", () => {
+    const { trace } = draftTyping(
+      ["dummy/slash"],
+      "https://example.test/api?x=1",
+      "https://example.test/page#dummy/slash",
+    );
+    expect(trace.entries[0].tabUrl).toBe("https://example.test/page#<text>");
+  });
+
   it("redacts values a playbook typed in the host process during the record", () => {
     const root = tempRoot();
     const record = records.startRecord({
@@ -3117,4 +3178,60 @@ describe("values typed during a record, in watch events", () => {
       }
     },
   );
+
+  function watchTyping(steps: Array<{ text: string } | { url: string }>) {
+    const root = tempRoot();
+    const record = records.startRecord({
+      site: "fixture",
+      op: "search",
+      tabId: 1,
+      origin: "https://example.test",
+      watch: true,
+      root,
+    });
+    for (const item of steps) {
+      if ("url" in item) {
+        records.appendRecordEvent(watchEvent("click", item.url), {
+          target: { tabId: 1, page: true },
+          root,
+        });
+        continue;
+      }
+      const args = { selector: "#q", text: item.text };
+      records.appendRecordEvent(
+        {
+          type: "tool.completed",
+          command: "type",
+          argsRedacted: redactCommandArgs("type", args, false),
+          startedAt: new Date().toISOString(),
+        },
+        { target: TAB, root, args },
+      );
+    }
+    records.stopRecord({ target: TAB, root });
+    return records
+      .readEvents(record.id, root)
+      .filter((e: Entry) => e.type === "browser.event")
+      .map((e: Entry) => e.url);
+  }
+
+  it("keeps the placeholders already in an event's URL when it redacts again at stop", () => {
+    expect(
+      watchTyping([
+        { text: "romeo" },
+        { url: "https://example.test/get?q=romeo" },
+        { text: "text" },
+        { url: "https://example.test/get?q=romeo&r=text" },
+      ]),
+    ).toEqual([
+      "https://example.test/get?q=<text>",
+      "https://example.test/get?q=<text>&r=<text-2>",
+    ]);
+  });
+
+  it("replaces a whole fragment holding a slash in an event's URL", () => {
+    expect(
+      watchTyping([{ text: "dummy/slash" }, { url: "https://example.test/page#dummy/slash" }]),
+    ).toEqual(["https://example.test/page#<text>"]);
+  });
 });
