@@ -401,6 +401,59 @@ describe("pb param: field locations", () => {
     expect(JSON.parse(sent.query.v)).toEqual({ "y{{!}}": 2031, n: "seed" });
   });
 
+  // A recorded JSON value with a masked number at each of its keys: each type is moved once the
+  // object's renamed key is known, in work linear in the number of keys.
+  it("moves the types of many masked numbers under a renamed key in work linear in their number", () => {
+    const counter = { keys: 0 };
+    (globalThis as any).paramKeyReads = counter;
+    const file = (require as any).resolve("../../native/playbook-param.cjs");
+    const source = fs.readFileSync(file, "utf8");
+    const line = "const keyReader = (escapes) => (escapes ? unescapeTemplates : keep);";
+    if (!source.includes(line)) {
+      throw new Error("the change matched nothing in the source");
+    }
+    const Module = require("node:module");
+    const loaded = new Module(file);
+    loaded.filename = file;
+    loaded.paths = Module._nodeModulePaths(path.dirname(file));
+    loaded._compile(
+      source.replace(
+        line,
+        "const keyReader = (escapes) => (key) => (globalThis.paramKeyReads.keys++, escapes ? unescapeTemplates(key) : key);",
+      ),
+      file,
+    );
+    const name = (index: number) => `field-${String(index).padStart(6, "0")}`;
+    const counts = [200, 400, 800, 1600].map((width) => {
+      const keys = Array.from({ length: width }, (_, index) => name(index));
+      const saved = savedJsonOp(
+        JSON.stringify(Object.fromEntries(keys.map((key) => [key, "<text>"]))),
+        "query",
+      );
+      requestOf(saved).redactedTypes = Object.fromEntries(
+        keys.map((key) => [`query.v.${key}`, "number"]),
+      );
+      counter.keys = 0;
+      const { op } = loaded.exports.paramOp(saved, {
+        fields: ["query.v"],
+        as: "key",
+        value: name(0),
+      });
+      const types = requestOf(op).redactedTypes;
+      expect(Object.keys(types)).toHaveLength(width);
+      expect(types).toMatchObject({
+        "query.v.{{key}}": "number",
+        [`query.v.${name(width - 1)}`]: "number",
+      });
+      return counter.keys;
+    });
+    (globalThis as any).paramKeyReads = undefined;
+    // How much more work each doubling took than the one before: about 2 when linear.
+    expect(
+      Math.max(...counts.slice(1).map((count, index) => count / counts[index])),
+    ).toBeLessThanOrEqual(2.2);
+  });
+
   // A hand-written op fills every {{name}} in a JSON param's text, keys too, but sends an object's
   // keys as written: pb param won't turn one into the other.
   it("refuses to store a hand-written JSON param whose key takes an input as an object", () => {

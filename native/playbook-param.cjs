@@ -143,31 +143,52 @@ function moveRedactedTypes(request, { prefix, before, after, escapes }) {
   const to = from && parseJson(after, escapes);
   if (!to) return;
   const keyText = keyReader(escapes);
+  // Each object's keys are read once, whatever number of types sit under it.
+  const renames = new Map();
+  const renamesOf = (before, after) => {
+    if (!renames.has(before)) renames.set(before, renameOf(before, after, keyText));
+    return renames.get(before);
+  };
   request.redactedTypes = Object.fromEntries(
     Object.entries(types).map(([field, type]) => {
-      const moved = field.startsWith(prefix) ? movedPath(from, to, field.slice(prefix.length).split("."), keyText) : null;
+      const moved = field.startsWith(prefix) ? movedPath(from, to, field.slice(prefix.length).split("."), renamesOf) : null;
       return [moved === null ? field : prefix + moved, type];
     }),
   );
 }
 
+// How `after`'s keys follow `before`'s, by the text a field names them by: at most one renamed.
+function renameOf(before, after, keyText) {
+  const read = (node) => {
+    const keys = new Map();
+    for (const key of Object.keys(node)) {
+      const text = keyText(key);
+      keys.set(text, keys.has(text) ? null : key);
+    }
+    return keys;
+  };
+  const from = read(before);
+  const to = read(after);
+  const gone = [...from.keys()].filter((text) => !to.has(text));
+  const added = [...to.keys()].filter((text) => !from.has(text));
+  const single = (texts, keys) => texts.length === 1 && keys.get(texts[0]) !== null;
+  return { from, to, renamed: single(gone, from) && single(added, to) ? { from: gone[0], to: added[0] } : null };
+}
+
 // The path in `to` of the value at `parts` in `from`, where at most one key at each level was
-// renamed; null when it can't tell.
-function movedPath(from, to, parts, keyText) {
+// renamed; null when it can't tell (a key named twice, or no such key).
+function movedPath(from, to, parts, renamesOf) {
   const moved = [];
   for (const part of parts) {
     if (!from || typeof from !== "object" || !to || typeof to !== "object") return null;
-    const fromKeys = Object.keys(from);
-    const toKeys = Object.keys(to);
-    const before = fromKeys.map(keyText);
-    const after = toKeys.map(keyText);
-    const gone = before.filter((key) => !after.includes(key));
-    const added = after.filter((key) => !before.includes(key));
-    const next = gone.length === 1 && added.length === 1 && gone[0] === part ? added[0] : part;
-    if (before.filter((key) => key === part).length !== 1 || after.filter((key) => key === next).length !== 1) return null;
+    const { from: before, to: after, renamed } = renamesOf(from, to);
+    const next = renamed?.from === part ? renamed.to : part;
+    const fromKey = before.get(part);
+    const toKey = after.get(next);
+    if (fromKey === undefined || fromKey === null || toKey === undefined || toKey === null) return null;
     moved.push(next);
-    from = from[fromKeys[before.indexOf(part)]];
-    to = to[toKeys[after.indexOf(next)]];
+    from = from[fromKey];
+    to = to[toKey];
   }
   return moved.join(".");
 }
