@@ -54,7 +54,7 @@ surf playbook export example --out ./example-playbook
 surf playbook import ./example-playbook
 ```
 
-A draft that clicked or typed is a write, as is one whose recorded requests include one other than GET, HEAD or OPTIONS (beacons, analytics, and the PerimeterX, DataDome and Qualtrics-intercept sensors aside). When the flow only read data, stop with `--draft --read`; it needs `--network`, and Surf refuses it if a captured request can change data or a step acts beyond the page (cookies, tabs, windows, emulation, AI providers).
+A draft that clicked or typed is a write, as is one whose recorded requests include one other than GET, HEAD or OPTIONS (beacons, analytics, and the PerimeterX, DataDome and Qualtrics-intercept sensors aside). Scrolling and zoom don't make a draft a write. When the flow only read data, stop with `--draft --read`: Surf drafts a read, and first names each captured request that can change data and each step that acts beyond the page (cookies, tabs, windows, emulation, AI providers). A record without `--network` has no requests to check, and Surf says so. A read op still can't replay PUT, PATCH or DELETE.
 
 The draft replays the top-ranked request (never telemetry, page assets or preflights; never a write on a read draft, nor a read on a draft made a write by a captured request); a weak top score, one within 3 points of the next, or a pick that may have passed over the page's data (a JSON with records demoted for a banner-like path, or one next to a document too large to compare) adds a warning. `record candidates` ranks your active record live, else your latest one, or a record id you pass; choose with `--request-id` on `record stop --draft` or `save --from-record`.
 

@@ -286,7 +286,7 @@ describe("draft effect and pb record stop --read", () => {
     [
       "a captured write",
       { trace: [page, create] },
-      /--read refused: the record captured POST https:\/\/example\.test\/api\/employees, which can change data/,
+      /--read drafts a read, though the record captured POST https:\/\/example\.test\/api\/employees, which can change data/,
     ],
     [
       "the vendor's own site (record origin)",
@@ -343,7 +343,6 @@ describe("draft effect and pb record stop --read", () => {
       { trace: [sentryCreate], origin: "" },
       /captured POST https:\/\/sentry\.io/,
     ],
-    ["a record without --network", {}, /--read needs a record started with --network/],
     [
       "a POST answered with JavaScript",
       {
@@ -357,27 +356,90 @@ describe("draft effect and pb record stop --read", () => {
           },
         ],
       },
-      /--read refused: the record captured POST https:\/\/example\.test\/cart\/add/,
+      /--read drafts a read, though the record captured POST https:\/\/example\.test\/cart\/add/,
     ],
     [
       "a POST replay, which acts beyond the page",
       { trace: [page], commands: [step("network.replay", { id: "r_1", "allow-post": true })] },
-      /--read refused: the record ran network\.replay, which acts beyond the page/,
+      /--read drafts a read, though the record ran network\.replay, which acts beyond the page/,
     ],
     [
       "a cookie step, which acts beyond the page",
       { trace: [page], commands: ["click", "cookie.set"] },
-      /--read refused: the record ran cookie\.set, which acts beyond the page/,
+      /--read drafts a read, though the record ran cookie\.set, which acts beyond the page/,
     ],
     [
       "a tab step, which acts beyond the page",
       { trace: [page], commands: ["type", "tab.close"] },
-      /--read refused: the record ran tab\.close, which acts beyond the page/,
+      /--read drafts a read, though the record ran tab\.close, which acts beyond the page/,
     ],
-  ])("refuses --read because of %s, leaving the record recording", (_case, options, error) => {
+  ])("--read drafts a read despite %s, and names it", (_case, options, warning) => {
     const flow = recordFlow({ commands: ["click"], stop: { draft: true, read: true }, ...options });
-    expect(flow.stopped).toThrow(error);
-    expect(records.recordStatus({ target: TAB, root: flow.root }).status).toBe("recording");
+    const stopped = flow.stopped();
+    expect(stopped.draft.effect).toBe("read");
+    expect(stopped.draft.safety).toBeUndefined();
+    expect(stopped.record.status).toBe("draft_created");
+    expect(stopped.warnings.join("\n")).toMatch(warning);
+  });
+
+  it("--read lists every write and every step beyond the page, and replays a read", () => {
+    const update = { ...create, id: "r_6", url: "https://example.test/api/profile" };
+    const stopped = stopFlow({
+      commands: ["click", "cookie.set", "tab.close"],
+      trace: [page, create, update],
+      stop: { draft: true, read: true },
+    });
+    expect(stopped.draft.effect).toBe("read");
+    expect(stopped.draft.run[0].request).toMatchObject({
+      method: "GET",
+      url: "https://example.test/search",
+    });
+    expect(stopped.warnings).toEqual([
+      "--read drafts a read, though the record ran cookie.set, which acts beyond the page",
+      "--read drafts a read, though the record ran tab.close, which acts beyond the page",
+      "--read drafts a read, though the record captured POST https://example.test/api/employees, which can change data",
+      "--read drafts a read, though the record captured POST https://example.test/api/profile, which can change data",
+    ]);
+  });
+
+  it("--read on a record without --network drafts a read and says no request was checked", () => {
+    const stopped = stopFlow({ commands: ["click"], stop: { draft: true, read: true } });
+    expect(stopped.draft.effect).toBe("read");
+    expect(stopped.warnings).toContain(
+      "--read checked no request: the record was started without --network, so none was captured",
+    );
+  });
+
+  it("--read is kept, so pb save --from-record saves the read", () => {
+    const flow = recordFlow({
+      commands: ["click"],
+      trace: [page, create],
+      stop: { draft: true, read: true },
+    });
+    flow.stopped();
+    const saved = authoring.saveFromRecord({
+      recordId: flow.record.id,
+      home: path.dirname(flow.root),
+      root: flow.root,
+    });
+    const op = JSON.parse(
+      fs.readFileSync(path.join(saved.directory, "ops", "search.json"), "utf8"),
+    );
+    expect(op.effect).toBe("read");
+    expect(op.safety).toBeUndefined();
+  });
+
+  it.each([
+    ["scroll", step("scroll", { direction: "down" })],
+    ["scroll.top", "scroll.top"],
+    ["scroll.bottom", "scroll.bottom"],
+    ["scroll_to_position", step("scroll_to_position", { position: "top" })],
+    ["zoom", step("zoom", { level: 1.5 })],
+  ])("a recorded %s leaves the draft a read", (_case, command) => {
+    const { draft, warnings } = stopFlow({ commands: ["navigate", command], trace: [page] });
+    expect(draft.effect).toBe("read");
+    expect(draft.safety).toBeUndefined();
+    expect(warnings).toBeUndefined();
   });
 
   it("refuses --read without --draft", () => {
@@ -743,7 +805,7 @@ describe("choosing the draft's request", () => {
     expect(draft.effect).toBe("read");
   });
 
-  it("drafts a chosen write as a write, and --read still refuses it", () => {
+  it("drafts a chosen write as a write, and with --read as a read that names it", () => {
     const { draft } = stopFlow({
       commands: ["click"],
       trace: [create, page],
@@ -756,7 +818,12 @@ describe("choosing the draft's request", () => {
       trace: [page, create],
       stop: { draft: true, read: true, requestId: "r_2" },
     });
-    expect(flow.stopped).toThrow(/--read refused: the record captured POST/);
+    const read = flow.stopped();
+    expect(read.draft.effect).toBe("read");
+    expect(networkRequest(read.draft)).toMatchObject({ method: "POST" });
+    expect(read.warnings).toContain(
+      "--read drafts a read, though the record captured POST https://example.test/api/employees, which can change data",
+    );
   });
 
   it.each([
