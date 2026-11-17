@@ -81,12 +81,16 @@ function fitWriteWorkflow(op, warnings) {
 // its network strategy replays (an API on another host, as api.resy.com for resy.com). Other
 // captured origins stay out.
 // A replayed request on another origin than the page (an api. host, a CDN's JSON) is allowed with a
-// warning, so a wrong pick shows.
+// warning, so a wrong pick shows. A write from a record with no page origin (started on
+// about:blank, as surf parse does) warns too; a read from one doesn't.
 function allowedOrigins(record, op, warnings) {
   const request = replayedRequest(op);
   const replayed = typeof request?.url === "string" ? originOf(absoluteUrl(request.url, record.origin)) : "";
-  if (replayed && record.origin && replayed !== originOf(record.origin)) {
-    warnings.push(`the op may also send to ${replayed}, the origin of the request it replays (${shownRequest(request)}), which isn't the origin of the record's page (${record.origin}); if that is the wrong request, save again with --request-id <r_…> from pb record candidates`);
+  const wrongPick = "if that is the wrong request, save again with --request-id <r_…> from pb record candidates";
+  if (replayed && !record.origin) {
+    if (op.effect === "write") warnings.push(`the op sends to ${replayed}, the origin of the request it replays (${shownRequest(request)}), and the record had no page origin to compare it with; ${wrongPick}`);
+  } else if (replayed && replayed !== originOf(record.origin)) {
+    warnings.push(`the op may also send to ${replayed}, the origin of the request it replays (${shownRequest(request)}), which isn't the origin of the record's page (${record.origin}); ${wrongPick}`);
   }
   return [...new Set([record.origin, replayed].filter(Boolean))];
 }
