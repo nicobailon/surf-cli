@@ -529,11 +529,13 @@ function typedInputs(record, root) {
       continue;
     }
     if (typeof event.command !== "string" || !event.argsRedacted) continue;
+    // A key step's named key (Enter) was kept as no one's data; `<key>` was a typed character.
+    const typing = commandMetadata(event.command, event.argsRedacted).sensitiveArgs;
     for (const name of commandMetadata(event.command).sensitiveArgs) {
       const value = event.argsRedacted[name];
       if (value === undefined) continue;
       if (value === `<${name}>`) known = false;
-      else collect(value);
+      else if (typing.includes(name)) collect(value);
     }
   }
   return { known, values: values.filter(Boolean) };

@@ -1059,6 +1059,21 @@ describe("pb record candidates", () => {
       expect(JSON.stringify(result)).not.toContain(TYPED);
     });
 
+    it.each([
+      [{ key: "Enter" }, true],
+      [{ key: "<key>" }, false],
+    ])("after key %j, keeps the page's words and a sample (%s)", (argsRedacted, sampled) => {
+      const root = tempRoot();
+      const record = records.startRecord({ site: "a", op: "one", tabId: 11, network: true, root });
+      records.appendRecordEvent(completed(["key", argsRedacted]), { target: { tabId: 11 }, root });
+      const result = sampleOf(record, root, reflecting({ responseBody: '{"hint":"Press Enter"}' }));
+      if (sampled) {
+        expect(result.candidates[0].sample).toContain("Press Enter");
+      } else {
+        expect(result.candidates[0]).not.toHaveProperty("sample");
+      }
+    });
+
     it("redacts the secret header values the request carried, JSON-escaped too", () => {
       const root = tempRoot();
       const record = records.startRecord({ site: "a", op: "one", tabId: 11, network: true, root });
@@ -2357,13 +2372,10 @@ describe("values typed with locate.* --action fill", () => {
     expect(JSON.stringify(redacted)).not.toContain("hunter2-S3cret!");
   });
 
-  it.each(["click", "hover"])(
-    "keeps locate.role --action %s, redacting only its name",
-    (action) => {
-      const args = { role: "button", name: "Save", action };
-      expect(redactCommandArgs("locate.role", args)).toEqual({ ...args, name: "<name>" });
-    },
-  );
+  it.each(["click", "hover"])("keeps locate.role --action %s as recorded", (action) => {
+    const args = { role: "button", name: "Save", action };
+    expect(redactCommandArgs("locate.role", args)).toEqual(args);
+  });
 
   it.each([false, true])(
     "keeps or redacts the value as type does its text (include input values: %s)",
@@ -3621,15 +3633,15 @@ describe("a typed value a URL holds only on a guessed reading, through every art
   });
 });
 
-describe("values key, network.replay --set and locate.role --name carry", () => {
+describe("values key and network.replay --set carry", () => {
   const { redactCommandArgs } = require("../../native/workflow-definition.cjs");
   // A dummy value, built from parts so no literal here reads as a credential.
   const TYPED = ["dummy", "typed", "3"].join("-");
   const commands: Array<[string, Entry, string]> = [
-    ["key", { key: TYPED }, "key"],
-    ["key", { text: TYPED }, "text"],
+    ["key", { key: "q" }, "key"],
+    ["key", { key: "Enter", text: TYPED }, "text"],
+    ["key", { key: "Enter", text: TYPED }, "key"],
     ["network.replay", { id: "r_1", set: { "query.q": TYPED } }, "set"],
-    ["locate.role", { role: "textbox", name: TYPED, action: "click" }, "name"],
   ];
   it.each(commands)("redacts %s %j", (command, args, name) => {
     expect(redactCommandArgs(command, args)[name]).toBe(`<${name}>`);
@@ -3654,6 +3666,53 @@ describe("values key, network.replay --set and locate.role --name carry", () => 
     const written = everyFile(root);
     expect(written).toContain('"flow"');
     expect(written).not.toContain(TYPED);
+  });
+});
+
+describe("named keys and lookup text a record keeps", () => {
+  const { redactCommandArgs } = require("../../native/workflow-definition.cjs");
+  // Records `commands` as the host journals them, and stops with a draft.
+  function draftOf(commands: Array<[string, Entry]>) {
+    const root = tempRoot();
+    records.startRecord({ site: "fixture", op: "search", tabId: 1, root });
+    for (const [command, args] of commands) {
+      records.appendRecordEvent(
+        { ...completed([command, redactCommandArgs(command, args)]), type: "tool.completed" },
+        { target: TAB, root },
+      );
+    }
+    const { draft } = records.stopRecord({ target: TAB, draft: true, root });
+    return draft;
+  }
+
+  it.each(["Enter", "Tab", "Escape", "ArrowDown", "Control+a", "F5"])(
+    "keeps key %s literal after a typed value",
+    (key) => {
+      const draft = draftOf([
+        ["type", { text: "x" }],
+        ["key", { key }],
+      ]);
+      expect(Object.keys(draft.args)).toEqual(["text"]);
+      const steps = draft.run.find((strategy: Entry) => strategy.using === "workflow").steps;
+      expect(steps[1]).toMatchObject({ tool: "key", args: { key } });
+    },
+  );
+
+  it.each([" ", "S", "7", "é"])("redacts key %j, one printable character", (key) => {
+    expect(redactCommandArgs("key", { key })).toEqual({ key: "<key>" });
+  });
+
+  it.each([
+    ["locate.role", { role: "button", name: "Search", action: "click" }],
+    ["locate.text", { text: "Search", action: "click" }],
+    ["locate.label", { label: "Search", action: "click" }],
+  ] as Array<[string, Entry]>)("keeps the lookup text of %s literal", (command, args) => {
+    const draft = draftOf([[command, args]]);
+    expect(
+      Object.keys(draft.args).filter((name) => ["name", "text", "label"].includes(name)),
+    ).toEqual([]);
+    const steps = draft.run.find((strategy: Entry) => strategy.using === "workflow").steps;
+    expect(steps[0]).toMatchObject({ tool: command, args });
   });
 });
 

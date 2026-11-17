@@ -50,7 +50,7 @@ describe("surf do and surf --script output", () => {
     await executor.executeDoSteps(
       [
         { cmd: "type", args: { selector: "#pw", text: TYPED } },
-        { cmd: "key", args: { key: TYPED } },
+        { cmd: "key", args: { key: "Enter", text: TYPED } },
       ],
       { executeTool: async () => ({ result: {} }), stepDelay: 0, autoWait: false },
     );

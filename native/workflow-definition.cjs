@@ -22,7 +22,8 @@ const COMMANDS = {
   click: { effect: "page-write", argKinds: { ref: "element-ref", selector: "selector", x: "number", y: "number" } },
   check: { primaryArg: "ref", effect: "page-write", argKinds: { ref: "element-ref" } },
   uncheck: { primaryArg: "ref", effect: "page-write", argKinds: { ref: "element-ref" } },
-  // A key step can type text (key "S"), so its key and text are redacted like type's text.
+  // A key step can type text (key "S", --text), so that is redacted like type's text; a named key
+  // (Enter, Tab, Control+a) stays literal (see argumentSensitiveArgs).
   key: { primaryArg: "key", effect: "page-write", argKinds: { key: "key", text: "key" }, sensitiveArgs: ["key", "text"] },
   submit: { effect: "page-write" },
   hover: { effect: "read", argKinds: { ref: "element-ref", selector: "selector" } },
@@ -80,11 +81,11 @@ const COMMANDS = {
   "window.new": { primaryArg: "url", effect: "navigation", argKinds: { url: "url" } },
   "window.focus": { primaryArg: "id", effect: "navigation", argKinds: { id: "window-id" } },
   "window.close": { primaryArg: "id", effect: "page-write", argKinds: { id: "window-id" } },
-  // `value` is what --action fill types, so it is redacted like type's text; --name is lookup text,
-  // redacted like locate.text's text.
-  "locate.role": { primaryArg: "role", effect: "read", argKinds: { role: "role", name: "user-input", value: "user-input" }, sensitiveArgs: ["name", "value"] },
-  "locate.text": { primaryArg: "text", effect: "read", argKinds: { text: "user-input", value: "user-input" }, sensitiveArgs: ["text", "value"] },
-  "locate.label": { primaryArg: "label", effect: "read", argKinds: { label: "user-input", value: "user-input" }, sensitiveArgs: ["label", "value"] },
+  // `value` is what --action fill types, so it is redacted like type's text. The lookup text (--name,
+  // the text, the label) is the page's own wording, so it stays literal.
+  "locate.role": { primaryArg: "role", effect: "read", argKinds: { role: "role", name: "user-input", value: "user-input" }, sensitiveArgs: ["value"] },
+  "locate.text": { primaryArg: "text", effect: "read", argKinds: { text: "user-input", value: "user-input" }, sensitiveArgs: ["value"] },
+  "locate.label": { primaryArg: "label", effect: "read", argKinds: { label: "user-input", value: "user-input" }, sensitiveArgs: ["value"] },
   "emulate.device": { primaryArg: "device", effect: "page-write", argKinds: { device: "name" } },
   "frame.js": { primaryArg: "code", effect: "unknown", recordable: false, argKinds: { code: "code" }, sensitiveArgs: ["code"] },
   "element.styles": { primaryArg: "selector", effect: "read", argKinds: { selector: "selector" } },
@@ -118,6 +119,14 @@ function argumentEffect(name, args = {}) {
   return undefined;
 }
 
+// A key step types text when its key is one printable character or it sets --text; otherwise its
+// key is a named key, which is no one's data. Without args, every argument that can be sensitive.
+function argumentSensitiveArgs(name, sensitiveArgs, args) {
+  if (name !== "key" || !args || args.text !== undefined) return sensitiveArgs;
+  const key = String(args.key ?? "");
+  return [...key].length === 1 && /^\P{C}$/u.test(key) ? sensitiveArgs : sensitiveArgs.filter((arg) => arg !== "key");
+}
+
 function commandMetadata(command, args) {
   const name = ALIASES[command] || command;
   const metadata = COMMANDS[name];
@@ -127,12 +136,12 @@ function commandMetadata(command, args) {
     effect: argumentEffect(name, args) || metadata?.effect || "unknown",
     recordable: Boolean(metadata) && metadata.recordable !== false,
     argKinds: metadata?.argKinds || {},
-    sensitiveArgs: metadata?.sensitiveArgs || [],
+    sensitiveArgs: argumentSensitiveArgs(name, metadata?.sensitiveArgs || [], args),
   };
 }
 
 function redactCommandArgs(command, args, includeInputValues = false) {
-  const metadata = commandMetadata(command);
+  const metadata = commandMetadata(command, args);
   const redacted = redactSensitiveFields({ ...(args || {}) });
   for (const name of metadata.sensitiveArgs) {
     if (!includeInputValues && Object.hasOwn(redacted, name)) redacted[name] = `<${name}>`;
@@ -154,7 +163,7 @@ function redactArgValues(command, args, text) {
     if (typeof value === "string" || typeof value === "number") values.push(String(value));
     else if (value && typeof value === "object") Object.values(value).forEach(collect);
   };
-  for (const name of commandMetadata(command).sensitiveArgs) collect(args?.[name]);
+  for (const name of commandMetadata(command, args).sensitiveArgs) collect(args?.[name]);
   return values.length ? redactSecretValues(text, values) : text;
 }
 
