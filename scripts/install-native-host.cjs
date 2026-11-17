@@ -149,13 +149,15 @@ function shellQuote(value) {
   return `'${value.replace(/'/g, "'\\''")}'`;
 }
 
-// The SURF_FFMPEG an earlier install wrote, when it still runs, so a refresh from a shell
-// that doesn't find ffmpeg (an updater with a bare PATH) keeps it.
+// The SURF_FFMPEG an earlier install wrote, when it is an absolute path that still runs, so a
+// refresh from a shell that doesn't find ffmpeg (an updater with a bare PATH) keeps it. A relative
+// pin would be read against whatever folder the browser starts the host in.
 function previousFfmpeg(shPath) {
   let previous;
   try { previous = fs.readFileSync(shPath, "utf8"); } catch { return null; }
   const quoted = /^export SURF_FFMPEG='((?:[^']|'\\'')*)'$/m.exec(previous)?.[1];
-  return quoted === undefined ? null : findFfmpeg({ SURF_FFMPEG: quoted.replace(/'\\''/g, "'") });
+  const pinned = quoted?.replace(/'\\''/g, "'");
+  return pinned !== undefined && path.isAbsolute(pinned) ? findFfmpeg({ SURF_FFMPEG: pinned }) : null;
 }
 
 // A browser launched from the Dock starts the host with PATH=/usr/bin:/bin:/usr/sbin:/sbin,

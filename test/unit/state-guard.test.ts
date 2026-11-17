@@ -23,6 +23,26 @@ describe("real state dir guard", () => {
     );
   });
 
+  it("says a running host most likely wrote the files when its socket exists", () => {
+    const warn = vi.fn();
+    checkStateChanges({ stateDir, before, after, env: {}, hostSocket: "/tmp/surf.sock", warn });
+    expect(warn).toHaveBeenCalledWith(
+      expect.stringContaining(
+        "A Surf host is running (/tmp/surf.sock exists) and writes these files as it works, so it most likely wrote them; otherwise a test escaped its temp HOME.",
+      ),
+    );
+    expect(() =>
+      checkStateChanges({
+        stateDir,
+        before,
+        after,
+        env: { CI: "true" },
+        hostSocket: "/tmp/surf.sock",
+        warn,
+      }),
+    ).toThrow(`Tests wrote to the real Surf state dir ${stateDir}`);
+  });
+
   it("stays quiet when nothing changed", () => {
     const warn = vi.fn();
     checkStateChanges({ stateDir, before, after: new Map(before), env: { CI: "true" }, warn });

@@ -16,7 +16,7 @@ const { draftedEvents, forgetTypedValues, heldTypingCalls, maskTypedValuesInUrl,
 const { commandMetadata, promoteRedactedStepArgs } = require("./workflow-definition.cjs");
 const { escapeStepArgs, escapeTemplates } = require("./playbook-template.cjs");
 const { describeCaptureGaps } = require("./formatters/network.cjs");
-const { ASSET_TYPES, REPLAYED_METHODS, isReplayCandidate, isTelemetryRequest, requestEffect, shownUrl } = require("./request-kinds.cjs");
+const { ASSET_TYPES, READ_OP_METHODS, REPLAYED_METHODS, isReplayCandidate, isTelemetryRequest, requestEffect, shownUrl } = require("./request-kinds.cjs");
 const { WINNER_MARGIN, isWeak, pageWords, rankCandidates, scoreEntries, summarizeResponse } = require("./record-candidates.cjs");
 const { version: PACKAGE_VERSION } = require("../package.json");
 
@@ -343,8 +343,8 @@ function neverReplayed(entry, origin) {
 // and never a read: when it can't replay that write it gets no network strategy. Without
 // --request-id, a draft that would replay a write is refused when the record captured several
 // (Surf won't guess which one). A lone write is replayed on any origin; the saver warns when that
-// origin isn't the page's. A read draft never replays a write. Telemetry, page assets and
-// preflights are never replayed.
+// origin isn't the page's. A read draft never replays a write, nor (with --request-id) a method a
+// read op can't send. Telemetry, page assets and preflights are never replayed.
 function pickRequest({ record, trace, effect, requestId, warnings }) {
   const entries = trace?.entries || [];
   const writes = effect === "write" ? entries.filter((entry) => requestEffect(entry) === "write" && !isTelemetryRequest(entry, record.origin)) : [];
@@ -354,6 +354,9 @@ function pickRequest({ record, trace, effect, requestId, warnings }) {
     if (!entry) throw new Error(`request ${requestId} is not in the trace of ${record.id}; run surf pb record candidates ${record.id} to list its requests`);
     const why = neverReplayed(entry, record.origin);
     if (why) throw new Error(`request ${requestId} (${shownUrl(entry)}) is ${why}; a draft never replays it`);
+    if (effect === "read" && !READ_OP_METHODS.has(entry.method)) {
+      throw new Error(`request ${requestId} (${shownUrl(entry)}) is a ${entry.method}, and a --read draft replays only GET, HEAD, OPTIONS or POST; drop --read to draft a write`);
+    }
     if (capturedWrite && requestEffect(entry) === "read") {
       throw new Error(`request ${requestId} (${shownUrl(entry)}) is a read, but the record captured ${shownUrl(capturedWrite)}, which makes the draft a write; a write draft replays its write, never a read`);
     }

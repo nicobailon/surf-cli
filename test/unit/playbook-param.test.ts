@@ -881,6 +881,28 @@ describe("pb param --link: a drafted typed-value input", () => {
     expect(again.changed).toBe(false);
   });
 
+  // A write saved from a record keeps only the inputs its request sends, so its typed step's
+  // {{text}} has no input: the hint still names it, and --link still folds it into the new input.
+  it("links a typed step's {{text}} that the saved op has no input for", () => {
+    const saved = () => drafted({ args: {} });
+    const plain = paramOp(saved(), { fields: ["query.nameOrId"], as: "name", required: true });
+    expect(Object.keys(plain.op.args)).toEqual(["name"]);
+    expect(plain.notes.join("\n")).toMatch(/if --text holds the same value, add --link text/);
+
+    const result = paramOp(saved(), {
+      fields: ["query.nameOrId"],
+      as: "name",
+      required: true,
+      link: "text",
+    });
+    expect(result.op.args).toEqual({ name: { type: "string", required: true } });
+    expect(result.op.run[1].steps[0].args.text).toBe("{{name}}");
+    expect(result.notes).toEqual(["workflow fallback takes --name in place of --text: type text"]);
+    expect(() =>
+      paramOp(saved(), { fields: ["query.nameOrId"], as: "name", link: "value" }),
+    ).toThrow("--link value: the op has no input value (inputs: name)");
+  });
+
   it("renames the input at every depth: loop bodies, until steps and nested loops", () => {
     const looped = drafted();
     (looped.run[1] as any).steps = [
