@@ -526,6 +526,28 @@ describe("surf pb test arguments", () => {
     );
     expect(() => pbTest.parseTestArgs(["a"])).toThrow(/Usage: surf pb test/);
   });
+
+  // A blocked write says "add --repeat", so pb test takes it, and sends it with the run.
+  it("forwards --repeat to the run", async () => {
+    const sent: Array<Record<string, unknown>> = [];
+    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "surf-pbtest-"));
+    tempDirs.push(cwd);
+    const run = (...extra: string[]) =>
+      pbTest.runPlaybookTest({
+        argv: ["hr", "create", "--write", ...extra],
+        cwd,
+        home: cwd,
+        env: {},
+        runOp: async (params: Record<string, unknown>) => {
+          sent.push(params);
+          return { status: "ok", value: {}, attempts: [] };
+        },
+      });
+    await run("--repeat");
+    await run();
+    expect(sent.map((params) => params.repeat)).toEqual([true, undefined]);
+    expect(sent[0].args).toEqual({});
+  });
 });
 
 function writeOp(base: string, extra: Record<string, unknown> = {}) {

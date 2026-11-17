@@ -54,8 +54,8 @@ const shownRequest = (request) => (request ? `${String(request.method ?? "GET").
 // Which inputs are left is read from what the request sends, never from a draft's checks (extract,
 // verify, expect) or the record's notes for pb param (redactedTypes). A declared safety key keeps
 // the inputs left, and covers every input once none is. A workflow of one page-write step (a click,
-// a type) keeps its steps and inputs. When the request is a read, the op is saved as drafted, with a
-// warning.
+// a type) keeps its steps, but its inputs too are only those the request sends. When the request is
+// a read, the op is saved as drafted, with a warning.
 function fitWriteWorkflow(op, warnings) {
   const [first] = op.run;
   const workflow = op.effect === "write" && first?.using === "network" && op.run.find((strategy) => strategy?.using === "workflow");
@@ -68,9 +68,9 @@ function fitWriteWorkflow(op, warnings) {
     return op;
   }
   const [only] = saved;
-  if (saved.length === 1 && only?.repeat === undefined && only?.each === undefined && commandMetadata(only?.cmd, only?.args).effect === "page-write") return op;
-  warnings.push(`saved network-only: a write runs only its first strategy, and this draft's replays ${shown}, so its workflow (${steps}) would never run; the op replays ${shown} alone`);
-  const run = op.run.filter((strategy) => strategy !== workflow);
+  const pageWrite = saved.length === 1 && only?.repeat === undefined && only?.each === undefined && commandMetadata(only?.cmd, only?.args).effect === "page-write";
+  if (!pageWrite) warnings.push(`saved network-only: a write runs only its first strategy, and this draft's replays ${shown}, so its workflow (${steps}) would never run; the op replays ${shown} alone`);
+  const run = pageWrite ? op.run : op.run.filter((strategy) => strategy !== workflow);
   // The op's provenance says its requests hold escaped text.
   const used = new Set(run.flatMap((strategy) => (strategy?.using === "network" ? [...requestInputs(sentRequest(strategy.request), { escapes: true })] : [])));
   const args = Object.fromEntries(Object.entries(op.args || {}).filter(([name]) => used.has(name)));

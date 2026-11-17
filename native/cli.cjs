@@ -1833,6 +1833,7 @@ const TOOLS = {
           strategy: "Run only this strategy (network, workflow, ...), to tell the network path from a fallback",
           save: "Save the --assert list in the op when the test passes; surf use then checks it too. While env headers are set, refuses an assertion that would store an accidental copy of an env header's value (escaped or not, or a matches pattern sharing 6 characters in a row with it); it doesn't stop a pattern written to encode one on purpose",
           write: "Allow testing a write op (it really writes)",
+          repeat: "With --write, send a write again that a receipt blocks as already sent",
           json: "Output JSON: ok, strategy, records, durationMs, assertions, attempts",
         },
         examples: [
