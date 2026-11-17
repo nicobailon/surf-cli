@@ -843,4 +843,102 @@ describe("the check after masking: only a proven match counts, read as a site re
     expect(loaded.heldTypingCalls("rec-1")).toEqual([]);
     expect(loaded.insidePatternsNow()?.has("private phrase") ?? false).toBe(false);
   });
+
+  it("reads past each marker by its position, so no character stands in for one", () => {
+    const value = "pre \uFDD0 post";
+    const values = [typed("longvalue"), typed(value, "<text-2>", "call-2.0")];
+    const query = `?q=${encodeURIComponent("pre longvalue post")}`;
+    expect(
+      typedValues.maskTypedValuesInUrl(
+        `https://example.test/${encodeURIComponent(value)}${query}`,
+        values,
+      ).url,
+    ).toBe("https://example.test/<text-2>?q=pre%20<text>%20post");
+    for (const times of [2, 4, 5, 8]) {
+      const path = `/${encode(value, times)}`;
+      const { url } = typedValues.maskTypedValuesInUrl(
+        `https://example.test${path}${query}`,
+        values,
+      );
+      expect(new URL(url).pathname).not.toBe(path);
+      expect(url).toContain("?q=pre%20<text>%20post");
+    }
+  });
+
+  it("finds a typed value inside every reading, not only the last one", () => {
+    for (const value of ["abc%FFdef", "romeo%41"]) {
+      const { url } = typedValues.maskTypedValuesInUrl(
+        `https://example.test/g?v=${encode(`say ${value} now`, 5)}`,
+        [typed(value)],
+      );
+      let received = new URL(url).searchParams.get("v") as string;
+      for (let time = 1; time < 5; time++) {
+        received = decodeURIComponent(received);
+      }
+      expect(received).not.toContain(value);
+    }
+  });
+
+  it("reads a URL decoded from a value by its parts: + is a space only in its query values", () => {
+    for (const times of [1, 2, 3, 4, 5, 8]) {
+      const { url } = typedValues.maskTypedValuesInUrl(
+        `https://example.test/g?v=${encode("/s?q=foo+bar", times)}`,
+        [typed("foo bar")],
+      );
+      let nested = new URL(url).searchParams.get("v") as string;
+      for (let time = 1; time < times; time++) {
+        nested = decodeURIComponent(nested);
+      }
+      const received = nested.startsWith("/")
+        ? new URL(nested, "https://e.test").searchParams.get("q")
+        : null;
+      expect(received).not.toBe("foo bar");
+    }
+    const route = `/${encodeURIComponent("foo bar")}`;
+    // The masked URL's path, as written.
+    const mask = (nested: string) =>
+      typedValues
+        .maskTypedValuesInUrl(`https://example.test${route}?next=${encodeURIComponent(nested)}`, [
+          typed("foo bar"),
+        ])
+        .url.split("?")[0]
+        .slice("https://example.test".length);
+    // Its path and keys send foo+bar as written: the query holds no typed value, so the route is masked.
+    expect(mask("/foo+bar?q=x")).toBe("/<text>");
+    expect(mask("/s?foo+bar=x")).toBe("/<text>");
+    // Its query value is foo bar: the route piece is the value the query sends, so it stays.
+    expect(mask("/s?q=foo+bar")).toBe(route);
+  });
+
+  it("names the field of a JSON scalar only to a bounded depth, in work linear in the depth", () => {
+    const counter = { steps: 0 };
+    (globalThis as any).fieldPathSteps = counter;
+    const counted = instrumented((source) =>
+      source.replace("path.push(key)", "(globalThis.fieldPathSteps.steps++, path.push(key))"),
+    );
+    const steps: number[] = [];
+    const chars: number[] = [];
+    for (const count of [200, 400, 800, 1600]) {
+      counter.steps = 0;
+      const json = `${"[2024,".repeat(count)}2024${"]".repeat(count)}`;
+      const { markers } = counted.maskTypedValuesInUrl(
+        `https://example.test/g?v=${encodeURIComponent(json)}`,
+        [typed("2024")],
+      );
+      expect(markers).toHaveLength(count + 1);
+      expect(markers[0]).toMatchObject({ type: "number", field: "query.v.0" });
+      expect(markers.at(-1)).not.toHaveProperty("field");
+      expect(markers.at(-1)).not.toHaveProperty("type");
+      steps.push(counter.steps);
+      chars.push(
+        markers.reduce(
+          (sum: number, item: { field?: string }) => sum + (item.field?.length ?? 0),
+          0,
+        ),
+      );
+    }
+    (globalThis as any).fieldPathSteps = undefined;
+    expect(growth(steps)).toBeLessThanOrEqual(2.2);
+    expect(growth(chars)).toBeLessThanOrEqual(2.2);
+  });
 });

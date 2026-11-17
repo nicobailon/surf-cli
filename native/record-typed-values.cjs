@@ -200,6 +200,10 @@ function escapedChar(text, index) {
 const utf8 = new TextDecoder("utf-8", { ignoreBOM: true });
 function decodeLeniently(text) {
   if (!text.includes("%")) return text;
+  // Every escape well-formed and valid UTF-8: the standard decoding reads the same.
+  try {
+    return decodeURIComponent(text);
+  } catch {}
   const chunks = [];
   let copied = 0;
   for (let index = text.indexOf("%"); index >= 0 && index < text.length; index = text.indexOf("%", index)) {
@@ -306,9 +310,10 @@ function insidePattern(value) {
 
 // Where `value` sits in `text`: the whole text, or, for a value of 4 or more characters, each
 // occurrence between characters that are not letters or digits (`pizza near me`, not `name` in
-// `username`). With `escapes`, the text will be decoded again, so a match can't split a %XX.
-function matchesIn(text, value, { escapes = false } = {}) {
-  if (value.length >= MIN_LENGTH && text === value) return [{ start: 0, end: text.length }];
+// `username`). With `escapes`, the text will be decoded again, so a match can't split a %XX; with
+// `whole: false`, only occurrences inside it count.
+function matchesIn(text, value, { escapes = false, whole = true } = {}) {
+  if (whole && value.length >= MIN_LENGTH && text === value) return [{ start: 0, end: text.length }];
   if (value.length < MIN_INSIDE_LENGTH || !text.includes(value)) return [];
   const found = [];
   for (const match of text.matchAll(insidePattern(value))) {
@@ -407,7 +412,7 @@ function jsonTokens(text) {
     space();
     const char = text[index];
     if (char === "{" || char === "[") {
-      frame = { parent: frame, key, object: char === "{", item: 0, members: new Map() };
+      frame = { parent: frame, key, object: char === "{", item: 0, members: new Map(), depth: (frame?.depth ?? 0) + 1 };
       index++;
       space();
       if (text[index] !== (frame.object ? "}" : "]")) {
@@ -446,6 +451,10 @@ function jsonTokens(text) {
     }
   }
 }
+
+// The deepest a masked JSON scalar's `field` path goes: one nested deeper gets no field or type,
+// so naming each scalar takes work bounded by this, not by its depth.
+const MAX_FIELD_DEPTH = 32;
 
 // A leaf's keys and indexes, from the document's root.
 function pathOf(leaf) {
@@ -491,7 +500,7 @@ function encodeLike(text, original, plusIsSpace) {
 // `url.slice(start, end)` with `pieces`, each text written as is or a marker (`{ marker, typedValue?,
 // type?, field? }`, `typedValue` the id of the typed value it stands for). Edits never overlap each
 // other or a marker an earlier pass listed, so no match can reach into a marker; everything outside
-// an edit stays byte for byte as captured. Each value masked is then checked (see checkMasked).
+// an edit stays byte for byte as captured. Each value masked is then checked (see leakIn).
 
 // The marker a typed value becomes, naming the value it stands for.
 const markerFor = (typed) => ({ marker: typed.marker, ...(typed.id ? { typedValue: typed.id } : {}) });
@@ -507,9 +516,9 @@ const spelledIn = (text, value) =>
  * (walked the same way, at any depth), a string that holds the value (each match, or the whole
  * string when a decoding of what's left still holds it), and a number or literal that is the value
  * as written or as read (`2024.0`, `1e3`, `null`), which becomes a marker string recording its JSON
- * type and `field` path. `at(i)` is where index i of `text` sits in the URL; `encode` writes text
- * of `text`'s level as the URL holds it. A string is decoded again as percent-encoded, never with +
- * as a space: the JSON holds it as written.
+ * type and `field` path (neither deeper than MAX_FIELD_DEPTH). `at(i)` is where index i of `text`
+ * sits in the URL; `encode` writes text of `text`'s level as the URL holds it. A string is decoded
+ * again as percent-encoded, never with + as a space: the JSON holds it as written.
  */
 function maskJson(text, typed, { at, encode, free, field, repeatedKey }) {
   const tokens = jsonTokens(text);
@@ -525,8 +534,10 @@ function maskJson(text, typed, { at, encode, free, field, repeatedKey }) {
       if (typed.value.length < MIN_LENGTH) continue;
       const read = JSON.parse(source);
       if (source !== typed.value && String(read) !== typed.value) continue;
-      const type = read === null ? null : typeof read;
-      const where = repeatedKey ? { repeatedKey } : field && !leaf.repeated ? { field: [field, ...pathOf(leaf)].join(".") } : {};
+      const named = !repeatedKey && field && !leaf.repeated;
+      const deep = named && leaf.frame.depth > MAX_FIELD_DEPTH;
+      const type = read === null || deep ? null : typeof read;
+      const where = repeatedKey ? { repeatedKey } : named && !deep ? { field: [field, ...pathOf(leaf)].join(".") } : {};
       accept({ start: at(leaf.start), end: at(leaf.end), pieces: [encode('"'), { ...marker, ...(type ? { type, ...where } : {}) }, encode('"')] });
       continue;
     }
@@ -592,65 +603,6 @@ function maskValue(raw, offset, typed, { plusIsSpace, field, repeatedKey, inside
   return [];
 }
 
-// Readings of one value longer in all than this many times its length (plus a margin) aren't
-// checked one by one: the value is masked whole.
-const MAX_READ_FACTOR = 64;
-const READ_MARGIN = 65536;
-
-/**
- * Every reading of `text` a site could decode, as `{ text, root, final, tokens }`: percent-decoded
- * (each well-formed run, and as URLSearchParams does, an invalid byte read as U+FFFD), repeatedly;
- * a JSON string literal's value; and the string values of a JSON document (its keys are names,
- * never typed values), each read the same way at any depth. + is a space only in a form-encoded
- * value: the value itself where `plusIsSpace` (a query or form value), and a query string decoded
- * from it (`next=%2Fs%3Fq%3Dfoo%2Bbar`), never a JSON string or a path. `final`: decoding doesn't
- * change it, so it is what a site reads; `tokens`: it is a JSON document. Null when the readings
- * are too long in all to check (see MAX_READ_FACTOR).
- */
-function readingsOf(text, { inside, plusIsSpace }) {
-  // The readings queued so far, by their text and whether + is a space in them.
-  const seen = [new Set(), new Set()];
-  const queue = [{ text, form: plusIsSpace, root: true }];
-  seen[Number(plusIsSpace)].add(text);
-  const readings = [];
-  let budget = MAX_READ_FACTOR * text.length + READ_MARGIN;
-  for (let index = 0; index < queue.length; index++) {
-    const { text: reading, form, root } = queue[index];
-    budget -= reading.length;
-    if (budget < 0) return null;
-    const tokens = jsonTokens(reading);
-    const next = [];
-    let final = true;
-    if (tokens) {
-      if (inside) for (const leaf of tokens.leaves) if (leaf.kind === "string") next.push({ text: decodeJsonString(reading.slice(leaf.start, leaf.end)).value, form: false });
-    } else {
-      const source = form ? reading.replace(/\+/g, " ") : reading;
-      const lenient = decodeLeniently(source);
-      final = lenient === reading;
-      for (const decoded of [decode(source), lenient]) next.push({ text: decoded, form: form && decoded.includes("=") });
-      if (/^\s*"/.test(reading)) {
-        try {
-          const quoted = JSON.parse(reading);
-          if (typeof quoted === "string") next.push({ text: quoted, form: false });
-        } catch {}
-      }
-    }
-    readings.push({ text: reading, root, final, tokens });
-    for (const item of next) {
-      const queued = seen[Number(item.form)];
-      if (queued.has(item.text)) continue;
-      queued.add(item.text);
-      queue.push({ ...item, root: false });
-    }
-  }
-  return readings;
-}
-
-// What the check reads in place of each marker surf wrote: a noncharacter, which no typed value
-// holds, so no match can reach into a marker, while page text that looks like one (or that decodes
-// to this character) is read as any other.
-const STAND_IN = "\uFDD0";
-
 // The first of the sorted, non-overlapping `spans` that ends after `start`.
 function firstAfter(spans, start) {
   let low = 0;
@@ -663,20 +615,172 @@ function firstAfter(spans, start) {
   return low;
 }
 
+// The check reads a value as masked with `marks`, the sorted `{ start, end }` spans of the markers
+// surf wrote in it (those this pass inserted and those an earlier pass listed), found by position,
+// never by their text: page text that looks like a marker is read as any other. A marker holds no
+// %, + or \ and starts with <, so no escape reaches into one and every decoding below keeps it as
+// written: each reading is decoded between its marks, and a match counts only between them.
+
+// Whether one of `marks` spans exactly `start`..`end`.
+function isMark(marks, start, end) {
+  const index = firstAfter(marks, start);
+  return index < marks.length && marks[index].start === start && marks[index].end === end;
+}
+
+// `reading` from `start` to `end`, with the marks in it.
+function sliced({ text, marks }, start, end) {
+  const inside = [];
+  for (let index = firstAfter(marks, start); index < marks.length && marks[index].start < end; index++) {
+    inside.push({ start: marks[index].start - start, end: marks[index].end - start });
+  }
+  return { text: text.slice(start, end), marks: inside };
+}
+
+// `reading` with `transform` applied to each run of text between its marks.
+function between({ text, marks }, transform) {
+  if (marks.length === 0) return { text: transform(text), marks };
+  let result = "";
+  const moved = [];
+  let index = 0;
+  for (const { start, end } of marks) {
+    result += transform(text.slice(index, start));
+    moved.push({ start: result.length, end: result.length + end - start });
+    result += text.slice(start, end);
+    index = end;
+  }
+  return { text: result + transform(text.slice(index)), marks: moved };
+}
+
+// A JSON string literal at `start`..`end` of `reading` as a reading of its value. A marker in it
+// sits between whole characters and escapes (none starts with <), so each run between marks reads
+// as a string of its own.
+const jsonString = (reading, start, end) => between(sliced(reading, start + 1, end - 1), (run) => JSON.parse(`"${run}"`));
+
+// The parts `k=v&…` at `start`..`end` of `reading` sends: each key as written, each value (or
+// pair with no =) form-encoded.
+function pairsIn(reading, start, end) {
+  const parts = [];
+  for (let at = start; at <= end;) {
+    const stop = reading.text.indexOf("&", at);
+    const close = stop < 0 || stop > end ? end : stop;
+    const split = at + reading.text.slice(at, close).indexOf("=");
+    if (split >= at) parts.push({ ...sliced(reading, at, split), form: false }, { ...sliced(reading, split + 1, close), form: true });
+    else parts.push({ ...sliced(reading, at, close), form: true });
+    at = close + 1;
+  }
+  return parts;
+}
+
+// The parts a URL-shaped reading (an absolute URL, `/path?query` or `?query`) sends, each read by
+// its own rules as the top-level URL is: its path, query keys and fragment route as written, its
+// query values (and a fragment's `k=v` pairs) form-encoded. None when it isn't URL-shaped.
+function urlParts(reading) {
+  if (!reading.text.includes("?") && !reading.text.includes("://")) return null;
+  const [, origin = "", pathname, query, fragment] = reading.text.match(URL_PARTS) || [];
+  if (pathname === undefined || !(origin || (query !== undefined && /^[/?]/.test(reading.text)))) return null;
+  const parts = [{ ...sliced(reading, origin.length, origin.length + pathname.length), form: false }];
+  const queryStart = origin.length + pathname.length + 1;
+  if (query !== undefined) parts.push(...pairsIn(reading, queryStart, queryStart + query.length));
+  if (fragment !== undefined) {
+    const start = reading.text.length - fragment.length;
+    const split = fragment.indexOf("?");
+    if (split >= 0) parts.push({ ...sliced(reading, start, start + split), form: false }, ...pairsIn(reading, start + split + 1, reading.text.length));
+    else if (fragment.includes("=")) parts.push(...pairsIn(reading, start, reading.text.length));
+    else parts.push({ ...sliced(reading, start, reading.text.length), form: false });
+  }
+  return parts;
+}
+
+// Readings of one value longer in all than this many times its length (plus a margin) aren't
+// checked one by one: the value is masked whole.
+const MAX_READ_FACTOR = 64;
+const READ_MARGIN = 65536;
+
 /**
- * Whether some reading of `text` (see readingsOf; surf's markers in it are STAND_IN) still spells
- * one of `typed`: as a whole reading other than the text as captured (unless that is what a site
- * reads), inside a reading a site reads (see matchesIn), as a JSON number or literal, or across a
- * JSON document's tokens. With `inside: false` (a path segment, a plain fragment), only as a whole
- * reading. `{ status: "clean" }`, `{ status: "leak", item }` naming the first value it spells, or
- * `{ status: "unread" }` when the readings are too many to check, which proves no value is there.
+ * Every reading of `masked` (`{ text, marks }`) a site could decode, as `{ text, marks, raw, final,
+ * tokens }`: percent-decoded (each well-formed run, and as URLSearchParams does, an invalid byte
+ * read as U+FFFD), repeatedly; a JSON string literal's value; the string values of a JSON document
+ * (its keys are names, never typed values); and the parts of a URL-shaped text (see urlParts), each
+ * read the same way at any depth. + is a space only in a query or form value: the value itself
+ * where `plusIsSpace`, a URL-shaped text's query values, and the values of a `k=v&…` text decoded
+ * from a form value; never a path, a key, a JSON string or a decoded value as a whole. `raw`: text
+ * as captured or a part cut from a reading, not itself a decoding; `final`: decoding doesn't change
+ * it; `tokens`: it is a JSON document. Null when the readings are too long in all to check (see
+ * MAX_READ_FACTOR).
  */
-function leakIn(text, typed, { inside, plusIsSpace }) {
+function readingsOf(masked, { inside, plusIsSpace }) {
+  const seen = new Set();
+  const queue = [];
+  const add = (reading) => {
+    // A reading that is one marker and nothing else holds nothing to check.
+    if (isMark(reading.marks, 0, reading.text.length)) return;
+    const flags = `${Number(reading.raw)}${Number(reading.form)}${Number(reading.nested)}`;
+    const key = reading.marks.length === 0 ? `${flags}|${reading.text}` : `${flags}${reading.marks.map(({ start, end }) => `${start},${end}`).join(";")}|${reading.text}`;
+    if (seen.has(key)) return;
+    seen.add(key);
+    queue.push(reading);
+  };
+  add({ ...masked, raw: true, form: plusIsSpace, nested: false });
+  const readings = [];
+  let budget = MAX_READ_FACTOR * masked.text.length + READ_MARGIN;
+  for (let index = 0; index < queue.length; index++) {
+    const reading = queue[index];
+    const { text, form, nested } = reading;
+    budget -= text.length;
+    if (budget < 0) return null;
+    const tokens = jsonTokens(text);
+    let final = true;
+    try {
+      if (tokens) {
+        if (inside) for (const leaf of tokens.leaves) if (leaf.kind === "string" && !isMark(reading.marks, leaf.start + 1, leaf.end - 1)) add({ ...jsonString(reading, leaf.start, leaf.end), raw: false, form: false, nested: false });
+      } else {
+        if (text.includes("%") || (form && text.includes("+"))) {
+          const source = form ? between(reading, (run) => run.replace(/\+/g, " ")) : reading;
+          const strict = between(source, decode);
+          const lenient = between(source, decodeLeniently);
+          final = lenient.text === text;
+          // A strict decoding that reads it as it is still counts as one: a site reads that text.
+          if (!final) for (const decoded of lenient.text === strict.text ? [strict] : [strict, lenient]) add({ ...decoded, raw: false, form: false, nested: form || nested });
+        }
+        if (inside && /^\s*"/.test(text)) {
+          let quoted = null;
+          try {
+            quoted = JSON.parse(text);
+          } catch {}
+          if (typeof quoted === "string") add({ ...jsonString(reading, text.indexOf('"'), text.trimEnd().length), raw: false, form: false, nested: false });
+        }
+        // A form value that decoding doesn't change is its own decoding.
+        const pairs = (nested || (form && final)) && text.includes("=");
+        const parts = inside ? urlParts(reading) || (pairs ? pairsIn(reading, 0, text.length) : []) : [];
+        for (const part of parts) add({ ...part, raw: true, nested: false });
+      }
+    } catch {
+      // A run between marks that doesn't read as JSON alone: the value can't be checked.
+      return null;
+    }
+    reading.final = final;
+    reading.tokens = tokens;
+    readings.push(reading);
+  }
+  return readings;
+}
+
+/**
+ * Whether some reading of `masked` (see readingsOf) still spells one of `typed`, between surf's
+ * markers: as a whole reading (one with no marker, and not raw text a site decodes further), inside
+ * any reading but raw text a site decodes further (see matchesIn; in a reading decoded again, a
+ * match can't split a %XX), as a JSON number or literal, or across a JSON document's tokens. With
+ * `inside: false` (a path segment, a plain fragment), only as a whole reading. `{ status: "clean" }`,
+ * `{ status: "leak", item }` naming the first value it spells, or `{ status: "unread" }` when the
+ * readings are too many to check, which proves no value is there.
+ */
+function leakIn(masked, typed, { inside, plusIsSpace }) {
   const values = typed.filter(({ value }) => value.length >= MIN_LENGTH);
   if (values.length === 0) return { status: "clean" };
-  const readings = readingsOf(text, { inside, plusIsSpace });
+  const readings = readingsOf(masked, { inside, plusIsSpace });
   if (!readings) return { status: "unread" };
-  for (const { text: reading, root, final, tokens } of readings) {
+  for (const { text: reading, marks, raw, final, tokens } of readings) {
+    if (raw && !final && !tokens) continue;
     let scalars = null;
     let spans = null;
     if (inside && tokens) {
@@ -688,15 +792,26 @@ function leakIn(text, typed, { inside, plusIsSpace }) {
       }
       spans = [...tokens.leaves, ...tokens.keys].sort((a, b) => a.start - b.start);
     }
+    // The runs of text between the marks, each with where it starts.
+    const runs = [];
+    let from = 0;
+    for (const { start, end } of marks) {
+      runs.push({ run: reading.slice(from, start), at: from });
+      from = end;
+    }
+    runs.push({ run: reading.slice(from), at: from });
     for (const item of values) {
-      if ((final || !root) && reading === item.value) return { status: "leak", item };
-      if (!inside || !(final || tokens)) continue;
+      if (marks.length === 0 && reading === item.value) return { status: "leak", item };
+      if (!inside) continue;
       if (scalars?.has(item.value)) return { status: "leak", item };
-      for (const match of matchesIn(reading, item.value)) {
-        // In JSON, a match inside one token is the token's to answer for; one across tokens leaks.
-        const token = spans?.[firstAfter(spans, match.start)];
-        if (spans && token && token.start <= match.start && token.end >= match.end) continue;
-        return { status: "leak", item };
+      for (const { run, at } of runs) {
+        for (const match of matchesIn(run, item.value, { escapes: !final, whole: false })) {
+          // In JSON, a match inside one token is the token's to answer for; one across tokens leaks.
+          const start = at + match.start;
+          const token = spans?.[firstAfter(spans, start)];
+          if (spans && token && token.start <= start && token.end >= at + match.end) continue;
+          return { status: "leak", item };
+        }
       }
     }
   }
@@ -783,17 +898,24 @@ function merged(edits, batch) {
   return result;
 }
 
-// `raw` (at `offset` in the URL) with the edits in it applied; with `standIn`, each marker surf
-// wrote (one this pass inserted, or one an earlier pass listed, with or without an id) as STAND_IN.
-function applied(raw, offset, edits, { standIn = false } = {}) {
+// `raw` (at `offset` in the URL) with the edits in it applied, as `{ text, marks }`: `marks` the
+// spans of the markers in it (see readingsOf).
+function applied(raw, offset, edits) {
   let text = "";
+  const marks = [];
   let index = 0;
   for (const edit of edits) {
     text += raw.slice(index, edit.start - offset);
-    for (const piece of edit.pieces) text += typeof piece === "string" ? piece : standIn ? STAND_IN : piece.marker;
+    for (const piece of edit.pieces) {
+      if (typeof piece === "string") text += piece;
+      else {
+        marks.push({ start: text.length, end: text.length + piece.marker.length });
+        text += piece.marker;
+      }
+    }
     index = edit.end - offset;
   }
-  return text + raw.slice(index);
+  return { text: text + raw.slice(index), marks };
 }
 
 /**
@@ -818,8 +940,9 @@ function maskEach(raw, offset, typed, options, context) {
     edits = merged(edits, batch);
     found?.add(item.value);
   }
-  const check = leakIn(applied(raw, offset, edits, { standIn: true }), typed, { inside, plusIsSpace: options.plusIsSpace });
-  if (check.status === "clean" && (!inside || jsonKept(raw, applied(raw, offset, edits), options.plusIsSpace))) return list.keep(edits);
+  const masked = applied(raw, offset, edits);
+  const check = leakIn(masked, typed, { inside, plusIsSpace: options.plusIsSpace });
+  if (check.status === "clean" && (!inside || jsonKept(raw, masked.text, options.plusIsSpace))) return list.keep(edits);
   let marker = { marker: "<redacted>" };
   if (check.status === "leak") {
     found?.add(check.item.value);
@@ -880,10 +1003,10 @@ const URL_PARTS = /^([a-zA-Z][a-zA-Z0-9+.-]*:\/\/[^/?#]*)?([^?#]*)(?:\?([^#]*))?
  * `url` with each typed value ({ value, marker, id? }) replaced by its marker, as `{ url, markers }`.
  * `markers` lists every marker in the result, as `{ start, end }` in it, with `typedValue` (the id
  * of the typed value it stands for), `type` (number or boolean) and `field` (`query.variables.year`)
- * for a JSON scalar it replaced, or `repeatedKey` instead of `field` when the scalar's query key
- * appears more than once. Pass the list a previous pass returned as `markers`, and those spans stay
- * as they are: no match reaches into them, and the typed value a query or fragment one names by
- * `typedValue` counts as held there. Any other text that looks like a marker is text a page or the
+ * for a JSON scalar it replaced (neither past MAX_FIELD_DEPTH), or `repeatedKey` instead of `field`
+ * when the scalar's query key appears more than once. Pass the list a previous pass returned as
+ * `markers`, and those spans stay as they are: no match reaches into them, and the typed value a
+ * query or fragment one names by `typedValue` counts as held there. Any other text that looks like a marker is text a page or the
  * user wrote, matched as any other.
  *
  * Query values (and a fragment's `?k=v` or `k=v` pairs) are form-decoded and matched whole or
