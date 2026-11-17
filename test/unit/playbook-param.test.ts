@@ -997,6 +997,15 @@ describe("pb param --link: a drafted typed-value input", () => {
     expect(op.safety.key).toEqual(["name"]);
   });
 
+  it("links a drafted write with no safety key, adding none", () => {
+    const safety = { authorization: "explicit", duplicate: "repeatable-window", windowMs: 300_000 };
+    const write = drafted({ effect: "write", safety });
+    write.run[1].steps = [{ cmd: "type", args: { text: "{{text}}" } }];
+    const { op } = paramOp(write, { fields: ["query.nameOrId"], as: "name", link: "text" });
+    expect(op.args).toEqual({ name: { type: "string", default: "Isabela" } });
+    expect(op.safety).toEqual(safety);
+  });
+
   it("refuses a link that isn't a workflow-only input", () => {
     const link = (op: Record<string, unknown>, name: string, as = "name") =>
       paramOp(op, { fields: ["query.nameOrId"], as, link: name });

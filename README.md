@@ -1009,6 +1009,7 @@ surf pb ops page
 surf use page read --json
 
 # Write ops require explicit authorization and a durable duplicate-safety receipt.
+# A recorded write blocks the same inputs for 5 minutes after it succeeds; --repeat sends again.
 surf use <site> <write-op> --write --resource-id 123
 ```
 
