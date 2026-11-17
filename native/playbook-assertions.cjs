@@ -5,7 +5,7 @@
 const { isDeepStrictEqual } = require("node:util");
 const bounded = require("./bounded-regex.cjs");
 const { compileJsonPath } = require("./records.cjs");
-const { redactObject, redactValues } = require("./redaction.cjs");
+const { redactJson, redactText, secretIn, secretSpellings } = require("./redaction.cjs");
 
 // matches patterns come from the CLI and from op files, so every run of one is bounded as
 // bounded-regex.cjs describes: a 100 ms timeout on at most the first 64 KB of the text. A pattern is
@@ -100,7 +100,7 @@ function describeActual(found, secrets) {
   if (found === undefined) return "missing";
   if (Array.isArray(found)) return `array(${found.length})`;
   if (found !== null && typeof found === "object") return "object";
-  const shown = redactObject(found, secrets);
+  const shown = redactJson(found, secrets);
   if (typeof shown === "string" && shown.length > ACTUAL_TEXT_LIMIT) return `${shown.slice(0, ACTUAL_TEXT_LIMIT)}…`;
   return shown;
 }
@@ -119,15 +119,30 @@ function valueTexts(value, out = []) {
   return out;
 }
 
-// Whether saving an assertion could store one of the run's env values: its path or expected value
-// (keys and leaves) contains one, its matches pattern matches one, or, for equals and matches (whose
-// stored value is compared with the content), the full, untruncated actual value contains one.
-// Only the run knows every value, the browser host's own included; callers get the boolean alone.
-// A pattern that runs too long against a value counts as matching it, and so does any pattern
-// against a value over MATCH_INPUT_LIMIT, which a run would test only the start of.
+// A matches pattern can't be decoded, so it is tested against each env value as is and
+// JSON-escaped up to this many times, the spellings a pattern on a raw JSON body could match.
+const PATTERN_SPELLING_LEVELS = 3;
+
+// Where secretIn finds one of `values` in a JSON value: in a key or leaf, or in the value as JSON,
+// compact or indented (as the op file stores it), where a value spanning keys and values shows.
+// That form escapes each string once more, so it is read to 9 levels. "found" wins over "too deep".
+function jsonSecretIn(value, values) {
+  if (value === undefined) return null;
+  const forms = [JSON.stringify(value), JSON.stringify(value, null, 2)];
+  const found = [...valueTexts(value).map((text) => secretIn(text, values)), ...forms.map((form) => secretIn(form, values, 9))];
+  return found.includes("found") ? "found" : found.includes("too deep") ? "too deep" : null;
+}
+
+// Whether saving an assertion could store one of the run's env values: secretIn finds one in its
+// path or expected value (see jsonSecretIn), its matches pattern matches one, or, for equals and
+// matches (whose stored value is compared with the content), secretIn finds one in the full,
+// untruncated actual value. Only the run knows every value, the browser host's own included;
+// callers get the boolean alone. A pattern that runs too long against a value counts as matching
+// it, and so does any pattern against a value over MATCH_INPUT_LIMIT, which a run would test only
+// the start of.
 function touchesSecret(assertion, found, secrets, budget) {
-  const texts = [assertion.path, ...valueTexts(assertion.value)];
-  if (assertion.op === "equals" || assertion.op === "matches") texts.push(...valueTexts(found));
+  if (secretIn(assertion.path, secrets) || jsonSecretIn(assertion.value, secrets)) return true;
+  if ((assertion.op === "equals" || assertion.op === "matches") && jsonSecretIn(found, secrets)) return true;
   const patternMatches = (secret) => {
     if (secret.length > MATCH_INPUT_LIMIT) return true;
     try {
@@ -137,33 +152,13 @@ function touchesSecret(assertion, found, secrets, budget) {
       throw error;
     }
   };
-  return secrets.some((secret) => texts.some((text) => text.includes(secret)) || (assertion.op === "matches" && patternMatches(secret)));
+  return assertion.op === "matches" && secretSpellings(secrets, PATTERN_SPELLING_LEVELS).some(patternMatches);
 }
 
 /**
- * The spellings of env values that output can hold: each value as is and JSON-escaped up to 3
- * times, as JSON inside a JSON string field holds one with a quote, a backslash or a control
- * character. A value JSON leaves as is has one spelling. Self-contained: generated clients inline it.
- */
-function secretSpellings(values) {
-  const spellings = new Set();
-  for (const value of values) {
-    let text = value;
-    spellings.add(text);
-    for (let level = 0; level < 3; level++) {
-      const escaped = JSON.stringify(text).slice(1, -1);
-      if (escaped === text) break;
-      spellings.add(escaped);
-      text = escaped;
-    }
-  }
-  return [...spellings];
-}
-
-/**
- * `secrets`: the run's env values (with secretSpellings); an assertion that touches one gets `secretSensitive: true`, and
- * each result's path, value and actual come back with <redacted> in their place, so anything built
- * from a result (a failure message included) is redacted too. `budget`: the op run's regex budget
+ * `secrets`: the run's env values; an assertion that touches one gets `secretSensitive: true`, and
+ * each result's path, value and actual come back redacted (redactText and redactJson), so anything
+ * built from a result (a failure message included) is redacted too. `budget`: the op run's regex budget
  * (a fresh one when not given).
  */
 function checkAssertions(value, list, secrets = [], budget = createRegexBudget()) {
@@ -179,9 +174,9 @@ function checkAssertions(value, list, secrets = [], budget = createRegexBudget()
       error = caught.message;
     }
     const result = {
-      path: redactValues(assertion.path, secrets),
+      path: redactText(assertion.path, secrets),
       op: assertion.op,
-      ...(Object.hasOwn(assertion, "value") ? { value: redactObject(assertion.value, secrets) } : {}),
+      ...(Object.hasOwn(assertion, "value") ? { value: redactJson(assertion.value, secrets) } : {}),
       pass,
       actual: describeActual(found, secrets),
       ...(error ? { error } : {}),
@@ -195,4 +190,4 @@ function describeAssertion({ path, op, value }) {
 }
 
 // MATCH_INPUT_LIMIT is bounded-regex.cjs's, exported here too for callers of boundedMatch.
-module.exports = { ASSERTION_LIMIT, MATCH_INPUT_LIMIT, MATCH_SKIPPED, MATCH_TIMED_OUT, boundedMatch, checkAssertions, createRegexBudget, describeAssertion, secretSpellings, validateAssertions, valueTexts };
+module.exports = { ASSERTION_LIMIT, MATCH_INPUT_LIMIT, MATCH_SKIPPED, MATCH_TIMED_OUT, boundedMatch, checkAssertions, createRegexBudget, describeAssertion, PATTERN_SPELLING_LEVELS, jsonSecretIn, validateAssertions, valueTexts };

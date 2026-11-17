@@ -1,5 +1,5 @@
 // Assertions and env-header values: what pb test may save, and what a run reports and journals.
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, describe, expect, it, vi } from "vitest";
 import { captureTab } from "../fixtures/capture-tab";
 
 const fs = require("node:fs");
@@ -12,6 +12,7 @@ const runtime = require("../../native/playbook-runtime.cjs");
 const assertions = require("../../native/playbook-assertions.cjs");
 const clients = require("../../native/playbook-client.cjs");
 const pbTest = require("../../native/playbook-test.cjs");
+const redaction = require("../../native/redaction.cjs");
 
 const tempDirs: string[] = [];
 afterEach(() => {
@@ -460,13 +461,13 @@ describe("an env value escaped more than once", () => {
   const leaks = (text: string) => text.includes("quoted");
 
   it("has one spelling per level of escaping, up to 3, and one for a value JSON leaves as is", () => {
-    expect(assertions.secretSpellings([QUOTED])).toEqual([
+    expect(redaction.secretSpellings([QUOTED], 3)).toEqual([
       QUOTED,
       escapeOnce(QUOTED),
       escapeOnce(escapeOnce(QUOTED)),
       escapeOnce(escapeOnce(escapeOnce(QUOTED))),
     ]);
-    expect(assertions.secretSpellings(["dummy-plain-value"])).toEqual(["dummy-plain-value"]);
+    expect(redaction.secretSpellings(["dummy-plain-value"], 3)).toEqual(["dummy-plain-value"]);
   });
 
   it("is refused by both --save checks", async () => {
@@ -571,5 +572,310 @@ describe("an env value escaped more than once", () => {
         }
       }
     }
+  });
+});
+
+describe("an env value in any JSON spelling the decoder reads", () => {
+  const join = (...parts: string[]) => parts.join("");
+  const QUOTED = join("dummy", '"', "quoted", "\\", "value");
+  const SLASHED = ["dummy", "slash", "value"].join("/");
+  const UNICODE = ["dummy", "unicode", "value"].join("-");
+  // JSON inside a JSON string field, `levels` deep: the value is escaped `levels` times.
+  const nested = (value: string, levels: number) => {
+    let text = JSON.stringify({ echo: value });
+    for (let level = 1; level < levels; level++) {
+      text = JSON.stringify({ data: text });
+    }
+    return text;
+  };
+  const unicodeEscaped = [...UNICODE]
+    .map((char) => `\\u${char.charCodeAt(0).toString(16).padStart(4, "0")}`)
+    .join("");
+  // Each body echoes its secret; `fragments` appear in no spelling of the output but the secret's.
+  const cases = [
+    { name: "escaped 4 times", secret: QUOTED, body: nested(QUOTED, 4), fragments: ["quoted"] },
+    { name: "escaped 6 times", secret: QUOTED, body: nested(QUOTED, 6), fragments: ["quoted"] },
+    {
+      name: "written with \\/",
+      secret: SLASHED,
+      body: `{"echo":"${SLASHED.replaceAll("/", "\\/")}"}`,
+      fragments: ["slash"],
+    },
+    {
+      name: "written with \\u escapes",
+      secret: UNICODE,
+      body: `{"echo":"${unicodeEscaped}"}`,
+      fragments: ["unicode", "006e"],
+    },
+    {
+      name: "escaped 10 times, past the 8 levels read",
+      secret: QUOTED,
+      body: nested(QUOTED, 10),
+      fragments: ["quoted"],
+    },
+  ];
+  const rawOp = { ...op, run: [{ ...op.run[0], extract: undefined }] };
+  const playbook = { id: "shop", provenance: { scope: "test" } };
+  const exposed = (text: string, fragments: string[]) =>
+    fragments.filter((fragment) => text.includes(fragment));
+  // Both forms surf prints: indented (the CLI) and compact (--json, MCP).
+  const printed = (value: unknown) => [JSON.stringify(value, null, 2), JSON.stringify(value)];
+
+  function hostedRun(secret: string, body: string, runOp: Record<string, unknown> = rawOp) {
+    return vi.fn((params: Record<string, any>) =>
+      runtime.testPlaybookOp({
+        playbook,
+        op: runOp,
+        secrets: params.secret ?? {},
+        env: { [ENV]: secret },
+        assertions: params.assert,
+        executeTool: captureTab({ reply: () => ({ body }) }).executeTool,
+      }),
+    );
+  }
+
+  // One generated client for the block's runs, removed after them.
+  let client = "";
+  afterAll(() => {
+    if (client) {
+      fs.rmSync(path.dirname(client), { recursive: true, force: true });
+    }
+  });
+  async function runClient(secret: string, status: number, body: string) {
+    if (!client) {
+      client = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "surf-assert-client-")), "client");
+      clients.generateClient({
+        playbookId: "shop",
+        op,
+        strategy: op.run[0],
+        provenance: { type: "playbook", id: "shop" },
+        out: client,
+      });
+    }
+    const out = client;
+    const server = http.createServer((_req: any, res: any) => {
+      res.writeHead(status, { "content-type": "application/json" });
+      res.end(body);
+    });
+    await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+    try {
+      return await new Promise<string>((resolve) =>
+        execFile(
+          process.execPath,
+          [path.join(out, "client.mjs")],
+          {
+            env: {
+              ...process.env,
+              [ENV]: secret,
+              SURF_CLIENT_ORIGIN: `http://127.0.0.1:${server.address().port}`,
+            },
+          },
+          (_error: Error | null, stdout: string, stderr: string) => resolve(stdout + stderr),
+        ),
+      );
+    } finally {
+      await new Promise((resolve) => server.close(resolve));
+    }
+  }
+
+  it("is refused by both --save checks", async () => {
+    for (const { name, secret, body } of cases) {
+      const { cwd, file } = tempShop(rawOp);
+      const before = fs.readFileSync(file, "utf8");
+      const hosted = hostedRun(secret, body);
+      const asserts = ["--assert", "$.body", "equals", JSON.stringify(body)];
+      await expect(save(cwd, asserts, { [ENV]: secret }, hosted), name).rejects.toThrow(
+        /--save refused: assertion 1 (contains the value of|holds JSON escaped more than 8 times, too deep to check for) SURF_TEST_ITEMS_KEY/,
+      );
+      expect(hosted, name).not.toHaveBeenCalled();
+      await expect(save(cwd, asserts, {}, hosted), name).rejects.toThrow(
+        /--save refused: assertion 1's value passed through env-header redaction/,
+      );
+      expect(fs.readFileSync(file, "utf8"), name).toBe(before);
+    }
+  });
+
+  it("names a value escaped past 8 levels as too deep to check, before the run", async () => {
+    const { cwd } = tempShop(rawOp);
+    const body = nested(QUOTED, 10);
+    const hosted = hostedRun(QUOTED, body);
+    await expect(
+      save(cwd, ["--assert", "$.body", "equals", JSON.stringify(body)], { [ENV]: QUOTED }, hosted),
+    ).rejects.toThrow(
+      "--save refused: assertion 1 holds JSON escaped more than 8 times, too deep to check for SURF_TEST_ITEMS_KEY; assert on something else",
+    );
+    expect(hosted).not.toHaveBeenCalled();
+  });
+
+  it("reads text with an unclosed run of escaped quotes in one pass", () => {
+    // After the echo, each of 400,000 quotes starts a JSON string that never closes.
+    const tail = `"${'\\"'.repeat(200_000)}`;
+    const text = `x {"echo":"${unicodeEscaped}"} ${tail}`;
+    const started = performance.now();
+    expect(redaction.redactText(text, [UNICODE])).toBe(`x {"echo":"<redacted>"} ${tail}`);
+    expect(performance.now() - started).toBeLessThan(2000);
+  });
+
+  it("is redacted from surf use's result", async () => {
+    for (const { name, secret, body, fragments } of cases) {
+      const result = await runtime.runPlaybookOp({
+        playbook,
+        op: rawOp,
+        env: { [ENV]: secret },
+        executeTool: captureTab({ reply: () => ({ body }) }).executeTool,
+      });
+      for (const text of printed(result)) {
+        expect(text, name).toContain("<redacted>");
+        expect(exposed(text, fragments), name).toEqual([]);
+      }
+    }
+  });
+
+  it("is redacted from a structured tab error and a network strategy's error text", async () => {
+    for (const { name, secret, body, fragments } of cases) {
+      for (const error of [{ nested: { echo: body } }, `fetch failed: ${body}`]) {
+        const events: Array<Record<string, unknown>> = [];
+        const failed = await runtime.testPlaybookOp({
+          playbook,
+          op,
+          env: { [ENV]: secret },
+          executeTool: async () => ({ error }),
+          onEvent: (event: Record<string, unknown>) => events.push(event),
+        });
+        expect(failed.status, name).toBe("failed");
+        const failures = events.filter((event) => event.type === "strategy.failed");
+        for (const text of [
+          failed.error,
+          failed.attempts[0].error,
+          ...failures.map((event) => event.error as string),
+          ...printed(failed),
+        ]) {
+          expect(text, name).toContain("<redacted>");
+          expect(exposed(text, fragments), name).toEqual([]);
+        }
+      }
+    }
+  });
+
+  it("is redacted from a generated client's output and HTTP error", async () => {
+    for (const { name, secret, body, fragments } of cases) {
+      for (const [status, served] of [
+        [200, JSON.stringify({ result: { text: body } })],
+        [500, body],
+        [500, `${"x".repeat(400)}${body}`],
+      ] as const) {
+        const output = await runClient(secret, status, served);
+        expect(output, `${name}, ${status}`).toContain("<redacted>");
+        expect(exposed(output, fragments), `${name}, ${status}`).toEqual([]);
+      }
+    }
+  }, 60_000);
+
+  it("is masked from surf use and a client when it spans JSON keys and values", async () => {
+    const spaced = join("dummy-left", '": "', "dummy-right");
+    const compact = join("dummy-left", '":null,"', "dummy-right");
+    for (const [secret, value] of [
+      [spaced, { "dummy-left": "dummy-right" }],
+      [compact, { "dummy-left": null, "dummy-right": 1 }],
+    ] as const) {
+      const result = await runtime.runPlaybookOp({
+        playbook,
+        op: rawOp,
+        env: { [ENV]: secret },
+        executeTool: captureTab({ reply: () => ({ body: JSON.stringify(value) }) }).executeTool,
+      });
+      expect(result.value).toBe("<redacted>");
+      for (const text of printed(result)) {
+        expect(text).not.toContain(secret);
+      }
+      const output = await runClient(secret, 200, JSON.stringify({ result: value }));
+      expect(output).toContain("<redacted>");
+      expect(output).not.toContain("dummy-left");
+    }
+    // A tab error object prints compact, which holds the compact one.
+    const failed = await runtime.testPlaybookOp({
+      playbook,
+      op,
+      env: { [ENV]: compact },
+      executeTool: async () => ({ error: { "dummy-left": null, "dummy-right": 1 } }),
+    });
+    expect(failed.error).toContain("<redacted>");
+    expect(failed.error).not.toContain("dummy-left");
+  });
+
+  it("is refused by both --save checks when it spans JSON keys and values", async () => {
+    const spaced = join("dummy-left", '": "', "dummy-right");
+    const compact = join("dummy-left", '":null,"', "dummy-right");
+    for (const [secret, value] of [
+      [spaced, { "dummy-left": "dummy-right" }],
+      [compact, { "dummy-left": null, "dummy-right": 1 }],
+    ] as const) {
+      const { cwd, file } = tempShop(rawOp);
+      const before = fs.readFileSync(file, "utf8");
+      const hosted = hostedRun(secret, JSON.stringify(value));
+      const asserts = ["--assert", "$.bodyJson", "equals", JSON.stringify(value)];
+      await expect(save(cwd, asserts, { [ENV]: secret }, hosted)).rejects.toThrow(
+        /--save refused: assertion 1 contains the value of SURF_TEST_ITEMS_KEY/,
+      );
+      expect(hosted).not.toHaveBeenCalled();
+      await expect(save(cwd, asserts, {}, hosted)).rejects.toThrow(
+        /--save refused: assertion 1's value passed through env-header redaction/,
+      );
+      expect(fs.readFileSync(file, "utf8")).toBe(before);
+    }
+  });
+
+  it("masks text escaped past 8 levels even when no level shows the value", async () => {
+    // 10 levels: its JSON string field holds text escaped 9 times.
+    const deep = nested(join("dummy", "-other-", "text"), 10);
+    const result = await runtime.runPlaybookOp({
+      playbook,
+      op: rawOp,
+      env: { [ENV]: QUOTED },
+      executeTool: captureTab({ reply: () => ({ body: deep }) }).executeTool,
+    });
+    expect(result.value.body).toBe('{"data":"<redacted>"}');
+    // The parsed body's field holds 9 levels, which the 8 levels read reach.
+    expect(result.value.bodyJson).toEqual(JSON.parse(deep));
+    const output = await runClient(QUOTED, 500, deep);
+    expect(output).toContain('HTTP 500: {"data":"<redacted>"}');
+    expect(output).not.toContain("other");
+    // An op without env values decodes and masks nothing.
+    const request = { ...rawOp.run[0].request, authInputs: [] };
+    const plain = await runtime.runPlaybookOp({
+      playbook,
+      op: { ...rawOp, run: [{ ...rawOp.run[0], request }] },
+      env: {},
+      executeTool: captureTab({ reply: () => ({ body: deep }) }).executeTool,
+    });
+    expect(plain.value.body).toBe(deep);
+  });
+
+  it("leaves values without it as they were, escapes and nested JSON included", async () => {
+    const body = JSON.stringify({
+      note: "a\\/b caf\\u00e9",
+      data: JSON.stringify({ inner: JSON.stringify({ deeper: "dummy-plain/text" }) }),
+      n: 12,
+    });
+    const result = await runtime.runPlaybookOp({
+      playbook,
+      op: rawOp,
+      env: { [ENV]: QUOTED },
+      executeTool: captureTab({ reply: () => ({ body }) }).executeTool,
+    });
+    expect(result.value.body).toBe(body);
+    expect(result.value.bodyJson).toEqual(JSON.parse(body));
+    const output = await runClient(QUOTED, 200, JSON.stringify({ result: JSON.parse(body) }));
+    expect(JSON.parse(output)).toEqual(JSON.parse(body));
+    // A plain echo keeps the text around it, as before.
+    const echoed = await runtime.runPlaybookOp({
+      playbook,
+      op: rawOp,
+      env: { [ENV]: QUOTED },
+      executeTool: captureTab({ reply: () => ({ body: JSON.stringify({ key: QUOTED, n: 1 }) }) })
+        .executeTool,
+    });
+    expect(echoed.value.body).toBe('{"key":"<redacted>","n":1}');
+    expect(echoed.value.bodyJson).toEqual({ key: "<redacted>", n: 1 });
   });
 });

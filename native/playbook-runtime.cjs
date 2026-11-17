@@ -8,8 +8,8 @@ const { editDistance } = require("./edit-distance.cjs");
 const { GLOBAL_OPTIONS } = require("./global-options.cjs");
 const { LITERAL_OPEN, escapedOp, renderRequest, resolveArgValues, sentRequest } = require("./playbook-template.cjs");
 const { findRedactedPlaceholder, placeholderError } = require("./record-typed-values.cjs");
-const { checkAssertions, createRegexBudget, secretSpellings } = require("./playbook-assertions.cjs");
-const { redactObject, redactSecretValues, valueSpellings } = require("./redaction.cjs");
+const { checkAssertions, createRegexBudget } = require("./playbook-assertions.cjs");
+const { redactJson, redactSecretValues } = require("./redaction.cjs");
 const boundedRegex = require("./bounded-regex.cjs");
 const { extractRecords } = require("./records.cjs");
 
@@ -113,17 +113,13 @@ function resolveAuthValues(op, secrets = {}, env = process.env) {
   return values;
 }
 
-// The texts to redact for env-supplied values: each value and its JSON-escaped spellings.
-function secretTexts(authValues) {
-  return secretSpellings(Object.values(authValues));
-}
-
 // Env-supplied values never leave a run: a response that echoes one in a value (or an error that
-// quotes it) comes back with <redacted> in its place, however short the value. A key is a field's
-// name and changes only when it holds a value of 4 characters or more (see redactObject).
+// quotes it) comes back with <redacted> in its place, however short the value and however JSON
+// escapes it. A key is a field's name and changes only when it holds a value of 4 characters or
+// more (redaction.cjs's redactJson and redactObject).
 function redactSecrets(value, secrets) {
   const values = Object.values(secrets);
-  return values.length === 0 ? value : redactObject(value, [...new Set([...values.flatMap(valueSpellings), ...secretTexts(secrets)])], { anyLength: true });
+  return values.length === 0 ? value : redactJson(value, values);
 }
 
 // The free text of a strategy's event (an error, a step's result) without the run's env values.
@@ -546,7 +542,7 @@ async function runPlaybookOp({ playbook, op, args: providedArgs = {}, secrets = 
         value = extractResult(raw, strategy.extract, fieldRegexBudget);
         const expect = strategy.verify || strategy.expect || op.on?.success?.expect;
         // Saved assertions hold for every strategy, even one with its own verify.
-        checked = verifyResult(value, assert ? { ...expect, assert } : expect, raw, secretTexts(authValues), regexBudget);
+        checked = verifyResult(value, assert ? { ...expect, assert } : expect, raw, Object.values(authValues), regexBudget);
       } catch (error) {
         throw checkFailure(error);
       }

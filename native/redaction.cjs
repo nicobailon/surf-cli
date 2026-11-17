@@ -29,24 +29,26 @@ function redactValues(text, values, { anyLength = false } = {}) {
   return result;
 }
 
-// redactValues over a JSON value's strings, at any depth. A number, boolean or null whose text
-// holds a value becomes that text, redacted. A key is a field's name, so a value rewrites one only
-// when it is a secret by any measure: a value of 8 characters or more wherever it appears in the
-// key, one of 4 to 7 only as the whole key, a shorter one never. A key that redacts to one already
-// present takes <redacted-2>, <redacted-3>... so no entry is lost. Self-contained but for
-// redactValues: generated clients embed both.
-function redactObject(value, values, options = {}) {
-  if (typeof value === "string") return redactValues(value, values, options);
-  if (Array.isArray(value)) return value.map((item) => redactObject(item, values, options));
+// redactValues over a JSON value's strings, at any depth (with `anyLength`, see redactValues). A
+// number, boolean or null whose text holds a value becomes that text, redacted. A key is a field's
+// name, so a value rewrites one only when it is a secret by any measure: a value of 8 characters or
+// more wherever it appears in the key, one of 4 to 7 only as the whole key, a shorter one never. A
+// key that redacts to one already present takes <redacted-2>, <redacted-3>... so no entry is lost.
+// `redactLeaf(text, values)` redacts each string, other leaf and key (a key with the long values
+// only): redactValues by default, redactText for env values. Self-contained but for redactValues:
+// generated clients embed both.
+function redactObject(value, values, { anyLength = false, redactLeaf = (text, leafValues) => redactValues(text, leafValues, { anyLength }) } = {}) {
+  if (typeof value === "string") return redactLeaf(value, values);
+  if (Array.isArray(value)) return value.map((item) => redactObject(item, values, { anyLength, redactLeaf }));
   if (value === undefined) return value;
   if (value === null || typeof value !== "object") {
-    const redacted = redactValues(String(value), values, options);
+    const redacted = redactLeaf(String(value), values);
     return redacted === String(value) ? value : redacted;
   }
-  const texts = values.map(String);
+  const texts = [...values].filter((text) => text !== undefined && text !== null).map(String);
   const long = texts.filter((text) => text.length >= 8);
-  const redactKey = (key) => (texts.some((text) => text.length >= 4 && text === key) ? "<redacted>" : redactValues(key, long));
-  const entries = Object.entries(value).map(([key, item]) => [key, redactKey(key), redactObject(item, values, options)]);
+  const redactKey = (key) => (texts.some((text) => text.length >= 4 && text === key) ? "<redacted>" : redactLeaf(key, long));
+  const entries = Object.entries(value).map(([key, item]) => [key, redactKey(key), redactObject(item, values, { anyLength, redactLeaf })]);
   const taken = new Set(entries.filter(([key, redacted]) => key === redacted).map(([key]) => key));
   return Object.fromEntries(entries.map(([key, redacted, item]) => {
     if (key === redacted) return [key, item];
@@ -367,6 +369,92 @@ function redactEchoBody(text, secrets, options = {}) {
   }
 }
 
+// Each value as is and JSON-escaped up to `levels` times (a value JSON leaves as is has one
+// spelling). Self-contained: generated clients embed it.
+function secretSpellings(values, levels) {
+  const spellings = new Set();
+  for (const value of values) {
+    let text = String(value);
+    spellings.add(text);
+    for (let level = 0; level < levels; level++) {
+      const escaped = JSON.stringify(text).slice(1, -1);
+      if (escaped === text) break;
+      spellings.add(escaped);
+      text = escaped;
+    }
+  }
+  return [...spellings];
+}
+
+// Where `text` holds one of `values` (by redactValues' rules for env values, `anyLength`): "found" when the text does, or does
+// once its JSON escapes (\" \\ \/ \uXXXX \n...) are decoded, up to `levels` times; "too deep"
+// when it still holds escapes after that; null otherwise. Decoding the whole text, not only its JSON
+// strings, reads every string of JSON held in a JSON string at any depth, and a value spanning
+// keys and values there, without parsing; it can only find more. Decoding never makes text
+// longer, so the work is at most levels + 1 passes over it. Self-contained but for redactValues:
+// generated clients embed it.
+function secretIn(text, values, levels = 8) {
+  const secrets = [...values].map(String).filter(Boolean);
+  if (secrets.length === 0) return null;
+  const unescaped = { b: "\b", f: "\f", n: "\n", r: "\r", t: "\t" };
+  let reading = String(text);
+  for (let level = 0; ; level++) {
+    if (redactValues(reading, secrets, { anyLength: true }) !== reading) return "found";
+    const decoded = reading.replace(/\\(?:u([0-9a-fA-F]{4})|(["\\/bfnrt]))/g, (_, hex, char) => (hex ? String.fromCharCode(parseInt(hex, 16)) : (unescaped[char] ?? char)));
+    if (decoded === reading) return null;
+    if (level === levels) return "too deep";
+    reading = decoded;
+  }
+}
+
+// redactValues for env values (`anyLength`) in text that can hold JSON: each value, its
+// JSON-escaped form and its other spellings (valueSpellings) become <redacted>; then each JSON string in the text that secretIn still finds one in becomes
+// "<redacted>"; and text that secretIn still finds one in after that (a value spanning strings,
+// or escapes outside them) becomes <redacted> as a whole. Self-contained but for redactValues,
+// valueSpellings, secretSpellings and secretIn: generated clients embed them.
+function redactText(text, values) {
+  const spellings = [...new Set([...secretSpellings(values, 1), ...[...values].filter((value) => value !== undefined && value !== null).flatMap(valueSpellings)])];
+  let result = redactValues(text, spellings, { anyLength: true });
+  if (!secretIn(result, values)) return result;
+  // JSON strings, found in one linear pass: from a quote to the next one no backslash escapes.
+  let scanned = "";
+  let from = 0;
+  for (let start = result.indexOf('"'); start !== -1; start = result.indexOf('"', from)) {
+    let end = start + 1;
+    while (end < result.length && result[end] !== '"') end += result[end] === "\\" ? 2 : 1;
+    if (end >= result.length) break;
+    const literal = result.slice(start, end + 1);
+    scanned += result.slice(from, start) + (secretIn(literal, values) ? '"<redacted>"' : literal);
+    from = end + 1;
+  }
+  result = scanned + result.slice(from);
+  return secretIn(result, values) ? "<redacted>" : result;
+}
+
+// The env values that can span two parts of a value as surf prints it: those holding a quote, a
+// backslash, whitespace or one of `:,{}[]()`, which stand between JSON's strings, keys and numbers
+// and between the words of a printed line. Any other value lies inside one part, which redaction
+// reads part by part; a key or surf's own field that holds it is kept by design (redactObject's
+// key rule). Self-contained: generated clients embed it.
+function spanningValues(values) {
+  return [...values].filter((value) => value !== undefined && value !== null).map(String).filter((text) => /["\\\s:,{}[\]()]/.test(text));
+}
+
+// redactObject with redactText for each string, key and other leaf (keys by redactObject's rule);
+// then the value as surf prints and stores it, JSON compact and indented, so a value spanning keys
+// and values (a secret holding `": "`) is caught too: one still found there (spanningValues) turns
+// the whole value into "<redacted>". JSON escapes each string once more, so those forms are read to
+// 9 levels. Header values hold no line breaks, so any indentation reads the same. Self-contained
+// but for redactObject, redactValues, valueSpellings, secretSpellings, secretIn, redactText and
+// spanningValues: generated clients embed them.
+function redactJson(value, values) {
+  const redacted = redactObject(value, values, { anyLength: true, redactLeaf: redactText });
+  if (redacted === undefined) return redacted;
+  const spanning = spanningValues(values);
+  const forms = [JSON.stringify(redacted), JSON.stringify(redacted, null, 2)];
+  return spanning.length > 0 && forms.some((form) => secretIn(form, spanning, 9)) ? "<redacted>" : redacted;
+}
+
 function isTemplate(value) {
   return typeof value === "string" && TEMPLATE_PATTERN.test(value);
 }
@@ -541,14 +629,19 @@ module.exports = {
   redactEchoJson,
   redactEchoText,
   redactEchoUrl,
+  redactJson,
   redactObject,
   redactSecretValues,
   redactSensitiveFields,
   redactUrlIfSecret,
+  redactText,
   redactUrlSecrets,
   redactUrlsInText,
   redactValues,
   safeHeaders,
   secretHeaderEchoes,
+  secretIn,
+  secretSpellings,
+  spanningValues,
   valueSpellings,
 };
