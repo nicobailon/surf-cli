@@ -16,7 +16,7 @@ const { draftedEvents, forgetTypedValues, heldTypingCalls, maskTypedValuesInUrl,
 const { commandMetadata, promoteRedactedStepArgs } = require("./workflow-definition.cjs");
 const { escapeStepArgs, escapeTemplates } = require("./playbook-template.cjs");
 const { describeCaptureGaps } = require("./formatters/network.cjs");
-const { ASSET_TYPES, isReplayCandidate, isTelemetryRequest, requestEffect, shownUrl } = require("./request-kinds.cjs");
+const { ASSET_TYPES, REPLAYED_METHODS, isReplayCandidate, isTelemetryRequest, requestEffect, shownUrl } = require("./request-kinds.cjs");
 const { WINNER_MARGIN, isWeak, pageWords, rankCandidates, scoreEntries, summarizeResponse } = require("./record-candidates.cjs");
 const { version: PACKAGE_VERSION } = require("../package.json");
 
@@ -328,19 +328,21 @@ function neverReplayed(entry, origin) {
   if (isTelemetryRequest(entry, origin)) return "telemetry";
   if (ASSET_TYPES.has(entry.type)) return `a page asset (${entry.type})`;
   if (entry.method === "OPTIONS" || entry.type === "Preflight") return "a CORS preflight";
-  if (!REPLAYED_METHODS.has(entry.method)) return `a ${entry.method} (a draft replays only GET, HEAD and POST)`;
+  if (!REPLAYED_METHODS.has(entry.method)) return `a ${entry.method} (a draft replays only GET, HEAD, POST, PUT, PATCH and DELETE)`;
   if (!isReplayCandidate(entry)) return `a ${entry.method} answered with status ${entry.status ?? "none"}`;
   return "";
 }
-const REPLAYED_METHODS = new Set(["GET", "HEAD", "POST"]);
 
 // The request a draft replays: the one chosen with --request-id, else the top-ranked read. A write
 // draft whose trace holds a write replays its top-ranked write, the request its effect comes from,
-// and never a read: when it can't replay that write it gets no network strategy. A read draft never
-// replays a write. Telemetry, page assets and preflights are never replayed.
+// and never a read: when it can't replay that write it gets no network strategy. Without
+// --request-id, a draft that would replay a write is refused when the record captured several
+// (Surf won't guess which one), or when the write is on another origin than the record's page. A
+// read draft never replays a write. Telemetry, page assets and preflights are never replayed.
 function pickRequest({ record, trace, effect, requestId, warnings }) {
   const entries = trace?.entries || [];
-  const capturedWrite = effect === "write" && entries.find((entry) => requestEffect(entry) === "write" && !isTelemetryRequest(entry, record.origin));
+  const writes = effect === "write" ? entries.filter((entry) => requestEffect(entry) === "write" && !isTelemetryRequest(entry, record.origin)) : [];
+  const [capturedWrite] = writes;
   if (requestId) {
     const entry = entries.find((candidate) => candidate.id === requestId);
     if (!entry) throw new Error(`request ${requestId} is not in the trace of ${record.id}; run surf pb record candidates ${record.id} to list its requests`);
@@ -361,6 +363,19 @@ function pickRequest({ record, trace, effect, requestId, warnings }) {
       : NO_REPLAY);
     return undefined;
   }
+  // Only when a write would be replayed: a record whose writes all failed drafts its steps alone.
+  if (writes.length > 1) {
+    const listed = writes.map((entry) => `${entry.id} ${shownUrl(entry)}`).join(", ");
+    throw new Error(`the record captured ${writes.length} writes (${listed}); name the one the op replays with --request-id <r_…>`);
+  }
+  if (capturedWrite) {
+    // Origins are compared exactly: alice.github.io and bob.github.io are different sites.
+    const pageOrigin = originOf(record.origin || top.entry.tabUrl);
+    const origin = originOf(top.entry.url);
+    if (origin !== pageOrigin) {
+      throw new Error(`the draft would replay ${shownUrl(top.entry)}, whose origin (${origin}) isn't the record's page origin (${pageOrigin || "unknown"}); name it with --request-id ${top.entry.id} to replay it anyway`);
+    }
+  }
   const choose = `run surf pb record candidates ${record.id} and choose with --request-id`;
   // A document over the capture cap can't be compared with the page, so a JSON with records may hold
   // the page's data instead.
@@ -377,6 +392,10 @@ function pickRequest({ record, trace, effect, requestId, warnings }) {
     warnings.push(`the draft's network strategy, ${shownUrl(top.entry)} (score ${top.score}), ${top.score === next.score ? "ties with" : "is close to"} ${shownUrl(next.entry)} (score ${next.score}); ${choose}`);
   }
   return top.entry;
+}
+
+function originOf(url) {
+  try { return new URL(url).origin; } catch { return ""; }
 }
 
 // The request's URL and its query as inputs. The query format holds one value a name, so a name
@@ -415,11 +434,11 @@ function requestFromEntry(entry, warnings = []) {
   };
 }
 
-// The input a write op without other inputs takes as its semantic safety key.
-const REVIEW_KEY_ARG = { required: true, desc: "Semantic key for reviewed write replay" };
+// How long a drafted write blocks the same inputs after it succeeded.
+const DRAFT_WINDOW_MS = 300_000;
 
 // The steps a record ran that a draft replays: its completed recordable commands, in order. Their
-// arguments are escaped, so text like `{{review_key}}` in a recorded selector or URL is sent as
+// arguments are escaped, so text like `{{action}}` in a recorded selector or URL is sent as
 // recorded; a redacted value (`<text>`) still becomes an input, each typing step's its own
 // (<text>, <text-2>), as the trace's URLs name them.
 function recordedSteps(recordId, root = getPrivateStateRoot()) {
@@ -445,8 +464,8 @@ function buildDraft(record, { read = false, requestId, warnings = [], root = get
     strategies.push({ using: "workflow", steps: promoted.steps });
   }
   if (strategies.length === 0) throw new Error("record has no executable evidence");
-  const safety = effect === "write" ? { authorization: "explicit", duplicate: "transactional", key: Object.keys(args).length ? Object.keys(args) : ["review_key"] } : undefined;
-  if (effect === "write" && !args.review_key && safety.key.includes("review_key")) args.review_key = REVIEW_KEY_ARG;
+  // A drafted write has no key: its duplicate claim covers every input, for 5 minutes once verified.
+  const safety = effect === "write" ? { authorization: "explicit", duplicate: "repeatable-window", windowMs: DRAFT_WINDOW_MS } : undefined;
   const provenance = { recordId: record.id, ...(requestId ? { requestId } : {}) };
   const op = { id: record.op, description: `Drafted from ${record.id}`, effect, args, ...(safety ? { safety } : {}), run: strategies, provenance };
   return { op, because };
@@ -588,7 +607,6 @@ function discardRecord({ target, root = getPrivateStateRoot() } = {}) {
 }
 
 module.exports = {
-  REVIEW_KEY_ARG,
   activeRecords,
   appendRecordEvent,
   attachNetworkTrace,

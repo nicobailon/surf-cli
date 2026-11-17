@@ -172,6 +172,43 @@ describe("playbook resolution and strategies", () => {
     expect(op.origins).toEqual(["https://example.test"]);
   });
 
+  // A write op may replay PUT, PATCH and DELETE; a read op can't.
+  it.each([["PUT"], ["patch"], ["DELETE"]])("refuses a read op that sends %s", (method) => {
+    const op = (effect: string) => ({
+      id: "update",
+      effect,
+      ...(effect === "write" ? { safety: { duplicate: "transactional", key: ["id"] } } : {}),
+      run: [{ using: "network", request: { method, url: "https://example.test/items/7" } }],
+    });
+    expect(() => playbooks.validateOp(op("read"), { origins: [] })).toThrow(
+      "read ops cannot use a mutating network method",
+    );
+    expect(playbooks.validateOp(op("write"), { origins: [] }).run[0].request.method).toBe(
+      method.toUpperCase(),
+    );
+  });
+
+  it("takes a write without a safety key, whose claim covers every input, and refuses an empty one", () => {
+    const write = (safety: Record<string, unknown>) =>
+      playbooks.validateOp(
+        {
+          id: "mutate",
+          effect: "write",
+          safety,
+          run: [{ using: "network", request: { method: "POST", url: "https://example.test/api" } }],
+        },
+        { origins: ["https://example.test"] },
+      );
+    expect(write({ duplicate: "repeatable-window", windowMs: 300_000 }).safety).toEqual({
+      authorization: "explicit",
+      duplicate: "repeatable-window",
+      windowMs: 300_000,
+    });
+    expect(() => write({ duplicate: "transactional", key: [] })).toThrow(
+      "write op mutate safety key must list inputs; leave it out to cover every input",
+    );
+  });
+
   it("rejects literal credentials and unsafe write workflows", () => {
     const validate = (op: unknown) => playbooks.validateOp(op, { origins: [] });
     expect(

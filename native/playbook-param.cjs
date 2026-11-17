@@ -572,7 +572,8 @@ function renameInSteps(steps, from, to, touched) {
 }
 
 // --link: the workflow-only input `link` becomes `name`. Its steps take {{name}}, and %{name}
-// where they read the input as a var, the input goes, and a write's safety key follows. A %{link}
+// where they read the input as a var, the input goes, and a declared safety key follows (without
+// one, a write's claim covers every input, so it needs no change). A %{link}
 // a capture or loop var named `link` or `name` may shadow is refused, as renaming it could change
 // what the step reads. Returns the step arguments it changed; none when it is already linked.
 function linkInput(op, link, name) {

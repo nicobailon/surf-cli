@@ -1709,7 +1709,7 @@ const TOOLS = {
         opts: {
           op: "Operation name",
           "from-recent": "Use activity from this window (default: 1h)",
-          "from-record": "Use this record id. Origins: the record's page and the replayed request's. A write draft whose workflow isn't one page-write step saves network-only. The record decides what the op sends (effect, safety, its strategies in order, steps, requests); the draft names and describes it, and its checks can only make it fail. Run pb param after",
+          "from-record": "Use this record id. Origins: the record's page and the replayed request's. A write draft whose workflow isn't one page-write step saves network-only. The draft is saved as edited, and each way it differs from what the record drafts (effect, safety, strategies, request, checks, steps, origins, inputs) is printed under differs. Run pb param after",
           "request-id": "With --from-record: replay this request (from pb record candidates) instead of the draft's",
           project: "Save in ./.surf/playbooks instead of ~/.surf/playbooks",
         },
@@ -1779,7 +1779,7 @@ const TOOLS = {
       "playbook client derive": {
         desc: "Generate a standalone client from an observed request",
         args: ["playbook"],
-        opts: { op: "Operation name", "from-record": "Record id", "request-id": "Request id in the record", out: "Output directory", write: "Allow a captured POST (a write); the client sends it with no receipt, and its body as captured, input values the record kept included (make a field an input with pb param to leave it out)" },
+        opts: { op: "Operation name", "from-record": "Record id", "request-id": "Request id in the record", out: "Output directory", write: "Allow a captured write (POST, PUT, PATCH or DELETE); the client sends it with no receipt, and its body as captured, input values the record kept included (make a field an input with pb param to leave it out)" },
       },
       "playbook client export": {
         desc: "Export a client for a playbook op; client.mjs takes the op's inputs as --name value or --name=value (\"\" for an empty one; a bare --name only for a boolean)",

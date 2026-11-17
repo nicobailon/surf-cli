@@ -826,6 +826,29 @@ describe("choosing the draft's request", () => {
     );
   });
 
+  it("saves a --read draft that replays a captured POST as the read it drafts", () => {
+    const flow = recordFlow({
+      commands: ["click"],
+      trace: [page, create],
+      stop: { draft: true, read: true, requestId: "r_2" },
+    });
+    const { record } = flow.stopped();
+    const saved = authoring.saveFromRecord({
+      recordId: record.id,
+      root: flow.root,
+      home: path.dirname(flow.root),
+    });
+    expect(saved.differs).toBeUndefined();
+    const op = JSON.parse(
+      fs.readFileSync(path.join(saved.directory, "ops", "search.json"), "utf8"),
+    );
+    expect(op.effect).toBe("read");
+    expect(networkRequest(op)).toMatchObject({
+      method: "POST",
+      url: "https://example.test/api/employees",
+    });
+  });
+
   it.each([
     [
       "an id not in the trace",
@@ -861,7 +884,7 @@ describe("choosing the draft's request", () => {
     const update = {
       id: "r_put",
       method: "PUT",
-      status: 200,
+      status: 500,
       type: "XHR",
       url: "https://example.test/api/employees/7",
     };
@@ -870,7 +893,7 @@ describe("choosing the draft's request", () => {
     expect(draft.effect).toBe("write");
     expect(draft.run.map((strategy: { using: string }) => strategy.using)).toEqual(["workflow"]);
     expect(warnings).toEqual([
-      "the draft has no network strategy: it is a write because of PUT https://example.test/api/employees/7, which is a PUT (a draft replays only GET, HEAD and POST), and a write draft never replays a read in its place",
+      "the draft has no network strategy: it is a write because of PUT https://example.test/api/employees/7, which is a PUT answered with status 500, and a write draft never replays a read in its place",
     ]);
     const chooseRead = recordFlow({
       commands: ["click"],
@@ -886,7 +909,7 @@ describe("choosing the draft's request", () => {
       stop: { draft: true, requestId: "r_put" },
     });
     expect(choosePut.stopped).toThrow(
-      "request r_put (PUT https://example.test/api/employees/7) is a PUT (a draft replays only GET, HEAD and POST); a draft never replays it",
+      "request r_put (PUT https://example.test/api/employees/7) is a PUT answered with status 500; a draft never replays it",
     );
   });
 
@@ -1385,14 +1408,12 @@ describe("activity and explicit record evidence", () => {
       ]);
       const op = savedOp(saved);
       expect(op.run.map((strategy: { using: string }) => strategy.using)).toEqual(["network"]);
-      // The workflow's typed input goes with it; the write keeps its review key.
-      expect(op.args).toEqual({
-        review_key: { required: true, desc: "Semantic key for reviewed write replay" },
-      });
-      expect(op.safety).toMatchObject({
+      // The workflow's typed input goes with it; the write needs no input of its own.
+      expect(op.args).toEqual({});
+      expect(op.safety).toEqual({
         authorization: "explicit",
-        duplicate: "transactional",
-        key: ["review_key"],
+        duplicate: "repeatable-window",
+        windowMs: 300_000,
       });
     });
 
@@ -1417,7 +1438,7 @@ describe("activity and explicit record evidence", () => {
       const checked = saveWith(check);
       expect(checked.safety).toEqual(plain.safety);
       expect(checked.args).toEqual(plain.args);
-      expect(checked.safety.key).toEqual(["review_key"]);
+      expect(checked.safety.key).toBeUndefined();
     });
 
     it("allows the page's origin and the replayed request's, and no other captured origin", () => {
@@ -1483,6 +1504,7 @@ describe("activity and explicit record evidence", () => {
         ...create,
         id: "r_put",
         method: "PUT",
+        status: 500,
         url: "https://example.test/api/employees/7",
       };
       const { root, stopped } = recordFlow({ commands: ["navigate"], trace: [update] });
@@ -1499,6 +1521,7 @@ describe("activity and explicit record evidence", () => {
         ...create,
         id: "r_put",
         method: "PUT",
+        status: 500,
         url: "https://example.test/api/employees/7",
       };
       const heartbeat = {
@@ -1516,19 +1539,20 @@ describe("activity and explicit record evidence", () => {
           ...(requestId ? { requestId } : {}),
         });
 
-      it("refuses a choice among several captured writes unless --request-id names one", () => {
+      it("refuses a choice among several captured writes, one it can't replay too", () => {
+        // The only write the draft could replay is the unrelated third-party heartbeat.
+        expect(() =>
+          recordFlow({ commands: ["navigate"], trace: [update, heartbeat] }).stopped(),
+        ).toThrow(
+          "the record captured 2 writes (r_put PUT https://example.test/api/employees/7, r_hb POST https://heartbeat.vendor.test/ping); name the one the op replays with --request-id <r_…>",
+        );
         const { root, stopped } = recordFlow({
           commands: ["navigate"],
           trace: [update, heartbeat],
+          stop: { draft: true, requestId: "r_hb" },
         });
-        const { record, draft } = stopped();
-        // The draft's pick, the only write it can replay, is the unrelated third-party heartbeat.
-        expect(draft.run[0].request.url).toBe("https://heartbeat.vendor.test/ping");
-        expect(() => save(root, record.id)).toThrow(
-          "write op search can't be saved network-only: the record captured 2 writes (r_put PUT https://example.test/api/employees/7, r_hb POST https://heartbeat.vendor.test/ping); name the one the op replays with pb save --from-record <id> --request-id <r_…>",
-        );
         // Named explicitly, a write on another origin saves, with a warning naming that origin.
-        expect(save(root, record.id, "r_hb").warnings).toContain(
+        expect(save(root, stopped().record.id).warnings).toContain(
           "the op may also send to https://heartbeat.vendor.test, the origin of the request it replays (POST https://heartbeat.vendor.test/ping), which isn't the origin of the record's page (https://example.test); if that is the wrong request, save again with --request-id <r_…> from pb record candidates",
         );
       });
@@ -1540,26 +1564,29 @@ describe("activity and explicit record evidence", () => {
           "https://bob.github.io/api/save",
         ],
         ["the site's api. subdomain", "https://example.test", "https://api.example.test/save"],
-      ])("replays a write on %s only when --request-id names it", (_case, origin, url) => {
-        const write = { ...create, id: "r_other", url };
-        const flow = recordFlow({
-          commands: ["navigate"],
-          origin,
-          trace: [{ ...page, url: `${origin}/` }, write],
-        });
-        const { record } = flow.stopped();
-        const other = new URL(url).origin;
-        expect(() => save(flow.root, record.id)).toThrow(
-          `write op search can't be saved network-only: it would replay POST ${url}, whose origin (${other}) isn't the record's page origin (${origin}); name it with --request-id r_other to replay it anyway`,
-        );
-        const saved = save(flow.root, record.id, "r_other");
-        expect(saved.origins).toEqual([origin, other]);
-        expect(saved.warnings).toContain(
-          `the op may also send to ${other}, the origin of the request it replays (POST ${url}), which isn't the origin of the record's page (${origin}); if that is the wrong request, save again with --request-id <r_…> from pb record candidates`,
-        );
-      });
+      ])(
+        "replays a write on %s only when --request-id names it, at stop or at save",
+        (_case, origin, url) => {
+          const write = { ...create, id: "r_other", url };
+          const trace = [{ ...page, url: `${origin}/` }, write];
+          const other = new URL(url).origin;
+          expect(() => recordFlow({ commands: ["navigate"], origin, trace }).stopped()).toThrow(
+            `the draft would replay POST ${url}, whose origin (${other}) isn't the record's page origin (${origin}); name it with --request-id r_other to replay it anyway`,
+          );
+          const flow = recordFlow({ commands: ["navigate"], origin, trace, stop: {} });
+          const { record } = flow.stopped();
+          expect(() => save(flow.root, record.id)).toThrow(
+            /whose origin .* isn't the record's page origin/,
+          );
+          const saved = save(flow.root, record.id, "r_other");
+          expect(saved.origins).toEqual([origin, other]);
+          expect(saved.warnings).toContain(
+            `the op may also send to ${other}, the origin of the request it replays (POST ${url}), which isn't the origin of the record's page (${origin}); if that is the wrong request, save again with --request-id <r_…> from pb record candidates`,
+          );
+        },
+      );
 
-      it("saves the write named with --request-id, at stop or at save", () => {
+      it("saves the write named with --request-id at stop", () => {
         const atStop = recordFlow({
           commands: ["navigate"],
           trace: [page, create, second],
@@ -1571,11 +1598,6 @@ describe("activity and explicit record evidence", () => {
             /so the op replays POST https:\/\/example\.test\/api\/notes alone$/,
           ),
         ]);
-        const atSave = recordFlow({ commands: ["navigate"], trace: [page, create, second] });
-        const { record } = atSave.stopped();
-        expect(() => save(atSave.root, record.id)).toThrow(/the record captured 2 writes/);
-        const saved = save(atSave.root, record.id, "r_2");
-        expect(savedOp(saved).run[0].request.url).toBe("https://example.test/api/employees");
       });
     });
 
@@ -1592,42 +1614,8 @@ describe("activity and explicit record evidence", () => {
   });
 
   describe("a single-click write draft's network strategy", () => {
-    const save = (root: string, recordId: string, requestId?: string) =>
-      authoring.saveFromRecord({
-        recordId,
-        root,
-        home: path.dirname(root),
-        ...(requestId ? { requestId } : {}),
-      });
-
-    it("replays a write on another origin only when --request-id names it, at save or at stop", () => {
-      const origin = "https://alice.github.io";
-      const trace = [
-        { ...page, url: `${origin}/` },
-        { ...create, id: "r_other", url: "https://bob.github.io/save" },
-      ];
-      const flow = recordFlow({ commands: ["click"], origin, trace });
-      const { record, draft } = flow.stopped();
-      expect(draft.run.map((strategy: { using: string }) => strategy.using)).toEqual([
-        "network",
-        "workflow",
-      ]);
-      expect(() => save(flow.root, record.id)).toThrow(
-        "write op search can't be saved: it would replay POST https://bob.github.io/save, whose origin (https://bob.github.io) isn't the record's page origin (https://alice.github.io); name it with --request-id r_other to replay it anyway",
-      );
-      const warning =
-        "the op may also send to https://bob.github.io, the origin of the request it replays (POST https://bob.github.io/save), which isn't the origin of the record's page (https://alice.github.io); if that is the wrong request, save again with --request-id <r_…> from pb record candidates";
-      const saved = save(flow.root, record.id, "r_other");
-      expect(saved.origins).toEqual([origin, "https://bob.github.io"]);
-      expect(saved.warnings).toEqual([warning]);
-      const atStop = recordFlow({
-        commands: ["click"],
-        origin,
-        trace,
-        stop: { draft: true, requestId: "r_other" },
-      });
-      expect(save(atStop.root, atStop.stopped().record.id).warnings).toEqual([warning]);
-    });
+    const save = (root: string, recordId: string) =>
+      authoring.saveFromRecord({ recordId, root, home: path.dirname(root) });
 
     it("saves a write on the record page's own origin", () => {
       const { root, stopped } = recordFlow({ commands: ["click"], trace: [page, create] });
@@ -1638,35 +1626,8 @@ describe("activity and explicit record evidence", () => {
   });
 
   describe("a write draft with no recorded steps", () => {
-    const save = (root: string, recordId: string, requestId?: string) =>
-      authoring.saveFromRecord({
-        recordId,
-        root,
-        home: path.dirname(root),
-        ...(requestId ? { requestId } : {}),
-      });
-
-    it("replays a write on another origin only when --request-id names it", () => {
-      const origin = "https://alice.github.io";
-      const flow = recordFlow({
-        origin,
-        trace: [
-          { ...page, url: `${origin}/` },
-          { ...create, id: "r_other", url: "https://bob.github.io/save" },
-        ],
-      });
-      const { record, draft } = flow.stopped();
-      expect(draft.effect).toBe("write");
-      expect(draft.run.map((strategy: { using: string }) => strategy.using)).toEqual(["network"]);
-      expect(() => save(flow.root, record.id)).toThrow(
-        "write op search can't be saved network-only: it would replay POST https://bob.github.io/save, whose origin (https://bob.github.io) isn't the record's page origin (https://alice.github.io); name it with --request-id r_other to replay it anyway",
-      );
-      const saved = save(flow.root, record.id, "r_other");
-      expect(saved.origins).toEqual([origin, "https://bob.github.io"]);
-      expect(saved.warnings).toEqual([
-        "the op may also send to https://bob.github.io, the origin of the request it replays (POST https://bob.github.io/save), which isn't the origin of the record's page (https://alice.github.io); if that is the wrong request, save again with --request-id <r_…> from pb record candidates",
-      ]);
-    });
+    const save = (root: string, recordId: string) =>
+      authoring.saveFromRecord({ recordId, root, home: path.dirname(root) });
 
     it("saves a write on the record page's own origin", () => {
       const { root, stopped } = recordFlow({ trace: [page, create] });
@@ -1676,360 +1637,9 @@ describe("activity and explicit record evidence", () => {
     });
   });
 
-  // The draft's network strategy decides, not its effect label or its workflow: a write it replays
-  // must be one the record captured, on the record page's origin unless --request-id names it.
-  describe("a hand-edited draft's network write", () => {
-    const origin = "https://alice.github.io";
-    const bob = "POST https://bob.github.io/save";
-    const trace = [
-      { ...page, url: `${origin}/` },
-      { ...create, id: "r_other", url: "https://bob.github.io/save" },
-    ];
-    type Op = { effect?: string; run: { using: string; request?: { url: string } }[] };
-    const edit = (root: string, recordId: string, change: (op: Op) => void) => {
-      const file = path.join(records.recordsRoot(root), recordId, "draft", "op.json");
-      const op = JSON.parse(fs.readFileSync(file, "utf8"));
-      change(op);
-      fs.writeFileSync(file, JSON.stringify(op));
-    };
-    const save = (root: string, recordId: string, requestId?: string) =>
-      authoring.saveFromRecord({
-        recordId,
-        root,
-        home: path.dirname(root),
-        ...(requestId ? { requestId } : {}),
-      });
-    const shapes: [string, Step[], string][] = [
-      ["no steps", [], "write op search can't be saved network-only"],
-      ["one click", ["click"], "write op search can't be saved"],
-      ["several steps", ["navigate", "click"], "write op search can't be saved network-only"],
-    ];
-    const asRead = [
-      ['"read"', (op: Op) => (op.effect = "read")],
-      ["missing", (op: Op) => Reflect.deleteProperty(op, "effect")],
-    ] as const;
-    const readRefusal = (effect: string) =>
-      `op search can't be saved: the record drafts a write op (it captured ${bob}), and the draft's effect is ${effect}; a draft can't change an op's effect`;
-
-    describe.each(shapes)("with %s", (_shape, commands, prefix) => {
-      it.each(asRead)("refuses a captured write when its effect is %s", (_effect, change) => {
-        const flow = recordFlow({ commands, origin, trace });
-        const { record } = flow.stopped();
-        edit(flow.root, record.id, change);
-        expect(() => save(flow.root, record.id)).toThrow(readRefusal(_effect));
-      });
-
-      it.each(asRead)(
-        "refuses it when its effect is %s, though --request-id at stop names it",
-        (_effect, change) => {
-          const flow = recordFlow({
-            commands,
-            origin,
-            trace,
-            stop: { draft: true, requestId: "r_other" },
-          });
-          const { record } = flow.stopped();
-          edit(flow.root, record.id, change);
-          expect(() => save(flow.root, record.id)).toThrow(readRefusal(_effect));
-        },
-      );
-
-      it("redrafts with --request-id at save from the record: a write, whatever the draft's effect", () => {
-        const flow = recordFlow({ commands, origin, trace });
-        const { record } = flow.stopped();
-        edit(flow.root, record.id, (op) => (op.effect = "read"));
-        expect(save(flow.root, record.id, "r_other").origins).toEqual([
-          origin,
-          "https://bob.github.io",
-        ]);
-        edit(flow.root, record.id, (op) => Reflect.deleteProperty(op, "effect"));
-        const saved = save(flow.root, record.id, "r_other");
-        expect(saved.origins).toEqual([origin, "https://bob.github.io"]);
-        expect(saved.warnings).toContain(
-          `the op may also send to https://bob.github.io, the origin of the request it replays (${bob}), which isn't the origin of the record's page (${origin}); if that is the wrong request, save again with --request-id <r_…> from pb record candidates`,
-        );
-      });
-
-      it("refuses a write the record didn't capture, on the page's own origin too", () => {
-        const uncaptured = (op: Op) => {
-          const network = op.run.find((strategy) => strategy.using === "network");
-          if (network?.request) {
-            network.request.url = `${origin}/uncaptured-write`;
-          }
-        };
-        const why = `it would replay POST ${origin}/uncaptured-write, which isn't a write the record captured`;
-        const flow = recordFlow({ commands, origin, trace });
-        const { record } = flow.stopped();
-        edit(flow.root, record.id, uncaptured);
-        expect(() => save(flow.root, record.id)).toThrow(`${prefix}: ${why}`);
-        edit(flow.root, record.id, (op) => (op.effect = "read"));
-        expect(() => save(flow.root, record.id)).toThrow(readRefusal('"read"'));
-        // --request-id at stop names Bob's write, not the edited request.
-        const named = recordFlow({
-          commands,
-          origin,
-          trace,
-          stop: { draft: true, requestId: "r_other" },
-        });
-        const stopped = named.stopped();
-        edit(named.root, stopped.record.id, uncaptured);
-        expect(() => save(named.root, stopped.record.id)).toThrow(`${prefix}: ${why}`);
-        // At save it redrafts with the write it names, which saves with a warning.
-        expect(save(named.root, stopped.record.id, "r_other").origins).toEqual([
-          origin,
-          "https://bob.github.io",
-        ]);
-      });
-    });
-
-    it("refuses a request without a method, which would send a GET", () => {
-      const flow = recordFlow({ commands: ["navigate"], trace: [page, create] });
-      const { record } = flow.stopped();
-      edit(flow.root, record.id, (op) => {
-        const network = op.run.find((strategy) => strategy.using === "network");
-        Reflect.deleteProperty(network?.request ?? {}, "method");
-      });
-      expect(() => save(flow.root, record.id)).toThrow(
-        "write op search can't be saved: its network strategy has no method, and a draft keeps the method the record captured (POST https://example.test/api/employees)",
-      );
-    });
-  });
-
-  // Save rebuilds every network write from the trace entry it stands for, so what a draft file says
-  // about a write's method, URL, query, headers or body is never sent.
-  describe("a draft's network writes, rebuilt from the trace", () => {
-    const origin = "https://alice.github.io";
-    const preview = {
-      id: "r_preview",
-      method: "POST",
-      status: 200,
-      type: "XHR",
-      url: `${origin}/save?action=preview`,
-      requestHeaders: { "content-type": "application/json", "x-action": "preview" },
-      requestBody: '{"action":"preview"}',
-    };
-    const captured = {
-      method: "POST",
-      url: `${origin}/save`,
-      query: { action: "preview" },
-      headers: { "content-type": "application/json", "x-action": "preview" },
-      body: '{"action":"preview"}',
-    };
-    type Request = Entry & { url: string; query?: Entry; headers?: Entry; body?: unknown };
-    type Strategy = Entry & { using: string; request?: Request };
-    type Op = Entry & { effect?: string; run: Strategy[] };
-    const flow = (commands: Step[], options: { includeInputValues?: boolean } = {}) => {
-      const recorded = recordFlow({
-        commands,
-        origin,
-        trace: [{ ...page, url: `${origin}/` }, preview],
-        includeInputValues: options.includeInputValues ?? true,
-      });
-      const { record, draft } = recorded.stopped();
-      const file = path.join(records.recordsRoot(recorded.root), record.id, "draft", "op.json");
-      const save = (change: (op: Op) => void) => {
-        const op = JSON.parse(fs.readFileSync(file, "utf8"));
-        change(op);
-        fs.writeFileSync(file, JSON.stringify(op));
-        return authoring.saveFromRecord({
-          recordId: record.id,
-          root: recorded.root,
-          home: path.dirname(recorded.root),
-        });
-      };
-      return { draft: draft as Op, save };
-    };
-    const savedRun = (saved: { directory: string }): Strategy[] =>
-      JSON.parse(fs.readFileSync(path.join(saved.directory, "ops", "search.json"), "utf8")).run;
-    const networkOf = (op: Op) =>
-      op.run.find((strategy) => strategy.using === "network") as Strategy;
-    const shapes: [string, Step[], string][] = [
-      ["no steps", [], "write op search can't be saved network-only"],
-      ["one click", ["click"], "write op search can't be saved"],
-      ["navigate + click", ["navigate", "click"], "write op search can't be saved network-only"],
-    ];
-    const edits: [string, (request: Request) => void][] = [
-      [
-        "the URL's query",
-        (request) => {
-          request.url += "?action=deleteAll";
-          Reflect.deleteProperty(request, "query");
-        },
-      ],
-      ["the query object", (request) => (request.query = { action: "deleteAll" })],
-      ["the body", (request) => (request.body = '{"action":"deleteAll"}')],
-      [
-        "a header",
-        (request) => (request.headers = { ...request.headers, "x-action": "deleteAll" }),
-      ],
-      ["an added header", (request) => (request.headers = { ...request.headers, "x-extra": "1" })],
-    ];
-
-    describe.each(shapes)("with %s", (_shape, commands, prefix) => {
-      it("drafts the captured request", () => {
-        expect(networkOf(flow(commands).draft).request).toEqual(captured);
-      });
-
-      it.each(edits)("saves the captured request, not an edit to %s", (_edit, change) => {
-        const saved = flow(commands).save((op) => change(networkOf(op).request as Request));
-        const run = savedRun(saved);
-        expect(networkOf({ run }).request).toEqual(captured);
-        expect(run.filter((strategy) => strategy.using === "network")).toHaveLength(1);
-      });
-
-      it("keeps <request-body> when the record captured no input values", () => {
-        const { draft, save } = flow(commands, { includeInputValues: false });
-        const drafted = networkOf(draft).request;
-        expect(drafted?.body).toBe("<request-body>");
-        const saved = save(
-          (op) =>
-            (networkOf(op).request = { ...drafted, body: '{"action":"deleteAll"}' } as Request),
-        );
-        expect(networkOf({ run: savedRun(saved) }).request).toEqual(drafted);
-      });
-
-      it("keeps the strategy's extract, verify and acceptStatus, and drops other fields", () => {
-        const saved = flow(commands).save((op) => {
-          Object.assign(networkOf(op), {
-            extract: { jsonPath: "$.id" },
-            verify: { status: 200 },
-            acceptStatus: [409],
-            stray: "dropped",
-          });
-        });
-        expect(networkOf({ run: savedRun(saved) })).toEqual({
-          using: "network",
-          request: captured,
-          extract: { jsonPath: "$.id" },
-          verify: { status: 200 },
-          acceptStatus: [409],
-        });
-      });
-
-      it("refuses a write whose method the record didn't capture on that path", () => {
-        const { save } = flow(commands);
-        expect(() => save((op) => ((networkOf(op).request as Request).method = "PATCH"))).toThrow(
-          `${prefix}: it would replay PATCH ${origin}/save, which isn't a write the record captured`,
-        );
-      });
-
-      it("refuses a second network write the record didn't capture", () => {
-        const { save } = flow(commands);
-        const why = `it would replay POST ${origin}/uncaptured-delete, which isn't a write the record captured`;
-        const second = {
-          using: "network",
-          request: { method: "POST", url: `${origin}/uncaptured-delete`, body: '{"all":true}' },
-        };
-        expect(() => save((op) => op.run.splice(1, 0, second))).toThrow(`${prefix}: ${why}`);
-      });
-
-      it("refuses a second network write, even one that stands for the captured one", () => {
-        const { draft, save } = flow(commands);
-        const drafted = draft.run.map((strategy: Strategy) => strategy.using);
-        const given = [drafted[0], ...drafted].join(", then ");
-        expect(() =>
-          save((op) => {
-            const copy = structuredClone(networkOf(op));
-            (copy.request as Request).query = { action: "deleteAll" };
-            op.run.splice(1, 0, copy);
-          }),
-        ).toThrow(
-          `write op search can't be saved: its strategies are ${given}, and the record drafts ${drafted.join(", then ")}; a draft can't change which strategies run, their order or how many there are`,
-        );
-      });
-
-      it("refuses a {{…}} placeholder in a write, which pb param adds after save", () => {
-        const { save } = flow(commands);
-        expect(() =>
-          save((op) => (networkOf(op).request = { ...captured, body: '{"action":"{{action}}"}' })),
-        ).toThrow(
-          `${prefix}: its network write POST ${origin}/save holds {{action}}, and a write is saved as the record captured it; save it as drafted, then make the input with surf pb param`,
-        );
-      });
-
-      it("refuses safety.serverIdempotency, which changes the write it replays", () => {
-        const { save } = flow(commands);
-        expect(() =>
-          save((op) =>
-            Object.assign(op.safety as Entry, { serverIdempotency: { query: "action" } }),
-          ),
-        ).toThrow(
-          `write op search can't be saved: its safety is drafted as {"authorization":"explicit","duplicate":"transactional","key":["review_key"]}, and a draft can't change it; change it on the saved op`,
-        );
-      });
-    });
-
-    it("refuses a write network strategy in a read op, which the record never captured", () => {
-      const reading = recordFlow({
-        origin,
-        trace: [{ ...page, id: "r_read", type: "XHR", url: `${origin}/read` }],
-      });
-      const { record, draft } = reading.stopped();
-      expect(draft.effect).toBe("read");
-      const file = path.join(records.recordsRoot(reading.root), record.id, "draft", "op.json");
-      fs.writeFileSync(
-        file,
-        JSON.stringify({
-          ...draft,
-          run: [
-            ...draft.run,
-            { using: "network", request: { method: "POST", url: `${origin}/uncaptured-delete` } },
-          ],
-        }),
-      );
-      expect(() =>
-        authoring.saveFromRecord({
-          recordId: record.id,
-          root: reading.root,
-          home: path.dirname(reading.root),
-        }),
-      ).toThrow(
-        `op search can't be saved: it would replay POST ${origin}/uncaptured-delete, which isn't a write the record captured`,
-      );
-    });
-
-    it("refuses a write the draft builder never replays, though the record captured it", () => {
-      const put = { ...preview, id: "r_put", method: "PUT", url: `${origin}/items/7` };
-      const recorded = recordFlow({
-        commands: ["navigate"],
-        origin,
-        trace: [{ ...page, url: `${origin}/` }, put],
-      });
-      const { record, draft } = recorded.stopped();
-      expect(draft.run.map((strategy: Strategy) => strategy.using)).toEqual(["workflow"]);
-      const file = path.join(records.recordsRoot(recorded.root), record.id, "draft", "op.json");
-      fs.writeFileSync(
-        file,
-        JSON.stringify({
-          ...draft,
-          run: [{ using: "network", request: { method: "PUT", url: `${origin}/items/7` } }],
-        }),
-      );
-      expect(() =>
-        authoring.saveFromRecord({
-          recordId: record.id,
-          root: recorded.root,
-          home: path.dirname(recorded.root),
-        }),
-      ).toThrow(
-        `write op search can't be saved network-only: it would replay PUT ${origin}/items/7, a PUT (a draft replays only GET, HEAD and POST)`,
-      );
-    });
-
-    it.each([
-      ["an api strategy that may POST", { using: "api", allowPost: true, url: `${origin}/delete` }],
-      ["a script strategy", { using: "script", script: "fetch('/delete', { method: 'POST' })" }],
-    ])("refuses %s, which the draft builder never makes", (_case, strategy) => {
-      const { save } = flow([]);
-      expect(() => save((op) => op.run.push(strategy))).toThrow(
-        `write op search can't be saved network-only: an op saved from a record runs only network and workflow strategies, and this draft has a ${strategy.using} strategy`,
-      );
-    });
-  });
-
-  // The record decides what an op saved from it sends: its steps, the request --request-id names
-  // and the text it captured. draft/op.json only names and describes the op.
-  describe("a hand-edited draft, held to the record", () => {
+  // The saver, never the draft, decides the op's provenance: its request id and that its captured
+  // text is escaped.
+  describe("an op saved from a record", () => {
     const origin = "https://alice.github.io";
     type Strategy = Entry & { using: string; request?: Entry; steps?: Entry[] };
     type Op = Entry & {
@@ -2064,162 +1674,13 @@ describe("activity and explicit record evidence", () => {
       requestHeaders: { "content-type": "application/json" },
       requestBody: '{"action":"preview"}',
     };
-    const bobDelete =
-      "fetch('https://bob.github.io/uncaptured-delete', { method: 'POST', body: 'deleteAll' })";
-
-    describe("its workflow", () => {
-      // Adds `added` to the draft's workflow, making one when the draft has none.
-      const addStep = (added: Entry) => (op: Op) => {
-        const workflow = op.run.find((strategy) => strategy.using === "workflow");
-        if (workflow) {
-          (workflow.steps as Entry[]).push(added);
-        } else {
-          op.run.push({ using: "workflow", steps: [added] });
-        }
-      };
-      const unrecordable = ["js", "javascript_tool", "frame.js"];
-
-      describe.each(shapes)("with %s", (_shape, commands) => {
-        const label = "write op search can't be saved";
-
-        it.each(unrecordable)("refuses a %s step the draft adds", (tool) => {
-          const flow = recordFlow({
-            commands,
-            origin,
-            trace: [{ ...page, url: `${origin}/` }, write],
-          });
-          const { record } = flow.stopped();
-          edit(flow.root, record.id, addStep({ tool, args: { code: bobDelete } }));
-          expect(() => save(flow.root, record.id)).toThrow(
-            `${label}: its workflow runs ${tool}, a step no record holds; an op saved from a record runs only the steps the record ran`,
-          );
-        });
-
-        it.each(unrecordable)("refuses a %s step inside a repeat loop", (tool) => {
-          const flow = recordFlow({
-            commands,
-            origin,
-            trace: [{ ...page, url: `${origin}/` }, write],
-          });
-          const { record } = flow.stopped();
-          edit(
-            flow.root,
-            record.id,
-            addStep({ repeat: 2, steps: [{ tool, args: { code: bobDelete } }] }),
-          );
-          expect(() => save(flow.root, record.id)).toThrow(
-            `${label}: its workflow runs ${tool}, a step no record holds`,
-          );
-        });
-
-        it("refuses a loop of recorded steps, which no record holds", () => {
-          const flow = recordFlow({
-            commands,
-            origin,
-            trace: [{ ...page, url: `${origin}/` }, write],
-          });
-          const { record } = flow.stopped();
-          edit(flow.root, record.id, addStep({ repeat: 2, steps: [{ tool: "click", args: {} }] }));
-          expect(() => save(flow.root, record.id)).toThrow(
-            `${label}: its workflow repeats steps in a loop, and a record holds no loop`,
-          );
-        });
-
-        it("refuses a recordable step the record didn't run", () => {
-          const flow = recordFlow({
-            commands,
-            origin,
-            trace: [{ ...page, url: `${origin}/` }, write],
-          });
-          const { record } = flow.stopped();
-          edit(
-            flow.root,
-            record.id,
-            addStep({ tool: "navigate", args: { url: "https://bob.github.io/uncaptured-delete" } }),
-          );
-          const ran = commands.map((item) => (typeof item === "string" ? item : item[0]));
-          expect(() => save(flow.root, record.id)).toThrow(
-            `${label}: its workflow runs ${[...ran, "navigate"].join(" + ")}, and the record ran ${ran.join(" + ") || "no steps"}`,
-          );
-        });
-      });
-
-      // The reviewer's case: a read record's draft, its effect kept, with a script step added.
-      it.each([
-        ["no steps", []],
-        ["a navigate", [step("navigate", { url: `${origin}/` })]],
-      ] as [string, Step[]][])("refuses a script step in a read op with %s", (_shape, commands) => {
-        const read = { ...page, id: "r_read", url: `${origin}/read`, type: "XHR" };
-        const flow = recordFlow({ commands, origin, trace: [read] });
-        const { record, draft } = flow.stopped();
-        expect(draft.effect).toBe("read");
-        for (const added of [
-          { tool: "javascript_tool", args: { code: bobDelete } },
-          { repeat: 2, steps: [{ tool: "javascript_tool", args: { code: bobDelete } }] },
-        ]) {
-          edit(flow.root, record.id, (op) => {
-            op.run = op.run.filter((strategy) => strategy.using !== "workflow");
-            addStep(added)(op);
-          });
-          expect(() => save(flow.root, record.id)).toThrow(
-            "op search can't be saved: its workflow runs javascript_tool, a step no record holds",
-          );
-        }
-      });
-
-      it("saves the recorded steps' arguments, not the draft's", () => {
-        const recorded = [step("navigate", { url: `${origin}/` })];
-        const read = { ...page, id: "r_read", url: `${origin}/read`, type: "XHR" };
-        const flow = recordFlow({ commands: recorded, origin, trace: [read] });
-        const { record } = flow.stopped();
-        edit(flow.root, record.id, (op) => {
-          (strategyOf(op, "workflow").steps as Entry[])[0].args = { url: "https://bob.github.io/" };
-          Object.assign(strategyOf(op, "workflow"), { onError: "continue", stepDelay: 0 });
-        });
-        expect(strategyOf(savedOp(save(flow.root, record.id)), "workflow")).toEqual({
-          using: "workflow",
-          steps: [{ cmd: "navigate", args: { url: `${origin}/` } }],
-        });
-        const click = recordFlow({
-          commands: ["click"],
-          origin,
-          trace: [{ ...page, url: `${origin}/` }, write],
-        });
-        const stopped = click.stopped();
-        edit(click.root, stopped.record.id, (op) => {
-          (strategyOf(op, "workflow").steps as Entry[])[0].args = { selector: "#delete-all" };
-        });
-        expect(strategyOf(savedOp(save(click.root, stopped.record.id)), "workflow").steps).toEqual([
-          { cmd: "click", args: {} },
-        ]);
-      });
-    });
 
     describe("the request --request-id names", () => {
       const trace = [
         { ...page, url: `${origin}/` },
         { ...write, id: "r_other", url: "https://bob.github.io/save" },
       ];
-      const prefixes: Record<string, string> = {
-        "no steps": "write op search can't be saved network-only",
-        "one click": "write op search can't be saved",
-        "navigate + click": "write op search can't be saved network-only",
-      };
-
-      describe.each(shapes)("with %s", (shape, commands) => {
-        it("takes it from pb save or pb record stop, not from the draft's provenance", () => {
-          const flow = recordFlow({ commands, origin, trace });
-          const { record } = flow.stopped();
-          edit(
-            flow.root,
-            record.id,
-            (op) => (op.provenance = { recordId: record.id, requestId: "r_other" }),
-          );
-          expect(() => save(flow.root, record.id)).toThrow(
-            `${prefixes[shape]}: it would replay POST https://bob.github.io/save, whose origin (https://bob.github.io) isn't the record's page origin (${origin}); name it with --request-id r_other to replay it anyway`,
-          );
-        });
-
+      describe.each(shapes)("with %s", (_shape, commands) => {
         it("keeps the one pb record stop --request-id named in the record", () => {
           const flow = recordFlow({
             commands,
@@ -2278,36 +1739,6 @@ describe("activity and explicit record evidence", () => {
             query: { note: "{{review_key}}" },
             headers: { "x-note": "{{review_key}}" },
             body: '{"action":"{{action}}","key":"{{review_key}}"}',
-          });
-        });
-
-        it("refuses an input the record didn't draft", () => {
-          const { root, record } = flow(commands);
-          edit(
-            root,
-            record.id,
-            (op) => (op.args = { ...op.args, action: { default: "deleteAll" } }),
-          );
-          expect(() => save(root, record.id)).toThrow(
-            "write op search can't be saved: its input action isn't one the record drafts (review_key); make inputs after save with surf pb param",
-          );
-        });
-
-        it("refuses a drafted input changed beyond its desc, and keeps a new desc", () => {
-          const { root, record } = flow(commands);
-          edit(root, record.id, (op) =>
-            Object.assign(op.args?.review_key ?? {}, { default: "deleteAll" }),
-          );
-          expect(() => save(root, record.id)).toThrow(
-            "write op search can't be saved: its input review_key is drafted as {\"required\":true}, and a draft may change only an input's desc",
-          );
-          edit(
-            root,
-            record.id,
-            (op) => (op.args = { review_key: { required: true, desc: "Order key" } }),
-          );
-          expect(savedOp(save(root, record.id)).args).toEqual({
-            review_key: { required: true, desc: "Order key" },
           });
         });
       });
@@ -2398,8 +1829,9 @@ describe("activity and explicit record evidence", () => {
     const stopped = records.stopRecord({ target: TAB, draft: true, root });
     expect(stopped.draft).toMatchObject({
       effect: "write",
-      safety: { authorization: "explicit", duplicate: "transactional", key: ["review_key"] },
+      safety: { authorization: "explicit", duplicate: "repeatable-window", windowMs: 300_000 },
     });
+    expect(stopped.draft.args).toEqual({});
     expect(() =>
       authoring.saveFromRecord({ recordId: stopped.record.id, root, home: path.dirname(root) }),
     ).not.toThrow();
@@ -2519,7 +1951,8 @@ describe("values typed with locate.* --action fill", () => {
 // pb save --from-record takes what an op sends, and whether it needs --write, from the record:
 // its effect, safety, inputs, strategies, steps and requests. draft/op.json only names and
 // describes the op.
-describe("what a hand-edited draft can't change", () => {
+// The draft file is the op: pb save --from-record saves it as edited and lists what differs.
+describe("a hand-edited draft", () => {
   const runtime = require("../../native/playbook-runtime.cjs");
   const origin = "https://alice.github.io";
   const home = { ...page, url: `${origin}/` };
@@ -2539,11 +1972,6 @@ describe("what a hand-edited draft can't change", () => {
     type: "XHR",
     url: `${origin}/read?q=shoes`,
     requestHeaders: { accept: "application/json" },
-  };
-  const DRAFTED_SAFETY = {
-    authorization: "explicit",
-    duplicate: "transactional",
-    key: ["review_key"],
   };
   type Request = Entry & { url: string; method?: string; headers?: Entry };
   type Strategy = Entry & { using: string; request?: Request; steps?: Entry[] };
@@ -2575,15 +2003,6 @@ describe("what a hand-edited draft can't change", () => {
     return { root: recorded.root, record, draft: draft as Op, save, saved };
   };
   const networkOf = (op: Op) => op.run.find((strategy) => strategy.using === "network") as Strategy;
-  const shapes: [string, Step[], string][] = [
-    ["no steps", [], "write op search can't be saved"],
-    ["one click", ["click"], "write op search can't be saved"],
-    [
-      "navigate + click",
-      [step("navigate", { url: `${origin}/` }), "click"],
-      "write op search can't be saved",
-    ],
-  ];
   // What the op dispatches: each tool and its arguments, run with a fake tab.
   const dispatched = async (op: Op, args: Entry = {}) => {
     const calls: { tool: string; args: Entry }[] = [];
@@ -2605,117 +2024,97 @@ describe("what a hand-edited draft can't change", () => {
     return calls;
   };
 
-  describe.each(shapes)("a write record with %s", (_shape, commands, prefix) => {
-    const writeFlow = () => flow({ commands, trace: [home, write] });
+  describe("saved as edited", () => {
+    const savedOpOf = (result: { directory: string }): Op =>
+      JSON.parse(fs.readFileSync(path.join(result.directory, "ops", "search.json"), "utf8"));
 
-    it.each([
-      [
-        "an implicit, repeatable safety",
-        (op: Op) =>
-          Object.assign(op.safety as Entry, {
-            authorization: "implicit",
-            duplicate: "repeatable-window",
-            windowMs: 0,
-          }),
-      ],
-      ["no safety", (op: Op) => Reflect.deleteProperty(op, "safety")],
-      ["another safety key", (op: Op) => ((op.safety as Entry).key = ["other"])],
-    ])("refuses %s", (_case, change) => {
-      expect(() => writeFlow().save(change)).toThrow(
-        `${prefix}: its safety is drafted as ${JSON.stringify(DRAFTED_SAFETY)}, and a draft can't change it; change it on the saved op`,
+    it("saves an added step and lists it; an unedited draft lists nothing", () => {
+      const reading = () =>
+        flow({ commands: [step("navigate", { url: `${origin}/` })], trace: [read] });
+      expect(reading().save().differs).toBeUndefined();
+      const result = reading().save((op) =>
+        (op.run[1].steps as Entry[]).push({ tool: "wait.element", args: { selector: "#results" } }),
       );
+      const steps = savedOpOf(result).run[1].steps as { cmd: string }[];
+      expect(steps.map((saved) => saved.cmd)).toEqual(["navigate", "wait.element"]);
+      expect(result.differs).toEqual([
+        "steps: navigate + wait.element (the record drafts navigate)",
+      ]);
     });
 
-    it.each([
-      ["read", (op: Op) => (op.effect = "read")],
-      ["missing", (op: Op) => Reflect.deleteProperty(op, "effect")],
-    ])("refuses an effect of %s, whatever else the draft drops", (_case, change) => {
-      const refusal = `op search can't be saved: the record drafts a write op (it captured POST ${origin}/save), and the draft's effect is ${_case === "read" ? '"read"' : "missing"}; a draft can't change an op's effect`;
-      expect(() => writeFlow().save(change)).toThrow(refusal);
+    it("lists an added extract and an on.success check", () => {
+      const result = flow({ trace: [read] }).save((op) => {
+        networkOf(op).extract = { html: { value: "h1" } };
+        op.on = { success: { expect: { status: 200 } } };
+      });
+      expect(result.differs).toEqual([
+        'network extract: {"html":{"value":"h1"}} (the record drafts none)',
+        'on: {"success":{"expect":{"status":200}}} (the record drafts none)',
+      ]);
+    });
+
+    it("saves an effect edited to read and says the record drafts a write", () => {
+      const result = flow({ commands: ["click"], trace: [home, write] }).save(
+        (op) => (op.effect = "read"),
+      );
+      expect(savedOpOf(result).effect).toBe("read");
+      expect(result.differs).toEqual([
+        `effect: read (the record drafts write: it captured POST ${origin}/save)`,
+      ]);
+    });
+  });
+
+  describe("a record that captured several writes", () => {
+    const note = { ...write, id: "r_note", url: `${origin}/notes` };
+    const refusal = `the record captured 2 writes (r_save POST ${origin}/save, r_note POST ${origin}/notes); name the one the op replays with --request-id <r_…>`;
+
+    it("is refused at pb record stop --draft, listing the ids, until --request-id names one", () => {
       expect(() =>
-        writeFlow().save((op) => {
-          change(op);
-          op.run = op.run.filter((strategy) => strategy.using !== "network");
-          Reflect.deleteProperty(op, "safety");
-          Reflect.deleteProperty(op.args ?? {}, "review_key");
-        }),
+        recordFlow({ origin, commands: ["click"], trace: [home, write, note] }).stopped(),
       ).toThrow(refusal);
+      const named = recordFlow({
+        origin,
+        commands: ["click"],
+        trace: [home, write, note],
+        stop: { draft: true, requestId: "r_note" },
+      }).stopped();
+      expect(networkOf(named.draft as Op).request?.url).toBe(`${origin}/notes`);
     });
 
-    it("refuses a draft that drops the network strategy the record drafts", () => {
-      expect(() =>
-        writeFlow().save((op) => {
-          op.run = op.run.filter((strategy) => strategy.using !== "network");
-          if (op.run.length === 0) {
-            op.run.push({ using: "workflow", steps: [] });
-          }
-        }),
-      ).toThrow(
-        `${prefix}: it drops the network strategy the record drafts (POST ${origin}/save); a draft holds the record's strategies`,
-      );
-    });
-
-    it("refuses a network request without a method", () => {
-      expect(() =>
-        writeFlow().save((op) => Reflect.deleteProperty(networkOf(op).request ?? {}, "method")),
-      ).toThrow(
-        `${prefix}: its network strategy has no method, and a draft keeps the method the record captured (POST ${origin}/save)`,
-      );
-    });
-
-    it("refuses a read network strategy the draft adds", () => {
-      expect(() =>
-        writeFlow().save((op) =>
-          op.run.splice(1, 0, {
-            using: "network",
-            request: { method: "GET", url: `${origin}/delete-all` },
-          }),
-        ),
-      ).toThrow(
-        `${prefix}: its network strategy sends GET ${origin}/delete-all, and the record drafts POST ${origin}/save`,
-      );
-    });
-
-    it("saves the record's effect and safety with the draft's names and descriptions", () => {
-      const saved = writeFlow().saved((op) => {
-        op.description = "Save the form";
-        (op.args as Record<string, Entry>).review_key.desc = "Order key";
+    it("saves a click-only write when none of them can be replayed (failed POSTs)", () => {
+      const failed = [
+        { ...write, status: 500 },
+        { ...note, status: 403 },
+      ];
+      const recorded = recordFlow({ origin, commands: ["click"], trace: [home, ...failed] });
+      const { record, draft } = recorded.stopped();
+      expect((draft as Op).run.map((strategy) => strategy.using)).toEqual(["workflow"]);
+      const saved = authoring.saveFromRecord({
+        recordId: record.id,
+        root: recorded.root,
+        home: path.dirname(recorded.root),
       });
-      expect(saved).toMatchObject({
-        description: "Save the form",
-        effect: "write",
-        safety: DRAFTED_SAFETY,
-        args: { review_key: { required: true, desc: "Order key" } },
-      });
+      expect(saved.op).toBe("search");
     });
-  });
 
-  it("refuses a click-only write op saved as a read, without its safety", () => {
-    const click = flow({ commands: [step("click", { selector: "#submit" })], trace: [home] });
-    expect(click.draft.effect).toBe("write");
-    expect(() =>
-      click.save((op) => {
-        op.effect = "read";
-        Reflect.deleteProperty(op, "safety");
-        op.args = {};
-      }),
-    ).toThrow(
-      "op search can't be saved: the record drafts a write op (it ran click, a page write), and the draft's effect is \"read\"; a draft can't change an op's effect",
-    );
-  });
-
-  it("refuses a read record's draft saved as a write", () => {
-    const reading = flow({ commands: [step("navigate", { url: `${origin}/` })], trace: [read] });
-    expect(reading.draft.effect).toBe("read");
-    expect(() =>
-      reading.save((op) => {
-        op.effect = "write";
-        op.safety = DRAFTED_SAFETY;
-        op.args = { review_key: { required: true } };
-      }),
-    ).toThrow(
-      "write op search can't be saved: the record drafts a read op, and the draft's effect is \"write\"; a draft can't change an op's effect",
-    );
+    it("is refused at pb save --from-record, listing the ids, until --request-id names one", () => {
+      const recorded = recordFlow({
+        origin,
+        commands: ["click"],
+        trace: [home, write, note],
+        stop: {},
+      });
+      const { record } = recorded.stopped();
+      const save = (requestId?: string) =>
+        authoring.saveFromRecord({
+          recordId: record.id,
+          root: recorded.root,
+          home: path.dirname(recorded.root),
+          ...(requestId ? { requestId } : {}),
+        });
+      expect(() => save()).toThrow(refusal);
+      expect(save("r_note").op).toBe("search");
+    });
   });
 
   it("keeps a read pb record stop --read drafted, at save and with --request-id at save", () => {
@@ -2734,153 +2133,13 @@ describe("what a hand-edited draft can't change", () => {
     expect(networkOf(redrafted).request?.url).toBe(`${origin}/other`);
   });
 
-  it("refuses an origin the draft adds to origins or auth.origins", () => {
+  it("saves an origin the draft adds, and lists it", () => {
     const both = [origin, "https://bob.github.io"];
-    for (const change of [
-      (draft: Op) => (draft.origins = both),
-      (draft: Op) => (draft.auth = { origins: both }),
-      (draft: Op) => Object.assign(draft, { origins: both, auth: { origins: both } }),
-    ]) {
-      const reading = flow({ trace: [read] });
-      expect(() => reading.save(change)).toThrow(
-        `op search can't be saved: its origins come from the record (${origin}), and a draft can't change them`,
-      );
-      expect(fs.existsSync(path.join(path.dirname(reading.root), ".surf"))).toBe(false);
-    }
-    // The record's own origins, written out, save.
-    const saved = flow({ trace: [read] }).saved((draft) =>
-      Object.assign(draft, { origins: [origin], auth: { origins: [origin] } }),
-    );
-    expect(saved).toMatchObject({ origins: [origin], auth: { origins: [origin] } });
+    const result = flow({ trace: [read] }).save((draft) => (draft.auth = { origins: both }));
+    expect(result.differs).toEqual([`origins: ${both.join(", ")} (the record drafts ${origin})`]);
   });
 
-  describe("a read's network request", () => {
-    const captured = {
-      method: "GET",
-      url: `${origin}/read`,
-      query: { q: "shoes" },
-      headers: { accept: "application/json" },
-    };
-
-    it.each([
-      ["no steps", [] as Step[]],
-      ["a navigate", [step("navigate", { url: `${origin}/` })]],
-    ])("is the captured request with %s, whatever the draft edits", async (_shape, commands) => {
-      const reading = flow({ commands, trace: [read] });
-      expect(reading.draft.effect).toBe("read");
-      const op = reading.saved((draft) => {
-        const request = networkOf(draft).request as Request;
-        request.url = `${origin}/read?q=deleteAll`;
-        request.headers = { ...request.headers, "x-edited": "yes" };
-        request.body = "edited";
-      });
-      expect(networkOf(op).request).toEqual(captured);
-      expect(op.origins).toEqual([origin]);
-      const tab = captureTab();
-      await runtime.runPlaybookOp({
-        playbook: { id: "fixture", origins: [origin] },
-        op: { ...op, run: [networkOf(op)] },
-        executeTool: tab.executeTool,
-      });
-      const [url, init] = tab.fetchImpl.mock.calls[0] as [string, Entry];
-      expect(url).toBe(`${origin}/read?q=shoes`);
-      expect(init).toMatchObject({ method: "GET", headers: { accept: "application/json" } });
-      expect(init.body).toBeUndefined();
-    });
-
-    it.each([
-      ["another site", "https://bob.github.io/uncaptured"],
-      ["another path", `${origin}/uncaptured`],
-    ])("refuses a URL on %s", (_case, url) => {
-      expect(() =>
-        flow({ trace: [read] }).save((op) => {
-          const request = networkOf(op).request as Request;
-          request.url = url;
-          request.headers = { "x-edited": "yes" };
-        }),
-      ).toThrow(
-        `op search can't be saved: its network strategy sends GET ${url}, and the record drafts GET ${origin}/read; save again with --request-id <r_…> to replay another captured request`,
-      );
-    });
-
-    it("refuses a request without a method", () => {
-      expect(() =>
-        flow({ trace: [read] }).save((op) =>
-          Reflect.deleteProperty(networkOf(op).request ?? {}, "method"),
-        ),
-      ).toThrow(
-        `op search can't be saved: its network strategy has no method, and a draft keeps the method the record captured (GET ${origin}/read)`,
-      );
-    });
-
-    it("refuses a network strategy a record that drafts none gets", () => {
-      expect(() =>
-        flow({
-          commands: [step("navigate", { url: `${origin}/` })],
-          trace: [{ ...home, type: "Image", url: `${origin}/logo.png` }],
-        }).save((op) =>
-          op.run.unshift({ using: "network", request: { method: "GET", url: `${origin}/` } }),
-        ),
-      ).toThrow(
-        `op search can't be saved: its network strategy sends GET ${origin}/, and the record drafts no network strategy`,
-      );
-    });
-  });
-
-  // The record decides which strategies run, in what order and how many: a draft can't put the
-  // click before the captured request, or run a strategy twice.
-  describe("the strategies", () => {
-    const writeClick = () => flow({ commands: ["click"], trace: [home, write] });
-    const readFlow = () =>
-      flow({ commands: [step("navigate", { url: `${origin}/extra` })], trace: [read] });
-    const refusal = (prefix: string, given: string) =>
-      `${prefix}: its strategies are ${given}, and the record drafts network, then workflow; a draft can't change which strategies run, their order or how many there are`;
-
-    it.each([
-      ["reversed", (op: Op) => op.run.reverse(), "workflow, then network"],
-      [
-        "with the network strategy twice",
-        (op: Op) => op.run.splice(1, 0, structuredClone(op.run[0])),
-        "network, then network, then workflow",
-      ],
-      ["without the workflow", (op: Op) => op.run.pop(), "network"],
-    ])("refuses a write draft's strategies %s", (_case, change, given) => {
-      expect(writeClick().draft.run.map((strategy) => strategy.using)).toEqual([
-        "network",
-        "workflow",
-      ]);
-      expect(() => writeClick().save(change)).toThrow(
-        refusal("write op search can't be saved", given),
-      );
-    });
-
-    it("refuses a write draft's workflow twice", () => {
-      expect(() => writeClick().save((op) => op.run.push(structuredClone(op.run[1])))).toThrow(
-        "write op search can't be saved: it has 2 workflow strategies, and a record drafts one",
-      );
-    });
-
-    it("refuses a read draft's strategies reversed, or its network strategy twice", () => {
-      expect(() => readFlow().save((op) => op.run.reverse())).toThrow(
-        refusal("op search can't be saved", "workflow, then network"),
-      );
-      expect(() =>
-        readFlow().save((op) => {
-          (op.run[0] as Entry).verify = { status: 201 };
-          op.run.splice(1, 0, { using: "network", request: op.run[0].request });
-        }),
-      ).toThrow(refusal("op search can't be saved", "network, then network, then workflow"));
-    });
-
-    it("saves the record's order with the draft's checks", () => {
-      const saved = writeClick().saved((op) => ((op.run[0] as Entry).verify = { status: 200 }));
-      expect(saved.run.map((strategy) => strategy.using)).toEqual(["network", "workflow"]);
-      expect(saved.run[0].verify).toEqual({ status: 200 });
-    });
-  });
-
-  // A draft's checks may make an op saved from a record fail, never send more: once a strategy's
-  // request is answered (or a workflow step has run), a failure is the op's.
+  // A read falls back to its next strategy after a failed check; a write, once sent, never does.
   describe("a failed check", () => {
     const readFlow = () =>
       flow({ commands: [step("navigate", { url: `${origin}/extra` })], trace: [read] });
@@ -2952,18 +2211,25 @@ describe("what a hand-edited draft can't change", () => {
     it.each([
       ["verify", (op: Op) => ((op.run[0] as Entry).verify = { status: 201 })],
       ["expect", (op: Op) => ((op.run[0] as Entry).expect = { status: 201 })],
-      ["on.success.expect", (op: Op) => (op.on = { success: { expect: { status: 201 } } })],
-    ])("in a read's %s is final: the recorded workflow doesn't run", async (_case, change) => {
-      const { calls, error } = await run(readFlow().saved(change));
-      expect(calls).toEqual(["javascript_tool"]);
-      expect(error).toMatch(/^network strategy failed after its request was answered: /);
+    ])("in a read's %s falls back to the recorded workflow", async (_case, change) => {
+      expect(await run(readFlow().saved(change))).toEqual({
+        calls: ["javascript_tool", "navigate"],
+        error: "",
+      });
+    });
+
+    it("in a read's on.success.expect falls back, and holds for the workflow too", async () => {
+      const saved = readFlow().saved((op) => (op.on = { success: { expect: { status: 201 } } }));
+      const { calls, error } = await run(saved);
+      expect(calls).toEqual(["javascript_tool", "navigate"]);
+      expect(error).toMatch(/^All strategies failed \(network: .*; workflow: /);
     });
 
     it("in a write is final: the click doesn't run after the POST", async () => {
       const saved = flow({ commands: ["click"], trace: [home, write] }).saved(
         (op) => ((op.run[0] as Entry).verify = { status: 201 }),
       );
-      const { calls, error } = await run(saved, { review_key: "k" });
+      const { calls, error } = await run(saved);
       expect(calls).toEqual(["javascript_tool"]);
       expect(error).toBe("expected status 201");
     });
@@ -2984,25 +2250,21 @@ describe("what a hand-edited draft can't change", () => {
       });
     });
 
-    it("in a read's extract is final", async () => {
+    it("in a read's extract falls back to the recorded workflow", async () => {
       const saved = readFlow().saved(
         (op) => ((op.run[0] as Entry).extract = { jsonPath: "$.missing" }),
       );
-      const { calls, error } = await run(saved);
-      expect(calls).toEqual(["javascript_tool"]);
-      expect(error).toMatch(/^network strategy failed after its request was answered: /);
+      expect(await run(saved)).toEqual({ calls: ["javascript_tool", "navigate"], error: "" });
     });
   });
 
   describe("recorded step arguments", () => {
-    it("are sent as recorded, a selector holding {{review_key}} or %{review_key} too", async () => {
-      const selector = '[data-x="{{review_key}}"] .a-%{review_key}';
+    it("are sent as recorded, a selector holding {{note}} or %{note} too", async () => {
+      const selector = '[data-x="{{note}}"] .a-%{note}';
       const click = flow({ commands: [step("click", { selector })] });
       const op = click.saved();
-      expect(op.args).toEqual({ review_key: records.REVIEW_KEY_ARG });
-      expect(await dispatched(op, { review_key: "deleteAll" })).toEqual([
-        { tool: "click", args: { selector } },
-      ]);
+      expect(op.args).toEqual({});
+      expect(await dispatched(op)).toEqual([{ tool: "click", args: { selector } }]);
     });
 
     it("are sent as recorded in a URL and a locate name", async () => {

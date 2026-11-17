@@ -174,7 +174,10 @@ function validateOp(value, manifest) {
   let safety = value.safety;
   if (effect === "write") {
     if (!value.safety || !["transactional", "repeatable-window"].includes(value.safety.duplicate)) throw new Error(`write op ${id} requires duplicate safety`);
-    if (!Array.isArray(value.safety.key) || value.safety.key.length === 0) throw new Error(`write op ${id} requires a semantic safety key`);
+    // Without a key, the duplicate claim covers every input.
+    if (value.safety.key !== undefined && (!Array.isArray(value.safety.key) || value.safety.key.length === 0)) {
+      throw new Error(`write op ${id} safety key must list inputs; leave it out to cover every input`);
+    }
     safety = { ...value.safety, authorization: value.safety.authorization || "explicit" };
     if (value.safety.serverIdempotency !== undefined) {
       safety.serverIdempotency = validateServerIdempotency(value.safety.serverIdempotency, id);
