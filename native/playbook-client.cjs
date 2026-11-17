@@ -9,6 +9,7 @@ const { resolveOp } = require("./playbooks.cjs");
 const { isReplayCandidate, readRecord, recordsRoot, requestEffect, requestFromEntry } = require("./playbook-records.cjs");
 const { WINNER_MARGIN, isWeak, scoreEntries } = require("./record-candidates.cjs");
 const { assertNoEmbeddedSecrets, assertUrlHasNoEmbeddedSecrets, redactObject, redactValues, safeHeaders, valueSpellings } = require("./redaction.cjs");
+const { secretSpellings } = require("./playbook-assertions.cjs");
 const { version: PACKAGE_VERSION } = require("../package.json");
 
 // URL parsing would percent-encode `{{name}}` in a path, so placeholders (and, in escaped text, the
@@ -89,6 +90,7 @@ const secretValues = [];
 ${redactValues.toString()}
 ${redactObject.toString()}
 ${valueSpellings.toString()}
+${secretSpellings.toString()}
 const redact = (text) => redactValues(text, secretValues, { anyLength: true });
 process.on("uncaughtException", (error) => {
   process.stderr.write(\`\${redact(error?.stack || error)}\\n\`);
@@ -99,7 +101,8 @@ for (const input of manifest.authInputs || []) {
   if (input.required && !value) throw new Error(\`missing auth environment variable \${input.env}\`);
   if (value && input.header) {
     headers[input.header] = value;
-    secretValues.push(...valueSpellings(value));
+    // A raw JSON body holds the value with its quotes and backslashes escaped, once or more.
+    secretValues.push(...new Set([...valueSpellings(value), ...secretSpellings([value])]));
   }
 }
 const response = await fetch(url, {

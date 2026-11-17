@@ -90,7 +90,7 @@ function localOp(playbook, op, { cwd, home }) {
 // Before the run: refuse when the path, any key or leaf of the value, or a matches pattern's source
 // contains one, or when the pattern matches one (which also refuses broad patterns such as .*). A
 // value over MATCH_INPUT_LIMIT is refused for any pattern: a run tests only its start. Each value is
-// checked as is and JSON-escaped, the spelling a raw JSON body holds.
+// checked as is and JSON-escaped up to 3 times, the spellings a raw JSON body holds.
 // Errors name the assertion's position and the variable, never the value.
 function refuseSecretAssertions(assertions, secret) {
   const budget = createRegexBudget();

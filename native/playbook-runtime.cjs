@@ -113,7 +113,7 @@ function resolveAuthValues(op, secrets = {}, env = process.env) {
   return values;
 }
 
-// The texts to redact for env-supplied values: each value and its JSON-escaped spelling.
+// The texts to redact for env-supplied values: each value and its JSON-escaped spellings.
 function secretTexts(authValues) {
   return secretSpellings(Object.values(authValues));
 }
@@ -123,7 +123,7 @@ function secretTexts(authValues) {
 // name and changes only when it holds a value of 4 characters or more (see redactObject).
 function redactSecrets(value, secrets) {
   const values = Object.values(secrets);
-  return values.length === 0 ? value : redactObject(value, values.flatMap(valueSpellings), { anyLength: true });
+  return values.length === 0 ? value : redactObject(value, [...new Set([...values.flatMap(valueSpellings), ...secretTexts(secrets)])], { anyLength: true });
 }
 
 // The free text of a strategy's event (an error, a step's result) without the run's env values.

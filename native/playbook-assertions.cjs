@@ -141,11 +141,23 @@ function touchesSecret(assertion, found, secrets, budget) {
 }
 
 /**
- * The spellings of env values that output can hold: each value as is, and JSON-escaped, as a raw
- * JSON body holds one with a quote, a backslash or a control character.
+ * The spellings of env values that output can hold: each value as is and JSON-escaped up to 3
+ * times, as JSON inside a JSON string field holds one with a quote, a backslash or a control
+ * character. A value JSON leaves as is has one spelling. Self-contained: generated clients inline it.
  */
 function secretSpellings(values) {
-  return [...new Set(values.flatMap((value) => [value, JSON.stringify(value).slice(1, -1)]))];
+  const spellings = new Set();
+  for (const value of values) {
+    let text = value;
+    spellings.add(text);
+    for (let level = 0; level < 3; level++) {
+      const escaped = JSON.stringify(text).slice(1, -1);
+      if (escaped === text) break;
+      spellings.add(escaped);
+      text = escaped;
+    }
+  }
+  return [...spellings];
 }
 
 /**

@@ -447,3 +447,129 @@ describe("the JSON-escaped spelling of an env value", () => {
     }
   });
 });
+
+describe("an env value escaped more than once", () => {
+  const QUOTED = 'dummy"quoted\\value';
+  const escapeOnce = (text: string) => JSON.stringify(text).slice(1, -1);
+  // JSON inside a JSON string field: each level escapes the value once more.
+  const wrap = (text: string) => JSON.stringify({ data: text });
+  const twice = wrap(JSON.stringify({ echo: QUOTED }));
+  const thrice = wrap(twice);
+  const rawOp = { ...op, run: [{ ...op.run[0], extract: undefined }] };
+  // "quoted" appears in no text but the value, whatever its escaping.
+  const leaks = (text: string) => text.includes("quoted");
+
+  it("has one spelling per level of escaping, up to 3, and one for a value JSON leaves as is", () => {
+    expect(assertions.secretSpellings([QUOTED])).toEqual([
+      QUOTED,
+      escapeOnce(QUOTED),
+      escapeOnce(escapeOnce(QUOTED)),
+      escapeOnce(escapeOnce(escapeOnce(QUOTED))),
+    ]);
+    expect(assertions.secretSpellings(["dummy-plain-value"])).toEqual(["dummy-plain-value"]);
+  });
+
+  it("is refused by both --save checks", async () => {
+    for (const body of [twice, thrice]) {
+      const { cwd, file } = tempShop(rawOp);
+      const before = fs.readFileSync(file, "utf8");
+      const hosted = vi.fn((params: Record<string, any>) =>
+        runtime.testPlaybookOp({
+          playbook: { id: "shop", provenance: { scope: "test" } },
+          op: rawOp,
+          secrets: params.secret ?? {},
+          env: { [ENV]: QUOTED },
+          assertions: params.assert,
+          executeTool: captureTab({ reply: () => ({ body }) }).executeTool,
+        }),
+      );
+      const asserts = ["--assert", "$.body", "equals", JSON.stringify(body)];
+      await expect(save(cwd, asserts, { [ENV]: QUOTED }, hosted)).rejects.toThrow(
+        /--save refused: assertion 1 contains the value of SURF_TEST_ITEMS_KEY/,
+      );
+      expect(hosted).not.toHaveBeenCalled();
+      await expect(save(cwd, asserts, {}, hosted)).rejects.toThrow(
+        /--save refused: assertion 1's value passed through env-header redaction/,
+      );
+      expect(fs.readFileSync(file, "utf8")).toBe(before);
+    }
+  });
+
+  it("is redacted from surf use's raw body and parsed body", async () => {
+    for (const body of [twice, thrice]) {
+      const result = await runtime.runPlaybookOp({
+        playbook: { id: "shop", provenance: { scope: "test" } },
+        op: rawOp,
+        env: { [ENV]: QUOTED },
+        executeTool: captureTab({ reply: () => ({ body }) }).executeTool,
+      });
+      expect(result.value.body).toContain("<redacted>");
+      expect(leaks(result.value.body)).toBe(false);
+      expect(leaks(JSON.stringify(result.value.bodyJson))).toBe(false);
+    }
+  });
+
+  it("is redacted from a structured tab error, its attempts and strategy.failed", async () => {
+    for (const echo of [twice, thrice]) {
+      const events: Array<Record<string, unknown>> = [];
+      const failed = await runtime.testPlaybookOp({
+        playbook: { id: "shop", provenance: { scope: "test" } },
+        op,
+        env: { [ENV]: QUOTED },
+        executeTool: async () => ({ error: { nested: { echo } } }),
+        onEvent: (event: Record<string, unknown>) => events.push(event),
+      });
+      expect(failed.status).toBe("failed");
+      const failures = events.filter((event) => event.type === "strategy.failed");
+      expect(failures).toHaveLength(1);
+      for (const text of [failed.error, failed.attempts[0].error, failures[0].error]) {
+        expect(text).toContain("<redacted>");
+        expect(leaks(text as string)).toBe(false);
+      }
+    }
+  });
+
+  it("is redacted from a generated client's output and HTTP error", async () => {
+    const out = path.join(tempShop().cwd, "client");
+    clients.generateClient({
+      playbookId: "shop",
+      op,
+      strategy: op.run[0],
+      provenance: { type: "playbook", id: "shop" },
+      out,
+    });
+    for (const status of [200, 500]) {
+      for (const levels of [2, 3]) {
+        const server = http.createServer((req: any, res: any) => {
+          let text = JSON.stringify({ echo: req.headers["x-api-key"] });
+          for (let level = 1; level < levels; level++) {
+            text = wrap(text);
+          }
+          res.writeHead(status, { "content-type": "application/json" });
+          res.end(status === 200 ? JSON.stringify({ result: { text } }) : text);
+        });
+        await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+        try {
+          const output = await new Promise<string>((resolve) =>
+            execFile(
+              process.execPath,
+              [path.join(out, "client.mjs")],
+              {
+                env: {
+                  ...process.env,
+                  [ENV]: QUOTED,
+                  SURF_CLIENT_ORIGIN: `http://127.0.0.1:${server.address().port}`,
+                },
+              },
+              (_error: Error | null, stdout: string, stderr: string) => resolve(stdout + stderr),
+            ),
+          );
+          expect(output, `${status} at ${levels} levels`).toContain("<redacted>");
+          expect(leaks(output), `${status} at ${levels} levels`).toBe(false);
+        } finally {
+          await new Promise((resolve) => server.close(resolve));
+        }
+      }
+    }
+  });
+});
