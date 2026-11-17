@@ -1607,9 +1607,9 @@ async function runHostPlaybook(msg, request) {
     playbookId: playbook.id,
     op,
     args: runArgs,
-    repeat: params.repeat === true,
+    // overrideInDoubt is --override-in-doubt from a CLI older than this host.
+    repeat: params.repeat === true || params.overrideInDoubt === true,
     retryAttempt: params.retryAttempt,
-    overrideInDoubt: params.overrideInDoubt === true,
     attemptId: params.retryAttempt || crypto.randomUUID(),
   };
   // A write is checked now and gets its receipt only when its request is dispatched, so a run
