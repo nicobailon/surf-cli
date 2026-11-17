@@ -392,6 +392,32 @@ function listPlaybooks(options = {}) {
   return [...found.values()];
 }
 
+/**
+ * The ops in user and project playbooks (built-in ones aside), each with its inputs and the
+ * origins it runs on. A playbook that doesn't load is left out, as listPlaybooks does.
+ */
+function savedOps(options = {}) {
+  const ops = [];
+  const seen = new Set();
+  for (const entry of playbookDirs(options)) {
+    if (entry.scope === "built-in" || !fs.existsSync(entry.path)) continue;
+    for (const name of fs.readdirSync(entry.path).sort()) {
+      if (seen.has(name) || !fs.existsSync(path.join(entry.path, name, "playbook.json"))) continue;
+      seen.add(name);
+      let playbook;
+      try {
+        playbook = loadPlaybookDirectory(path.join(entry.path, name), entry.scope);
+      } catch {
+        continue;
+      }
+      for (const op of playbook.ops.values()) {
+        ops.push({ playbook: playbook.id, op: op.id, inputs: Object.keys(op.args || {}), origins: op.origins || playbook.origins });
+      }
+    }
+  }
+  return ops;
+}
+
 // The headers, in lower case, that any saved op reads from the environment (request.authInputs),
 // so an export can redact them. Reads op files as they are: an op that wouldn't load still counts.
 function envBackedHeaders(options = {}) {
@@ -508,5 +534,6 @@ module.exports = {
   resolveOp,
   resolvePlaybook,
   savePlaybook,
+  savedOps,
   validateOp,
 };

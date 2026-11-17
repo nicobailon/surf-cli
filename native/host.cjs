@@ -71,6 +71,7 @@ const { validateAssertions } = require("./playbook-assertions.cjs");
 const { authInputs, previewPlaybookOp, resolveArgs, runPlaybookOp, testPlaybookOp } = require("./playbook-runtime.cjs");
 const { eachFromChain, previewChainOp, runChainOp } = require("./chain-runtime.cjs");
 const { envBackedHeaders, resolveOp } = require("./playbooks.cjs");
+const { createSavedOpsNotice } = require("./saved-ops-notice.cjs");
 const { replay, waitForResponse } = require("./api-harvest.cjs");
 const { runCollect } = require("./dom-collect.cjs");
 const { formatRecords } = require("./record-format.cjs");
@@ -1920,6 +1921,25 @@ async function truncatePageTextResult(context, request, output) {
   return { ...output, text: cut.text, truncated: cut.truncated };
 }
 
+const savedOpsNotice = createSavedOpsNotice();
+
+// The saved ops for the site a CLI `go` or `tab.switch` lands on, the first time its session lands there.
+async function savedOpsFor(request, output) {
+  if (request?.savedOpsCwd === undefined) return null;
+  try {
+    return await savedOpsNotice({
+      session: request.target?.session || request.callerSession,
+      cwd: request.savedOpsCwd,
+      pageUrl: async () => request.tool === "navigate"
+        ? (await inspectBrowserTab(request, request.target?.tabId)).url
+        : output?.url,
+    });
+  } catch (error) {
+    log(`Saved ops lookup failed: ${error.message}`);
+    return null;
+  }
+}
+
 function sendToolResponse(socket, id, result, error) {
   const context = socketContexts.get(socket);
   if (context && !sessionManager.canRespond(context, id)) return;
@@ -1967,6 +1987,7 @@ function sendToolResponse(socket, id, result, error) {
     }
     await cleanupRequestTransfers(request);
     if (request?.settled) return;
+    const savedOps = finalError || request?.signal.aborted ? null : await savedOpsFor(request, output);
     const outcome = request?.signal.aborted
       ? (request.tombstoned ? "cleanup-settled" : "cancelled")
       : finalError ? "error" : "completed";
@@ -1989,6 +2010,7 @@ function sendToolResponse(socket, id, result, error) {
     }
     if (request?.notice) response.notice = request.notice;
     if (pageChanges) response.pageChanges = pageChanges;
+    if (savedOps) response.savedOps = savedOps;
     if (formattedError) response.error = formattedError;
     else {
       response.result = { content: formatToolContent(withoutTypedEcho(output, request?.args), log) };
@@ -2091,6 +2113,10 @@ function handleToolRequest(msg, socket, requestContext = requestStorage.getStore
 
   requestContext.args = args || {};
   requestContext.activityStartedAt = new Date().toISOString();
+  if (msg.savedOps && ["navigate", "tab.switch"].includes(tool)) {
+    const projectDir = msg.savedOps.projectDir;
+    requestContext.savedOpsCwd = requestContext.context?.isRemote || typeof projectDir !== "string" ? process.cwd() : projectDir;
+  }
   if (!tool.startsWith("playbook.")) journalCommand(tool, args || {}, { tabId });
   if (tool.startsWith("session.")) {
     handleBrowserSessionCommand(tool, args || {}, requestContext)

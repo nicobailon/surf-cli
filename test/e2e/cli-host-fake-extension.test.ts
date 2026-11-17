@@ -70,6 +70,8 @@ type FakeHostOptions = {
   recording?: boolean;
   // Runs each script in the tab instead of answering it, as the tab would.
   runScript?: (code: string) => Promise<Record<string, unknown>>;
+  // The page each other tab shows, for tab.switch.
+  tabUrls?: Record<number, string>;
 };
 
 // What the extension answers for a playbook record, a click and typing, with `recording` on.
@@ -333,6 +335,16 @@ function startHost(socketPath: string, options: FakeHostOptions = {}) {
   const respond = async (message: NativeMessage) => {
     if (options.runScript && message.type === "EXECUTE_JAVASCRIPT") {
       return { id: message.id, ...(await options.runScript(String(message.code))) };
+    }
+    if (message.type === "SWITCH_TAB") {
+      const tabId = Number(message.tabId);
+      return {
+        id: message.id,
+        success: true,
+        tabId,
+        url: options.tabUrls?.[tabId],
+        title: "Other Tab",
+      };
     }
     return (
       (options.recording ? recordingResponse(message, currentUrl) : null) ??
@@ -4574,6 +4586,139 @@ describe("surf parse", () => {
       expect(navigations()).toBe(0);
       expect(host.messages.some((message) => message.type === "START_NETWORK_CAPTURE")).toBe(false);
       expect(fs.existsSync(path.join(home, ".surf", "playbooks"))).toBe(false);
+    } finally {
+      await host.dispose();
+    }
+  }, 60000);
+});
+
+describe("saved ops when a site opens", () => {
+  // A playbook saved under `base` (a home or a project) whose ops each run on `origin`.
+  function savePlaybook(base: string, id: string, origin: string, ops: Record<string, string[]>) {
+    const directory = path.join(base, ".surf", "playbooks", id);
+    fs.mkdirSync(path.join(directory, "ops"), { recursive: true });
+    fs.writeFileSync(
+      path.join(directory, "playbook.json"),
+      JSON.stringify({ id, version: "1.0.0", origins: [origin] }),
+    );
+    for (const [op, inputs] of Object.entries(ops)) {
+      fs.writeFileSync(
+        path.join(directory, "ops", `${op}.json`),
+        JSON.stringify({
+          id: op,
+          args: Object.fromEntries(inputs.map((input) => [input, { type: "string" }])),
+          run: [{ using: "network", request: { url: `${origin}/api/${op}` } }],
+        }),
+      );
+    }
+  }
+
+  function savedOpsFixture() {
+    const scratch = fs.mkdtempSync(path.join(os.tmpdir(), "surf-saved-ops-"));
+    tempDirs.push(scratch);
+    const home = path.join(scratch, "home");
+    const project = path.join(scratch, "project");
+    savePlaybook(home, "books", "https://books.test", { list_books: ["page"], get_book: ["book"] });
+    savePlaybook(project, "quotes", "https://quotes.test", { list_quotes: ["tag", "page"] });
+    savePlaybook(home, "shelf", "https://shelf.test", {
+      a: [],
+      b: [],
+      c: [],
+      d: [],
+      e: [],
+      f: [],
+      g: [],
+    });
+    const socketPath = createSocketPath();
+    const host = startHost(socketPath, {
+      env: { HOME: home },
+      tabUrls: { 43: "https://shelf.test/", 44: "https://plain.test/" },
+    });
+    const cli = (args: string[]) => runCli(socketPath, args, project, { HOME: home });
+    return { host, cli };
+  }
+
+  it("lists an origin's saved ops once per session, and nothing for an origin without", async () => {
+    const { host, cli } = savedOpsFixture();
+    try {
+      await host.waitForMessage((message) => message.type === "HOST_READY");
+      const first = await cli(["go", "https://books.test/"]);
+      expect(first).toMatchObject({
+        code: 0,
+        stdout: "OK\nsaved: books get_book --book, list_books --page\n",
+      });
+      expect(await cli(["go", "https://books.test/catalogue/page-2.html"])).toMatchObject({
+        code: 0,
+        stdout: "OK\n",
+      });
+      expect(await cli(["navigate", "https://plain.test/"])).toMatchObject({
+        code: 0,
+        stdout: "OK\n",
+      });
+      expect(await cli(["navigate", "https://quotes.test/"])).toMatchObject({
+        code: 0,
+        stdout: "OK\nsaved: quotes list_quotes --tag --page\n",
+      });
+      // Another session hears it again, once.
+      seedOldSession(host.stateDir);
+      expect(await cli(["go", "https://books.test/", "--session", "old"])).toMatchObject({
+        code: 0,
+        stdout: "OK\nsaved: books get_book --book, list_books --page\n",
+      });
+      expect(await cli(["go", "https://books.test/", "--session", "old"])).toMatchObject({
+        code: 0,
+        stdout: "OK\n",
+      });
+    } finally {
+      await host.dispose();
+    }
+  }, 60000);
+
+  it("carries savedOps in --json instead of printing them", async () => {
+    const { host, cli } = savedOpsFixture();
+    try {
+      await host.waitForMessage((message) => message.type === "HOST_READY");
+      const json = await cli(["go", "https://books.test/", "--json"]);
+      expect(json.code).toBe(0);
+      expect(json.stdout).not.toContain("saved:");
+      expect(JSON.parse(json.stdout)).toMatchObject({
+        result: "OK",
+        savedOps: {
+          origin: "https://books.test",
+          ops: [
+            { playbook: "books", op: "get_book", inputs: ["book"] },
+            { playbook: "books", op: "list_books", inputs: ["page"] },
+          ],
+        },
+      });
+      expect(
+        JSON.parse((await cli(["go", "https://books.test/", "--json"])).stdout),
+      ).not.toHaveProperty("savedOps");
+      expect(
+        JSON.parse((await cli(["go", "https://plain.test/", "--json"])).stdout),
+      ).not.toHaveProperty("savedOps");
+    } finally {
+      await host.dispose();
+    }
+  }, 60000);
+
+  it("lists them once when a tab switch lands on the origin, five at most", async () => {
+    const { host, cli } = savedOpsFixture();
+    try {
+      await host.waitForMessage((message) => message.type === "HOST_READY");
+      expect(await cli(["tab.switch", "43"])).toMatchObject({
+        code: 0,
+        stdout:
+          "Switched to tab 43: Other Tab\nsaved: shelf a, b, c, d, e +2 more: surf pb ops shelf\n",
+      });
+      expect(await cli(["tab.switch", "43"])).toMatchObject({
+        code: 0,
+        stdout: "Switched to tab 43: Other Tab\n",
+      });
+      expect(await cli(["tab.switch", "44"])).toMatchObject({
+        code: 0,
+        stdout: "Switched to tab 44: Other Tab\n",
+      });
     } finally {
       await host.dispose();
     }

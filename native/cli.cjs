@@ -41,6 +41,7 @@ const {
   handleOracleCli,
 } = require("./oracle-cli.cjs");
 const { formatPlaybookOutput, handlePlaybookCli } = require("./playbook-cli.cjs");
+const { formatSavedOps } = require("./saved-ops-notice.cjs");
 const { editDistance } = require("./edit-distance.cjs");
 const { formatGlobalOptions } = require("./global-options.cjs");
 
@@ -4196,6 +4197,8 @@ const request = {
   params: { tool: finalTool, args: toolArgs },
   id: "cli-" + Date.now(),
   ...globalOpts,
+  // The host answers with the saved ops, this project's too, for the site the tab lands on.
+  ...(["navigate", "tab.switch"].includes(finalTool) ? { savedOps: { projectDir: process.cwd() } } : {}),
 };
 
 const sendRequest = async (toolName, toolArgs = {}, timeoutMs = 5000) => {
@@ -4616,13 +4619,14 @@ async function handleResponse(response) {
   }
 
   if (wantJson) {
-    const output = response.target || response.notice || response.truncated || response.pageChanges
+    const output = response.target || response.notice || response.truncated || response.pageChanges || response.savedOps
       ? {
         result: data ?? null,
         target: response.target || null,
         notice: response.notice || null,
         ...(response.truncated ? { truncated: response.truncated } : {}),
         ...(response.pageChanges ? { pageChanges: response.pageChanges } : {}),
+        ...(response.savedOps ? { savedOps: response.savedOps } : {}),
       }
       : data ?? null;
     console.log(JSON.stringify(output, null, 2));
@@ -5030,6 +5034,7 @@ async function handleResponse(response) {
     console.log(JSON.stringify(data, null, 2));
   }
   if (pageChangeLines.length > 0 && typeof data !== "string") console.log(pageChangeLines.join("\n"));
+  if (response.savedOps) console.log(formatSavedOps(response.savedOps));
 
   socket.end();
   process.exit(0);
