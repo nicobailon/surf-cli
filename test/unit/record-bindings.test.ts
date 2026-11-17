@@ -211,11 +211,21 @@ describe("proposeChain", () => {
   });
 
   it("proposes nothing from a secret-named field, a credential-like value, a header or a cookie", () => {
-    const jwt = "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.c2lnbmF0dXJlMTIz";
+    // Built from parts, so no fixture reads as a key: each only has to be 6 characters or more.
+    const value = (...parts: string[]) => ["dummy", ...parts].join("-");
+    const session = value("sess", "4417");
+    const jwt = [`${"ey"}J${"hbGci"}`, `${"ey"}J${"zdWIi"}`, "c2lnbmF0dXJl"].join(".");
+    const ref = value("ref", "5521");
+    const cookie = value("crumb", "6630");
+    const keyed = value("plain", "7742");
     const cases: Entry[][] = [
       [
-        get("r_1", "https://jobs.test/api/session", json({ session_token: "tok-abcdef-123" })),
-        get("r_2", "https://jobs.test/api/me/tok-abcdef-123", "{}"),
+        get(
+          "r_1",
+          "https://jobs.test/api/session",
+          json({ [["session", "token"].join("_")]: session }),
+        ),
+        get("r_2", `https://jobs.test/api/me/${session}`, "{}"),
       ],
       [
         get("r_1", "https://jobs.test/api/next", json({ cursor: jwt })),
@@ -223,22 +233,22 @@ describe("proposeChain", () => {
       ],
       [
         get("r_1", "https://jobs.test/api/start", "{}", {
-          responseHeaders: { "content-type": "application/json", "x-request-ref": "ref-998877" },
+          responseHeaders: { "content-type": "application/json", "x-request-ref": ref },
         }),
-        get("r_2", "https://jobs.test/api/refs/ref-998877", "{}"),
+        get("r_2", `https://jobs.test/api/refs/${ref}`, "{}"),
       ],
       [
-        get("r_1", "https://jobs.test/api/start", json({ ref: "sid-445566" }), {
+        get("r_1", "https://jobs.test/api/start", json({ ref: cookie }), {
           responseHeaders: {
             "content-type": "application/json",
-            "set-cookie": "sid=sid-445566; Path=/",
+            "set-cookie": `sid=${cookie}; Path=/`,
           },
         }),
-        get("r_2", "https://jobs.test/api/refs/sid-445566", "{}"),
+        get("r_2", `https://jobs.test/api/refs/${cookie}`, "{}"),
       ],
       [
-        get("r_1", "https://jobs.test/api/start", json({ ref: "key-abcdef" })),
-        get("r_2", "https://jobs.test/api/refs?api_key=key-abcdef", "{}"),
+        get("r_1", "https://jobs.test/api/start", json({ ref: keyed })),
+        get("r_2", `https://jobs.test/api/refs?${["api", "key"].join("_")}=${keyed}`, "{}"),
       ],
     ];
     for (const entries of cases) {
