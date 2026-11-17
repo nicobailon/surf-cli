@@ -1058,7 +1058,7 @@ surf pb client export example --op read --out ./client
 surf pb client verify ./client
 ```
 
-Generated manifests declare provenance and authentication environment inputs. Surf leaves out cookies, bearer tokens, and secret headers. A client of a write needs `--write`: `client derive` of a captured POST (POST reads included) or `client export` of a write op. It sends with no receipt, and its body is as captured: a record that kept input values (`--include-input-values`) puts them, passwords included, in `surf-client.json`, whose `noEmbeddedSecrets` is then `false`. Make a body field an input with `pb param` first to leave it out. `client verify --live` of a write client needs `--write` too.
+Generated manifests declare provenance and authentication environment inputs. Surf leaves out cookies, bearer tokens, and secret headers. A client of a write needs `--write`: `client derive` of a captured write (POST, PUT, PATCH or DELETE; POST reads included) or `client export` of a write op. It sends with no receipt, and its body is as captured: a record that kept input values (`--include-input-values`) puts them, passwords included, in `surf-client.json`, whose `noEmbeddedSecrets` is then `false`. Make a body field an input with `pb param` first to leave it out. `client verify --live` of a write client needs `--write` too.
 
 ### Threads and Feeds
 

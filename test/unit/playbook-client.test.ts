@@ -228,6 +228,11 @@ describe("playbook client projection", () => {
     expect(derive([api, { ...api, id: "r-api-2", url: "https://example.test/api/other" }])).toThrow(
       /has several read endpoints and no clear winner; run surf pb record candidates rec-[^ ]+ and pass --request-id/,
     );
+    // A POST that leads a weak GET is the winner: without --write it is refused, naming the flag.
+    const search = { ...api, id: "r-gql", method: "POST", url: "https://example.test/graphql" };
+    expect(derive([search, beacon])).toThrow(
+      "op search is a write request (POST https://example.test/graphql); add --write to make a client for it",
+    );
   });
 
   it("refuses to derive a client from a POST, keeping its query and body shape when allowed", () => {
@@ -772,7 +777,12 @@ describe("pb client derive and export --write", () => {
     return cwd;
   }
 
-  function capture(cwd: string, entry: Record<string, unknown>) {
+  // Each entry is captured as r-1, r-2…; derive names r-1 unless `pick` is false.
+  function capture(
+    cwd: string,
+    entry: Record<string, unknown> | Record<string, unknown>[],
+    { pick = true } = {},
+  ) {
     const root = process.env.SURF_STATE_DIR;
     const record = records.startRecord({
       site: "fixture",
@@ -783,7 +793,9 @@ describe("pb client derive and export --write", () => {
     });
     records.attachNetworkTrace(
       record.id,
-      [{ id: "r-1", status: 200, type: "XHR", ...entry }],
+      [entry]
+        .flat()
+        .map((each, index) => ({ id: `r-${index + 1}`, status: 200, type: "XHR", ...each })),
       root,
     );
     const out = path.join(cwd, "client");
@@ -798,8 +810,7 @@ describe("pb client derive and export --write", () => {
           "send",
           "--from-record",
           record.id,
-          "--request-id",
-          "r-1",
+          ...(pick ? ["--request-id", "r-1"] : []),
           ...flags,
           "--out",
           out,
@@ -831,6 +842,72 @@ describe("pb client derive and export --write", () => {
       },
     });
     expect(fs.existsSync(path.join(out, "client.mjs"))).toBe(true);
+  });
+
+  // pb client derive picks from the requests a draft replays, so a captured PATCH derives too.
+  it("derives a client from a captured PATCH only with --write", async () => {
+    const cwd = sandbox();
+    const { out, derive } = capture(cwd, {
+      method: "PATCH",
+      url: "https://example.test/items/7",
+      requestHeaders: { "content-type": "application/json" },
+      requestBody: JSON.stringify({ note: "dummy" }),
+    });
+    await expect(derive()).rejects.toThrow(
+      "op send is a write request (PATCH https://example.test/items/7); add --write to make a client for it",
+    );
+    expect(fs.existsSync(out)).toBe(false);
+    const { value } = await derive("--write");
+    expect(value.manifest).toMatchObject({
+      effect: "write",
+      endpoint: {
+        method: "PATCH",
+        url: "https://example.test/items/7",
+        body: JSON.stringify({ note: "dummy" }),
+      },
+    });
+    expect(fs.existsSync(path.join(out, "client.mjs"))).toBe(true);
+  });
+
+  // Without --write or --request-id, derive ranks only a record's reads, as it did before it could
+  // replay a PUT, PATCH or DELETE; a record with no read still names --write.
+  it.each([["PUT"], ["PATCH"]])(
+    "derives the GET of a record that also captured a %s without --write",
+    async (method) => {
+      const cwd = sandbox();
+      const { out, derive } = capture(
+        cwd,
+        [
+          { method: "GET", url: "https://example.test/items/7" },
+          {
+            method,
+            url: "https://example.test/items/7",
+            requestHeaders: { "content-type": "application/json" },
+            requestBody: JSON.stringify({ note: "dummy" }),
+          },
+        ],
+        { pick: false },
+      );
+      const { value } = await derive();
+      expect(value.manifest).toMatchObject({
+        effect: "read",
+        endpoint: { method: "GET", url: "https://example.test/items/7" },
+      });
+      expect(fs.existsSync(path.join(out, "client.mjs"))).toBe(true);
+    },
+  );
+
+  it("refuses a lone captured PATCH without --write, naming the flag", async () => {
+    const cwd = sandbox();
+    const { out, derive } = capture(
+      cwd,
+      { method: "PATCH", url: "https://example.test/items/7" },
+      { pick: false },
+    );
+    await expect(derive()).rejects.toThrow(
+      "op send is a write request (PATCH https://example.test/items/7); add --write to make a client for it",
+    );
+    expect(fs.existsSync(out)).toBe(false);
   });
 
   it("derives a client from a captured GET without --write", async () => {

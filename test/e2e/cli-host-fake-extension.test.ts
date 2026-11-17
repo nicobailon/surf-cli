@@ -2709,6 +2709,77 @@ describe("CLI/native-host/fake-extension E2E contract", () => {
     60000,
   );
 
+  // A write draft replays a captured PUT, PATCH or DELETE as it does a POST: its network strategy
+  // sends that method and the recorded body.
+  it.each([["PUT"], ["PATCH"], ["DELETE"]])(
+    "drafts a write from a captured %s and replays it with surf use --write",
+    async (method) => {
+      const socketPath = createSocketPath();
+      const project = fs.mkdtempSync(path.join(os.tmpdir(), "surf-record-method-"));
+      tempDirs.push(project);
+      const typedText = ["dummy", "method", "words"].join(" ");
+      const body = JSON.stringify({ note: typedText });
+      const page = {
+        url: "https://fixture.test/api/items/7",
+        requestHeaders: { "content-type": "application/json" },
+        requestBody: body,
+      };
+      const host = startHost(socketPath, { recording: true, scriptResponse: page });
+      const scripts = () =>
+        host.messages
+          .filter((message) => message.type === "EXECUTE_JAVASCRIPT")
+          .map((message) => String(message.code));
+      const cli = (args: string[]) =>
+        runCli(socketPath, args, project, { SURF_STATE_DIR: host.stateDir });
+
+      try {
+        await host.waitForMessage((message) => message.type === "HOST_READY");
+        expect((await cli(["navigate", "https://fixture.test/form"])).code).toBe(0);
+        const start = ["pb", "record", "start", "fixture", "--op", "submit", "--network"];
+        expect((await cli([...start, "--include-input-values"])).code).toBe(0);
+        expect((await cli(["type", typedText, "--selector", "#note"])).code).toBe(0);
+        const fetched = `fetch("/api/items/7", { method: "${method}" })`;
+        expect((await cli(["js", fetched])).code).toBe(0);
+        const stopped = await cli(["pb", "record", "stop", "--draft", "--json"]);
+        expect(stopped.code).toBe(0);
+        const { record, draft } = JSON.parse(stopped.stdout);
+        expect(draft.effect).toBe("write");
+        const network = draft.run.find(
+          (strategy: { using: string }) => strategy.using === "network",
+        );
+        expect(network.request).toMatchObject({
+          method,
+          url: "https://fixture.test/api/items/7",
+          body,
+        });
+
+        page.url = "https://fixture.test/api";
+        const saved = await cli(["pb", "save", "--from-record", record.id, "--project", "--json"]);
+        expect(saved).toMatchObject({ code: 0, stderr: "" });
+        const before = scripts().length;
+        const used = await cli([
+          "use",
+          "fixture",
+          "submit",
+          "--text",
+          "dummy run",
+          "--write",
+          "--json",
+        ]);
+        expect(used.code).toBe(0);
+        expect(JSON.parse(used.stdout)).toMatchObject({ strategy: "network" });
+        // The one script surf use ran sends the captured method and body.
+        const sent = scripts().slice(before);
+        expect(sent).toHaveLength(1);
+        expect(sent[0]).toContain(`method: "${method}"`);
+        expect(sent[0]).toContain(`body: ${JSON.stringify(body)},`);
+      } finally {
+        await host.dispose();
+      }
+    },
+    60000,
+  );
+
   // includeInputValues in the user's own ~/surf.json sets pb record start's default; the same key
   // in the project's surf.json, where surf runs, changes nothing.
   it("keeps a record's values by default only from ~/surf.json, never the project's", async () => {

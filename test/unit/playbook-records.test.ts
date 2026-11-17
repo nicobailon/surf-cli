@@ -884,7 +884,7 @@ describe("choosing the draft's request", () => {
     const update = {
       id: "r_put",
       method: "PUT",
-      status: 200,
+      status: 500,
       type: "XHR",
       url: "https://example.test/api/employees/7",
     };
@@ -893,7 +893,7 @@ describe("choosing the draft's request", () => {
     expect(draft.effect).toBe("write");
     expect(draft.run.map((strategy: { using: string }) => strategy.using)).toEqual(["workflow"]);
     expect(warnings).toEqual([
-      "the draft has no network strategy: it is a write because of PUT https://example.test/api/employees/7, which is a PUT (a draft replays only GET, HEAD and POST), and a write draft never replays a read in its place",
+      "the draft has no network strategy: it is a write because of PUT https://example.test/api/employees/7, which is a PUT answered with status 500, and a write draft never replays a read in its place",
     ]);
     const chooseRead = recordFlow({
       commands: ["click"],
@@ -909,7 +909,7 @@ describe("choosing the draft's request", () => {
       stop: { draft: true, requestId: "r_put" },
     });
     expect(choosePut.stopped).toThrow(
-      "request r_put (PUT https://example.test/api/employees/7) is a PUT (a draft replays only GET, HEAD and POST); a draft never replays it",
+      "request r_put (PUT https://example.test/api/employees/7) is a PUT answered with status 500; a draft never replays it",
     );
   });
 
@@ -1504,6 +1504,7 @@ describe("activity and explicit record evidence", () => {
         ...create,
         id: "r_put",
         method: "PUT",
+        status: 500,
         url: "https://example.test/api/employees/7",
       };
       const { root, stopped } = recordFlow({ commands: ["navigate"], trace: [update] });
@@ -1520,6 +1521,7 @@ describe("activity and explicit record evidence", () => {
         ...create,
         id: "r_put",
         method: "PUT",
+        status: 500,
         url: "https://example.test/api/employees/7",
       };
       const heartbeat = {
@@ -2040,6 +2042,17 @@ describe("a hand-edited draft", () => {
       ]);
     });
 
+    it("lists an added extract and an on.success check", () => {
+      const result = flow({ trace: [read] }).save((op) => {
+        networkOf(op).extract = { html: { value: "h1" } };
+        op.on = { success: { expect: { status: 200 } } };
+      });
+      expect(result.differs).toEqual([
+        'network extract: {"html":{"value":"h1"}} (the record drafts none)',
+        'on: {"success":{"expect":{"status":200}}} (the record drafts none)',
+      ]);
+    });
+
     it("saves an effect edited to read and says the record drafts a write", () => {
       const result = flow({ commands: ["click"], trace: [home, write] }).save(
         (op) => (op.effect = "read"),
@@ -2066,6 +2079,22 @@ describe("a hand-edited draft", () => {
         stop: { draft: true, requestId: "r_note" },
       }).stopped();
       expect(networkOf(named.draft as Op).request?.url).toBe(`${origin}/notes`);
+    });
+
+    it("saves a click-only write when none of them can be replayed (failed POSTs)", () => {
+      const failed = [
+        { ...write, status: 500 },
+        { ...note, status: 403 },
+      ];
+      const recorded = recordFlow({ origin, commands: ["click"], trace: [home, ...failed] });
+      const { record, draft } = recorded.stopped();
+      expect((draft as Op).run.map((strategy) => strategy.using)).toEqual(["workflow"]);
+      const saved = authoring.saveFromRecord({
+        recordId: record.id,
+        root: recorded.root,
+        home: path.dirname(recorded.root),
+      });
+      expect(saved.op).toBe("search");
     });
 
     it("is refused at pb save --from-record, listing the ids, until --request-id names one", () => {

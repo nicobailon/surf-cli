@@ -97,8 +97,11 @@ const shownSteps = (steps) => (Array.isArray(steps) && steps.length > 0 ? steps.
 const savedStep = (step) => { try { return normalizeStep(step); } catch { return step; } };
 const workflowSteps = (op) => op.run.find((strategy) => strategy?.using === "workflow")?.steps?.map?.(savedStep);
 
+// A strategy's checks: what it reads from the answer and when the answer counts as failed.
+const CHECK_FIELDS = ["extract", "verify", "expect", "acceptStatus"];
+
 // One line for each way the draft differs from what the record drafts: effect, safety, strategies,
-// request, steps, origins and inputs. `because` says why the record drafts a write.
+// request, checks, steps, origins and inputs. `because` says why the record drafts a write.
 function draftDifferences({ draft, reference, because, origins, recordOrigins }) {
   const lines = [];
   const effect = draft.effect ?? "read";
@@ -111,6 +114,13 @@ function draftDifferences({ draft, reference, because, origins, recordOrigins })
     const edited = request && recorded ? Object.keys({ ...request, ...recorded }).filter((part) => !isDeepStrictEqual(request[part], recorded[part])) : [];
     lines.push(`request: ${shownRequest(request)}${edited.length > 0 ? `, its ${edited.join(", ")} edited` : ""} (the record drafts ${shownRequest(recorded)})`);
   }
+  for (const recordedStrategy of reference.run) {
+    const strategy = draft.run.find((candidate) => candidate?.using === recordedStrategy.using);
+    for (const field of strategy ? CHECK_FIELDS : []) {
+      if (!isDeepStrictEqual(strategy[field], recordedStrategy[field])) lines.push(`${strategy.using} ${field}: ${shownJson(strategy[field])} (the record drafts ${shownJson(recordedStrategy[field])})`);
+    }
+  }
+  if (!isDeepStrictEqual(draft.on, reference.on)) lines.push(`on: ${shownJson(draft.on)} (the record drafts ${shownJson(reference.on)})`);
   const [steps, recordedSteps] = [workflowSteps(draft), workflowSteps(reference)];
   if (!isDeepStrictEqual(steps, recordedSteps)) {
     const sameNames = shownSteps(steps) === shownSteps(recordedSteps);

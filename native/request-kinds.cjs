@@ -43,9 +43,12 @@ function isTelemetryRequest(entry, recordOrigin) {
 // is an XHR, not a Script), but a draft or client never replays one.
 const ASSET_TYPES = new Set(["Image", "Stylesheet", "Script", "Font", "Media"]);
 
+// The methods a draft replays. A derived client may also send an OPTIONS.
+const REPLAYED_METHODS = new Set(["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE"]);
+
 // A captured request a draft or derived client may replay.
 function isReplayCandidate(entry) {
-  return ["GET", "HEAD", "OPTIONS", "POST"].includes(entry.method) && entry.status >= 200 && entry.status < 400 && !ASSET_TYPES.has(entry.type);
+  return (REPLAYED_METHODS.has(entry.method) || entry.method === "OPTIONS") && entry.status >= 200 && entry.status < 400 && !ASSET_TYPES.has(entry.type);
 }
 
 function requestEffect(entry) {
@@ -58,4 +61,4 @@ function shownUrl(entry) {
   return `${entry.method} ${url}`;
 }
 
-module.exports = { ASSET_TYPES, hostname, isReplayCandidate, isTelemetryRequest, requestEffect, shownUrl };
+module.exports = { ASSET_TYPES, REPLAYED_METHODS, hostname, isReplayCandidate, isTelemetryRequest, requestEffect, shownUrl };
