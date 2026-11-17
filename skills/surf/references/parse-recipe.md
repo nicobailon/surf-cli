@@ -11,7 +11,7 @@ Use this to go from a URL and a goal ("all books with price and rating") to a sa
 ## 1. Record the request that carries the data
 
 ```bash
-surf playbook record start <pb> --op <op> --network     # add --include-input-values for a write's body (section 5)
+surf playbook record start <pb> --op <op> --network     # add --include-input-values for a write's body (Writes, below)
 surf navigate '<url>' && surf wait.ready           # or the click, search or scroll that loads the data
 surf playbook record candidates --limit 5                # while recording: r_… ids, score, reasons, a sample
 surf playbook record stop --draft --read                 # --read only when the flow changed nothing
@@ -39,7 +39,7 @@ surf playbook param <pb> <op> query.skip --as skip                      # paging
 
 ## 3. Return records
 
-Find selectors in the tab first, and measure the size. The result must fit in 50,000 characters of pretty-printed JSON:
+Find selectors in the tab first, and measure the size. The result must fit in 50,000 characters of pretty-printed JSON. This measure counts the records alone, and the cap is checked on the whole nested result, so leave a few thousand characters of margin:
 
 ```bash
 surf js 'const r=[...document.querySelectorAll("<item>")].map(e=>({title:e.querySelector("h3 a")?.title})); return [r.length, JSON.stringify(r,null,2).length]'
@@ -79,7 +79,7 @@ surf use <pb> <op> --<input> <B> --json            # .strategy is network, and t
 
 **Data that appears after a click, search or scroll.** Start the record on the page, then do only the action that loads the data. Navigate or expand the UI before `record start`. Read `candidates` for the `Fetch`/`XHR` the action sent. If the data is in that request, the op is network-first, and its fallback replays the action. For a search, param the query with `--link text`. For infinite scroll, see `docs/threads-and-feeds.md` in the Surf repository (the `api` strategy follows cursors, and `collect` scrolls).
 
-**Writes.** A record that clicked or typed drafts a write: `effect: write`, a `review_key` input and a safety block. Record with `--include-input-values` if the body matters, and param body fields with `pb param body.<path>` so no typed value stays in the op. Check what it would send with `surf use <pb> <op> --review_key <k> --dry-run`, then send once with `--write`. A second run with the same key is blocked by its receipt until you pass `--repeat`. Test it on a test site or a test record only. Write rules, receipts and `pb client export --write` are in [workflows.md](workflows.md#playbooks).
+**Writes.** A record that clicked or typed drafts a write: `effect: write` and a safety block. Record with `--include-input-values` if the body matters, and param body fields with `pb param body.<path>` so no typed value stays in the op. Check what it would send with `surf use <pb> <op> --dry-run` (pass the inputs `surf playbook ops <pb>` lists), then send once with `--write`. A second run with the same inputs is blocked by its receipt for 5 minutes; pass `--repeat` to send it again. Test it on a test site or a test record only. Write rules, receipts and `pb client export --write` are in [workflows.md](workflows.md#playbooks).
 
 ## Decision log
 
