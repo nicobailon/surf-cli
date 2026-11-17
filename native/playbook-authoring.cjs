@@ -27,26 +27,35 @@ function saveFromRecent({ site, op: opId, since = "1h", scope = "user", cwd, hom
   return savePlaybook({ manifest: { id: site, name: site, version: "1.0.0", origins: [] }, op, scope, cwd, home });
 }
 
-// The captured write a network-only write op replays: one on the record's page origin, unless
-// --request-id (at stop or at save) names it. When the record holds several writes, the one named.
-// Origins are compared exactly: a host's last labels don't make a site (alice.github.io and
-// bob.github.io are different sites).
+function capturedWrites(record, trace) {
+  return (trace?.entries || []).filter((entry) => requestEffect(entry) === "write" && !isTelemetryRequest(entry, record.origin));
+}
+
+// A write op's network strategy replays a write on the record's page origin, unless --request-id
+// (at stop or at save) names it. Origins are compared exactly: a host's last labels don't make a
+// site (alice.github.io and bob.github.io are different sites).
+function firstPartyWrite({ record, entry, chosen, request, fail }) {
+  const sent = `${request.method} ${request.url}`;
+  const page = originOf(record.origin || entry?.tabUrl);
+  const origin = originOf(request.url);
+  if (origin !== page && !(chosen && entry?.id === chosen)) {
+    throw fail(`it would replay ${sent}, whose origin (${origin}) isn't the record's page origin (${page || "unknown"}); name it with --request-id ${entry?.id ?? "<r_…>"} to replay it anyway`);
+  }
+}
+
+// The captured write a network-only write op replays: a first-party one. When the record holds
+// several writes, the one named.
 function replayedWrite({ op, record, trace, requestId, request }) {
   const fail = (why) => new Error(`write op ${op.id} can't be saved network-only: ${why}`);
-  const writes = (trace?.entries || []).filter((entry) => requestEffect(entry) === "write" && !isTelemetryRequest(entry, record.origin));
+  const writes = capturedWrites(record, trace);
   const chosen = requestId ?? op.provenance?.requestId;
   if (!chosen && writes.length > 1) {
     const listed = writes.map((entry) => `${entry.id} ${shownUrl(entry)}`).join(", ");
     throw fail(`the record captured ${writes.length} writes (${listed}); name the one the op replays with pb save --from-record <id> --request-id <r_…>`);
   }
   const entry = chosen ? writes.find((candidate) => candidate.id === chosen) : writes[0];
-  const sent = `${request.method} ${request.url}`;
-  if (!entry || shownUrl(entry) !== sent) throw fail(`it would replay ${shownUrl(request)}, which isn't a write the record captured`);
-  const page = originOf(record.origin || entry.tabUrl);
-  const origin = originOf(entry.url);
-  if (!chosen && origin !== page) {
-    throw fail(`it would replay ${sent}, whose origin (${origin}) isn't the record's page origin (${page || "unknown"}); name it with --request-id ${entry.id} to replay it anyway`);
-  }
+  if (!entry || shownUrl(entry) !== `${request.method} ${request.url}`) throw fail(`it would replay ${shownUrl(request)}, which isn't a write the record captured`);
+  firstPartyWrite({ record, entry, chosen, request, fail });
 }
 
 function originOf(url) {
@@ -56,14 +65,24 @@ function originOf(url) {
 // A write draft whose workflow can't be its fallback (a navigate first, or a type and a click)
 // saves with its network strategy alone when that replays the site's own captured write. The
 // workflow's inputs go with it, and the review key takes their place as the safety key when none
-// is left.
+// is left. A one-click draft keeps its workflow, and its network write must be first-party too.
 function fitWriteWorkflow(op, { record, trace, requestId }, warnings) {
   const workflow = op.effect === "write" && op.run.find((strategy) => strategy.using === "workflow");
   if (!workflow) return op;
   const steps = workflow.steps.map(normalizeStep);
-  if (isCommitWorkflow(steps)) return op;
-  const why = `a write op's workflow fallback must be one page-write step, and this draft's is ${steps.map((step) => step.cmd).join(" + ")}`;
   const network = op.run.find((strategy) => strategy.using === "network");
+  if (isCommitWorkflow(steps)) {
+    // The network strategy runs before the click, so its write is first-party too.
+    if (network && requestEffect(network.request) === "write") {
+      const chosen = requestId ?? op.provenance?.requestId;
+      const sent = shownUrl(network.request);
+      const matching = capturedWrites(record, trace).filter((entry) => shownUrl(entry) === sent);
+      const entry = matching.find((candidate) => candidate.id === chosen) ?? matching[0];
+      firstPartyWrite({ record, entry, chosen, request: network.request, fail: (why) => new Error(`write op ${op.id} can't be saved: ${why}`) });
+    }
+    return op;
+  }
+  const why = `a write op's workflow fallback must be one page-write step, and this draft's is ${steps.map((step) => step.cmd).join(" + ")}`;
   if (!network) {
     throw new Error(`write op ${op.id} can't be saved: ${why}, and the draft has no network strategy to replay the write instead. Record the write as a single click, or start the record with --network so the draft can replay its request`);
   }

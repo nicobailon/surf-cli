@@ -1397,6 +1397,52 @@ describe("activity and explicit record evidence", () => {
     });
   });
 
+  describe("a single-click write draft's network strategy", () => {
+    const save = (root: string, recordId: string, requestId?: string) =>
+      authoring.saveFromRecord({
+        recordId,
+        root,
+        home: path.dirname(root),
+        ...(requestId ? { requestId } : {}),
+      });
+
+    it("replays a write on another origin only when --request-id names it, at save or at stop", () => {
+      const origin = "https://alice.github.io";
+      const trace = [
+        { ...page, url: `${origin}/` },
+        { ...create, id: "r_other", url: "https://bob.github.io/save" },
+      ];
+      const flow = recordFlow({ commands: ["click"], origin, trace });
+      const { record, draft } = flow.stopped();
+      expect(draft.run.map((strategy: { using: string }) => strategy.using)).toEqual([
+        "network",
+        "workflow",
+      ]);
+      expect(() => save(flow.root, record.id)).toThrow(
+        "write op search can't be saved: it would replay POST https://bob.github.io/save, whose origin (https://bob.github.io) isn't the record's page origin (https://alice.github.io); name it with --request-id r_other to replay it anyway",
+      );
+      const warning =
+        "the op may also send to https://bob.github.io, the origin of the request it replays (POST https://bob.github.io/save), which isn't the origin of the record's page (https://alice.github.io); if that is the wrong request, save again with --request-id <r_…> from pb record candidates";
+      const saved = save(flow.root, record.id, "r_other");
+      expect(saved.origins).toEqual([origin, "https://bob.github.io"]);
+      expect(saved.warnings).toEqual([warning]);
+      const atStop = recordFlow({
+        commands: ["click"],
+        origin,
+        trace,
+        stop: { draft: true, requestId: "r_other" },
+      });
+      expect(save(atStop.root, atStop.stopped().record.id).warnings).toEqual([warning]);
+    });
+
+    it("saves a write on the record page's own origin", () => {
+      const { root, stopped } = recordFlow({ commands: ["click"], trace: [page, create] });
+      const saved = save(root, stopped().record.id);
+      expect(saved.origins).toEqual(["https://example.test"]);
+      expect(saved.warnings).toBeUndefined();
+    });
+  });
+
   it("does not save recent activity with a locate click as a read op", () => {
     const root = tempRoot();
     journal.journalCommand(
