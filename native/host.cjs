@@ -33,6 +33,7 @@ const { createOracleHost } = require("./oracle-host.cjs");
 
 const IS_WIN = process.platform === "win32";
 const { SOCKET_PATH, SURF_TMP } = require("./socket-path.cjs");
+const { createHostLog } = require("./host-log.cjs");
 const { takeFrames } = require("./stdin-frames.cjs");
 const { parseListenEndpoint } = require("./listener.cjs");
 const { getStateDir } = require("./remote-auth.cjs");
@@ -194,7 +195,7 @@ let aiQueue;
 function queueAiRequest(handler, request = requestStorage.getStore()) {
   return aiQueue.enqueue(handler, request);
 }
-const LOG_FILE = path.join(SURF_TMP, "surf-host.log");
+const appendLog = createHostLog({ file: path.join(SURF_TMP, "surf-host.log") });
 const AUTH_FILE = path.join(os.homedir(), ".pi", "agent", "auth.json");
 
 const DEFAULT_RETRY_OPTIONS = {
@@ -406,7 +407,7 @@ async function handleApiRequest(msg, sendResponse) {
 }
 
 const log = (msg) => {
-  fs.appendFileSync(LOG_FILE, `${new Date().toISOString()} ${msg}\n`);
+  appendLog(`${new Date().toISOString()} ${msg}\n`);
 };
 
 if (require.main === module) {
