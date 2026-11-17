@@ -1,6 +1,6 @@
 const { openClientTransport } = require("./client-transport.cjs");
 const { selectEndpoint } = require("./endpoint.cjs");
-const { prepareRemoteTool, validateLocalToolPaths } = require("./file-transfer.cjs");
+const { prepareToolRequest } = require("./file-transfer.cjs");
 const { resolveRequestDeadlineMs } = require("./host-sessions.cjs");
 const { summarizeArgs } = require("./workflow-definition.cjs");
 const runtime = require("./workflow-runtime.cjs");
@@ -21,9 +21,7 @@ function sendDoRequest(toolName, toolArgs, context = {}) {
   if (context.admission) request.admission = context.admission;
   const timeoutMs = context.timeoutMs || resolveRequestDeadlineMs(toolName, toolArgs);
   const endpoint = context.endpoint || selectEndpoint([]).endpoint;
-  const prepared = endpoint.kind === "remote"
-    ? prepareRemoteTool(toolName, toolArgs)
-    : { args: validateLocalToolPaths(toolName, toolArgs), uploads: [], downloads: [] };
+  const prepared = prepareToolRequest(endpoint, toolName, toolArgs);
   request.params.args = prepared.args;
   if (context.transport) return context.transport.request(request, timeoutMs, prepared);
   return (async () => {

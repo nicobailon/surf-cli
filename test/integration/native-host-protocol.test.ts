@@ -2002,6 +2002,46 @@ describe("native host protocol integration", () => {
     },
   );
 
+  it.each([
+    ["plain", ["dummy", "site", "key", "17"].join("-")],
+    ["quoted", ["dummy", 'quo"ted', "va\\lue", "17"].join("-")],
+  ])(
+    "redacts a project op's env-backed header in a --script network.export step (%s value)",
+    async (_label, siteKey) => {
+      const project = siteKeyProject();
+      const output = path.join(project, "requests.json");
+      const script = path.join(project, "export.json");
+      fs.writeFileSync(
+        script,
+        JSON.stringify({ steps: [{ tool: "network.export", args: { output } }] }),
+      );
+      const host = await startHostHarness();
+      const exporting = runCli(["--script", script], host.socketPath, {}, project);
+      const request = await host.waitForMessage(
+        (message) => message.type === "EXPORT_NETWORK_REQUESTS",
+        "EXPORT_NETWORK_REQUESTS",
+      );
+      host.send({
+        id: request.id,
+        entries: [
+          {
+            id: "r1",
+            url: "https://example.test/api",
+            requestHeaders: { "X-Site-Key": siteKey },
+            responseBody: JSON.stringify({ echo: siteKey }),
+          },
+        ],
+        jsonl: false,
+        har: false,
+      });
+      const exported = await exporting;
+      expect(exported.code, exported.stderr).toBe(0);
+      const written = fs.readFileSync(output, "utf8");
+      expect(written).toContain("X-Site-Key");
+      expect(written).not.toContain("dummy");
+    },
+  );
+
   it("logs an API request's URL without its password or secret query values", async () => {
     // Dummy credentials, built from parts so no literal here reads as one.
     const password = ["dummy", "log", "pw", "11"].join("-");

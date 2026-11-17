@@ -54,7 +54,7 @@ const { resolveRequestDeadlineMs } = require("./host-sessions.cjs");
 const toolScope = require("./tool-scope.cjs");
 const { classifyTool } = toolScope;
 const { parseVideoFps, validateVideoOutputPath } = require("./video-recorder.cjs");
-const { AUTO_SCREENSHOT_TOOLS, MAX_SETTLE_MS, PAGE_CHANGES_TOOLS, isSettleMs, prepareRemoteTool, validateLocalToolPaths } = require("./file-transfer.cjs");
+const { AUTO_SCREENSHOT_TOOLS, MAX_SETTLE_MS, PAGE_CHANGES_TOOLS, isSettleMs, prepareToolRequest } = require("./file-transfer.cjs");
 const { authorizeClient, listClients, revokeClient, getStateDir } = require("./remote-auth.cjs");
 if (IS_WIN) { try { fs.mkdirSync(SURF_TMP, { recursive: true }); } catch {} }
 
@@ -2763,7 +2763,7 @@ if (args.includes("--script")) {
       req.sessionSource = scriptTarget.sessionSource;
     }
     if (scriptTarget.admission) req.admission = scriptTarget.admission;
-    const prepared = endpoint.kind === "remote" ? prepareRemoteTool(toolName, toolArgs) : (() => { const args = validateLocalToolPaths(toolName, toolArgs); return { args, uploads: [], downloads: [] }; })();
+    const prepared = prepareToolRequest(endpoint, toolName, toolArgs);
     req.params.args = prepared.args;
     return scriptTransport.request(req, resolveRequestDeadlineMs(toolName, prepared.args), prepared);
   };
@@ -3898,8 +3898,6 @@ if (tool === "gemini") {
 if (tool === "network.export" && outputPath !== undefined) {
   toolArgs.output = outputPath;
 }
-// The export redacts the headers this project's saved ops read from the environment.
-if (tool === "network.export") toolArgs.projectDir = process.cwd();
 if ((tool === "video.start" || tool === "video.restart") && outputPath !== undefined) {
   toolArgs.output = outputPath;
 }
@@ -4138,7 +4136,7 @@ if (streamMode && (tool === "console" || tool === "network")) {
 
 let transferPlan;
 try {
-  transferPlan = endpoint.kind === "remote" ? prepareRemoteTool(finalTool, toolArgs) : (() => { const args = validateLocalToolPaths(finalTool, toolArgs); return { args, uploads: [], downloads: [] }; })();
+  transferPlan = prepareToolRequest(endpoint, finalTool, toolArgs);
 } catch (error) {
   const message = finalTool === "record" && endpoint.kind === "remote"
     ? `record is not supported with remote endpoint ${endpoint.display}`
@@ -4158,7 +4156,7 @@ const request = {
 const sendRequest = async (toolName, toolArgs = {}, timeoutMs = 5000) => {
   const transport = await openClientTransport(endpoint, { requestTimeoutMs: timeoutMs });
   try {
-    const prepared = endpoint.kind === "remote" ? prepareRemoteTool(toolName, toolArgs) : (() => { const args = validateLocalToolPaths(toolName, toolArgs); return { args, uploads: [], downloads: [] }; })();
+    const prepared = prepareToolRequest(endpoint, toolName, toolArgs);
     return await transport.request({
       type: "tool_request",
       method: "execute_tool",

@@ -6,7 +6,7 @@ const { formatSocketError } = require("./socket-path.cjs");
 const { selectEndpoint } = require("./endpoint.cjs");
 const { openClientTransport } = require("./client-transport.cjs");
 const { resolveRequestDeadlineMs } = require("./host-sessions.cjs");
-const { prepareRemoteTool, validateLocalToolPaths } = require("./file-transfer.cjs");
+const { prepareToolRequest } = require("./file-transfer.cjs");
 
 const TOOL_SCHEMAS = {
   navigate: {
@@ -368,12 +368,10 @@ const TOOL_SCHEMAS = {
 };
 
 async function sendSocketRequest(tool, toolArgs = {}, endpoint = selectEndpoint([]).endpoint) {
-  // As from the CLI: the export redacts the headers this project's saved ops read from the environment.
-  const args = tool === "network.export" ? { ...toolArgs, projectDir: process.cwd() } : toolArgs;
-  const requestTimeoutMs = resolveRequestDeadlineMs(tool, args);
+  const requestTimeoutMs = resolveRequestDeadlineMs(tool, toolArgs);
   const transport = await openClientTransport(endpoint, { requestTimeoutMs });
   try {
-    const prepared = endpoint.kind === "remote" ? prepareRemoteTool(tool, args) : (() => { const normalized = validateLocalToolPaths(tool, args); return { args: normalized, uploads: [], downloads: [] }; })();
+    const prepared = prepareToolRequest(endpoint, tool, toolArgs);
     return await transport.request({
       type: "tool_request",
       method: "execute_tool",
