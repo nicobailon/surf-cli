@@ -50,36 +50,63 @@ function jsonSlot(field, root, parts, onStore) {
   throw new Error(`${field}: name a field inside it`);
 }
 
-// A JSON param or body stored as text. In an escaped op that text was escaped whole, as text, so a
-// `{{` written \u007b\u007b was never escaped; parsed, it is stored as an object, whose keys are
-// sent as they are (renderRequest fills values only). So the text is unescaped whole, which gives
-// back the captured text, and parsed: a field names a key by its captured text, as redactedTypes
-// does. Then each string value is escaped as a string, the one form templateSlot and renderRequest
-// read, so a value that reads like an input once parsed stays text.
+// A JSON param or body stored as text. In an escaped op that text was escaped whole, as text, so
+// only a `{{!}}` or `{{name}}` written as is in it is an escape or an input: a `{{` written
+// \u007b\u007b was never escaped, and pb param's partial templating writes inputs as is. Parsed,
+// the document is stored as an object, whose keys are sent as they are (renderRequest fills
+// values only), so each string is read where it is written (storedJsonText) and the text
+// parsed once.
 function parseJson(text, escapes) {
   let value;
   try {
-    value = JSON.parse(escapes ? unescapeTemplates(text) : text);
+    value = JSON.parse(escapes ? storedJsonText(text) : text);
   } catch {
     return null;
   }
-  if (!value || typeof value !== "object") return null;
-  return escapes ? escapeValues(value) : value;
+  return value && typeof value === "object" ? value : null;
 }
 
-// escapeTemplates on each string value of a freshly parsed document, in place and without
-// recursion, so a document of any depth JSON.parse reads is read here too.
-function escapeValues(root) {
-  const pending = [root];
-  while (pending.length > 0) {
-    const node = pending.pop();
-    for (const key of Object.keys(node)) {
-      const item = node[key];
-      if (typeof item === "string") node[key] = escapeTemplates(item);
-      else if (item && typeof item === "object") pending.push(item);
+const STORED_MARK = /\{\{(?:[a-zA-Z0-9._-]+|!)\}\}/g;
+const JSON_SPACE = new Set([" ", "\t", "\n", "\r"]);
+
+// The stored JSON text with each string token written again as the one form pb param keeps:
+// a key as captured (its `{{!}}` read as `{{`), and a value escaped (escapeTemplates), its inputs
+// as they were. A match of STORED_MARK in a token's source holds no `\`, so it is written as is;
+// the text between matches, JSON escapes and all, is captured text. Throws on text that isn't JSON.
+function storedJsonText(text) {
+  let out = "";
+  let at = 0;
+  while (at < text.length) {
+    const open = text.indexOf('"', at);
+    if (open < 0) break;
+    let close = open + 1;
+    while (close < text.length && text[close] !== '"') close += text[close] === "\\" ? 2 : 1;
+    if (close >= text.length) throw new Error("unterminated JSON string");
+    let next = close + 1;
+    while (JSON_SPACE.has(text[next])) next += 1;
+    out += text.slice(at, open) + JSON.stringify(storedString(text.slice(open + 1, close), text[next] === ":"));
+    at = close + 1;
+  }
+  return out + text.slice(at);
+}
+
+function storedString(source, isKey) {
+  const decode = (piece) => JSON.parse(`"${piece}"`);
+  let stored = "";
+  let captured = "";
+  let last = 0;
+  for (const match of source.matchAll(STORED_MARK)) {
+    captured += decode(source.slice(last, match.index));
+    last = match.index + match[0].length;
+    if (match[0] === LITERAL_OPEN) captured += "{{";
+    else if (isKey) captured += match[0];
+    else {
+      stored += escapeTemplates(captured) + match[0];
+      captured = "";
     }
   }
-  return root;
+  captured += decode(source.slice(last));
+  return isKey ? captured : stored + escapeTemplates(captured);
 }
 
 function querySlot(request, field, [param, ...jsonPath], escapes) {

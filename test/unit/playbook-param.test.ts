@@ -251,6 +251,8 @@ describe("pb param: field locations", () => {
       // A value that reads like an input once parsed is text, not an input.
       String.raw`{"a":"\u007b\u007bx}}","n":"seed"}`,
       String.raw`{"a":"\u007b\u007b!}}","b":"{{!}}","c":"{{x}}","n":"seed"}`,
+      // A request's text has no %{ escape: a captured %{!} is text, in a key or a value.
+      '{"%{!}k":"%{!}v","n":"seed"}',
     ];
     for (const raw of captured) {
       for (const where of ["query", "body"]) {
@@ -266,6 +268,59 @@ describe("pb param: field locations", () => {
           n: "next",
         });
       }
+    }
+  });
+
+  // Templating part of a JSON param's text leaves it a string holding a live {{a}}; templating a
+  // field inside it next keeps that input, and every captured key and value, as they were.
+  it("keeps an input in a stored JSON param's text when a field inside it is templated next", () => {
+    const { escapedOp } = require("../../native/playbook-template.cjs");
+    const raw = String.raw`{"a":"first-seed","b":"second-seed","c":"third-seed","literal":"{{keep}}","esc":"\u007b\u007bx}}","bang":"{{!}}","{{k}}":"key","\u007b\u007b!}}k":"key2","{{!}}j":"key3"}`;
+    const given: Record<string, string> = {
+      a: "live-a{{!}}%{!}",
+      b: "live-b{{!}}%{!}",
+      c: "live-c{{!}}%{!}",
+    };
+    // Each order's steps before its last, which templates a field inside the text.
+    const orders = {
+      forward: { before: [{ as: "a", value: "first-seed" }], field: "b" },
+      reverse: { before: [{ as: "b", value: "second-seed" }], field: "a" },
+      three: {
+        before: [
+          { as: "a", value: "first-seed" },
+          { as: "b", value: "second-seed" },
+        ],
+        field: "c",
+      },
+    };
+    for (const [name, { before, field }] of Object.entries(orders)) {
+      const partial = before.reduce(
+        (at, step) => paramOp(at, { fields: ["query.v"], ...step }).op,
+        savedJsonOp(raw, "query"),
+      );
+      const inputs = [...before.map((step) => step.as), field];
+      const args = Object.fromEntries(inputs.map((input) => [input, given[input]]));
+      const expected = { ...JSON.parse(raw), ...args };
+
+      const { op } = paramOp(partial, { fields: [`query.v.${field}`], as: field });
+      expect(Object.keys(op.args), name).toEqual(inputs);
+      const sent = renderRequest(requestOf(op), args, { escapes: escapedOp(op) });
+      expect(JSON.parse(sent.query.v), name).toEqual(expected);
+
+      // The same text as a body, which pb param reads the same way.
+      const body = networkOp(
+        {
+          url: "https://shop.test/s",
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: requestOf(partial).query.v,
+        },
+        { args: partial.args, provenance: { recordId: "rec-1", escaped: true } },
+      );
+      const fromBody = paramOp(body, { fields: [`body.${field}`], as: field }).op;
+      expect(renderRequest(requestOf(fromBody), args, { escapes: true }).body, name).toEqual(
+        expected,
+      );
     }
   });
 

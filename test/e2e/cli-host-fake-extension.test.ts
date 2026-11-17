@@ -1146,6 +1146,134 @@ describe("CLI/native-host/fake-extension E2E contract", () => {
     }
   }, 60000);
 
+  // pb param on part of a JSON query param's text leaves it a string holding a live {{a}}; a
+  // field templated inside it next keeps that input, so the replay sends each input as given and
+  // the captured text as captured.
+  it("keeps an input in a JSON param's text when a field inside it is templated next", async () => {
+    const socketPath = createSocketPath();
+    const project = fs.mkdtempSync(path.join(os.tmpdir(), "surf-record-json-steps-"));
+    tempDirs.push(project);
+    const vm = require("node:vm") as {
+      runInNewContext(code: string, context: Record<string, unknown>): unknown;
+    };
+    const sent: string[] = [];
+    const tab = {
+      URL,
+      location: { href: "https://fixture.test/form" },
+      fetch: async (url: string) => {
+        sent.push(url);
+        return {
+          status: 200,
+          ok: true,
+          url,
+          redirected: false,
+          headers: new Map([["content-type", "application/json"]]),
+          text: async () => '{"ok":true}',
+          arrayBuffer: async () => new ArrayBuffer(0),
+        };
+      },
+    };
+    let running = false;
+    const raw = String.raw`{"a":"first-seed","b":"second-seed","c":"third-seed","literal":"{{keep}}","esc":"\u007b\u007bx}}","\u007b\u007b!}}k":1}`;
+    const page = { url: `https://fixture.test/api?v=${encodeURIComponent(raw)}` };
+    const host = startHost(socketPath, {
+      recording: true,
+      scriptResponse: page,
+      runScript: async (code) => {
+        if (running) {
+          await vm.runInNewContext(code, { ...tab });
+        }
+        const at = Date.now();
+        return {
+          output: JSON.stringify({
+            status: 200,
+            ok: true,
+            url: "https://fixture.test/api",
+            headers: {},
+            sentAt: at,
+            doneAt: at,
+          }),
+        };
+      },
+    });
+    const cli = async (args: string[]) => {
+      const result = await runCli(socketPath, args, project, { SURF_STATE_DIR: host.stateDir });
+      expect(result.code, `surf ${args.join(" ")}: ${result.stderr}`).toBe(0);
+      return result;
+    };
+    const opFile = path.join(project, ".surf", "playbooks", "fixture", "ops", "probe.json");
+    const given: Record<string, string> = {
+      a: "live-a{{!}}%{!}",
+      b: "live-b{{!}}%{!}",
+      c: "live-c",
+    };
+    const orders = [
+      [
+        ["query.v", "a", "first-seed"],
+        ["query.v.b", "b"],
+      ],
+      [
+        ["query.v", "b", "second-seed"],
+        ["query.v.a", "a"],
+      ],
+      [
+        ["query.v", "a", "first-seed"],
+        ["query.v", "b", "second-seed"],
+        ["query.v.c", "c"],
+      ],
+    ];
+
+    try {
+      await host.waitForMessage((message) => message.type === "HOST_READY");
+      await cli(["navigate", "https://fixture.test/form"]);
+      await cli(["pb", "record", "start", "fixture", "--op", "probe", "--network"]);
+      await cli(["js", 'fetch("/api")']);
+      const { record } = JSON.parse(
+        (await cli(["pb", "record", "stop", "--draft", "--read", "--json"])).stdout,
+      );
+      await cli(["pb", "save", "--from-record", record.id, "--project", "--json"]);
+      const saved = fs.readFileSync(opFile, "utf8");
+      page.url = "https://fixture.test/api";
+      running = true;
+      for (const steps of orders) {
+        fs.writeFileSync(opFile, saved);
+        for (const [field, input, value] of steps) {
+          await cli([
+            "pb",
+            "param",
+            "fixture",
+            "probe",
+            field,
+            "--as",
+            input,
+            ...(value ? ["--value", value] : []),
+            "--json",
+          ]);
+        }
+        const inputs = steps.map(([, input]) => input);
+        sent.length = 0;
+        await cli([
+          "use",
+          "fixture",
+          "probe",
+          ...inputs.flatMap((input) => [`--${input}`, given[input]]),
+          "--json",
+        ]);
+        expect(
+          sent.map((url) => JSON.parse(new URL(url).searchParams.get("v") ?? "")),
+          inputs.join(" then "),
+        ).toEqual([
+          {
+            ...JSON.parse(raw),
+            ...Object.fromEntries(inputs.map((input) => [input, given[input]])),
+          },
+        ]);
+      }
+    } finally {
+      await host.dispose();
+    }
+  }, 60000);
+
   // The CLI types `true` as a boolean; the record holds it as the text it typed, as it does a
   // number, so a URL that sends it is masked in the trace, the saved op and the HAR, and a JSON
   // `true` there becomes a boolean input.
