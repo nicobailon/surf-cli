@@ -64,6 +64,8 @@ type FakeHostOptions = {
   pageTraffic?: CapturedRequest[];
   // Captured on each navigation, each time under a new id.
   navigationTraffic?: CapturedRequest[];
+  // Captured on a navigation to this URL, each time under a new id.
+  navigationTrafficFor?: (url: string) => CapturedRequest[];
   // Merged into what capture holds for each script's request (a response body, say).
   scriptResponse?: Record<string, unknown>;
   // Answers a playbook record's page context and network capture, and clicks.
@@ -318,7 +320,11 @@ function startHost(socketPath: string, options: FakeHostOptions = {}) {
   // What network capture records for a navigation or a script's request.
   const captureTraffic = (message: NativeMessage) => {
     if (message.type === "EXECUTE_NAVIGATE" && message.url !== "about:blank") {
-      for (const request of options.navigationTraffic ?? []) {
+      const traffic = [
+        ...(options.navigationTraffic ?? []),
+        ...(options.navigationTrafficFor?.(String(message.url)) ?? []),
+      ];
+      for (const request of traffic) {
         captured.push({ ...request, id: `${request.id}_${captured.length + 1}`, ts: Date.now() });
       }
     }
@@ -4089,6 +4095,221 @@ describe("CLI/native-host/fake-extension E2E contract", () => {
       const dry = await cli(["use", "jobs", "jobs_with_details", "--company", "acme", "--dry-run"]);
       expect(dry).toMatchObject({ code: 0, stderr: "" });
       expect(dry.stdout).toContain("step detail: get_posting, each record of list");
+    } finally {
+      await host.dispose();
+    }
+  }, 60000);
+
+  // pb record stop --draft proposes the binding a list → detail record shows, without its value,
+  // and pb save --chain saves both requests as ops and the chain over them.
+  it("proposes a chain binding at record stop and saves a working chain with pb save --chain", async () => {
+    const socketPath = createSocketPath();
+    const project = fs.mkdtempSync(path.join(os.tmpdir(), "surf-record-chain-"));
+    tempDirs.push(project);
+    const vm = require("node:vm") as {
+      runInNewContext(code: string, context: Record<string, unknown>): unknown;
+    };
+    const ids = ["posting-1001", "posting-1002", "posting-1003", "posting-1004"];
+    const listBody = JSON.stringify({ items: ids.map((id) => ({ id, title: `Role ${id}` })) });
+    const detailBody = (id: string) => JSON.stringify({ data: { id, title: `Role ${id}` } });
+    const sent: string[] = [];
+    const answer = (body: string, url: string) => ({
+      status: 200,
+      ok: true,
+      url,
+      redirected: false,
+      headers: new Map([["content-type", "application/json"]]),
+      text: async () => body,
+      arrayBuffer: async () => new ArrayBuffer(0),
+    });
+    const tab = {
+      URL,
+      location: { href: "https://jobs.test/" },
+      fetch: async (url: string) => {
+        const parsed = new URL(url);
+        sent.push(parsed.pathname);
+        const body =
+          parsed.pathname === "/api/list"
+            ? listBody
+            : detailBody(String(parsed.pathname.split("/").pop()));
+        return answer(body, url);
+      },
+    };
+    const captured = (url: string, body: string): CapturedRequest => ({
+      id: "r_nav",
+      method: "GET",
+      url,
+      status: 200,
+      type: "Fetch",
+      mimeType: "application/json",
+      requestHeaders: {},
+      responseHeaders: { "content-type": "application/json" },
+      responseBody: body,
+      flags: [],
+      _loadingFinished: true,
+    });
+    const host = startHost(socketPath, {
+      recording: true,
+      navigationTrafficFor: (url) => {
+        if (url.endsWith("/api/list")) {
+          return [captured(url, listBody)];
+        }
+        return url.includes("/api/postings/")
+          ? [captured(url, detailBody(String(url.split("/").pop())))]
+          : [];
+      },
+      runScript: async (code) => ({
+        output: JSON.stringify(await vm.runInNewContext(code, { ...tab })),
+      }),
+    });
+    const cli = (args: string[]) =>
+      runCli(socketPath, args, project, { SURF_STATE_DIR: host.stateDir });
+
+    try {
+      await host.waitForMessage((message) => message.type === "HOST_READY");
+      const ok = async (args: string[]) => {
+        const result = await cli(args);
+        expect(result, args.join(" ")).toMatchObject({ code: 0 });
+        return result;
+      };
+      await ok(["pb", "record", "start", "jobs", "--op", "postings", "--network"]);
+      await ok(["navigate", "https://jobs.test/api/list"]);
+      await ok(["navigate", "https://jobs.test/api/postings/posting-1002"]);
+      const stopped = JSON.parse(
+        (await ok(["pb", "record", "stop", "--draft", "--read", "--json"])).stdout,
+      );
+      expect(stopped.chain.bindings).toEqual([
+        "postings_posting --posting ← $.id of each record of postings_list ($.items) (into path.3)",
+      ]);
+      expect(stopped.chain.save).toBe(`surf pb save --from-record ${stopped.record.id} --chain`);
+      const file = path.join(host.stateDir, "records", stopped.record.id, "draft", "chain.json");
+      expect(stopped.chain.path).toBe(file);
+      const proposed = fs.readFileSync(file, "utf8");
+      for (const value of ids) {
+        expect(proposed).not.toContain(value);
+      }
+      expect(JSON.parse(proposed).op.chain[1].with).toEqual({
+        posting: { from: "item", path: "$.id" },
+      });
+
+      const saved = JSON.parse(
+        (
+          await ok([
+            "pb",
+            "save",
+            "--from-record",
+            stopped.record.id,
+            "--chain",
+            "--project",
+            "--json",
+          ])
+        ).stdout,
+      );
+      expect(saved).toMatchObject({
+        playbook: "jobs",
+        op: "postings",
+        steps: [
+          { id: "list", op: "postings_list" },
+          { id: "posting", op: "postings_posting", inputs: { posting: "path.3" } },
+        ],
+      });
+      const opFile = (name: string) =>
+        JSON.parse(
+          fs.readFileSync(
+            path.join(project, ".surf", "playbooks", "jobs", "ops", `${name}.json`),
+            "utf8",
+          ),
+        );
+      expect(opFile("postings_posting")).toMatchObject({
+        args: { posting: { type: "string", required: true } },
+        run: [{ using: "network", request: { url: "https://jobs.test/api/postings/{{posting}}" } }],
+      });
+      expect(opFile("postings_posting").run).toHaveLength(1);
+      expect(opFile("postings_list").run[0].extract).toEqual({
+        records: "$.items",
+        fields: { id: "id" },
+      });
+
+      // The detail op needs an extract of its own, as any op saved from a record.
+      await ok([
+        "pb",
+        "extract",
+        "jobs",
+        "postings_posting",
+        "--field",
+        "id=data.id",
+        "--field",
+        "title=data.title",
+      ]);
+      const run = await ok([
+        "use",
+        "jobs",
+        "postings",
+        "--limit",
+        "3",
+        "--delay-ms",
+        "10",
+        "--json",
+      ]);
+      expect(JSON.parse(run.stdout)).toMatchObject({
+        status: "completed",
+        strategy: "chain",
+        value: ids.slice(0, 3).map((id) => ({ id, title: `Role ${id}` })),
+      });
+      expect(sent).toEqual(["/api/list", ...ids.slice(0, 3).map((id) => `/api/postings/${id}`)]);
+    } finally {
+      await host.dispose();
+    }
+  }, 60000);
+
+  // One replayable request has nothing to bind: no chain.json, no chain in the result.
+  it("proposes no chain for a record of one request", async () => {
+    const socketPath = createSocketPath();
+    const host = startHost(socketPath, {
+      recording: true,
+      navigationTrafficFor: (url) => [
+        {
+          id: "r_nav",
+          method: "GET",
+          url,
+          status: 200,
+          type: "Fetch",
+          mimeType: "application/json",
+          responseHeaders: { "content-type": "application/json" },
+          responseBody: JSON.stringify({ items: [{ id: "posting-1001" }] }),
+          flags: [],
+          _loadingFinished: true,
+        },
+      ],
+    });
+    const project = fs.mkdtempSync(path.join(os.tmpdir(), "surf-record-one-"));
+    tempDirs.push(project);
+    const cli = (args: string[]) =>
+      runCli(socketPath, args, project, { SURF_STATE_DIR: host.stateDir });
+    try {
+      await host.waitForMessage((message) => message.type === "HOST_READY");
+      expect((await cli(["pb", "record", "start", "jobs", "--op", "list", "--network"])).code).toBe(
+        0,
+      );
+      expect((await cli(["navigate", "https://jobs.test/api/list"])).code).toBe(0);
+      const stopped = await cli(["pb", "record", "stop", "--draft", "--read", "--json"]);
+      expect(stopped.code).toBe(0);
+      const { record, chain } = JSON.parse(stopped.stdout);
+      expect(chain).toBeUndefined();
+      expect(
+        fs.existsSync(path.join(host.stateDir, "records", record.id, "draft", "chain.json")),
+      ).toBe(false);
+      const save = await cli([
+        "pb",
+        "save",
+        "--from-record",
+        record.id,
+        "--chain",
+        "--project",
+        "--json",
+      ]);
+      expect(save.code).toBe(1);
+      expect(save.stderr).toContain(`record ${record.id} has no proposed chain`);
     } finally {
       await host.dispose();
     }

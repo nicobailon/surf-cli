@@ -6,7 +6,9 @@ const { writeNetworkExport } = require("./network-export.cjs");
 const { getPrivateStateRoot, readPrivateJson } = require("./private-state.cjs");
 const { buildDraft, DRAFT_SAFETY, draftFromRecord, readRecord, recordsRoot } = require("./playbook-records.cjs");
 const { escapeStepArgs, requestInputs, sentRequest } = require("./playbook-template.cjs");
-const { envBackedHeaders, savePlaybook, validateOp } = require("./playbooks.cjs");
+const { saveExtract } = require("./playbook-extract.cjs");
+const { applyParam } = require("./playbook-param.cjs");
+const { envBackedHeaders, resolvePlaybook, savePlaybook, validateOp } = require("./playbooks.cjs");
 const { requestEffect } = require("./request-kinds.cjs");
 const { commandMetadata, normalizeStep, promoteRedactedStepArgs } = require("./workflow-definition.cjs");
 
@@ -148,9 +150,20 @@ function draftDifferences({ draft, reference, because, origins, recordOrigins })
 // differs from what the record drafts. `requestId` redrafts the op to replay that request, a read
 // when pb record stop had --read. The draft builder refuses a record that captured several writes
 // unless a request id (pb save's, else pb record stop's) names one.
-function saveFromRecord({ recordId, requestId, scope = "user", cwd, home, root = getPrivateStateRoot() }) {
+// `chainStep` ({ op, origins }) saves the request as one step of a chain (pb save --chain): a read
+// op of that name that replays it alone, with no inputs yet, allowed `origins` (every step's) too.
+function saveFromRecord({ recordId, requestId, chainStep, scope = "user", cwd, home, root = getPrivateStateRoot() }) {
   const record = readRecord(recordId, root);
   if (!record) throw new Error(`record not found: ${recordId}`);
+  if (chainStep) {
+    const warnings = [];
+    const { op: built } = buildDraft(record, { read: true, requestId, root });
+    const network = built.run.filter((strategy) => strategy.using === "network");
+    const op = { ...built, id: chainStep.op, args: {}, run: network, provenance: { recordId: record.id, requestId, escaped: true } };
+    const origins = [...new Set([...allowedOrigins(record, op, warnings), ...chainStep.origins])];
+    const saved = savePlaybook({ manifest: { id: record.site, name: record.site, version: "1.0.0", origins }, op, scope, cwd, home });
+    return { ...saved, origins, ...(warnings.length > 0 ? { warnings } : {}) };
+  }
   const draftPath = path.join(recordsRoot(root), recordId, "draft", "op.json");
   const draft = fs.existsSync(draftPath) ? readPrivateJson(draftPath, null, { root }) : null;
   const warnings = [];
@@ -172,6 +185,44 @@ function saveFromRecord({ recordId, requestId, scope = "user", cwd, home, root =
   return { ...saved, origins, ...(warnings.length > 0 ? { warnings } : {}), ...(differs.length > 0 ? { differs } : {}) };
 }
 
+/**
+ * pb save --from-record <id> --chain: the chain pb record stop --draft proposed (draft/chain.json).
+ * Each step's request is saved as a read op (saveFromRecord), its bound URL values made required
+ * inputs (pb param) and the extract the later steps read set (pb extract); then the chain op over
+ * them. Every op may send to every step's origin.
+ */
+function saveChainFromRecord({ recordId, scope = "user", cwd, home, root = getPrivateStateRoot() }) {
+  const record = readRecord(recordId, root);
+  if (!record) throw new Error(`record not found: ${recordId}`);
+  const file = path.join(recordsRoot(root), recordId, "draft", "chain.json");
+  const proposal = fs.existsSync(file) ? readPrivateJson(file, null, { root }) : null;
+  if (!proposal) throw new Error(`record ${recordId} has no proposed chain: pb record stop --draft proposes one when a later request sends a value an earlier response returned`);
+  if (!Array.isArray(proposal.steps) || proposal.steps.some((step) => typeof step?.op !== "string" || typeof step.request !== "string")) {
+    throw new Error(`${file}: steps must each name an op and a request`);
+  }
+  validateOp(proposal.op, { origins: [] });
+  const trace = readPrivateJson(path.join(recordsRoot(root), recordId, "network", "trace.json"), null, { root });
+  const urlOf = (requestId) => trace?.entries?.find((entry) => entry.id === requestId)?.url ?? "";
+  const origins = [...new Set([record.origin, ...proposal.steps.map((step) => originOf(absoluteUrl(urlOf(step.request), record.origin)))].filter(Boolean))];
+  const warnings = [];
+  for (const step of proposal.steps) {
+    const saved = saveFromRecord({ recordId, requestId: step.request, chainStep: { op: step.op, origins }, scope, cwd, home, root });
+    warnings.push(...(saved.warnings || []));
+    for (const [name, field] of Object.entries(step.inputs || {})) applyParam({ playbook: record.site, op: step.op, fields: [field], as: name, required: true, cwd, home });
+    if (step.extract) saveExtract({ playbook: record.site, op: step.op, extract: step.extract, cwd, home });
+  }
+  const saved = savePlaybook({ manifest: { id: record.site, name: record.site, version: "1.0.0", origins }, op: proposal.op, scope, cwd, home });
+  // Loading the playbook checks the chain against its ops.
+  resolvePlaybook(record.site, { cwd, home });
+  return {
+    ...saved,
+    origins,
+    steps: proposal.steps.map(({ id, op, request, inputs, extract }) => ({ id, op, request, ...(inputs ? { inputs } : {}), ...(extract ? { extract } : {}) })),
+    run: `surf use ${record.site} ${saved.op}`,
+    ...(warnings.length > 0 ? { warnings: [...new Set(warnings)] } : {}),
+  };
+}
+
 // `cwd` and `home` find the saved ops whose env-backed headers the HAR redacts.
 function exportRecordHar(recordId, output, root = getPrivateStateRoot(), { cwd, home } = {}) {
   const trace = readPrivateJson(path.join(recordsRoot(root), recordId, "network", "trace.json"), null, { root });
@@ -179,4 +230,4 @@ function exportRecordHar(recordId, output, root = getPrivateStateRoot(), { cwd, 
   return writeNetworkExport(path.resolve(output), trace.entries, "har", { secretHeaders: envBackedHeaders({ cwd, home }) });
 }
 
-module.exports = { exportRecordHar, saveFromRecent, saveFromRecord, suggestions };
+module.exports = { exportRecordHar, saveChainFromRecord, saveFromRecent, saveFromRecord, suggestions };

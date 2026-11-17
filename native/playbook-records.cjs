@@ -478,13 +478,18 @@ function draftFromRecord(recordId, root = getPrivateStateRoot(), options = {}) {
 // request --request-id names, and --read, are kept in the record, which pb save reads them from:
 // the draft file is only a suggestion.
 // `includeInputValues` (pb record stop --include-input-values) marks the record as kept, as if
-// started with it; the host passes it to attachNetworkTrace first.
-function stopRecord({ target, draft = false, read = false, requestId, includeInputValues = false, root = getPrivateStateRoot() } = {}) {
+// started with it; the host passes it to attachNetworkTrace first. `chain` is the chain the host
+// proposed from the live requests (record-bindings.cjs), written beside the draft as chain.json
+// for pb save --from-record --chain.
+function stopRecord({ target, draft = false, read = false, requestId, includeInputValues = false, chain = null, root = getPrivateStateRoot() } = {}) {
   if (read && !draft) throw new Error("--read applies only with --draft");
   if (requestId && !draft) throw new Error("--request-id applies only with --draft");
   let record = requireRecordFor(target, root);
   const draftWarnings = [];
   const op = draft ? draftFromRecord(record.id, root, { read, requestId, warnings: draftWarnings }) : undefined;
+  const chainPath = path.join(recordDirectory(record.id, root), "draft", "chain.json");
+  if (draft && chain) atomicWriteJson(chainPath, chain, { root });
+  else if (draft) fs.rmSync(chainPath, { force: true });
   record = updateStatus("stopping", { target, root });
   record = readRecord(record.id, root);
   redactWatchEvents(record, root);
@@ -497,7 +502,8 @@ function stopRecord({ target, draft = false, read = false, requestId, includeInp
   writeRecord(record, root);
   writeActiveIds(activeIds(root).filter((id) => id !== record.id), root);
   const warnings = [...(record.trace?.warnings || []), ...draftWarnings];
-  return { record, ...(op ? { draft: op } : {}), ...(warnings.length > 0 ? { warnings } : {}) };
+  const proposed = draft && chain ? { chain: { path: chainPath, bindings: chain.bindings, save: `surf pb save --from-record ${record.id} --chain` } } : {};
+  return { record, ...(op ? { draft: op } : {}), ...proposed, ...(warnings.length > 0 ? { warnings } : {}) };
 }
 
 function listRecords(root) {
