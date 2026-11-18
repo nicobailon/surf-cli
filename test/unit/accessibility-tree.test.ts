@@ -387,6 +387,27 @@ describe("accessibility tree", () => {
     });
   });
 
+  it("gives a renamed button the ref the next read lists", async () => {
+    const button = element("button");
+    button.append(text("Try it out"));
+    (document.body as unknown as FakeElement).append(button);
+    const readRef = (name: string) =>
+      sendMessage({
+        type: "GENERATE_ACCESSIBILITY_TREE",
+        options: { filter: "interactive" },
+      }).pageContent.match(new RegExp(`button "${name}" \\[(e\\d+)\\]`))?.[1];
+    const before = readRef("Try it out");
+    beginPageChanges();
+
+    button.textContent = "Cancel";
+    FakeMutationObserver.mutate();
+
+    const { result } = await endPageChanges();
+    const reported = result.changes.find((change: { name: string }) => change.name === "Cancel");
+    expect(reported.ref).not.toBe(before);
+    expect(readRef("Cancel")).toBe(reported.ref);
+  });
+
   it("redacts sensitive field value changes and reports ordinary values", async () => {
     const password = new FakeInputElement("input");
     password.setAttribute("type", "password");
@@ -463,6 +484,59 @@ describe("accessibility tree", () => {
     const { result } = await endPageChanges(1000);
     clearInterval(ticker);
     expect(result.settle).toEqual({ state: "unsettled", ms: 1000 });
+  });
+
+  it("locates a selector match as a ref whose click point scrolls it into view", () => {
+    (window as any).innerHeight = 400;
+    const body = document.body as unknown as FakeElement;
+    const far = element("button");
+    far.append(text("Submit order"));
+    body.append(far);
+    let top = 2000;
+    Object.assign(far, {
+      checkVisibility: () => true,
+      getBoundingClientRect: () => ({
+        top,
+        left: 10,
+        width: 80,
+        height: 20,
+        bottom: top + 20,
+        right: 90,
+      }),
+      scrollIntoView: vi.fn(() => {
+        top = 180;
+      }),
+    });
+    (document as any).querySelectorAll = (selector: string) => {
+      if (selector === "form button") {
+        return [far];
+      }
+      if (selector === "button:contains('x')") {
+        throw new Error("not a valid selector");
+      }
+      return [];
+    };
+    (document as any).elementFromPoint = (_x: number, y: number) =>
+      y >= top && y < top + 20 ? far : body;
+
+    const located = sendMessage({ type: "LOCATE_SELECTOR", selector: "form button", index: 0 });
+    expect(located).toEqual({ ref: expect.stringMatching(/^e\d+$/), count: 1 });
+    expect(sendMessage({ type: "CLICK_POINT", ref: located.ref })).toEqual({
+      x: 50,
+      y: 190,
+      inPage: false,
+    });
+    expect((far as any).scrollIntoView).toHaveBeenCalledOnce();
+
+    expect(sendMessage({ type: "LOCATE_SELECTOR", selector: "#missing", index: 0 })).toEqual({
+      error: "No elements match selector",
+    });
+    expect(sendMessage({ type: "LOCATE_SELECTOR", selector: "form button", index: 1 })).toEqual({
+      error: "Index 1 out of range (found 1 elements)",
+    });
+    expect(
+      sendMessage({ type: "LOCATE_SELECTOR", selector: "button:contains('x')", index: 0 }),
+    ).toEqual({ error: "not a valid selector" });
   });
 
   it("returns unknown_token when the document holding the before snapshot is gone", () => {
@@ -1587,36 +1661,5 @@ describe("accessibility tree", () => {
     }
     expect(checkbox.checked).toBe(true);
     expect(select.value).toBe("chosen");
-  });
-
-  // FORM_INPUT is locate.* --action fill and form_input, FORM_FILL is form.fill, SELECT_OPTION is select.
-  it.each([
-    ["FORM_INPUT", { ref: "e1", value: "hunter2-S3cret!" }],
-    ["FORM_FILL", { data: [{ ref: "e1", value: "hunter2-S3cret!" }] }],
-    ["SELECT_OPTION by value", { selector: "e1", values: ["hunter2-S3cret!"], by: "value" }],
-    ["SELECT_OPTION by label", { selector: "e1", values: ["hunter2-S3cret!"], by: "label" }],
-    ["SELECT_OPTION multiple", { selector: "e1", values: ["red", "hunter2-S3cret!"], by: "value" }],
-  ])("%s does not repeat a value no option matches in its error", (name, args) => {
-    const select = new FakeSelectElement("select");
-    (select as any).multiple = name.endsWith("multiple");
-    for (const value of ["red", "green"]) {
-      const option = new FakeElement("option");
-      option.value = value;
-      option.textContent = value;
-      (option as any).text = value;
-      select.options.push(option);
-    }
-    window.__piElementMap = {
-      e1: { element: new WeakRef(select as unknown as Element), role: "combobox", name: "" },
-    };
-    let response: any;
-    messageHandler?.({ type: name.split(" ")[0], ...args }, {}, (result) => {
-      response = result;
-    });
-    expect(JSON.stringify(response)).not.toContain("hunter2-S3cret!");
-    expect(response.error).toMatch(
-      /^e1 has no option matching (the given value|given value 2 of 2) \(by .+, 2 options\), so nothing was selected\.$/,
-    );
-    expect(select.value).toBe("");
   });
 });

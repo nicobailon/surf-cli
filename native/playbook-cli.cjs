@@ -3,18 +3,11 @@ const { openClientTransport } = require("./client-transport.cjs");
 const { resolveRequestDeadlineMs } = require("./host-sessions.cjs");
 const { exportRecordHar, saveFromRecent, saveFromRecord, suggestions } = require("./playbook-authoring.cjs");
 const { deriveClient, exportClient, verifyClient } = require("./playbook-client.cjs");
-const { formatCandidates } = require("./record-candidates.cjs");
-const { RESERVED_RUN_OPTIONS, applyParam, formatParamResult } = require("./playbook-param.cjs");
-const { authInputs } = require("./playbook-runtime.cjs");
-const { formatExtractResult, parseExtractArgs, saveExtract } = require("./playbook-extract.cjs");
-const { formatTestReport, runPlaybookTest } = require("./playbook-test.cjs");
 const { exportPlaybookDirectory, importPlaybookDirectory, listPlaybooks, resolvePlaybook } = require("./playbooks.cjs");
 
-// `raw` keeps each option's text: `--id 2101.10010` is a number in `options`, a string in `raw`.
 function parseCommandArgs(argv) {
   const positional = [];
   const options = {};
-  const raw = {};
   for (let index = 0; index < argv.length; index++) {
     const value = argv[index];
     if (!value.startsWith("--")) {
@@ -25,36 +18,10 @@ function parseCommandArgs(argv) {
     const next = argv[index + 1];
     if (next !== undefined && !next.startsWith("--")) {
       options[name] = /^-?\d+(?:\.\d+)?$/.test(next) ? Number(next) : next;
-      raw[name] = next;
       index++;
     } else options[name] = true;
   }
-  return { positional, options, raw };
-}
-
-const PARAM_FLAGS = new Set(["required", "json"]);
-const PARAM_VALUES = new Set(["as", "env", "default", "desc", "value"]);
-
-// pb param's options are known, so a field may follow a flag (`--required query.q`).
-function parseParamArgs(argv) {
-  const positional = [];
-  const options = {};
-  for (let index = 0; index < argv.length; index++) {
-    const token = argv[index];
-    if (!token.startsWith("--")) {
-      positional.push(token);
-      continue;
-    }
-    const name = token.slice(2);
-    if (PARAM_FLAGS.has(name)) options[name] = true;
-    else if (PARAM_VALUES.has(name)) {
-      if (argv[index + 1] === undefined) throw new Error(`--${name} needs a value`);
-      options[name] = argv[++index];
-    } else throw new Error(`pb param has no --${name} option`);
-  }
-  const [playbook, op, ...fields] = positional;
-  if (!playbook || !op) throw new Error("Usage: surf pb param <playbook> <op> <field>... --as <name> [--required | --default <v>] [--desc <text>] [--value <text>], or <field> --env <VAR>");
-  return { playbook, op, fields, options };
+  return { positional, options };
 }
 
 function unwrapResponse(response) {
@@ -86,32 +53,9 @@ function runSpec(argv) {
   const parsed = parseCommandArgs(argv.slice(offset));
   const [playbook, op] = parsed.positional;
   if (!playbook || !op) throw new Error(direct ? "Usage: surf use <playbook> <op> [--arg value]" : "Usage: surf pb run <playbook> <op> [--arg value]");
-  const args = Object.fromEntries(Object.entries(parsed.options).filter(([name]) => !RESERVED_RUN_OPTIONS.has(name)));
-  return { playbook, op, args, raw: parsed.raw, options: parsed.options };
-}
-
-function resolveLocalOp(spec, cwd) {
-  try {
-    return resolvePlaybook(spec.playbook, { cwd, pinBuiltIn: spec.options["pin-built-in"] === true }).ops.get(spec.op);
-  } catch {
-    return undefined;
-  }
-}
-
-// String inputs keep the text as typed. Env-supplied headers are read here, from the caller's
-// shell, and go to the host with this one request (in `secret`, a name redaction hides).
-function prepareRun(spec, cwd) {
-  const op = resolveLocalOp(spec, cwd);
-  if (!op) return { args: spec.args, secret: {} };
-  const args = { ...spec.args };
-  for (const [name, input] of Object.entries(op.args || {})) {
-    if (input.type === "string" && typeof spec.raw[name] === "string") args[name] = spec.raw[name];
-  }
-  // A variable the shell doesn't set is left to the host's environment; the host fails, naming it,
-  // when neither has it.
-  const secret = {};
-  for (const { env } of authInputs(op)) if (process.env[env]) secret[env] = process.env[env];
-  return { args, secret };
+  const reserved = new Set(["json", "no-lock", "no-wait", "session", "tab-id", "write", "repeat", "retry-attempt", "override-in-doubt", "pin-built-in", "allow-script", "format"]);
+  const args = Object.fromEntries(Object.entries(parsed.options).filter(([name]) => !reserved.has(name)));
+  return { playbook, op, args, options: parsed.options };
 }
 
 function resolveRunTimeout(spec, cwd) {
@@ -130,7 +74,7 @@ function resolveRunTimeout(spec, cwd) {
 function playbookCommandNeedsBrowser(argv) {
   if (argv[0] === "use") return true;
   const subcommand = argv[1];
-  if (subcommand === "run" || subcommand === "test") return true;
+  if (subcommand === "run") return true;
   return subcommand === "record" && ["start", "stop", "discard"].includes(argv[2]);
 }
 
@@ -141,12 +85,10 @@ async function handlePlaybookCli(argv, { endpoint, cwd = process.cwd(), session,
     const format = spec.options.format;
     if (format !== undefined && format !== "md" && format !== "jsonl") throw new Error("--format must be md or jsonl");
     const timeout = resolveRunTimeout(spec, cwd);
-    const prepared = prepareRun(spec, cwd);
     const args = {
       playbook: spec.playbook,
       op: spec.op,
-      args: prepared.args,
-      ...(Object.keys(prepared.secret).length > 0 ? { secret: prepared.secret } : {}),
+      args: spec.args,
       projectDir: cwd,
       ...(timeout ? { timeout } : {}),
       write: spec.options.write === true,
@@ -169,39 +111,9 @@ async function handlePlaybookCli(argv, { endpoint, cwd = process.cwd(), session,
     return { handled: true, value, json: spec.options.json === true };
   }
   const command = argv[1];
-  if (command === "param") {
-    const { playbook, op, fields, options } = parseParamArgs(argv.slice(2));
-    const result = applyParam({ playbook, op, fields, cwd, as: options.as, env: options.env, required: options.required === true, default: options.default, desc: options.desc, value: options.value });
-    return { handled: true, value: options.json ? result : formatParamResult(result), json: options.json === true };
-  }
   const parsed = parseCommandArgs(argv.slice(2));
-  if (!command || command === "help") return { handled: true, value: "Usage: surf playbook|pb <list|show|ops|run|test|extract|record|suggest|save|param|client|trace|export|import>\nRun trusted script strategies with: surf use <playbook> <op> --allow-script" };
-  if (endpoint?.kind === "remote" && ["list", "show", "ops", "extract"].includes(command)) throw new Error(`playbook ${command} is local-only with --remote because runs resolve on the browser host`);
-  if (command === "test") {
-    if (endpoint?.kind === "remote" && argv.includes("--save")) throw new Error("pb test --save is local-only with --remote because it edits the op file on this machine");
-    const flags = parseCommandArgs(argv.slice(2)).options;
-    const report = await runPlaybookTest({
-      argv: argv.slice(2),
-      cwd,
-      runOp: (params) => {
-        const args = { ...params, projectDir: cwd, test: true, pinBuiltIn: flags["pin-built-in"] === true };
-        return requestHost(endpoint, "playbook.run", args, {
-          tabId: flags["tab-id"],
-          session: flags.session || session,
-          sessionSource: flags.session ? "explicit" : sessionSource,
-          admission: flags["no-wait"] === true ? { wait: false } : admission,
-          timeoutMs: resolveRequestDeadlineMs("playbook.run", args),
-        });
-      },
-    });
-    const json = argv.includes("--json");
-    return { handled: true, value: json ? report : formatTestReport(report), json, exitCode: report.ok ? 0 : 1 };
-  }
-  if (command === "extract") {
-    const spec = parseExtractArgs(argv.slice(2));
-    const result = saveExtract({ playbook: spec.playbook, op: spec.op, extract: spec.extract, strategy: spec.options.strategy, cwd });
-    return { handled: true, value: spec.options.json ? result : formatExtractResult(result), json: spec.options.json === true };
-  }
+  if (!command || command === "help") return { handled: true, value: "Usage: surf playbook|pb <list|show|ops|run|record|suggest|save|client|trace|export|import>\nRun trusted script strategies with: surf use <playbook> <op> --allow-script" };
+  if (endpoint?.kind === "remote" && ["list", "show", "ops"].includes(command)) throw new Error(`playbook ${command} is local-only with --remote because runs resolve on the browser host`);
   if (command === "list") return { handled: true, value: listPlaybooks({ cwd }), json: parsed.options.json === true };
   if (command === "show") {
     const playbook = resolvePlaybook(parsed.positional[0], { cwd });
@@ -217,8 +129,7 @@ async function handlePlaybookCli(argv, { endpoint, cwd = process.cwd(), session,
     let args = {};
     if (action === "start") args = { site: parsed.positional[1], op: parsed.options.op, watch: parsed.options.watch === true, network: parsed.options.network === true, includeInputValues: parsed.options["include-input-values"] === true };
     else if (action === "mark") args = { label: parsed.positional.slice(1).join(" ") };
-    else if (action === "stop") args = { draft: parsed.options.draft === true, read: parsed.options.read === true, ...(parsed.options["request-id"] ? { requestId: String(parsed.options["request-id"]) } : {}) };
-    else if (action === "candidates") args = { ...(parsed.positional[1] ? { recordId: parsed.positional[1] } : {}), ...(parsed.options.limit !== undefined ? { limit: parsed.options.limit } : {}) };
+    else if (action === "stop") args = { draft: parsed.options.draft === true };
     else if (!["status", "pause", "resume", "discard"].includes(action)) throw new Error("Unknown record command");
     const value = await requestHost(endpoint, tool, args, {
       tabId: parsed.options["tab-id"],
@@ -226,29 +137,24 @@ async function handlePlaybookCli(argv, { endpoint, cwd = process.cwd(), session,
       sessionSource: parsed.options.session ? "explicit" : sessionSource,
       admission: parsed.options["no-wait"] === true ? { wait: false } : admission,
     });
-    if (action === "candidates" && parsed.options.json !== true) return { handled: true, value: formatCandidates(value), json: false };
     return { handled: true, value, json: parsed.options.json === true };
   }
   if (command === "suggest") return { handled: true, value: suggestions({ since: parsed.options.since || "1h" }), json: parsed.options.json === true };
   if (command === "save") {
     let value;
-    if (parsed.options["from-record"]) value = saveFromRecord({ recordId: parsed.options["from-record"], ...(parsed.options["request-id"] ? { requestId: String(parsed.options["request-id"]) } : {}), scope: parsed.options.project ? "project" : "user", cwd });
+    if (parsed.options["from-record"]) value = saveFromRecord({ recordId: parsed.options["from-record"], scope: parsed.options.project ? "project" : "user", cwd });
     else if (parsed.options["from-recent"] || parsed.positional[0]) value = saveFromRecent({ site: parsed.positional[0], op: parsed.options.op, since: parsed.options["from-recent"] === true ? "1h" : parsed.options["from-recent"] || "1h", scope: parsed.options.project ? "project" : "user", cwd });
     else throw new Error("save requires --from-record <id> or <site> --op <name> --from-recent");
     return { handled: true, value, json: parsed.options.json === true };
   }
   if (command === "client") {
     const action = parsed.positional[0];
-    let value;
-    if (action === "derive") value = deriveClient(parsed.positional[1], parsed.options.op, parsed.options.out, { recordId: parsed.options["from-record"], requestId: parsed.options["request-id"], cwd });
-    else if (action === "export") {
+    if (action === "derive") return { handled: true, value: deriveClient(parsed.positional[1], parsed.options.op, parsed.options.out, { recordId: parsed.options["from-record"], requestId: parsed.options["request-id"] }), json: parsed.options.json === true };
+    if (action === "export") {
       const playbook = parsed.positional[1];
       const resolved = resolvePlaybook(playbook, { cwd });
-      value = exportClient(playbook, parsed.options.op || [...resolved.ops.keys()][0], parsed.options.out, { cwd });
-    }
-    if (value) {
-      for (const warning of value.warnings) console.error(`Warning: ${warning}`);
-      return { handled: true, value, json: parsed.options.json === true };
+      const op = parsed.options.op || [...resolved.ops.keys()][0];
+      return { handled: true, value: exportClient(playbook, op, parsed.options.out, { cwd }), json: parsed.options.json === true };
     }
     if (action === "verify") return { handled: true, value: await verifyClient(parsed.positional[1], { live: parsed.options.live === true ? true : undefined }), json: parsed.options.json === true };
     throw new Error("Unknown client command");

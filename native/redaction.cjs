@@ -12,38 +12,6 @@ const SECRET_NAME_PATTERN = /(?:^|[-_.])(authorization|cookie|password|passwd|se
 const TEMPLATE_PATTERN = /\{\{[a-zA-Z0-9._-]+\}\}/;
 const CREDENTIAL_LITERAL_PATTERN = /\bbearer\s+[a-z0-9._~-]+|\bsk-[a-z0-9_-]{12,}|\bgh[pousr]_[a-z0-9_]{12,}|\beyj[a-z0-9_-]+\.[a-z0-9_-]+\.[a-z0-9_-]+/i;
 
-// Replaces each of `values` in `text` with <redacted>, longest first. A value under 8 characters is
-// replaced only where it stands alone, so a short value can't break up the words around it.
-// Self-contained: generated clients embed its source.
-function redactValues(text, values) {
-  let result = String(text);
-  const sorted = [...values].map(String).filter(Boolean).sort((a, b) => b.length - a.length);
-  for (const value of sorted) {
-    if (value.length >= 8) result = result.split(value).join("<redacted>");
-    else result = result.replace(new RegExp(`(?<![A-Za-z0-9])${value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(?![A-Za-z0-9])`, "g"), "<redacted>");
-  }
-  return result;
-}
-
-// redactValues over a JSON value: strings, and object keys too, at any depth. A key that redacts to
-// one already present (another redacted key, or a key that reads <redacted>) takes <redacted-2>,
-// <redacted-3>... so no entry is lost. Keys left unchanged keep their names. Self-contained but for
-// redactValues: generated clients embed both.
-function redactObject(value, values) {
-  if (typeof value === "string") return redactValues(value, values);
-  if (Array.isArray(value)) return value.map((item) => redactObject(item, values));
-  if (!value || typeof value !== "object") return value;
-  const entries = Object.entries(value).map(([key, item]) => [key, redactValues(key, values), redactObject(item, values)]);
-  const taken = new Set(entries.filter(([key, redacted]) => key === redacted).map(([key]) => key));
-  return Object.fromEntries(entries.map(([key, redacted, item]) => {
-    if (key === redacted) return [key, item];
-    let name = redacted;
-    for (let index = 2; taken.has(name); index++) name = redacted.replace(/<redacted>/, `<redacted-${index}>`);
-    taken.add(name);
-    return [name, item];
-  }));
-}
-
 function isTemplate(value) {
   return typeof value === "string" && TEMPLATE_PATTERN.test(value);
 }
@@ -66,11 +34,6 @@ function redactSensitiveFields(value) {
       isSensitiveName(key) ? "<redacted>" : redactSensitiveFields(item),
     ]),
   );
-}
-
-// Masks bearer tokens, API keys and JWTs in free text, such as a response sample.
-function redactCredentialLiterals(text) {
-  return String(text).replace(new RegExp(CREDENTIAL_LITERAL_PATTERN.source, "gi"), "<redacted>");
 }
 
 function safeHeaders(headers = {}) {
@@ -135,10 +98,7 @@ module.exports = {
   isSecretHeader,
   isSensitiveName,
   isTemplate,
-  redactCredentialLiterals,
-  redactObject,
   redactSensitiveFields,
   redactUrlSecrets,
-  redactValues,
   safeHeaders,
 };

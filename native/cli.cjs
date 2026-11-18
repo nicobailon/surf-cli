@@ -12,7 +12,6 @@ const networkFormatters = require("./formatters/network.cjs");
 const { formatPageChanges } = require("./formatters/page-changes.cjs");
 const {
   applyArgDefaults,
-  commandMetadata,
   formatStep,
   getWorkflowDirs,
   getWorkflowInfo,
@@ -35,8 +34,6 @@ const {
   handleOracleCli,
 } = require("./oracle-cli.cjs");
 const { formatPlaybookOutput, handlePlaybookCli } = require("./playbook-cli.cjs");
-const { editDistance } = require("./edit-distance.cjs");
-const { formatGlobalOptions } = require("./global-options.cjs");
 
 const IS_WIN = process.platform === "win32";
 const { SURF_TMP, formatSocketError } = require("./socket-path.cjs");
@@ -135,12 +132,6 @@ function installBrowserLock({ noLock, timeoutMs }, endpoint) {
 }
 
 // Cross-platform image resize (macOS: sips, Linux: ImageMagick)
-
-// Help shows a positional argument as <name>, or as [name] when its name ends with "?" (optional).
-function formatArgs(args = []) {
-  return args.map((arg) => (arg.endsWith("?") ? `[${arg.slice(0, -1)}]` : `<${arg}>`)).join(" ");
-}
-
 function resizeImage(filePath, maxSize) {
   const platform = process.platform;
 
@@ -269,7 +260,7 @@ if (["playbook", "pb", "use"].includes(args[0]) && !helpRequested()) {
     .then((result) => {
       if (!result.handled) throw new Error("Playbook command was not handled");
       if (result.value !== undefined) console.log(formatPlaybookOutput(result.value, result.json));
-      process.exit(result.exitCode ?? 0);
+      process.exit(0);
     })
     .catch((error) => {
       console.error(`Error: ${error.message}`);
@@ -535,7 +526,7 @@ const TOOLS = {
       "tab.new": {
         desc: "Open new tab",
         args: ["url"],
-        opts: { urls: "Open multiple URLs", session: "Only picks the playbook record that holds this command, not the tab or window it acts on" },
+        opts: { urls: "Open multiple URLs" },
         examples: [
           { cmd: 'tab.new "https://google.com"', desc: "Open single tab" },
           { cmd: 'tab.new --urls "https://a.com" "https://b.com"', desc: "Open multiple" },
@@ -544,7 +535,6 @@ const TOOLS = {
       "tab.switch": {
         desc: "Switch to tab by ID or name",
         args: ["id"],
-        opts: { session: "Only picks the playbook record that holds this command, not the tab or window it acts on" },
         examples: [
           { cmd: "tab.switch 123", desc: "Switch by ID" },
           { cmd: 'tab.switch "myTab"', desc: "Switch by name" },
@@ -553,7 +543,7 @@ const TOOLS = {
       "tab.close": {
         desc: "Close tab by ID or name",
         args: ["id"],
-        opts: { ids: "Close multiple tabs", session: "With an id, only picks the playbook record that holds this command, not the tab it closes; without one, closes the session's tab" },
+        opts: { ids: "Close multiple tabs" },
         examples: [{ cmd: "tab.close 123", desc: "Close tab" }]
       },
       "tab.move": {
@@ -567,7 +557,7 @@ const TOOLS = {
         args: ["name"],
         examples: [{ cmd: 'tab.name "dashboard"', desc: "Name current tab" }]
       },
-      "tab.unname": { desc: "Unregister a named tab", args: ["name"], opts: { session: "Only picks the playbook record that holds this command, not the tab or window it acts on" } },
+      "tab.unname": { desc: "Unregister a named tab", args: ["name"] },
       "tab.named": { desc: "List all named tabs", args: [] },
       "tab.group": {
         desc: "Create/add to tab group",
@@ -1086,10 +1076,10 @@ const TOOLS = {
           origin: "Filter by origin (domain)",
           method: "Filter by method (GET,POST,...)",
           status: "Filter by exact status code (e.g. 404)",
-          type: "Filter by response type: json, html, proto, a MIME type (image/png, image/) or subtype (css), or a resource type (document, xhr, fetch)",
+          type: "Filter by content type (json, html, proto)",
           last: "Show N requests (default: 100)",
           filter: "With --stream: URL pattern filter",
-          format: "compact|urls|curl|raw|json (default: compact, which starts each line with the request id; --json gives json)",
+          format: "compact|urls|curl|raw (default: compact)",
           v: "Verbose output",
           vv: "Very verbose output",
           "body-mode": "Response bodies: none, text, or all (default: text)",
@@ -1137,7 +1127,7 @@ const TOOLS = {
         ]
       },
       "network.replay": {
-        desc: "Re-send a captured request from inside its tab (same cookies and headers) and print the response; the tab must still be on the request's origin or the page that sent it",
+        desc: "Re-send a captured request from inside its tab (same cookies and headers) and print the response",
         args: ["id"],
         opts: {
           set: "Edit before sending (repeatable): query.<param>=v, query.<param>.<json.path>=v, body=v, body.<json.path>=v; values are parsed as JSON when valid",
@@ -1568,7 +1558,7 @@ const TOOLS = {
       "history.search": {
         desc: "Search history",
         args: ["query"],
-        opts: { limit: "Max results (default: 20)", session: "Only picks the playbook record that holds this command" },
+        opts: { limit: "Max results (default: 20)" },
         examples: [{ cmd: 'history.search "github"', desc: "Search history" }]
       },
     }
@@ -1583,8 +1573,7 @@ const TOOLS = {
           width: "Window width",
           height: "Window height",
           incognito: "Open incognito window",
-          unfocused: "Don't focus the new window",
-          session: "Only picks the playbook record that holds this command, not the tab or window it acts on",
+          unfocused: "Don't focus the new window"
         },
         examples: [
           { cmd: 'window.new "https://example.com"', desc: "New window with URL" },
@@ -1601,13 +1590,11 @@ const TOOLS = {
       "window.focus": {
         desc: "Focus a window by ID",
         args: ["id"],
-        opts: { session: "Only picks the playbook record that holds this command, not the tab or window it acts on" },
         examples: [{ cmd: "window.focus 123", desc: "Focus window" }]
       },
       "window.close": {
         desc: "Close a window by ID",
         args: ["id"],
-        opts: { session: "Only picks the playbook record that holds this command, not the tab or window it acts on" },
         examples: [{ cmd: "window.close 123", desc: "Close window" }]
       },
       "window.resize": {
@@ -1662,8 +1649,7 @@ const TOOLS = {
         desc: "Run a playbook operation, such as reading a whole X thread",
         args: ["playbook", "op"],
         opts: {
-          "<arg>": "Operation input, e.g. --url <post-url>; an input the op doesn't define fails and lists its inputs",
-          timeout: "Seconds before the run gives up (default: the op's --timeout, else 600)",
+          "<arg>": "Operation input, e.g. --url <post-url> (see: surf pb ops <playbook>)",
           format: "md or jsonl instead of JSON",
           write: "Authorize a write operation",
           "allow-script": "Allow the playbook's trusted script strategy",
@@ -1691,33 +1677,11 @@ const TOOLS = {
           op: "Operation name",
           "from-recent": "Use activity from this window (default: 1h)",
           "from-record": "Use this record id",
-          "request-id": "With --from-record: replay this request (from pb record candidates) instead of the draft's",
           project: "Save in ./.surf/playbooks instead of ~/.surf/playbooks",
         },
         examples: [
           { cmd: "pb save example --op read --from-recent 1h", desc: "From recent activity" },
           { cmd: "pb save --from-record <record-id>", desc: "From a record" },
-          { cmd: "pb save --from-record <record-id> --request-id r_1794_12", desc: "From a record, replaying the request you chose" },
-        ],
-      },
-      "playbook param": {
-        desc: "Turn a recorded value in an op's network request into a named input (--as), or read a header from an environment variable (--env)",
-        args: ["playbook", "op", "field..."],
-        opts: {
-          as: "Input name; the same name in several fields fills them all",
-          required: "No default: surf use must pass --<name>",
-          default: "Default value (default: the recorded value)",
-          desc: "Input description",
-          value: "Template only this text inside the field, as 2 in page-2.html",
-          env: "With one headers.<name> field: send the header from this variable, read from the caller's shell at run time and never stored",
-          json: "Output raw JSON",
-        },
-        examples: [
-          { cmd: "pb param books get_books path.2 --value 2 --as page", desc: "/catalogue/page-2.html → page-{{page}}.html" },
-          { cmd: "pb param arxiv get_paper path.2 --as arxiv_id --required", desc: "/abs/<id> → /abs/{{arxiv_id}}" },
-          { cmd: "pb param walmart search query.variables.query query.variables.searchArgs.query --as query", desc: "One input in two places in a JSON query param" },
-          { cmd: "pb param resy search body.slot_filter.party_size --as party_size", desc: "A JSON body field (form and multipart fields work the same way)" },
-          { cmd: "pb param resy search headers.authorization --env RESY_API_KEY", desc: "A site's public key from the environment" },
         ],
       },
       "playbook record start": {
@@ -1727,28 +1691,7 @@ const TOOLS = {
         examples: [{ cmd: "pb record start example --op read --network --watch", desc: "Record with network" }],
       },
       "playbook record mark": { desc: "Add a note to the recording", args: ["note"] },
-      "playbook record stop": {
-        desc: "Stop recording",
-        args: [],
-        opts: {
-          draft: "Save a draft playbook from the record (a write if it clicked or typed)",
-          read: "With --draft: mark the draft a read. Needs --network; refused if a captured request can change data or a step acts beyond the page",
-          "request-id": "With --draft: replay this request (see pb record candidates) instead of the top-ranked one",
-        },
-        examples: [
-          { cmd: "pb record stop --draft --read", desc: "Draft a search done by clicking as a read" },
-          { cmd: "pb record stop --draft --read --request-id r_1794_12", desc: "Draft it replaying the request you chose" },
-        ],
-      },
-      "playbook record candidates": {
-        desc: "Rank a record's requests by how likely each carries the page's data (JSON or HTML document, records, page text overlap, first-party; telemetry, assets, redirects, preflights low)",
-        args: ["record-id?"],
-        opts: { limit: "How many to show (default: 10)", json: "Output raw JSON" },
-        examples: [
-          { cmd: "pb record candidates", desc: "Your active record (read live), else your latest one" },
-          { cmd: "pb record candidates rec-1794-ab12 --limit 3 --json", desc: "A stopped record, top 3 as JSON" },
-        ],
-      },
+      "playbook record stop": { desc: "Stop recording", args: [], opts: { draft: "Save a draft playbook from the record" } },
       "playbook record status": { desc: "Show the recording state (also: pause, resume, discard)", args: [] },
       "playbook trace export": { desc: "Export a record as HAR", args: [], opts: { "from-record": "Record id", har: "Output .har path" } },
       "playbook export": { desc: "Export a playbook directory", args: ["playbook"], opts: { out: "Output directory" } },
@@ -1760,41 +1703,6 @@ const TOOLS = {
       },
       "playbook client export": { desc: "Export a client for a playbook op", args: ["playbook"], opts: { op: "Operation name", out: "Output directory" } },
       "playbook client verify": { desc: "Verify a generated client", args: ["dir"], opts: { live: "Also call the live endpoint" } },
-      "playbook test": {
-        desc: "Run an op as surf use does and check assertions on its result; exits 1 when one fails or no strategy answers",
-        args: ["playbook", "op"],
-        opts: {
-          "<arg>": "Operation input, as with surf use (or all at once with --args '<json>'); an input the op doesn't define fails",
-          timeout: "Seconds before the run gives up (default: the op's --timeout, else 600)",
-          assert: "<path> <op> [value] (repeatable): ops equals, array_min_len, not_null, exists, matches; paths like $, $[0].title, $.status. Default: the op's saved assertions",
-          strategy: "Run only this strategy (network, workflow, ...), to tell the network path from a fallback",
-          save: "Save the --assert list in the op when the test passes; surf use then checks it too",
-          write: "Allow testing a write op (it really writes)",
-          json: "Output JSON: ok, strategy, records, durationMs, assertions, attempts",
-        },
-        examples: [
-          { cmd: "pb test books get_books --page 2 --assert '$' array_min_len 1 --assert '$[0].title' not_null --strategy network --save", desc: "Check the network path and save the checks" },
-          { cmd: "pb test resy search --args '{\"query\":\"pizza\"}' --json", desc: "Rerun the saved checks" },
-        ],
-      },
-      "playbook extract": {
-        desc: "Make an op return records: from HTML (collect's --item/--field) or JSON (--records, --field paths), saved in the op",
-        args: ["playbook", "op"],
-        opts: {
-          item: "HTML: selector for one record",
-          field: "name=source (repeatable). HTML: 'sel', 'sel@attr', 'sel[]' as in collect. JSON: a path in each record, e.g. venue.name",
-          value: "HTML: one value instead of records, 'sel@attr' (a $.path reads one JSON value)",
-          records: "JSON: path of the records array, e.g. $.search.hits ($ for the whole body)",
-          filter: "JSON: path=value; keep records whose value matches (as text)",
-          strategy: "Set it on this strategy only (default: network and workflow for HTML, network for JSON)",
-          json: "Output raw JSON",
-        },
-        examples: [
-          { cmd: "pb extract books get_books --item article.product_pod --field 'title=h3 a@title' --field price=.price_color --field 'url=h3 a@href'", desc: "Book records from a catalogue page" },
-          { cmd: "pb extract blast submit --value 'input[name=RID]@value'", desc: "One value from an HTML form" },
-          { cmd: "pb extract walmart search --records '$.data.items' --field id=usItemId --field price=price.current --filter __typename=Product", desc: "JSON records, renamed and filtered" },
-        ],
-      },
     },
   },
   remote: {
@@ -2271,7 +2179,7 @@ Usage: surf <command> [args] [options]
     console.log(`${groupName.toUpperCase()} - ${group.desc}`);
     for (const [cmd, info] of Object.entries(group.commands)) {
       if (info.alias) continue;
-      const argStr = formatArgs(info.args);
+      const argStr = info.args?.length ? `<${info.args.join("> <")}>` : "";
       const line = `${`  ${cmd} ${argStr}`.padEnd(31)} `;
       console.log(`${line}${info.desc}`);
     }
@@ -2280,7 +2188,21 @@ Usage: surf <command> [args] [options]
   console.log(`Aliases: snap -> screenshot, read -> page.read, find -> search, go -> navigate
 
 Options:
-${formatGlobalOptions()}
+  --remote <host>:<port>       Route requests to a remote native host
+  --remote-credential <path>   Use a mode-0600 Ed25519 remote credential file
+  --remote-tls                 Use TLS through a TLS-terminating reverse proxy
+  --remote-tls-ca <path>       Replace system roots with a custom CA bundle
+  --remote-tls-server-name <name>  Override TLS SNI and certificate identity
+  --session <name>  Target a durable named session (or set SURF_SESSION)
+  --tab-id <id>     Target specific tab
+  --window-id <id>  Target specific window
+  --no-wait         Return immediately when the tab/browser is busy
+  --json            Output raw JSON including target metadata
+  --auto-capture    On error: capture screenshot + console to /tmp
+  --soft-fail       Host tool errors: warn on stderr, exit 0, no JSON error output
+  --no-lock         Bypass the legacy lock for compound client-side commands
+  --settle <ms>     Max wait for the page to settle after actions (default 2000, max 30000, surf.json settleMs)
+  --no-diff         Skip reporting page changes after actions
 
 Host tool-response errors: stderr includes [code] on the first line when supplied;
 --json also writes {"error":{"code":"...","message":"..."}} to stdout; exit 1.
@@ -2318,7 +2240,7 @@ const showGroupHelp = (groupName) => {
       console.log(`  ${cmd} -> ${info.alias}\n`);
       continue;
     }
-    const argStr = formatArgs(info.args);
+    const argStr = info.args?.length ? `<${info.args.join("> <")}>` : "";
     console.log(`  ${cmd} ${argStr}`);
     console.log(`      ${info.desc}`);
     if (info.opts) {
@@ -2345,13 +2267,13 @@ const showToolHelp = (toolName) => {
         showToolHelp(info.alias);
         return;
       }
-      const argStr = formatArgs(info.args);
+      const argStr = info.args?.length ? `<${info.args.join("> <")}>` : "";
       console.log(`\n${toolName} - ${info.desc}\n`);
       console.log(`Usage: surf ${toolName} ${argStr}\n`);
       if (info.args?.length) {
         console.log("Arguments:");
         for (const arg of info.args) {
-          console.log(`  ${formatArgs([arg])}`);
+          console.log(`  <${arg}>`);
         }
         console.log();
       }
@@ -2390,6 +2312,18 @@ const showToolHelp = (toolName) => {
     return;
   }
   reportUnknownCommand(toolName);
+};
+
+const editDistance = (a, b) => {
+  let previous = Array.from({ length: b.length + 1 }, (_, index) => index);
+  for (let i = 1; i <= a.length; i++) {
+    const current = [i];
+    for (let j = 1; j <= b.length; j++) {
+      current[j] = Math.min(previous[j] + 1, current[j - 1] + 1, previous[j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1));
+    }
+    previous = current;
+  }
+  return previous[b.length];
 };
 
 // Closest public names, comparing the whole name and its group part (`bookmarks` -> bookmark.*, `key.repeat` -> key).
@@ -3819,8 +3753,6 @@ if (toolArgs["network-path"] !== undefined && typeof toolArgs["network-path"] !=
 }
 const wantJson = toolArgs.json === true;
 delete toolArgs.json;
-// The network listing is a text table; --json lists the requests as JSON instead, ids included.
-if (wantJson && tool === "network" && toolArgs.format === undefined && toolArgs.stream !== true) toolArgs.format = "json";
 
 const autoCapture = toolArgs["auto-capture"] === true;
 delete toolArgs["auto-capture"];
@@ -3955,15 +3887,12 @@ if (!noDiff && PAGE_CHANGES_TOOLS.includes(finalTool)) {
 }
 
 const finalClassification = classifyTool(finalTool, toolArgs);
-// Tab and window commands (and tab.unname, a host command) don't target a session's tab, but a
-// session's playbook record holds them: the host uses `recordSession` only to file the command there.
-const recordsBrowserCommand = ["browser", "host"].includes(finalClassification.targetUse) && commandMetadata(finalTool).recordable;
 if (explicitSession !== undefined) {
   if (typeof explicitSession !== "string" || !explicitSession) {
     console.error("Error: --session requires a session name");
     process.exit(1);
   }
-  if ((finalClassification.targetUse !== "default-tab" && !recordsBrowserCommand) || finalTool.startsWith("session.")) {
+  if (finalClassification.targetUse !== "default-tab" || finalTool.startsWith("session.")) {
     console.error(`Error: --session does not apply to ${finalTool}`);
     process.exit(1);
   }
@@ -3971,11 +3900,8 @@ if (explicitSession !== undefined) {
     console.error("Error: use either --session or --tab-id/--window-id, not both");
     process.exit(1);
   }
-  if (recordsBrowserCommand) globalOpts.recordSession = explicitSession;
-  else {
-    globalOpts.session = explicitSession;
-    globalOpts.sessionSource = "explicit";
-  }
+  globalOpts.session = explicitSession;
+  globalOpts.sessionSource = "explicit";
 } else if (
   environmentSession &&
   finalClassification.targetUse === "default-tab" &&
@@ -3985,8 +3911,6 @@ if (explicitSession !== undefined) {
 ) {
   globalOpts.session = environmentSession;
   globalOpts.sessionSource = "environment";
-} else if (environmentSession && recordsBrowserCommand) {
-  globalOpts.recordSession = environmentSession;
 }
 if (noWait) globalOpts.admission = { wait: false };
 
@@ -4818,14 +4742,10 @@ async function handleResponse(response) {
     // Network list - handle both new (entries) and old (requests) formats
     const items = data.entries || data.requests || [];
 
-    if (toolArgs.format === "json") {
-      // The host's JSON listing: ids and capture warnings included.
-      console.log(JSON.stringify(data, null, 2));
-    } else if (items.length === 0) {
+    if (items.length === 0) {
       console.log("No network requests captured");
     } else if (data._format === 'raw') {
       // Raw JSON output - print entries array directly
-      for (const line of networkFormatters.describeCaptureGaps(data.capture)) console.error(`Warning: ${line}`);
       console.log(JSON.stringify(items, null, 2));
     } else {
       // Simple compact format for now

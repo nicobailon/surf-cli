@@ -57,7 +57,7 @@ const TAB_TOOLS = new Set([
   "zoom", "cookie.list", "cookie.get",
   "tab.name", "tabs_register",
   "playbook.record.start", "playbook.record.stop", "playbook.record.status", "playbook.record.mark",
-  "playbook.record.pause", "playbook.record.resume", "playbook.record.discard", "playbook.record.candidates",
+  "playbook.record.pause", "playbook.record.resume", "playbook.record.discard",
 ]);
 
 const NATIVE_DIALOG_TOOLS = new Set(["dialog.accept", "dialog.dismiss", "dialog.info"]);

@@ -4,8 +4,6 @@ const path = require("path");
 const { atomicWriteJson } = require("./private-state.cjs");
 const { validateApiSpec } = require("./api-harvest.cjs");
 const { validateCollectSpec } = require("./dom-collect.cjs");
-const { validateAssertions } = require("./playbook-assertions.cjs");
-const { validateExtract } = require("./playbook-extract.cjs");
 const { validateMarkdownSpec } = require("./record-format.cjs");
 const { assertNoEmbeddedSecrets, assertUrlHasNoEmbeddedSecrets } = require("./redaction.cjs");
 const { commandMetadata, normalizeStep } = require("./workflow-definition.cjs");
@@ -13,26 +11,6 @@ const { commandMetadata, normalizeStep } = require("./workflow-definition.cjs");
 const BUILTIN_DIR = path.join(__dirname, "..", "playbooks");
 const PINNED_BUILTINS = new Set(["chatgpt", "aistudio", "x"]);
 const ID_PATTERN = /^[a-z0-9][a-z0-9._-]{0,63}$/;
-const ARG_TYPES = new Set(["string", "number", "boolean"]);
-const ENV_NAME_PATTERN = /^[A-Za-z_][A-Za-z0-9_]*$/;
-const HEADER_NAME_PATTERN = /^[!#$%&'*+.^_`|~0-9A-Za-z-]+$/;
-
-// `request.authInputs`: headers whose value comes from an environment variable at run time.
-function validateAuthInputs(inputs, headers = {}) {
-  if (inputs === undefined) return;
-  if (!Array.isArray(inputs)) throw new Error("network request authInputs must be an array");
-  const seen = new Set();
-  for (const input of inputs) {
-    if (!input || typeof input !== "object" || Array.isArray(input)) throw new Error("network request authInputs entries must be objects");
-    if (typeof input.env !== "string" || !ENV_NAME_PATTERN.test(input.env)) throw new Error(`auth input env must be an environment variable name: ${input.env}`);
-    if (typeof input.header !== "string" || !HEADER_NAME_PATTERN.test(input.header)) throw new Error(`auth input header must be a header name: ${input.header}`);
-    if (input.required !== undefined && typeof input.required !== "boolean") throw new Error("auth input required must be true or false");
-    const lower = input.header.toLowerCase();
-    if (seen.has(lower)) throw new Error(`network request has two auth inputs for the ${input.header} header`);
-    seen.add(lower);
-    if (Object.keys(headers || {}).some((name) => name.toLowerCase() === lower)) throw new Error(`auth input ${input.env} also has a literal ${input.header} header`);
-  }
-}
 
 function playbookDirs({ cwd = process.cwd(), home = os.homedir() } = {}) {
   return [
@@ -53,7 +31,6 @@ function validateArgSpecs(args) {
   for (const [name, spec] of Object.entries(args)) {
     assertId(name, "argument name");
     if (!spec || typeof spec !== "object" || Array.isArray(spec)) throw new Error(`argument ${name} must be an object`);
-    if (spec.type !== undefined && !ARG_TYPES.has(spec.type)) throw new Error(`argument ${name} type must be string, number or boolean`);
   }
   return args;
 }
@@ -95,7 +72,7 @@ function validateWriteWorkflowSteps(steps, opId) {
   if (steps.length !== 1 || steps[0].repeat !== undefined || steps[0].each !== undefined) {
     throw new Error(`write op ${opId} workflow strategy must contain exactly one commit step`);
   }
-  const metadata = commandMetadata(steps[0].cmd, steps[0].args);
+  const metadata = commandMetadata(steps[0].cmd);
   if (metadata.effect !== "page-write") {
     throw new Error(`write op ${opId} workflow commit step must be page-write`);
   }
@@ -109,13 +86,6 @@ function normalizeScript(value) {
 
 function validateStrategy(strategy, effect, opId) {
   if (!strategy || typeof strategy !== "object" || Array.isArray(strategy)) throw new Error("playbook strategy must be an object");
-  if (strategy.extract !== undefined) {
-    try {
-      validateExtract(strategy.extract, strategy.using);
-    } catch (error) {
-      throw new Error(`op ${opId} extract: ${error.message}`);
-    }
-  }
   if (strategy.using === "script") {
     if (effect === "write") throw new Error(`write op ${opId} script strategy is not supported`);
     const script = normalizeScript(strategy.script);
@@ -138,7 +108,6 @@ function validateStrategy(strategy, effect, opId) {
     assertNoEmbeddedSecrets(request.headers || {});
     assertNoEmbeddedSecrets(request.query || {});
     assertNoEmbeddedSecrets(request.body);
-    validateAuthInputs(request.authInputs, request.headers);
     return { ...strategy, request: { ...request, method } };
   }
   if (strategy.using === "native") {
@@ -185,13 +154,6 @@ function validateOp(value, manifest) {
       validateMarkdownSpec(value.markdown);
     } catch (error) {
       throw new Error(`op ${id} ${error.message}`);
-    }
-  }
-  if (value.on?.success?.expect?.assert !== undefined) {
-    try {
-      validateAssertions(value.on.success.expect.assert);
-    } catch (error) {
-      throw new Error(`op ${id} on.success.expect.assert: ${error.message}`);
     }
   }
   const origins = validateOrigins(auth.origins || value.origins || manifest.origins);
@@ -270,37 +232,6 @@ function savePlaybook({ manifest, op, scope = "user", cwd = process.cwd(), home 
   return { directory, playbook: validatedManifest.id, op: validatedOp.id, scope };
 }
 
-/** The playbook, if it is a user or project one that edits can be saved to. */
-function resolveEditablePlaybook(playbookId, options) {
-  const playbook = resolvePlaybook(playbookId, options);
-  const { scope } = playbook.provenance;
-  if (scope !== "user" && scope !== "project") {
-    throw new Error(`${scope} playbook ${playbook.id} can't be edited; copy it first: surf pb export ${playbook.id} --out <dir>, then surf pb import <dir>`);
-  }
-  return playbook;
-}
-
-/**
- * The one way an op file is edited (pb param, pb extract, pb test --save): `edit(raw, playbook)` gets
- * the op as written on disk (not normalized) and returns the new op, which is saved through
- * savePlaybook, or null to leave the file alone. Returns the file and its text before and after.
- */
-function editSavedOp({ playbook: playbookId, op: opId, edit, cwd = process.cwd(), home = os.homedir() }) {
-  const playbook = resolveEditablePlaybook(playbookId, { cwd, home });
-  const { scope } = playbook.provenance;
-  const opsDir = path.join(playbook.directory, "ops");
-  const name = fs.readdirSync(opsDir).find((file) => file.endsWith(".json") && JSON.parse(fs.readFileSync(path.join(opsDir, file), "utf8"))?.id === opId);
-  if (!name) throw new Error(`Op not found: ${playbook.id} ${opId}`);
-  if (name !== `${opId}.json`) throw new Error(`op ${opId} is saved as ${name}; rename it to ${opId}.json before editing it`);
-  const file = path.join(opsDir, name);
-  const before = fs.readFileSync(file, "utf8");
-  const { directory: _directory, provenance: _provenance, ops: _ops, ...manifest } = playbook;
-  const next = edit(JSON.parse(before), playbook);
-  if (next === null) return { playbook: playbook.id, op: opId, scope, path: file, changed: false, before, after: before };
-  savePlaybook({ manifest, op: next, scope, cwd, home });
-  return { playbook: playbook.id, op: opId, scope, path: file, changed: true, before, after: fs.readFileSync(file, "utf8") };
-}
-
 function writePlaybookDirectory(directory, playbook) {
   if (fs.existsSync(directory)) throw new Error(`playbook output already exists: ${directory}`);
   fs.mkdirSync(path.join(directory, "ops"), { recursive: true });
@@ -328,11 +259,9 @@ function importPlaybookDirectory(source, { scope = "user", cwd = process.cwd(), 
 }
 
 module.exports = {
-  editSavedOp,
   exportPlaybookDirectory,
   importPlaybookDirectory,
   listPlaybooks,
-  resolveEditablePlaybook,
   resolveOp,
   resolvePlaybook,
   savePlaybook,

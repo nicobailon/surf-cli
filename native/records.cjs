@@ -12,15 +12,6 @@ const X_DATETIME = new RegExp(
   `^(?:Sun|Mon|Tue|Wed|Thu|Fri|Sat) (${MONTHS.join("|")}) (\\d{2}) (\\d{2}):(\\d{2}):(\\d{2}) ([+-]\\d{4}) (\\d{4})$`,
 );
 
-// Output field names build objects, so these segments could reach Object.prototype.
-const RESERVED_SEGMENTS = ["__proto__", "constructor", "prototype"];
-
-function assertFieldName(name, where) {
-  if (name.split(".").some((part) => RESERVED_SEGMENTS.includes(part))) {
-    throw new Error(`${where} name "${name}" uses a reserved segment (${RESERVED_SEGMENTS.join(", ")})`);
-  }
-}
-
 function isPlainObject(value) {
   return value !== null && typeof value === "object" && !Array.isArray(value);
 }
@@ -189,7 +180,6 @@ function compileFields(fields, where) {
   const paths = [];
   const templates = [];
   for (const [name, spec] of Object.entries(fields)) {
-    assertFieldName(name, "field");
     if (isPlainObject(spec) && spec.template !== undefined) {
       checkKeys(spec, ["template"], `${where}.${name}`);
       templates.push([name, compileTemplate(spec.template, `${where}.${name}`)]);
@@ -260,60 +250,4 @@ function readCursor(doc, cursor) {
   return first === undefined ? undefined : get(first);
 }
 
-/** "$", "$.data.items" or "$[0].title" as a path for compilePath; "" is the document itself. */
-function fromJsonPath(source, where) {
-  const usage = `${where} must be $, $.path or $[n]..., such as $.data.items (got ${JSON.stringify(source)})`;
-  if (typeof source !== "string" || !/^\$(?:$|\.[^.]|\[)/.test(source)) throw new Error(usage);
-  const path = source.slice(1).replace(/^\./, "");
-  if (path) {
-    try {
-      compilePath(path);
-    } catch {
-      throw new Error(usage);
-    }
-  }
-  return path;
-}
-
-function compileJsonPath(source, where) {
-  const path = fromJsonPath(source, where);
-  return path ? compilePath(path) : (value) => value;
-}
-
-/**
- * A playbook extract over JSON: `records` picks the array, `filter` keeps records whose path equals
- * a value (compared as text), `fields` maps output names to paths. Without `records`, `fields` maps
- * the whole document. Malformed specs throw when compiled.
- */
-function compileJsonExtract({ records, fields, filter }) {
-  const getRecords = records === undefined ? undefined : compileJsonPath(records, "records");
-  const map = fields === undefined ? undefined : compileFields(fields, "fields");
-  let rules;
-  if (filter !== undefined) {
-    if (!isPlainObject(filter) || Object.keys(filter).length === 0) throw new Error("filter must map a path to a value");
-    rules = Object.entries(filter).map(([path, value]) => [compilePath(path), String(value)]);
-  }
-  return (doc) => {
-    let value = doc;
-    if (getRecords) {
-      value = getRecords(doc);
-      if (!Array.isArray(value)) throw new Error(`extract records ${records} is not an array (found ${value === null ? "null" : typeof value})`);
-    }
-    if (rules) {
-      if (!Array.isArray(value)) throw new Error("extract filter needs an array of records");
-      value = value.filter((record) => rules.every(([get, expected]) => {
-        const found = get(record);
-        return found !== undefined && found !== null && String(found) === expected;
-      }));
-    }
-    if (!map) return value;
-    if (Array.isArray(value)) return value.map((record) => (isPlainObject(record) ? map(record) : record));
-    return isPlainObject(value) ? map(value) : value;
-  };
-}
-
-function extractRecords(doc, spec) {
-  return compileJsonExtract(spec)(doc);
-}
-
-module.exports = { assertFieldName, compileJsonExtract, compileJsonPath, createRecordSet, extractRecords, filterRecords, findObjects, getPath, readCursor };
+module.exports = { createRecordSet, filterRecords, findObjects, getPath, readCursor };

@@ -35,7 +35,6 @@ surf use x thread --url https://x.com/<user>/status/<id> --format md
 surf use <playbook> <op> --format jsonl  # one record per line
 ```
 
-- An input the op doesn't define (`--lmit`) fails before anything runs and lists the op's inputs. Surf's global flags and `--timeout` aren't inputs unless the op declares them.
 - Write ops need `--write`. Surf records the intent before sending, so a retry can't submit twice.
 - Script strategies need `--allow-script`.
 - To write a recipe for a new site's feed API (the `api` and `collect` strategies), follow `docs/threads-and-feeds.md` in the Surf repository.
@@ -47,48 +46,15 @@ surf playbook suggest --since 1h
 surf playbook save example --op read --from-recent 1h
 surf playbook record start example --op read --network --watch
 surf playbook record mark "loaded results"
-surf playbook record candidates               # rank the requests: r_… id, score, reasons, sample
-surf playbook record stop --draft --request-id <r_…>
+surf playbook record stop --draft
 surf playbook trace export --from-record <record-id> --har ./trace.har
 surf playbook export example --out ./example-playbook
 surf playbook import ./example-playbook
 ```
 
-A draft that clicked or typed is a write, as is one whose recorded requests include one other than GET, HEAD or OPTIONS (beacons and analytics aside). When the flow only read data, stop with `--draft --read`; it needs `--network`, and Surf refuses it if a captured request can change data or a step acts beyond the page (cookies, tabs, windows, emulation, AI providers).
+Records, traces and the activity journal are private. Auth headers are always dropped. Typed inputs and request bodies are redacted unless you pass `--include-input-values`.
 
-The draft replays the top-ranked request (never telemetry, page assets or preflights; never a write on a read draft, nor a read on a draft made a write by a captured request); a weak top score adds a warning. `record candidates` ranks your active record live, else your latest one, or a record id you pass; choose with `--request-id` on `record stop --draft` or `save --from-record`.
-
-Name a recorded op's inputs with `pb param`. A field is `query.<param>` (plus `.<json.path>` inside a JSON-valued param), `path.<n>` (`path.1` is the first segment), `body.<path>` (JSON, urlencoded or multipart) or `headers.<name>`. The input defaults to the recorded value unless you pass `--required` or `--default`. Surf prints a diff, saves the op where it is, and also templates a workflow step that carries the same value:
-
-```bash
-surf playbook param books get_books path.2 --value 2 --as page   # page-2.html → page-{{page}}.html
-surf playbook param shop search query.q body.query --as q --required  # one input, several fields
-surf playbook param resy search headers.authorization --env RESY_API_KEY
-surf use books get_books --page 3
-```
-
-`--env` headers are read from the shell that runs `surf use` (or a generated client) and are never stored; secret headers take only `--env`.
-
-Make an op return records instead of the raw page or JSON (saved in the op, with a diff):
-
-```bash
-surf playbook extract books get_books --item article.product_pod --field 'title=h3 a@title' --field 'url=h3 a@href'   # HTML, collect's field specs
-surf playbook extract blast submit --value 'input[name=RID]@value'                                                     # one HTML value
-surf playbook extract resy search --records '$.search.hits' --field name=name --field id=id.resy --filter type=venue    # JSON records, renamed
-```
-
-Check an op (exit 1 on failure); `--save` keeps the assertions in the op, and `surf use` then checks them too:
-
-```bash
-surf playbook test books get_books --page 2 --assert '$' array_min_len 1 --assert '$[0].title' not_null --strategy network --save
-surf playbook test books get_books --json   # rerun the saved assertions
-```
-
-A record belongs to the session that started it (or its tab, without a session): only that session's commands go into it, only that session can mark, stop or discard it, and other sessions can record at the same time.
-
-Records, traces and the activity journal are private. Auth headers are always dropped. Typed inputs and request bodies are redacted unless you pass `--include-input-values`. Traces keep no response bodies or values, only each response's kind, size, record count, field count per type, and page-text overlap (no field names); `record candidates` prints a short sample only for an active record, from memory.
-
-A generated client replays a read endpoint without the browser and never contains browser credentials. Without `--request-id`, `client derive` takes the top-ranked request only when it clearly leads. `client export` of an op with inputs gives a client that takes the same `--<name>` options. For now it refuses any request other than GET, HEAD or OPTIONS, POST reads included:
+A generated client replays a read endpoint without the browser and never contains browser credentials:
 
 ```bash
 surf playbook client derive example --op read --from-record <record-id> --request-id <request-id> --out ./client

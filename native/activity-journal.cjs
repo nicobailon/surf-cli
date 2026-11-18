@@ -25,7 +25,7 @@ function appendActivity(event, { root = getPrivateStateRoot() } = {}) {
 }
 
 function journalCommand(command, args, options = {}) {
-  const metadata = commandMetadata(command, args);
+  const metadata = commandMetadata(command);
   if (!metadata.recordable) return;
   appendActivity({
     type: "tool.issued",

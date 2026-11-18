@@ -33,6 +33,7 @@ const { createOracleHost } = require("./oracle-host.cjs");
 
 const IS_WIN = process.platform === "win32";
 const { SOCKET_PATH, SURF_TMP } = require("./socket-path.cjs");
+const { createHostLog } = require("./host-log.cjs");
 const { takeFrames } = require("./stdin-frames.cjs");
 const { parseListenEndpoint } = require("./listener.cjs");
 const { getStateDir } = require("./remote-auth.cjs");
@@ -48,25 +49,18 @@ const { redactUrlSecrets } = require("./redaction.cjs");
 const { appendActivity, journalCommand } = require("./activity-journal.cjs");
 const { reserveReceipt, updateReceipt } = require("./playbook-receipts.cjs");
 const {
+  activeRecord,
   appendRecordEvent,
   attachNetworkTrace,
   discardRecord,
-  findCandidatesRecord,
-  isActive,
   markRecord,
   pauseRecord,
-  recordCandidates,
-  recordStatus,
-  requireRecordFor,
   resumeRecord,
   startRecord,
   stopRecord,
-  traceEntriesForRecord,
   updateRecordContext,
 } = require("./playbook-records.cjs");
-const { visibleText } = require("./record-candidates.cjs");
-const { validateAssertions } = require("./playbook-assertions.cjs");
-const { resolveArgs, runPlaybookOp, testPlaybookOp } = require("./playbook-runtime.cjs");
+const { resolveArgs, runPlaybookOp } = require("./playbook-runtime.cjs");
 const { resolveOp } = require("./playbooks.cjs");
 const { replay, waitForResponse } = require("./api-harvest.cjs");
 const { runCollect } = require("./dom-collect.cjs");
@@ -83,6 +77,7 @@ const {
   DEFAULT_VIDEO_FPS,
   VideoRecorder,
   VideoRecorderError,
+  findFfmpeg,
   parseVideoFps,
   validateVideoOutputPath,
 } = require("./video-recorder.cjs");
@@ -200,7 +195,7 @@ let aiQueue;
 function queueAiRequest(handler, request = requestStorage.getStore()) {
   return aiQueue.enqueue(handler, request);
 }
-const LOG_FILE = path.join(SURF_TMP, "surf-host.log");
+const appendLog = createHostLog({ file: path.join(SURF_TMP, "surf-host.log") });
 const AUTH_FILE = path.join(os.homedir(), ".pi", "agent", "auth.json");
 
 const DEFAULT_RETRY_OPTIONS = {
@@ -412,7 +407,7 @@ async function handleApiRequest(msg, sendResponse) {
 }
 
 const log = (msg) => {
-  fs.appendFileSync(LOG_FILE, `${new Date().toISOString()} ${msg}\n`);
+  appendLog(`${new Date().toISOString()} ${msg}\n`);
 };
 
 if (require.main === module) {
@@ -1107,7 +1102,6 @@ async function prepareToolRequest(msg, request) {
   const { identity, target } = await resolveRequestTarget(msg, request, classification);
   request.browserIdentity = identity;
   request.target = target;
-  request.callerSession = msg.target?.session || msg.session || msg.recordSession;
   request.laneKey = target?.tabId ? targetLaneKey(identity, target.tabId) : undefined;
   if (classification.scope === "provider") {
     request.notice = `${request.tool} uses exclusive browser access; other Surf sessions will queue until it finishes.`;
@@ -1563,10 +1557,7 @@ async function runHostPlaybook(msg, request) {
     cwd: request.context?.isRemote ? process.cwd() : params.projectDir || process.cwd(),
     pinBuiltIn: params.pinBuiltIn === true,
   });
-  const runArgs = resolveArgs(op, params.args || {}, { playbookId: playbook.id });
-  if (params.test === true && op.effect === "write" && params.write !== true) {
-    throw new Error(`${playbook.id} ${op.id} is a write op; pb test runs it only with --write`);
-  }
+  const runArgs = resolveArgs(op, params.args || {});
   if (op.effect === "write" && op.safety.authorization === "explicit" && params.write !== true) {
     throw new Error(`write op ${playbook.id} ${op.id} requires --write`);
   }
@@ -1580,18 +1571,12 @@ async function runHostPlaybook(msg, request) {
   });
   const report = (event) => {
     appendActivity(event);
-    appendRecordEvent(event, { target: recordEventTarget(request) });
+    appendRecordEvent(event);
   };
-  // pb test: the same run, but a failed one comes back as a result with each attempt's assertions.
-  const run = params.test === true ? testPlaybookOp : runPlaybookOp;
-  const result = await run({
+  const result = await runPlaybookOp({
     playbook,
     op,
     args: runArgs,
-    // Values of env-supplied headers, read from the caller's shell by surf use; never stored.
-    secrets: params.secret || {},
-    ...(params.assert !== undefined ? { assertions: validateAssertions(params.assert) } : {}),
-    ...(params.strategy !== undefined ? { strategy: params.strategy } : {}),
     attemptId: receipt?.attemptId,
     signal: request.signal,
     executeTool: (tool, args) => executeMappedHostTool(request, tool, args, msg.tabId),
@@ -1625,96 +1610,58 @@ async function runHarvestTool(tool, args, msg, request) {
   return formatRecords(records, args.format ?? "json");
 }
 
-const RECORD_TRACE_LIMIT = 500;
-
-// Who a command's events belong to. Tab and window commands resolve no tab target, so they go by
-// the caller's session.
-function recordEventTarget(request) {
-  if (request.target) return { session: request.target.session, tabId: request.target.tabId };
-  return { browser: true, session: request.callerSession };
-}
-
-// Each record belongs to the session (or, without one, the tab) that started it.
 async function handleRecordRequest(tool, args, msg, request) {
-  const target = { session: request.target?.session, tabId: request.target?.tabId ?? msg.tabId };
-  const stopCapture = (record) => Promise.all([
-    record.capture.network && requestCallExtension(request, tool, { type: "STOP_NETWORK_CAPTURE", tabId: record.tabId }, 30000, true).catch(() => {}),
-    record.capture.watch && requestCallExtension(request, tool, { type: "STOP_PLAYBOOK_WATCH", tabId: record.tabId }, 30000, true).catch(() => {}),
-  ]);
   if (tool === "playbook.record.start") {
-    let record = startRecord({ ...args, tabId: target.tabId, session: target.session });
+    let record = startRecord({ ...args, tabId: msg.tabId });
     try {
       const context = await requestCallExtension(request, tool, {
         type: "GET_PLAYBOOK_RECORD_CONTEXT",
-        tabId: record.tabId,
+        tabId: msg.tabId,
       });
-      record = updateRecordContext(record.id, {
-        tabId: context._resolvedTabId || record.tabId,
+      record = updateRecordContext({
+        tabId: context._resolvedTabId || msg.tabId,
         origin: context.origin,
       });
       if (record.capture.network) {
         const result = await requestCallExtension(request, tool, { type: "START_NETWORK_CAPTURE", tabId: record.tabId, bodyMode: "text" });
-        record = updateRecordContext(record.id, { tabId: result._resolvedTabId || record.tabId });
+        record = updateRecordContext({ tabId: result._resolvedTabId || record.tabId });
       }
       if (record.capture.watch) {
-        const result = await requestCallExtension(request, tool, { type: "START_PLAYBOOK_WATCH", tabId: record.tabId, includeInputValues: record.redaction.includeInputValues });
-        record = updateRecordContext(record.id, { tabId: result._resolvedTabId || record.tabId });
+        const result = await requestCallExtension(request, tool, { type: "START_PLAYBOOK_WATCH", tabId: record.tabId || msg.tabId, includeInputValues: record.redaction.includeInputValues });
+        record = updateRecordContext({ tabId: result._resolvedTabId || record.tabId || msg.tabId });
       }
       return record;
     } catch (error) {
-      await stopCapture(record);
-      discardRecord({ target: { session: record.session, tabId: record.tabId } });
+      if (record?.capture.network) await requestCallExtension(request, tool, { type: "STOP_NETWORK_CAPTURE", tabId: record.tabId }, 30000, true).catch(() => {});
+      if (record?.capture.watch) await requestCallExtension(request, tool, { type: "STOP_PLAYBOOK_WATCH", tabId: record.tabId }, 30000, true).catch(() => {});
+      discardRecord();
       throw error;
     }
   }
-  if (tool === "playbook.record.status") return recordStatus({ target });
-  if (tool === "playbook.record.mark") return markRecord(args.label, { target });
-  if (tool === "playbook.record.pause") return pauseRecord({ target });
-  if (tool === "playbook.record.resume") return resumeRecord({ target });
+  if (tool === "playbook.record.status") return activeRecord() || { status: "idle" };
+  if (tool === "playbook.record.mark") return markRecord(args.label);
+  if (tool === "playbook.record.pause") return pauseRecord();
+  if (tool === "playbook.record.resume") return resumeRecord();
   if (tool === "playbook.record.discard") {
-    await stopCapture(requireRecordFor(target));
-    return discardRecord({ target });
-  }
-  // The record's requests as captured so far, with the page's visible text for the overlap score.
-  // The page is read only when a request kept a body to compare it with. page.text reads only the
-  // first <article> or <main>, which on a listing is one item, so this takes the body's HTML.
-  const readTrace = async (record) => {
-    const result = await requestCallExtension(request, tool, { type: "READ_NETWORK_REQUESTS", tabId: record.tabId, full: true, includeStatic: true, limit: RECORD_TRACE_LIMIT });
-    const read = result.entries || [];
-    const entries = traceEntriesForRecord(record, read);
-    let pageText = "";
-    if (entries.some((entry) => typeof entry.responseBody === "string")) {
-      pageText = await requestCallExtension(request, tool, { type: "GET_PAGE_HTML", tabId: record.tabId, selector: "body", stripScripts: true }, 10000)
-        .then((page) => (typeof page?.html === "string" ? visibleText(page.html) : ""), () => "");
-    }
-    return { entries, pageText, capture: result.capture, truncated: read.length >= RECORD_TRACE_LIMIT };
-  };
-  if (tool === "playbook.record.candidates") {
-    const record = findCandidatesRecord({ recordId: args.recordId, target });
-    const limit = args.limit ?? 10;
-    if (!isActive(record) || !record.capture.network) return recordCandidates(record, { limit });
-    const { entries, pageText } = await readTrace(record);
-    return recordCandidates(record, { limit, live: { entries, pageText } });
+    const record = activeRecord();
+    if (record?.capture.network) await requestCallExtension(request, tool, { type: "STOP_NETWORK_CAPTURE", tabId: record.tabId }, 30000, true).catch(() => {});
+    if (record?.capture.watch) await requestCallExtension(request, tool, { type: "STOP_PLAYBOOK_WATCH", tabId: record.tabId }, 30000, true).catch(() => {});
+    return discardRecord();
   }
   if (tool === "playbook.record.stop") {
-    const record = requireRecordFor(target);
+    const record = activeRecord();
+    if (!record) throw new Error("no active playbook record");
     if (record.capture.network) {
       try {
-        const { entries, pageText, capture, truncated } = await readTrace(record);
-        attachNetworkTrace(record.id, entries, undefined, {
-          capture,
-          pageText,
-          ...(truncated ? { truncatedAt: RECORD_TRACE_LIMIT } : {}),
-        });
-      } catch (error) {
-        await stopCapture(record);
-        throw error;
+        const result = await requestCallExtension(request, tool, { type: "READ_NETWORK_REQUESTS", tabId: record.tabId, full: true, limit: 500 });
+        const cutoff = Date.parse(record.startedAt);
+        attachNetworkTrace(record.id, (result.entries || []).filter((entry) => entry.ts >= cutoff));
+      } finally {
+        await requestCallExtension(request, tool, { type: "STOP_NETWORK_CAPTURE", tabId: record.tabId }, 30000, true).catch(() => {});
       }
     }
-    // Capture stops only once the record has: a refused --read leaves both running, to stop again.
-    const stopped = stopRecord({ target, draft: args.draft === true, read: args.read === true, requestId: args.requestId });
-    await stopCapture(record);
-    return stopped;
+    if (record.capture.watch) await requestCallExtension(request, tool, { type: "STOP_PLAYBOOK_WATCH", tabId: record.tabId }, 30000, true).catch(() => {});
+    return stopRecord({ draft: args.draft === true });
   }
   throw new Error(`Unknown record command: ${tool}`);
 }
@@ -1880,7 +1827,7 @@ function sendToolResponse(socket, id, result, error) {
           resultSummary: finalError ? "failed" : "success",
         };
         appendActivity(event);
-        appendRecordEvent(event, { target: recordEventTarget(request) });
+        appendRecordEvent(event);
       }
     }
     await cleanupRequestTransfers(request);
@@ -3020,7 +2967,7 @@ function processInput() {
           url: redactUrlSecrets(msg.url),
           tabId: msg.tabId,
           timestamp: msg.timestamp || new Date().toISOString(),
-        }, { target: { tabId: msg.tabId, page: true } });
+        });
         continue;
       }
 
@@ -3362,9 +3309,15 @@ const handleClient = (socket) => {
       return;
     }
 
-    // Answered here, without the extension, so `surf doctor` can compare versions.
+    // Answered here, without the extension, so `surf doctor` can compare versions and see
+    // whether this host, with the PATH the browser gave it, finds ffmpeg.
     if (msg.type === "versions_request") {
-      await sendSocket(socket, { type: "versions_response", host: HOST_VERSION, extension: browserIdentity?.extensionVersion ?? null });
+      await sendSocket(socket, {
+        type: "versions_response",
+        host: HOST_VERSION,
+        extension: browserIdentity?.extensionVersion ?? null,
+        ffmpeg: { path: findFfmpeg(), searchedPath: process.env.PATH || "", pinned: process.env.SURF_FFMPEG || null },
+      });
       return;
     }
 

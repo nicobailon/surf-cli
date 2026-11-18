@@ -542,7 +542,7 @@ surf video stop
 surf video restart ./take-2.webm --fps 60
 ```
 
-`--fps` defaults to 30 and is capped at 60. Video recording is local-only and requires `ffmpeg` on `PATH`.
+`--fps` defaults to 30 and is capped at 60. Video recording is local-only and requires `ffmpeg`. The native host runs with the browser's PATH, not your shell's, so `surf install` records the ffmpeg your shell finds as `SURF_FFMPEG` in the host wrapper; after installing ffmpeg, rerun `surf install` and reload the extension. `surf doctor` reports whether the host finds it.
 
 ### Animation Audit
 
@@ -719,15 +719,14 @@ Surf automatically captures all network requests while active. No explicit start
 
 ```bash
 # Overview (token-efficient for LLMs)
-surf network --last 20                # Recent requests, compact table with request ids (bare `surf network` prints help)
-surf network --json                   # Requests as JSON: id, method, status, type, MIME type, URL
+surf network                          # Recent requests, compact table
 surf network --urls                   # Just URLs (minimal output)
 surf network --format curl            # As curl commands
 
 # Filtering
 surf network --origin api.github.com  # Filter by origin/domain
 surf network --method POST            # Only POST requests
-surf network --type json              # Only JSON responses (by MIME type; also html, image/, xhr)
+surf network --type json              # Only JSON responses
 surf network --status 4xx,5xx         # Only errors
 surf network --since 5m               # Last 5 minutes
 surf network --exclude-static         # Skip images/fonts/css/js
@@ -1034,10 +1033,6 @@ surf pb export example --out ./example-playbook
 surf pb import ./example-playbook
 ```
 
-A draft that clicked or typed is a write, as is one whose recorded requests include one other than GET, HEAD, or OPTIONS (beacons and analytics aside). When the flow only read data, stop with `--draft --read`; it needs `--network`, and Surf refuses it if a captured request can change data or a step acts beyond the page (cookies, tabs, windows, emulation, AI providers).
-
-A record belongs to the session that started it (or its tab, without a session): only that session's commands go into it, only that session can mark, stop, or discard it, and other sessions can record at the same time.
-
 Records, traces, receipts, and recent-use journals live under private Surf state. Input values and authentication headers are redacted by default; `--include-input-values` is an explicit recording choice.
 
 Generate a standalone client only from an observed or validated read endpoint:
@@ -1048,7 +1043,7 @@ surf pb client export example --op read --out ./client
 surf pb client verify ./client
 ```
 
-Generated manifests declare provenance and authentication environment inputs. Surf excludes cookies, bearer tokens, and captured credentials and does not export write-capable clients. For now `client derive` refuses any request other than GET, HEAD, or OPTIONS, POST reads included.
+Generated manifests declare provenance and authentication environment inputs. Surf excludes cookies, bearer tokens, and captured credentials and does not export write-capable clients without explicit review.
 
 ### Threads and Feeds
 

@@ -59,9 +59,6 @@ type NativeMessage = Record<string, unknown> & {
 
 type FakeHostOptions = {
   targetActive?: boolean;
-  env?: Record<string, string>;
-  // Requests the page made before the test, already in network capture.
-  pageTraffic?: CapturedRequest[];
 };
 
 type CliResult = {
@@ -81,13 +78,8 @@ const { spawn } = require("node:child_process") as {
   spawn: (command: string, args: string[], options: Record<string, unknown>) => ChildProcessLike;
 };
 const fs = require("node:fs") as {
-  existsSync(targetPath: string): boolean;
   mkdirSync(targetPath: string, options: { recursive: boolean }): void;
   mkdtempSync(prefix: string): string;
-  readdirSync(
-    targetPath: string,
-    options: { withFileTypes: true },
-  ): Array<{ name: string; isDirectory(): boolean }>;
   readFileSync(targetPath: string, encoding: "utf8"): string;
   rmSync(targetPath: string, options: { recursive: boolean; force: boolean }): void;
   writeFileSync(targetPath: string, content: string, options?: { mode?: number }): void;
@@ -127,28 +119,7 @@ function writeNativeMessage(stdin: WritableLike, message: NativeMessage) {
   stdin.write(BufferCtor.concat([header, BufferCtor.from(json, "utf8")]));
 }
 
-type CapturedRequest = Record<string, unknown> & { id: string };
-
-// What network capture holds for a script's request to the fixture API.
-function capturedRequest(message: NativeMessage, seq: number): CapturedRequest {
-  return {
-    id: `r_${seq}`,
-    ts: Date.now(),
-    method: /method: "([A-Z]+)"/.exec(String(message.code))?.[1] || "GET",
-    url: "https://fixture.test/api",
-    status: 200,
-    responseHeaders: {},
-    flags: [],
-    _loadingFinished: true,
-  };
-}
-
-function buildExtensionResponse(
-  message: NativeMessage,
-  currentUrl: string,
-  targetActive: boolean,
-  captured: CapturedRequest[],
-) {
+function buildExtensionResponse(message: NativeMessage, currentUrl: string, targetActive: boolean) {
   switch (message.type) {
     case "TARGET_RESOLVE":
     case "TARGET_INSPECT":
@@ -203,22 +174,9 @@ function buildExtensionResponse(
           status: 200,
           ok: true,
           url: "https://fixture.test/api",
-          headers: {},
-          sentAt: Date.now(),
-          doneAt: Date.now(),
+          body: '{"ok":true}',
+          bodyJson: { ok: true },
         }),
-      };
-    // Network capture holds what each script sent; its body is the fixture API's.
-    case "READ_NETWORK_REQUESTS":
-      return { id: message.id, entries: captured };
-    case "GET_NETWORK_ENTRY":
-      return { id: message.id, entry: captured.find((entry) => entry.id === message.requestId) };
-    case "GET_RESPONSE_BODY":
-      return {
-        id: message.id,
-        success: true,
-        body:
-          captured.find((entry) => entry.id === message.requestId)?.responseBody ?? '{"ok":true}',
       };
     default:
       return { id: message.id, error: `Unhandled fake extension message: ${message.type}` };
@@ -231,14 +189,13 @@ function startHost(socketPath: string, options: FakeHostOptions = {}) {
   tempDirs.push(stateDir);
   const child = spawn(process.execPath, [hostPath], {
     cwd: process.cwd(),
-    env: { ...process.env, ...options.env, SURF_SOCKET: socketPath, SURF_STATE_DIR: stateDir },
+    env: { ...process.env, SURF_SOCKET: socketPath, SURF_STATE_DIR: stateDir },
     stdio: ["pipe", "pipe", "pipe"],
   });
   const messages: NativeMessage[] = [];
   const waiters: MessageWaiter[] = [];
   let stdoutBuffer = BufferCtor.alloc(0);
   let currentUrl = "about:blank";
-  const captured: CapturedRequest[] = [...(options.pageTraffic ?? [])];
   const targetActive = options.targetActive !== false;
   let stderr = "";
   let closed = false;
@@ -295,13 +252,7 @@ function startHost(socketPath: string, options: FakeHostOptions = {}) {
       if (message.type === "EXECUTE_NAVIGATE" && message.url) {
         currentUrl = message.url;
       }
-      if (message.type === "EXECUTE_JAVASCRIPT") {
-        captured.push(capturedRequest(message, captured.length + 1));
-      }
-      writeNativeMessage(
-        child.stdin,
-        buildExtensionResponse(message, currentUrl, targetActive, captured),
-      );
+      writeNativeMessage(child.stdin, buildExtensionResponse(message, currentUrl, targetActive));
     }
   });
 
@@ -371,18 +322,13 @@ function startHost(socketPath: string, options: FakeHostOptions = {}) {
   };
 }
 
-async function runCli(
-  socketPath: string,
-  args: string[],
-  cwd = process.cwd(),
-  env: Record<string, string> = {},
-) {
+async function runCli(socketPath: string, args: string[], cwd = process.cwd()) {
   const cliPath = path.join(process.cwd(), "native", "cli.cjs");
 
   return await new Promise<CliResult>((resolve, reject) => {
     const child = spawn(process.execPath, [cliPath, ...args], {
       cwd,
-      env: { ...process.env, ...env, SURF_SOCKET: socketPath },
+      env: { ...process.env, SURF_SOCKET: socketPath },
       stdio: ["ignore", "pipe", "pipe"],
     });
     let stdout = "";
@@ -575,244 +521,6 @@ describe("CLI/native-host/fake-extension E2E contract", () => {
       expect(host.messages.filter((message) => message.type === "EXECUTE_JAVASCRIPT")).toHaveLength(
         2,
       );
-    } finally {
-      await host.dispose();
-    }
-  });
-
-  it("sends an env-supplied header from the caller's shell and writes its value nowhere", async () => {
-    const socketPath = createSocketPath();
-    const scratch = fs.mkdtempSync(path.join(os.tmpdir(), "surf-secret-header-"));
-    tempDirs.push(scratch);
-    const env = { HOME: path.join(scratch, "home"), SURF_TMP: path.join(scratch, "tmp") };
-    const project = path.join(scratch, "project");
-    const opsDir = path.join(project, ".surf", "playbooks", "api", "ops");
-    for (const directory of [env.HOME, env.SURF_TMP, opsDir]) {
-      fs.mkdirSync(directory, { recursive: true });
-    }
-    fs.writeFileSync(
-      path.join(project, ".surf", "playbooks", "api", "playbook.json"),
-      JSON.stringify({ id: "api", version: "1.0.0", origins: ["https://fixture.test"] }),
-    );
-    fs.writeFileSync(
-      path.join(opsDir, "search.json"),
-      JSON.stringify({
-        id: "search",
-        effect: "read",
-        run: [
-          {
-            using: "network",
-            request: {
-              method: "GET",
-              url: "https://fixture.test/api",
-              authInputs: [{ env: "SURF_E2E_SITE_KEY", header: "Authorization", required: true }],
-            },
-          },
-        ],
-      }),
-    );
-    fs.writeFileSync(
-      path.join(opsDir, "paper.json"),
-      JSON.stringify({
-        id: "paper",
-        effect: "read",
-        args: { id: { type: "string", required: true } },
-        run: [
-          { using: "network", request: { method: "GET", url: "https://fixture.test/abs/{{id}}" } },
-        ],
-      }),
-    );
-    const secret = "dummy-shell-value-7f3a9c41";
-    const host = startHost(socketPath, { env });
-    const executions = () =>
-      host.messages.filter((message) => message.type === "EXECUTE_JAVASCRIPT");
-
-    try {
-      await host.waitForMessage((message) => message.type === "HOST_READY");
-      const missing = await runCli(socketPath, ["use", "api", "search", "--json"], project, env);
-      expect(missing.code).toBe(1);
-      expect(missing.stderr).toMatch(/environment variable SURF_E2E_SITE_KEY is not set/);
-      expect(executions()).toHaveLength(0);
-
-      const run = await runCli(socketPath, ["use", "api", "search", "--json"], project, {
-        ...env,
-        SURF_E2E_SITE_KEY: secret,
-      });
-      expect(run.code).toBe(0);
-      expect(JSON.parse(run.stdout)).toMatchObject({ status: "completed", strategy: "network" });
-      expect(executions()).toHaveLength(1);
-      expect(JSON.stringify(executions()[0])).toContain(`"Authorization\\":\\"${secret}`);
-
-      // A string input keeps its text: 2101.10010 isn't read as the number 2101.1001.
-      const paper = await runCli(
-        socketPath,
-        ["use", "api", "paper", "--id", "2101.10010"],
-        project,
-        env,
-      );
-      expect(paper.code).toBe(0);
-      expect(JSON.stringify(executions()[1])).toContain("https://fixture.test/abs/2101.10010");
-
-      // The env value travels outside the op's inputs, so the undefined-input check (#480) lets it
-      // through, still refuses a real typo, and the refusal doesn't quote the value.
-      const typo = await runCli(socketPath, ["use", "api", "paper", "--idd", "x"], project, {
-        ...env,
-        SURF_E2E_SITE_KEY: secret,
-      });
-      expect(typo.code).toBe(1);
-      expect(typo.stderr).toMatch(/Unknown input --idd for api paper\. Did you mean --id\?/);
-      const typoWithSecret = await runCli(
-        socketPath,
-        ["use", "api", "search", "--q", "x"],
-        project,
-        {
-          ...env,
-          SURF_E2E_SITE_KEY: secret,
-        },
-      );
-      expect(typoWithSecret.stderr).toMatch(
-        /Unknown input --q for api search\. It takes no inputs/,
-      );
-      expect(`${typo.stderr}${typoWithSecret.stderr}`).not.toContain(secret);
-      expect(executions()).toHaveLength(2);
-
-      const files: string[] = [];
-      const walk = (directory: string) => {
-        for (const entry of fs.readdirSync(directory, { withFileTypes: true })) {
-          const target = path.join(directory, entry.name);
-          if (entry.isDirectory()) {
-            walk(target);
-          } else {
-            files.push(target);
-          }
-        }
-      };
-      walk(scratch);
-      walk(host.stateDir);
-      expect(files.length).toBeGreaterThan(2);
-      expect(files.filter((file) => fs.readFileSync(file, "utf8").includes(secret))).toEqual([]);
-      expect(`${run.stdout}${run.stderr}${missing.stderr}`).not.toContain(secret);
-    } finally {
-      await host.dispose();
-    }
-  });
-
-  it("keeps the page's other captured requests off disk when surf use and network.replay read capture", async () => {
-    const socketPath = createSocketPath();
-    const scratch = fs.mkdtempSync(path.join(os.tmpdir(), "surf-capture-disk-"));
-    tempDirs.push(scratch);
-    const env = { HOME: path.join(scratch, "home"), SURF_TMP: path.join(scratch, "tmp") };
-    const project = path.join(scratch, "project");
-    const opsDir = path.join(project, ".surf", "playbooks", "api", "ops");
-    for (const directory of [env.HOME, env.SURF_TMP, opsDir]) {
-      fs.mkdirSync(directory, { recursive: true });
-    }
-    fs.writeFileSync(
-      path.join(project, ".surf", "playbooks", "api", "playbook.json"),
-      JSON.stringify({ id: "api", version: "1.0.0", origins: ["https://fixture.test"] }),
-    );
-    fs.writeFileSync(
-      path.join(opsDir, "read.json"),
-      JSON.stringify({
-        id: "read",
-        effect: "read",
-        run: [{ using: "network", request: { method: "GET", url: "https://fixture.test/api" } }],
-      }),
-    );
-    const marker = "dummy-page-marker-for-tests";
-    const host = startHost(socketPath, {
-      env,
-      pageTraffic: [
-        {
-          id: "r_page",
-          ts: Date.now() - 60_000,
-          method: "GET",
-          url: "https://fixture.test/api",
-          requestHeaders: { "x-page-token": marker },
-          status: 200,
-          responseHeaders: {},
-          responseBody: `{"note":"${marker}"}`,
-          flags: [],
-          _loadingFinished: true,
-        },
-      ],
-    });
-    try {
-      await host.waitForMessage((message) => message.type === "HOST_READY");
-      const run = await runCli(socketPath, ["use", "api", "read", "--json"], project, env);
-      expect(run).toMatchObject({ code: 0, stderr: "" });
-      expect(JSON.parse(run.stdout)).toMatchObject({ strategy: "network" });
-      const replay = await runCli(socketPath, ["network.replay", "r_page", "--json"], project, env);
-      expect(replay.code).toBe(0);
-      expect(
-        host.messages.filter((message) => message.type === "READ_NETWORK_REQUESTS").length,
-      ).toBeGreaterThan(1);
-
-      const files: string[] = [];
-      const walk = (directory: string) => {
-        for (const entry of fs.readdirSync(directory, { withFileTypes: true })) {
-          const target = path.join(directory, entry.name);
-          if (entry.isDirectory()) {
-            walk(target);
-          } else {
-            files.push(target);
-          }
-        }
-      };
-      walk(scratch);
-      walk(host.stateDir);
-      expect(files.filter((file) => fs.readFileSync(file, "utf8").includes(marker))).toEqual([]);
-      expect(fs.existsSync(path.join(host.stateDir, "network"))).toBe(false);
-    } finally {
-      await host.dispose();
-    }
-  });
-
-  it("falls back to the host's environment for an env-supplied header the shell doesn't set", async () => {
-    const socketPath = createSocketPath();
-    const project = fs.mkdtempSync(path.join(os.tmpdir(), "surf-host-env-header-"));
-    tempDirs.push(project);
-    const opsDir = path.join(project, ".surf", "playbooks", "api", "ops");
-    fs.mkdirSync(opsDir, { recursive: true });
-    fs.writeFileSync(
-      path.join(project, ".surf", "playbooks", "api", "playbook.json"),
-      JSON.stringify({ id: "api", version: "1.0.0", origins: ["https://fixture.test"] }),
-    );
-    const authOp = (env: string) => ({
-      id: env === "SURF_E2E_HOST_ONLY_KEY" ? "host" : "nowhere",
-      effect: "read",
-      run: [
-        {
-          using: "network",
-          request: {
-            method: "GET",
-            url: "https://fixture.test/api",
-            authInputs: [{ env, header: "X-Site-Key", required: true }],
-          },
-        },
-      ],
-    });
-    fs.writeFileSync(
-      path.join(opsDir, "host.json"),
-      JSON.stringify(authOp("SURF_E2E_HOST_ONLY_KEY")),
-    );
-    fs.writeFileSync(
-      path.join(opsDir, "nowhere.json"),
-      JSON.stringify(authOp("SURF_E2E_UNSET_KEY")),
-    );
-    const host = startHost(socketPath, { env: { SURF_E2E_HOST_ONLY_KEY: "host-side-value-31" } });
-    const executions = () =>
-      host.messages.filter((message) => message.type === "EXECUTE_JAVASCRIPT");
-    try {
-      await host.waitForMessage((message) => message.type === "HOST_READY");
-      const run = await runCli(socketPath, ["use", "api", "host", "--json"], project);
-      expect(run).toMatchObject({ code: 0 });
-      expect(JSON.stringify(executions()[0])).toContain("host-side-value-31");
-
-      const missing = await runCli(socketPath, ["use", "api", "nowhere", "--json"], project);
-      expect(missing.code).toBe(1);
-      expect(missing.stderr).toMatch(/environment variable SURF_E2E_UNSET_KEY is not set/);
-      expect(executions()).toHaveLength(1);
     } finally {
       await host.dispose();
     }

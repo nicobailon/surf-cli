@@ -3,7 +3,6 @@
 
 const { createRecordSet, readCursor } = require("./records.cjs");
 const { hiddenTabError } = require("./dom-collect.cjs");
-const { redactValues } = require("./redaction.cjs");
 
 const POLL_MS = 500;
 const DEFAULT_TIMEOUT_MS = 30000;
@@ -185,137 +184,6 @@ async function readBody(ctx, entry) {
   }
 }
 
-// Header values as fetch shows them: lowercase names, repeated values joined by ", " (capture
-// joins them with newlines).
-function normalHeaders(headers = {}) {
-  return Object.fromEntries(Object.entries(headers).map(([name, value]) => [name.toLowerCase(), String(value).split("\n").join(", ")]));
-}
-
-// A cached response the browser revalidated is a 304 in capture and a 200 to fetch. It is the
-// script's only when the validator fetch saw, the ETag (else Last-Modified), is the one the 304
-// confirmed: in its response, or in the browser's If-None-Match (If-Modified-Since).
-function revalidatedFor(entry, seen) {
-  const script = normalHeaders(seen.headers);
-  const response = normalHeaders(entry.responseHeaders);
-  const request = normalHeaders(entry.requestHeaders);
-  if (script.etag !== undefined) return response.etag === script.etag || (request["if-none-match"] ?? "").split(/,\s*/).includes(script.etag);
-  if (script["last-modified"] !== undefined) return [response["last-modified"], request["if-modified-since"]].includes(script["last-modified"]);
-  return false;
-}
-
-// A captured response agrees with what the tab's script saw: the same status (or a 304 that
-// revalidated it), and the same value for each header both have (fetch hides some, such as
-// set-cookie).
-function agreesWith(entry, seen) {
-  if (entry.status !== seen.status && !(entry.status === 304 && seen.status === 200 && revalidatedFor(entry, seen))) return false;
-  const captured = normalHeaders(entry.responseHeaders);
-  return Object.entries(normalHeaders(seen.headers)).every(([name, value]) => captured[name] === undefined || captured[name] === value);
-}
-
-// Slack between the tab's clock, which times the script's request, and capture's request start.
-const SEND_WINDOW_SLACK_MS = 1000;
-
-async function capturedText(ctx, entry) {
-  let result;
-  let failure;
-  try {
-    result = await ctx.executeTool("network.body", { id: entry.id });
-  } catch (error) {
-    failure = error;
-  }
-  // network.body falls back to Chrome's own copy when capture skipped the body.
-  if (typeof result?.body === "string") return result.base64Encoded ? Buffer.from(result.body, "base64").toString("utf8") : result.body;
-  const { reason, sizeBytes, limitBytes } = entry.bodyCapture || {};
-  if (reason === "per-body-cap") throw new Error(`it is ${sizeBytes} bytes, over the ${limitBytes}-byte per-body capture cap, and Chrome no longer has it`);
-  if (reason === "session-cap") throw new Error(`it is ${sizeBytes} bytes, more than is left of the tab's ${limitBytes}-byte capture budget, and Chrome no longer has it`);
-  throw new Error(failure?.message || `network.body returned no body for ${entry.id}`);
-}
-
-// The method a redirect gives the next request: 303 turns anything but HEAD into GET, 301 and 302
-// turn POST into GET, 307 and 308 keep it.
-function redirectedMethod(method, status) {
-  if (status === 303 && method !== "HEAD") return "GET";
-  return (status === 301 || status === 302) && method === "POST" ? "GET" : method;
-}
-
-// Whether capture shows `entry` as the end of the script's redirected request: Chrome sends every
-// hop under one request id, and capture keeps each redirect under its own id with its status, so
-// the hops must start at the script's URL and method and carry the method each redirect gives.
-function endsRedirectFrom(entry, fresh, sent) {
-  if (entry._requestId === undefined) return false;
-  const chain = fresh.filter((hop) => hop._requestId === entry._requestId);
-  if (chain.length < 2 || chain.at(-1) !== entry || chain[0].url !== sent.requestUrl) return false;
-  let method = sent.method;
-  for (const hop of chain) {
-    if (String(hop.method).toUpperCase() !== method) return false;
-    if (hop === entry) return true;
-    if (!hop.flags?.includes("redirect")) return false;
-    method = redirectedMethod(method, hop.status);
-  }
-  return false;
-}
-
-/**
- * Reads the body of a request a tab script is about to send from network capture, since the
- * script's output is capped. Call it before sending: it turns capture on and notes what is there.
- * `read(sent)` takes what the script saw ({ method, requestUrl, url, redirected, status, headers,
- * sentAt, doneAt }) and returns the body text. The captured request must be the only new one with
- * that URL and method, started while the script ran, that agrees on status and headers; when the
- * page sent a twin meanwhile, it fails rather than guess. A redirected response must end the
- * redirect chain capture recorded for the script's request, or it fails.
- */
-async function watchCapture(options) {
-  const ctx = context(options);
-  await markSeen(ctx);
-  return {
-    async read(sent) {
-      const { pathname } = new URL(sent.url);
-      const label = sent.redirected ? `${sent.method} ${new URL(sent.requestUrl).pathname}` : `${sent.method} ${pathname}`;
-      const deadline = ctx.now() + (options.timeoutMs ?? REPLAY_CAPTURE_TIMEOUT_MS);
-      let candidates = [];
-      let confirmed = [];
-      for (;;) {
-        // A redirect's earlier hops are under the request's own URL, so list them all.
-        const fresh = (await listEntries(ctx, sent.redirected ? undefined : pathname)).filter((entry) => !ctx.seen.has(entry.id) && entry.method !== "OPTIONS");
-        candidates = fresh.filter(
-          (entry) =>
-            entry.url === sent.url &&
-            !entry.flags?.includes("redirect") &&
-            (sent.redirected || String(entry.method).toUpperCase() === sent.method) &&
-            entry.ts >= sent.sentAt - SEND_WINDOW_SLACK_MS &&
-            entry.ts <= sent.doneAt + SEND_WINDOW_SLACK_MS,
-        );
-        confirmed = sent.redirected ? candidates.filter((entry) => endsRedirectFrom(entry, fresh, sent)) : candidates;
-        if (candidates.every((entry) => entry._loadingFinished === true)) {
-          const matches = confirmed.filter((entry) => !entry.flags?.includes("failed") && agreesWith(entry, sent));
-          if (matches.length === 1) {
-            try {
-              return await capturedText(ctx, matches[0]);
-            } catch (error) {
-              throw new Error(`got HTTP ${sent.status} from ${pathname} but can't read its body: ${error.message}`);
-            }
-          }
-          if (matches.length > 1) {
-            throw new Error(`${matches.length} captured requests match ${label} while the op ran, and nothing tells which one it sent: the page sent the same request itself`);
-          }
-        }
-        if (ctx.now() >= deadline) break;
-        await ctx.sleep(POLL_MS);
-      }
-      if (candidates.some((entry) => entry._loadingFinished !== true)) {
-        throw new Error(`${candidates.length} captured requests match ${label} while the op ran, and not all of them finished, so nothing tells which one it sent`);
-      }
-      if (sent.redirected && candidates.length > 0 && confirmed.length === 0) {
-        throw new Error(`${label} was redirected to ${pathname}, and capture can't show which captured request it ended in, so surf won't guess`);
-      }
-      if (confirmed.length > 0) {
-        throw new Error(`the captured response for ${label} disagrees with what the tab saw (HTTP ${sent.status}): capture has ${confirmed.map((entry) => `HTTP ${entry.status}`).join(", ")}`);
-      }
-      throw new Error(`the response for ${label} was not captured`);
-    },
-  };
-}
-
 async function recentApiPaths(ctx) {
   const paths = [];
   for (const entry of (await listEntries(ctx)).reverse()) {
@@ -354,38 +222,6 @@ async function waitForResponse(options) {
   return (await waitWith(context(options), options)).response;
 }
 
-// The origin of the page that sent a request: undefined when the capture has no tabUrl (older
-// Surf), "null" when that page had an opaque origin (about:blank, data:) or an unreadable URL.
-function senderOrigin(tabUrl) {
-  if (tabUrl === undefined || tabUrl === null || tabUrl === "") return undefined;
-  try {
-    return new URL(tabUrl).origin;
-  } catch {
-    return "null";
-  }
-}
-
-const OPAQUE_ORIGIN = "a page with an opaque origin (such as about:blank)";
-
-function replayRefusal(entry, url, sentFrom, tabOrigin) {
-  const place = (origin) => (origin === "null" ? OPAQUE_ORIGIN : origin);
-  let sent = `sent to ${url.origin}`;
-  if (sentFrom === url.origin) sent = `sent from ${sentFrom}`;
-  else if (sentFrom === "null") sent = `sent from ${OPAQUE_ORIGIN} to ${url.origin}`;
-  else if (sentFrom) sent = `sent from a page on ${sentFrom} to ${url.origin}`;
-  const goTo = sentFrom && sentFrom !== "null" ? sentFrom : url.origin;
-  return new Error(
-    `${entry.id} was ${sent}, but the tab is now on ${place(tabOrigin)}, so the browser would block it (CORS) or send it without its cookies. ` +
-      `Run \`surf go ${goTo}\` first, then replay it.`,
-  );
-}
-
-// Replaces every header value in a message with <redacted> (see redactValues).
-function headerRedactor(headers) {
-  const values = Object.values(headers).map(String);
-  return (message) => redactValues(message, values);
-}
-
 function replayHeaders(headers = {}) {
   return Object.fromEntries(
     Object.entries(headers).filter(([name]) => {
@@ -405,7 +241,7 @@ async function replayEntry(ctx, entry, { set, allowPost = false, origins = [] } 
   if (origins.length > 0 && !origins.includes(url.origin)) throw new Error(`replay origin is not allowed: ${url.origin}`);
   const headers = replayHeaders(entry.requestHeaders);
   // Header values (auth, CSRF) must never reach errors, events, or logs.
-  const redact = headerRedactor(headers);
+  const secrets = Object.values(headers).filter((value) => String(value).length >= 8);
   try {
     await markSeen(ctx, url.pathname);
     const init = { method, headers, ...(request.body !== undefined && !["GET", "HEAD"].includes(method) ? { body: request.body } : {}) };
@@ -414,26 +250,12 @@ async function replayEntry(ctx, entry, { set, allowPost = false, origins = [] } 
     const allowCredentials = Object.entries(entry.responseHeaders || {}).some(
       ([name, value]) => name.toLowerCase() === "access-control-allow-credentials" && String(value).trim().toLowerCase() === "true",
     );
-    // Only the request's own origin or the page that sent it can repeat it with the same cookies and
-    // CORS outcome. From any other page, or any opaque one, the script refuses before sending. A
-    // capture without tabUrl can't say which page sent it, so only an opaque tab is refused.
-    const sentFrom = senderOrigin(entry.tabUrl);
     // The script only reports status: its output is capped, so the body is read from network capture.
     const sent = await ctx.executeTool("javascript_tool", {
       code: `(async () => {
 const url = new URL(${JSON.stringify(request.url)});
-const sentFrom = ${JSON.stringify(sentFrom ?? null)};
-if (location.origin !== url.origin && (location.origin === "null" || (sentFrom && (sentFrom === "null" || location.origin !== sentFrom)))) {
-  return { tabOrigin: location.origin };
-}
 const credentials = url.origin === location.origin || ${allowCredentials} ? "include" : "omit";
-let response;
-try {
-  response = await fetch(url.href, { ...${JSON.stringify(init)}, credentials });
-} catch (error) {
-  if (url.origin === location.origin) throw error;
-  return { tabOrigin: location.origin, fetchError: String(error?.message || error) };
-}
+const response = await fetch(url.href, { ...${JSON.stringify(init)}, credentials });
 await response.arrayBuffer();
 return { status: response.status, url: response.url };
 })()`,
@@ -444,17 +266,15 @@ return { status: response.status, url: response.url };
     } catch {
       result = undefined;
     }
-    if (result?.fetchError !== undefined) {
-      throw new Error(`the browser refused the replay from ${result.tabOrigin} to ${url.origin} (CORS or network): ${result.fetchError}`);
-    }
-    if (typeof result?.tabOrigin === "string") throw replayRefusal(entry, url, sentFrom, result.tabOrigin);
     if (!Number.isInteger(result?.status)) throw new Error("replay script returned no status");
     const finalUrl = result.url || request.url;
     const captured = await findEntry(ctx, url.pathname, (candidate) => candidate.url === finalUrl, REPLAY_CAPTURE_TIMEOUT_MS);
     if (!captured) throw new Error(`the replayed response for ${url.pathname} was not captured`);
     return { status: result.status, url: finalUrl, ...(await readBody(ctx, captured)) };
   } catch (error) {
-    throw new Error(redact(error?.message || String(error)));
+    let message = error?.message || String(error);
+    for (const secret of secrets) message = message.split(secret).join("<redacted>");
+    throw new Error(message);
   }
 }
 
@@ -531,4 +351,4 @@ async function runApiHarvest({ spec, origins = [], onEvent = () => {}, ...option
   return records.records();
 }
 
-module.exports = { applySet, parseSetArgument, replay, runApiHarvest, urlMatcher, validateApiSpec, waitForResponse, watchCapture };
+module.exports = { applySet, parseSetArgument, replay, runApiHarvest, urlMatcher, validateApiSpec, waitForResponse };

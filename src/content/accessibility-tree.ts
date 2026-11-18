@@ -1587,11 +1587,6 @@ function writeTextField(field: HTMLInputElement | HTMLTextAreaElement, text: str
   return null;
 }
 
-// Why a select has no option for a value. Never echoes the value: a select may be filled with a secret.
-function noOptionError({ target, select, by, which = "the given value" }: { target: string; select: HTMLSelectElement; by: string; which?: string }): string {
-  return `${target} has no option matching ${which} (by ${by}, ${select.options.length} options), so nothing was selected.`;
-}
-
 function setFormValue(ref: string, value: string | boolean | number): { success: boolean; error?: string } {
   const { element, error } = resolveRef(ref);
   if (!element) {
@@ -1621,7 +1616,7 @@ function setFormValue(ref: string, value: string | boolean | number): { success:
       }
 
       if (!found) {
-        return { success: false, error: noOptionError({ target: ref, select, by: "value or text" }) };
+        return { success: false, error: `Option "${value}" not found in select element ${ref}` };
       }
 
       select.dispatchEvent(new Event("change", { bubbles: true }));
@@ -1990,7 +1985,7 @@ function capturePageSnapshot(): { snapshot: PageSnapshot; elements: Element[] } 
 // Ref identity uses the same name as `surf read` so stale-ref suggestions match.
 function registerPageRef(element: Element, role: string): string {
   const name = getName(element);
-  const ref = elementRefs.get(element)?.ref ?? getOrAssignRef(element, role, name);
+  const ref = getOrAssignRef(element, role, name);
   window.__piRefs = window.__piRefs || {};
   window.__piRefs[ref] = element;
   getElementMap()[ref] = { element: new WeakRef(element), role, name };
@@ -2519,6 +2514,23 @@ function handleContentMessage(
       }
       break;
     }
+    // `click --selector` clicks its match through a ref, so it scrolls and hit-tests like a ref click.
+    case "LOCATE_SELECTOR": {
+      try {
+        const { selector, index } = message;
+        const matches = document.querySelectorAll(selector);
+        if (matches.length === 0) {
+          sendResponse({ error: "No elements match selector" });
+        } else if (index >= matches.length) {
+          sendResponse({ error: `Index ${index} out of range (found ${matches.length} elements)` });
+        } else {
+          sendResponse({ ref: registerLocatedRef(matches[index]), count: matches.length });
+        }
+      } catch (err) {
+        sendResponse({ error: err instanceof Error ? err.message : String(err) });
+      }
+      break;
+    }
     case "GET_ELEMENT_STYLES": {
       try {
         const { selector } = message;
@@ -2604,12 +2616,12 @@ function handleContentMessage(
         }
         
         const matched: HTMLOptionElement[] = [];
-        const notFound: number[] = []; // 1-based positions, so the error names no value
+        const notFound: string[] = [];
         
         // For single-select, only use the first value
         const valuesToSelect = selectEl.multiple ? values : [values[0]];
         
-        for (const [position, val] of valuesToSelect.entries()) {
+        for (const val of valuesToSelect) {
           let found = false;
           
           for (const opt of selectEl.options) {
@@ -2631,13 +2643,12 @@ function handleContentMessage(
             }
           }
           
-          if (!found) notFound.push(position + 1);
+          if (!found) notFound.push(val);
         }
 
         // Select nothing unless every value matched, so a typo can't leave a half-changed dropdown.
         if (notFound.length > 0) {
-          const which = valuesToSelect.length === 1 ? "the given value" : `given value ${notFound.join(", ")} of ${valuesToSelect.length}`;
-          sendResponse({ error: noOptionError({ target: selector, select: selectEl, by: by || "value", which }) });
+          sendResponse({ error: `${selector} has no option matching ${notFound.map((v) => JSON.stringify(v)).join(", ")} (by ${by || "value"}), so nothing was selected.` });
           break;
         }
         if (selectEl.multiple) {
@@ -2933,7 +2944,7 @@ function handleContentMessage(
               el.value = option.value;
               el.dispatchEvent(new Event("change", { bubbles: true }));
             }
-            results.push(option ? { ref, success: true } : { ref, success: false, error: noOptionError({ target: ref, select: el, by: "value or text" }) });
+            results.push(option ? { ref, success: true } : { ref, success: false, error: `${ref} has no option with value or text ${JSON.stringify(String(value))}, so nothing was selected.` });
           } else if (el.isContentEditable) {
             el.focus();
             el.textContent = String(value);

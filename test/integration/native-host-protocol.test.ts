@@ -67,11 +67,13 @@ const { spawn } = require("node:child_process") as {
 const fs = require("node:fs") as {
   existsSync(targetPath: string): boolean;
   mkdtempSync(prefix: string): string;
+  mkdirSync(targetPath: string, options: { recursive: boolean }): void;
   statSync(targetPath: string): { gid: number; mode: number };
   rmSync(targetPath: string, options: { recursive: boolean; force: boolean }): void;
   readdirSync(targetPath: string): string[];
   writeFileSync(targetPath: string, content: string): void;
   readFileSync(targetPath: string, encoding: string): string;
+  chmodSync(targetPath: string, mode: number): void;
 };
 const os = require("node:os") as { tmpdir(): string };
 const path = require("node:path") as { join(...paths: string[]): string };
@@ -83,6 +85,7 @@ const { openClientTransport } = require("../../native/client-transport.cjs") as 
 const fileTransfer = require("../../native/file-transfer.cjs") as any;
 const { version: packageVersion } = require("../../package.json") as { version: string };
 const crypto = require("node:crypto") as any;
+const { runDoctor } = require("../../native/doctor.cjs") as any;
 
 const tempDirs: string[] = [];
 const children: ChildProcessLike[] = [];
@@ -152,17 +155,13 @@ async function cleanupChild(child: ChildProcessLike) {
   }
 }
 
-async function runCli(
-  args: string[],
-  socketPath: string,
-  env: Record<string, string> = {},
-): Promise<CliResult> {
+async function runCli(args: string[], socketPath: string): Promise<CliResult> {
   const cliPath = path.join(process.cwd(), "native", "cli.cjs");
 
   return await new Promise<CliResult>((resolve, reject) => {
     const child = spawn(process.execPath, [cliPath, ...args], {
       cwd: process.cwd(),
-      env: { ...process.env, SURF_SOCKET: socketPath, ...env },
+      env: { ...process.env, SURF_SOCKET: socketPath },
       stdio: ["ignore", "pipe", "pipe"],
     });
     children.push(child);
@@ -679,148 +678,6 @@ describe("native host protocol integration", () => {
     expect(host.stderr()).toBe("");
   });
 
-  it("files a tab command in its session's record and reads static responses when a record stops", async () => {
-    const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), "surf-host-records-"));
-    tempDirs.push(stateDir);
-    const records = require("../../native/playbook-records.cjs") as any;
-    const alpha = records.startRecord({
-      site: "a",
-      op: "read",
-      tabId: 5,
-      session: "alpha",
-      root: stateDir,
-    });
-    const loose = records.startRecord({
-      site: "b",
-      op: "read",
-      tabId: 1,
-      network: true,
-      root: stateDir,
-    });
-    const host = await startHostHarness({ SURF_STATE_DIR: stateDir });
-
-    // tab.new has no tab target; SURF_SESSION reaches the host as recordSession.
-    const tabNew = runCli(["tab.new", "https://example.test/next"], host.socketPath, {
-      SURF_SESSION: "alpha",
-    });
-    const newTab = await host.waitForMessage((message) => message.type === "NEW_TAB", "NEW_TAB");
-    host.send({ id: newTab.id, tabId: 7, url: "https://example.test/next" });
-    expect((await tabNew).code).toBe(0);
-    const filed = (recordId: string) =>
-      records.readEvents(recordId, stateDir).map((event: { command: string }) => event.command);
-    expect(filed(alpha.id)).toEqual(["tab.new"]);
-    expect(filed(loose.id)).toEqual([]);
-
-    const stop = runCli(["pb", "record", "stop"], host.socketPath);
-    const read = await host.waitForMessage(
-      (message) => message.type === "READ_NETWORK_REQUESTS",
-      "READ_NETWORK_REQUESTS",
-    );
-    expect(read).toMatchObject({ tabId: 1, full: true, includeStatic: true });
-    host.send({
-      id: read.id,
-      entries: [],
-      capture: { active: true, interruptions: [], dropped: 0 },
-    });
-    const stopCapture = await host.waitForMessage(
-      (message) => message.type === "STOP_NETWORK_CAPTURE",
-      "STOP_NETWORK_CAPTURE",
-    );
-    host.send({ id: stopCapture.id, success: true });
-    expect((await stop).code).toBe(0);
-  });
-
-  it("ranks an active record's requests live, then drafts the one chosen with --request-id", async () => {
-    const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), "surf-host-candidates-"));
-    tempDirs.push(stateDir);
-    const records = require("../../native/playbook-records.cjs") as any;
-    const record = records.startRecord({
-      site: "books",
-      op: "list",
-      tabId: 1,
-      network: true,
-      origin: "https://books.example",
-      root: stateDir,
-    });
-    const host = await startHostHarness({ SURF_STATE_DIR: stateDir });
-    const listing =
-      "<html><body><h1>All products</h1><p>Sharp Objects Tipping Velvet Soumission Starving Hearts Shakespeare Sonnets Olio Mesaerion</p></body></html>";
-    const entries = [
-      {
-        id: "r_page",
-        method: "GET",
-        status: 200,
-        type: "Document",
-        mimeType: "text/html",
-        url: "https://books.example/catalogue/page-2.html?ref=nav",
-        responseBody: listing,
-        bodyCapture: { mode: "text", complete: true, capturedBytes: listing.length },
-      },
-      {
-        id: "r_font",
-        method: "GET",
-        status: 200,
-        type: "Font",
-        mimeType: "font/woff2",
-        url: "https://books.example/f.woff2",
-      },
-    ];
-    const answerReads = async () => {
-      const read = await host.waitForMessage(
-        (message) => message.type === "READ_NETWORK_REQUESTS",
-        "READ_NETWORK_REQUESTS",
-      );
-      expect(read).toMatchObject({ tabId: 1, full: true, includeStatic: true });
-      host.send({ id: read.id, entries, capture: { active: true, interruptions: [], dropped: 0 } });
-      // The whole body's text: page.text would read only a listing's first <article>.
-      const page = await host.waitForMessage(
-        (message) => message.type === "GET_PAGE_HTML",
-        "GET_PAGE_HTML",
-      );
-      expect(page).toMatchObject({ selector: "body", stripScripts: true });
-      host.send({
-        id: page.id,
-        html: "<body><article><h3>Sharp Objects</h3></article><article><h3>Tipping Velvet Soumission Starving Hearts</h3></article><article><h3>Shakespeare Sonnets Olio Mesaerion</h3></article><p>All products</p></body>",
-      });
-    };
-
-    const ranking = runCli(["pb", "record", "candidates", "--limit", "5"], host.socketPath);
-    await answerReads();
-    const ranked = await ranking;
-    expect(ranked.stderr).toBe("");
-    expect(ranked.code).toBe(0);
-    const lines = ranked.stdout.split("\n");
-    expect(lines[0]).toBe(
-      `${record.id} (books list): 2 requests, best first, read live (still recording)`,
-    );
-    expect(lines[1]).toMatch(
-      /^1\. r_page {2}GET 200 Document text\/html {2}https:\/\/books\.example\/catalogue\/page-2\.html {2}\d+ B {2}score \d+$/,
-    );
-    expect(lines[2]).toBe("   HTML document, first-party, overlaps 100% of the page text");
-    expect(ranked.stdout).toMatch(/2\. r_font .*\(never picked\)/);
-
-    const stop = runCli(
-      ["pb", "record", "stop", "--draft", "--read", "--request-id", "r_page", "--json"],
-      host.socketPath,
-    );
-    await answerReads();
-    const stopCapture = await host.waitForMessage(
-      (message) => message.type === "STOP_NETWORK_CAPTURE",
-      "STOP_NETWORK_CAPTURE",
-    );
-    host.send({ id: stopCapture.id, success: true });
-    const stopped = await stop;
-    expect(stopped.stderr).toBe("");
-    expect(JSON.parse(stopped.stdout).draft.run[0]).toMatchObject({
-      using: "network",
-      request: {
-        method: "GET",
-        url: "https://books.example/catalogue/page-2.html",
-        query: { ref: "nav" },
-      },
-    });
-  });
-
   it("prints one stderr line, and leaves stdout alone, when the host version differs from the CLI", async () => {
     const host = await startHostHarness({ SURF_TEST_HOST_VERSION: "0.0.1" });
     const cliPromise = runCli(["tab.list"], host.socketPath);
@@ -839,6 +696,41 @@ describe("native host protocol integration", () => {
     expect(result.stderr).toBe(
       `surf: version mismatch (cli ${packageVersion}, host 0.0.1, extension ${packageVersion}). Run \`surf update\`.\n`,
     );
+  });
+
+  it("tells surf doctor whether the host finds ffmpeg with the PATH it was started with", async ({
+    skip,
+  }) => {
+    if (process.platform === "win32") {
+      skip();
+      return;
+    }
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "surf-host-ffmpeg-"));
+    tempDirs.push(tempDir);
+    const binDir = path.join(tempDir, "bin");
+    fs.mkdirSync(binDir, { recursive: true });
+    const ffmpegPath = path.join(binDir, "ffmpeg");
+    fs.writeFileSync(ffmpegPath, "#!/bin/sh\nexit 0\n");
+    fs.chmodSync(ffmpegPath, 0o755);
+    const hostFfmpegCheck = async (env: Record<string, string | undefined>) => {
+      const host = await startHostHarness({ SURF_FFMPEG: undefined, ...env });
+      const report = await runDoctor(
+        { browser: "chrome", socket: host.socketPath },
+        { homeDir: tempDir, env: {} },
+      );
+      return report.checks.find((check: any) => check.id === "host-ffmpeg");
+    };
+
+    const guiPath = path.join(tempDir, "empty");
+    const missing = await hostFfmpegCheck({ PATH: guiPath });
+    expect(missing.status).toBe("warn");
+    expect(missing.message).toContain(`on its PATH (${guiPath})`);
+
+    const found = await hostFfmpegCheck({ PATH: `${guiPath}:${binDir}` });
+    expect(found).toMatchObject({ status: "pass", message: expect.stringContaining(ffmpegPath) });
+
+    const pinned = await hostFfmpegCheck({ PATH: guiPath, SURF_FFMPEG: ffmpegPath });
+    expect(pinned).toMatchObject({ status: "pass", message: expect.stringContaining(ffmpegPath) });
   });
 
   it("routes page text, page state, and JavaScript through the selected frame until frame.main", async () => {

@@ -1,5 +1,4 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { captureTab } from "../fixtures/capture-tab";
 
 const fs = require("node:fs");
 const os = require("node:os");
@@ -43,18 +42,15 @@ describe("playbook resolution and strategies", () => {
     expect(resolved.provenance.scope).toBe("project");
     expect(resolved.description).toBe("project");
 
-    const executeTool = vi.fn(async (tool: string) => {
-      if (tool === "network") {
-        return { entries: [] };
-      }
-      return tool === "javascript_tool" ? { error: "CORS drift" } : { value: "fallback content" };
-    });
+    const executeTool = vi.fn(async (tool: string) =>
+      tool === "javascript_tool" ? { error: "CORS drift" } : { value: "fallback content" },
+    );
     const result = await runtime.runPlaybookOp({
       playbook: { id: "fixture", provenance: { scope: "test" } },
       op: {
         id: "read",
         effect: "read",
-        args: { label: {} },
+        args: {},
         run: [
           { using: "network", request: { method: "GET", url: "/api" } },
           {
@@ -281,60 +277,12 @@ describe("playbook resolution and strategies", () => {
     expect(calls.some((call) => call.tool === "wait.dom")).toBe(true);
   });
 
-  it("rejects inputs the op does not define before any strategy runs", async () => {
-    const op = {
-      id: "thread",
-      effect: "read",
-      args: { url: { required: true }, limit: { default: 10 } },
-      run: [{ using: "workflow", steps: [{ cmd: "page.text", args: {}, as: "text" }] }],
-    };
-    expect(runtime.resolveArgs(op, { url: "https://x.test" })).toEqual({
-      url: "https://x.test",
-      limit: 10,
-    });
-    expect(() =>
-      runtime.resolveArgs(op, { url: "https://x.test", lmit: 5 }, { playbookId: "x" }),
-    ).toThrow(
-      "Unknown input --lmit for x thread. Did you mean --limit? Its inputs: --url (required), --limit",
-    );
-    expect(() =>
-      runtime.resolveArgs(
-        { id: "read", effect: "read", run: [] },
-        { bogus: 1 },
-        { playbookId: "page" },
-      ),
-    ).toThrow("Unknown input --bogus for page read. It takes no inputs");
-    const executeTool = vi.fn();
-    await expect(
-      runtime.runPlaybookOp({
-        playbook: { id: "x", provenance: { scope: "test" } },
-        op,
-        args: { url: "https://x.test", zzz: true },
-        executeTool,
-      }),
-    ).rejects.toThrow("Unknown input --zzz for x thread. Its inputs: --url (required), --limit");
-    expect(executeTool).not.toHaveBeenCalled();
-  });
-
-  it("leaves surf's global flags out of the input check, and gives them to ops that declare them", () => {
-    const read = { id: "read", effect: "read", run: [] };
-    expect(
-      runtime.resolveArgs(
-        read,
-        { timeout: 30, "no-diff": true, "window-id": 5, settle: 500 },
-        { playbookId: "page" },
-      ),
-    ).toEqual({});
-    const ask = { id: "ask", effect: "read", args: { timeout: { default: 60 } }, run: [] };
-    expect(runtime.resolveArgs(ask, { timeout: 30, "no-diff": true })).toEqual({ timeout: 30 });
-    expect(runtime.resolveArgs(ask, {})).toEqual({ timeout: 60 });
-    expect(() =>
-      runtime.resolveArgs(read, { "no-diff": true, bogus: 1 }, { playbookId: "page" }),
-    ).toThrow("Unknown input --bogus for page read. It takes no inputs");
-  });
-
   it("rejects a page-context network request outside the declared origins", async () => {
-    const { fetchImpl, executeTool } = captureTab({ href: "https://current.test/page" });
+    const fetchImpl = vi.fn();
+    const executeTool = vi.fn(async (_tool: string, args: { code: string }) => {
+      const execute = new Function("location", "fetch", `return ${args.code}`);
+      return { value: await execute({ href: "https://current.test/page" }, fetchImpl) };
+    });
     await expect(
       runtime.runPlaybookOp({
         playbook: { id: "fixture", provenance: { scope: "test" } },
@@ -372,19 +320,17 @@ describe("playbook resolution and strategies", () => {
           },
         ],
       },
-      executeTool: captureTab({ reply: () => ({ body: JSON.stringify({ data: "value" }) }) })
-        .executeTool,
+      executeTool: async () => ({
+        output: JSON.stringify({ ok: true, status: 200, bodyJson: { data: "value" } }),
+      }),
     });
     expect(result.value).toBe("value");
   });
 
   it("injects server idempotency into write network requests", async () => {
-    const tab = captureTab({ reply: () => ({ body: JSON.stringify({ ok: true }) }) });
-    const executeTool = vi.fn(async (tool: string, args: { code: string }) => {
-      if (tool === "javascript_tool") {
-        expect(args.code).toContain('"Idempotency-Key":"attempt-one"');
-      }
-      return tab.executeTool(tool, args);
+    const executeTool = vi.fn(async (_tool: string, args: { code: string }) => {
+      expect(args.code).toContain('"Idempotency-Key":"attempt-one"');
+      return { output: JSON.stringify({ ok: true, status: 200, bodyJson: { ok: true } }) };
     });
     await runtime.runPlaybookOp({
       playbook: { id: "fixture", provenance: { scope: "test" } },
@@ -409,7 +355,7 @@ describe("playbook resolution and strategies", () => {
       attemptId: "attempt-one",
       executeTool,
     });
-    expect(executeTool.mock.calls.filter(([tool]) => tool === "javascript_tool")).toHaveLength(1);
+    expect(executeTool).toHaveBeenCalledOnce();
   });
 
   it("distinguishes pre-dispatch write failures from ambiguous dispatched failures", async () => {
@@ -440,10 +386,7 @@ describe("playbook resolution and strategies", () => {
           args: {},
           run: [{ using: "network", request: { method: "POST", url: "https://example.test/api" } }],
         },
-        executeTool: async (tool: string) => {
-          if (tool === "network") {
-            return { entries: [] };
-          }
+        executeTool: async () => {
           throw new Error("timeout");
         },
         beforeDispatch: async () => statuses.push("dispatched"),
