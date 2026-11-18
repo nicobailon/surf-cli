@@ -305,6 +305,53 @@ describe("UPLOAD_FILE through an upload control", () => {
     expect(methods).not.toContain("DOM.setFileInputFiles");
   });
 
+  it("uploads a file to a file input inside an open shadow root", async () => {
+    const handleMessage = await loadHandleMessage();
+    const chrome = (globalThis as any).chrome;
+    chrome.tabs.sendMessage.mockResolvedValue({
+      selector: '[data-pi-file-id="shadow-x"]',
+      isFileInput: true,
+      multiple: false,
+    });
+    chrome.debugger.sendCommand.mockImplementation(async (_target: any, method: string) => {
+      if (method === "DOM.getDocument") {
+        return { root: { nodeId: 1 } };
+      }
+      if (method === "DOM.querySelector") {
+        return { nodeId: 0 };
+      }
+      if (method === "Runtime.evaluate") {
+        return { result: { objectId: "doc-obj" } };
+      }
+      if (method === "Runtime.callFunctionOn") {
+        return { result: { type: "object", subtype: "node", objectId: "shadow-file-input" } };
+      }
+      return {};
+    });
+
+    await expect(
+      handleMessage({ type: "UPLOAD_FILE", tabId: 42, ref: "e12", files: ["/tmp/resume.pdf"] }, {}),
+    ).resolves.toEqual({ success: true, filesSet: 1 });
+    expect(chrome.debugger.sendCommand).toHaveBeenCalledWith(
+      { tabId: 42 },
+      "DOM.setFileInputFiles",
+      {
+        objectId: "shadow-file-input",
+        files: ["/tmp/resume.pdf"],
+      },
+    );
+    expect(chrome.debugger.sendCommand).toHaveBeenCalledWith(
+      { tabId: 42 },
+      "Runtime.releaseObject",
+      { objectId: "doc-obj" },
+    );
+    expect(chrome.debugger.sendCommand).toHaveBeenCalledWith(
+      { tabId: 42 },
+      "Runtime.releaseObject",
+      { objectId: "shadow-file-input" },
+    );
+  });
+
   it("fails after 10s when no chooser opens and still stops intercepting", async () => {
     vi.useFakeTimers();
     try {
