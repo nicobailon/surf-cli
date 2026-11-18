@@ -1103,14 +1103,64 @@ export class CDPController {
         nodeId: doc.root.nodeId,
         selector,
       });
-      if (!queryResult.nodeId) {
+      if (queryResult?.nodeId) {
+        await this.send(tabId, "DOM.setFileInputFiles", {
+          nodeId: queryResult.nodeId,
+          files,
+        });
+        return { success: true };
+      }
+
+      // DOM.querySelector does not pierce shadow roots; walk open shadow roots via Runtime.
+      const docObj = await this.send(tabId, "Runtime.evaluate", { expression: "document" });
+      const docObjectId = docObj?.result?.objectId;
+      let targetObjectId: string | undefined;
+      if (docObjectId) {
+        try {
+          const shadowMatch = await this.send(tabId, "Runtime.callFunctionOn", {
+            objectId: docObjectId,
+            functionDeclaration: `function (selector) {
+              const roots = [this];
+              for (let i = 0; i < roots.length; i++) {
+                const match = roots[i].querySelector(selector);
+                if (match) return match;
+                for (const el of roots[i].querySelectorAll("*")) {
+                  if (el.shadowRoot) roots.push(el.shadowRoot);
+                }
+              }
+              return null;
+            }`,
+            arguments: [{ value: selector }],
+          });
+          if (shadowMatch?.exceptionDetails) {
+            const errObjectId = shadowMatch.result?.objectId ?? shadowMatch.exceptionDetails.exception?.objectId;
+            if (errObjectId) {
+              try { await this.send(tabId, "Runtime.releaseObject", { objectId: errObjectId }); } catch {}
+            }
+            return {
+              success: false,
+              error: shadowMatch.exceptionDetails.exception?.description || shadowMatch.exceptionDetails.text || "Could not find element by selector",
+            };
+          }
+          if (shadowMatch?.result?.subtype !== "null" && shadowMatch?.result?.objectId) {
+            targetObjectId = shadowMatch.result.objectId;
+          }
+        } finally {
+          try { await this.send(tabId, "Runtime.releaseObject", { objectId: docObjectId }); } catch {}
+        }
+      }
+      if (!targetObjectId) {
         return { success: false, error: "Could not find element by selector" };
       }
-      await this.send(tabId, "DOM.setFileInputFiles", {
-        nodeId: queryResult.nodeId,
-        files,
-      });
-      return { success: true };
+      try {
+        await this.send(tabId, "DOM.setFileInputFiles", {
+          objectId: targetObjectId,
+          files,
+        });
+        return { success: true };
+      } finally {
+        try { await this.send(tabId, "Runtime.releaseObject", { objectId: targetObjectId }); } catch {}
+      }
     } catch (e) {
       return { success: false, error: e instanceof Error ? e.message : String(e) };
     }

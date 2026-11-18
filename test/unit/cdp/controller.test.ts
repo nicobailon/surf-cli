@@ -32,6 +32,31 @@ describe("describeDebuggerError", () => {
   });
 });
 
+function evaluateShadowLookup(
+  fakeDoc: unknown,
+  expectedMatch: unknown,
+  params?: Record<string, any>,
+) {
+  const fn = new Function("doc", "arg", `return (${params?.functionDeclaration}).call(doc, arg);`);
+  return fn(fakeDoc, params?.arguments?.[0]?.value) === expectedMatch
+    ? { result: { type: "object", subtype: "node", objectId: "shadow-input-obj" } }
+    : { result: { type: "object", subtype: "null", value: null } };
+}
+
+function createShadowSendCommandMock(fakeDoc: unknown, expectedMatch: unknown) {
+  const staticResponses: Record<string, unknown> = {
+    "DOM.getDocument": { root: { nodeId: 1 } },
+    "DOM.querySelector": { nodeId: 0 },
+    "Runtime.evaluate": { result: { objectId: "doc-obj" } },
+  };
+  return async (_target: unknown, method: string, params?: Record<string, any>) => {
+    if (method === "Runtime.callFunctionOn") {
+      return evaluateShadowLookup(fakeDoc, expectedMatch, params);
+    }
+    return staticResponses[method] ?? {};
+  };
+}
+
 describe("CDPController", () => {
   afterEach(() => {
     vi.useRealTimers();
@@ -1532,19 +1557,163 @@ describe("CDPController", () => {
           files: ["/path/to/file"],
         },
       );
+      expect(mockChrome.debugger.sendCommand).not.toHaveBeenCalledWith(
+        { tabId },
+        "Runtime.evaluate",
+        expect.anything(),
+      );
     });
 
-    it("returns error when element not found", async () => {
+    it("pierces open and nested shadow roots when DOM.querySelector misses and releases remote objects", async () => {
+      const selector = `[data-pi-file-id="__pi_file_99"]`;
+      const nestedInput = { id: "nested-shadow-file-input" };
+      const innerShadowRoot = {
+        querySelector: (sel: string) => (sel === selector ? nestedInput : null),
+        querySelectorAll: () => [],
+      };
+      const outerShadowRoot = {
+        querySelector: () => null,
+        querySelectorAll: () => [{ shadowRoot: innerShadowRoot }, { shadowRoot: null }],
+      };
+      const fakeDoc = {
+        querySelector: () => null,
+        querySelectorAll: () => [{ shadowRoot: outerShadowRoot }],
+      };
+
+      mockChrome.debugger.sendCommand.mockImplementation(
+        createShadowSendCommandMock(fakeDoc, nestedInput),
+      );
+
+      const result = await controller.setFileInputBySelector(tabId, selector, ["/path/to/file"]);
+
+      expect(result).toStrictEqual({ success: true });
+      const callFunctionCall = mockChrome.debugger.sendCommand.mock.calls.find(
+        (call) => call[1] === "Runtime.callFunctionOn",
+      );
+      expect(callFunctionCall?.[2]).toMatchObject({
+        objectId: "doc-obj",
+        arguments: [{ value: selector }],
+      });
+      expect(callFunctionCall?.[2].functionDeclaration).not.toContain("__pi_file_99");
+      expect(mockChrome.debugger.sendCommand).toHaveBeenCalledWith(
+        { tabId },
+        "DOM.setFileInputFiles",
+        {
+          objectId: "shadow-input-obj",
+          files: ["/path/to/file"],
+        },
+      );
+      expect(mockChrome.debugger.sendCommand).toHaveBeenCalledWith(
+        { tabId },
+        "Runtime.releaseObject",
+        { objectId: "doc-obj" },
+      );
+      expect(mockChrome.debugger.sendCommand).toHaveBeenCalledWith(
+        { tabId },
+        "Runtime.releaseObject",
+        { objectId: "shadow-input-obj" },
+      );
+    });
+
+    it("releases remote objects even when DOM.setFileInputFiles fails on a shadow match", async () => {
       mockChrome.debugger.sendCommand
         .mockResolvedValueOnce({}) // Page.enable
         .mockResolvedValueOnce({}) // DOM.enable
         .mockResolvedValueOnce({ root: { nodeId: 1 } }) // getDocument
-        .mockResolvedValueOnce({ nodeId: 0 }); // querySelector returns 0
+        .mockResolvedValueOnce({ nodeId: 0 }) // querySelector
+        .mockResolvedValueOnce({ result: { objectId: "doc-obj" } }) // Runtime.evaluate
+        .mockResolvedValueOnce({
+          result: { type: "object", subtype: "node", objectId: "shadow-input-obj" },
+        }) // Runtime.callFunctionOn
+        .mockResolvedValueOnce({}) // Runtime.releaseObject (doc-obj)
+        .mockRejectedValueOnce(new Error("Node is not a file input element")) // DOM.setFileInputFiles
+        .mockResolvedValueOnce({}); // Runtime.releaseObject (shadow-input-obj)
+
+      const result = await controller.setFileInputBySelector(tabId, "#shadow-div", ["/file"]);
+
+      expect(result).toStrictEqual({
+        success: false,
+        error: "Node is not a file input element",
+      });
+      expect(mockChrome.debugger.sendCommand).toHaveBeenCalledWith(
+        { tabId },
+        "Runtime.releaseObject",
+        { objectId: "doc-obj" },
+      );
+      expect(mockChrome.debugger.sendCommand).toHaveBeenCalledWith(
+        { tabId },
+        "Runtime.releaseObject",
+        { objectId: "shadow-input-obj" },
+      );
+    });
+
+    it("releases exception and document objects when Runtime.callFunctionOn reports exceptionDetails", async () => {
+      mockChrome.debugger.sendCommand
+        .mockResolvedValueOnce({}) // Page.enable
+        .mockResolvedValueOnce({}) // DOM.enable
+        .mockResolvedValueOnce({ root: { nodeId: 1 } }) // getDocument
+        .mockResolvedValueOnce({ nodeId: 0 }) // querySelector
+        .mockResolvedValueOnce({ result: { objectId: "doc-obj" } }) // Runtime.evaluate
+        .mockResolvedValueOnce({
+          result: { type: "object" },
+          exceptionDetails: {
+            text: "Uncaught DOMException",
+            exception: {
+              objectId: "err-obj",
+              description: "SyntaxError: Failed to execute 'querySelector' on 'Document'",
+            },
+          },
+        }) // Runtime.callFunctionOn
+        .mockResolvedValueOnce({}) // Runtime.releaseObject (err-obj)
+        .mockResolvedValueOnce({}); // Runtime.releaseObject (doc-obj)
+
+      const result = await controller.setFileInputBySelector(tabId, "[invalid", ["/file"]);
+
+      expect(result).toStrictEqual({
+        success: false,
+        error: "SyntaxError: Failed to execute 'querySelector' on 'Document'",
+      });
+      expect(mockChrome.debugger.sendCommand).toHaveBeenCalledWith(
+        { tabId },
+        "Runtime.releaseObject",
+        { objectId: "err-obj" },
+      );
+      expect(mockChrome.debugger.sendCommand).toHaveBeenCalledWith(
+        { tabId },
+        "Runtime.releaseObject",
+        { objectId: "doc-obj" },
+      );
+      expect(mockChrome.debugger.sendCommand).not.toHaveBeenCalledWith(
+        { tabId },
+        "DOM.setFileInputFiles",
+        expect.anything(),
+      );
+    });
+
+    it("returns error when element not found in document or open shadow roots", async () => {
+      mockChrome.debugger.sendCommand
+        .mockResolvedValueOnce({}) // Page.enable
+        .mockResolvedValueOnce({}) // DOM.enable
+        .mockResolvedValueOnce({ root: { nodeId: 1 } }) // getDocument
+        .mockResolvedValueOnce({ nodeId: 0 }) // querySelector returns 0
+        .mockResolvedValueOnce({ result: { objectId: "doc-obj" } }) // Runtime.evaluate
+        .mockResolvedValueOnce({ result: { type: "object", subtype: "null", value: null } }) // Runtime.callFunctionOn
+        .mockResolvedValueOnce({}); // Runtime.releaseObject (doc-obj)
 
       const result = await controller.setFileInputBySelector(tabId, "#missing", ["/file"]);
 
       expect(result.success).toBe(false);
       expect(result.error).toContain("Could not find element");
+      expect(mockChrome.debugger.sendCommand).toHaveBeenCalledWith(
+        { tabId },
+        "Runtime.releaseObject",
+        { objectId: "doc-obj" },
+      );
+      expect(mockChrome.debugger.sendCommand).not.toHaveBeenCalledWith(
+        { tabId },
+        "DOM.setFileInputFiles",
+        expect.anything(),
+      );
     });
   });
 });
