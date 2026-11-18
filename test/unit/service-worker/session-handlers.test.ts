@@ -304,6 +304,34 @@ describe("browser session handlers", () => {
     );
   });
 
+  it("ungroups a Surf session tab before closing it so Chrome keeps no saved group", async () => {
+    const handleMessage = await loadHandleMessage();
+    const chrome = (globalThis as any).chrome;
+    chrome.tabs.get.mockResolvedValue({ id: 42, groupId: 7 });
+    chrome.tabGroups.get.mockResolvedValue({ id: 7, title: "Surf: research" });
+
+    await handleMessage({ type: "SESSION_CLOSE_TARGET", tabId: 42 }, {});
+    await handleMessage({ type: "CLOSE_TAB", tabId: 42 }, {});
+
+    expect(chrome.tabs.ungroup).toHaveBeenCalledTimes(2);
+    expect(chrome.tabs.ungroup).toHaveBeenCalledWith(42);
+    expect(chrome.tabs.ungroup.mock.invocationCallOrder[0]).toBeLessThan(
+      chrome.tabs.remove.mock.invocationCallOrder[0],
+    );
+  });
+
+  it("leaves a user's own tab group alone when closing a tab", async () => {
+    const handleMessage = await loadHandleMessage();
+    const chrome = (globalThis as any).chrome;
+    chrome.tabs.get.mockResolvedValue({ id: 42, groupId: 8 });
+    chrome.tabGroups.get.mockResolvedValue({ id: 8, title: "Work" });
+
+    await handleMessage({ type: "CLOSE_TAB", tabId: 42 }, {});
+
+    expect(chrome.tabs.ungroup).not.toHaveBeenCalled();
+    expect(chrome.tabs.remove).toHaveBeenCalledWith([42]);
+  });
+
   it("treats closing an already-gone target as successful cleanup", async () => {
     const handleMessage = await loadHandleMessage();
     const chrome = (globalThis as any).chrome;
