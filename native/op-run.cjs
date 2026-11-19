@@ -94,7 +94,14 @@ function assertSite(url, origins) {
 async function evaluate(context, code) {
   const response = await context.executeTool("javascript_tool", { code, maxOutput: BODY_LIMIT }, { signal: context.signal });
   if (response?.error) throw new Error(typeof response.error === "string" ? response.error : JSON.stringify(response.error));
-  return response?.output !== undefined ? JSON.parse(response.output) : (response?.value ?? response);
+  if (response?.output === undefined) return response?.value ?? response;
+  try {
+    return JSON.parse(response.output);
+  } catch (error) {
+    // An extension older than this surf still cuts every result at 50,000 characters.
+    if (response.output.length === 50000) throw new Error("the tab's result stopped at 50,000 characters: reload the Surf extension so it takes this surf's limit");
+    throw error;
+  }
 }
 
 async function openPage(context, url, steps) {
@@ -110,27 +117,35 @@ async function openPage(context, url, steps) {
   if (result.status !== "completed") throw new Error(result.error || "page steps failed");
 }
 
-// One page's response: { status?, body, contentType, url }.
-async function readStep(via, context, { args, url, steps }) {
+// One page: what it sends (`sent`, to spot a page that repeats the last) and `read`, which sends it
+// and gives { status?, body, contentType, url }.
+function preparePage(via, context, { args, url, steps }) {
   const { op, env, origins } = context;
   if (via === "tab") {
     const request = renderRequest(url === undefined ? op.request : { ...op.request, url }, { args, env });
     assertSite(request.url, origins);
-    await context.markDispatched();
-    let response = await evaluate(context, requestScript(request));
-    if (response?.elsewhere) {
-      await openPage(context, `${new URL(request.url).origin}/`, []);
-      response = await evaluate(context, requestScript(request));
-    }
-    if (response?.elsewhere) throw new Error(`the tab stayed on ${response.elsewhere}`);
-    return response;
+    const read = async () => {
+      await context.markDispatched();
+      let response = await evaluate(context, requestScript(request));
+      if (response?.elsewhere) {
+        await openPage(context, `${new URL(request.url).origin}/`, []);
+        response = await evaluate(context, requestScript(request));
+      }
+      if (response?.elsewhere) throw new Error(`the tab stayed on ${response.elsewhere}`);
+      return response;
+    };
+    return { sent: JSON.stringify(request), read };
   }
   const target = url ?? renderUrl(op.open, { args, env });
   assertSite(target, origins);
-  await context.markDispatched();
-  await openPage(context, target, renderTemplate(steps, { args, env }));
-  const page = await evaluate(context, PAGE_SCRIPT);
-  return { body: page.html, contentType: "text/html", url: page.url };
+  const rendered = renderTemplate(steps, { args, env });
+  const read = async () => {
+    await context.markDispatched();
+    await openPage(context, target, rendered);
+    const page = await evaluate(context, PAGE_SCRIPT);
+    return { body: page.html, contentType: "text/html", url: page.url };
+  };
+  return { sent: JSON.stringify([target, rendered]), read };
 }
 
 function checkExpect(value, expect = {}, status) {
@@ -152,30 +167,48 @@ function nextPage({ into, next }, response, args) {
   return into ? { args: { ...args, [into]: value } } : { url: new URL(value, response.url).href };
 }
 
+// { value, note? }: the records of each page, until --pages, an empty or failed page, no next page,
+// or a next page that would send the same request again.
 async function readPages(via, context) {
   const { op } = context;
   let cursor = { args: context.args, url: context.url, steps: op.steps || [] };
+  let step = preparePage(via, context, cursor);
   const records = [];
   for (let page = 1; ; page++) {
-    const response = await readStep(via, context, cursor);
-    if (response.status >= 400) throw new Error(`status ${response.status}`);
+    const response = await step.read();
+    if (response.status >= 400) {
+      if (page === 1) throw new Error(`status ${response.status}`);
+      return { value: records, note: `stopped at page ${page}: status ${response.status}` };
+    }
     const value = readResponse(response, op.extract);
     if (page === 1) checkExpect(value, op.expect, response.status);
-    if (!Array.isArray(value)) return value;
+    if (!Array.isArray(value)) return { value };
     records.push(...value);
-    if (page >= context.pages || !op.page || value.length === 0) return records;
+    if (page >= context.pages || !op.page || value.length === 0) return { value: records };
     const next = nextPage(op.page, response, cursor.args);
-    if (!next) return records;
-    if (next.url) assertSite(next.url, context.origins);
+    if (!next) return { value: records };
     cursor = next.url ? { ...cursor, url: next.url, steps: [] } : { ...cursor, args: next.args };
+    const following = preparePage(via, context, cursor);
+    if (following.sent === step.sent) return { value: records, note: `stopped after page ${page}: page ${page + 1} would send the same request` };
+    step = following;
     await context.sleep(PAGE_DELAY_MS);
   }
+}
+
+// The events of an op's own steps (a navigate to its open URL) go to the activity journal, so the
+// env values the op fills in are put back as {{env.NAME}}.
+function hideEnv(op, env, onEvent) {
+  const values = [...JSON.stringify(op).matchAll(/\{\{env\.([a-zA-Z0-9._-]+)\}\}/g)]
+    .flatMap(([, name]) => (typeof env[name] === "string" && env[name] ? [env[name], encodeURIComponent(env[name])].map((value) => [name, JSON.stringify(value).slice(1, -1)]) : []));
+  if (values.length === 0) return onEvent;
+  return (event) => onEvent(JSON.parse(values.reduce((text, [name, value]) => text.replaceAll(value, `{{env.${name}}}`), JSON.stringify(event))));
 }
 
 async function runOp({ playbook, op, args, url, pages = 1, env = {}, executeTool, signal, sleep = async () => {}, onEvent = () => {}, beforeDispatch = async () => {}, afterDispatch = async () => {} }) {
   if (op.chain) throw new Error(`op ${op.id} is a chain, and chains don't run yet`);
   const origins = siteOrigins(op);
   if (url !== undefined) assertSite(url, origins);
+  onEvent = hideEnv(op, env, onEvent);
   const write = op.effect === "write";
   const vias = [...(op.request ? ["tab"] : []), ...(op.open ? ["page"] : [])].slice(0, write ? 1 : 2);
   const attempts = [];
@@ -189,10 +222,10 @@ async function runOp({ playbook, op, args, url, pages = 1, env = {}, executeTool
     const event = { playbook: playbook.id, op: op.id, using: via };
     onEvent({ type: "strategy.started", ...event, startedAt: new Date().toISOString() });
     try {
-      const value = await readPages(via, { op, args, url, pages: write ? 1 : pages, env, executeTool, signal, sleep, onEvent, origins, markDispatched });
+      const { value, note } = await readPages(via, { op, args, url, pages: write ? 1 : pages, env, executeTool, signal, sleep, onEvent, origins, markDispatched });
       if (write) await afterDispatch({ status: "verified", via });
       onEvent({ type: "strategy.completed", ...event, endedAt: new Date().toISOString() });
-      return { status: "completed", playbook: playbook.id, op: op.id, via, value, provenance: playbook.provenance, attempts };
+      return { status: "completed", playbook: playbook.id, op: op.id, via, value, ...(note ? { note } : {}), provenance: playbook.provenance, attempts };
     } catch (error) {
       const message = error?.message || String(error);
       attempts.push({ via, error: message });

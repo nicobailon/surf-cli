@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 
+const { spawnSync } = require("node:child_process");
 const fs = require("node:fs");
+const os = require("node:os");
 const path = require("node:path");
 
 const { readNext, readResponse, validateExtract } = require("../../native/op-extract.cjs");
@@ -71,6 +73,15 @@ describe("HTML extract", () => {
       heading: "All products | Books to Scrape - Sandbox",
       pager: "Page 1 of 50",
     });
+  });
+
+  it("reads an attribute value that holds =", () => {
+    const page = {
+      body: '<a href="/x?a=b">one</a><a href="/y">two</a>',
+      contentType: "text/html",
+      url: "https://a.test/",
+    };
+    expect(readResponse(page, { records: 'a[href="/x?a=b"]' })).toEqual(["one"]);
   });
 
   it("refuses a selector outside the subset and names the subset", () => {
@@ -156,6 +167,42 @@ describe("embedded page data", () => {
     ).toEqual({ name: "Lamp", price: "12" });
     expect(() => readResponse(page, { in: "ld+json:Recipe" })).toThrow(/no JSON-LD Recipe/);
     expect(() => readResponse(page, { in: "js:state" })).toThrow(/no inline script assigns state/);
+  });
+});
+
+describe("without htmlparser2 (Node before 20.19 / 22.12)", () => {
+  // Fails loading htmlparser2 the way an older Node's require() of an ES module does.
+  const hook = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "surf-no-esm-")), "hook.cjs");
+  fs.writeFileSync(
+    hook,
+    `const Module = require("node:module");
+const resolve = Module._resolveFilename;
+Module._resolveFilename = function (request, ...rest) {
+  if (request === "htmlparser2") {
+    const error = new Error("require() of ES Module htmlparser2 not supported");
+    error.code = "ERR_REQUIRE_ESM";
+    throw error;
+  }
+  return resolve.call(this, request, ...rest);
+};`,
+  );
+  const node = (...args: string[]) =>
+    spawnSync(process.execPath, ["-r", hook, ...args], { encoding: "utf8" });
+
+  it("loads the CLI, and fails only an HTML read, naming the Node it needs", () => {
+    const help = node("native/cli.cjs", "use", "--help");
+    expect(help.stderr).toBe("");
+    expect(help.status).toBe(0);
+    const read = node(
+      "-e",
+      `const x = require("./native/op-extract.cjs");
+console.log(JSON.stringify(x.readResponse({ body: '{"a":1}', contentType: "application/json" }, { fields: { a: "a" } })));
+try { x.readResponse({ body: "<p>hi</p>", contentType: "text/html" }); } catch (error) { console.log(error.message); }`,
+    );
+    expect(read.stdout).toContain('{"a":1}');
+    expect(read.stdout).toMatch(
+      /reading HTML needs Node 20\.19 or 22\.12 or later \(this is Node v/,
+    );
   });
 });
 

@@ -86,6 +86,8 @@ function classifyTool(tool, args = {}) {
       : { scope: "browser-write", targetUse: "default-tab" };
   }
   if (HOST_TOOLS.has(tool)) return { scope: "host", targetUse: "host" };
+  // A dry run only renders the op's request, so it needs no tab.
+  if (tool === "playbook.run" && args.dryRun === true) return { scope: "host", targetUse: "host" };
   if (BROWSER_READ_TOOLS.has(tool)) return { scope: "browser-read", targetUse: "browser" };
   if (BROWSER_WRITE_TARGETED_TOOLS.has(tool)) {
     return { scope: "browser-write", targetUse: "default-tab" };

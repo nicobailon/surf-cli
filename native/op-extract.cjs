@@ -2,8 +2,7 @@
 // path, HTML by selector, and JSON a page embeds (`in`) by path. Embedded sources come from the
 // parked embedded-page-data branch: a script selector, `ld+json:<Type>`, or `js:<name>`.
 
-const { DomUtils } = require("htmlparser2");
-const { parseDocument, parseField, parseSelector, readField, readHtml, selectAll } = require("./html-read.cjs");
+const { parseDocument, parseField, parseSelector, rawText, readField, readHtml, selectAll } = require("./html-read.cjs");
 const { getPath, readJson } = require("./records.cjs");
 
 const IN_LD = /^ld\+json:[A-Za-z][\w-]*$/;
@@ -89,7 +88,7 @@ function ldNodes(value, found = []) {
 
 /** The JSON a page embeds where `source` says. The JSON is parsed, never run. */
 function embedded(doc, source) {
-  const scripts = (selector) => selectAll(doc, selector).map((el) => ({ el, text: DomUtils.textContent(el) }));
+  const scripts = (selector) => selectAll(doc, selector).map((el) => ({ el, text: rawText(el) }));
   if (source.startsWith("js:")) {
     const name = source.slice(3);
     for (const { el, text } of scripts("script")) {

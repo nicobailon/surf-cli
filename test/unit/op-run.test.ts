@@ -260,6 +260,76 @@ describe("runOp", () => {
   });
 });
 
+describe("paging ends", () => {
+  it("keeps the pages read when a later page answers 404", async () => {
+    const tab = fakeTab((url) =>
+      url.endsWith("page-4.html") ? { status: 404 } : { body: fixture("books-page-1.html") },
+    );
+    const result = await run(listBooks, tab, { pages: 6 });
+    expect(result).toMatchObject({ status: "completed", via: "tab" });
+    expect(result.value).toHaveLength(9);
+    expect(tab.requested()).toHaveLength(4);
+  });
+
+  it("stops with a note when the next page is the same request", async () => {
+    const tab = fakeTab(() => ({ body: fixture("books-page-1.html") }));
+    const pinned = await run(listBooks, tab, {
+      pages: 3,
+      url: "https://books.toscrape.com/catalogue/page-1.html",
+    });
+    expect(pinned.value).toHaveLength(3);
+    expect(tab.requested()).toHaveLength(1);
+    expect(pinned.note).toBe("stopped after page 1: page 2 would send the same request");
+    const self = fixture("quotes-page-1.html").replace('href="/page/2/"', 'href="/"');
+    const quotes = fakeTab(() => ({ body: self }));
+    const result = await run(
+      {
+        id: "quotes",
+        request: { url: "https://quotes.toscrape.com/" },
+        extract: { records: "div.quote", fields: { text: "span.text" } },
+        page: { next: "li.next a@href" },
+      },
+      quotes,
+      { pages: 4 },
+    );
+    expect(result.value).toHaveLength(10);
+    expect(quotes.requested()).toEqual(["https://quotes.toscrape.com/"]);
+    expect(result.note).toMatch(/same request/);
+  });
+});
+
+describe("tab results", () => {
+  it("says to reload the extension when a result stops at 50,000 characters", async () => {
+    const executeTool = async (tool: string) =>
+      tool === "javascript_tool" ? { output: `"${"x".repeat(49_999)}` } : { success: true };
+    await expect(
+      runOp({ playbook, op: validateOp(listBooks, {}), args: { page: 1 }, executeTool }),
+    ).rejects.toThrow(/stopped at 50,000 characters.*reload the Surf extension/);
+  });
+
+  it("keeps env values out of the events of the page it opens", async () => {
+    const events: unknown[] = [];
+    const tab = fakeTab(() => ({}), {
+      url: "https://books.toscrape.com/",
+      html: fixture("books-page-1.html"),
+    });
+    await run(
+      {
+        id: "keyed",
+        open: "https://books.toscrape.com/?key={{env.SHOP_KEY}}",
+        extract: { records: "article.product_pod", fields: { title: "h3 a@title" } },
+      },
+      tab,
+      { env: { SHOP_KEY: "s3cr3t-value" }, onEvent: (event: unknown) => events.push(event) },
+    );
+    expect(tab.calls[0]?.args).toEqual({ url: "https://books.toscrape.com/?key=s3cr3t-value" });
+    const journaled = JSON.stringify(events);
+    expect(journaled).toContain("tool.started");
+    expect(journaled).not.toContain("s3cr3t-value");
+    expect(journaled).toContain("{{env.SHOP_KEY}}");
+  });
+});
+
 describe("dry run", () => {
   it("renders the request with env names kept, and sends nothing", () => {
     const op = validateOp(

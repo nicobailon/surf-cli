@@ -591,13 +591,18 @@ describe("CLI/native-host/fake-extension E2E contract", () => {
       javascript: (code) => {
         codes.push(code);
         const url = code.match(/https:\/\/books\.toscrape\.com\/[^"]*/)?.[0];
+        if (url?.endsWith("page-50.html")) {
+          return { status: 404, ok: false, url, body: "" };
+        }
         return { status: 200, ok: true, url, contentType: "text/html", body: html };
       },
     });
     const env = { SURF_E2E_TOKEN: "tok-123" };
     const sent = () =>
       host.messages.filter((message) =>
-        ["EXECUTE_JAVASCRIPT", "EXECUTE_NAVIGATE"].includes(String(message.type)),
+        ["EXECUTE_JAVASCRIPT", "EXECUTE_NAVIGATE", "TARGET_RESOLVE", "TARGET_INSPECT"].includes(
+          String(message.type),
+        ),
       ).length;
 
     try {
@@ -620,6 +625,15 @@ describe("CLI/native-host/fake-extension E2E contract", () => {
       });
       expect(codes.map((code) => code.match(/page-\d+/)?.[0])).toEqual(["page-2", "page-3"]);
       expect(codes[0]).toContain("tok-123");
+
+      const last = await runCli(
+        socketPath,
+        ["use", "books", "list_books", "--page", "49", "--pages", "3", "--json"],
+        project,
+        env,
+      );
+      expect(last.code).toBe(0);
+      expect(JSON.parse(last.stdout).value).toHaveLength(3);
 
       const old = await runCli(socketPath, ["use", "books", "old_read", "--json"], project);
       expect(old.code).toBe(0);
