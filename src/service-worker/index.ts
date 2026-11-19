@@ -824,6 +824,12 @@ chrome.webNavigation.onCompleted.addListener((details) => {
   }
 });
 
+// A detach can leave the tab on a page Chrome won't let the debugger attach to (chrome://), so the
+// resume before the next command fails. Try again once the tab commits a web page.
+chrome.webNavigation.onCommitted.addListener((details) => {
+  if (details.frameId === 0 && /^https?:/.test(details.url)) void cdp.resumeNetworkCapture(details.tabId);
+});
+
 chrome.webNavigation.onErrorOccurred.addListener((details) => {
   if (details.frameId === 0) {
     const resolver = navigationResolvers.get(details.tabId);
@@ -3110,7 +3116,7 @@ export async function handleMessage(
 
     case "START_NETWORK_CAPTURE": {
       if (!tabId) throw new Error("No tabId provided");
-      cdp.clearNetworkRequests(tabId);
+      cdp.clearNetworkRequests(tabId, { restart: true });
       await cdp.enableNetworkTracking(tabId, {
         bodyMode: message.bodyMode || "text",
         perBodyBytes: message.perBodyBytes,
@@ -3222,6 +3228,8 @@ export async function handleMessage(
 
     case "READ_NETWORK_REQUESTS": {
       if (!tabId) throw new Error("No tabId provided");
+      // Taken before reading turns capture on, so a stopped capture shows as stopped.
+      const capture = cdp.getNetworkCaptureStatus(tabId);
 
       try {
         if (message.bodyMode !== undefined || message.perBodyBytes !== undefined || message.totalBodyBytes !== undefined) {
@@ -3255,6 +3263,7 @@ export async function handleMessage(
         const limit = message.limit || 100;
         return {
           entries: entries.slice(0, limit),
+          capture,
           format: message.format,
           verbose: message.verbose
         };
@@ -3282,6 +3291,7 @@ export async function handleMessage(
 
       return {
         requests,
+        capture,
         format: message.format,
         verbose: message.verbose
       };
@@ -4714,6 +4724,8 @@ initNativeMessaging(async (msg) => {
   }
 
   if (tabId && msg.frameId !== undefined) await validateRequestedFrame(tabId, msg.frameId);
+  // A dialog blocks attaching, so dialog commands skip this.
+  if (tabId && !isDialogCommand) await cdp.resumeNetworkCapture(tabId);
   const handle = () => handleMessage({ ...msg, tabId }, {} as chrome.runtime.MessageSender);
   const runAction = tabId && !isDialogCommand
     ? () => returnOnNativeDialog(tabId, msg.watchDialogs === true, handle)

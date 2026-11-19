@@ -57,6 +57,10 @@ type ChromeMock = {
       addListener: ReturnType<typeof vi.fn>;
       removeListener: ReturnType<typeof vi.fn>;
     };
+    onCommitted: {
+      addListener: ReturnType<typeof vi.fn>;
+      removeListener: ReturnType<typeof vi.fn>;
+    };
   };
   runtime: {
     sendMessage: ReturnType<typeof vi.fn>;
@@ -171,6 +175,10 @@ export function createChromeMock(): ChromeMock {
         removeListener: vi.fn(),
       },
       onErrorOccurred: {
+        addListener: vi.fn(),
+        removeListener: vi.fn(),
+      },
+      onCommitted: {
         addListener: vi.fn(),
         removeListener: vi.fn(),
       },

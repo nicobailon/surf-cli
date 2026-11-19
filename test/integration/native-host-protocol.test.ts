@@ -155,13 +155,17 @@ async function cleanupChild(child: ChildProcessLike) {
   }
 }
 
-async function runCli(args: string[], socketPath: string): Promise<CliResult> {
+async function runCli(
+  args: string[],
+  socketPath: string,
+  env: Record<string, string> = {},
+): Promise<CliResult> {
   const cliPath = path.join(process.cwd(), "native", "cli.cjs");
 
   return await new Promise<CliResult>((resolve, reject) => {
     const child = spawn(process.execPath, [cliPath, ...args], {
       cwd: process.cwd(),
-      env: { ...process.env, SURF_SOCKET: socketPath },
+      env: { ...process.env, SURF_SOCKET: socketPath, ...env },
       stdio: ["ignore", "pipe", "pipe"],
     });
     children.push(child);
@@ -676,6 +680,203 @@ describe("native host protocol integration", () => {
     expect(result.stderr).toBe("");
     expect(result.stdout).toBe("123\tExample\thttps://example.test/\n");
     expect(host.stderr()).toBe("");
+  });
+
+  describe("playbook records", () => {
+    const records = require("../../native/playbook-records.cjs") as any;
+    const recordState = () => {
+      const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), "surf-host-records-"));
+      tempDirs.push(stateDir);
+      return stateDir;
+    };
+    // Answers the next extension message of `type`, and returns it.
+    const answer = async (host: HostHarness, type: string, reply: NativeMessage = {}) => {
+      const message = await host.waitForMessage((item) => item.type === type, type);
+      host.send({ id: message.id, ...reply });
+      return message;
+    };
+    // The one record under the state dir.
+    const onlyRecord = (stateDir: string) => {
+      const [id, ...more] = fs
+        .readdirSync(records.recordsRoot(stateDir))
+        .filter((name) => name.startsWith("rec-"));
+      if (more.length > 0) {
+        throw new Error(`expected one record, found ${more.length + 1}`);
+      }
+      return records.readRecord(id, stateDir);
+    };
+    const filed = (recordId: string, stateDir: string) =>
+      records
+        .readEvents(recordId, stateDir)
+        .filter((event: { type: string }) => event.type === "tool.completed")
+        .map((event: { command: string }) => event.command);
+
+    it("pb record start, a navigation and stop save the requests the tab captured", async () => {
+      const stateDir = recordState();
+      const host = await startHostHarness({ SURF_STATE_DIR: stateDir });
+      const start = runCli(
+        ["pb", "record", "start", "books", "--op", "list_books", "--network"],
+        host.socketPath,
+      );
+      await answer(host, "GET_PLAYBOOK_RECORD_CONTEXT", { origin: "https://books.toscrape.com" });
+      await answer(host, "START_NETWORK_CAPTURE", { success: true });
+      expect((await start).code).toBe(0);
+      const record = onlyRecord(stateDir);
+
+      const page = "https://books.toscrape.com/catalogue/page-2.html";
+      const go = runCli(["go", page, "--no-diff"], host.socketPath);
+      await answer(host, "EXECUTE_NAVIGATE", { success: true, url: page });
+      expect((await go).code).toBe(0);
+
+      const stop = runCli(["pb", "record", "stop"], host.socketPath);
+      const read = await host.waitForMessage(
+        (message) => message.type === "READ_NETWORK_REQUESTS",
+        "READ_NETWORK_REQUESTS",
+      );
+      expect(read).toMatchObject({ tabId: record.tabId, full: true });
+      const started = Date.parse(record.startedAt);
+      host.send({
+        id: read.id,
+        entries: [
+          // A request from before the record started, stamped in epoch ms: left out.
+          {
+            id: "r_1",
+            ts: started - 60_000,
+            method: "GET",
+            status: 200,
+            url: "https://books.toscrape.com/",
+          },
+          { id: "r_2", ts: started + 10, method: "GET", status: 200, type: "Document", url: page },
+          // An extension up to v2.26.0 stamped `ts` with Chrome's monotonic clock: kept.
+          {
+            id: "r_3",
+            ts: 1_160_000_500,
+            method: "GET",
+            status: 200,
+            type: "Image",
+            url: `${page}.png`,
+          },
+        ],
+        capture: { active: true, interruptions: [], dropped: 0 },
+      });
+      await answer(host, "STOP_NETWORK_CAPTURE", { success: true });
+      const result = await stop;
+      expect(result.code).toBe(0);
+
+      const trace = JSON.parse(
+        fs.readFileSync(
+          path.join(records.recordsRoot(stateDir), record.id, "network", "trace.json"),
+          "utf8",
+        ),
+      );
+      expect(trace.entries.map((entry: { id: string }) => entry.id)).toEqual(["r_2", "r_3"]);
+      expect(records.readRecord(record.id, stateDir)).toMatchObject({
+        status: "stopped",
+        trace: { count: 2 },
+      });
+      expect(filed(record.id, stateDir)).toEqual(["navigate"]);
+    });
+
+    it("stops a record started without a session from another tab after its own tab closed", async () => {
+      const stateDir = recordState();
+      const host = await startHostHarness({ SURF_STATE_DIR: stateDir });
+      const start = runCli(
+        ["pb", "record", "start", "a", "--op", "read", "--network"],
+        host.socketPath,
+      );
+      await answer(host, "GET_PLAYBOOK_RECORD_CONTEXT", { origin: "https://example.test" });
+      await answer(host, "START_NETWORK_CAPTURE", { success: true });
+      expect((await start).code).toBe(0);
+      const record = onlyRecord(stateDir);
+
+      const tabNew = runCli(["tab.new", "https://example.test/b"], host.socketPath);
+      await answer(host, "NEW_TAB", { tabId: 9, url: "https://example.test/b" });
+      expect((await tabNew).code).toBe(0);
+      const go = runCli(
+        ["go", "https://example.test/c", "--no-diff", "--tab-id", "9"],
+        host.socketPath,
+      );
+      await answer(host, "EXECUTE_NAVIGATE", { success: true });
+      expect((await go).code).toBe(0);
+
+      const stop = runCli(["pb", "record", "stop", "--tab-id", "9"], host.socketPath);
+      // The record's own tab is gone, so its requests can't be read.
+      await answer(host, "READ_NETWORK_REQUESTS", {
+        error: `Tab ${record.tabId} no longer exists`,
+      });
+      await answer(host, "STOP_NETWORK_CAPTURE", { error: `Tab ${record.tabId} no longer exists` });
+      const result = await stop;
+      expect(result.code).toBe(0);
+      expect(JSON.parse(result.stdout).warnings).toEqual([
+        `the network trace could not be read: Tab ${record.tabId} no longer exists`,
+      ]);
+      expect(onlyRecord(stateDir).status).toBe("stopped");
+      expect(filed(record.id, stateDir)).toEqual(["tab.new", "navigate"]);
+    });
+
+    it("keeps another session's commands out of a record and refuses its stop", async () => {
+      const stateDir = recordState();
+      const { BrowserSessionStore } = require("../../native/browser-session-store.cjs") as any;
+      const store = new BrowserSessionStore({
+        filePath: path.join(stateDir, "browser-sessions.json"),
+        root: stateDir,
+      });
+      const identity = {
+        browserInstanceId: "integration-browser",
+        browserEpoch: `integration-epoch-${process.pid}`,
+      };
+      store.create(identity, "alpha", { tabId: 5, windowId: 1 });
+      store.create(identity, "beta", { tabId: 6, windowId: 1 });
+      const host = await startHostHarness({ SURF_STATE_DIR: stateDir });
+      const alpha = { SURF_SESSION: "alpha" };
+      const beta = { SURF_SESSION: "beta" };
+
+      const start = runCli(["pb", "record", "start", "a", "--op", "read"], host.socketPath, alpha);
+      await answer(host, "GET_PLAYBOOK_RECORD_CONTEXT", { origin: "https://example.test" });
+      expect((await start).code).toBe(0);
+      const record = onlyRecord(stateDir);
+      expect(record).toMatchObject({ session: "alpha", tabId: 5 });
+
+      for (const [env, tabId] of [
+        [beta, 6],
+        [alpha, 5],
+      ] as const) {
+        const go = runCli(
+          ["go", `https://example.test/${tabId}`, "--no-diff"],
+          host.socketPath,
+          env,
+        );
+        expect(await answer(host, "EXECUTE_NAVIGATE", { success: true })).toMatchObject({ tabId });
+        expect((await go).code).toBe(0);
+      }
+      // tab.new has no tab target: SURF_SESSION reaches the host as recordSession.
+      const tabNew = runCli(["tab.new", "https://example.test/next"], host.socketPath, alpha);
+      await answer(host, "NEW_TAB", { tabId: 7, url: "https://example.test/next" });
+      expect((await tabNew).code).toBe(0);
+      expect(filed(record.id, stateDir)).toEqual(["navigate", "tab.new"]);
+
+      const refused = await runCli(["pb", "record", "stop"], host.socketPath, beta);
+      expect(refused.code).toBe(1);
+      expect(refused.stderr).toContain(
+        `no active playbook record for session beta; active: ${record.id} (session alpha)`,
+      );
+      const stop = await runCli(["pb", "record", "stop"], host.socketPath, alpha);
+      expect(stop.code).toBe(0);
+      expect(onlyRecord(stateDir).status).toBe("stopped");
+    });
+  });
+
+  it("refuses a surf use input the op doesn't define, naming the op's inputs", async () => {
+    const host = await startHostHarness();
+    const result = await runCli(
+      ["use", "x", "thread", "--url", "https://x.com/a/status/1", "--urls", "x"],
+      host.socketPath,
+    );
+    expect(result.code).toBe(1);
+    expect(result.stderr).toMatch(
+      /Unknown input --urls for x thread\. Did you mean --url\? Its inputs: --url \(required\)/,
+    );
+    await host.expectNoMessage((message) => message.type !== "HOST_READY", "an op step");
   });
 
   it("prints one stderr line, and leaves stdout alone, when the host version differs from the CLI", async () => {

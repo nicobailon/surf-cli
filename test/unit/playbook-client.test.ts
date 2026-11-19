@@ -103,6 +103,7 @@ describe("playbook client projection", () => {
       site: "fixture",
       op: "search",
       includeInputValues: true,
+      tabId: 1,
       root,
     });
     records.attachNetworkTrace(
