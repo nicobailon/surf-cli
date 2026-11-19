@@ -87,6 +87,7 @@ export interface NetworkEntry {
   // Response  
   status?: number;
   statusText?: string;
+  errorText?: string;            // Why loading failed (net::ERR_...), with the "failed" flag
   mimeType?: string;
   responseHeaders?: Record<string, string>;
   responseBody?: string;         // Will be fetched via getResponseBody
@@ -814,7 +815,9 @@ export class CDPController {
       }
       this.networkRequestStartTimes.delete(this.requestStartKey(tabId, params.requestId));
       
-      entry.status = 0;
+      // A response already received (an empty 404 page Chrome then fails) keeps its status.
+      if (!entry._responseReceived) entry.status = 0;
+      if (params.errorText) entry.errorText = params.errorText;
       entry.flags.push('failed');
       entry._loadingFinished = true;
     }

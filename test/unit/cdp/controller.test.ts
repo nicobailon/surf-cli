@@ -1208,6 +1208,50 @@ describe("CDPController", () => {
         timestamp: 1_794_000_000_250,
       });
     });
+
+    it("keeps a received status when the load then fails, and notes the failure", async () => {
+      await controller.enableNetworkTracking(tabId);
+      const send = (requestId: string) =>
+        cdpEvent(controller, tabId, "Network.requestWillBeSent", {
+          requestId,
+          timestamp: 1,
+          type: "Document",
+          request: { url: `https://example.test/${requestId}`, method: "GET", headers: {} },
+        });
+      // An empty 404 page: Chrome answers it, then fails the navigation.
+      await send("req-404");
+      await cdpEvent(controller, tabId, "Network.responseReceived", {
+        requestId: "req-404",
+        timestamp: 1.01,
+        response: { status: 404, statusText: "Not Found", mimeType: "text/html", headers: {} },
+      });
+      await cdpEvent(controller, tabId, "Network.loadingFailed", {
+        requestId: "req-404",
+        timestamp: 1.02,
+        errorText: "net::ERR_HTTP_RESPONSE_CODE_FAILURE",
+      });
+      // No answer at all.
+      await send("req-dns");
+      await cdpEvent(controller, tabId, "Network.loadingFailed", {
+        requestId: "req-dns",
+        timestamp: 1.02,
+        errorText: "net::ERR_NAME_NOT_RESOLVED",
+      });
+      const entries = controller.getNetworkEntries(tabId, { includeStatic: true });
+      expect(entries.find((entry) => entry.url.endsWith("req-404"))).toMatchObject({
+        status: 404,
+        flags: ["failed"],
+        errorText: "net::ERR_HTTP_RESPONSE_CODE_FAILURE",
+      });
+      expect(entries.find((entry) => entry.url.endsWith("req-dns"))).toMatchObject({
+        status: 0,
+        flags: ["failed"],
+        errorText: "net::ERR_NAME_NOT_RESOLVED",
+      });
+      expect(controller.getNetworkRequests(tabId).map((request) => request.status)).toEqual([
+        404, 0,
+      ]);
+    });
   });
 
   describe("network capture interruptions", () => {

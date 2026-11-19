@@ -155,7 +155,7 @@ function validateFlatOp(value, id, effect) {
   if (value.open !== undefined && (typeof value.open !== "string" || !value.open)) throw new Error(`op ${id} open must be a URL`);
   if (value.steps !== undefined) {
     if (value.open === undefined) throw new Error(`op ${id} steps run on the page it opens, so they need open`);
-    const steps = typeof value.steps === "string" ? parseDoCommands(value.steps) : value.steps;
+    const steps = typeof value.steps === "string" ? parseDoCommands(value.steps, { checkClicks: false }) : value.steps;
     if (!Array.isArray(steps)) throw new Error(`op ${id} steps must be surf do steps`);
     op.steps = steps.map(normalizeStep);
   }

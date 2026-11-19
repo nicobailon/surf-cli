@@ -123,6 +123,23 @@ screenshot --output /tmp/result.png
     expect(steps[4].args.output).toBe("/tmp/result.png");
   });
 
+  it("refuses a click with no ref, selector or x y, naming the step", () => {
+    expect(() =>
+      parser.parseDoCommands('type "Ada" --into "input[name=custname]" | click "Submit order"'),
+    ).toThrow(
+      'step 2: click takes a ref (e5), --selector <css> or x y, not "Submit order". Try: click --selector "form button"',
+    );
+    expect(() => parser.parseDoCommands("click", { step: "--do step" })).toThrow(
+      /^--do step 1: click takes a ref \(e5\), --selector <css> or x y\. Try:/,
+    );
+    // An op file's steps load as written, so one bad op doesn't take down its playbook.
+    expect(parser.parseDoCommands("click", { checkClicks: false })).toEqual([
+      { cmd: "click", args: {} },
+    ]);
+    expect(parser.parseDoCommands("click --x 10 --y 20")[0].args).toEqual({ x: 10, y: 20 });
+    expect(parser.parseDoCommands("click --ref e5")[0].args).toEqual({ ref: "e5" });
+  });
+
   it("handles URLs with special characters", () => {
     const input = 'go "https://example.com/path?query=value&foo=bar"';
     const steps = parser.parseDoCommands(input);

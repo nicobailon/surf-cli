@@ -244,14 +244,31 @@ function parseCommandLine(line) {
   return { cmd, args };
 }
 
-function parseDoCommands(input) {
+// A click with no target reaches the browser as one it can only answer with "Invalid parameters".
+function checkClick(step, line, name) {
+  const { ref, selector, x, y } = step.args;
+  if (step.cmd !== "click" || ref !== undefined || selector !== undefined || (x !== undefined && y !== undefined)) return;
+  const given = tokenize(line)[1];
+  const not = given && !given.startsWith("--") ? `, not "${given}"` : "";
+  throw new Error(`${name}: click takes a ref (e5), --selector <css> or x y${not}. Try: click --selector "form button"`);
+}
+
+/**
+ * `step` names a step in an error, numbered from 1: "step 2", or "--do step 2" for surf hook.
+ * `checkClicks: false` loads an op file's steps as written, so one bad op can't hide its playbook.
+ */
+function parseDoCommands(input, { step = "step", checkClicks = true } = {}) {
   const hasPipe = input.includes("|");
   const normalized = hasPipe ? input : input.replace(/\\n/g, "\n");
   return normalized
     .split(hasPipe ? "|" : "\n")
     .map((line) => line.trim())
     .filter((line) => line && !line.startsWith("#"))
-    .map(parseCommandLine)
+    .map((line, index) => {
+      const parsed = parseCommandLine(line);
+      if (parsed && checkClicks) checkClick(parsed, line, `${step} ${index + 1}`);
+      return parsed;
+    })
     .filter(Boolean);
 }
 

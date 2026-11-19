@@ -71,7 +71,7 @@ function parseHookArgs(argv, { cwd = process.cwd() } = {}) {
   if (!URL.canParse(url) || !/^https?:$/.test(new URL(url).protocol)) throw new Error(`surf hook takes an http or https URL, not ${spec.url}`);
   const [site, op] = spec.as ? spec.as.split("/") : [new URL(url).hostname.replace(/^www\./, ""), `get_${spec.goal.toLowerCase().split(/[^a-z0-9]+/).filter(Boolean).slice(0, 3).join("_") || "data"}`];
   if (!ID.test(site || "") || !ID.test(op || "")) throw new Error(`--as needs <site>/<op> in lowercase letters, numbers, dot, underscore or hyphen (got ${spec.as})`);
-  const steps = spec.do ? parseDoCommands(spec.do) : [];
+  const steps = spec.do ? parseDoCommands(spec.do, { step: "--do step" }) : [];
   // A value typed or picked as written (not an {{input}}) becomes an input named after where it lands.
   const typed = steps.flatMap((step) => [step.args?.text, step.args?.value, step.args?.values].flat()).filter((value) => typeof value === "string" && value && !value.includes("{{"));
   return { spec, url, site, op, steps: renderTemplate(steps, { args: spec.samples, env: null }), typed };
