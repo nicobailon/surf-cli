@@ -44,14 +44,24 @@ surf playbook test books                 # each read op with its examples; exit 
 - Script strategies need `--allow-script`.
 - To write a recipe for a new site's feed API (the `api` and `collect` strategies), follow `docs/threads-and-feeds.md` in the Surf repository.
 
-Author from what you just did, or from a recording:
+Make an op with `surf hook` first. It opens the page, runs `--do` steps, picks the request that carries the data, names its inputs, infers the extract, tests the op and saves it to `~/.surf/playbooks/<site>/ops/<op>.json`:
+
+```bash
+surf hook 'https://books.toscrape.com/catalogue/page-{{page}}.html' --page 2 --goal "books with prices" --as books/list_books
+surf hook https://quotes.toscrape.com/search --goal "quotes by author" --do 'type "{{query}}" --into "#q" | key Enter' --query einstein
+```
+
+- `{{name}}` in the URL or a `--do` step, with `--name <sample>`, becomes the op's input; a search key, a page number and an id in the path become inputs on their own.
+- Exit 2: no request clearly leads. Rerun the printed line, with `--match` a part of the right request's URL.
+- Exit 1: an error, or the request is a write (it saves reads only). It prints the draft op: fix it, save it as the op file, run `surf playbook test <site>`.
+- When hook can't get there (a login, steps it can't express), record by hand: `pb record start`, do the steps, `pb record stop`. Stop picks, tests and saves the same way (`--match` too; `--draft` only drafts).
 
 ```bash
 surf playbook suggest --since 1h
 surf playbook save example --op read --from-recent 1h
-surf playbook record start example --op read --network --watch
+surf playbook record start example --op read --watch
 surf playbook record mark "loaded results"
-surf playbook record stop --draft
+surf playbook record stop
 surf playbook trace export --from-record <record-id> --har ./trace.har
 surf playbook export example --out ./example-playbook
 surf playbook import ./example-playbook

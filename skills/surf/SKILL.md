@@ -24,9 +24,9 @@ It is one tab in its own background window, and its commands run in order. Sessi
 
 **Fail fast on walls.** `wait.ready` returns when the page is ready and fails with `page_login|page_challenge|page_not_found|page_error|page_timeout`; `--accept login` returns that state instead.
 
-**API before scroll.** For feeds and threads, read the site's own API: `use x thread`, or `network.wait` then `network.replay --set`. `collect` scrolls the page when there is no API and needs a visible tab (`session.ensure <name> <url> --window --focused`).
+**API before scroll.** A read you'll repeat: `surf hook <url> --goal "<what>"` saves a tested op from the site's own request, then `surf use <site> <op>`. Once: `use x thread`, or `network.wait` then `network.replay --set`. `collect` scrolls the page when there is no API and needs a visible tab (`session.ensure <name> <url> --window --focused`).
 
-**Values, not pages.** To read a few values (a total, a date, a count), use `semantic.extract`: it returns typed values without a full page read.
+**Values, not pages.** A few values (a total, a date, a count): `semantic.extract` returns them typed, without a full page read.
 
 **Pipe multi-step work.** `surf do` runs steps with waits between them; run it with `--dry-run` first.
 
@@ -101,7 +101,7 @@ emulate: emulate.network emulate.cpu emulate.geo emulate.device emulate.touch
 ai: kimi aistudio aistudio.build ai
 semantic: semantic.find semantic.filter semantic.verify | semantic auth set | semantic auth status | semantic auth clear
 oracle: oracle follow | oracle status | oracle list
-playbook: playbook list | playbook show | playbook ops | playbook run | playbook test | playbook suggest | playbook save | playbook record start | playbook record mark | playbook record stop | playbook record status | playbook trace export | playbook export | playbook import | playbook client derive | playbook client export | playbook client verify
+playbook: hook | playbook list | playbook show | playbook ops | playbook run | playbook test | playbook suggest | playbook save | playbook record start | playbook record mark | playbook record stop | playbook record status | playbook trace export | playbook export | playbook import | playbook client derive | playbook client export | playbook client verify
 workflow: batch workflow.list workflow.info workflow.validate
 setup: install uninstall update config server extension-path health smoke remote authorize | remote list | remote revoke
 ```
@@ -113,4 +113,4 @@ setup: install uninstall update config server extension-path health smoke remote
 - semantic credentials, models, thresholds, workflow steps → [references/semantic.md](references/semantic.md)
 - oracle jobs, files, Pro quota → [references/oracle.md](references/oracle.md)
 - browser on another machine → [references/remote.md](references/remote.md)
-- workflow JSON, playbooks → [references/workflows.md](references/workflows.md)
+- `surf hook` exit 2 or 1, recording an op by hand, workflow JSON, playbooks → [references/workflows.md](references/workflows.md)

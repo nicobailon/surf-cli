@@ -239,6 +239,12 @@ async function runOp({ playbook, op, args, url, pages = 1, env = {}, executeTool
   throw new Error(`All steps failed (${attempts.map((attempt) => `${attempt.via}: ${attempt.error}`).join("; ")})`);
 }
 
+/** Sends one request from the tab, as a read's tab step does: { status, url, contentType, body }. */
+function sendRequest({ request, executeTool, signal, sleep = async () => {}, onEvent = () => {} }) {
+  const context = { op: { request }, args: {}, env: {}, origins: siteOrigins({ request }), executeTool, signal, sleep, onEvent, markDispatched: async () => {} };
+  return preparePage("tab", context, { args: {} }).read();
+}
+
 /** What the op would send, with `{{env.NAME}}` left as written. Sends nothing. */
 function dryRunOp({ playbook, op, args, url }) {
   if (url !== undefined) assertSite(url, siteOrigins(op));
@@ -249,4 +255,4 @@ function dryRunOp({ playbook, op, args, url }) {
   throw new Error(`--dry-run shows ops with request or open; ${op.id} has ${op.chain ? "a chain" : "a run list"}`);
 }
 
-module.exports = { dryRunOp, renderRequest, renderTemplate, runOp };
+module.exports = { dryRunOp, evaluate, renderRequest, renderTemplate, runOp, sendRequest };

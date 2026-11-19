@@ -29,6 +29,8 @@ const PROVIDER_DEFAULT_TIMEOUT_SECONDS = {
   perplexity: 120,
   "oracle.result": 300,
   "playbook.run": 600,
+  "playbook.hook": 300,
+  "playbook.record.stop": 300,
   "network.wait": 30,
   collect: 300,
 };

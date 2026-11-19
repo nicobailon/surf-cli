@@ -32,7 +32,7 @@ const BROWSER_WRITE_TOOLS = new Set([
 const BROWSER_WRITE_TARGETED_TOOLS = new Set([
   "cookie.set", "cookie.clear", "cookie.clear-all",
   "bookmark.add", "bookmark.remove",
-  "playbook.run",
+  "playbook.run", "playbook.hook",
 ]);
 
 const TAB_TOOLS = new Set([

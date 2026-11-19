@@ -121,4 +121,4 @@ function readHtml(doc, { records, fields } = {}, baseUrl) {
   return items.map((item) => (fields ? recordOf(item, fields, baseUrl) : textOf(item)));
 }
 
-module.exports = { parseDocument, parseField, parseSelector, rawText, readField, readHtml, selectAll };
+module.exports = { domUtils: () => htmlparser2().DomUtils, parseDocument, parseField, parseSelector, rawText, readField, readHtml, selectAll };
