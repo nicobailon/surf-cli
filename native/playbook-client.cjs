@@ -26,7 +26,7 @@ function absoluteEndpointUrl(url, origins = []) {
 }
 
 function networkStrategy(op) {
-  const strategy = op.run.find((candidate) => candidate.using === "network");
+  const strategy = (op.run || []).find((candidate) => candidate.using === "network");
   if (!strategy) throw new Error(`op ${op.id} has no validated network strategy`);
   return strategy;
 }

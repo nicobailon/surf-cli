@@ -33,7 +33,12 @@ surf playbook list                       # project ./.surf/playbooks/, then ~/.s
 surf playbook ops x                      # an op's inputs
 surf use x thread --url https://x.com/<user>/status/<id> --format md
 surf use <playbook> <op> --format jsonl  # one record per line
+surf use books list_books --pages 3      # follow the op's page rule
+surf use books list_books --dry-run      # print the request; send nothing
+surf playbook test books                 # each read op with its examples; exit 1 when expect fails
 ```
+
+- An op file with `request` (or `open` + `steps`), `extract` and `expect` is in the README's "Ops" section. The body is read in Node: JSON by path, HTML by selector, embedded page data with `extract.in`.
 
 - Write ops need `--write`. Surf records the intent before sending, so a retry can't submit twice.
 - Script strategies need `--allow-script`.

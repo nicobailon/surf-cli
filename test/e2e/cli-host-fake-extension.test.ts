@@ -59,6 +59,8 @@ type NativeMessage = Record<string, unknown> & {
 
 type FakeHostOptions = {
   targetActive?: boolean;
+  // What the tab's script returns, from its code; the default answers a JSON fetch.
+  javascript?: (code: string) => unknown;
 };
 
 type CliResult = {
@@ -119,7 +121,12 @@ function writeNativeMessage(stdin: WritableLike, message: NativeMessage) {
   stdin.write(BufferCtor.concat([header, BufferCtor.from(json, "utf8")]));
 }
 
-function buildExtensionResponse(message: NativeMessage, currentUrl: string, targetActive: boolean) {
+function buildExtensionResponse(
+  message: NativeMessage,
+  currentUrl: string,
+  options: FakeHostOptions,
+) {
+  const targetActive = options.targetActive !== false;
   switch (message.type) {
     case "TARGET_RESOLVE":
     case "TARGET_INSPECT":
@@ -167,7 +174,12 @@ function buildExtensionResponse(message: NativeMessage, currentUrl: string, targ
         width: 1,
         height: 1,
       };
+    case "WAIT_FOR_LOAD":
+      return { id: message.id, success: true };
     case "EXECUTE_JAVASCRIPT":
+      if (options.javascript) {
+        return { id: message.id, output: JSON.stringify(options.javascript(String(message.code))) };
+      }
       return {
         id: message.id,
         output: JSON.stringify({
@@ -196,7 +208,6 @@ function startHost(socketPath: string, options: FakeHostOptions = {}) {
   const waiters: MessageWaiter[] = [];
   let stdoutBuffer = BufferCtor.alloc(0);
   let currentUrl = "about:blank";
-  const targetActive = options.targetActive !== false;
   let stderr = "";
   let closed = false;
 
@@ -252,7 +263,7 @@ function startHost(socketPath: string, options: FakeHostOptions = {}) {
       if (message.type === "EXECUTE_NAVIGATE" && message.url) {
         currentUrl = message.url;
       }
-      writeNativeMessage(child.stdin, buildExtensionResponse(message, currentUrl, targetActive));
+      writeNativeMessage(child.stdin, buildExtensionResponse(message, currentUrl, options));
     }
   });
 
@@ -322,13 +333,18 @@ function startHost(socketPath: string, options: FakeHostOptions = {}) {
   };
 }
 
-async function runCli(socketPath: string, args: string[], cwd = process.cwd()) {
+async function runCli(
+  socketPath: string,
+  args: string[],
+  cwd = process.cwd(),
+  env: Record<string, string> = {},
+) {
   const cliPath = path.join(process.cwd(), "native", "cli.cjs");
 
   return await new Promise<CliResult>((resolve, reject) => {
     const child = spawn(process.execPath, [cliPath, ...args], {
       cwd,
-      env: { ...process.env, SURF_SOCKET: socketPath },
+      env: { ...process.env, ...env, SURF_SOCKET: socketPath },
       stdio: ["ignore", "pipe", "pipe"],
     });
     let stdout = "";
@@ -521,6 +537,122 @@ describe("CLI/native-host/fake-extension E2E contract", () => {
       expect(host.messages.filter((message) => message.type === "EXECUTE_JAVASCRIPT")).toHaveLength(
         2,
       );
+    } finally {
+      await host.dispose();
+    }
+  });
+
+  it("runs a flat op end to end, an old run-list op, pb test and --dry-run", async () => {
+    const socketPath = createSocketPath();
+    const project = fs.mkdtempSync(path.join(os.tmpdir(), "surf-op-project-"));
+    tempDirs.push(project);
+    const site = path.join(project, ".surf", "playbooks", "books");
+    fs.mkdirSync(path.join(site, "ops"), { recursive: true });
+    const writeOp = (op: Record<string, unknown>) =>
+      fs.writeFileSync(path.join(site, "ops", `${String(op.id)}.json`), JSON.stringify(op));
+    fs.writeFileSync(
+      path.join(site, "playbook.json"),
+      JSON.stringify({ id: "books", version: "1.0.0" }),
+    );
+    const listBooks = {
+      id: "list_books",
+      description: "Books on one catalogue page",
+      args: { page: { default: 1, example: 2 } },
+      request: {
+        url: "https://books.toscrape.com/catalogue/page-{{page}}.html",
+        headers: { "x-token": "{{env.SURF_E2E_TOKEN}}" },
+      },
+      extract: {
+        records: "article.product_pod",
+        fields: { title: "h3 a@title", price: ".price_color", url: "h3 a@href" },
+      },
+      page: { into: "page", next: "+1" },
+      expect: { minItems: 1, fields: ["title", "url"] },
+    };
+    writeOp(listBooks);
+    writeOp({ ...listBooks, id: "broken", expect: { fields: ["isbn"] } });
+    writeOp({
+      id: "old_read",
+      run: [
+        {
+          using: "network",
+          request: { method: "GET", url: "https://books.toscrape.com/" },
+          extract: { field: "status" },
+          expect: { truthy: true },
+        },
+      ],
+    });
+    const html = fs.readFileSync(
+      path.join(process.cwd(), "test", "fixtures", "sites", "books-page-1.html"),
+      "utf8",
+    );
+    const codes: string[] = [];
+    const host = startHost(socketPath, {
+      javascript: (code) => {
+        codes.push(code);
+        const url = code.match(/https:\/\/books\.toscrape\.com\/[^"]*/)?.[0];
+        return { status: 200, ok: true, url, contentType: "text/html", body: html };
+      },
+    });
+    const env = { SURF_E2E_TOKEN: "tok-123" };
+    const sent = () =>
+      host.messages.filter((message) =>
+        ["EXECUTE_JAVASCRIPT", "EXECUTE_NAVIGATE"].includes(String(message.type)),
+      ).length;
+
+    try {
+      await host.waitForMessage((message) => message.type === "HOST_READY");
+      const used = await runCli(
+        socketPath,
+        ["use", "books", "list_books", "--page", "2", "--pages", "2", "--json"],
+        project,
+        env,
+      );
+      expect(used.stderr).toBe("");
+      expect(used.code).toBe(0);
+      const result = JSON.parse(used.stdout);
+      expect(result).toMatchObject({ status: "completed", via: "tab", op: "list_books" });
+      expect(result.value).toHaveLength(6);
+      expect(result.value[0]).toEqual({
+        title: "A Light in the Attic",
+        price: "£51.77",
+        url: "https://books.toscrape.com/catalogue/a-light-in-the-attic_1000/index.html",
+      });
+      expect(codes.map((code) => code.match(/page-\d+/)?.[0])).toEqual(["page-2", "page-3"]);
+      expect(codes[0]).toContain("tok-123");
+
+      const old = await runCli(socketPath, ["use", "books", "old_read", "--json"], project);
+      expect(old.code).toBe(0);
+      expect(JSON.parse(old.stdout)).toMatchObject({ strategy: "network", value: 200 });
+
+      const one = await runCli(socketPath, ["pb", "test", "books", "list_books"], project, env);
+      expect(one).toMatchObject({ code: 0 });
+      expect(one.stdout).toMatch(/^pass +list_books +3 records via tab$/m);
+      expect(codes.at(-1)).toContain("page-2.html");
+
+      const all = await runCli(socketPath, ["pb", "test", "books"], project, env);
+      expect(all.code).toBe(1);
+      expect(all.stdout).toMatch(/^fail +broken +.*expected field isbn in the first record/m);
+      expect(all.stdout).toMatch(/^pass +list_books /m);
+      expect(all.stdout).toMatch(/^pass +old_read /m);
+
+      const before = sent();
+      const dry = await runCli(
+        socketPath,
+        ["use", "books", "list_books", "--page", "7", "--dry-run", "--json"],
+        project,
+        env,
+      );
+      expect(dry.code).toBe(0);
+      expect(JSON.parse(dry.stdout)).toMatchObject({
+        dryRun: true,
+        request: {
+          method: "GET",
+          url: "https://books.toscrape.com/catalogue/page-7.html",
+          headers: { "x-token": "{{env.SURF_E2E_TOKEN}}" },
+        },
+      });
+      expect(sent()).toBe(before);
     } finally {
       await host.dispose();
     }

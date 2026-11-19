@@ -263,7 +263,7 @@ if (["playbook", "pb", "use"].includes(args[0]) && !helpRequested()) {
     .then((result) => {
       if (!result.handled) throw new Error("Playbook command was not handled");
       if (result.value !== undefined) console.log(formatPlaybookOutput(result.value, result.json));
-      process.exit(0);
+      process.exit(result.exitCode ?? 0);
     })
     .catch((error) => {
       console.error(`Error: ${error.message}`);
@@ -1652,7 +1652,7 @@ const TOOLS = {
         desc: "Run a playbook operation, such as reading a whole X thread",
         args: ["playbook", "op"],
         opts: {
-          "<arg>": "Operation input, e.g. --url <post-url>; an input the op doesn't define fails and lists its inputs",
+          "<arg>": "Operation input, e.g. --page 2; an input the op doesn't define fails and lists its inputs",
           timeout: "Seconds before the run gives up (default: the op's --timeout, else 600)",
           format: "md or jsonl instead of JSON",
           write: "Authorize a write operation",
@@ -1661,9 +1661,13 @@ const TOOLS = {
           "retry-attempt": "Retry this write attempt id",
           "override-in-doubt": "Write again after an indeterminate attempt",
           "pin-built-in": "Use the built-in playbook even if a user or project copy exists",
+          url: "Run the op on another URL of its site",
+          pages: "Follow the op's page rule for up to n pages (default 1, max 100)",
+          "dry-run": "Print the request the op would send; send nothing",
           json: "Output raw JSON",
         },
         examples: [
+          { cmd: "use books list_books --page 2 --pages 3", desc: "Three catalogue pages from a hand-written op" },
           { cmd: "use x thread --url https://x.com/<user>/status/<id> --format md", desc: "Whole X thread as Markdown" },
           { cmd: "use page read --json", desc: "Read the current page" },
         ],
@@ -1673,6 +1677,12 @@ const TOOLS = {
       "playbook show": { desc: "Show a playbook's source and ops", args: ["playbook"], opts: { json: "Output raw JSON" } },
       "playbook ops": { desc: "List a playbook's operations", args: ["playbook"], opts: { json: "Output raw JSON" } },
       "playbook run": { desc: "Same as surf use <playbook> <op>", args: ["playbook", "op"] },
+      "playbook test": {
+        desc: "Run each read op (or one) with its example inputs and check its expect; exit 1 on a failure",
+        args: ["playbook"],
+        opts: { json: "Output raw JSON" },
+        examples: [{ cmd: "pb test books list_books", desc: "Test one op" }],
+      },
       "playbook suggest": { desc: "Suggest playbooks from recent activity", args: [], opts: { since: "Look-back window (default: 1h)" } },
       "playbook save": {
         desc: "Save a playbook op from recent activity or a record",

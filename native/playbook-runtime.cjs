@@ -32,9 +32,9 @@ function unknownInputError(op, name, playbookId) {
   return new Error(`Unknown input --${name} for ${label}.${hint} Its inputs: ${inputs}`);
 }
 
-// Surf's global flags, and `surf use --timeout` (the run's deadline), aren't op inputs: an op gets
+// Surf's global flags, and `surf use --timeout`, `--url` and `--pages`, aren't op inputs: an op gets
 // one only when it declares that name.
-const SURF_FLAGS = new Set([...GLOBAL_OPTIONS.map((option) => option.name), "timeout"]);
+const SURF_FLAGS = new Set([...GLOBAL_OPTIONS.map((option) => option.name), "timeout", "url", "pages"]);
 
 function resolveArgs(op, provided, { playbookId } = {}) {
   const args = { ...provided };
