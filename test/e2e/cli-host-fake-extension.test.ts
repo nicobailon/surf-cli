@@ -722,6 +722,54 @@ describe("CLI/native-host/fake-extension E2E contract", () => {
     }
   });
 
+  it("fails a surf use result too large to send the CLI at once, naming its size", async () => {
+    const socketPath = createSocketPath();
+    const project = fs.mkdtempSync(path.join(os.tmpdir(), "surf-op-project-"));
+    tempDirs.push(project);
+    const site = path.join(project, ".surf", "playbooks", "big");
+    fs.mkdirSync(path.join(site, "ops"), { recursive: true });
+    fs.writeFileSync(
+      path.join(site, "playbook.json"),
+      JSON.stringify({ id: "big", version: "1.0.0" }),
+    );
+    fs.writeFileSync(
+      path.join(site, "ops", "list_items.json"),
+      JSON.stringify({
+        id: "list_items",
+        request: { url: "https://big.example/items.json" },
+        extract: { records: "$.items", fields: { text: "text" } },
+      }),
+    );
+    // 1,800 records of 1 kB: about 1.8 MB once the host frames them.
+    const items = Array.from({ length: 1800 }, (_, n) => ({ text: `${n} ${"x".repeat(1000)}` }));
+    const host = startHost(socketPath, {
+      javascript: () => ({
+        status: 200,
+        ok: true,
+        url: "https://big.example/items.json",
+        contentType: "application/json",
+        body: JSON.stringify({ items }),
+      }),
+    });
+    try {
+      await host.waitForMessage((message) => message.type === "HOST_READY");
+      const started = Date.now();
+      const used = await runCli(
+        socketPath,
+        ["use", "big", "list_items", "--json", "--timeout", "15"],
+        project,
+      );
+      expect(used.code).toBe(1);
+      expect(used.stdout).toBe("");
+      expect(used.stderr).toMatch(
+        /the result is 1\.8 MB, over the 1 MiB the host can send the CLI; ask for less: fewer --pages or --each runs \(--limit\), or an extract with fewer records or fields/,
+      );
+      expect(Date.now() - started).toBeLessThan(10_000);
+    } finally {
+      await host.dispose();
+    }
+  });
+
   it("removes an old live Surf-created session and its target", async () => {
     const socketPath = createSocketPath();
     const host = startHost(socketPath, { targetActive: false });

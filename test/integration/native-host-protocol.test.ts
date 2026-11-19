@@ -2533,7 +2533,7 @@ describe("native host protocol integration", () => {
     expect(result.code).toBe(1);
     expect(result.stdout).toBe("");
     expect(result.stderr).toMatch(
-      /the result is 1\.8 MB, over the 1 MiB the host can send the CLI; ask for less with --fields, --limit or a narrower extract/,
+      /Error: the result is 1\.8 MB, over the 1 MiB the host can send the CLI; ask for less\n/,
     );
     expect(Date.now() - started).toBeLessThan(5000);
   });

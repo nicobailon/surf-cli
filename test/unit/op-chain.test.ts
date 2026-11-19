@@ -273,9 +273,17 @@ describe("chains", () => {
         request: { url: `${origin}/abs/{{abs_id}}` },
         extract: { fields: { title: 'meta[name="citation_title"]@content' } },
       },
-    ].map((op) => validateOp(op, {}));
-    const site = { origin, seen, playbook: { id: "arxiv", ops: new Map(ops.map((op) => [op.id, op])) } };
-    const op = eachChain(site.playbook, site.playbook.ops.get("get_paper"), "list_papers:id=abs_id");
+    ].map((spec) => validateOp(spec, {}));
+    const site = {
+      origin,
+      seen,
+      playbook: { id: "arxiv", ops: new Map(ops.map((valid) => [valid.id, valid])) },
+    };
+    const op = eachChain(
+      site.playbook,
+      site.playbook.ops.get("get_paper"),
+      "list_papers:id=abs_id",
+    );
     const { result, sleeps } = await run(site, op, { limit: 2 });
     expect(seen).toEqual(["/list/cs.CL/recent", "/abs/2611.23218", "/abs/2611.23197"]);
     expect(result.value).toEqual([

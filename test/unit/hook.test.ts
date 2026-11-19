@@ -496,7 +496,9 @@ describe("op-infer", () => {
     });
     expect(found.count).toBe(4);
     expect(found.read).toHaveLength(4);
-    for (const record of found.read) expect(Object.keys(record)).toEqual(expect.arrayContaining(["id", "url", "title"]));
+    for (const record of found.read) {
+      expect(Object.keys(record)).toEqual(expect.arrayContaining(["id", "url", "title"]));
+    }
     expect(found.read[0]).toMatchObject({
       url: "https://arxiv.org/abs/2611.23218",
       id: "2611.23218",

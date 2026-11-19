@@ -1995,7 +1995,9 @@ function sendToolResponse(socket, id, result, error) {
         if (sendError.code !== "FRAME_TOO_LARGE") throw sendError;
         // Too large for one frame: the CLI gets an error now instead of waiting out its timeout.
         const { result: _result, truncated: _truncated, ...rest } = response;
-        const text = `the result is ${(sendError.bytes / 1e6).toFixed(1)} MB, over the ${MAX_FRAME_BYTES / 1024 / 1024} MiB the host can send the CLI; ask for less with --fields, --limit or a narrower extract`;
+        // An op's --fields and --limit trim in the CLI, after the result arrives, so they can't help here.
+        const less = request?.tool?.startsWith("playbook.") ? ": fewer --pages or --each runs (--limit), or an extract with fewer records or fields" : "";
+        const text = `the result is ${(sendError.bytes / 1e6).toFixed(1)} MB, over the ${MAX_FRAME_BYTES / 1024 / 1024} MiB the host can send the CLI; ask for less${less}`;
         return sendSocket(socket, { ...rest, error: { content: [{ type: "text", text }] } });
       });
     }
