@@ -1040,6 +1040,154 @@ describe("surf hook and pb record stop through the fake extension", () => {
     }
   });
 
+  // A fake tab on books.toscrape.com's page 2, with network capture holding that page.
+  const booksHost = (socketPath: string) => {
+    const html = readFixture("books-page-1.html");
+    const page = "https://books.toscrape.com/catalogue/page-2.html";
+    return startHost(socketPath, {
+      network: () => [captured(page, { responseBody: html })],
+      javascript: tab(page, "A Light in the Attic £51.77", { [page]: html }, []),
+    });
+  };
+  const hookBooks = (socketPath: string, site: string, ...extra: string[]) =>
+    runCli(socketPath, [
+      "hook",
+      "https://books.toscrape.com/catalogue/page-{{page}}.html",
+      ...extra,
+      "--page",
+      "2",
+      "--goal",
+      "books with prices",
+      "--as",
+      `${site}/list_books`,
+    ]);
+
+  it("refuses a surf use flag before any request, unless the URL writes it as {{name}}", async () => {
+    const socketPath = createSocketPath();
+    const site = unique("stray");
+    const host = booksHost(socketPath);
+    try {
+      await host.waitForMessage((message) => message.type === "HOST_READY");
+      const format = await hookBooks(socketPath, site, "--format", "md");
+      expect(format.code).toBe(1);
+      expect(format.stdout).toBe("");
+      expect(format.stderr.trim()).toBe(
+        "Error: --format is a surf use option, not a surf hook one: give it to surf use when you run the saved op. surf hook takes --goal, --do, --match, --as, --dry-run, --json and --<input> <sample>. An input named format needs {{format}} in the URL or a --do step; a sample under another name works too (--per_page 20).",
+      );
+      // A flag with no value is refused before it can take the next word as its value.
+      const write = await hookBooks(socketPath, site, "--write");
+      expect(write.code).toBe(1);
+      expect(write.stderr).toMatch(/^Error: --write is a surf use option, not a surf hook one/);
+      expect(host.messages.map((message) => message.type)).not.toContain("START_NETWORK_CAPTURE");
+      expect(exists(opFile(site, "list_books"))).toBe(false);
+
+      // A URL that writes {{limit}} makes --limit an input sample, as {{page}} does --page.
+      const limited = await runCli(socketPath, [
+        "hook",
+        "https://books.toscrape.com/catalogue/page-{{page}}.html?limit={{limit}}",
+        "--page",
+        "2",
+        "--limit",
+        "20",
+        "--goal",
+        "books",
+        "--as",
+        `${site}/list_books`,
+        "--dry-run",
+      ]);
+      expect(limited.stderr).not.toMatch(/surf use option/);
+      expect(host.messages.find((message) => message.type === "EXECUTE_NAVIGATE")?.url).toBe(
+        "https://books.toscrape.com/catalogue/page-2.html?limit=20",
+      );
+    } finally {
+      await host.dispose();
+    }
+  });
+
+  it("--dry-run picks and tests as usual, prints the op and writes no file", async () => {
+    const socketPath = createSocketPath();
+    const site = unique("dry");
+    const host = booksHost(socketPath);
+    try {
+      await host.waitForMessage((message) => message.type === "HOST_READY");
+      // Before --goal, --dry-run takes no value.
+      const dry = await hookBooks(socketPath, site, "--dry-run");
+      expect(dry.stderr).toBe("");
+      expect(dry.code).toBe(0);
+      expect(dry.stdout).toMatch(/^test +tab ✓ 3 records; title, url present$/m);
+      expect(dry.stdout).toMatch(
+        new RegExp(
+          `^saved +nothing \\(--dry-run\\); the op would go to ~/\\.surf/playbooks/${site}/ops/list_books\\.json$`,
+          "m",
+        ),
+      );
+      expect(dry.stdout).not.toMatch(/^run /m);
+      const [, printed] = dry.stdout.split(/^op +as surf hook would save it:\n/m);
+      expect(JSON.parse(printed)).toMatchObject({
+        id: "list_books",
+        args: { page: { default: 2, example: 2 } },
+        extract: { records: "article.product_pod" },
+        expect: { minItems: 1, fields: ["title", "url"] },
+      });
+      expect(exists(opFile(site, "list_books"))).toBe(false);
+      expect(
+        exists(path.join(String(process.env.HOME), ".surf", "playbooks", site, "playbook.json")),
+      ).toBe(false);
+    } finally {
+      await host.dispose();
+    }
+  });
+
+  it("says when it replaces an op and keeps the old one as <op>.json.bak", async () => {
+    const socketPath = createSocketPath();
+    const site = unique("again");
+    const host = booksHost(socketPath);
+    try {
+      await host.waitForMessage((message) => message.type === "HOST_READY");
+      const first = await hookBooks(socketPath, site);
+      expect(first.code).toBe(0);
+      expect(first.stdout).not.toMatch(/^replaced /m);
+      const file = opFile(site, "list_books");
+      // A hand edit, which the second hook replaces.
+      const edited = {
+        ...JSON.parse(fs.readFileSync(file, "utf8")),
+        description: "edited by hand",
+      };
+      fs.writeFileSync(file, JSON.stringify(edited));
+
+      const dry = await hookBooks(socketPath, site, "--dry-run");
+      expect(dry.stdout).toMatch(
+        /^saved +nothing \(--dry-run\); the op would replace ~\/.*\/list_books\.json$/m,
+      );
+      expect(exists(`${file}.bak`)).toBe(false);
+
+      const second = await hookBooks(socketPath, site);
+      expect(second.stderr).toBe("");
+      expect(second.code).toBe(0);
+      expect(second.stdout).toMatch(
+        new RegExp(
+          `^saved +~/\\.surf/playbooks/${site}/ops/list_books\\.json\\nreplaced ${site} list_books \\(the old op is list_books\\.json\\.bak\\)$`,
+          "m",
+        ),
+      );
+      expect(JSON.parse(fs.readFileSync(`${file}.bak`, "utf8"))).toEqual(edited);
+      expect(JSON.parse(fs.readFileSync(file, "utf8")).description).toBe("books with prices");
+
+      // One .bak slot: a third hook keeps the second op there, and says the older .bak is overwritten.
+      const replaced = JSON.parse(fs.readFileSync(file, "utf8"));
+      const third = await hookBooks(socketPath, site);
+      expect(third.stdout).toMatch(
+        new RegExp(
+          `^replaced ${site} list_books \\(the old op is list_books\\.json\\.bak; the older \\.bak is overwritten\\)$`,
+          "m",
+        ),
+      );
+      expect(JSON.parse(fs.readFileSync(`${file}.bak`, "utf8"))).toEqual(replaced);
+    } finally {
+      await host.dispose();
+    }
+  }, 30000);
+
   it("tests a draft from the tab when the host gets a 200 page without the records", async () => {
     const shell = await serveLocal((_req, res) => {
       res.writeHead(200, { "content-type": "text/html" });
@@ -1285,7 +1433,9 @@ describe("surf hook and pb record stop through the fake extension", () => {
       expect(hooked.stdout).toMatch(
         /^inputs +--custname \(required, sample Ada\) · --password \(required\)$/m,
       );
-      expect(hooked.stdout).toMatch(/^test +not run: surf hook sends no write; --write sends it$/m);
+      expect(hooked.stdout).toMatch(
+        /^test +not run: the --do steps sent it once; surf hook sends nothing more \(surf use … --write sends it again\)$/m,
+      );
       expect(hooked.stdout).toMatch(
         new RegExp(
           `^run +surf use ${site} order --custname Ada --password '<password>' --write$`,

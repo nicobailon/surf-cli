@@ -34,7 +34,7 @@ const {
   formatOracleOutput,
   handleOracleCli,
 } = require("./oracle-cli.cjs");
-const { formatPlaybookOutput, handlePlaybookCli } = require("./playbook-cli.cjs");
+const { formatPlaybookOutput, handlePlaybookCli, opHelp } = require("./playbook-cli.cjs");
 const { formatSavedOps } = require("./saved-ops-notice.cjs");
 const { handleHookCli } = require("./hook-cli.cjs");
 const { editDistance } = require("./edit-distance.cjs");
@@ -331,6 +331,10 @@ const REMOVED_COMMANDS = {
   triple_click: "click --button triple",
   left_click_drag: "drag",
 };
+
+// `surf --find` words that lead to hook and use; a command named by the word still ranks first.
+const HOOK_KEYWORDS = ["api", "scrape", "extract", "op", "playbook", "save", "reuse"];
+const USE_KEYWORDS = ["api", "op", "playbook", "reuse"];
 
 const TOOLS = {
   session: {
@@ -1667,14 +1671,16 @@ const TOOLS = {
     desc: "Reusable site operations: threads, feeds and recorded flows",
     commands: {
       hook: {
+        keywords: HOOK_KEYWORDS,
         desc: "Make a tested read op from a page: open it, pick the request with its data, name inputs, infer the extract, test, save. A picked POST etc. is saved untested as a write",
         args: ["url"],
         opts: {
           goal: "What the op returns, in words (required); its first words name the op",
           do: "surf do steps to run after the page loads, before the pick (clicks, typing)",
-          "<input>": "This run's value of {{input}} in the URL or a --do step, e.g. --page 2; also found in the request",
+          "<input>": "This run's value of {{input}} in the URL or a --do step, e.g. --page 2; also found in the request. A surf use option (--format, --limit, --write…) is refused unless the URL writes it as {{name}}",
           match: "Pick the captured request whose URL holds this text",
-          as: "Save as <site>/<op> (default: the host name and get_ + the goal's first three words)",
+          as: "Save as <site>/<op> (default: the host name and get_ + the goal's first three words); an op already there is kept as <op>.json.bak",
+          "dry-run": "Open the page, pick, name inputs and test as usual, then print the op instead of saving it",
           json: "Output the result as JSON",
         },
         examples: [
@@ -1684,6 +1690,7 @@ const TOOLS = {
         ],
       },
       use: {
+        keywords: USE_KEYWORDS,
         desc: "Run a playbook operation, such as reading a whole X thread",
         args: ["playbook", "op"],
         opts: {
@@ -2162,6 +2169,8 @@ Common Commands:
   animate-audit      JSON timeline of element animation/style samples
   perf-audit         PerformanceObserver snapshot for motion/jank debugging
   page.read          Get page accessibility tree (alias: read)
+  hook <url> --goal  Make a saved op from a page's data
+  use <site> <op>    Run a saved op; add --help for its inputs
   semantic.find      Optional model-powered candidate selection
   semantic.act       Bounded semantic browser action controller
   semantic.extract   Optional model-powered typed values from the page
@@ -2233,6 +2242,7 @@ Session cleanup: surf session.cleanup --idle-after 1h [--dry-run]
 Recovery: run the exact command printed after Recovery: on tab_gone, session_epoch_stale, tab_busy, or browser_busy
 Concurrency: commands for different session tabs can overlap; each tab remains FIFO; provider flows are browser-exclusive
 Doctor: surf doctor --browser all              # native host/socket diagnostics
+Saved ops: surf hook <url> --goal "<what>" makes one from a page's data; surf use <site> <op> runs it   # --help after it lists its inputs
 Workflow: surf do 'go "https://example.com" | wait 2 | read | click e5 | screenshot'
 More help: surf --help-full | surf <command> --help | surf --help-topic refs | surf --find <query>`);
 };
@@ -2400,15 +2410,19 @@ const fuzzyFind = (query) => {
   for (const [groupName, group] of Object.entries(TOOLS)) {
     for (const [cmd, info] of Object.entries(group.commands)) {
       if (info.alias) continue;
-      const searchText = `${cmd} ${info.desc} ${groupName}`.toLowerCase();
-      const score = terms.filter(t => searchText.includes(t)).length;
+      const keywords = info.keywords || [];
+      const searchText = `${cmd} ${info.desc} ${groupName} ${keywords.join(" ")}`.toLowerCase();
+      // A term that is a whole part of the name or the group counts twice (`save` -> page.save); among
+      // equal scores a whole keyword goes first, so `op` lists hook and use before names that only hold the letters.
+      const parts = [...cmd.split(/[.\s]/), groupName];
+      const score = terms.filter(t => searchText.includes(t)).length + terms.filter(t => parts.includes(t)).length;
       if (score > 0) {
-        results.push({ cmd, desc: info.desc, group: groupName, score });
+        results.push({ cmd, desc: info.desc, group: groupName, score, keyword: terms.filter(t => keywords.includes(t)).length });
       }
     }
   }
 
-  return results.sort((a, b) => b.score - a.score);
+  return results.sort((a, b) => b.score - a.score || b.keyword - a.keyword);
 };
 
 const showFindResults = (query) => {
@@ -2614,6 +2628,14 @@ if (args.includes("--help") || args.includes("-h")) {
   const words = [args[0] === "pb" ? "playbook" : args[0], ...args.slice(1).filter((arg) => !arg.startsWith("-"))];
   const isCommand = (name) => Object.values(TOOLS).some((group) => group.commands[name]);
   const subcommand = [words.slice(0, 3), words.slice(0, 2)].filter((w) => w.length > 1).map((w) => w.join(" ")).find(isCommand);
+  if (args[0] === "use") {
+    try {
+      const help = opHelp(args);
+      if (help) console.log(`\n${help}`);
+    } catch (error) {
+      console.error(error.message);
+    }
+  }
   if (subcommand) showToolHelp(subcommand);
   // A command that shares its group's name (network, ai, upload) shows its own help; `surf <group>` shows the group.
   else if (TOOLS[words[0]] && !isCommand(words[0])) showGroupHelp(words[0]);
