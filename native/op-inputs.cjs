@@ -3,16 +3,12 @@
 // a paging key or page-N segment, and an id-like path segment. Simplified from the feat branch's
 // parse-inputs.cjs, without its goal-word tables.
 
-const { isSensitiveName } = require("./redaction.cjs");
+const { isSecret, spaced } = require("./redaction.cjs");
 
 const SEARCH_KEYS = /^(?:q|s|k|query|search|search_?query|keywords?|term)$/i;
 const PAGE_KEYS = /^(?:page|p|pg|page_?num(?:ber)?)$/i;
 const OFFSET_KEYS = /^(?:start|skip|offset|from)$/i;
 const ID_LIKE = [/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i, /^\d{4}\.\d{4,5}(?:v\d+)?$/, /^[0-9a-f]{16,}$/i, /^\d{4,}$/, /^[a-z0-9-]+_\d+$/i, /^[a-z0-9-]+-\d{3,}$/i];
-// A write's secret-named field (password, token, secret, csrf...) is a required input with no
-// stored value. `newPassword`, `user[password]` and `csrfToken` are read as `new_password` etc.
-const spaced = (name) => String(name).replace(/([a-z0-9])([A-Z])/g, "$1_$2").replace(/[^A-Za-z0-9]+/g, "_");
-const isSecret = (name) => isSensitiveName(spaced(name)) || /(?:^|_)(?:pass|pwd|otp)(?:$|_)/i.test(spaced(name));
 // The request headers an op keeps; the browser supplies the rest.
 const KEPT_HEADERS = new Set(["content-type", "accept", "x-requested-with"]);
 
@@ -144,6 +140,8 @@ function nameInputs({ request, samples = {}, typed = [], template }) {
     else if (/^\d+$/.test(value) && PAGE_KEYS.test(key)) pair[1] = add("page", value);
     else if (/^\d+$/.test(value) && OFFSET_KEYS.test(key)) pair[1] = add(key.toLowerCase(), value);
   }
+  // A write's secret-named field (password, token, secret, csrf...) is a required input with no
+  // stored value.
   const hide = (key, value) => {
     if (!isSecret(key) || value === "" || !["string", "number"].includes(typeof value)) return value;
     const template = free(String(value)) ? add(snake(spaced(key)) || "secret", "") : String(value);

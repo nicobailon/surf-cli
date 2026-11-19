@@ -19,6 +19,7 @@ const {
   ensurePrivateDir,
   privateStatePath,
 } = require("./private-state.cjs");
+const { isSecret } = require("./redaction.cjs");
 
 // Configuration
 const DEFAULT_BASE = privateStatePath("network");
@@ -91,6 +92,54 @@ function writeMeta(meta) {
   const metaPath = getMetaPath();
   ensureDirectories();
   atomicWriteJson(metaPath, meta, { root: getBasePath() });
+}
+
+// What is written to disk leaves out secrets: credential header values and the values of
+// secret-named form and JSON body fields. The caller's entry, used in memory, is not changed.
+const REDACTED = "<redacted>";
+const CREDENTIAL_HEADERS = new Set(["authorization", "cookie", "proxy-authorization", "set-cookie"]);
+const isPlainObject = (value) => value !== null && typeof value === "object" && !Array.isArray(value);
+
+function redactHeaders(headers) {
+  if (!isPlainObject(headers)) return headers;
+  return Object.fromEntries(Object.entries(headers).map(([name, value]) => [name, CREDENTIAL_HEADERS.has(name.toLowerCase()) ? REDACTED : value]));
+}
+
+function redactJson(value) {
+  if (Array.isArray(value)) return value.map(redactJson);
+  if (!isPlainObject(value)) return value;
+  return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, isSecret(key) ? REDACTED : redactJson(item)]));
+}
+
+function formKey(raw) {
+  try { return decodeURIComponent(raw.replace(/\+/g, " ")); } catch { return raw; }
+}
+
+// Each other form pair is kept byte for byte.
+function redactForm(body) {
+  return body.split("&").map((pair) => {
+    const at = pair.indexOf("=");
+    return at > 0 && isSecret(formKey(pair.slice(0, at))) ? `${pair.slice(0, at + 1)}${REDACTED}` : pair;
+  }).join("&");
+}
+
+function redactBody(body, headers) {
+  if (typeof body !== "string" || body === "") return body;
+  const type = String(Object.entries(isPlainObject(headers) ? headers : {}).find(([name]) => name.toLowerCase() === "content-type")?.[1] || "");
+  if (/x-www-form-urlencoded/i.test(type)) return redactForm(body);
+  if (!/json/i.test(type) && !(type === "" && /^\s*[[{]/.test(body))) return body;
+  let parsed;
+  try { parsed = JSON.parse(body); } catch { return body; }
+  const redacted = JSON.stringify(redactJson(parsed));
+  return redacted === JSON.stringify(parsed) ? body : redacted;
+}
+
+function forDisk(entry) {
+  const saved = { ...entry };
+  if ("requestBody" in saved) saved.requestBody = redactBody(saved.requestBody, saved.requestHeaders);
+  if ("requestHeaders" in saved) saved.requestHeaders = redactHeaders(saved.requestHeaders);
+  if ("responseHeaders" in saved) saved.responseHeaders = redactHeaders(saved.responseHeaders);
+  return saved;
 }
 
 /**
@@ -179,7 +228,7 @@ async function appendEntry(entry) {
       ...entry
     };
     
-    appendPrivateJsonLine(getRequestsPath(), fullEntry, { root: getBasePath() });
+    appendPrivateJsonLine(getRequestsPath(), forDisk(fullEntry), { root: getBasePath() });
     
     return fullEntry;
   } finally {
@@ -230,13 +279,13 @@ function appendEntrySync(entry, basePath) {
     
     if (lockFd === undefined) {
       // Proceed without lock as fallback
-      appendPrivateJsonLine(getRequestsPath(basePath), fullEntry, { root: getBasePath(basePath) });
+      appendPrivateJsonLine(getRequestsPath(basePath), forDisk(fullEntry), { root: getBasePath(basePath) });
       return fullEntry;
     }
   }
   
   try {
-    appendPrivateJsonLine(getRequestsPath(basePath), fullEntry, { root: getBasePath(basePath) });
+    appendPrivateJsonLine(getRequestsPath(basePath), forDisk(fullEntry), { root: getBasePath(basePath) });
   } finally {
     if (lockFd !== undefined) {
       fs.closeSync(lockFd);
