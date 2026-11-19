@@ -338,6 +338,72 @@ function waitFor<T>(promise: Promise<T>, ms: number, label: string): Promise<T> 
   ]);
 }
 
+// A host that answers no request until a second one arrives. A CLI that waits for the first
+// request to finish before it sends its own never reaches it, so the wait for the second fails;
+// no timing is measured, so a slow machine only makes the test slower.
+async function startPairHost(socketPath: string) {
+  const answers: (() => void)[] = [];
+  let requestCount = 0;
+  let firstArrived!: () => void;
+  let secondArrived!: () => void;
+  const first = new Promise<void>((resolve) => {
+    firstArrived = resolve;
+  });
+  const second = new Promise<void>((resolve) => {
+    secondArrived = resolve;
+  });
+  const answerAll = () => {
+    for (const answer of answers.splice(0)) {
+      answer();
+    }
+  };
+  const server = net.createServer((socket: any) => {
+    let buffer = "";
+    socket.on("data", (chunk: { toString(): string }) => {
+      buffer += chunk.toString();
+      const lineEnd = buffer.indexOf("\n");
+      if (lineEnd === -1) {
+        return;
+      }
+      const request = JSON.parse(buffer.slice(0, lineEnd));
+      buffer = buffer.slice(lineEnd + 1);
+      requestCount++;
+      const text = requestCount === 1 ? "first" : "second";
+      answers.push(() => {
+        socket.write(
+          `${JSON.stringify({ id: request.id, result: { content: [{ type: "text", text }] } })}\n`,
+        );
+        socket.end();
+      });
+      if (requestCount === 1) {
+        firstArrived();
+      } else {
+        secondArrived();
+        answerAll();
+      }
+    });
+  });
+  await new Promise<void>((resolve, reject) => {
+    server.on("error", reject);
+    server.listen(socketPath, resolve);
+  });
+  return {
+    first,
+    second,
+    get requestCount() {
+      return requestCount;
+    },
+    close() {
+      answerAll();
+      server.close();
+    },
+  };
+}
+
+// Spawning a CLI takes over a second on a loaded machine.
+const CLI_WAIT_MS = 5000;
+const CLI_TEST_TIMEOUT_MS = 20000;
+
 describe("CLI argument parsing", () => {
   it("passes empty extract options to js as an empty SURF_OPTIONS object", async () => {
     const result = await runExtractCli([
@@ -886,144 +952,152 @@ describe("CLI argument parsing", () => {
     }
   });
 
-  it("sends stream requests over the selected TCP endpoint without forwarding remote", async () => {
-    let request: any;
-    let receivedRequest!: () => void;
-    const requestReceived = new Promise<void>((resolve) => {
-      receivedRequest = resolve;
-    });
-    const credential = createRemoteCredential();
-    const server = net.createServer((socket: any) =>
-      attachAuthenticatedServer(socket, credential.stateDir, (message: any, client: any) => {
-        request = message;
-        receivedRequest();
-        remoteTransport.writeFrame(client, { type: "stream_started" }).catch(() => undefined);
-      }),
-    );
-    await new Promise<void>((resolve, reject) => {
-      server.on("error", reject);
-      server.listen(0, "127.0.0.1", resolve);
-    });
-    const remote = `127.0.0.1:${(server.address() as any).port}`;
-    const child = spawn(
-      process.execPath,
-      [
-        "native/cli.cjs",
-        "console",
-        "--stream",
-        "--remote",
-        remote,
-        "--remote-credential",
-        credential.credentialPath,
-        "--no-lock",
-      ],
-      {
-        cwd: process.cwd(),
-        env: createCliEnv(),
-        stdio: ["ignore", "ignore", "pipe"],
-      },
-    );
-    try {
-      await waitFor(requestReceived, 1000, "stream request");
-      expect(request).toMatchObject({ type: "stream_request", streamType: "STREAM_CONSOLE" });
-      expect(JSON.stringify(request)).not.toContain("remote");
-    } finally {
-      child.kill("SIGINT");
-      await new Promise<void>((resolve) => child.once("close", () => resolve()));
-      fs.rmSync(credential.stateDir, { recursive: true, force: true });
-      await new Promise<void>((resolve) => server.close(() => resolve()));
-    }
-  });
-
-  it("routes MCP tool calls over the selected TCP endpoint", async () => {
-    let request: any;
-    let receivedRequest!: () => void;
-    const requestReceived = new Promise<void>((resolve) => {
-      receivedRequest = resolve;
-    });
-    const credential = createRemoteCredential();
-    const server = net.createServer((socket: any) =>
-      attachAuthenticatedServer(socket, credential.stateDir, (message: any, client: any) => {
-        request = message;
-        receivedRequest();
-        remoteTransport
-          .writeFrame(client, {
-            id: message.id,
-            result: { content: [{ type: "text", text: "OK" }] },
-          })
-          .finally(() => client.end())
-          .catch(() => client.end());
-      }),
-    );
-    await new Promise<void>((resolve, reject) => {
-      server.on("error", reject);
-      server.listen(0, "127.0.0.1", resolve);
-    });
-    const remote = `127.0.0.1:${(server.address() as any).port}`;
-    const child = spawn(
-      process.execPath,
-      [
-        "native/cli.cjs",
-        "server",
-        "--remote",
-        remote,
-        "--remote-credential",
-        credential.credentialPath,
-      ],
-      {
-        cwd: process.cwd(),
-        env: createCliEnv(),
-        stdio: ["pipe", "pipe", "pipe"],
-      },
-    );
-    let initialized!: () => void;
-    const initializationComplete = new Promise<void>((resolve) => {
-      initialized = resolve;
-    });
-    let completed!: () => void;
-    const toolCallComplete = new Promise<void>((resolve) => {
-      completed = resolve;
-    });
-    child.stdout.on("data", (chunk: { toString(): string }) => {
-      const output = chunk.toString();
-      if (output.includes('"id":1')) {
-        initialized();
-      }
-      if (output.includes('"id":2')) {
-        completed();
-      }
-    });
-    const send = (message: object) => child.stdin.write(`${JSON.stringify(message)}\n`);
-    try {
-      send({
-        jsonrpc: "2.0",
-        id: 1,
-        method: "initialize",
-        params: {
-          protocolVersion: "2024-11-05",
-          capabilities: {},
-          clientInfo: { name: "test", version: "1" },
+  it(
+    "sends stream requests over the selected TCP endpoint without forwarding remote",
+    async () => {
+      let request: any;
+      let receivedRequest!: () => void;
+      const requestReceived = new Promise<void>((resolve) => {
+        receivedRequest = resolve;
+      });
+      const credential = createRemoteCredential();
+      const server = net.createServer((socket: any) =>
+        attachAuthenticatedServer(socket, credential.stateDir, (message: any, client: any) => {
+          request = message;
+          receivedRequest();
+          remoteTransport.writeFrame(client, { type: "stream_started" }).catch(() => undefined);
+        }),
+      );
+      await new Promise<void>((resolve, reject) => {
+        server.on("error", reject);
+        server.listen(0, "127.0.0.1", resolve);
+      });
+      const remote = `127.0.0.1:${(server.address() as any).port}`;
+      const child = spawn(
+        process.execPath,
+        [
+          "native/cli.cjs",
+          "console",
+          "--stream",
+          "--remote",
+          remote,
+          "--remote-credential",
+          credential.credentialPath,
+          "--no-lock",
+        ],
+        {
+          cwd: process.cwd(),
+          env: createCliEnv(),
+          stdio: ["ignore", "ignore", "pipe"],
         },
+      );
+      try {
+        await waitFor(requestReceived, CLI_WAIT_MS, "stream request");
+        expect(request).toMatchObject({ type: "stream_request", streamType: "STREAM_CONSOLE" });
+        expect(JSON.stringify(request)).not.toContain("remote");
+      } finally {
+        child.kill("SIGINT");
+        await new Promise<void>((resolve) => child.once("close", () => resolve()));
+        fs.rmSync(credential.stateDir, { recursive: true, force: true });
+        await new Promise<void>((resolve) => server.close(() => resolve()));
+      }
+    },
+    CLI_TEST_TIMEOUT_MS,
+  );
+
+  it(
+    "routes MCP tool calls over the selected TCP endpoint",
+    async () => {
+      let request: any;
+      let receivedRequest!: () => void;
+      const requestReceived = new Promise<void>((resolve) => {
+        receivedRequest = resolve;
       });
-      await waitFor(initializationComplete, 1000, "MCP initialization");
-      send({
-        jsonrpc: "2.0",
-        id: 2,
-        method: "tools/call",
-        params: { name: "page.text", arguments: {} },
+      const credential = createRemoteCredential();
+      const server = net.createServer((socket: any) =>
+        attachAuthenticatedServer(socket, credential.stateDir, (message: any, client: any) => {
+          request = message;
+          receivedRequest();
+          remoteTransport
+            .writeFrame(client, {
+              id: message.id,
+              result: { content: [{ type: "text", text: "OK" }] },
+            })
+            .finally(() => client.end())
+            .catch(() => client.end());
+        }),
+      );
+      await new Promise<void>((resolve, reject) => {
+        server.on("error", reject);
+        server.listen(0, "127.0.0.1", resolve);
       });
-      await waitFor(requestReceived, 1000, "MCP TCP request");
-      expect(request.params.tool).toBe("page.text");
-      expect(JSON.stringify(request)).not.toContain("remote");
-      await waitFor(toolCallComplete, 1000, "MCP tool response");
-    } finally {
-      child.stdin.end();
-      child.kill("SIGTERM");
-      await new Promise<void>((resolve) => child.once("close", () => resolve()));
-      fs.rmSync(credential.stateDir, { recursive: true, force: true });
-      await new Promise<void>((resolve) => server.close(() => resolve()));
-    }
-  });
+      const remote = `127.0.0.1:${(server.address() as any).port}`;
+      const child = spawn(
+        process.execPath,
+        [
+          "native/cli.cjs",
+          "server",
+          "--remote",
+          remote,
+          "--remote-credential",
+          credential.credentialPath,
+        ],
+        {
+          cwd: process.cwd(),
+          env: createCliEnv(),
+          stdio: ["pipe", "pipe", "pipe"],
+        },
+      );
+      let initialized!: () => void;
+      const initializationComplete = new Promise<void>((resolve) => {
+        initialized = resolve;
+      });
+      let completed!: () => void;
+      const toolCallComplete = new Promise<void>((resolve) => {
+        completed = resolve;
+      });
+      child.stdout.on("data", (chunk: { toString(): string }) => {
+        const output = chunk.toString();
+        if (output.includes('"id":1')) {
+          initialized();
+        }
+        if (output.includes('"id":2')) {
+          completed();
+        }
+      });
+      const send = (message: object) => child.stdin.write(`${JSON.stringify(message)}\n`);
+      try {
+        send({
+          jsonrpc: "2.0",
+          id: 1,
+          method: "initialize",
+          params: {
+            protocolVersion: "2024-11-05",
+            capabilities: {},
+            clientInfo: { name: "test", version: "1" },
+          },
+        });
+        await waitFor(initializationComplete, CLI_WAIT_MS, "MCP initialization");
+        send({
+          jsonrpc: "2.0",
+          id: 2,
+          method: "tools/call",
+          params: { name: "page.text", arguments: {} },
+        });
+        await waitFor(requestReceived, CLI_WAIT_MS, "MCP TCP request");
+        expect(request.params.tool).toBe("page.text");
+        expect(JSON.stringify(request)).not.toContain("remote");
+        await waitFor(toolCallComplete, CLI_WAIT_MS, "MCP tool response");
+      } finally {
+        child.stdin.end();
+        child.kill("SIGTERM");
+        await new Promise<void>((resolve) => child.once("close", () => resolve()));
+        fs.rmSync(credential.stateDir, { recursive: true, force: true });
+        await new Promise<void>((resolve) => server.close(() => resolve()));
+      }
+    },
+    CLI_TEST_TIMEOUT_MS,
+  );
 
   it("maps resize positional width and height", async () => {
     const { request } = await runCli(["resize", "375", "812"]);
@@ -1303,74 +1377,29 @@ describe("CLI argument parsing", () => {
     });
   });
 
-  it("lets ordinary one-shot requests reach the host concurrently", async () => {
-    const socketPath = createSocketPath();
-    cleanupSocket(socketPath);
-    let requestCount = 0;
-    let firstRequestAt = 0;
-    let secondRequestAt = 0;
-    let resolveFirstRequest!: () => void;
-    let resolveSecondRequest!: () => void;
-    const firstRequest = new Promise<void>((resolve) => {
-      resolveFirstRequest = resolve;
-    });
-    const secondRequest = new Promise<void>((resolve) => {
-      resolveSecondRequest = resolve;
-    });
-
-    const server = net.createServer((socket: any) => {
-      let buffer = "";
-      socket.on("data", (chunk: { toString(): string }) => {
-        buffer += chunk.toString();
-        const lineEnd = buffer.indexOf("\n");
-        if (lineEnd === -1) {
-          return;
-        }
-
-        const request = JSON.parse(buffer.slice(0, lineEnd));
-        requestCount++;
-        if (requestCount === 1) {
-          firstRequestAt = Date.now();
-          resolveFirstRequest();
-          setTimeout(() => {
-            socket.write(
-              `${JSON.stringify({ id: request.id, result: { content: [{ type: "text", text: "first" }] } })}\n`,
-            );
-            socket.end();
-          }, 250);
-          return;
-        }
-
-        secondRequestAt = Date.now();
-        resolveSecondRequest();
-        socket.write(
-          `${JSON.stringify({ id: request.id, result: { content: [{ type: "text", text: "second" }] } })}\n`,
-        );
-        socket.end();
-      });
-    });
-
-    await new Promise<void>((resolve, reject) => {
-      server.on("error", reject);
-      server.listen(socketPath, resolve);
-    });
-
-    try {
-      const first = spawnCliWithSocket(["page.text"], socketPath);
-      await waitFor(firstRequest, 1000, "first request");
-      const second = spawnCliWithSocket(["page.state"], socketPath);
-      await waitFor(secondRequest, 200, "second concurrent request");
-      const [firstDone, secondDone] = await Promise.all([first.done, second.done]);
-
-      expect(firstDone.code).toBe(0);
-      expect(secondDone.code).toBe(0);
-      expect(requestCount).toBe(2);
-      expect(secondRequestAt - firstRequestAt).toBeLessThan(200);
-    } finally {
-      server.close();
+  it(
+    "lets ordinary one-shot requests reach the host concurrently",
+    async () => {
+      const socketPath = createSocketPath();
       cleanupSocket(socketPath);
-    }
-  });
+      const host = await startPairHost(socketPath);
+      try {
+        const first = spawnCliWithSocket(["page.text"], socketPath);
+        await waitFor(host.first, CLI_WAIT_MS, "first request");
+        const second = spawnCliWithSocket(["page.state"], socketPath);
+        await waitFor(host.second, CLI_WAIT_MS, "second request while the first is open");
+        const [firstDone, secondDone] = await Promise.all([first.done, second.done]);
+
+        expect(firstDone.code).toBe(0);
+        expect(secondDone.code).toBe(0);
+        expect(host.requestCount).toBe(2);
+      } finally {
+        host.close();
+        cleanupSocket(socketPath);
+      }
+    },
+    CLI_TEST_TIMEOUT_MS,
+  );
 
   for (const workflowCase of [
     {
@@ -1386,22 +1415,45 @@ describe("CLI argument parsing", () => {
       args: () => ({ args: ["do", "page.state"], cleanup: () => undefined }),
     },
   ]) {
-    it(`lets ${workflowCase.name} requests reach the host scheduler concurrently`, async () => {
+    it(
+      `lets ${workflowCase.name} requests reach the host scheduler concurrently`,
+      async () => {
+        const socketPath = createSocketPath();
+        cleanupSocket(socketPath);
+        const workflow = workflowCase.args();
+        const host = await startPairHost(socketPath);
+        try {
+          const first = spawnCliWithSocket(["page.text"], socketPath);
+          await waitFor(host.first, CLI_WAIT_MS, "first request");
+          const second = spawnCliWithSocket(workflow.args, socketPath);
+          await waitFor(host.second, CLI_WAIT_MS, "second request while the first is open");
+          const [firstDone, secondDone] = await Promise.all([first.done, second.done]);
+
+          expect(firstDone.code).toBe(0);
+          expect(secondDone.code).toBe(0);
+          expect(host.requestCount).toBe(2);
+        } finally {
+          host.close();
+          cleanupSocket(socketPath);
+          workflow.cleanup();
+        }
+      },
+      CLI_TEST_TIMEOUT_MS,
+    );
+  }
+
+  it(
+    "records screenshot frames into a GIF",
+    async () => {
       const socketPath = createSocketPath();
       cleanupSocket(socketPath);
-      const workflow = workflowCase.args();
-      let requestCount = 0;
-      let firstRequestAt = 0;
-      let secondRequestAt = 0;
-      let resolveFirstRequest!: () => void;
-      let resolveSecondRequest!: () => void;
-      const firstRequest = new Promise<void>((resolve) => {
-        resolveFirstRequest = resolve;
-      });
-      const secondRequest = new Promise<void>((resolve) => {
-        resolveSecondRequest = resolve;
-      });
+      const outputPath = path.join(os.tmpdir(), `surf-record-${process.pid}-${Date.now()}.gif`);
+      const magickDir = fs.mkdtempSync(path.join(os.tmpdir(), "surf-magick-"));
+      const magickPath = path.join(magickDir, "magick");
+      fs.writeFileSync(magickPath, '#!/bin/sh\nfor last do :; done\nprintf "GIF89a" > "$last"\n');
+      fs.chmodSync(magickPath, 0o755);
 
+      const requests: any[] = [];
       const server = net.createServer((socket: any) => {
         let buffer = "";
         socket.on("data", (chunk: { toString(): string }) => {
@@ -1412,24 +1464,9 @@ describe("CLI argument parsing", () => {
           }
 
           const request = JSON.parse(buffer.slice(0, lineEnd));
-          buffer = buffer.slice(lineEnd + 1);
-          requestCount++;
-          if (requestCount === 1) {
-            firstRequestAt = Date.now();
-            resolveFirstRequest();
-            setTimeout(() => {
-              socket.write(
-                `${JSON.stringify({ id: request.id, result: { content: [{ type: "text", text: "first" }] } })}\n`,
-              );
-              socket.end();
-            }, 250);
-            return;
-          }
-
-          secondRequestAt = Date.now();
-          resolveSecondRequest();
+          requests.push(request);
           socket.write(
-            `${JSON.stringify({ id: request.id, result: { content: [{ type: "text", text: "second" }] } })}\n`,
+            `${JSON.stringify({ id: request.id, result: { content: [{ type: "text", text: JSON.stringify({ ok: true }) }] } })}\n`,
           );
           socket.end();
         });
@@ -1441,100 +1478,50 @@ describe("CLI argument parsing", () => {
       });
 
       try {
-        const first = spawnCliWithSocket(["page.text"], socketPath);
-        await waitFor(firstRequest, 1000, "first request");
-        const second = spawnCliWithSocket(workflow.args, socketPath);
-        await waitFor(secondRequest, 200, "second concurrent request");
-        const [firstDone, secondDone] = await Promise.all([first.done, second.done]);
+        const child = spawnCliWithSocket(
+          [
+            "record",
+            "--duration",
+            "200",
+            "--fps",
+            "10",
+            "--trigger",
+            "click:#go",
+            "--rect",
+            "0,10,200,100",
+            "--output",
+            outputPath,
+            "--json",
+          ],
+          socketPath,
+          { PATH: `${magickDir}${path.delimiter}${process.env.PATH || ""}` },
+        );
+        const done = await waitFor(child.done, CLI_WAIT_MS, "record command");
 
-        expect(firstDone.code).toBe(0);
-        expect(secondDone.code).toBe(0);
-        expect(requestCount).toBe(2);
-        expect(secondRequestAt - firstRequestAt).toBeLessThan(200);
+        expect(done.code).toBe(0);
+        expect(done.stderr).toBe("");
+        expect(fs.readFileSync(outputPath, "utf8")).toBe("GIF89a");
+        const summary = JSON.parse(done.stdout);
+        expect(summary).toMatchObject({ output: outputPath, frames: 2, durationMs: 200, fps: 10 });
+        expect(summary.trigger).toEqual({ action: "click", selector: "#go" });
+        expect(summary.rect).toEqual({ x: 0, y: 10, width: 200, height: 100 });
+        expect(requests.map((request) => request.params.tool)).toEqual([
+          "click",
+          "screenshot",
+          "screenshot",
+        ]);
+        expect(requests[0].params.args.selector).toBe("#go");
+        expect(requests[1].params.args.savePath).toContain("frame-0000.png");
+        expect(requests[2].params.args.savePath).toContain("frame-0001.png");
       } finally {
         server.close();
         cleanupSocket(socketPath);
-        workflow.cleanup();
+        fs.rmSync(magickDir, { recursive: true, force: true });
+        fs.rmSync(outputPath, { force: true });
       }
-    });
-  }
-
-  it("records screenshot frames into a GIF", async () => {
-    const socketPath = createSocketPath();
-    cleanupSocket(socketPath);
-    const outputPath = path.join(os.tmpdir(), `surf-record-${process.pid}-${Date.now()}.gif`);
-    const magickDir = fs.mkdtempSync(path.join(os.tmpdir(), "surf-magick-"));
-    const magickPath = path.join(magickDir, "magick");
-    fs.writeFileSync(magickPath, '#!/bin/sh\nfor last do :; done\nprintf "GIF89a" > "$last"\n');
-    fs.chmodSync(magickPath, 0o755);
-
-    const requests: any[] = [];
-    const server = net.createServer((socket: any) => {
-      let buffer = "";
-      socket.on("data", (chunk: { toString(): string }) => {
-        buffer += chunk.toString();
-        const lineEnd = buffer.indexOf("\n");
-        if (lineEnd === -1) {
-          return;
-        }
-
-        const request = JSON.parse(buffer.slice(0, lineEnd));
-        requests.push(request);
-        socket.write(
-          `${JSON.stringify({ id: request.id, result: { content: [{ type: "text", text: JSON.stringify({ ok: true }) }] } })}\n`,
-        );
-        socket.end();
-      });
-    });
-
-    await new Promise<void>((resolve, reject) => {
-      server.on("error", reject);
-      server.listen(socketPath, resolve);
-    });
-
-    try {
-      const child = spawnCliWithSocket(
-        [
-          "record",
-          "--duration",
-          "200",
-          "--fps",
-          "10",
-          "--trigger",
-          "click:#go",
-          "--rect",
-          "0,10,200,100",
-          "--output",
-          outputPath,
-          "--json",
-        ],
-        socketPath,
-        { PATH: `${magickDir}${path.delimiter}${process.env.PATH || ""}` },
-      );
-      const done = await waitFor(child.done, 3000, "record command");
-
-      expect(done.code).toBe(0);
-      expect(done.stderr).toBe("");
-      expect(fs.readFileSync(outputPath, "utf8")).toBe("GIF89a");
-      const summary = JSON.parse(done.stdout);
-      expect(summary).toMatchObject({ output: outputPath, frames: 2, durationMs: 200, fps: 10 });
-      expect(summary.trigger).toEqual({ action: "click", selector: "#go" });
-      expect(summary.rect).toEqual({ x: 0, y: 10, width: 200, height: 100 });
-      expect(requests.map((request) => request.params.tool)).toEqual([
-        "click",
-        "screenshot",
-        "screenshot",
-      ]);
-      expect(requests[0].params.args.selector).toBe("#go");
-      expect(requests[1].params.args.savePath).toContain("frame-0000.png");
-      expect(requests[2].params.args.savePath).toContain("frame-0001.png");
-    } finally {
-      server.close();
-      cleanupSocket(socketPath);
-      fs.rmSync(magickDir, { recursive: true, force: true });
-      fs.rmSync(outputPath, { force: true });
-    }
-  });
+    },
+    CLI_TEST_TIMEOUT_MS,
+  );
 
   it("routes space-separated video commands with a local WebM output path", async () => {
     const outputPath = path.join(os.tmpdir(), `surf-video-${process.pid}-${Date.now()}.webm`);
@@ -1546,135 +1533,98 @@ describe("CLI argument parsing", () => {
     expect(JSON.parse(result.stdout)).toBe("OK");
   });
 
-  it("saves perf-audit JSON output", async () => {
-    const socketPath = createSocketPath();
-    cleanupSocket(socketPath);
-    const outputPath = path.join(os.tmpdir(), `surf-perf-${process.pid}-${Date.now()}.json`);
-    let request: any;
-
-    const server = net.createServer((socket: any) => {
-      let buffer = "";
-      socket.on("data", (chunk: { toString(): string }) => {
-        buffer += chunk.toString();
-        const lineEnd = buffer.indexOf("\n");
-        if (lineEnd === -1) {
-          return;
-        }
-
-        request = JSON.parse(buffer.slice(0, lineEnd));
-        socket.write(
-          `${JSON.stringify({
-            id: request.id,
-            result: {
-              content: [
-                {
-                  type: "text",
-                  text: JSON.stringify({
-                    durationMs: 300,
-                    summary: { cumulativeLayoutShift: 0.1 },
-                    entries: { layoutShifts: [] },
-                  }),
-                },
-              ],
-            },
-          })}\n`,
-        );
-        socket.end();
-      });
-    });
-
-    await new Promise<void>((resolve, reject) => {
-      server.on("error", reject);
-      server.listen(socketPath, resolve);
-    });
-
-    try {
-      const child = spawnCliWithSocket(
-        ["perf-audit", "--duration", "300", "--trigger", "click:.cta", "--output", outputPath],
-        socketPath,
-      );
-      const done = await waitFor(child.done, 3000, "perf-audit command");
-
-      expect(done.code).toBe(0);
-      expect(done.stderr).toBe("");
-      expect(done.stdout).toContain(`Saved perf audit to ${outputPath}`);
-      expect(request.params).toMatchObject({
-        tool: "perf-audit",
-        args: { duration: 300, trigger: "click:.cta" },
-      });
-      expect(JSON.parse(fs.readFileSync(outputPath, "utf8"))).toMatchObject({
-        durationMs: 300,
-        summary: { cumulativeLayoutShift: 0.1 },
-      });
-    } finally {
-      server.close();
+  it(
+    "saves perf-audit JSON output",
+    async () => {
+      const socketPath = createSocketPath();
       cleanupSocket(socketPath);
-      fs.rmSync(outputPath, { force: true });
-    }
-  });
+      const outputPath = path.join(os.tmpdir(), `surf-perf-${process.pid}-${Date.now()}.json`);
+      let request: any;
 
-  it("allows --no-lock to bypass a held browser lock", async () => {
-    const socketPath = createSocketPath();
-    cleanupSocket(socketPath);
-    let requestCount = 0;
-    let resolveFirstRequest!: () => void;
-    let resolveSecondRequest!: () => void;
-    const firstRequest = new Promise<void>((resolve) => {
-      resolveFirstRequest = resolve;
-    });
-    const secondRequest = new Promise<void>((resolve) => {
-      resolveSecondRequest = resolve;
-    });
+      const server = net.createServer((socket: any) => {
+        let buffer = "";
+        socket.on("data", (chunk: { toString(): string }) => {
+          buffer += chunk.toString();
+          const lineEnd = buffer.indexOf("\n");
+          if (lineEnd === -1) {
+            return;
+          }
 
-    const server = net.createServer((socket: any) => {
-      let buffer = "";
-      socket.on("data", (chunk: { toString(): string }) => {
-        buffer += chunk.toString();
-        const lineEnd = buffer.indexOf("\n");
-        if (lineEnd === -1) {
-          return;
-        }
-
-        const request = JSON.parse(buffer.slice(0, lineEnd));
-        buffer = buffer.slice(lineEnd + 1);
-        requestCount++;
-        if (requestCount === 1) {
-          resolveFirstRequest();
-          setTimeout(() => {
-            socket.write(
-              `${JSON.stringify({ id: request.id, result: { content: [{ type: "text", text: "first" }] } })}\n`,
-            );
-            socket.end();
-          }, 300);
-          return;
-        }
-
-        resolveSecondRequest();
-        socket.write(
-          `${JSON.stringify({ id: request.id, result: { content: [{ type: "text", text: "second" }] } })}\n`,
-        );
-        socket.end();
+          request = JSON.parse(buffer.slice(0, lineEnd));
+          socket.write(
+            `${JSON.stringify({
+              id: request.id,
+              result: {
+                content: [
+                  {
+                    type: "text",
+                    text: JSON.stringify({
+                      durationMs: 300,
+                      summary: { cumulativeLayoutShift: 0.1 },
+                      entries: { layoutShifts: [] },
+                    }),
+                  },
+                ],
+              },
+            })}\n`,
+          );
+          socket.end();
+        });
       });
-    });
 
-    await new Promise<void>((resolve, reject) => {
-      server.on("error", reject);
-      server.listen(socketPath, resolve);
-    });
+      await new Promise<void>((resolve, reject) => {
+        server.on("error", reject);
+        server.listen(socketPath, resolve);
+      });
 
-    try {
-      const first = spawnCliWithSocket(["page.text"], socketPath);
-      await waitFor(firstRequest, 1000, "first request");
-      const second = spawnCliWithSocket(["page.state", "--no-lock"], socketPath);
-      await waitFor(secondRequest, 200, "second no-lock request");
-      const [firstDone, secondDone] = await Promise.all([first.done, second.done]);
+      try {
+        const child = spawnCliWithSocket(
+          ["perf-audit", "--duration", "300", "--trigger", "click:.cta", "--output", outputPath],
+          socketPath,
+        );
+        const done = await waitFor(child.done, CLI_WAIT_MS, "perf-audit command");
 
-      expect(firstDone.code).toBe(0);
-      expect(secondDone.code).toBe(0);
-      expect(requestCount).toBe(2);
-    } finally {
-      server.close();
+        expect(done.code).toBe(0);
+        expect(done.stderr).toBe("");
+        expect(done.stdout).toContain(`Saved perf audit to ${outputPath}`);
+        expect(request.params).toMatchObject({
+          tool: "perf-audit",
+          args: { duration: 300, trigger: "click:.cta" },
+        });
+        expect(JSON.parse(fs.readFileSync(outputPath, "utf8"))).toMatchObject({
+          durationMs: 300,
+          summary: { cumulativeLayoutShift: 0.1 },
+        });
+      } finally {
+        server.close();
+        cleanupSocket(socketPath);
+        fs.rmSync(outputPath, { force: true });
+      }
+    },
+    CLI_TEST_TIMEOUT_MS,
+  );
+
+  it(
+    "allows --no-lock to bypass a held browser lock",
+    async () => {
+      const socketPath = createSocketPath();
       cleanupSocket(socketPath);
-    }
-  });
+      const host = await startPairHost(socketPath);
+      try {
+        const first = spawnCliWithSocket(["page.text"], socketPath);
+        await waitFor(host.first, CLI_WAIT_MS, "first request");
+        const second = spawnCliWithSocket(["page.state", "--no-lock"], socketPath);
+        await waitFor(host.second, CLI_WAIT_MS, "second no-lock request while the first is open");
+        const [firstDone, secondDone] = await Promise.all([first.done, second.done]);
+
+        expect(firstDone.code).toBe(0);
+        expect(secondDone.code).toBe(0);
+        expect(host.requestCount).toBe(2);
+      } finally {
+        host.close();
+        cleanupSocket(socketPath);
+      }
+    },
+    CLI_TEST_TIMEOUT_MS,
+  );
 });
