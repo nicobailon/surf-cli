@@ -1080,7 +1080,7 @@ run      surf use books list_books --page 2
 
 - `{{name}}` in the URL or a `--do` step (`--do 'type "{{query}}" --into "#q" | key Enter' --query einstein`), with `--name <sample>`, becomes an input where that value sits in the request. A search key becomes `query`, a page key or `page-N` segment `page`, an id in the path `<word before>_id`.
 - The pick scores each request: same site, a JSON list of objects, the page's own document, share of the page's words, sent after the `--do` steps, a word of the goal. Exit 2 when the best leads by under 3 points: it prints the top 3 and a rerun line with `--match <url-part>`.
-- A pick that is not GET or HEAD is saved as a write, untested (`test     not run`), with its extract read from the captured response; its run line ends in `--write`. A secret-named body or query field (`password`, `token`, `secret`, `key`, `csrf`…) becomes a required input with no stored value.
+- A pick that is not GET or HEAD is saved as a write, untested (`test     not run`), with its extract read from the captured response; its run line ends in `--write`. A secret-named body or query field (`password`, `token`, `secret`, `api_key`, `csrf`…) becomes a required input with no stored value.
 - Exit 1 on an error: it prints the draft op and saves nothing.
 - `--as <site>/<op>` names it; the default is the host name and `get_` with the goal's first three words.
 - `surf pb record start <site> --op <name>` captures network requests by default (`--no-network` turns it off), and `surf pb record stop` makes the op the same way from what you did, values you typed included. On a weak pick the record keeps recording: `stop --match <url-part>` picks. `--draft` only drafts, as before.
@@ -1089,7 +1089,7 @@ run      surf use books list_books --page 2
 
 An op made by `surf hook` or `pb record stop` keeps what made it in `source` (`url`, `goal`, and `do` and `match` when given). When such a read later gets an answer without its records, or a 404 or 410, on its last step and again with its saved sample inputs (so an empty search or a page past the end changes nothing), `surf use` runs the hook pipeline again on `source` with those samples. It keeps the op's input names, `expect` and the names of fields whose selector still reads them, saves the new op only if it passes `expect`, keeps the old file as `<op>.json.bak`, prints one line on stderr (`repaired books list_books: records article.product_pod → article.product_card; fields +price_now`), and answers the call. If the rebuild fails, the run fails as before and prints the `surf hook` command to rebuild it. A 401, 403, 429, 5xx or network error, a write, a call with `--url`, or `--no-repair` never repairs, and a `--do` that types a value that is no input saves no `source`; `pb test` reports a repair and takes `--no-repair` too.
 
-When `go`, `navigate` or `tab.switch` lands on a site your playbooks have ops for, surf prints them once per session and site, up to five: `saved: books get_book --book_id, list_books --page`. `--json` carries them as `savedOps`.
+When `go`, `navigate` or `tab.switch` lands on a site your playbooks have ops for, surf prints them once per session and site, up to five: `saved: books get_book --catalogue_id, list_books --page`. `--json` carries them as `savedOps`.
 
 Playbook read ops can also use a trusted `script` strategy when fixed JSON steps are too rigid. Scripts require `--allow-script` at run time. Only run scripts from playbooks you trust. This is not a security sandbox.
 
