@@ -250,4 +250,15 @@ function readCursor(doc, cursor) {
   return first === undefined ? undefined : get(first);
 }
 
-module.exports = { createRecordSet, filterRecords, findObjects, getPath, readCursor };
+/** An op's JSON extract: the records at `records` ($ and $.a.b paths), each read by `fields`. */
+function readJson(value, { records, fields } = {}) {
+  const at = records === undefined || records === "$" ? value : compilePath(records.replace(/^\$\./, ""))(value);
+  if (at === undefined) throw new Error(`extract records ${records} is not in the response`);
+  if (fields === undefined) return at;
+  const map = compileFields(fields, "extract.fields");
+  if (records === undefined) return map(at);
+  if (!Array.isArray(at)) throw new Error(`extract records ${records} is not a list`);
+  return at.filter(isPlainObject).map(map);
+}
+
+module.exports = { createRecordSet, filterRecords, findObjects, getPath, readCursor, readJson };

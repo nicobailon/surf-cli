@@ -63,6 +63,7 @@ const {
   updateRecordContext,
 } = require("./playbook-records.cjs");
 const { resolveArgs, runPlaybookOp } = require("./playbook-runtime.cjs");
+const { dryRunOp, runOp } = require("./op-run.cjs");
 const { resolveOp } = require("./playbooks.cjs");
 const { replay, waitForResponse } = require("./api-harvest.cjs");
 const { runCollect } = require("./dom-collect.cjs");
@@ -1560,7 +1561,17 @@ async function runHostPlaybook(msg, request) {
     cwd: request.context?.isRemote ? process.cwd() : params.projectDir || process.cwd(),
     pinBuiltIn: params.pinBuiltIn === true,
   });
+  // --url and --pages are surf's unless the op names an input so.
+  const flag = (name) => (Object.hasOwn(op.args || {}, name) ? undefined : params.args?.[name]);
+  const url = flag("url");
+  const pages = flag("pages") ?? 1;
+  if (op.run && (url !== undefined || pages !== 1 || params.dryRun)) {
+    throw new Error(`--url, --pages and --dry-run need an op with request or open; ${playbook.id} ${op.id} has a run list`);
+  }
+  if (url !== undefined && typeof url !== "string") throw new Error("--url needs a URL");
+  if (!Number.isInteger(pages) || pages < 1 || pages > 100) throw new Error("--pages must be a whole number from 1 to 100");
   const runArgs = resolveArgs(op, params.args || {}, { playbookId: playbook.id });
+  if (params.dryRun) return dryRunOp({ playbook, op, args: runArgs, url });
   if (op.effect === "write" && op.safety.authorization === "explicit" && params.write !== true) {
     throw new Error(`write op ${playbook.id} ${op.id} requires --write`);
   }
@@ -1576,10 +1587,13 @@ async function runHostPlaybook(msg, request) {
     appendActivity(event);
     appendRecordEvent(event, { target: recordEventTarget(request) });
   };
-  const result = await runPlaybookOp({
+  const result = await (op.run ? runPlaybookOp : runOp)({
     playbook,
     op,
     args: runArgs,
+    url,
+    pages,
+    env: { ...process.env, ...params.env },
     attemptId: receipt?.attemptId,
     signal: request.signal,
     executeTool: (tool, args) => executeMappedHostTool(request, tool, args, msg.tabId),

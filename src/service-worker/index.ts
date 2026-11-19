@@ -2773,7 +2773,7 @@ export async function handleMessage(
 
         const value = result.result?.value;
         const output = value === undefined ? "undefined" : JSON.stringify(value, null, 2);
-        return { output: output?.substring(0, 50000) || "undefined" };
+        return { output: output?.substring(0, message.maxOutput ?? 50000) || "undefined" };
       } catch (err) {
         const msg = err instanceof Error ? err.message : "Script execution failed";
         if (msg.includes("Cannot access") || msg.includes("Cannot attach")) {

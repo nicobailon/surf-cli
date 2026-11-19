@@ -4,9 +4,10 @@ const path = require("path");
 const { atomicWriteJson } = require("./private-state.cjs");
 const { validateApiSpec } = require("./api-harvest.cjs");
 const { validateCollectSpec } = require("./dom-collect.cjs");
+const { validateExtract } = require("./op-extract.cjs");
 const { validateMarkdownSpec } = require("./record-format.cjs");
 const { assertNoEmbeddedSecrets, assertUrlHasNoEmbeddedSecrets } = require("./redaction.cjs");
-const { commandMetadata, normalizeStep } = require("./workflow-definition.cjs");
+const { commandMetadata, normalizeStep, parseDoCommands } = require("./workflow-definition.cjs");
 
 const BUILTIN_DIR = path.join(__dirname, "..", "playbooks");
 const PINNED_BUILTINS = new Set(["chatgpt", "aistudio", "x"]);
@@ -128,12 +129,67 @@ function validateStrategy(strategy, effect, opId) {
   throw new Error(`unsupported playbook strategy: ${strategy.using}`);
 }
 
+// The op file's flat keys (README "Ops"); safety, auth, origins, markdown and provenance as for run ops.
+const FLAT_KEYS = new Set(["id", "description", "effect", "args", "request", "open", "steps", "extract", "page", "expect", "chain", "safety", "auth", "origins", "markdown", "provenance"]);
+const isObject = (value) => value !== null && typeof value === "object" && !Array.isArray(value);
+
+function validateRequest(request, id, effect) {
+  if (!isObject(request) || typeof request.url !== "string") throw new Error(`op ${id} request needs a url`);
+  for (const key of ["query", "headers"]) {
+    if (request[key] !== undefined && !isObject(request[key])) throw new Error(`op ${id} request.${key} must be an object`);
+  }
+  const method = String(request.method || "GET").toUpperCase();
+  if (effect === "read" && !["GET", "HEAD", "OPTIONS", "POST"].includes(method)) throw new Error("read ops cannot use a mutating network method");
+  assertUrlHasNoEmbeddedSecrets(request.url);
+  assertNoEmbeddedSecrets(request.headers || {});
+  assertNoEmbeddedSecrets(request.query || {});
+  assertNoEmbeddedSecrets(request.body);
+  return { ...request, method };
+}
+
+function validateFlatOp(value, id, effect) {
+  for (const key of Object.keys(value)) if (!FLAT_KEYS.has(key)) throw new Error(`op ${id} has unknown key "${key}"`);
+  const op = { ...value };
+  if (value.request !== undefined) op.request = validateRequest(value.request, id, effect);
+  if (value.open !== undefined && (typeof value.open !== "string" || !value.open)) throw new Error(`op ${id} open must be a URL`);
+  if (value.steps !== undefined) {
+    if (value.open === undefined) throw new Error(`op ${id} steps run on the page it opens, so they need open`);
+    const steps = typeof value.steps === "string" ? parseDoCommands(value.steps) : value.steps;
+    if (!Array.isArray(steps)) throw new Error(`op ${id} steps must be surf do steps`);
+    op.steps = steps.map(normalizeStep);
+  }
+  validateExtract(value.extract, `op ${id} extract`);
+  if (value.page !== undefined) {
+    const { into, next, ...rest } = isObject(value.page) ? value.page : { next: null };
+    if (typeof next !== "string" || !next || Object.keys(rest).length) throw new Error(`op ${id} page must be { into?, next }`);
+    if (/^\+\d+$/.test(next) && into === undefined) throw new Error(`op ${id} page.next "${next}" adds to an input, so it needs page.into`);
+    if (into !== undefined && !Object.hasOwn(value.args || {}, into)) throw new Error(`op ${id} page.into names no input: ${into}`);
+  }
+  if (value.expect !== undefined) {
+    const { status, minItems, fields, ...rest } = isObject(value.expect) ? value.expect : { status: null };
+    if (Object.keys(rest).length) throw new Error(`op ${id} expect takes status, minItems and fields`);
+    for (const [name, number] of [["status", status], ["minItems", minItems]]) {
+      if (number !== undefined && !Number.isInteger(number)) throw new Error(`op ${id} expect.${name} must be an integer`);
+    }
+    if (fields !== undefined && (!Array.isArray(fields) || !fields.every((name) => typeof name === "string"))) throw new Error(`op ${id} expect.fields must be a list of field names`);
+  }
+  if (value.chain !== undefined && (!Array.isArray(value.chain) || !value.chain.every((step) => isObject(step) && typeof step.id === "string" && typeof step.op === "string"))) {
+    throw new Error(`op ${id} chain must be a list of { id, op } steps`);
+  }
+  return op;
+}
+
 function validateOp(value, manifest) {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("playbook op must be an object");
   const id = assertId(value.id, "op id");
   const effect = value.effect || "read";
   if (effect !== "read" && effect !== "write") throw new Error(`op ${id} effect must be read or write`);
-  if (!Array.isArray(value.run) || value.run.length === 0) throw new Error(`op ${id} requires at least one strategy`);
+  const kinds = ["request", "open", "chain", "run"].filter((key) => value[key] !== undefined);
+  const flat = kinds.length > 0 && !kinds.includes("run");
+  if (kinds.length === 0 || (kinds.includes("run") && kinds.length > 1) || (kinds.includes("chain") && kinds.length > 1)) {
+    throw new Error(`op ${id} needs one of request, open, chain or run (request and open may go together)`);
+  }
+  if (!flat && (!Array.isArray(value.run) || value.run.length === 0)) throw new Error(`op ${id} requires at least one strategy`);
   let safety = value.safety;
   if (effect === "write") {
     if (!value.safety || !["transactional", "repeatable-window"].includes(value.safety.duplicate)) throw new Error(`write op ${id} requires duplicate safety`);
@@ -158,13 +214,13 @@ function validateOp(value, manifest) {
   }
   const origins = validateOrigins(auth.origins || value.origins || manifest.origins);
   return {
-    ...value,
+    ...(flat ? validateFlatOp(value, id, effect) : value),
     id,
     args: validateArgSpecs(value.args),
     effect,
     ...(safety ? { safety } : {}),
     auth: { ...auth, origins },
-    run: value.run.map((strategy) => validateStrategy(strategy, effect, id)),
+    ...(flat ? {} : { run: value.run.map((strategy) => validateStrategy(strategy, effect, id)) }),
     origins,
   };
 }

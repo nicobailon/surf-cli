@@ -699,7 +699,7 @@ function mapToolToMessage(tool, args, tabId) {
         ...baseMsg 
       };
     case "javascript_tool":
-      return { type: "EXECUTE_JAVASCRIPT", code: a.code, ...baseMsg };
+      return { type: "EXECUTE_JAVASCRIPT", code: a.code, ...(a.maxOutput ? { maxOutput: a.maxOutput } : {}), ...baseMsg };
     case "animate-audit": {
       if (!a.selector || typeof a.selector !== "string") throw new Error("selector required");
       if (typeof a.duration === "boolean") throw new Error("duration must be a number");
