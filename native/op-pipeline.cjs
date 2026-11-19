@@ -9,7 +9,7 @@ const path = require("path");
 const { shell } = require("./hook-cli.cjs");
 const { inferResponse, keyFields } = require("./op-infer.cjs");
 const { isSecret, nameInputs, requestOf } = require("./op-inputs.cjs");
-const { WRITE_GOAL, matchHint, pickRequest, rankRequests } = require("./op-rank.cjs");
+const { matchHint, pickRequest, rankRequests } = require("./op-rank.cjs");
 const { evaluate, renderTemplate, runOp, sendRequest } = require("./op-run.cjs");
 const { savePlaybook, validateOp } = require("./playbooks.cjs");
 const { atomicWriteJson } = require("./private-state.cjs");
@@ -21,6 +21,10 @@ const PAGE_TEXT = "({ url: location.href, text: document.body ? document.body.in
 const TRACE_LIMIT = 500;
 // Between the requests the pipeline sends a site (the page, the replay, the test), as paging does.
 const GAP_MS = 1000;
+// A goal that starts with a write verb: "submit the order", "order a book", not "order history".
+// Words that are nouns too (order, book, post, comment) count as verbs only before an object.
+const WRITE_VERB = /^\s*(?:(?:send|submit|create|add|reply|update|delete|remove|save|register|subscribe|buy|pay|upload|edit|vote)\b|(?:order|book|post|comment)\s+(?:a|an|the|my|our|this|that|it|one|some|on)\b)/i;
+const withoutHash = (url) => String(url || "").replace(/#.*$/, "");
 // Bodies the capture keeps for ranking: a whole large page, not the 64 KB a record keeps.
 const BODY_BYTES = 2 * 1024 * 1024;
 
@@ -69,7 +73,7 @@ async function makeOp({ capture, goal = "", samples = {}, typed = [], template, 
   const chosen = pickRequest(ranked, { match });
   if (chosen.error) {
     // Nothing to pick, and the page itself answered an error (a 404 or 500): say so.
-    const page = ranked.length === 0 && capture.entries.find((entry) => entry.status >= 400 && entry.url === capture.pageUrl);
+    const page = ranked.length === 0 && capture.entries.find((entry) => entry.status >= 400 && withoutHash(entry.url) === withoutHash(capture.pageUrl));
     const error = page ? `${redactUrlSecrets(page.url)} answered ${page.status}, so the capture holds no request to pick; check the URL, or add --do steps that load the data` : chosen.error;
     return { status: "error", exitCode: 1, error };
   }
@@ -111,8 +115,8 @@ async function makeOp({ capture, goal = "", samples = {}, typed = [], template, 
     const response = await sendRequest({ request: sent, ...context });
     if (response.status >= 400) throw new Error(`replaying ${sent.url} answered ${response.status}`);
     const found = inferResponse(response, { detail: named.detail });
-    // A write goal whose capture holds no write: the form was never submitted.
-    const submit = WRITE_GOAL.test(goal) && !previous ? `; a form's POST is captured only when --do submits the form: --do 'type "…" --into "<css>" | click --selector "<css>"'` : "";
+    // A write goal with no --do and no write captured: the form was never submitted.
+    const submit = WRITE_VERB.test(goal) && !capture.after && !previous ? `; a form's POST is captured only when --do submits the form: --do 'type "…" --into "<css>" | click --selector "<css>"'` : "";
     if (!found) throw new Error(`found no records or fields in the response of ${sent.url}${submit}`);
     draft.extract = found.extract;
     if (named.paging) draft.page = { into: named.paging.name, next: named.paging.next === "+count" ? `+${found.count ?? 1}` : named.paging.next };

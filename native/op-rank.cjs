@@ -136,4 +136,4 @@ function matchHint(ranked) {
   return parts.find((part) => ranked.slice(1).every((candidate) => !candidate.entry.url.includes(part))) || url.href;
 }
 
-module.exports = { WRITE_GOAL, matchHint, pickRequest, rankRequests, siteOf, visibleText };
+module.exports = { matchHint, pickRequest, rankRequests, siteOf, visibleText };

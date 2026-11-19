@@ -132,6 +132,10 @@ screenshot --output /tmp/result.png
     expect(() => parser.parseDoCommands("click", { step: "--do step" })).toThrow(
       /^--do step 1: click takes a ref \(e5\), --selector <css> or x y\. Try:/,
     );
+    // An op file's steps load as written, so one bad op doesn't take down its playbook.
+    expect(parser.parseDoCommands("click", { checkClicks: false })).toEqual([
+      { cmd: "click", args: {} },
+    ]);
     expect(parser.parseDoCommands("click --x 10 --y 20")[0].args).toEqual({ x: 10, y: 20 });
     expect(parser.parseDoCommands("click --ref e5")[0].args).toEqual({ ref: "e5" });
   });

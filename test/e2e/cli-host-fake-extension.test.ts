@@ -777,7 +777,7 @@ describe("CLI/native-host/fake-extension E2E contract", () => {
         },
       });
       expect(used.stderr).toContain(
-        "the result is 1.8 MB, over the 1 MiB the host can send the CLI; --limit and --fields trim it only after it arrives, so ask for less: fewer --pages, or narrow the op's extract (records, fields) in its file",
+        "the result is 1.8 MB, over the 1 MiB the host can send the CLI; --limit and --fields trim it only after it arrives (unless the op takes them as inputs), so ask for less: fewer --pages, or narrow the op's extract (records, fields) in its file",
       );
       expect(Date.now() - started).toBeLessThan(10_000);
       // With --each, --limit caps the runs in the host, so it is the way to ask for less.
@@ -1343,7 +1343,8 @@ describe("surf hook and pb record stop through the fake extension", () => {
     const page = "https://httpbin.org/status/404";
     const host = startHost(socketPath, {
       network: () => [captured(page, { status: 404, responseBody: "" })],
-      javascript: tab(page, "", {}, []),
+      // The tab's location keeps a fragment the captured request doesn't have.
+      javascript: tab(`${page}#top`, "", {}, []),
     });
     try {
       await host.waitForMessage((message) => message.type === "HOST_READY");
@@ -1373,9 +1374,23 @@ describe("surf hook and pb record stop through the fake extension", () => {
       expect(hooked.stderr.trim()).toBe(
         `Error: found no records or fields in the response of ${page}; a form's POST is captured only when --do submits the form: --do 'type "…" --into "<css>" | click --selector "<css>"'`,
       );
-      // A read goal keeps the short message.
-      const read = await runCli(socketPath, ["hook", page, "--goal", "the form"]);
-      expect(read.stderr.trim()).toBe(
+      // A read goal, even one with a write word as a noun, keeps the short message, and so
+      // does a write goal whose --do steps ran.
+      for (const goal of ["the form", "order history", "blog post titles"]) {
+        const read = await runCli(socketPath, ["hook", page, "--goal", goal]);
+        expect(read.stderr.trim()).toBe(
+          `Error: found no records or fields in the response of ${page}`,
+        );
+      }
+      const done = await runCli(socketPath, [
+        "hook",
+        page,
+        "--goal",
+        "submit the order",
+        "--do",
+        'click --selector "form button"',
+      ]);
+      expect(done.stderr.trim()).toBe(
         `Error: found no records or fields in the response of ${page}`,
       );
     } finally {

@@ -2000,7 +2000,7 @@ function sendToolResponse(socket, id, result, error) {
         const extract = "or narrow the op's extract (records, fields) in its file";
         const less = !request?.tool?.startsWith("playbook.") ? "ask for less"
           : request.args?.each !== undefined ? `ask for less: fewer --each runs (--limit), fewer --pages, ${extract}`
-          : `--limit and --fields trim it only after it arrives, so ask for less: fewer --pages, ${extract}`;
+          : `--limit and --fields trim it only after it arrives (unless the op takes them as inputs), so ask for less: fewer --pages, ${extract}`;
         const text = `the result is ${(sendError.bytes / 1e6).toFixed(1)} MB, over the ${MAX_FRAME_BYTES / 1024 / 1024} MiB the host can send the CLI; ${less}`;
         return sendSocket(socket, { ...rest, error: { content: [{ type: "text", text }] } });
       });

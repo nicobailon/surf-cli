@@ -253,8 +253,11 @@ function checkClick(step, line, name) {
   throw new Error(`${name}: click takes a ref (e5), --selector <css> or x y${not}. Try: click --selector "form button"`);
 }
 
-/** `step` names a step in an error, numbered from 1: "step 2", or "--do step 2" for surf hook. */
-function parseDoCommands(input, { step = "step" } = {}) {
+/**
+ * `step` names a step in an error, numbered from 1: "step 2", or "--do step 2" for surf hook.
+ * `checkClicks: false` loads an op file's steps as written, so one bad op can't hide its playbook.
+ */
+function parseDoCommands(input, { step = "step", checkClicks = true } = {}) {
   const hasPipe = input.includes("|");
   const normalized = hasPipe ? input : input.replace(/\\n/g, "\n");
   return normalized
@@ -263,7 +266,7 @@ function parseDoCommands(input, { step = "step" } = {}) {
     .filter((line) => line && !line.startsWith("#"))
     .map((line, index) => {
       const parsed = parseCommandLine(line);
-      if (parsed) checkClick(parsed, line, `${step} ${index + 1}`);
+      if (parsed && checkClicks) checkClick(parsed, line, `${step} ${index + 1}`);
       return parsed;
     })
     .filter(Boolean);

@@ -75,6 +75,37 @@ describe("playbook resolution and strategies", () => {
     expect(executeTool).toHaveBeenCalledWith("page.text", { label: "fallback" }, expect.anything());
   });
 
+  it("loads a playbook whose op has a click with no target in its steps, and runs its other ops", () => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), "surf-playbook-home-"));
+    tempDirs.push(home);
+    const directory = path.join(home, ".surf", "playbooks", "forms");
+    fs.mkdirSync(path.join(directory, "ops"), { recursive: true });
+    fs.writeFileSync(
+      path.join(directory, "playbook.json"),
+      JSON.stringify({ id: "forms", version: "1.0.0", origins: ["https://a.test"] }),
+    );
+    fs.writeFileSync(
+      path.join(directory, "ops", "send.json"),
+      JSON.stringify({ id: "send", open: "https://a.test/form", steps: 'click "Submit order"' }),
+    );
+    fs.writeFileSync(
+      path.join(directory, "ops", "list.json"),
+      JSON.stringify({ id: "list", request: { url: "https://a.test/items.json" } }),
+    );
+    expect(playbooks.listPlaybooks({ home }).map((entry: { id: string }) => entry.id)).toContain(
+      "forms",
+    );
+    const playbook = playbooks.resolvePlaybook("forms", { home });
+    expect([...playbook.ops.keys()].sort()).toEqual(["list", "send"]);
+    expect(
+      require("../../native/op-run.cjs").dryRunOp({
+        playbook,
+        op: playbook.ops.get("list"),
+        args: {},
+      }),
+    ).toMatchObject({ request: { url: "https://a.test/items.json" } });
+  });
+
   it("defaults protected writes to explicit authorization and uses op auth origins", () => {
     const op = playbooks.validateOp(
       {
