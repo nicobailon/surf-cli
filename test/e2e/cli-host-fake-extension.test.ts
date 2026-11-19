@@ -944,6 +944,10 @@ describe("surf hook and pb record stop through the fake extension", () => {
         },
         page: { into: "page", next: "+1" },
         expect: { minItems: 1, fields: ["title", "url"] },
+        source: {
+          url: "https://books.toscrape.com/catalogue/page-{{page}}.html",
+          goal: "books with prices",
+        },
       });
 
       const tested = await runCli(socketPath, ["pb", "test", site, "list_books"]);
@@ -1228,6 +1232,7 @@ describe("surf hook and pb record stop through the fake extension", () => {
         args: { page: { default: 3, example: 3 } },
         request: { url: "https://books.toscrape.com/catalogue/page-{{page}}.html" },
         expect: { minItems: 1, fields: ["title", "url"] },
+        source: { url: page },
       });
       const status = await runCli(socketPath, ["pb", "record", "status", "--json"]);
       expect(JSON.parse(status.stdout)).toMatchObject({ status: "idle" });
@@ -1305,6 +1310,105 @@ describe("surf hook and pb record stop through the fake extension", () => {
       expect(byUrl.stderr).toBe("");
       expect(byUrl.code).toBe(0);
       expect(fetches(codes).at(-1)).toContain(`new URL("${other}")`);
+    } finally {
+      await host.dispose();
+    }
+  });
+
+  it("repairs a read op the site changed under, in surf use and pb test, unless --no-repair", async () => {
+    const socketPath = createSocketPath();
+    const site = unique("books");
+    const html = readFixture("books-page-1.html").replaceAll("product_pod", "product_card");
+    const page = "https://books.toscrape.com/catalogue/page-2.html";
+    const url = "https://books.toscrape.com/catalogue/page-{{page}}.html";
+    const file = opFile(site, "list_books");
+    fs.mkdirSync(path.join(file, ".."), { recursive: true });
+    fs.writeFileSync(
+      path.join(file, "..", "..", "playbook.json"),
+      `{"id":"${site}","version":"1"}`,
+    );
+    const broken = JSON.stringify({
+      id: "list_books",
+      args: { page: { default: 1, example: 2 } },
+      request: { url },
+      extract: { records: "article.product_pod", fields: { title: "h3 a@title" } },
+      expect: { minItems: 1, fields: ["title"] },
+      source: { url, goal: "books" },
+    });
+    fs.writeFileSync(file, broken);
+    const host = startHost(socketPath, {
+      network: () => [captured(page, { responseBody: html, ts: Date.now() })],
+      javascript: tab(page, "A Light in the Attic", { [page]: html }, []),
+    });
+    const repaired = `repaired ${site} list_books: records article.product_pod → article.product_card; fields +url, +star_rating, +price_color (the old op is list_books.json.bak)`;
+
+    try {
+      await host.waitForMessage((message) => message.type === "HOST_READY");
+      const off = await runCli(socketPath, ["pb", "test", site, "--no-repair"]);
+      expect(off.code).toBe(1);
+      expect(off.stdout).toMatch(/not repaired \(--no-repair\)\. Rebuild it: surf hook/);
+      const tested = await runCli(socketPath, ["pb", "test", site]);
+      expect(tested.code).toBe(0);
+      expect(tested.stdout).toBe(`pass  list_books  3 records via tab; ${repaired}\n`);
+
+      fs.writeFileSync(file, broken);
+      const used = await runCli(socketPath, ["use", site, "list_books", "--page", "2", "--json"]);
+      expect(used.code).toBe(0);
+      expect(used.stderr).toBe(`${repaired}\n`);
+      expect(JSON.parse(used.stdout)).toMatchObject({
+        via: "tab",
+        repaired,
+        value: [{ title: "A Light in the Attic" }, {}, {}],
+      });
+      expect(fs.readFileSync(`${file}.bak`, "utf8")).toBe(broken);
+    } finally {
+      await host.dispose();
+    }
+  });
+});
+
+describe("the saved-ops hint through the fake extension", () => {
+  it("lists an origin's saved ops once per session, and in --json", async () => {
+    const origin = `https://hint-${process.pid}.test`;
+    const site = `hint-${process.pid}`;
+    const dir = path.join(String(process.env.HOME), ".surf", "playbooks", site);
+    fs.mkdirSync(path.join(dir, "ops"), { recursive: true });
+    fs.writeFileSync(path.join(dir, "playbook.json"), `{"id":"${site}","version":"1"}`);
+    const ops = { list_items: { page: { default: 1 } }, get_item: { item_id: { required: true } } };
+    for (const [op, args] of Object.entries(ops)) {
+      const body = { id: op, args, request: { url: `${origin}/${op}` } };
+      fs.writeFileSync(path.join(dir, "ops", `${op}.json`), JSON.stringify(body));
+    }
+    const socketPath = createSocketPath();
+    const host = startHost(socketPath);
+
+    try {
+      await host.waitForMessage((message) => message.type === "HOST_READY");
+      expect(await runCli(socketPath, ["go", `${origin}/`])).toMatchObject({
+        code: 0,
+        stdout: `OK\nsaved: ${site} get_item --item_id, list_items --page\n`,
+      });
+      expect(await runCli(socketPath, ["go", `${origin}/page-2`])).toMatchObject({
+        stdout: "OK\n",
+      });
+      expect(await runCli(socketPath, ["go", "https://plain.test/"])).toMatchObject({
+        stdout: "OK\n",
+      });
+      // Another session hears of them once, here in --json.
+      seedOldSession(host.stateDir);
+      const json = await runCli(socketPath, ["go", `${origin}/`, "--session", "old", "--json"]);
+      expect(JSON.parse(json.stdout)).toMatchObject({
+        result: "OK",
+        savedOps: {
+          origin,
+          ops: [
+            { playbook: site, op: "get_item", inputs: ["item_id"] },
+            { playbook: site, op: "list_items", inputs: ["page"] },
+          ],
+        },
+      });
+      const again = await runCli(socketPath, ["go", `${origin}/`, "--session", "old", "--json"]);
+      expect(JSON.parse(again.stdout)).not.toHaveProperty("savedOps");
     } finally {
       await host.dispose();
     }

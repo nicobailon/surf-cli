@@ -130,7 +130,7 @@ function validateStrategy(strategy, effect, opId) {
 }
 
 // The op file's flat keys (README "Ops"); safety, auth, origins, markdown and provenance as for run ops.
-const FLAT_KEYS = new Set(["id", "description", "effect", "args", "request", "open", "steps", "extract", "page", "expect", "chain", "safety", "auth", "origins", "markdown", "provenance"]);
+const FLAT_KEYS = new Set(["id", "description", "effect", "args", "request", "open", "steps", "extract", "page", "expect", "chain", "source", "safety", "auth", "origins", "markdown", "provenance"]);
 const CHAIN_STEP_KEYS = new Set(["id", "op", "with", "each", "limit", "delayMs"]);
 const isObject = (value) => value !== null && typeof value === "object" && !Array.isArray(value);
 
@@ -174,6 +174,8 @@ function validateFlatOp(value, id, effect) {
     }
     if (fields !== undefined && (!Array.isArray(fields) || !fields.every((name) => typeof name === "string"))) throw new Error(`op ${id} expect.fields must be a list of field names`);
   }
+  // What `surf hook` was given (url, goal, do, match), which self-repair runs again.
+  if (value.source !== undefined && !(isObject(value.source) && typeof value.source.url === "string")) throw new Error(`op ${id} source must be { url, goal?, do?, match? }`);
   if (value.chain !== undefined && (!Array.isArray(value.chain) || !value.chain.every((step) => isObject(step) && typeof step.id === "string" && typeof step.op === "string"))) {
     throw new Error(`op ${id} chain must be a list of { id, op } steps`);
   }
@@ -281,6 +283,18 @@ function listPlaybooks(options = {}) {
   return [...found.values()];
 }
 
+const originOf = (url) => (URL.canParse(url) ? [new URL(url).origin] : []);
+
+/** The ops of user and project playbooks, each with its inputs and the origins it runs on (its playbook's, its request's or open URL's). */
+function savedOps(options = {}) {
+  return listPlaybooks(options).filter(({ scope }) => scope !== "built-in").flatMap(({ id }) => [...resolvePlaybook(id, options).ops.values()].map((op) => ({
+    playbook: id,
+    op: op.id,
+    inputs: Object.keys(op.args || {}),
+    origins: [...(op.origins || []), ...originOf(op.request?.url), ...originOf(op.open)],
+  })));
+}
+
 function resolveOp(playbookId, opId, options = {}) {
   const playbook = resolvePlaybook(playbookId, options);
   const op = playbook.ops.get(opId);
@@ -334,5 +348,6 @@ module.exports = {
   resolveOp,
   resolvePlaybook,
   savePlaybook,
+  savedOps,
   validateOp,
 };

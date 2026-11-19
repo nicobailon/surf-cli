@@ -1,16 +1,20 @@
 // One pipeline makes an op: capture → pick → inputs → extract → test → save. `surf hook` captures
 // the URL it opens (captureHook); `pb record stop` hands over its record's capture. makeOp does the
-// rest, and saves only an op whose test passed; a write (a POST etc.) is saved untested.
+// rest, and saves only an op whose test passed; a write (a POST etc.) is saved untested. Self-repair
+// (runWithRepair) runs it again on an op's `source` when the site has changed under the op.
 
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
+const { shell } = require("./hook-cli.cjs");
 const { inferResponse, keyFields } = require("./op-infer.cjs");
 const { nameInputs, requestOf } = require("./op-inputs.cjs");
 const { matchHint, pickRequest, rankRequests } = require("./op-rank.cjs");
-const { evaluate, runOp, sendRequest } = require("./op-run.cjs");
+const { evaluate, renderTemplate, runOp, sendRequest } = require("./op-run.cjs");
 const { savePlaybook, validateOp } = require("./playbooks.cjs");
+const { atomicWriteJson } = require("./private-state.cjs");
 const { redactUrlSecrets } = require("./redaction.cjs");
+const { parseDoCommands } = require("./workflow-definition.cjs");
 const { executeWorkflow } = require("./workflow-runtime.cjs");
 
 const PAGE_TEXT = "({ url: location.href, text: document.body ? document.body.innerText : '' })";
@@ -60,7 +64,7 @@ function save(site, op) {
  * op through the runner and saves it. Returns { status, exitCode }: saved 0, weak 2 (with the top
  * candidates and a `match` that picks the first), or error 1 (with the draft once there is one).
  */
-async function makeOp({ capture, goal = "", samples = {}, typed = [], template, match, site, op: id, ...context }) {
+async function makeOp({ capture, goal = "", samples = {}, typed = [], template, match, site, op: id, source, previous, ...context }) {
   const ranked = rankRequests(capture.entries, { pageUrl: capture.pageUrl, pageText: capture.pageText, goal, after: capture.after });
   const chosen = pickRequest(ranked, { match });
   if (chosen.error) return { status: "error", exitCode: 1, error: chosen.error };
@@ -71,12 +75,14 @@ async function makeOp({ capture, goal = "", samples = {}, typed = [], template, 
   const { entry, reasons, effect } = chosen.pick;
   const sent = requestOf(entry);
   const named = nameInputs({ request: sent, samples, typed, template });
-  const draft = { id, description: goal || `${id} on ${new URL(sent.url).host}`, ...(effect === "write" ? { effect } : {}), args: named.args, request: named.request };
+  // A write never repairs, and its --do may type a secret, so only a read keeps its source.
+  const draft = { id, description: goal || `${id} on ${new URL(sent.url).host}`, ...(effect === "write" ? { effect } : {}), args: named.args, request: named.request, ...(source && effect !== "write" ? { source } : {}) };
   const base = { playbook: site, op: id, picked: { method: entry.method, url: redactUrlSecrets(entry.url), reasons }, warnings: named.warnings };
   // The run line: each input's sample, or <name> for one with none (a secret).
   const runLine = (examples) => ["surf", "use", site, id, ...Object.entries(examples).flatMap(([name, value]) => [`--${name}`, value === undefined ? `<${name}>` : String(value)])];
   const examples = Object.fromEntries(Object.entries(draft.args).map(([name, spec]) => [name, spec.example]));
   if (effect === "write") {
+    if (previous) return { ...base, status: "error", exitCode: 1, error: `the new pick is a write (${entry.method} ${base.picked.url})` };
     // Saved untested, as a write is never sent again here: the extract comes from the captured response.
     try {
       const found = entry.responseBody && inferResponse({ body: entry.responseBody, contentType: entry.mimeType, url: entry.url });
@@ -96,19 +102,79 @@ async function makeOp({ capture, goal = "", samples = {}, typed = [], template, 
     if (!found) throw new Error(`found no records or fields in the response of ${sent.url}`);
     draft.extract = found.extract;
     if (named.paging) draft.page = { into: named.paging.name, next: named.paging.next === "+count" ? `+${found.count ?? 1}` : named.paging.next };
+    if (previous) keepNames(draft, previous);
     await context.sleep(GAP_MS);
     const run = await runOp({ playbook: { id: site }, op: validateOp(draft, { origins: [] }), args: examples, ...context });
     const list = Array.isArray(run.value);
     const first = list ? run.value[0] : run.value;
-    const fields = keyFields(found).filter((name) => ![undefined, null, ""].includes(first?.[name]));
-    if (fields.length === 0) throw new Error(`the test run read no record with ${keyFields(found).join(" or ")}`);
-    draft.expect = { ...(list ? { minItems: 1 } : {}), fields };
-    const file = save(site, draft);
-    const test = { via: run.via, count: list ? run.value.length : null, fields };
-    return { ...base, status: "saved", exitCode: 0, file, args: draft.args, extract: draft.extract, page: draft.page, test, run: runLine(examples) };
+    if (!previous) {
+      const fields = keyFields(found).filter((name) => ![undefined, null, ""].includes(first?.[name]));
+      if (fields.length === 0) throw new Error(`the test run read no record with ${keyFields(found).join(" or ")}`);
+      draft.expect = { ...(list ? { minItems: 1 } : {}), fields };
+    }
+    const file = previous ? replaceOp(previous.file, draft) : save(site, draft);
+    const test = { via: run.via, count: list ? run.value.length : null, fields: draft.expect.fields || [] };
+    return { ...base, status: "saved", exitCode: 0, file, op: draft, args: draft.args, extract: draft.extract, page: draft.page, test, run: runLine(examples) };
   } catch (error) {
     return { ...base, status: "error", exitCode: 1, error: error.message, draft };
   }
 }
 
-module.exports = { captureHook, makeOp, readPage };
+// A rebuilt op keeps the old one's description, inputs (by name, with their specs) and expect, so
+// its test run checks the old expect; a new field read by an old field's selector takes its name.
+function keepNames(draft, previous) {
+  const lost = Object.keys(previous.args || {}).find((name) => !draft.args[name]);
+  if (lost) throw new Error(`the new request has no place for the input ${lost}`);
+  const old = Object.entries(previous.extract?.fields || {});
+  const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
+  if (draft.extract.fields) draft.extract.fields = Object.fromEntries(Object.entries(draft.extract.fields).map(([name, spec]) => [old.find(([was, before]) => same(before, spec) && !Object.hasOwn(draft.extract.fields, was))?.[0] ?? name, spec]));
+  Object.assign(draft, { description: previous.description ?? draft.description, args: { ...draft.args, ...previous.args }, ...(previous.expect ? { expect: previous.expect } : {}) });
+}
+
+// Saves a rebuilt op over its file, the old one kept beside it as <op>.json.bak.
+function replaceOp(file, op) {
+  fs.copyFileSync(file, `${file}.bak`);
+  atomicWriteJson(file, op);
+  return file;
+}
+
+// What a repair changed, in one line: the request, new inputs, the records selector and each field.
+function changes(before, after) {
+  const parts = [];
+  if (JSON.stringify(before.request) !== JSON.stringify(after.request)) parts.push(`request ${after.request.url}`);
+  const added = Object.keys(after.args).filter((name) => !before.args?.[name]);
+  if (added.length) parts.push(`inputs ${added.map((name) => `+${name}`).join(", ")}`);
+  if (before.extract?.records !== after.extract?.records) parts.push(`records ${before.extract?.records ?? "none"} → ${after.extract?.records ?? "none"}`);
+  const [was, now] = [before.extract?.fields || {}, after.extract?.fields || {}];
+  const fields = [...new Set([...Object.keys(was), ...Object.keys(now)])].filter((name) => JSON.stringify(was[name]) !== JSON.stringify(now[name]));
+  if (fields.length) parts.push(`fields ${fields.map((name) => (!(name in now) ? `-${name}` : !(name in was) ? `+${name}` : name)).join(", ")}`);
+  return parts.join("; ") || "nothing";
+}
+
+/**
+ * Runs `run(op)`. When a read op made by surf hook or pb record stop fails on shape (its last step
+ * got an answer without the records, or a 404 or 410), runs the pipeline again on its `source` with
+ * this call's inputs, saves the rebuilt op if it passes the old expect, and runs that. `noRepair`
+ * names why not to. A write, a 401, 403, 429, 5xx or network error never repairs.
+ */
+async function runWithRepair({ run, playbook, op, args, noRepair, tabId, ...context }) {
+  try {
+    return await run(op);
+  } catch (error) {
+    if (!error.shape || !op.source || op.effect === "write" || op.chain || op.run) throw error;
+    const { url, goal = op.description || op.id, do: steps, match } = op.source;
+    const samples = Object.fromEntries(Object.keys(op.args || {}).filter((name) => args[name] !== undefined).map((name) => [name, args[name]]));
+    const hook = shell(["surf", "hook", url, "--goal", goal, ...(steps ? ["--do", steps] : []), ...(match ? ["--match", match] : []), ...Object.entries(samples).flatMap(([name, value]) => [`--${name}`, String(value)]), "--as", `${playbook.id}/${op.id}`]);
+    if (noRepair) throw new Error(`${error.message}; ${playbook.id} ${op.id} no longer matches the site, not repaired (${noRepair}). Rebuild it: ${hook}`);
+    const file = path.join(playbook.directory, "ops", `${op.id}.json`);
+    const before = JSON.parse(fs.readFileSync(file, "utf8"));
+    const made = await captureHook({ url: renderTemplate(url, { args: samples, env: null, encode: encodeURIComponent }), steps: steps ? renderTemplate(parseDoCommands(steps), { args: samples, env: null }) : [], tabId, ...context })
+      .then((capture) => makeOp({ capture, goal, samples, template: url, match, site: playbook.id, op: op.id, source: op.source, previous: { ...before, file }, ...context }))
+      .catch((failure) => ({ error: failure.message }));
+    if (made.status !== "saved") throw new Error(`${error.message}; repair failed: ${made.error || made.reason}. Rebuild it: ${hook}`);
+    const result = await run(validateOp(made.op, playbook));
+    return { ...result, repaired: `repaired ${playbook.id} ${op.id}: ${changes(before, made.op)} (the old op is ${op.id}.json.bak)` };
+  }
+}
+
+module.exports = { captureHook, makeOp, readPage, runWithRepair };

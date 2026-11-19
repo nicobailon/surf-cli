@@ -24,7 +24,7 @@ It is one tab in its own background window, and its commands run in order. Sessi
 
 **Fail fast on walls.** `wait.ready` returns when the page is ready and fails with `page_login|page_challenge|page_not_found|page_error|page_timeout`; `--accept login` returns that state instead.
 
-**API before scroll.** A read you'll repeat: `surf hook <url> --goal "<what>"` saves a tested op from the site's own request, then `surf use <site> <op>`. Once: `use x thread`, or `network.wait` then `network.replay --set`. `collect` scrolls the page when there is no API and needs a visible tab (`session.ensure <name> <url> --window --focused`).
+**API before scroll.** When `go` prints `saved: <site> <op> --<input>, …`, get the data with `surf use <site> <op> --<input> <v>`, not clicks. A read you'll repeat: `surf hook <url> --goal "<what>"` saves a tested op from the site's own request. Once: `use x thread`, or `network.wait` then `network.replay --set`. `collect` scrolls when there is no API and needs a visible tab (`session.ensure <name> <url> --window --focused`).
 
 **Values, not pages.** A few values (a total, a date, a count): `semantic.extract` returns them typed, without a full page read.
 

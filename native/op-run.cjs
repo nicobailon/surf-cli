@@ -191,12 +191,18 @@ async function readPages(via, context) {
     const response = await step.read();
     context.answer.status = response.status;
     if (response.status >= 400) {
-      if (page === 1) throw new Error(`status ${response.status}`);
+      // A 404 or 410 is the op's shape (self-repair may rebuild it); 401, 403, 429 and 5xx are not.
+      if (page === 1) throw Object.assign(new Error(`status ${response.status}`), { shape: [404, 410].includes(response.status) });
       return { value: records, note: `stopped at page ${page}: status ${response.status}` };
     }
-    const value = readResponse(response, op.extract);
-    if (page === 1) checkExpect(value, op.expect, response.status);
-    if (page === 1 && via === "direct" && readNothing(value)) throw new Error("read no records");
+    let value;
+    try {
+      value = readResponse(response, op.extract);
+      if (page === 1) checkExpect(value, op.expect, response.status);
+      if (page === 1 && via === "direct" && readNothing(value)) throw new Error("read no records");
+    } catch (error) {
+      throw Object.assign(error, { shape: true });
+    }
     if (!Array.isArray(value)) return { value };
     records.push(...value);
     if (page >= context.pages || !op.page || value.length === 0) return { value: records };
@@ -234,6 +240,7 @@ async function runOp({ playbook, op, args, url, pages = 1, env = {}, readCookies
   const { beforeDispatch = async () => {}, afterDispatch = async () => {} } = write ? await guard({ op, args, url }) : {};
   const vias = opSteps(op, readCookies !== undefined);
   const attempts = [];
+  let shape = false;
   for (const via of vias) {
     let dispatched = false;
     const markDispatched = async () => {
@@ -253,6 +260,7 @@ async function runOp({ playbook, op, args, url, pages = 1, env = {}, readCookies
     } catch (error) {
       const message = error?.message || String(error);
       attempts.push({ via, error: message });
+      shape = error?.shape === true;
       onEvent({ type: "strategy.failed", ...event, error: message, endedAt: new Date().toISOString() });
       if (write) {
         await afterDispatch({ status: dispatched && !error?.notSent ? "indeterminate" : "not_dispatched", via, error: message, answered: answer.status < 500 });
@@ -260,7 +268,8 @@ async function runOp({ playbook, op, args, url, pages = 1, env = {}, readCookies
       }
     }
   }
-  throw new Error(`All steps failed (${attempts.map((attempt) => `${attempt.via}: ${attempt.error}`).join("; ")})`);
+  // `shape`: the last step got an answer without the records, or a 404 or 410.
+  throw Object.assign(new Error(`All steps failed (${attempts.map((attempt) => `${attempt.via}: ${attempt.error}`).join("; ")})`), { shape });
 }
 
 /** Sends one request from the tab, as a read's tab step does: { status, url, contentType, body }. */

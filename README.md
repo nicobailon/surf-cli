@@ -1085,6 +1085,12 @@ run      surf use books list_books --page 2
 - `--as <site>/<op>` names it; the default is the host name and `get_` with the goal's first three words.
 - `surf pb record start <site> --op <name>` captures network requests by default (`--no-network` turns it off), and `surf pb record stop` makes the op the same way from what you did, values you typed included. On a weak pick the record keeps recording: `stop --match <url-part>` picks. `--draft` only drafts, as before.
 
+#### Self-repair and the saved-ops hint
+
+An op made by `surf hook` or `pb record stop` keeps what made it in `source` (`url`, `goal`, and `do` and `match` when given). When such a read later gets an answer without its records, or a 404 or 410, on its last step, `surf use` runs the hook pipeline again on `source` with this call's inputs. It keeps the op's input names, `expect` and the names of fields whose selector still reads them, saves the new op only if it passes `expect`, keeps the old file as `<op>.json.bak`, prints one line on stderr (`repaired books list_books: records article.product_pod → article.product_card; fields +price_now`), and answers the call. If the rebuild fails, the run fails as before and prints the `surf hook` command to rebuild it. A 401, 403, 429, 5xx or network error, a write, or `--no-repair` never repairs; `pb test` reports a repair and takes `--no-repair` too.
+
+When `go`, `navigate` or `tab.switch` lands on a site your playbooks have ops for, surf prints them once per session and site, up to five: `saved: books get_book --book_id, list_books --page`. `--json` carries them as `savedOps`.
+
 Playbook read ops can also use a trusted `script` strategy when fixed JSON steps are too rigid. Scripts require `--allow-script` at run time. Only run scripts from playbooks you trust. This is not a security sandbox.
 
 The script gets `input`, `tools.run`, `tools.all`, `tools.ref`/`refs`, `emit`, and `console`. Tool calls still use Surf workflow step behavior, including auto-waits unless `autoWait` is `false`.

@@ -55,7 +55,7 @@ function runSpec(argv) {
   const parsed = parseCommandArgs(argv.slice(offset));
   const [playbook, op] = parsed.positional;
   if (!playbook || !op) throw new Error(direct ? "Usage: surf use <playbook> <op> [--arg value]" : "Usage: surf pb run <playbook> <op> [--arg value]");
-  const reserved = new Set(["json", "no-lock", "no-wait", "session", "tab-id", "write", "repeat", "retry-attempt", "override-in-doubt", "pin-built-in", "allow-script", "format", "dry-run", "each", "delay-ms"]);
+  const reserved = new Set(["json", "no-lock", "no-wait", "session", "tab-id", "write", "repeat", "retry-attempt", "override-in-doubt", "pin-built-in", "allow-script", "format", "dry-run", "no-repair", "each", "delay-ms"]);
   const args = Object.fromEntries(Object.entries(parsed.options).filter(([name]) => !reserved.has(name)));
   return { playbook, op, args, options: parsed.options, filterFlags: collectFilterFlags(argv.slice(offset)) };
 }
@@ -103,6 +103,7 @@ function runRequest(spec, endpoint, { cwd, session, sessionSource, admission }) 
     pinBuiltIn: spec.options["pin-built-in"] === true,
     allowScript: spec.options["allow-script"] === true,
     dryRun: spec.options["dry-run"] === true,
+    noRepair: spec.options["no-repair"] === true,
     env: opEnv(reached),
     ...(spec.options.each === undefined ? {} : { each: String(spec.options.each) }),
     ...(spec.options["delay-ms"] === undefined ? {} : { delayMs: spec.options["delay-ms"] }),
@@ -133,13 +134,13 @@ async function testPlaybook(siteId, opId, context, flags) {
     const args = Object.fromEntries(Object.entries(op.args || {}).filter(([, spec]) => spec.example !== undefined).map(([name, spec]) => [name, spec.example]));
     let run;
     try {
-      run = await runRequest({ playbook: siteId, op: op.id, args, options: {} }, context.endpoint, context);
+      run = await runRequest({ playbook: siteId, op: op.id, args, options: { "no-repair": context.noRepair } }, context.endpoint, context);
     } catch (error) {
       results.push({ op: op.id, status: "fail", detail: error.message });
       continue;
     }
     const count = Array.isArray(run.value) ? `${run.value.length} records` : "1 value";
-    results.push({ op: op.id, status: "pass", detail: `${count} via ${run.via || run.strategy}`, ...(filter ? filterRun(run.value, filter) : {}) });
+    results.push({ op: op.id, status: "pass", detail: `${count} via ${run.via || run.strategy}${run.repaired ? `; ${run.repaired}` : ""}`, ...(filter ? filterRun(run.value, filter) : {}) });
   }
   return results;
 }
@@ -170,10 +171,11 @@ async function handlePlaybookCli(argv, { endpoint, cwd = process.cwd(), session,
     const filter = takeRunFilter({ flags: spec.filterFlags, args: spec.args, ops: localOps(spec, cwd).filtered, each: spec.options.each });
     if (filter && (format || spec.options["dry-run"] === true)) throw new Error("--where, --fields and --limit filter a run's JSON records; they don't combine with --format or --dry-run");
     const value = await runRequest(spec, endpoint, { cwd, session, sessionSource, admission });
-    // With --format the host returns the rendered records as the value.
-    if (format && !value.dryRun) return { handled: true, value: value.value, json: false };
+    // A repair's one line goes to stderr. With --format the host returns the rendered records as the value.
+    const repaired = value.repaired ? { stderr: value.repaired } : {};
+    if (format && !value.dryRun) return { handled: true, value: value.value, json: false, ...repaired };
     const filtered = filter && Object.hasOwn(value, "value") ? { ...value, ...applyFilter(value.value, filter) } : value;
-    return { handled: true, value: filtered, json: spec.options.json === true || value.dryRun === true };
+    return { handled: true, value: filtered, json: spec.options.json === true || value.dryRun === true, ...repaired };
   }
   const command = argv[1];
   const parsed = parseCommandArgs(argv.slice(2));
@@ -189,8 +191,8 @@ async function handlePlaybookCli(argv, { endpoint, cwd = process.cwd(), session,
     return { handled: true, value: [...playbook.ops.values()].map((op) => ({ id: op.id, description: op.description || "", effect: op.effect, strategies: op.run ? op.run.map((strategy) => strategy.using) : ["request", "open", "chain"].filter((key) => op[key]) })), json: parsed.options.json === true };
   }
   if (command === "test") {
-    if (!parsed.positional[0]) throw new Error("Usage: surf pb test <playbook> [<op>]");
-    const results = await testPlaybook(parsed.positional[0], parsed.positional[1], { endpoint, cwd, session, sessionSource, admission }, collectFilterFlags(argv.slice(2)));
+    if (!parsed.positional[0]) throw new Error("Usage: surf pb test <playbook> [<op>] [--no-repair]");
+    const results = await testPlaybook(parsed.positional[0], parsed.positional[1], { endpoint, cwd, session, sessionSource, admission, noRepair: parsed.options["no-repair"] === true }, collectFilterFlags(argv.slice(2)));
     const exitCode = results.some((result) => result.status === "fail") ? 1 : 0;
     const width = Math.max(...results.map((result) => result.op.length));
     const line = (result) => `${result.status.padEnd(4)}  ${result.op.padEnd(width)}  ${result.detail}`;
