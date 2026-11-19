@@ -126,6 +126,66 @@ describe("network store keeps secrets off disk", () => {
     expect(scan(base, dummy)).toEqual({ files: 1, holding: [] });
   });
 
+  it("redacts digit-suffixed password fields, JSON sent as text/plain, and every secret header", () => {
+    const base = tempStore();
+    networkStore.appendEntrySync(
+      {
+        method: "POST",
+        url: "https://a.example/register",
+        requestHeaders: {
+          "content-type": "application/x-www-form-urlencoded",
+          "X-CSRF-Token": dummy,
+          "X-Api-Key": dummy,
+        },
+        requestBody: `password1=${dummy}&password2=${dummy}&new_password1=${dummy}&pass1=${dummy}&pass2=${dummy}&page2=3`,
+      },
+      base,
+    );
+    networkStore.appendEntrySync(
+      {
+        method: "POST",
+        url: "https://a.example/account",
+        requestHeaders: { "content-type": "text/plain;charset=UTF-8" },
+        requestBody: JSON.stringify({ newPassword1: dummy, Password1: dummy, name: "ada" }),
+      },
+      base,
+    );
+    const [form, json] = saved(base);
+    expect(form.requestBody).toBe(
+      "password1=<redacted>&password2=<redacted>&new_password1=<redacted>&pass1=<redacted>&pass2=<redacted>&page2=3",
+    );
+    expect(form.requestHeaders).toEqual({
+      "content-type": "application/x-www-form-urlencoded",
+      "X-CSRF-Token": "<redacted>",
+      "X-Api-Key": "<redacted>",
+    });
+    expect(JSON.parse(json.requestBody)).toEqual({
+      newPassword1: "<redacted>",
+      Password1: "<redacted>",
+      name: "ada",
+    });
+    expect(scan(base, dummy)).toEqual({ files: 1, holding: [] });
+  });
+
+  it("still saves a JSON body nested too deep to walk, without its content", () => {
+    const base = tempStore();
+    const depth = 200_000;
+    const body = `${"[".repeat(depth)}"${dummy}"${"]".repeat(depth)}`;
+    expect(() =>
+      networkStore.appendEntrySync(
+        {
+          method: "POST",
+          url: "https://a.example/deep",
+          requestHeaders: { "content-type": "application/json" },
+          requestBody: body,
+        },
+        base,
+      ),
+    ).not.toThrow();
+    expect(saved(base)[0].requestBody).toBe("<redacted>");
+    expect(scan(base, dummy)).toEqual({ files: 1, holding: [] });
+  });
+
   it("redacts the same way through the async append", async () => {
     const base = tempStore();
     const previous = process.env.SURF_NETWORK_PATH;

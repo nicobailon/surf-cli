@@ -19,7 +19,7 @@ const {
   ensurePrivateDir,
   privateStatePath,
 } = require("./private-state.cjs");
-const { isSecret } = require("./redaction.cjs");
+const { isSecret, isSecretHeader } = require("./redaction.cjs");
 
 // Configuration
 const DEFAULT_BASE = privateStatePath("network");
@@ -94,15 +94,14 @@ function writeMeta(meta) {
   atomicWriteJson(metaPath, meta, { root: getBasePath() });
 }
 
-// What is written to disk leaves out secrets: credential header values and the values of
+// What is written to disk leaves out secrets: secret header values and the values of
 // secret-named form and JSON body fields. The caller's entry, used in memory, is not changed.
 const REDACTED = "<redacted>";
-const CREDENTIAL_HEADERS = new Set(["authorization", "cookie", "proxy-authorization", "set-cookie"]);
 const isPlainObject = (value) => value !== null && typeof value === "object" && !Array.isArray(value);
 
 function redactHeaders(headers) {
   if (!isPlainObject(headers)) return headers;
-  return Object.fromEntries(Object.entries(headers).map(([name, value]) => [name, CREDENTIAL_HEADERS.has(name.toLowerCase()) ? REDACTED : value]));
+  return Object.fromEntries(Object.entries(headers).map(([name, value]) => [name, isSecretHeader(name) ? REDACTED : value]));
 }
 
 function redactJson(value) {
@@ -127,11 +126,16 @@ function redactBody(body, headers) {
   if (typeof body !== "string" || body === "") return body;
   const type = String(Object.entries(isPlainObject(headers) ? headers : {}).find(([name]) => name.toLowerCase() === "content-type")?.[1] || "");
   if (/x-www-form-urlencoded/i.test(type)) return redactForm(body);
-  if (!/json/i.test(type) && !(type === "" && /^\s*[[{]/.test(body))) return body;
+  if (!/json/i.test(type) && !/^\s*[[{]/.test(body)) return body;
   let parsed;
   try { parsed = JSON.parse(body); } catch { return body; }
-  const redacted = JSON.stringify(redactJson(parsed));
-  return redacted === JSON.stringify(parsed) ? body : redacted;
+  // A body nested too deep to walk is left out rather than saved unchecked.
+  try {
+    const redacted = JSON.stringify(redactJson(parsed));
+    return redacted === JSON.stringify(parsed) ? body : redacted;
+  } catch {
+    return REDACTED;
+  }
 }
 
 function forDisk(entry) {

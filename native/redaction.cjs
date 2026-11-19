@@ -20,10 +20,13 @@ function isSensitiveName(name) {
   return SECRET_NAME_PATTERN.test(String(name || ""));
 }
 
-// A field is secret when its name, split into words, names one: `newPassword`, `user[password]`
-// and `csrfToken` read as `new_password` etc.; `custname` and `keyword` don't.
+// A field is secret when its name, split into words, names one: `newPassword`, `user[password]`,
+// `csrfToken` and `password1` read as `new_password` etc.; `custname` and `keyword` don't.
 const spaced = (name) => String(name).replace(/([a-z0-9])([A-Z])/g, "$1_$2").replace(/[^A-Za-z0-9]+/g, "_");
-const isSecret = (name) => isSensitiveName(spaced(name)) || /(?:^|_)(?:pass|pwd|otp)(?:$|_)/i.test(spaced(name));
+const isSecret = (name) => {
+  const words = spaced(name).replace(/\d+(?=_|$)/g, "");
+  return isSensitiveName(words) || /(?:^|_)(?:pass|pwd|otp)(?:$|_)/i.test(words);
+};
 
 function isSecretHeader(name) {
   const lower = String(name || "").toLowerCase();
