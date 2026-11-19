@@ -63,6 +63,8 @@ type FakeHostOptions = {
   javascript?: (code: string) => unknown;
   // The requests network capture holds when they are read.
   network?: () => Record<string, unknown>[];
+  // The browser's cookies for a direct request's URL.
+  directContext?: (url: string) => Record<string, unknown>;
 };
 
 // Messages the fake answers with success and nothing else: capture, waits and page actions.
@@ -192,6 +194,11 @@ function buildExtensionResponse(
       return { id: message.id, success: true };
     case "GET_PLAYBOOK_RECORD_CONTEXT":
       return { id: message.id, success: true, origin: new URL(currentUrl).origin, url: currentUrl };
+    case "GET_DIRECT_REQUEST_CONTEXT":
+      if (options.directContext) {
+        return { id: message.id, ...options.directContext(String(message.url)) };
+      }
+      return { id: message.id, error: `Unhandled fake extension message: ${message.type}` };
     case "READ_NETWORK_REQUESTS":
       return { id: message.id, entries: options.network?.() ?? [], capture: { active: true } };
     case "EXECUTE_JAVASCRIPT":
@@ -390,6 +397,28 @@ async function runCli(
       resolve({ code: typeof code === "number" ? code : null, stdout, stderr });
     });
   });
+}
+
+type LocalHandler = (
+  req: { url: string; headers: Record<string, string> },
+  res: {
+    writeHead(status: number, headers: Record<string, string>): void;
+    end(body: string): void;
+  },
+) => void;
+
+// A site on 127.0.0.1 that the host's direct step reaches.
+async function serveLocal(handler: LocalHandler) {
+  const http = require("node:http") as {
+    createServer(handler: LocalHandler): {
+      listen(port: number, host: string, done: () => void): void;
+      address(): { port: number };
+      close(): void;
+    };
+  };
+  const server = http.createServer(handler);
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  return { origin: `http://127.0.0.1:${server.address().port}`, close: () => server.close() };
 }
 
 afterEach(() => {
@@ -925,6 +954,44 @@ describe("surf hook and pb record stop through the fake extension", () => {
     }
   });
 
+  it("tests a draft from the tab when the host gets a 200 page without the records", async () => {
+    const shell = await serveLocal((_req, res) => {
+      res.writeHead(200, { "content-type": "text/html" });
+      res.end("<html><body><h1>Prove your humanity</h1></body></html>");
+    });
+    const socketPath = createSocketPath();
+    const site = unique("shell");
+    const html = readFixture("books-page-1.html");
+    const page = `${shell.origin}/catalogue/page-2.html`;
+    const codes: string[] = [];
+    const host = startHost(socketPath, {
+      network: () => [captured(page, { responseBody: html })],
+      javascript: tab(page, "A Light in the Attic £51.77", { [page]: html }, codes),
+      directContext: () => ({ cookies: [] }),
+    });
+
+    try {
+      await host.waitForMessage((message) => message.type === "HOST_READY");
+      const hooked = await runCli(socketPath, [
+        "hook",
+        `${shell.origin}/catalogue/page-{{page}}.html`,
+        "--page",
+        "2",
+        "--goal",
+        "books with prices",
+        "--as",
+        `${site}/list_books`,
+      ]);
+      expect(hooked.stderr).toBe("");
+      expect(hooked.code).toBe(0);
+      expect(hooked.stdout).toMatch(/^test +tab ✓ 3 records; title, url present$/m);
+      expect(exists(opFile(site, "list_books"))).toBe(true);
+    } finally {
+      shell.close();
+      await host.dispose();
+    }
+  });
+
   it("stops at a weak pick with the top requests and a rerun line, and --match settles it", async () => {
     const socketPath = createSocketPath();
     const site = unique("shop");
@@ -1234,6 +1301,144 @@ describe("surf hook and pb record stop through the fake extension", () => {
       expect(byUrl.code).toBe(0);
       expect(fetches(codes).at(-1)).toContain(`new URL("${other}")`);
     } finally {
+      await host.dispose();
+    }
+  });
+});
+
+describe("direct requests, --each and filters through the fake extension", () => {
+  it("answers via direct with the browser's cookies, runs --each and filters the records", async () => {
+    const seen: { url: string; cookie?: string }[] = [];
+    let origin = "";
+    const server = await serveLocal((req, res) => {
+      seen.push({ url: req.url, cookie: req.headers.cookie });
+      const page = Number(req.url.match(/page=(\d+)/)?.[1] ?? 0);
+      const item = req.url.match(/^\/item\/(\d+)$/)?.[1];
+      const items = [1, 2].map((n) => ({
+        url: `${origin}/item/${(page - 1) * 2 + n}`,
+        slug: `s${n}`,
+      }));
+      res.writeHead(200, { "content-type": "application/json" });
+      // /shell is a 200 page that holds no records, as a challenge or consent page would.
+      const empty = page > 2 || req.url === "/shell";
+      res.end(JSON.stringify(item ? { name: `Item ${item}` } : { items: empty ? [] : items }));
+    });
+    origin = server.origin;
+    const project = fs.mkdtempSync(path.join(os.tmpdir(), "surf-direct-project-"));
+    tempDirs.push(project);
+    const site = path.join(project, ".surf", "playbooks", "shop");
+    fs.mkdirSync(path.join(site, "ops"), { recursive: true });
+    fs.writeFileSync(
+      path.join(site, "playbook.json"),
+      JSON.stringify({ id: "shop", version: "1.0.0" }),
+    );
+    const ops = [
+      {
+        id: "list_items",
+        args: { page: { default: 1, example: 1 } },
+        request: { url: `${origin}/list?page={{page}}` },
+        extract: { records: "$.items", fields: { url: "url", slug: "slug" } },
+        page: { into: "page", next: "+1" },
+        expect: { minItems: 1, fields: ["url"] },
+      },
+      {
+        id: "get_item",
+        args: { item_id: { required: true, example: 1 } },
+        request: { url: `${origin}/item/{{item_id}}` },
+        extract: { fields: { name: "name" } },
+        expect: { fields: ["name"] },
+      },
+      {
+        id: "shell_items",
+        request: { url: `${origin}/shell` },
+        extract: { records: "$.items", fields: { url: "url", slug: "slug" } },
+      },
+    ];
+    for (const op of ops) {
+      fs.writeFileSync(path.join(site, "ops", `${op.id}.json`), JSON.stringify(op));
+    }
+    const socketPath = createSocketPath();
+    const host = startHost(socketPath, {
+      directContext: () => ({ cookies: [{ name: "sid", value: "e2e" }], userAgent: "Chrome/E2E" }),
+      javascript: () => ({
+        status: 200,
+        url: `${origin}/shell`,
+        contentType: "application/json",
+        body: JSON.stringify({ items: [{ url: `${origin}/item/9`, slug: "from-tab" }] }),
+      }),
+    });
+    const use = async (args: string[]) => {
+      const result = await runCli(socketPath, args, project);
+      expect(result.stderr).toBe("");
+      expect(result.code).toBe(0);
+      return result.stdout;
+    };
+
+    try {
+      await host.waitForMessage((message) => message.type === "HOST_READY");
+      const direct = JSON.parse(await use(["use", "shop", "list_items", "--json"]));
+      expect(direct).toMatchObject({ via: "direct", value: [{ slug: "s1" }, { slug: "s2" }] });
+      expect(seen).toEqual([{ url: "/list?page=1", cookie: "sid=e2e" }]);
+      expect(
+        host.messages.find((message) => message.type === "GET_DIRECT_REQUEST_CONTEXT"),
+      ).toMatchObject({ url: `${origin}/list?page=1`, sourceTabId: 42 });
+      expect(host.messages.some((message) => message.type === "EXECUTE_JAVASCRIPT")).toBe(false);
+
+      const each = JSON.parse(
+        await use([
+          "use",
+          "shop",
+          "get_item",
+          "--each",
+          "list_items:url",
+          "--limit",
+          "2",
+          "--json",
+        ]),
+      );
+      expect(each).toMatchObject({ via: "chain", value: [{ name: "Item 1" }, { name: "Item 2" }] });
+      expect(seen.slice(1).map((request) => request.url)).toEqual([
+        "/list?page=1",
+        "/item/1",
+        "/item/2",
+      ]);
+
+      const filtered = JSON.parse(
+        await use([
+          "use",
+          "shop",
+          "list_items",
+          "--pages",
+          "2",
+          "--where",
+          "slug=s2",
+          "--fields",
+          "url",
+          "--limit",
+          "1",
+          "--json",
+        ]),
+      );
+      expect(filtered.value).toEqual([{ url: `${origin}/item/2` }]);
+      expect(filtered.filter).toMatchObject({ before: 4, after: 1, limit: 1 });
+
+      const tested = await use(["pb", "test", "shop", "list_items", "--where", "slug=nothing"]);
+      expect(tested).toMatch(/^pass +list_items +2 records via direct$/m);
+      expect(tested).toContain("Filtered: 0 of 2 records (--where slug=nothing)");
+
+      // A 200 page with no records goes to the tab, though the op has no expect.
+      const shell = JSON.parse(await use(["use", "shop", "shell_items", "--json"]));
+      expect(shell).toMatchObject({ via: "tab", value: [{ slug: "from-tab" }] });
+      // A filter only trims what pb test prints: a field one op lacks keeps it a pass.
+      const whole = await use(["pb", "test", "shop", "--fields", "slug"]);
+      expect(whole).toMatch(/^pass +get_item +1 value via direct$/m);
+      expect(whole).toMatch(/^ +--fields: unknown field "slug". Fields: name$/m);
+      expect(whole).toMatch(/^pass +shell_items +1 records via tab$/m);
+
+      const dry = JSON.parse(await use(["use", "shop", "list_items", "--dry-run", "--json"]));
+      expect(dry).toMatchObject({ via: "direct", fallback: ["tab"] });
+    } finally {
+      server.close();
       await host.dispose();
     }
   });

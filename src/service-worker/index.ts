@@ -4139,6 +4139,20 @@ export async function handleMessage(
       };
     }
 
+    // surf use's direct step: the browser's cookies and user agent for one request URL, for the
+    // native host only (a content script's message has a sender tab).
+    case "GET_DIRECT_REQUEST_CONTEXT": {
+      if (sender.tab) throw new Error("GET_DIRECT_REQUEST_CONTEXT is only for the native host");
+      const url = typeof message.url === "string" ? message.url : "";
+      if (!/^https?:\/\//i.test(url)) throw new Error("GET_DIRECT_REQUEST_CONTEXT needs an http or https URL");
+      // An incognito tab keeps its own cookies, which this read would miss; its tab sends the request.
+      if (typeof message.sourceTabId === "number" && (await chrome.tabs.get(message.sourceTabId)).incognito) {
+        throw new Error("the session's tab is incognito, so the tab sends this request");
+      }
+      const cookies = await chrome.cookies.getAll({ url });
+      return { cookies: cookies.map(({ name, value }) => ({ name, value })), userAgent: navigator.userAgent };
+    }
+
     case "GET_CHATGPT_COOKIES": {
       const cookies = await chrome.cookies.getAll({ domain: ".chatgpt.com" });
       const openaiCookies = await chrome.cookies.getAll({ domain: ".openai.com" });
@@ -4592,7 +4606,7 @@ const COMMANDS_WITHOUT_TAB = new Set([
   "GET_COOKIES", "SET_COOKIE", "DELETE_COOKIES", "GET_BOOKMARKS", "ADD_BOOKMARK",
   "DELETE_BOOKMARK", "DIALOG_DISMISS", "DIALOG_ACCEPT", "DIALOG_INFO",
   "CHATGPT_NEW_TAB", "CHATGPT_CLOSE_TAB", "CHATGPT_EVALUATE", "CHATGPT_CDP_COMMAND",
-  "GET_CHATGPT_COOKIES", "GET_GOOGLE_COOKIES", "GET_TWITTER_COOKIES",
+  "GET_CHATGPT_COOKIES", "GET_GOOGLE_COOKIES", "GET_TWITTER_COOKIES", "GET_DIRECT_REQUEST_CONTEXT",
   "PERPLEXITY_NEW_TAB", "PERPLEXITY_CLOSE_TAB", "PERPLEXITY_EVALUATE", "PERPLEXITY_CDP_COMMAND",
   "GROK_NEW_TAB", "GROK_CLOSE_TAB", "GROK_EVALUATE", "GROK_CDP_COMMAND",
   "GEMINI_NEW_TAB", "GEMINI_CLOSE_TAB", "GEMINI_FETCH_URL", "AI_UPLOAD_FILE_TO_TAB", "UPLOAD_FILE_TO_TAB",

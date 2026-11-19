@@ -131,6 +131,7 @@ function validateStrategy(strategy, effect, opId) {
 
 // The op file's flat keys (README "Ops"); safety, auth, origins, markdown and provenance as for run ops.
 const FLAT_KEYS = new Set(["id", "description", "effect", "args", "request", "open", "steps", "extract", "page", "expect", "chain", "safety", "auth", "origins", "markdown", "provenance"]);
+const CHAIN_STEP_KEYS = new Set(["id", "op", "with", "each", "limit", "delayMs"]);
 const isObject = (value) => value !== null && typeof value === "object" && !Array.isArray(value);
 
 function validateRequest(request, id, effect) {
@@ -175,6 +176,11 @@ function validateFlatOp(value, id, effect) {
   }
   if (value.chain !== undefined && (!Array.isArray(value.chain) || !value.chain.every((step) => isObject(step) && typeof step.id === "string" && typeof step.op === "string"))) {
     throw new Error(`op ${id} chain must be a list of { id, op } steps`);
+  }
+  for (const step of value.chain || []) {
+    const extra = Object.keys(step).find((key) => !CHAIN_STEP_KEYS.has(key));
+    if (extra) throw new Error(`op ${id} chain step ${step.id} has unknown key "${extra}" (it takes ${[...CHAIN_STEP_KEYS].join(", ")})`);
+    if (step.with !== undefined && !isObject(step.with)) throw new Error(`op ${id} chain step ${step.id} with must be an object`);
   }
   return op;
 }

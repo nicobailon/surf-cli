@@ -348,7 +348,8 @@ describe("dry run", () => {
       dryRun: true,
       playbook: "site",
       op: "search",
-      via: "tab",
+      via: "direct",
+      fallback: ["tab"],
       request: {
         method: "GET",
         url: "https://api.test/search?q=lamps",

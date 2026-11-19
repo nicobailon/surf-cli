@@ -1,8 +1,9 @@
-// Runs an op with the flat keys. The tab sends `request` and returns the body; else the tab opens
-// `open`, runs `steps` and returns the rendered HTML. Node reads either with the op's extract. A read
-// tries each step it has, in that order, and keeps the first that passes `expect`; a write runs its
-// first step once. `page` and --pages read more pages; --url points the op at another URL of its site.
+// Runs an op with the flat keys. A read's `request` goes from the host with the browser's cookies
+// (direct), then from the tab; else the tab opens `open`, runs `steps` and returns the rendered HTML.
+// Node reads each body with the op's extract. A read tries each step it has, in that order, and keeps
+// the first that passes `expect`; a write runs its first step once, from the tab. `page` and --pages read more pages; --url points the op at another URL of its site.
 
+const { sendDirect } = require("./op-direct.cjs");
 const { readNext, readResponse } = require("./op-extract.cjs");
 const { executeWorkflow } = require("./workflow-runtime.cjs");
 
@@ -123,9 +124,10 @@ async function openPage(context, url, steps) {
 // and gives { status?, body, contentType, url }.
 function preparePage(via, context, { args, url, steps }) {
   const { op, env, origins } = context;
-  if (via === "tab") {
+  if (via !== "page") {
     const request = renderRequest(url === undefined ? op.request : { ...op.request, url }, { args, env });
     assertSite(request.url, origins);
+    if (via === "direct") return { sent: JSON.stringify(request), read: () => sendDirect({ request, readCookies: context.readCookies, signal: context.signal, timeoutMs: context.directTimeoutMs }) };
     const read = async () => {
       await context.markDispatched();
       let response = await evaluate(context, requestScript(request));
@@ -160,6 +162,14 @@ function checkExpect(value, expect = {}, status) {
   }
 }
 
+// A 200 page without the records (a challenge, consent or script-only page) reads as nothing: no
+// record, or a first record whose fields are all empty. The direct step then leaves it to the tab.
+const blank = (value) => value === undefined || value === null || value === "" || (Array.isArray(value) && value.length === 0);
+function readNothing(value) {
+  const first = Array.isArray(value) ? value[0] : value;
+  return blank(first) || (isObject(first) && Object.values(first).every(blank));
+}
+
 // The next page's inputs ({ args }) or URL ({ url }) by the op's `page` rule; undefined at the end.
 function nextPage({ into, next }, response, args) {
   const step = next.match(/^\+(\d+)$/);
@@ -184,6 +194,7 @@ async function readPages(via, context) {
     }
     const value = readResponse(response, op.extract);
     if (page === 1) checkExpect(value, op.expect, response.status);
+    if (page === 1 && via === "direct" && readNothing(value)) throw new Error("read no records");
     if (!Array.isArray(value)) return { value };
     records.push(...value);
     if (page >= context.pages || !op.page || value.length === 0) return { value: records };
@@ -206,13 +217,15 @@ function hideEnv(op, env, onEvent) {
   return (event) => onEvent(JSON.parse(values.reduce((text, [name, value]) => text.replaceAll(value, `{{env.${name}}}`), JSON.stringify(event))));
 }
 
-async function runOp({ playbook, op, args, url, pages = 1, env = {}, executeTool, signal, sleep = async () => {}, onEvent = () => {}, beforeDispatch = async () => {}, afterDispatch = async () => {} }) {
-  if (op.chain) throw new Error(`op ${op.id} is a chain, and chains don't run yet`);
+// The steps an op tries: a read with a request goes direct when the browser's cookies can be read.
+const opSteps = (op, direct) => (op.effect === "write" ? [op.request ? "tab" : "page"] : [...(op.request ? [...(direct ? ["direct"] : []), "tab"] : []), ...(op.open ? ["page"] : [])]);
+
+async function runOp({ playbook, op, args, url, pages = 1, env = {}, readCookies, directTimeoutMs, executeTool, signal, sleep = async () => {}, onEvent = () => {}, beforeDispatch = async () => {}, afterDispatch = async () => {} }) {
   const origins = siteOrigins(op);
   if (url !== undefined) assertSite(url, origins);
   onEvent = hideEnv(op, env, onEvent);
   const write = op.effect === "write";
-  const vias = [...(op.request ? ["tab"] : []), ...(op.open ? ["page"] : [])].slice(0, write ? 1 : 2);
+  const vias = opSteps(op, readCookies !== undefined);
   const attempts = [];
   for (const via of vias) {
     let dispatched = false;
@@ -224,7 +237,7 @@ async function runOp({ playbook, op, args, url, pages = 1, env = {}, executeTool
     const event = { playbook: playbook.id, op: op.id, using: via };
     onEvent({ type: "strategy.started", ...event, startedAt: new Date().toISOString() });
     try {
-      const { value, note } = await readPages(via, { op, args, url, pages: write ? 1 : pages, env, executeTool, signal, sleep, onEvent, origins, markDispatched });
+      const { value, note } = await readPages(via, { op, args, url, pages: write ? 1 : pages, env, readCookies, directTimeoutMs, executeTool, signal, sleep, onEvent, origins, markDispatched });
       if (write) await afterDispatch({ status: "verified", via });
       onEvent({ type: "strategy.completed", ...event, endedAt: new Date().toISOString() });
       return { status: "completed", playbook: playbook.id, op: op.id, via, value, ...(note ? { note } : {}), provenance: playbook.provenance, attempts };
@@ -250,10 +263,11 @@ function sendRequest({ request, executeTool, signal, sleep = async () => {}, onE
 /** What the op would send, with `{{env.NAME}}` left as written. Sends nothing. */
 function dryRunOp({ playbook, op, args, url }) {
   if (url !== undefined) assertSite(url, siteOrigins(op));
-  const base = { dryRun: true, playbook: playbook.id, op: op.id };
+  const [via, ...fallback] = opSteps(op, true);
+  const base = { dryRun: true, playbook: playbook.id, op: op.id, via, ...(fallback.length ? { fallback } : {}) };
   const context = { args, env: null };
-  if (op.request) return { ...base, via: "tab", request: renderRequest(url === undefined ? op.request : { ...op.request, url }, context) };
-  if (op.open) return { ...base, via: "page", open: url ?? renderUrl(op.open, context), steps: renderTemplate(op.steps || [], context) };
+  if (op.request) return { ...base, request: renderRequest(url === undefined ? op.request : { ...op.request, url }, context) };
+  if (op.open) return { ...base, open: url ?? renderUrl(op.open, context), steps: renderTemplate(op.steps || [], context) };
   throw new Error(`--dry-run shows ops with request or open; ${op.id} has ${op.chain ? "a chain" : "a run list"}`);
 }
 
