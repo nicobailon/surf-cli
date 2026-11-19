@@ -332,6 +332,31 @@ describe("activity and explicit record evidence", () => {
     ).toHaveLength(1);
   });
 
+  it("drafts a recorded click flow as its steps, not the last request it captured", () => {
+    const root = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "surf-records-")), "state");
+    roots.push(path.dirname(root));
+    const trace = [
+      { id: "r-1", method: "GET", status: 200, url: "https://example.test/pixel.gif" },
+    ];
+    const clicked = records.startRecord({ site: "fixture", op: "flow", tabId: 1, root });
+    records.appendRecordEvent(
+      { type: "tool.completed", command: "click", argsRedacted: { selector: "#go" } },
+      { target: TAB, root },
+    );
+    records.attachNetworkTrace(clicked.id, trace, root);
+    const flow = records.stopRecord({ target: TAB, draft: true, root });
+    expect(flow.draft.run.map((strategy: { using: string }) => strategy.using)).toEqual([
+      "workflow",
+    ]);
+
+    const read = records.startRecord({ site: "fixture", op: "read", tabId: 1, root });
+    records.attachNetworkTrace(read.id, trace, root);
+    const network = records.stopRecord({ target: TAB, draft: true, root });
+    expect(network.draft.run.map((strategy: { using: string }) => strategy.using)).toEqual([
+      "network",
+    ]);
+  });
+
   it("does not turn recent or recorded page writes into an unreviewed read op", () => {
     const root = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "surf-records-")), "state");
     roots.push(path.dirname(root));

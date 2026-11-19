@@ -284,7 +284,8 @@ function savePlaybook({ manifest, op, scope = "user", cwd = process.cwd(), home 
   const directory = path.join(base, validatedManifest.id);
   fs.mkdirSync(path.join(directory, "ops"), { recursive: true });
   atomicWriteJson(path.join(directory, "playbook.json"), validatedManifest);
-  atomicWriteJson(path.join(directory, "ops", `${validatedOp.id}.json`), validatedOp);
+  // The op as written, so a saved file stays the short file a person edits; loading checks it again.
+  atomicWriteJson(path.join(directory, "ops", `${validatedOp.id}.json`), op);
   return { directory, playbook: validatedManifest.id, op: validatedOp.id, scope };
 }
 

@@ -35,6 +35,7 @@ const {
   handleOracleCli,
 } = require("./oracle-cli.cjs");
 const { formatPlaybookOutput, handlePlaybookCli } = require("./playbook-cli.cjs");
+const { handleHookCli } = require("./hook-cli.cjs");
 const { editDistance } = require("./edit-distance.cjs");
 const { formatGlobalOptions } = require("./global-options.cjs");
 
@@ -262,8 +263,23 @@ if (["playbook", "pb", "use"].includes(args[0]) && !helpRequested()) {
   handlePlaybookCli(args, { endpoint, cwd: process.cwd(), ...targetOptions })
     .then((result) => {
       if (!result.handled) throw new Error("Playbook command was not handled");
-      if (result.value !== undefined) console.log(formatPlaybookOutput(result.value, result.json));
+      if (result.stderr) console.error(result.stderr);
+      if (result.value !== undefined && result.value !== "") console.log(formatPlaybookOutput(result.value, result.json));
       process.exit(result.exitCode ?? 0);
+    })
+    .catch((error) => {
+      console.error(`Error: ${error.message}`);
+      process.exit(1);
+    });
+  return;
+}
+
+if (args[0] === "hook" && !helpRequested()) {
+  handleHookCli(args, { endpoint, ...resolveEarlyTargetOptions(args, { allowWindow: false }) })
+    .then(({ stdout, stderr, exitCode }) => {
+      if (stderr) console.error(stderr);
+      if (stdout) console.log(stdout);
+      process.exit(exitCode);
     })
     .catch((error) => {
       console.error(`Error: ${error.message}`);
@@ -1648,6 +1664,23 @@ const TOOLS = {
   playbook: {
     desc: "Reusable site operations: threads, feeds and recorded flows",
     commands: {
+      hook: {
+        desc: "Make a tested read op from a page: open it, pick the request with its data, name inputs, infer the extract, test, save",
+        args: ["url"],
+        opts: {
+          goal: "What the op returns, in words (required); its first words name the op",
+          do: "surf do steps to run after the page loads, before the pick (clicks, typing)",
+          "<input>": "This run's value of {{input}} in the URL or a --do step, e.g. --page 2; also found in the request",
+          match: "Pick the captured request whose URL holds this text",
+          as: "Save as <site>/<op> (default: the host name and get_ + the goal's first three words)",
+          json: "Output the result as JSON",
+        },
+        examples: [
+          { cmd: "hook 'https://books.toscrape.com/catalogue/page-{{page}}.html' --page 2 --goal \"books with prices\" --as books/list_books", desc: "Exit 0: saved and tested" },
+          { cmd: "hook https://quotes.toscrape.com/scroll --goal quotes --do 'scroll.bottom'", desc: "Picks the JSON the scroll loads" },
+          { cmd: "hook https://quotes.toscrape.com/scroll --goal quotes --match /api/quotes", desc: "After exit 2: pick by URL" },
+        ],
+      },
       use: {
         desc: "Run a playbook operation, such as reading a whole X thread",
         args: ["playbook", "op"],
@@ -1701,11 +1734,15 @@ const TOOLS = {
       "playbook record start": {
         desc: "Start recording a playbook op",
         args: ["playbook"],
-        opts: { op: "Operation name", network: "Record network requests", watch: "Watch page changes", "include-input-values": "Keep typed values (redacted by default)" },
-        examples: [{ cmd: "pb record start example --op read --network --watch", desc: "Record with network" }],
+        opts: { op: "Operation name", "no-network": "Don't capture network requests (captured by default)", watch: "Watch page changes", "include-input-values": "Keep typed values (redacted by default)" },
+        examples: [{ cmd: "pb record start example --op read --watch", desc: "Record network requests and page changes" }],
       },
       "playbook record mark": { desc: "Add a note to the recording", args: ["note"] },
-      "playbook record stop": { desc: "Stop recording", args: [], opts: { draft: "Save a draft playbook from the record" } },
+      "playbook record stop": {
+        desc: "Stop recording; with network capture, pick, test and save the op as surf hook does (exit 2 on a weak pick keeps recording)",
+        args: [],
+        opts: { match: "Pick the captured request whose URL holds this text", draft: "Only save a draft op in the record, as before" },
+      },
       "playbook record status": { desc: "Show the recording state (also: pause, resume, discard)", args: [] },
       "playbook trace export": { desc: "Export a record as HAR", args: [], opts: { "from-record": "Record id", har: "Output .har path" } },
       "playbook export": { desc: "Export a playbook directory", args: ["playbook"], opts: { out: "Output directory" } },

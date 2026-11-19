@@ -1039,6 +1039,28 @@ surf pb test books                             # run each op with its examples, 
 
 Selectors cover tag, `#id`, `.class`, `[attr]`, `[attr="v"]`, `:nth-child(n)`, descendant and `>`. `--url <u>` runs the op on another URL of its site; a URL or next link on another site is refused. `--json` says which step answered (`"via": "tab"` or `"page"`). An op with a `run` list works as before. Reading HTML needs Node 20.19 or 22.12 or later.
 
+#### Make an op with `surf hook`
+
+`surf hook` writes that file for you. It opens the URL in the session's tab with network capture on, runs any `--do` steps, picks the request that carries the data, names its inputs, infers the extract from a replay, tests the op and saves it:
+
+```
+$ surf hook 'https://books.toscrape.com/catalogue/page-{{page}}.html' --page 2 \
+    --goal "books with prices" --as books/list_books
+picked   GET https://books.toscrape.com/catalogue/page-2.html   HTML document
+inputs   --page (default 2)
+extract  article.product_pod → title, url, star_rating, price_color
+paging   --pages: page +1
+test     tab ✓ 20 records; title, url present
+saved    ~/.surf/playbooks/books/ops/list_books.json
+run      surf use books list_books --page 2
+```
+
+- `{{name}}` in the URL or a `--do` step (`--do 'type "{{query}}" --into "#q" | key Enter' --query einstein`), with `--name <sample>`, becomes an input where that value sits in the request. A search key becomes `query`, a page key or `page-N` segment `page`, an id in the path `<word before>_id`.
+- The pick scores each request: same site, a JSON list of objects, the page's own document, share of the page's words, sent after the `--do` steps, a word of the goal. Exit 2 when the best leads by under 3 points: it prints the top 3 and a rerun line with `--match <url-part>`.
+- Exit 1 on an error or when the pick is a write (not GET or HEAD): it prints the draft op and saves nothing. `surf hook` saves reads only.
+- `--as <site>/<op>` names it; the default is the host name and `get_` with the goal's first three words.
+- `surf pb record start <site> --op <name>` captures network requests by default (`--no-network` turns it off), and `surf pb record stop` makes the op the same way from what you did, values you typed included. On a weak pick the record keeps recording: `stop --match <url-part>` picks. `--draft` only drafts, as before.
+
 Playbook read ops can also use a trusted `script` strategy when fixed JSON steps are too rigid. Scripts require `--allow-script` at run time. Only run scripts from playbooks you trust. This is not a security sandbox.
 
 The script gets `input`, `tools.run`, `tools.all`, `tools.ref`/`refs`, `emit`, and `console`. Tool calls still use Surf workflow step behavior, including auto-waits unless `autoWait` is `false`.
@@ -1061,7 +1083,7 @@ Author a playbook from redacted recent activity or an explicit evidence record:
 ```bash
 surf pb suggest --since 1h
 surf pb save example --op read --from-recent 1h
-surf pb record start example --op read --network --watch
+surf pb record start example --op read --watch
 surf pb record mark "loaded results"
 surf pb record stop --draft
 surf pb save --from-record <record-id>

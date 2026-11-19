@@ -17,7 +17,8 @@ function parseCommandArgs(argv) {
     const name = value.slice(2);
     const next = argv[index + 1];
     if (next !== undefined && !next.startsWith("--")) {
-      options[name] = /^-?\d+(?:\.\d+)?$/.test(next) ? Number(next) : next;
+      // A number only when it reads back the same: ids such as 2101.10010 or 0704.0001 stay text.
+      options[name] = /^-?\d+(?:\.\d+)?$/.test(next) && String(Number(next)) === next ? Number(next) : next;
       index++;
     } else options[name] = true;
   }
@@ -174,9 +175,9 @@ async function handlePlaybookCli(argv, { endpoint, cwd = process.cwd(), session,
     const action = parsed.positional[0];
     const tool = `playbook.record.${action}`;
     let args = {};
-    if (action === "start") args = { site: parsed.positional[1], op: parsed.options.op, watch: parsed.options.watch === true, network: parsed.options.network === true, includeInputValues: parsed.options["include-input-values"] === true };
+    if (action === "start") args = { site: parsed.positional[1], op: parsed.options.op, watch: parsed.options.watch === true, network: parsed.options["no-network"] !== true, includeInputValues: parsed.options["include-input-values"] === true };
     else if (action === "mark") args = { label: parsed.positional.slice(1).join(" ") };
-    else if (action === "stop") args = { draft: parsed.options.draft === true };
+    else if (action === "stop") args = { draft: parsed.options.draft === true, ...(parsed.options.match === undefined ? {} : { match: String(parsed.options.match) }) };
     else if (!["status", "pause", "resume", "discard"].includes(action)) throw new Error("Unknown record command");
     const value = await requestHost(endpoint, tool, args, {
       tabId: parsed.options["tab-id"],
@@ -184,7 +185,13 @@ async function handlePlaybookCli(argv, { endpoint, cwd = process.cwd(), session,
       sessionSource: parsed.options.session ? "explicit" : sessionSource,
       admission: parsed.options["no-wait"] === true ? { wait: false } : admission,
     });
-    return { handled: true, value, json: parsed.options.json === true };
+    // Without --draft, a stop with network capture ran the op pipeline (surf hook's output).
+    if (value?.hook && parsed.options.json !== true) {
+      const { stdout, stderr, exitCode } = require("./hook-cli.cjs").formatHook(value.hook, ["surf", "pb", "record", "stop"]);
+      const warnings = (value.warnings || []).map((warning) => `Warning: ${warning}`);
+      return { handled: true, value: [stdout, ...warnings].filter(Boolean).join("\n"), stderr, exitCode };
+    }
+    return { handled: true, value, json: parsed.options.json === true, ...(value?.hook ? { exitCode: value.hook.exitCode } : {}) };
   }
   if (command === "suggest") return { handled: true, value: suggestions({ since: parsed.options.since || "1h" }), json: parsed.options.json === true };
   if (command === "save") {
@@ -220,4 +227,4 @@ function formatPlaybookOutput(value, json = false) {
   return value;
 }
 
-module.exports = { formatPlaybookOutput, handlePlaybookCli, playbookCommandNeedsBrowser };
+module.exports = { formatPlaybookOutput, handlePlaybookCli, playbookCommandNeedsBrowser, requestHost };

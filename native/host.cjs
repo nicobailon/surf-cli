@@ -49,6 +49,7 @@ const { redactUrlSecrets } = require("./redaction.cjs");
 const { appendActivity, journalCommand } = require("./activity-journal.cjs");
 const { reserveReceipt, updateReceipt } = require("./playbook-receipts.cjs");
 const {
+  activeRecords,
   appendRecordEvent,
   attachNetworkTrace,
   discardRecord,
@@ -64,6 +65,7 @@ const {
 } = require("./playbook-records.cjs");
 const { resolveArgs, runPlaybookOp } = require("./playbook-runtime.cjs");
 const { dryRunOp, runOp } = require("./op-run.cjs");
+const { captureHook, makeOp, readPage } = require("./op-pipeline.cjs");
 const { resolveOp } = require("./playbooks.cjs");
 const { replay, waitForResponse } = require("./api-harvest.cjs");
 const { runCollect } = require("./dom-collect.cjs");
@@ -1555,6 +1557,14 @@ async function executeNativePlaybook(request, handler, args, options = {}) {
   return { response: result.response, model: result.model, tookMs: result.tookMs };
 }
 
+// With --url, an input that only fills the op's URL (a hook-made detail op's id) isn't needed.
+function urlInputsOptional(op) {
+  const inUrl = `${op.request?.url || ""} ${op.open || ""}`;
+  const elsewhere = JSON.stringify([op.request && { ...op.request, url: "" }, op.steps]);
+  const optional = (name) => inUrl.includes(`{{${name}}}`) && !elsewhere.includes(`{{${name}}}`);
+  return Object.fromEntries(Object.entries(op.args || {}).map(([name, spec]) => [name, optional(name) ? { ...spec, required: false } : spec]));
+}
+
 async function runHostPlaybook(msg, request) {
   const params = msg.params?.args || {};
   const { playbook, op } = resolveOp(params.playbook, params.op, {
@@ -1570,7 +1580,7 @@ async function runHostPlaybook(msg, request) {
   }
   if (url !== undefined && typeof url !== "string") throw new Error("--url needs a URL");
   if (!Number.isInteger(pages) || pages < 1 || pages > 100) throw new Error("--pages must be a whole number from 1 to 100");
-  const runArgs = resolveArgs(op, params.args || {}, { playbookId: playbook.id });
+  const runArgs = resolveArgs(url === undefined ? op : { ...op, args: urlInputsOptional(op) }, params.args || {}, { playbookId: playbook.id });
   if (params.dryRun) return dryRunOp({ playbook, op, args: runArgs, url });
   if (op.effect === "write" && op.safety.authorization === "explicit" && params.write !== true) {
     throw new Error(`write op ${playbook.id} ${op.id} requires --write`);
@@ -1628,6 +1638,32 @@ async function runHarvestTool(tool, args, msg, request) {
 }
 
 const RECORD_TRACE_LIMIT = 500;
+// What each active record's tab was given to type or pick, kept in memory until its stop, where
+// the values become the op's inputs. Records on disk keep them redacted.
+const recordTyped = new Map();
+
+// What the op pipeline uses to drive the tab and the extension.
+function pipelineContext(request, tabId) {
+  return {
+    executeTool: (tool, args) => executeMappedHostTool(request, tool, args, tabId),
+    callExtension: (message) => requestExtensionOrThrow(request, request.tool, message),
+    signal: request.signal,
+    sleep: (ms) => abortableDelay(ms, request.signal),
+    onEvent: appendActivity,
+  };
+}
+
+// surf hook: opens the URL with capture on, runs the --do steps, and makes the op from what it sent.
+async function runHook(msg, request) {
+  const params = msg.params?.args || {};
+  const tabId = request.target?.tabId ?? msg.tabId;
+  if (activeRecords().some((record) => record.tabId === tabId)) {
+    throw new Error("a playbook record is open on this tab; stop it (surf pb record stop) before running surf hook");
+  }
+  const context = pipelineContext(request, tabId);
+  const capture = await captureHook({ url: params.url, steps: params.steps || [], tabId, ...context });
+  return makeOp({ capture, goal: params.goal, samples: params.samples, typed: params.typed, template: params.template, match: params.match, site: params.site, op: params.op, ...context });
+}
 
 // Who a command's events belong to. Tab and window commands resolve no tab target, so they go by
 // the caller's session.
@@ -1679,24 +1715,42 @@ async function handleRecordRequest(tool, args, msg, request) {
   }
   if (tool === "playbook.record.stop") {
     const record = requireRecordFor(target);
-    let readError;
+    let result;
+    let hook;
     if (record.capture.network) {
       try {
-        const result = await requestExtensionOrThrow(request, tool, { type: "READ_NETWORK_REQUESTS", tabId: record.tabId, full: true, limit: RECORD_TRACE_LIMIT });
-        const read = result.entries || [];
-        attachNetworkTrace(record.id, traceEntriesForRecord(record, read), undefined, {
-          capture: result.capture,
-          ...(read.length >= RECORD_TRACE_LIMIT ? { truncatedAt: RECORD_TRACE_LIMIT } : {}),
-        });
+        result = await requestExtensionOrThrow(request, tool, { type: "READ_NETWORK_REQUESTS", tabId: record.tabId, full: true, limit: RECORD_TRACE_LIMIT });
       } catch (error) {
         // The record's tab may be closed; the record still stops, without a trace.
-        readError = error;
+        result = { error };
       }
     }
+    const entries = result?.entries && traceEntriesForRecord(record, result.entries);
+    // Without --draft, stop runs the op pipeline on what the record captured. A weak pick leaves the
+    // record open, so stop --match can pick again.
+    if (entries && args.draft !== true) {
+      const context = pipelineContext(request, record.tabId);
+      hook = await readPage(context)
+        .then((page) => makeOp({ capture: { entries, pageUrl: page.url, pageText: page.text }, typed: recordTyped.get(record.id), match: args.match, site: record.site, op: record.op, ...context }))
+        .catch((error) => ({ status: "error", exitCode: 1, error: error.message }));
+      // A weak pick, or a --match that holds no request, leaves the record open to pick again.
+      if (hook.status === "weak") return { record: { id: record.id, status: record.status }, hook };
+      if (args.match !== undefined && !hook.picked) {
+        return { record: { id: record.id, status: record.status }, hook: { ...hook, error: `${hook.error}; record ${record.id} is still open: run surf pb record stop --match with another part of the URL` } };
+      }
+    }
+    if (entries) {
+      attachNetworkTrace(record.id, entries, undefined, {
+        capture: result.capture,
+        ...(result.entries.length >= RECORD_TRACE_LIMIT ? { truncatedAt: RECORD_TRACE_LIMIT } : {}),
+      });
+    }
     await stopCapture(record);
+    recordTyped.delete(record.id);
     const stopped = stopRecord({ target: { session: record.session, tabId: record.tabId }, draft: args.draft === true });
-    if (!readError) return stopped;
-    return { ...stopped, warnings: [...(stopped.warnings || []), `the network trace could not be read: ${readError.message || readError}`] };
+    const warnings = [...(stopped.warnings || []), ...(result?.error ? [`the network trace could not be read: ${result.error.message || result.error}`] : [])];
+    if (hook?.status === "error") hook = { ...hook, error: `${hook.error}; record ${record.id} stopped, its trace saved` };
+    return { ...stopped, ...(hook ? { hook } : {}), ...(warnings.length > 0 ? { warnings } : {}) };
   }
   throw new Error(`Unknown record command: ${tool}`);
 }
@@ -1862,7 +1916,12 @@ function sendToolResponse(socket, id, result, error) {
           resultSummary: finalError ? "failed" : "success",
         };
         appendActivity(event);
-        appendRecordEvent(event, { target: recordEventTarget(request) });
+        const target = recordEventTarget(request);
+        const typed = finalError || metadata.effect !== "page-write" ? [] : [request.args?.text, request.args?.value, request.args?.values].flat().filter((value) => typeof value === "string" && value);
+        if (appendRecordEvent(event, { target }) && typed.length > 0) {
+          const { id } = recordStatus({ target });
+          if (id) recordTyped.set(id, [...(recordTyped.get(id) || []), ...typed]);
+        }
       }
     }
     await cleanupRequestTransfers(request);
@@ -2004,8 +2063,8 @@ function handleToolRequest(msg, socket, requestContext = requestStorage.getStore
       .catch((error) => sendToolResponse(socket, originalId, null, error));
     return;
   }
-  if (tool === "playbook.run") {
-    runHostPlaybook(msg, requestContext)
+  if (tool === "playbook.run" || tool === "playbook.hook") {
+    (tool === "playbook.run" ? runHostPlaybook : runHook)(msg, requestContext)
       .then((result) => sendToolResponse(socket, originalId, { output: JSON.stringify(result) }, null))
       .catch((error) => sendToolResponse(socket, originalId, null, error.message));
     return;
