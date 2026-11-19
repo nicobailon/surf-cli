@@ -1677,7 +1677,7 @@ async function runHook(msg, request) {
   const context = pipelineContext(request, tabId);
   const capture = await captureHook({ url: params.url, steps: params.steps || [], tabId, ...context });
   const source = { url: params.template, goal: params.goal, ...(params.do ? { do: params.do } : {}), ...(params.match === undefined ? {} : { match: params.match }) };
-  return makeOp({ capture, goal: params.goal, samples: params.samples, typed: params.typed, template: params.template, match: params.match, site: params.site, op: params.op, source, ...context });
+  return makeOp({ capture, goal: params.goal, samples: params.samples, typed: params.typed, template: params.template, match: params.match, site: params.site, op: params.op, source, dryRun: params.dryRun === true, ...context });
 }
 
 // Who a command's events belong to. Tab and window commands resolve no tab target, so they go by

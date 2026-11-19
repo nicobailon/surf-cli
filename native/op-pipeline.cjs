@@ -48,23 +48,33 @@ async function captureHook({ url, steps = [], tabId, ...context }) {
   }
 }
 
-// Saves into ~/.surf/playbooks/<site>, adding the op's origin to the site's playbook.json.
-function save(site, op) {
+// Saves into ~/.surf/playbooks/<site>, adding the op's origin to the site's playbook.json, and
+// keeps an op it replaces as <op>.json.bak. With dryRun it checks the op and writes nothing.
+function save(site, op, dryRun) {
+  const directory = path.join(os.homedir(), ".surf", "playbooks", site);
+  const file = path.join(directory, "ops", `${op.id}.json`);
   let manifest = { id: site, version: "1.0.0", origins: [] };
   try {
-    manifest = JSON.parse(fs.readFileSync(path.join(os.homedir(), ".surf", "playbooks", site, "playbook.json"), "utf8"));
+    manifest = JSON.parse(fs.readFileSync(path.join(directory, "playbook.json"), "utf8"));
   } catch {}
   manifest.origins = [...new Set([...(manifest.origins || []), new URL(op.request.url).origin])];
-  const saved = savePlaybook({ manifest, op });
-  return path.join(saved.directory, "ops", `${op.id}.json`);
+  const replaced = fs.existsSync(file);
+  if (dryRun) {
+    validateOp(op, manifest);
+    return { file, replaced };
+  }
+  if (replaced) fs.copyFileSync(file, `${file}.bak`);
+  savePlaybook({ manifest, op });
+  return { file, replaced };
 }
 
 /**
  * Picks the capture's data request, names its inputs, infers its extract from a replay, tests the
  * op through the runner and saves it. Returns { status, exitCode }: saved 0, weak 2 (with the top
- * candidates and a `match` that picks the first), or error 1 (with the draft once there is one).
+ * candidates and a `match` that picks the first), or error 1 (with the draft once there is one). With dryRun it
+ * saves nothing and returns status "dry-run", exit 0, with the draft it would save.
  */
-async function makeOp({ capture, goal = "", samples = {}, typed = [], template, match, site, op: id, source, previous, ...context }) {
+async function makeOp({ capture, goal = "", samples = {}, typed = [], template, match, site, op: id, source, previous, dryRun = false, ...context }) {
   const ranked = rankRequests(capture.entries, { pageUrl: capture.pageUrl, pageText: capture.pageText, goal, after: capture.after });
   const chosen = pickRequest(ranked, { match });
   if (chosen.error) return { status: "error", exitCode: 1, error: chosen.error };
@@ -88,6 +98,10 @@ async function makeOp({ capture, goal = "", samples = {}, typed = [], template, 
   // The run line: each input's sample, or <name> for one with none (a secret).
   const runLine = (examples) => ["surf", "use", site, id, ...Object.entries(examples).flatMap(([name, value]) => [`--${name}`, value === undefined ? `<${name}>` : String(value)])];
   const examples = Object.fromEntries(Object.entries(draft.args).map(([name, spec]) => [name, spec.example]));
+  const saved = (fields) => {
+    const { file, replaced } = save(site, draft, dryRun);
+    return { ...base, status: dryRun ? "dry-run" : "saved", exitCode: 0, file, replaced, ...fields, ...(dryRun ? { draft } : {}) };
+  };
   if (effect === "write") {
     if (previous) return { ...base, status: "error", exitCode: 1, error: `the new pick is a write (${entry.method} ${base.picked.url})` };
     // Saved untested, as a write is never sent again here: the extract comes from the captured response.
@@ -96,7 +110,8 @@ async function makeOp({ capture, goal = "", samples = {}, typed = [], template, 
       if (found) draft.extract = found.extract;
     } catch {}
     try {
-      return { ...base, status: "saved", exitCode: 0, file: save(site, draft), args: draft.args, extract: draft.extract, test: null, run: [...runLine(examples), "--write"] };
+      // The capture holds the write because the page, or the --do steps, sent it once.
+      return saved({ args: draft.args, extract: draft.extract, test: null, sentBy: capture.after ? "do" : "page", run: [...runLine(examples), "--write"] });
     } catch (error) {
       return { ...base, status: "error", exitCode: 1, error: error.message, draft };
     }
@@ -119,9 +134,9 @@ async function makeOp({ capture, goal = "", samples = {}, typed = [], template, 
       if (fields.length === 0) throw new Error(`the test run read no record with ${keyFields(found).join(" or ")}`);
       draft.expect = { ...(list ? { minItems: 1 } : {}), fields };
     }
-    const file = previous ? replaceOp(previous.file, draft) : save(site, draft);
     const test = { via: run.via, count: list ? run.value.length : null, fields: draft.expect.fields || [] };
-    return { ...base, status: "saved", exitCode: 0, file, op: draft, args: draft.args, extract: draft.extract, page: draft.page, test, run: runLine(examples) };
+    const fields = { op: draft, args: draft.args, extract: draft.extract, page: draft.page, test, run: runLine(examples) };
+    return previous ? { ...base, status: "saved", exitCode: 0, file: replaceOp(previous.file, draft), ...fields } : saved(fields);
   } catch (error) {
     return { ...base, status: "error", exitCode: 1, error: error.message, draft };
   }
