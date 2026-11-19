@@ -321,6 +321,22 @@ describe("op-inputs", () => {
       key: "theme",
     });
     expect(JSON.stringify(named)).not.toMatch(/hunter2|n3w|"cs"|"ct"/);
+    // A trailing number still names a secret (Django's password1, WordPress's pass1).
+    const { isSecret } = require("../../native/op-inputs.cjs");
+    for (const name of [
+      "password1",
+      "password2",
+      "new_password1",
+      "pass1",
+      "pass2",
+      "newPassword1",
+      "Password1",
+    ]) {
+      expect(isSecret(name)).toBe(true);
+    }
+    for (const name of ["page2", "custname", "keyword", "address1", "passenger2"]) {
+      expect(isSecret(name)).toBe(false);
+    }
     // A sample given for a secret is never kept.
     const sampled = nameInputs({
       request: { method: "POST", url: "https://a.example/o", body: { pw: "s3cret" } },
