@@ -6,9 +6,14 @@ const MAX_FRAME_BYTES = 1024 * 1024;
 const DEFAULT_FRAME_TIMEOUT_MS = 10000;
 const DEFAULT_AUTH_TIMEOUT_MS = 5000;
 
+// A frame the writer won't send: `bytes` says how large it was.
+function frameTooLarge(bytes) {
+  return Object.assign(new Error("frame exceeds byte limit"), { code: "FRAME_TOO_LARGE", bytes });
+}
+
 function writeFrame(socket, value) {
   const encoded = Buffer.from(`${JSON.stringify(value)}\n`, "utf8");
-  if (encoded.length - 1 > MAX_FRAME_BYTES) return Promise.reject(new Error("frame exceeds byte limit"));
+  if (encoded.length - 1 > MAX_FRAME_BYTES) return Promise.reject(frameTooLarge(encoded.length - 1));
   return new Promise((resolve, reject) => {
     let settled = false;
     let drainListener;
@@ -109,7 +114,7 @@ function createSocketWriter(socket, { maxPendingBytes = 4 * 1024 * 1024, onOverf
   const send = (value, { stream = false } = {}) => {
     if (closed) return Promise.reject(new Error("socket writer is closed"));
     const encoded = Buffer.from(`${JSON.stringify(value)}\n`, "utf8");
-    if (encoded.length - 1 > MAX_FRAME_BYTES) return Promise.reject(new Error("frame exceeds byte limit"));
+    if (encoded.length - 1 > MAX_FRAME_BYTES) return Promise.reject(frameTooLarge(encoded.length - 1));
     if (pendingBytes + encoded.length > maxPendingBytes) {
       const error = new Error("socket writer queue is full");
       onOverflow({ stream, error });
