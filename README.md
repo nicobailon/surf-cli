@@ -1030,14 +1030,37 @@ surf pb test books                             # run each op with its examples, 
 | Key | Meaning |
 |---|---|
 | `args` | Inputs: `{ "<name>": { "default"?, "required"?, "example"?, "desc"? } }`. `pb test` uses `example`. |
-| `request` | `{ "method"?, "url", "query"?, "headers"?, "body"? }`. Strings take `{{input}}` and `{{env.NAME}}` (from the shell that runs `surf use`). An object body is sent as JSON, or as a form with a form `content-type`. The tab opens the op's site if it is elsewhere and sends the request with the browser's cookies. |
+| `request` | `{ "method"?, "url", "query"?, "headers"?, "body"? }`. Strings take `{{input}}` and `{{env.NAME}}` (from the shell that runs `surf use`). An object body is sent as JSON, or as a form with a form `content-type`. A read goes first from surf itself with the browser's cookies for that URL (read through the extension for that one request, never saved), then, on an error, a redirect, a status of 400 or more or a failed `expect`, from the tab, which opens the op's site if it is elsewhere. A write goes from the tab only. |
 | `open`, `steps` | A page to open and `surf do` steps to run there (`"click e3 \| wait.element .results"`); the rendered HTML is read. Used with no `request`, or when the request fails. |
 | `extract` | `{ "in"?, "records"?, "fields"? }`. JSON: `records` is a path (`$.data.items`), a field is a path (`author.name`, `links[0].href`, `a ?? b`). HTML: `records` is a selector, a field is `selector`, `selector@attr`, `selector[]` (every match) or `:scope`, or `{ "selector", "match" }` to keep one regex group; `href` and `src` come back absolute. `in` reads JSON the page embeds: a script selector (`script#__NEXT_DATA__`), `ld+json:<Type>` or `js:<name>` (`var data = [...]`). No `records`: one record from the whole response. |
 | `page` | `{ "into"?, "next" }`: `"+1"` adds to the input `into`; a path or selector gives the next value of `into`, or with no `into`, the next URL. `--pages <n>` follows it (default 1, at most 100, 1 s apart); it stops at a failed page or one that repeats the last request, keeping what it read. |
 | `expect` | `{ "status"?, "minItems"?, "fields"? }`, checked on every run; `fields` must be in the first record. |
 | `effect` | `"write"` for an op that changes data; it needs `--write` and a `safety` key as other writes do. |
+| `chain` | Steps that run other ops of the playbook, in place of `request` (below). |
 
-Selectors cover tag, `#id`, `.class`, `[attr]`, `[attr="v"]`, `:nth-child(n)`, descendant and `>`. `--url <u>` runs the op on another URL of its site; a URL or next link on another site is refused. `--json` says which step answered (`"via": "tab"` or `"page"`). An op with a `run` list works as before. Reading HTML needs Node 20.19 or 22.12 or later.
+Selectors cover tag, `#id`, `.class`, `[attr]`, `[attr="v"]`, `:nth-child(n)`, descendant and `>`. `--url <u>` runs the op on another URL of its site; a URL or next link on another site is refused. `--json` says which step answered (`"via": "direct"`, `"tab"`, `"page"` or `"chain"`); `--dry-run` shows the request and the steps it would try. An op with a `run` list works as before. Reading HTML needs Node 20.19 or 22.12 or later.
+
+#### Chains, `--each` and filters
+
+```json
+{
+  "id": "books_with_details",
+  "args": { "pages": { "default": 2 }, "limit": { "default": 5 } },
+  "chain": [
+    { "id": "list", "op": "list_books", "with": { "pages": "{{pages}}" } },
+    { "id": "book", "op": "get_book", "each": "list", "limit": "{{limit}}", "with": { "url": "{{item.url}}" } }
+  ]
+}
+```
+
+Each step runs an op of the same playbook; `with` gives its inputs (and may set `url` and `pages`) as templates: `{{input}}`, `{{item.<path>}}` (the record an `each` step runs for) or `{{<step>.<path>}}` (an earlier step's result). `each` loops over a step's records, `limit` of them (default 10), 1 s apart (`delayMs`); the chain returns the last step's records. A run makes at most 100 op runs, and chain steps are reads for now. Without a file:
+
+```bash
+surf use books get_book --each list_books:url --pages 2 --limit 5   # url fills --url; field=input names another input
+surf use books list_books --where rating~=Five --fields title,price --limit 3
+```
+
+`--where field=value` (also `!=`, and `~=` for contains, any case; repeatable; dotted fields read nested ones), `--fields a,b.c` and `--limit n` trim the records in the CLI after the run, with a `filter: { where, fields, limit, before, after }` summary; an unknown field fails and lists the fields. With `--each`, `--limit` caps the records looped over instead. `pb test` takes them too, for what it prints; `expect` still checks the whole result.
 
 #### Make an op with `surf hook`
 
@@ -1050,7 +1073,7 @@ picked   GET https://books.toscrape.com/catalogue/page-2.html   HTML document
 inputs   --page (default 2)
 extract  article.product_pod → title, url, star_rating, price_color
 paging   --pages: page +1
-test     tab ✓ 20 records; title, url present
+test     direct ✓ 20 records; title, url present
 saved    ~/.surf/playbooks/books/ops/list_books.json
 run      surf use books list_books --page 2
 ```

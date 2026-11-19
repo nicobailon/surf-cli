@@ -63,6 +63,8 @@ type FakeHostOptions = {
   javascript?: (code: string) => unknown;
   // The requests network capture holds when they are read.
   network?: () => Record<string, unknown>[];
+  // The browser's cookies for a direct request's URL.
+  directContext?: (url: string) => Record<string, unknown>;
 };
 
 // Messages the fake answers with success and nothing else: capture, waits and page actions.
@@ -192,6 +194,11 @@ function buildExtensionResponse(
       return { id: message.id, success: true };
     case "GET_PLAYBOOK_RECORD_CONTEXT":
       return { id: message.id, success: true, origin: new URL(currentUrl).origin, url: currentUrl };
+    case "GET_DIRECT_REQUEST_CONTEXT":
+      if (options.directContext) {
+        return { id: message.id, ...options.directContext(String(message.url)) };
+      }
+      return { id: message.id, error: `Unhandled fake extension message: ${message.type}` };
     case "READ_NETWORK_REQUESTS":
       return { id: message.id, entries: options.network?.() ?? [], capture: { active: true } };
     case "EXECUTE_JAVASCRIPT":
@@ -1234,6 +1241,138 @@ describe("surf hook and pb record stop through the fake extension", () => {
       expect(byUrl.code).toBe(0);
       expect(fetches(codes).at(-1)).toContain(`new URL("${other}")`);
     } finally {
+      await host.dispose();
+    }
+  });
+});
+
+describe("direct requests, --each and filters through the fake extension", () => {
+  it("answers via direct with the browser's cookies, runs --each and filters the records", async () => {
+    const http = require("node:http") as {
+      createServer(
+        handler: (
+          req: { url: string; headers: Record<string, string> },
+          res: {
+            writeHead(status: number, headers: Record<string, string>): void;
+            end(body: string): void;
+          },
+        ) => void,
+      ): {
+        listen(port: number, host: string, done: () => void): void;
+        address(): { port: number };
+        close(): void;
+      };
+    };
+    const seen: { url: string; cookie?: string }[] = [];
+    let origin = "";
+    const server = http.createServer((req, res) => {
+      seen.push({ url: req.url, cookie: req.headers.cookie });
+      const page = Number(req.url.match(/page=(\d+)/)?.[1] ?? 0);
+      const item = req.url.match(/^\/item\/(\d+)$/)?.[1];
+      const items = [1, 2].map((n) => ({
+        url: `${origin}/item/${(page - 1) * 2 + n}`,
+        slug: `s${n}`,
+      }));
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(JSON.stringify(item ? { name: `Item ${item}` } : { items: page > 2 ? [] : items }));
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    origin = `http://127.0.0.1:${server.address().port}`;
+    const project = fs.mkdtempSync(path.join(os.tmpdir(), "surf-direct-project-"));
+    tempDirs.push(project);
+    const site = path.join(project, ".surf", "playbooks", "shop");
+    fs.mkdirSync(path.join(site, "ops"), { recursive: true });
+    fs.writeFileSync(
+      path.join(site, "playbook.json"),
+      JSON.stringify({ id: "shop", version: "1.0.0" }),
+    );
+    const ops = [
+      {
+        id: "list_items",
+        args: { page: { default: 1, example: 1 } },
+        request: { url: `${origin}/list?page={{page}}` },
+        extract: { records: "$.items", fields: { url: "url", slug: "slug" } },
+        page: { into: "page", next: "+1" },
+        expect: { minItems: 1, fields: ["url"] },
+      },
+      {
+        id: "get_item",
+        args: { item_id: { required: true } },
+        request: { url: `${origin}/item/{{item_id}}` },
+        extract: { fields: { name: "name" } },
+        expect: { fields: ["name"] },
+      },
+    ];
+    for (const op of ops) {
+      fs.writeFileSync(path.join(site, "ops", `${op.id}.json`), JSON.stringify(op));
+    }
+    const socketPath = createSocketPath();
+    const host = startHost(socketPath, {
+      directContext: () => ({ cookies: [{ name: "sid", value: "e2e" }], userAgent: "Chrome/E2E" }),
+    });
+    const use = async (args: string[]) => {
+      const result = await runCli(socketPath, args, project);
+      expect(result.stderr).toBe("");
+      expect(result.code).toBe(0);
+      return result.stdout;
+    };
+
+    try {
+      await host.waitForMessage((message) => message.type === "HOST_READY");
+      const direct = JSON.parse(await use(["use", "shop", "list_items", "--json"]));
+      expect(direct).toMatchObject({ via: "direct", value: [{ slug: "s1" }, { slug: "s2" }] });
+      expect(seen).toEqual([{ url: "/list?page=1", cookie: "sid=e2e" }]);
+      expect(
+        host.messages.find((message) => message.type === "GET_DIRECT_REQUEST_CONTEXT")?.url,
+      ).toBe(`${origin}/list?page=1`);
+      expect(host.messages.some((message) => message.type === "EXECUTE_JAVASCRIPT")).toBe(false);
+
+      const each = JSON.parse(
+        await use([
+          "use",
+          "shop",
+          "get_item",
+          "--each",
+          "list_items:url",
+          "--limit",
+          "2",
+          "--json",
+        ]),
+      );
+      expect(each).toMatchObject({ via: "chain", value: [{ name: "Item 1" }, { name: "Item 2" }] });
+      expect(seen.slice(1).map((request) => request.url)).toEqual([
+        "/list?page=1",
+        "/item/1",
+        "/item/2",
+      ]);
+
+      const filtered = JSON.parse(
+        await use([
+          "use",
+          "shop",
+          "list_items",
+          "--pages",
+          "2",
+          "--where",
+          "slug=s2",
+          "--fields",
+          "url",
+          "--limit",
+          "1",
+          "--json",
+        ]),
+      );
+      expect(filtered.value).toEqual([{ url: `${origin}/item/2` }]);
+      expect(filtered.filter).toMatchObject({ before: 4, after: 1, limit: 1 });
+
+      const tested = await use(["pb", "test", "shop", "list_items", "--where", "slug=nothing"]);
+      expect(tested).toMatch(/^pass +list_items +2 records via direct$/m);
+      expect(tested).toContain("Filtered: 0 of 2 records (--where slug=nothing)");
+
+      const dry = JSON.parse(await use(["use", "shop", "list_items", "--dry-run", "--json"]));
+      expect(dry).toMatchObject({ via: "direct", fallback: ["tab"] });
+    } finally {
+      server.close();
       await host.dispose();
     }
   });

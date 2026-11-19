@@ -63,8 +63,9 @@ const {
   traceEntriesForRecord,
   updateRecordContext,
 } = require("./playbook-records.cjs");
-const { resolveArgs, runPlaybookOp } = require("./playbook-runtime.cjs");
+const { runPlaybookOp } = require("./playbook-runtime.cjs");
 const { dryRunOp, runOp } = require("./op-run.cjs");
+const { eachChain, runChain, stepInputs } = require("./op-chain.cjs");
 const { captureHook, makeOp, readPage } = require("./op-pipeline.cjs");
 const { resolveOp } = require("./playbooks.cjs");
 const { replay, waitForResponse } = require("./api-harvest.cjs");
@@ -1557,30 +1558,24 @@ async function executeNativePlaybook(request, handler, args, options = {}) {
   return { response: result.response, model: result.model, tookMs: result.tookMs };
 }
 
-// With --url, an input that only fills the op's URL (a hook-made detail op's id) isn't needed.
-function urlInputsOptional(op) {
-  const inUrl = `${op.request?.url || ""} ${op.open || ""}`;
-  const elsewhere = JSON.stringify([op.request && { ...op.request, url: "" }, op.steps]);
-  const optional = (name) => inUrl.includes(`{{${name}}}`) && !elsewhere.includes(`{{${name}}}`);
-  return Object.fromEntries(Object.entries(op.args || {}).map(([name, spec]) => [name, optional(name) ? { ...spec, required: false } : spec]));
+// The browser's cookies for one direct request's URL, read by the extension. They stay in memory
+// for that request: nothing here logs or stores them.
+async function readDirectCookies(request, url) {
+  const reply = await requestExtensionOrThrow(request, "playbook.direct", { type: "GET_DIRECT_REQUEST_CONTEXT", url }, 10000);
+  return { cookies: Array.isArray(reply.cookies) ? reply.cookies : [], userAgent: reply.userAgent };
 }
 
 async function runHostPlaybook(msg, request) {
   const params = msg.params?.args || {};
-  const { playbook, op } = resolveOp(params.playbook, params.op, {
+  const resolved = resolveOp(params.playbook, params.op, {
     cwd: request.context?.isRemote ? process.cwd() : params.projectDir || process.cwd(),
     pinBuiltIn: params.pinBuiltIn === true,
   });
-  // --url and --pages are surf's unless the op names an input so.
-  const flag = (name) => (Object.hasOwn(op.args || {}, name) ? undefined : params.args?.[name]);
-  const url = flag("url");
-  const pages = flag("pages") ?? 1;
-  if (op.run && (url !== undefined || pages !== 1 || params.dryRun)) {
-    throw new Error(`--url, --pages and --dry-run need an op with request or open; ${playbook.id} ${op.id} has a run list`);
-  }
-  if (url !== undefined && typeof url !== "string") throw new Error("--url needs a URL");
-  if (!Number.isInteger(pages) || pages < 1 || pages > 100) throw new Error("--pages must be a whole number from 1 to 100");
-  const runArgs = resolveArgs(url === undefined ? op : { ...op, args: urlInputsOptional(op) }, params.args || {}, { playbookId: playbook.id });
+  const { playbook } = resolved;
+  if (params.each !== undefined && resolved.op.effect === "write") throw new Error(`--each runs reads for now; ${playbook.id} ${resolved.op.id} is a write`);
+  const op = params.each === undefined ? resolved.op : eachChain(playbook, resolved.op, params.each);
+  if (params.dryRun && !op.request && !op.open) throw new Error(`--dry-run shows ops with request or open; ${playbook.id} ${op.id} has ${op.chain ? "a chain" : "a run list"}`);
+  const { args: runArgs, url, pages } = stepInputs(playbook, op, params.args || {});
   if (params.dryRun) return dryRunOp({ playbook, op, args: runArgs, url });
   if (op.effect === "write" && op.safety.authorization === "explicit" && params.write !== true) {
     throw new Error(`write op ${playbook.id} ${op.id} requires --write`);
@@ -1597,13 +1592,14 @@ async function runHostPlaybook(msg, request) {
     appendActivity(event);
     appendRecordEvent(event, { target: recordEventTarget(request) });
   };
-  const result = await (op.run ? runPlaybookOp : runOp)({
+  const result = await (op.chain ? runChain : op.run ? runPlaybookOp : runOp)({
     playbook,
     op,
     args: runArgs,
     url,
     pages,
     env: { ...process.env, ...params.env },
+    readCookies: (url) => readDirectCookies(request, url),
     attemptId: receipt?.attemptId,
     signal: request.signal,
     executeTool: (tool, args) => executeMappedHostTool(request, tool, args, msg.tabId),
@@ -1646,6 +1642,7 @@ const recordTyped = new Map();
 function pipelineContext(request, tabId) {
   return {
     executeTool: (tool, args) => executeMappedHostTool(request, tool, args, tabId),
+    readCookies: (url) => readDirectCookies(request, url),
     callExtension: (message) => requestExtensionOrThrow(request, request.tool, message),
     signal: request.signal,
     sleep: (ms) => abortableDelay(ms, request.signal),
