@@ -31,8 +31,9 @@ function loadSalt(root) {
 
 function semanticClaimKey({ playbookId, op, args, root = getPrivateStateRoot() }) {
   const semantic = {};
-  for (const name of op.safety.key) {
-    if (args[name] === undefined) throw new Error(`semantic safety argument is missing: ${name}`);
+  // Without a key (the default guard), every input is the key.
+  for (const name of op.safety.key ?? Object.keys(args).sort()) {
+    if (args[name] === undefined && op.safety.key) throw new Error(`semantic safety argument is missing: ${name}`);
     semantic[name] = args[name];
   }
   const message = JSON.stringify({ playbook: playbookId, op: op.id, semantic });
@@ -76,15 +77,21 @@ function reserveReceipt({ playbookId, op, args, repeat = false, retryAttempt, ov
       }
       return { claimKey, claimDir, attemptId: retryAttempt, path: path.join(claimDir, `${retryAttempt}.json`), receipt: retry };
     }
-    if (latest) {
-      const ageMs = Math.max(0, now - Date.parse(latest.updatedAt || latest.createdAt));
-      const windowMs = op.safety.windowMs ?? 30000;
-      const windowElapsed = op.safety.duplicate === "repeatable-window" && latest.status === "verified" && ageMs >= windowMs;
-      const deliberateOverride = overrideInDoubt && latest.status === "indeterminate";
-      const deliberateRepeat = repeat && latest.status === "verified";
-      if (!windowElapsed && !deliberateOverride && !deliberateRepeat) {
-        throw new Error(`write blocked by ${latest.status} receipt ${latest.attemptId}; use the policy-specific retry or override flag`);
-      }
+    // --repeat passes any state. A window op may send again once its window has passed after a
+    // send, or when the last attempt sent nothing; an unknown outcome blocks until --repeat.
+    const ageMs = Math.max(0, now - Date.parse(latest.createdAt));
+    const windowMs = op.safety.windowMs ?? 30000;
+    const windowed = op.safety.duplicate === "repeatable-window";
+    // A send the site answered (a 4xx) is as known as a verified one.
+    const sent = latest.status === "verified" || (latest.status === "indeterminate" && latest.answered === true);
+    const passes = repeat
+      || (windowed && sent && ageMs >= windowMs)
+      || (windowed && latest.status === "not_dispatched")
+      || (overrideInDoubt && latest.status === "indeterminate");
+    if (!passes) {
+      const ago = (ms) => (ms < 60000 ? `${Math.round(ms / 1000)} s` : `${Math.floor(ms / 60000)} min`);
+      const why = sent ? `the same op and inputs were ${latest.status === "verified" ? "sent" : "answered"} ${ago(ageMs)} ago${windowed ? ` (blocked for ${ago(windowMs)})` : ""}` : "the last send's outcome is unknown; check the site first";
+      throw new Error(`write blocked by ${latest.status} receipt ${latest.attemptId}: ${why}; --repeat sends it again`);
     }
   }
   const createdAt = new Date(now).toISOString();
@@ -100,7 +107,7 @@ function updateReceipt(handle, status, details = {}, root = getPrivateStateRoot(
   if (!["reserved", "not_dispatched", "dispatched", "indeterminate", "verified"].includes(status)) throw new Error(`invalid receipt status: ${status}`);
   const current = readPrivateJson(handle.path, null, { root });
   if (!current) throw new Error(`receipt is missing: ${handle.attemptId}`);
-  const receipt = { ...current, status, updatedAt: new Date().toISOString(), ...(details.error ? { errorCode: crypto.createHash("sha256").update(String(details.error)).digest("hex").slice(0, 16) } : {}) };
+  const receipt = { ...current, status, updatedAt: new Date().toISOString(), ...(details.error ? { errorCode: crypto.createHash("sha256").update(String(details.error)).digest("hex").slice(0, 16) } : {}), ...(details.answered ? { answered: true } : {}) };
   atomicWriteJson(handle.path, receipt, { root });
   handle.receipt = receipt;
   return receipt;

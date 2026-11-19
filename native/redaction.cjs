@@ -63,7 +63,8 @@ function assertNoEmbeddedSecrets(value, key = "value") {
   }
   if (value && typeof value === "object") {
     for (const [name, item] of Object.entries(value)) {
-      if (isSensitiveName(name)) {
+      // A secret-named wrapper ({ "session": { ... } }) is checked field by field.
+      if (isSensitiveName(name) && (item === null || typeof item !== "object")) {
         if (isTemplate(item) || item === undefined || item === null || item === "") continue;
         throw new Error(`playbook requires an auth input instead of a literal ${name}`);
       }

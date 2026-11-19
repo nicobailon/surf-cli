@@ -1126,29 +1126,25 @@ describe("surf hook and pb record stop through the fake extension", () => {
     }
   });
 
-  it("refuses a picked write: prints the draft, sends nothing again and saves nothing", async () => {
+  it("saves a picked write untested, a typed secret as an input with no value", async () => {
     const socketPath = createSocketPath();
-    const site = unique("quotes");
-    const page = "https://quotes.toscrape.com/search.aspx";
-    const results = readFixture("quotes-page-1.html");
+    const site = unique("httpbin");
+    const page = "https://httpbin.org/forms/post";
     const codes: string[] = [];
     const host = startHost(socketPath, {
       network: () => [
         captured(page, { responseBody: "<html><body><form></form></body></html>" }),
-        captured("https://quotes.toscrape.com/filter.aspx", {
+        captured("https://httpbin.org/post", {
           method: "POST",
+          type: "XHR",
+          mimeType: "application/json",
           requestHeaders: { "Content-Type": "application/x-www-form-urlencoded" },
-          requestBody: "author=Albert+Einstein&tag=----------",
-          responseBody: results,
+          requestBody: "custname=Ada&size=medium&password=hunter2",
+          responseBody: JSON.stringify({ form: { custname: "Ada", size: "medium" } }),
           ts: Date.now(),
         }),
       ],
-      javascript: tab(
-        "https://quotes.toscrape.com/filter.aspx",
-        "Albert Einstein The world as we have created it",
-        {},
-        codes,
-      ),
+      javascript: tab("https://httpbin.org/post", "custname Ada size medium", {}, codes),
     });
 
     try {
@@ -1157,28 +1153,37 @@ describe("surf hook and pb record stop through the fake extension", () => {
         "hook",
         page,
         "--goal",
-        "quotes by author",
+        "send the order",
         "--do",
-        'click --selector "#go"',
+        'type "Ada" --into "input[name=custname]" | type "hunter2" --into "#pw" | click --selector "#go"',
         "--as",
-        `${site}/by_author`,
+        `${site}/order`,
       ]);
-      expect(hooked.code).toBe(1);
-      expect(hooked.stderr).toMatch(
-        /refused: POST https:\/\/quotes\.toscrape\.com\/filter\.aspx can change data; surf hook saves reads only/,
+      expect(hooked.stderr).toBe("");
+      expect(hooked.code).toBe(0);
+      expect(hooked.stdout).toMatch(/^picked +POST https:\/\/httpbin\.org\/post/m);
+      expect(hooked.stdout).toMatch(
+        /^inputs +--custname \(required, sample Ada\) · --password \(required\)$/m,
       );
-      expect(JSON.parse(hooked.stdout)).toMatchObject({
-        id: "by_author",
+      expect(hooked.stdout).toMatch(/^test +not run: surf hook sends no write; --write sends it$/m);
+      expect(hooked.stdout).toMatch(
+        new RegExp(
+          `^run +surf use ${site} order --custname Ada --password '<password>' --write$`,
+          "m",
+        ),
+      );
+      const saved = fs.readFileSync(opFile(site, "order"), "utf8");
+      expect(JSON.parse(saved)).toMatchObject({
         effect: "write",
+        args: { custname: { required: true, example: "Ada" }, password: { required: true } },
         request: {
           method: "POST",
-          url: "https://quotes.toscrape.com/filter.aspx",
-          body: { author: "Albert Einstein" },
+          url: "https://httpbin.org/post",
+          body: { custname: "{{custname}}", size: "medium", password: "{{password}}" },
         },
-        extract: { records: "div.quote" },
       });
+      expect(`${hooked.stdout}${saved}`).not.toContain("hunter2");
       expect(fetches(codes)).toEqual([]);
-      expect(exists(opFile(site, "by_author"))).toBe(false);
     } finally {
       await host.dispose();
     }
@@ -1439,6 +1444,125 @@ describe("direct requests, --each and filters through the fake extension", () =>
       expect(dry).toMatchObject({ via: "direct", fallback: ["tab"] });
     } finally {
       server.close();
+      await host.dispose();
+    }
+  });
+});
+
+describe("writes through the fake extension", () => {
+  it("--write sends once from the tab, a second run is blocked, --repeat sends; chains and --each too", async () => {
+    const project = fs.mkdtempSync(path.join(os.tmpdir(), "surf-write-project-"));
+    tempDirs.push(project);
+    const site = path.join(project, ".surf", "playbooks", "forms");
+    fs.mkdirSync(path.join(site, "ops"), { recursive: true });
+    fs.writeFileSync(
+      path.join(site, "playbook.json"),
+      JSON.stringify({ id: "forms", version: "1.0.0", origins: ["https://httpbin.org"] }),
+    );
+    const ops = [
+      {
+        id: "order",
+        args: { custname: { required: true }, size: { default: "medium" } },
+        request: {
+          method: "POST",
+          url: "https://httpbin.org/post",
+          headers: { "content-type": "application/x-www-form-urlencoded" },
+          body: { custname: "{{custname}}", size: "{{size}}" },
+        },
+        open: "https://httpbin.org/forms/post",
+        extract: { fields: { name: "form.custname" } },
+        expect: { fields: ["name"] },
+      },
+      {
+        id: "list_names",
+        request: { url: "https://httpbin.org/names" },
+        extract: { records: "$.names", fields: { name: "name" } },
+      },
+      {
+        id: "order_all",
+        chain: [
+          { id: "list", op: "list_names" },
+          {
+            id: "send",
+            op: "order",
+            each: "list",
+            delayMs: 0,
+            with: { custname: "{{item.name}}" },
+          },
+        ],
+      },
+    ];
+    for (const op of ops) {
+      fs.writeFileSync(path.join(site, "ops", `${op.id}.json`), JSON.stringify(op));
+    }
+    const sent: string[] = [];
+    const socketPath = createSocketPath();
+    const host = startHost(socketPath, {
+      javascript: (code) => {
+        const body = (value: unknown) => ({
+          status: 200,
+          contentType: "application/json",
+          body: JSON.stringify(value),
+        });
+        if (code.includes("/names")) {
+          return body({ names: [{ name: "Cy" }, { name: "Dee" }] });
+        }
+        const name = code.match(/custname=(\w+)/)?.[1] ?? "";
+        sent.push(name);
+        if (name === "Away") {
+          return { elsewhere: "https://login.example" };
+        }
+        if (name === "Deny") {
+          return { status: 403, body: "" };
+        }
+        return name === "Fail" ? { status: 500, body: "" } : body({ form: { custname: name } });
+      },
+    });
+    const use = (...args: string[]) => runCli(socketPath, ["use", "forms", ...args], project);
+
+    try {
+      await host.waitForMessage((message) => message.type === "HOST_READY");
+      const refused = await use("order", "--custname", "Ada");
+      expect(refused.code).toBe(1);
+      expect(refused.stderr).toMatch(
+        /refused: forms order is a write \(POST https:\/\/httpbin\.org\/post\); add --write to send it/,
+      );
+      const once = await use("order", "--custname", "Ada", "--write", "--json");
+      expect(once.code).toBe(0);
+      expect(JSON.parse(once.stdout)).toMatchObject({ via: "tab", value: { name: "Ada" } });
+      const again = await use("order", "--custname", "Ada", "--write");
+      expect(again.code).toBe(1);
+      expect(again.stderr).toMatch(/write blocked by verified receipt .*--repeat sends it again/);
+      expect((await use("order", "--custname", "Ada", "--write", "--repeat")).code).toBe(0);
+      expect(sent).toEqual(["Ada", "Ada"]);
+
+      // A failed send never falls to the page step, and its unknown outcome blocks until --repeat.
+      expect((await use("order", "--custname", "Fail", "--write")).stderr).toMatch(/status 500/);
+      expect((await use("order", "--custname", "Fail", "--write")).stderr).toMatch(
+        /outcome is unknown/,
+      );
+      expect(host.messages.some((message) => message.type === "EXECUTE_NAVIGATE")).toBe(false);
+      expect(sent).toEqual(["Ada", "Ada", "Fail"]);
+      // A tab that stays on another site sent nothing; a 403 was answered, so it waits the window.
+      expect((await use("order", "--custname", "Away", "--write")).stderr).toMatch(/stayed on/);
+      expect((await use("order", "--custname", "Away", "--write")).stderr).toMatch(/stayed on/);
+      expect((await use("order", "--custname", "Deny", "--write")).stderr).toMatch(/status 403/);
+      expect((await use("order", "--custname", "Deny", "--write")).stderr).toMatch(
+        /answered \d+ s ago/,
+      );
+      sent.splice(3);
+
+      expect((await use("order_all")).stderr).toMatch(
+        /refused: forms order is a write \(POST https:\/\/httpbin\.org\/post\); add --write/,
+      );
+      const chained = await use("order_all", "--write", "--json");
+      expect(chained.code).toBe(0);
+      expect(JSON.parse(chained.stdout).value).toEqual([{ name: "Cy" }, { name: "Dee" }]);
+      const each = ["order", "--each", "list_names:name=custname", "--write", "--delay-ms", "0"];
+      expect((await use(...each)).stderr).toMatch(/record 1: write blocked by verified receipt/);
+      expect((await use(...each, "--repeat")).code).toBe(0);
+      expect(sent.slice(3)).toEqual(["Cy", "Dee", "Cy", "Dee"]);
+    } finally {
       await host.dispose();
     }
   });

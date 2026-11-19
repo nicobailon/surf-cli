@@ -91,28 +91,39 @@ function scoreEntry(entry, { pageUrl, pageWords, goalWords, after }) {
   return { entry, score, reasons, effect: ["GET", "HEAD"].includes(String(entry.method).toUpperCase()) ? "read" : "write" };
 }
 
+const WRITE_GOAL = /\b(?:send|submit|post|create|add|order|book|reply|comment|update|delete|remove|save|register|subscribe|buy|pay|upload|edit|vote)\b/i;
+
 /**
  * The captured requests that can carry data, scored, best first; a tie goes to the later request.
- * `after` (epoch ms) marks when the --do steps started.
+ * `after` (epoch ms) marks when the --do steps started. A write may have been answered with a
+ * redirect (a form POST). When the goal asks for a write (send, post, order...), writes rank first.
  */
 function rankRequests(entries, { pageUrl, pageText = "", goal = "", after } = {}) {
   const context = { pageUrl, pageWords: words(pageText), goalWords: words(goal), after };
+  const write = (entry) => !["GET", "HEAD"].includes(String(entry.method).toUpperCase());
+  const first = (candidate) => (WRITE_GOAL.test(goal) && candidate.effect === "write" ? 1 : 0);
   return entries
     .map((entry, index) => ({ entry, index }))
-    .filter(({ entry }) => entry.status >= 200 && entry.status < 300 && entry.method !== "OPTIONS" && !SKIPPED_TYPES.has(entry.type) && /^https?:/.test(entry.url))
+    .filter(({ entry }) => entry.status >= 200 && entry.status < (write(entry) ? 400 : 300) && entry.method !== "OPTIONS" && !SKIPPED_TYPES.has(entry.type) && /^https?:/.test(entry.url))
     .map(({ entry, index }) => ({ ...scoreEntry(entry, context), index }))
-    .sort((a, b) => b.score - a.score || b.index - a.index)
+    .sort((a, b) => first(b) - first(a) || b.score - a.score || b.index - a.index)
     .map(({ index: _index, ...candidate }) => candidate);
 }
 
-/** --match's best request; else the top one, unless it leads the next by under WEAK_LEAD points. */
+/**
+ * --match's best request (`POST`, `POST /comments` or a URL part); else the top one, unless it
+ * leads the next by under WEAK_LEAD points.
+ */
 function pickRequest(ranked, { match } = {}) {
   if (match !== undefined) {
-    const found = ranked.find((candidate) => candidate.entry.url.includes(match));
+    const [, method, part = ""] = String(match).match(/^(GET|HEAD|POST|PUT|PATCH|DELETE)(?:\s+(.+))?$/) || [null, null, match];
+    const found = ranked.find((candidate) => (!method || String(candidate.entry.method).toUpperCase() === method) && candidate.entry.url.includes(part));
     return found ? { pick: found } : { error: `no captured request's URL holds "${match}"` };
   }
-  const [top, next] = ranked;
+  const [top] = ranked;
   if (!top) return { error: "the capture holds no request to pick" };
+  // A read leads the reads, a write the writes.
+  const next = ranked.slice(1).find((candidate) => candidate.effect === top.effect);
   const lead = top.score - (next?.score ?? 0);
   if (lead >= WEAK_LEAD) return { pick: top };
   return { weak: `${top.entry.method} ${top.entry.url} leads ${next ? next.entry.url : "nothing"} by ${lead} points (it needs ${WEAK_LEAD})` };

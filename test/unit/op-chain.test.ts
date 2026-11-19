@@ -98,16 +98,9 @@ async function shop() {
       effect: "write",
       safety: { duplicate: "transactional", key: ["x"] },
       args: { x: {} },
-      request: { method: "POST", url: `${origin}/send` },
+      request: { method: "POST", url: `${origin}/send`, body: { x: "{{x}}" } },
     },
     { id: "nested", chain: [{ id: "inner", op: "first_item" }] },
-    {
-      id: "send_all",
-      chain: [
-        { id: "list", op: "list_items" },
-        { id: "send", op: "send", each: "list" },
-      ],
-    },
   ].map((op) => validateOp(op, {}));
   const playbook = { id: "shop", ops: new Map(ops.map((op) => [op.id, op])) };
   return { origin, seen, playbook };
@@ -193,18 +186,65 @@ describe("chains", () => {
     );
   });
 
-  it("names the step and record that failed, and refuses a write step before sending", async () => {
+  it("names the step and record that failed", async () => {
     const site = await shop();
     await expect(run(site, site.playbook.ops.get("by_slug"))).rejects.toThrow(
       /chain by_slug step item \(get_item\), record 1: \{\{item\.missing\}\} has no value/,
     );
-    const sent = site.seen.length;
-    await expect(run(site, site.playbook.ops.get("send_all"))).rejects.toThrow(
-      /step send runs a write op/,
-    );
-    expect(site.seen).toHaveLength(sent);
     expect(() => validateOp({ id: "c", chain: [{ id: "a", op: "b", from: "x" }] }, {})).toThrow(
       'op c chain step a has unknown key "from"',
     );
+  });
+
+  it("runs a write step once per record from the tab, each send guarded, --delay-ms apart", async () => {
+    const site = await shop();
+    const sent: string[] = [];
+    const guarded: unknown[] = [];
+    const sleeps: number[] = [];
+    const chain = (guard: (run: { op: { id: string }; args: unknown }) => Promise<object>) => {
+      const op = eachChain(site.playbook, site.playbook.ops.get("send"), "list_items:slug=x", {
+        delayMs: 50,
+      });
+      return runChain({
+        playbook: site.playbook,
+        op,
+        args: resolveArgs(op, { limit: 2 }),
+        readCookies: async () => ({ cookies: [] }),
+        executeTool: async (_tool: string, { code }: { code: string }) => {
+          sent.push(code);
+          const body = JSON.stringify({ ok: true });
+          return { output: JSON.stringify({ status: 200, contentType: "application/json", body }) };
+        },
+        sleep: async (ms: number) => {
+          sleeps.push(ms);
+        },
+        guard,
+      });
+    };
+    const result = await chain(async ({ op, args }) => {
+      guarded.push([op.id, args]);
+      return {};
+    });
+    expect(result.steps[1]).toEqual({ id: "each", op: "send", runs: 2, via: "tab" });
+    expect(guarded).toEqual([
+      ["send", { x: "s1" }],
+      ["send", { x: "s2" }],
+    ]);
+    expect(sent.map((code) => code.match(/x\\":\\"(s\d)/)?.[1])).toEqual(["s1", "s2"]);
+    expect(sleeps).toEqual([50]);
+    // A blocked record stops the loop before it sends.
+    sent.length = 0;
+    await expect(
+      chain(async ({ args }) => {
+        if ((args as { x: string }).x === "s2") {
+          throw new Error("write blocked");
+        }
+        return {};
+      }),
+    ).rejects.toThrow(/step each \(send\), record 2: write blocked/);
+    expect(sent).toHaveLength(1);
+    expect(() =>
+      eachChain(site.playbook, site.playbook.ops.get("send"), "list_items:slug=x", { delayMs: -1 }),
+    ).toThrow("--delay-ms must be a whole number of milliseconds from 0 to 600000");
   });
 });
