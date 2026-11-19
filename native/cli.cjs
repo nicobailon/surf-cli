@@ -1689,7 +1689,7 @@ const TOOLS = {
         opts: {
           "<arg>": "Operation input, e.g. --page 2; an input the op doesn't define fails and lists its inputs",
           timeout: "Seconds before the run gives up (default: the op's --timeout, else 600)",
-          format: "md or jsonl instead of JSON",
+          format: "md or jsonl instead of JSON; not with --where, --fields or --limit",
           write: "Send a write (\"effect\": \"write\", or a request that is not GET or HEAD), once, from the tab; without it surf names the method and URL and sends nothing",
           "allow-script": "Allow the playbook's trusted script strategy",
           repeat: "Send a write again: the same op and inputs are blocked 5 minutes after a send, and after a send whose outcome is unknown",
@@ -1710,7 +1710,7 @@ const TOOLS = {
         examples: [
           { cmd: "use books list_books --page 2 --pages 3", desc: "Three catalogue pages from a hand-written op" },
           { cmd: "use books get_book --each list_books:url --limit 3", desc: "The detail op for the first 3 books of the list" },
-          { cmd: "use books list_books --where rating~=Five --fields title,price", desc: "Five-star books, title and price only" },
+          { cmd: "use books list_books --where star_rating~=Five --fields title,price_color", desc: "Five-star books, title and price only" },
           { cmd: "use httpbin order --custname Ada --write", desc: "Send a write op; again within 5 minutes needs --repeat" },
           { cmd: "use x thread --url https://x.com/<user>/status/<id> --format md", desc: "Whole X thread as Markdown" },
           { cmd: "use page read --json", desc: "Read the current page" },

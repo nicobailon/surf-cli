@@ -1057,10 +1057,10 @@ Each step runs an op of the same playbook; `with` gives its inputs (and may set 
 
 ```bash
 surf use books get_book --each list_books:url --pages 2 --limit 5   # url fills --url; field=input names another input
-surf use books list_books --where rating~=Five --fields title,price --limit 3
+surf use books list_books --where star_rating~=Five --fields title,price_color --limit 3   # field names as surf hook saves them (below)
 ```
 
-`--where field=value` (also `!=`, and `~=` for contains, any case; repeatable; dotted fields read nested ones), `--fields a,b.c` and `--limit n` trim the records in the CLI after the run, with a `filter: { where, fields, limit, before, after }` summary; an unknown field fails and lists the fields. With `--each`, `--limit` caps the records looped over instead (10 by default), and a relative `url` resolves on the list op's site. `pb test` takes them too, for what it prints; `expect` still checks the whole result.
+`--where field=value` (also `!=`, and `~=` for contains, any case; repeatable; dotted fields read nested ones), `--fields a,b.c` and `--limit n` trim the records in the CLI after the run, with a `filter: { where, fields, limit, before, after }` summary; an unknown field fails and lists the fields. They don't combine with `--format` or `--dry-run`. With `--each`, `--limit` caps the records looped over instead (10 by default), and a relative `url` resolves on the list op's site. `pb test` takes them too, for what it prints; `expect` still checks the whole result.
 
 #### Make an op with `surf hook`
 
