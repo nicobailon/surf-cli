@@ -52,7 +52,9 @@ function renderUrl(template, context) {
 function renderRequest(request, context) {
   const url = new URL(renderUrl(request.url, context));
   for (const [key, value] of Object.entries(renderTemplate(request.query || {}, context))) {
-    url.searchParams.set(key, typeof value === "object" ? JSON.stringify(value) : String(value));
+    url.searchParams.delete(key);
+    // A list is the key repeated, once per value.
+    for (const item of Array.isArray(value) ? value : [value]) if (item !== undefined) url.searchParams.append(key, typeof item === "object" ? JSON.stringify(item) : String(item));
   }
   const headers = renderTemplate(request.headers || {}, context);
   const sent = { method: String(request.method || "GET").toUpperCase(), url: url.href, headers };

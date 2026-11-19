@@ -5,6 +5,7 @@ declare const require: (moduleName: string) => any;
 const fs = require("node:fs");
 const path = require("node:path");
 const { readResponse } = require("../../native/op-extract.cjs");
+const { renderRequest } = require("../../native/op-run.cjs");
 const { inferResponse, keyFields } = require("../../native/op-infer.cjs");
 const { nameInputs, requestOf } = require("../../native/op-inputs.cjs");
 const { matchHint, pickRequest, rankRequests, visibleText } = require("../../native/op-rank.cjs");
@@ -185,6 +186,31 @@ describe("op-inputs", () => {
     ]);
   });
 
+  it("puts a sample only where the hook URL wrote {{name}} when the pick is that URL", () => {
+    const named = nameInputs({
+      request: { url: "https://a.example/list", query: { page: "2", size: "2" } },
+      samples: { page: "2" },
+      template: "https://a.example/list?page={{page}}&size=2",
+    });
+    expect(named.request.query).toEqual({ page: "{{page}}", size: "2" });
+    const elsewhere = nameInputs({
+      request: { url: "https://a.example/api", query: { p: "2", size: "2" } },
+      samples: { page: "2" },
+      template: "https://a.example/list?page={{page}}",
+    });
+    expect(elsewhere.request.query).toEqual({ p: "{{page}}", size: "{{page}}" });
+  });
+
+  it("keeps every value of a repeated query key, and sends them all", () => {
+    const request = requestOf(entry({ url: "https://a.example/s?tag=a&tag=b&q=x" }));
+    expect(request.query).toEqual({ tag: ["a", "b"], q: "x" });
+    const named = nameInputs({ request, samples: { tag: "b" } });
+    expect(named.request.query).toEqual({ tag: ["a", "{{tag}}"], q: "{{query}}" });
+    expect(renderRequest(named.request, { args: { tag: "c", query: "y" }, env: {} }).url).toBe(
+      "https://a.example/s?tag=a&tag=c&q=y",
+    );
+  });
+
   it("names a search key query, a paging key page and a page-N segment page", () => {
     const named = nameInputs({
       request: { url: "https://a.example/search", query: { q: "python", page: "3", lang: "en" } },
@@ -256,7 +282,10 @@ describe("op-infer", () => {
       fields: {
         title: "h3 a@title",
         url: "h3 a@href",
-        star_rating: ".star-rating@class",
+        star_rating: {
+          selector: ".star-rating@class",
+          match: "(?:^|\\s)(?!star-rating(?:\\s|$))(\\S+)",
+        },
         price_color: ".price_color",
       },
     });
@@ -264,7 +293,7 @@ describe("op-infer", () => {
     expect(found.read[0]).toEqual({
       title: "A Light in the Attic",
       url: "https://books.toscrape.com/catalogue/a-light-in-the-attic_1000/index.html",
-      star_rating: "star-rating Three",
+      star_rating: "Three",
       price_color: "£51.77",
     });
     expect(keyFields(found)).toEqual(["title", "url"]);
@@ -312,7 +341,7 @@ describe("op-infer", () => {
       author_name: "Albert Einstein",
       tags: ["change", "deep-thoughts", "thinking", "world"],
     });
-    expect(keyFields(api)).toEqual(["author_name", "author_goodreads_link"]);
+    expect(keyFields(api)).toEqual(["text", "author_name"]);
 
     const embedded = infer(quotesJs, "https://quotes.toscrape.com/js/");
     expect(embedded.extract).toMatchObject({ in: "js:data", records: "$" });

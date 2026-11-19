@@ -241,7 +241,8 @@ function draftFromRecord(recordId, root = getPrivateStateRoot()) {
   const tracePath = path.join(recordDirectory(recordId, root), "network", "trace.json");
   const trace = readPrivateJson(tracePath, null, { root });
   const strategies = [];
-  const observed = trace?.entries?.findLast((entry) => ["GET", "HEAD", "OPTIONS", "POST"].includes(entry.method) && entry.status >= 200 && entry.status < 400);
+  // A recorded flow replays its steps; the last request it captured is often a beacon.
+  const observed = steps.length > 0 ? undefined : trace?.entries?.findLast((entry) => ["GET", "HEAD", "OPTIONS", "POST"].includes(entry.method) && entry.status >= 200 && entry.status < 400);
   if (observed) {
     const url = new URL(observed.url);
     const query = Object.fromEntries(url.searchParams.entries());

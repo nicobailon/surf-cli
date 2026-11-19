@@ -906,7 +906,10 @@ describe("surf hook and pb record stop through the fake extension", () => {
           fields: {
             title: "h3 a@title",
             url: "h3 a@href",
-            star_rating: ".star-rating@class",
+            star_rating: {
+              selector: ".star-rating@class",
+              match: "(?:^|\\s)(?!star-rating(?:\\s|$))(\\S+)",
+            },
             price_color: ".price_color",
           },
         },
@@ -1138,6 +1141,12 @@ describe("surf hook and pb record stop through the fake extension", () => {
       expect(started.stderr).toBe("");
       expect(started.code).toBe(0);
       expect(host.messages.some((message) => message.type === "START_NETWORK_CAPTURE")).toBe(true);
+      // A --match that holds no request leaves the record open to pick again.
+      const missed = await runCli(socketPath, ["pb", "record", "stop", "--match", "/nothing"]);
+      expect(missed.code).toBe(1);
+      expect(missed.stderr).toMatch(/no captured request's URL holds "\/nothing".*still open/);
+      const open = await runCli(socketPath, ["pb", "record", "status", "--json"]);
+      expect(JSON.parse(open.stdout)).toMatchObject({ status: "recording" });
       const stopped = await runCli(socketPath, ["pb", "record", "stop"]);
       expect(stopped.stderr).toBe("");
       expect(stopped.code).toBe(0);
@@ -1150,6 +1159,80 @@ describe("surf hook and pb record stop through the fake extension", () => {
       });
       const status = await runCli(socketPath, ["pb", "record", "status", "--json"]);
       expect(JSON.parse(status.stdout)).toMatchObject({ status: "idle" });
+    } finally {
+      await host.dispose();
+    }
+  });
+
+  it("pb record stop that fails says the record stopped and names it", async () => {
+    const socketPath = createSocketPath();
+    const site = unique("books");
+    const page = "https://books.toscrape.com/catalogue/page-3.html";
+    const host = startHost(socketPath, {
+      network: () => [
+        captured(page, { responseBody: readFixture("books-page-1.html"), ts: Date.now() }),
+      ],
+      // The replay answers 404.
+      javascript: tab(page, "A Light in the Attic", {}, []),
+    });
+
+    try {
+      await host.waitForMessage((message) => message.type === "HOST_READY");
+      expect(
+        (await runCli(socketPath, ["pb", "record", "start", site, "--op", "list_books"])).code,
+      ).toBe(0);
+      const stopped = await runCli(socketPath, ["pb", "record", "stop"]);
+      expect(stopped.code).toBe(1);
+      expect(stopped.stderr).toMatch(/answered 404; record rec-[\w-]+ stopped, its trace saved/);
+      expect(exists(opFile(site, "list_books"))).toBe(false);
+    } finally {
+      await host.dispose();
+    }
+  });
+
+  it("saves an arXiv-style detail op whose printed run line and --url both work", async () => {
+    const socketPath = createSocketPath();
+    const site = unique("arxiv");
+    const html = readFixture("arxiv-abs.html");
+    const page = "https://arxiv.org/abs/2101.10010";
+    const other = "https://arxiv.org/abs/0704.0001";
+    const codes: string[] = [];
+    const host = startHost(socketPath, {
+      network: () => [captured(page, { responseBody: html })],
+      javascript: tab(
+        page,
+        "The First Fermi-LAT Solar Flare Catalog",
+        { [page]: html, [other]: html },
+        codes,
+      ),
+    });
+
+    try {
+      await host.waitForMessage((message) => message.type === "HOST_READY");
+      const hooked = await runCli(socketPath, [
+        "hook",
+        page,
+        "--goal",
+        "paper details",
+        "--as",
+        `${site}/paper`,
+      ]);
+      expect(hooked.stderr).toBe("");
+      expect(hooked.code).toBe(0);
+      const run = hooked.stdout.match(/^run +surf (.*)$/m)?.[1] ?? "";
+      expect(run).toBe(`use ${site} paper --abs_id 2101.10010`);
+      const used = await runCli(socketPath, [...run.split(" "), "--json"]);
+      expect(used.stderr).toBe("");
+      expect(used.code).toBe(0);
+      expect(fetches(codes).at(-1)).toContain('new URL("https://arxiv.org/abs/2101.10010")');
+      expect(JSON.parse(used.stdout).value).toMatchObject({
+        title: "The First Fermi-LAT Solar Flare Catalog",
+      });
+
+      const byUrl = await runCli(socketPath, ["use", site, "paper", "--url", other, "--json"]);
+      expect(byUrl.stderr).toBe("");
+      expect(byUrl.code).toBe(0);
+      expect(fetches(codes).at(-1)).toContain(`new URL("${other}")`);
     } finally {
       await host.dispose();
     }

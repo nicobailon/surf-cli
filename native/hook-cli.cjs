@@ -78,7 +78,7 @@ function formatHook(result, rerun) {
 
 async function handleHookCli(argv, { endpoint, session, sessionSource, admission } = {}) {
   const { spec, url, site, op, steps, typed } = parseHookArgs(argv.slice(1));
-  const args = { url, goal: spec.goal, steps, samples: spec.samples, typed, site, op, ...(spec.match === undefined ? {} : { match: spec.match }) };
+  const args = { url, template: spec.url, goal: spec.goal, steps, samples: spec.samples, typed, site, op, ...(spec.match === undefined ? {} : { match: spec.match }) };
   const result = await requestHost(endpoint, "playbook.hook", args, {
     tabId: spec["tab-id"],
     session: spec.session || session,

@@ -17,7 +17,8 @@ function parseCommandArgs(argv) {
     const name = value.slice(2);
     const next = argv[index + 1];
     if (next !== undefined && !next.startsWith("--")) {
-      options[name] = /^-?\d+(?:\.\d+)?$/.test(next) ? Number(next) : next;
+      // A number only when it reads back the same: ids such as 2101.10010 or 0704.0001 stay text.
+      options[name] = /^-?\d+(?:\.\d+)?$/.test(next) && String(Number(next)) === next ? Number(next) : next;
       index++;
     } else options[name] = true;
   }

@@ -28,7 +28,9 @@ function parseBody(text, type) {
 /** The op request for a captured request: its query apart, a JSON or form body as an object. */
 function requestOf(entry) {
   const url = new URL(entry.url);
-  const query = Object.fromEntries(url.searchParams);
+  // A repeated key keeps every value, as a list.
+  const query = {};
+  for (const [key, value] of url.searchParams) query[key] = Object.hasOwn(query, key) ? [query[key], value].flat() : value;
   url.search = "";
   url.hash = "";
   const headers = {};
@@ -49,12 +51,15 @@ function requestOf(entry) {
 /**
  * `request` with its inputs as `{{name}}`, and the inputs: { request, args, paging?, detail,
  * warnings }. `samples` maps an input to this run's value; `typed` lists values typed into the
- * page, each named after the key it lands in. `paging` is the input the op's page rule adds to.
+ * page, each named after the key it lands in. `template` is the URL as surf hook was given it:
+ * when the pick is that URL, a sample goes only where it wrote `{{name}}`. `paging` is the input
+ * the op's page rule adds to.
  */
-function nameInputs({ request, samples = {}, typed = [] }) {
+function nameInputs({ request, samples = {}, typed = [], template }) {
   const url = new URL(request.url);
-  const segments = url.pathname.split("/");
-  const query = { ...request.query };
+  let segments = url.pathname.split("/");
+  // The query as [key, value] pairs, a repeated key once per value.
+  let pairs = Object.entries(request.query || {}).flatMap(([key, value]) => (Array.isArray(value) ? value : [value]).map((item) => [key, item]));
   let body = request.body;
   const args = {};
   const warnings = [];
@@ -96,26 +101,44 @@ function nameInputs({ request, samples = {}, typed = [] }) {
         found = true;
       }
     });
-    for (const [key, item] of Object.entries(query)) {
-      if (free(item) && item === value) [query[key], found] = [nameOf(key), true];
+    for (const pair of pairs) {
+      if (free(pair[1]) && pair[1] === value) [pair[1], found] = [nameOf(pair[0]), true];
     }
     let inside;
     [body, inside] = inBody(body, value, nameOf);
     return found || inside;
   };
+  const written = new Set();
+  if (template) {
+    const filled = new URL(template.replace(/\{\{([a-zA-Z0-9._-]+)\}\}/g, (whole, name) => (samples[name] === undefined ? whole : encodeURIComponent(samples[name]))));
+    const raw = new URL(template);
+    if (filled.origin + filled.pathname === url.origin + url.pathname && JSON.stringify([...filled.searchParams]) === JSON.stringify(pairs)) {
+      segments = raw.pathname.replace(/%7B%7B([a-zA-Z0-9._-]+)%7D%7D/gi, "{{$1}}").split("/");
+      pairs = [...raw.searchParams];
+      for (const name of Object.keys(samples)) {
+        if (!template.includes(`{{${name}}}`)) continue;
+        written.add(name);
+        add(name, String(samples[name]), { unique: false });
+      }
+    }
+  }
   for (const [name, sample] of Object.entries(samples)) {
-    let template;
-    if (!place(String(sample), () => (template ??= add(name, String(sample), { unique: false })))) warnings.push(`--${name}'s value ${sample} isn't in the picked request, so it is no input`);
+    let made;
+    if (written.has(name)) continue;
+    if (!place(String(sample), () => (made ??= add(name, String(sample), { unique: false })))) warnings.push(`--${name}'s value ${sample} isn't in the picked request, so it is no input`);
   }
   for (const value of typed) {
     if (value) place(String(value), (key, before) => add(key === undefined ? snake(singular(before)) || "value" : SEARCH_KEYS.test(key) ? "query" : snake(key) || "value", String(value)));
   }
-  for (const [key, value] of Object.entries(query)) {
+  for (const pair of pairs) {
+    const [key, value] = pair;
     if (!free(value)) continue;
-    if (SEARCH_KEYS.test(key) && value) query[key] = add("query", value);
-    else if (/^\d+$/.test(value) && PAGE_KEYS.test(key)) query[key] = add("page", value);
-    else if (/^\d+$/.test(value) && OFFSET_KEYS.test(key)) query[key] = add(key.toLowerCase(), value);
+    if (SEARCH_KEYS.test(key) && value) pair[1] = add("query", value);
+    else if (/^\d+$/.test(value) && PAGE_KEYS.test(key)) pair[1] = add("page", value);
+    else if (/^\d+$/.test(value) && OFFSET_KEYS.test(key)) pair[1] = add(key.toLowerCase(), value);
   }
+  const query = {};
+  for (const [key, value] of pairs) query[key] = Object.hasOwn(query, key) ? [query[key], value].flat() : value;
   segments.forEach((segment, index) => {
     if (!segment || !free(segment)) return;
     const page = segment.match(/^page-(\d+)((?:\.\w+)?)$/i);

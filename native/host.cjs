@@ -1557,6 +1557,14 @@ async function executeNativePlaybook(request, handler, args, options = {}) {
   return { response: result.response, model: result.model, tookMs: result.tookMs };
 }
 
+// With --url, an input that only fills the op's URL (a hook-made detail op's id) isn't needed.
+function urlInputsOptional(op) {
+  const inUrl = `${op.request?.url || ""} ${op.open || ""}`;
+  const elsewhere = JSON.stringify([op.request && { ...op.request, url: "" }, op.steps]);
+  const optional = (name) => inUrl.includes(`{{${name}}}`) && !elsewhere.includes(`{{${name}}}`);
+  return Object.fromEntries(Object.entries(op.args || {}).map(([name, spec]) => [name, optional(name) ? { ...spec, required: false } : spec]));
+}
+
 async function runHostPlaybook(msg, request) {
   const params = msg.params?.args || {};
   const { playbook, op } = resolveOp(params.playbook, params.op, {
@@ -1572,7 +1580,7 @@ async function runHostPlaybook(msg, request) {
   }
   if (url !== undefined && typeof url !== "string") throw new Error("--url needs a URL");
   if (!Number.isInteger(pages) || pages < 1 || pages > 100) throw new Error("--pages must be a whole number from 1 to 100");
-  const runArgs = resolveArgs(op, params.args || {}, { playbookId: playbook.id });
+  const runArgs = resolveArgs(url === undefined ? op : { ...op, args: urlInputsOptional(op) }, params.args || {}, { playbookId: playbook.id });
   if (params.dryRun) return dryRunOp({ playbook, op, args: runArgs, url });
   if (op.effect === "write" && op.safety.authorization === "explicit" && params.write !== true) {
     throw new Error(`write op ${playbook.id} ${op.id} requires --write`);
@@ -1654,7 +1662,7 @@ async function runHook(msg, request) {
   }
   const context = pipelineContext(request, tabId);
   const capture = await captureHook({ url: params.url, steps: params.steps || [], tabId, ...context });
-  return makeOp({ capture, goal: params.goal, samples: params.samples, typed: params.typed, match: params.match, site: params.site, op: params.op, ...context });
+  return makeOp({ capture, goal: params.goal, samples: params.samples, typed: params.typed, template: params.template, match: params.match, site: params.site, op: params.op, ...context });
 }
 
 // Who a command's events belong to. Tab and window commands resolve no tab target, so they go by
@@ -1725,7 +1733,11 @@ async function handleRecordRequest(tool, args, msg, request) {
       hook = await readPage(context)
         .then((page) => makeOp({ capture: { entries, pageUrl: page.url, pageText: page.text }, typed: recordTyped.get(record.id), match: args.match, site: record.site, op: record.op, ...context }))
         .catch((error) => ({ status: "error", exitCode: 1, error: error.message }));
+      // A weak pick, or a --match that holds no request, leaves the record open to pick again.
       if (hook.status === "weak") return { record: { id: record.id, status: record.status }, hook };
+      if (args.match !== undefined && !hook.picked) {
+        return { record: { id: record.id, status: record.status }, hook: { ...hook, error: `${hook.error}; record ${record.id} is still open: run surf pb record stop --match with another part of the URL` } };
+      }
     }
     if (entries) {
       attachNetworkTrace(record.id, entries, undefined, {
@@ -1737,6 +1749,7 @@ async function handleRecordRequest(tool, args, msg, request) {
     recordTyped.delete(record.id);
     const stopped = stopRecord({ target: { session: record.session, tabId: record.tabId }, draft: args.draft === true });
     const warnings = [...(stopped.warnings || []), ...(result?.error ? [`the network trace could not be read: ${result.error.message || result.error}`] : [])];
+    if (hook?.status === "error") hook = { ...hook, error: `${hook.error}; record ${record.id} stopped, its trace saved` };
     return { ...stopped, ...(hook ? { hook } : {}), ...(warnings.length > 0 ? { warnings } : {}) };
   }
   throw new Error(`Unknown record command: ${tool}`);

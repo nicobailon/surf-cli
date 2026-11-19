@@ -178,7 +178,10 @@ function itemFields(items, { check, prefix = "", all = "" }) {
   const fields = {};
   const used = [];
   const add = (name, el, selector, attr) => {
-    const spec = `${prefix}${selector}${attr ? `@${attr}` : ""}${all}`;
+    const written = `${prefix}${selector}${attr ? `@${attr}` : ""}${all}`;
+    // A class list keeps its other class, the one that varies (star-rating Three → Three).
+    const kept = attr === "class" && selector.split(".").pop();
+    const spec = kept ? { selector: written, match: `(?:^|\\s)(?!${kept}(?:\\s|$))(\\S+)` } : written;
     if (fields[name] || !check(spec)) return false;
     fields[name] = spec;
     if (el) used.push(el);
@@ -381,12 +384,18 @@ function inferResponse(response, { detail = false } = {}) {
   return embedded;
 }
 
-/** The two fields an op's `expect` checks: a title or name, then an id or url; else the first two. */
+/**
+ * The two fields an op's `expect` checks: a title or text, then an id or url, by their own name
+ * first (`text` before `author_name`), never a nested object's; else the first fields.
+ */
 function keyFields({ extract }) {
   const fields = Object.keys(extract.fields || {});
-  const keys = [fields.find((name) => /(^|_)(title|name|headline|heading)$/.test(name)), fields.find((name) => /(^|_)(id|url|link|href)$/.test(name))].filter(Boolean);
+  // `author_name` read from `author.name` names the author, not the record.
+  const nested = (name) => typeof extract.fields[name] === "string" && extract.fields[name].replace(/\./g, "_") === name && name.includes("_");
+  const find = (words) => fields.find((name) => new RegExp(`^(${words})$`).test(name)) || fields.find((name) => new RegExp(`_(${words})$`).test(name) && !nested(name));
+  const keys = [find("title|name|headline|heading|text"), find("id|url|link|href")].filter(Boolean);
   for (const name of fields) if (keys.length < 2 && !keys.includes(name)) keys.push(name);
-  return keys;
+  return [...new Set(keys)];
 }
 
 module.exports = { inferResponse, keyFields };

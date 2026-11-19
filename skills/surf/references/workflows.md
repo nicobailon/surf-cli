@@ -48,7 +48,7 @@ Make an op with `surf hook` first. It opens the page, runs `--do` steps, picks t
 
 ```bash
 surf hook 'https://books.toscrape.com/catalogue/page-{{page}}.html' --page 2 --goal "books with prices" --as books/list_books
-surf hook https://quotes.toscrape.com/search --goal "quotes by author" --do 'type "{{query}}" --into "#q" | key Enter' --query einstein
+surf hook https://quotes.toscrape.com/scroll --goal quotes --do 'scroll.bottom'   # picks the JSON the scroll loads
 ```
 
 - `{{name}}` in the URL or a `--do` step, with `--name <sample>`, becomes the op's input; a search key, a page number and an id in the path become inputs on their own.

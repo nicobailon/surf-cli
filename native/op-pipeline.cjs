@@ -14,6 +14,8 @@ const { executeWorkflow } = require("./workflow-runtime.cjs");
 
 const PAGE_TEXT = "({ url: location.href, text: document.body ? document.body.innerText : '' })";
 const TRACE_LIMIT = 500;
+// Between the requests the pipeline sends a site (the page, the replay, the test), as paging does.
+const GAP_MS = 1000;
 // Bodies the capture keeps for ranking: a whole large page, not the 64 KB a record keeps.
 const BODY_BYTES = 2 * 1024 * 1024;
 
@@ -57,7 +59,7 @@ function save(site, op) {
  * op through the runner and saves it. Returns { status, exitCode }: saved 0, weak 2 (with the top
  * candidates and a `match` that picks the first), or error 1 (with the draft once there is one).
  */
-async function makeOp({ capture, goal = "", samples = {}, typed = [], match, site, op: id, ...context }) {
+async function makeOp({ capture, goal = "", samples = {}, typed = [], template, match, site, op: id, ...context }) {
   const ranked = rankRequests(capture.entries, { pageUrl: capture.pageUrl, pageText: capture.pageText, goal, after: capture.after });
   const chosen = pickRequest(ranked, { match });
   if (chosen.error) return { status: "error", exitCode: 1, error: chosen.error };
@@ -67,7 +69,7 @@ async function makeOp({ capture, goal = "", samples = {}, typed = [], match, sit
   }
   const { entry, reasons, effect } = chosen.pick;
   const sent = requestOf(entry);
-  const named = nameInputs({ request: sent, samples, typed });
+  const named = nameInputs({ request: sent, samples, typed, template });
   const draft = { id, description: goal || `${id} on ${new URL(sent.url).host}`, args: named.args, request: named.request };
   const base = { playbook: site, op: id, picked: { method: entry.method, url: entry.url, reasons }, warnings: named.warnings };
   if (effect === "write") {
@@ -78,6 +80,7 @@ async function makeOp({ capture, goal = "", samples = {}, typed = [], match, sit
     return { ...base, status: "error", exitCode: 1, error, draft: { ...draft, effect: "write", ...(found ? { extract: found.extract } : {}) } };
   }
   try {
+    await context.sleep(GAP_MS);
     const response = await sendRequest({ request: sent, ...context });
     if (response.status >= 400) throw new Error(`replaying ${sent.url} answered ${response.status}`);
     const found = inferResponse(response, { detail: named.detail });
@@ -85,6 +88,7 @@ async function makeOp({ capture, goal = "", samples = {}, typed = [], match, sit
     draft.extract = found.extract;
     if (named.paging) draft.page = { into: named.paging.name, next: named.paging.next === "+count" ? `+${found.count ?? 1}` : named.paging.next };
     const examples = Object.fromEntries(Object.entries(draft.args).map(([name, spec]) => [name, spec.example]));
+    await context.sleep(GAP_MS);
     const run = await runOp({ playbook: { id: site }, op: validateOp(draft, { origins: [] }), args: examples, ...context });
     const list = Array.isArray(run.value);
     const first = list ? run.value[0] : run.value;
