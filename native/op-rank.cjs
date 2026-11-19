@@ -104,7 +104,8 @@ function rankRequests(entries, { pageUrl, pageText = "", goal = "", after } = {}
   const first = (candidate) => (WRITE_GOAL.test(goal) && candidate.effect === "write" ? 1 : 0);
   return entries
     .map((entry, index) => ({ entry, index }))
-    .filter(({ entry }) => entry.status >= 200 && entry.status < (write(entry) ? 400 : 300) && entry.method !== "OPTIONS" && !SKIPPED_TYPES.has(entry.type) && /^https?:/.test(entry.url))
+    // A load that failed after its answer keeps its status (an aborted 200) but holds no data.
+    .filter(({ entry }) => entry.status >= 200 && entry.status < (write(entry) ? 400 : 300) && !entry.flags?.includes("failed") && entry.method !== "OPTIONS" && !SKIPPED_TYPES.has(entry.type) && /^https?:/.test(entry.url))
     .map(({ entry, index }) => ({ ...scoreEntry(entry, context), index }))
     .sort((a, b) => first(b) - first(a) || b.score - a.score || b.index - a.index)
     .map(({ index: _index, ...candidate }) => candidate);

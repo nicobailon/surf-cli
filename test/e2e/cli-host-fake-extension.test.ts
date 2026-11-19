@@ -1341,17 +1341,29 @@ describe("surf hook and pb record stop through the fake extension", () => {
   it("says an error page's status when the capture holds no request to pick", async () => {
     const socketPath = createSocketPath();
     const page = "https://httpbin.org/status/404";
+    const answered =
+      "Error: https://httpbin.org/status/404 answered 404, so the capture holds no request to pick; check the URL, or add --do steps that load the data";
+    let entry: Record<string, unknown> = { status: 404, responseBody: "" };
     const host = startHost(socketPath, {
-      network: () => [captured(page, { status: 404, responseBody: "" })],
+      network: () => [captured(page, entry)],
       // The tab's location keeps a fragment the captured request doesn't have.
       javascript: tab(`${page}#top`, "", {}, []),
     });
-    try {
-      await host.waitForMessage((message) => message.type === "HOST_READY");
+    const hook = async () => {
       const hooked = await runCli(socketPath, ["hook", page, "--goal", "status"]);
       expect(hooked.code).toBe(1);
-      expect(hooked.stderr.trim()).toBe(
-        "Error: https://httpbin.org/status/404 answered 404, so the capture holds no request to pick; check the URL, or add --do steps that load the data",
+      return hooked.stderr.trim();
+    };
+    try {
+      await host.waitForMessage((message) => message.type === "HOST_READY");
+      expect(await hook()).toBe(answered);
+      // An empty 404 page Chrome then fails to load keeps its status.
+      entry = { status: 404, flags: ["failed"], errorText: "net::ERR_HTTP_RESPONSE_CODE_FAILURE" };
+      expect(await hook()).toBe(answered);
+      // A page that got no answer at all.
+      entry = { status: 0, flags: ["failed"], errorText: "net::ERR_NAME_NOT_RESOLVED" };
+      expect(await hook()).toBe(
+        "Error: https://httpbin.org/status/404 failed to load (net::ERR_NAME_NOT_RESOLVED), so the capture holds no request to pick; check the URL, or add --do steps that load the data",
       );
     } finally {
       await host.dispose();

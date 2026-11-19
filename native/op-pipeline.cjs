@@ -72,9 +72,10 @@ async function makeOp({ capture, goal = "", samples = {}, typed = [], template, 
   const ranked = rankRequests(capture.entries, { pageUrl: capture.pageUrl, pageText: capture.pageText, goal, after: capture.after });
   const chosen = pickRequest(ranked, { match });
   if (chosen.error) {
-    // Nothing to pick, and the page itself answered an error (a 404 or 500): say so.
-    const page = ranked.length === 0 && capture.entries.find((entry) => entry.status >= 400 && withoutHash(entry.url) === withoutHash(capture.pageUrl));
-    const error = page ? `${redactUrlSecrets(page.url)} answered ${page.status}, so the capture holds no request to pick; check the URL, or add --do steps that load the data` : chosen.error;
+    // Nothing to pick, and the page itself answered an error (a 404 or 500) or failed to load: say so.
+    const page = ranked.length === 0 && capture.entries.find((entry) => (entry.status >= 400 || entry.flags?.includes("failed")) && withoutHash(entry.url) === withoutHash(capture.pageUrl));
+    const why = page && (page.status >= 400 ? `answered ${page.status}` : `failed to load${page.errorText ? ` (${page.errorText})` : ""}`);
+    const error = why ? `${redactUrlSecrets(page.url)} ${why}, so the capture holds no request to pick; check the URL, or add --do steps that load the data` : chosen.error;
     return { status: "error", exitCode: 1, error };
   }
   if (chosen.weak) {

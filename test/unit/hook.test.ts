@@ -122,6 +122,10 @@ describe("op-rank", () => {
     expect(pickRequest(ranked, {}).weak).toMatch(/leads .* by 0 points/);
     expect(matchHint(ranked)).toBe(new URL(ranked[0].entry.url).pathname);
     expect(pickRequest([], {})).toEqual({ error: "the capture holds no request to pick" });
+    // A load that failed after its answer keeps its status but is no candidate.
+    expect(
+      rankRequests([{ ...a, flags: ["failed"] }], { pageUrl: "https://shop.example/" }),
+    ).toEqual([]);
   });
 
   it("ranks a POST as a write", () => {
