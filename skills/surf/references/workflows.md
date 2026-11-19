@@ -53,7 +53,7 @@ surf hook https://quotes.toscrape.com/scroll --goal quotes --do 'scroll.bottom' 
 
 - `{{name}}` in the URL or a `--do` step, with `--name <sample>`, becomes the op's input; a search key, a page number and an id in the path become inputs on their own.
 - Exit 2: no request clearly leads. Rerun the printed line, with `--match` a part of the right request's URL.
-- A picked write (a POST etc.) is saved untested; a password, token or key field becomes a required input with no stored value. A search sent as a POST: set `"effect": "read"` in the file.
+- A picked write (a POST etc.) is saved untested; a password, token or API key field becomes a required input with no stored value. A search sent as a POST: set `"effect": "read"` in the file.
 - Exit 1: an error. It prints the draft op: fix it, save it as the op file, run `surf playbook test <site>`.
 - When hook can't get there (a login, steps it can't express), record by hand: `pb record start`, do the steps, `pb record stop`. Stop picks, tests and saves the same way (`--match` too; `--draft` only drafts).
 
