@@ -55,6 +55,30 @@ describe("network capture after a debugger detach", () => {
     });
   });
 
+  it("re-attaches once a navigation off a page it can't debug commits, so that page's requests are captured", async () => {
+    const { chrome, dispatch, detach } = await loadDispatcher();
+    await dispatch({ type: "START_NETWORK_CAPTURE", tabId: 7 });
+    detach(7, "target_closed");
+    // The tab is on chrome://version, where Chrome refuses the debugger.
+    chrome.debugger.attach.mockRejectedValue(new Error("Cannot access a chrome:// URL"));
+    await dispatch({ type: "GET_PLAYBOOK_RECORD_CONTEXT", tabId: 7 });
+    chrome.debugger.attach.mockReset();
+    chrome.debugger.attach.mockResolvedValue(undefined);
+    chrome.debugger.sendCommand.mockClear();
+
+    const committed = chrome.webNavigation.onCommitted.addListener.mock.calls[0][0];
+    committed({ tabId: 7, frameId: 1, url: "https://example.test/frame" });
+    committed({ tabId: 7, frameId: 0, url: "chrome://settings/" });
+    expect(chrome.debugger.attach).not.toHaveBeenCalled();
+    committed({ tabId: 7, frameId: 0, url: "https://example.test/page-4" });
+    await vi.waitFor(() =>
+      expect(chrome.debugger.sendCommand).toHaveBeenCalledWith({ tabId: 7 }, "Network.enable", {
+        maxPostDataSize: 65536,
+      }),
+    );
+    expect(chrome.debugger.attach).toHaveBeenCalledWith({ tabId: 7 }, "1.3");
+  });
+
   it("leaves a tab alone when capture was off or the user cancelled debugging", async () => {
     const { chrome, dispatch, detach } = await loadDispatcher();
     await dispatch({ type: "GET_PLAYBOOK_RECORD_CONTEXT", tabId: 8 });

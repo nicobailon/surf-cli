@@ -176,22 +176,68 @@ describe("record ownership", () => {
     expect(records.activeRecords(root)).toEqual([]);
   });
 
-  it("tells a session caller to stop a record started without a session without --session", () => {
+  it("lets a session caller on its tab control a record started without a session", () => {
     const root = tempRoot();
-    records.startRecord({ site: "a", op: "read", tabId: 5, root });
-    expect(() => records.stopRecord({ target: { session: "alpha", tabId: 5 }, root })).toThrow(
-      "the playbook record on tab 5 belongs to tab 5; it was started without a session, so stop it without --session or SURF_SESSION",
-    );
+    const record = records.startRecord({ site: "a", op: "read", tabId: 5, root });
+    const alpha = { target: { session: "alpha", tabId: 5 }, root };
+    expect(records.appendRecordEvent(completed("navigate"), alpha)).toBe(true);
+    expect(records.markRecord("x", alpha).id).toBe(record.id);
+    expect(records.stopRecord(alpha).record.status).toBe("stopped");
   });
 
-  it("still finds a record started before records had owners", () => {
+  it("still finds a record started before records had owners, also from the session that started it", () => {
     const root = tempRoot();
+    // v2.26.0 wrote { recordId } and a record with its tab but no session, even under SURF_SESSION.
     const record = records.startRecord({ site: "a", op: "read", tabId: 5, root });
     fs.writeFileSync(
       path.join(records.recordsRoot(root), "active.json"),
       JSON.stringify({ recordId: record.id }),
     );
     expect(records.recordStatus({ target: { tabId: 5 }, root })).toMatchObject({ id: record.id });
+    const alpha = { target: { session: "alpha", tabId: 5 }, root };
+    expect(records.recordStatus(alpha)).toMatchObject({ id: record.id });
+    expect(records.appendRecordEvent(completed("navigate"), alpha)).toBe(true);
+    expect(records.stopRecord(alpha).record.status).toBe("stopped");
+    expect(commands(record.id, root)).toEqual(["navigate"]);
+  });
+
+  it("gives a caller without a session on another tab the only record started without a session", () => {
+    const root = tempRoot();
+    const record = records.startRecord({ site: "a", op: "read", tabId: 1, root });
+    // After tab.new or a tab switch the caller's tab is another one, and the start tab may be closed.
+    const other = { target: { tabId: 9 }, root };
+    expect(records.recordStatus(other)).toMatchObject({ id: record.id });
+    expect(records.appendRecordEvent(completed("navigate"), other)).toBe(true);
+    expect(records.markRecord("on tab 9", other).id).toBe(record.id);
+    expect(commands(record.id, root)).toEqual(["navigate", "on tab 9"]);
+    expect(records.stopRecord(other).record.status).toBe("stopped");
+
+    const again = records.startRecord({ site: "a", op: "read", tabId: 1, root });
+    expect(records.discardRecord(other)).toEqual({ discarded: again.id });
+  });
+
+  it("keeps the fallback to the one record without a session, and out of session callers and session tabs", () => {
+    const root = tempRoot();
+    records.startRecord({ site: "a", op: "read", tabId: 11, session: "alpha", root });
+    const loose = records.startRecord({ site: "b", op: "read", tabId: 1, root });
+    expect(
+      records.appendRecordEvent(completed("go"), { target: { session: "beta", tabId: 9 }, root }),
+    ).toBe(false);
+    expect(records.appendRecordEvent(completed("go"), { target: { tabId: 11 }, root })).toBe(false);
+    expect(records.recordStatus({ target: { tabId: 9 }, root })).toMatchObject({ id: loose.id });
+    records.startRecord({ site: "c", op: "read", tabId: 2, root });
+    expect(records.appendRecordEvent(completed("go"), { target: { tabId: 9 }, root })).toBe(false);
+    expect(() => records.stopRecord({ target: { tabId: 9 }, root })).toThrow(
+      /no active playbook record for tab 9; active: /,
+    );
+  });
+
+  it("names the session to stop a record from without suggesting --session with --tab-id", () => {
+    const root = tempRoot();
+    records.startRecord({ site: "a", op: "read", tabId: 11, session: "alpha", root });
+    expect(() => records.stopRecord({ target: { tabId: 11 }, root })).toThrow(
+      "the playbook record on tab 11 belongs to session alpha; run it with SURF_SESSION=alpha or --session alpha, without --tab-id",
+    );
   });
 });
 

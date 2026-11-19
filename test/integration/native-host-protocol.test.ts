@@ -777,6 +777,43 @@ describe("native host protocol integration", () => {
       expect(filed(record.id, stateDir)).toEqual(["navigate"]);
     });
 
+    it("stops a record started without a session from another tab after its own tab closed", async () => {
+      const stateDir = recordState();
+      const host = await startHostHarness({ SURF_STATE_DIR: stateDir });
+      const start = runCli(
+        ["pb", "record", "start", "a", "--op", "read", "--network"],
+        host.socketPath,
+      );
+      await answer(host, "GET_PLAYBOOK_RECORD_CONTEXT", { origin: "https://example.test" });
+      await answer(host, "START_NETWORK_CAPTURE", { success: true });
+      expect((await start).code).toBe(0);
+      const record = onlyRecord(stateDir);
+
+      const tabNew = runCli(["tab.new", "https://example.test/b"], host.socketPath);
+      await answer(host, "NEW_TAB", { tabId: 9, url: "https://example.test/b" });
+      expect((await tabNew).code).toBe(0);
+      const go = runCli(
+        ["go", "https://example.test/c", "--no-diff", "--tab-id", "9"],
+        host.socketPath,
+      );
+      await answer(host, "EXECUTE_NAVIGATE", { success: true });
+      expect((await go).code).toBe(0);
+
+      const stop = runCli(["pb", "record", "stop", "--tab-id", "9"], host.socketPath);
+      // The record's own tab is gone, so its requests can't be read.
+      await answer(host, "READ_NETWORK_REQUESTS", {
+        error: `Tab ${record.tabId} no longer exists`,
+      });
+      await answer(host, "STOP_NETWORK_CAPTURE", { error: `Tab ${record.tabId} no longer exists` });
+      const result = await stop;
+      expect(result.code).toBe(0);
+      expect(JSON.parse(result.stdout).warnings).toEqual([
+        `the network trace could not be read: Tab ${record.tabId} no longer exists`,
+      ]);
+      expect(onlyRecord(stateDir).status).toBe("stopped");
+      expect(filed(record.id, stateDir)).toEqual(["tab.new", "navigate"]);
+    });
+
     it("keeps another session's commands out of a record and refuses its stop", async () => {
       const stateDir = recordState();
       const { BrowserSessionStore } = require("../../native/browser-session-store.cjs") as any;

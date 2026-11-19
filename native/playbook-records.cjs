@@ -55,32 +55,35 @@ function ownerLabel(record) {
   return record.session ? `session ${record.session}` : `tab ${record.tabId}`;
 }
 
-// A record belongs to the session that started it, or to its tab when started without a session.
-// `target` is the caller's resolved { session, tabId }; page events from the record's watcher
-// carry only the tab and set `page`. Tab and window commands have no tab target and set `browser`:
-// they match by the caller's session, or without one the only record started without a session.
+// A record belongs to the session that started it, or to its tab when started without a session
+// (v2.26.0 wrote no session even under SURF_SESSION). `target` is the caller's resolved
+// { session, tabId }; page events from the record's watcher carry only the tab and set `page`, and
+// tab and window commands have no tab.
 function ownsTarget(record, target) {
-  if (!target) return false;
-  if (target.page) return target.tabId === record.tabId;
-  if (record.session) return target.session === record.session;
-  if (target.browser) return !target.session;
-  return !target.session && target.tabId === record.tabId;
+  if (record.session && !target.page) return target.session === record.session;
+  return target.tabId === record.tabId;
 }
 
+// A caller without a session whose tab holds no record (a tab and window command, a command after
+// tab.new or a tab switch, or one after the record's tab closed) gets the only record started
+// without a session.
 function recordFor(target, root = getPrivateStateRoot()) {
-  const owners = activeRecords(root).filter((record) => ownsTarget(record, target));
-  if (target?.browser && !target.session && owners.length > 1) return null;
-  return owners[0] || null;
+  if (!target) return null;
+  const active = activeRecords(root);
+  const owner = active.find((record) => ownsTarget(record, target));
+  if (owner || target.page || target.session || active.some((record) => record.tabId === target.tabId)) return owner || null;
+  const loose = active.filter((record) => !record.session);
+  return loose.length === 1 ? loose[0] : null;
 }
 
 function requireRecordFor(target, root = getPrivateStateRoot()) {
   const record = recordFor(target, root);
   if (record) return record;
   const others = activeRecords(root);
+  // Only a session's record can be on the caller's tab without belonging to it.
   const onTab = others.find((other) => other.tabId === target?.tabId);
   if (onTab) {
-    const hint = onTab.session ? `run it with --session ${onTab.session}` : "it was started without a session, so stop it without --session or SURF_SESSION";
-    throw new Error(`the playbook record on tab ${onTab.tabId} belongs to ${ownerLabel(onTab)}; ${hint}`);
+    throw new Error(`the playbook record on tab ${onTab.tabId} belongs to session ${onTab.session}; run it with SURF_SESSION=${onTab.session} or --session ${onTab.session}, without --tab-id`);
   }
   const caller = target?.session ? `session ${target.session}` : `tab ${target?.tabId}`;
   if (others.length > 0) throw new Error(`no active playbook record for ${caller}; active: ${others.map((other) => `${other.id} (${ownerLabel(other)})`).join(", ")}`);

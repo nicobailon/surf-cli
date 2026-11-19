@@ -824,6 +824,12 @@ chrome.webNavigation.onCompleted.addListener((details) => {
   }
 });
 
+// A detach can leave the tab on a page Chrome won't let the debugger attach to (chrome://), so the
+// resume before the next command fails. Try again once the tab commits a web page.
+chrome.webNavigation.onCommitted.addListener((details) => {
+  if (details.frameId === 0 && /^https?:/.test(details.url)) void cdp.resumeNetworkCapture(details.tabId);
+});
+
 chrome.webNavigation.onErrorOccurred.addListener((details) => {
   if (details.frameId === 0) {
     const resolver = navigationResolvers.get(details.tabId);

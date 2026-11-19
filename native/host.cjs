@@ -1665,19 +1665,24 @@ async function handleRecordRequest(tool, args, msg, request) {
   }
   if (tool === "playbook.record.stop") {
     const record = requireRecordFor(target);
-    try {
-      if (record.capture.network) {
-        const result = await requestCallExtension(request, tool, { type: "READ_NETWORK_REQUESTS", tabId: record.tabId, full: true, limit: RECORD_TRACE_LIMIT });
+    let readError;
+    if (record.capture.network) {
+      try {
+        const result = await requestExtensionOrThrow(request, tool, { type: "READ_NETWORK_REQUESTS", tabId: record.tabId, full: true, limit: RECORD_TRACE_LIMIT });
         const read = result.entries || [];
         attachNetworkTrace(record.id, traceEntriesForRecord(record, read), undefined, {
           capture: result.capture,
           ...(read.length >= RECORD_TRACE_LIMIT ? { truncatedAt: RECORD_TRACE_LIMIT } : {}),
         });
+      } catch (error) {
+        // The record's tab may be closed; the record still stops, without a trace.
+        readError = error;
       }
-    } finally {
-      await stopCapture(record);
     }
-    return stopRecord({ target, draft: args.draft === true });
+    await stopCapture(record);
+    const stopped = stopRecord({ target: { session: record.session, tabId: record.tabId }, draft: args.draft === true });
+    if (!readError) return stopped;
+    return { ...stopped, warnings: [...(stopped.warnings || []), `the network trace could not be read: ${readError.message || readError}`] };
   }
   throw new Error(`Unknown record command: ${tool}`);
 }
