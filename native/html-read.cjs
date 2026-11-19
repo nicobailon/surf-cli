@@ -22,6 +22,8 @@ const COMPOUND = /^([a-z][a-z0-9-]*)?((?:#[\w-]+|\.[\w-]+|\[[\w-]+(?:="[^"]*")?\
 const TOKEN = /#[\w-]+|\.[\w-]+|\[[\w-]+(?:="[^"]*")?\]|:nth-child\(\d+\)/g;
 // A field: `selector`, `selector@attr`, either with `[]` for every match; `:scope` is the record.
 const FIELD = /^(.*?)(?:@([a-zA-Z_:][-a-zA-Z0-9_:.]*))?$/;
+// `+ dd .title`: in the record's next element sibling when it matches `dd` (a dt/dd pair).
+const SIBLING = /^\+\s*([^\s>]+)(?:\s+(.+))?$/;
 
 const textOf = (el) => rawText(el).replace(/\s+/g, " ").trim();
 const elementChildren = (el) => (el?.children || []).filter((child) => child.type === "tag");
@@ -84,14 +86,29 @@ function parseField(spec) {
   const { selector: raw, match } = typeof spec === "string" ? { selector: spec } : spec;
   const all = raw.endsWith("[]");
   const [, selector, attr] = (all ? raw.slice(0, -2) : raw).match(FIELD);
-  if (selector !== ":scope") parseSelector(selector);
+  const sibling = selector.match(SIBLING);
+  if (sibling) {
+    parseSelector(sibling[1]);
+    if (sibling[2] !== undefined && sibling[2] !== ":scope") parseSelector(sibling[2]);
+  } else if (selector !== ":scope") parseSelector(selector);
   return { selector, attr, all, ...(match === undefined ? {} : { match: new RegExp(match) }) };
+}
+
+function fieldElements(item, selector) {
+  if (selector === ":scope") return [item];
+  const sibling = selector.match(SIBLING);
+  if (!sibling) return selectAll(item, selector);
+  const siblings = elementChildren(item.parent);
+  const at = siblings.indexOf(item);
+  const next = at < 0 ? undefined : siblings[at + 1];
+  if (!next || !matchesCompound(next, parseSelector(sibling[1])[0].compound)) return [];
+  return sibling[2] === undefined || sibling[2] === ":scope" ? [next] : selectAll(next, sibling[2]);
 }
 
 /** A field's value in `item`: text, or an attribute (`href` and `src` absolute against `baseUrl`). */
 function readField(item, spec, baseUrl) {
   const { selector, attr, all, match } = parseField(spec);
-  const elements = selector === ":scope" ? [item] : selectAll(item, selector);
+  const elements = fieldElements(item, selector);
   const read = (el) => {
     let value = attr ? el.attribs[attr] : textOf(el);
     if (value !== undefined && (attr === "href" || attr === "src")) {

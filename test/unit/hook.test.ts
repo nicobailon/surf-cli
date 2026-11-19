@@ -485,17 +485,30 @@ describe("op-infer", () => {
     expect(embedded.read[0]).toMatchObject({ author_name: "Albert Einstein" });
   });
 
-  it("reads arXiv's dt/dd listing as parallel [] fields of the list", () => {
+  it("reads arXiv's dt/dd listing as one record per dt, its dd read through + dd", () => {
     const found = infer(arxivList, "https://arxiv.org/list/cs.CL/recent");
-    expect(found.extract.records).toBe("dl#articles");
+    expect(found.extract.records).toBe("dl#articles > dt");
     expect(found.extract.fields).toMatchObject({
-      url: 'dt a[title="Abstract"]@href[]',
-      id: 'dt a[title="Abstract"]@id[]',
-      title: "dd .list-title[]",
-      authors: "dd .list-authors[]",
+      url: 'a[title="Abstract"]@href',
+      id: 'a[title="Abstract"]@id',
+      title: "+ dd .list-title",
+      authors: "+ dd .list-authors",
     });
-    expect(found.read[0].url).toHaveLength(4);
-    expect(found.read[0].url[0]).toBe("https://arxiv.org/abs/2611.23218");
+    expect(found.count).toBe(4);
+    expect(found.read).toHaveLength(4);
+    for (const record of found.read) {
+      expect(Object.keys(record)).toEqual(expect.arrayContaining(["id", "url", "title"]));
+    }
+    expect(found.read[0]).toMatchObject({
+      url: "https://arxiv.org/abs/2611.23218",
+      id: "2611.23218",
+      title: expect.stringContaining("What Does a Bias Head Measure?"),
+    });
+    expect(found.read[3]).toMatchObject({
+      id: "2611.23158",
+      authors: expect.stringContaining("Nikit Srivastava"),
+    });
+    expect(keyFields(found)).toEqual(["title", "url"]);
   });
 
   it("reads an arXiv abstract page from its citation meta tags and own heading", () => {

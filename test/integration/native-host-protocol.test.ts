@@ -2515,6 +2515,29 @@ describe("native host protocol integration", () => {
     expect(short.stdout).not.toMatch(/truncated/i);
   });
 
+  it("fails at once, naming the size, when a result is too large for one frame to the CLI", async () => {
+    const host = await startHostHarness();
+    const started = Date.now();
+    const cliPromise = runCli(["tab.list"], host.socketPath);
+
+    const extensionRequest = await host.waitForMessage(
+      (message) => message.type === "LIST_TABS",
+      "LIST_TABS",
+    );
+    host.send({
+      id: extensionRequest.id,
+      tabs: [{ id: 123, title: "x".repeat(1_800_000), url: "https://example.test/" }],
+    });
+
+    const result = await cliPromise;
+    expect(result.code).toBe(1);
+    expect(result.stdout).toBe("");
+    expect(result.stderr).toMatch(
+      /Error: the result is 1\.8 MB, over the 1 MiB the host can send the CLI; ask for less\n/,
+    );
+    expect(Date.now() - started).toBeLessThan(5000);
+  });
+
   it("propagates extension errors through the native host to CLI stderr", async () => {
     const host = await startHostHarness();
     const cliPromise = runCli(["tab.list"], host.socketPath);

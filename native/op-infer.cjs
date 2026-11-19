@@ -127,13 +127,13 @@ function outermost(el) {
 
 const previousElement = (el) => { const siblings = elementChildren(el.parent); return siblings[siblings.indexOf(el) - 1]; };
 
-// Records split across siblings (dt then dd): { containers, head, body } tags, or nothing.
+// Records split across siblings (dt then dd): { heads, bodies, body } (the body's tag), or nothing.
 function siblingPairs(els) {
   const bodies = els.map(outermost);
   const heads = bodies.map(previousElement);
   if (heads.some((head, index) => !head || head.name === bodies[index].name || head.name !== heads[0].name)) return undefined;
   if (bodies.some((body) => body.name !== bodies[0].name)) return undefined;
-  return { containers: [...new Set(bodies.map((body) => body.parent))], head: heads[0].name, body: bodies[0].name };
+  return { heads, bodies, body: bodies[0].name };
 }
 
 // A selector under `root` whose first match is `el`, tried in every item (`check`). A class field's
@@ -171,14 +171,14 @@ function fieldName(className, itemClasses) {
 /**
  * Fields of the records in `items` (elements of one kind), read from the first: title, url, id,
  * then up to 6 classed descendants with short text that varies. `check(spec)` says whether a
- * field reads in every record; `prefix` goes before each selector (siblings: "dt ").
+ * field reads in most records; `prefix` goes before each selector (siblings: "+ dd ").
  */
-function itemFields(items, { check, prefix = "", all = "" }) {
+function itemFields(items, { check, prefix = "" }) {
   const [first] = items;
   const fields = {};
   const used = [];
   const add = (name, el, selector, attr) => {
-    const written = `${prefix}${selector}${attr ? `@${attr}` : ""}${all}`;
+    const written = `${prefix}${selector}${attr ? `@${attr}` : ""}`;
     // A class list keeps its other class, the one that varies (star-rating Three → Three).
     const kept = attr === "class" && selector.split(".").pop();
     const spec = kept ? { selector: written, match: `(?:^|\\s)(?!${kept}(?:\\s|$))(\\S+)` } : written;
@@ -237,21 +237,21 @@ function itemFields(items, { check, prefix = "", all = "" }) {
 }
 
 function listExtract(doc, group, baseUrl) {
+  const mostRead = (els) => (spec) => els.filter((el) => readField(el, spec, baseUrl) !== undefined).length * 5 >= els.length * 4;
   const pairs = siblingPairs(group.els);
   if (pairs) {
-    const records = groupSelector(doc, pairs.containers, keyOf(pairs.containers[0]));
+    // One record per head (dt); the body's (dd) fields read through `+ dd`.
+    const records = groupSelector(doc, pairs.heads, keyOf(pairs.heads[0]));
     if (!records) return undefined;
-    const membersOf = (tag) => pairs.containers.flatMap((container) => elementChildren(container).filter((el) => el.name === pairs[tag]));
-    const parallel = (tag) => (spec) => pairs.containers.every((container) => (readField(container, spec, baseUrl) || []).length === elementChildren(container).filter((el) => el.name === pairs[tag]).length);
-    const fields = {
-      ...itemFields(membersOf("head"), { check: parallel("head"), prefix: `${pairs.head} `, all: "[]" }),
-      ...itemFields(membersOf("body"), { check: parallel("body"), prefix: `${pairs.body} `, all: "[]" }),
-    };
-    return Object.keys(fields).length ? { extract: { records, fields }, count: pairs.containers.length } : undefined;
+    const head = itemFields(pairs.heads, { check: mostRead(pairs.heads) });
+    const body = itemFields(pairs.bodies, { check: mostRead(pairs.heads), prefix: `+ ${pairs.body} ` });
+    // The body's text names the record (its title over the head's link text); the head's link is its url and id.
+    const fields = { ...head, ...body, ...Object.fromEntries(Object.entries(head).filter(([name]) => name === "url" || name === "id")) };
+    return Object.keys(fields).length ? { extract: { records, fields }, count: pairs.heads.length } : undefined;
   }
   const records = groupSelector(doc, group.els, group.key);
   if (!records) return undefined;
-  const fields = itemFields(group.els, { check: (spec) => group.els.filter((el) => readField(el, spec, baseUrl) !== undefined).length * 5 >= group.els.length * 4 });
+  const fields = itemFields(group.els, { check: mostRead(group.els) });
   return Object.keys(fields).length ? { extract: { records, fields }, count: group.els.length } : undefined;
 }
 
