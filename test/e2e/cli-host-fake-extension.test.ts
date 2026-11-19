@@ -1509,6 +1509,12 @@ describe("writes through the fake extension", () => {
         }
         const name = code.match(/custname=(\w+)/)?.[1] ?? "";
         sent.push(name);
+        if (name === "Away") {
+          return { elsewhere: "https://login.example" };
+        }
+        if (name === "Deny") {
+          return { status: 403, body: "" };
+        }
         return name === "Fail" ? { status: 500, body: "" } : body({ form: { custname: name } });
       },
     });
@@ -1537,6 +1543,14 @@ describe("writes through the fake extension", () => {
       );
       expect(host.messages.some((message) => message.type === "EXECUTE_NAVIGATE")).toBe(false);
       expect(sent).toEqual(["Ada", "Ada", "Fail"]);
+      // A tab that stays on another site sent nothing; a 403 was answered, so it waits the window.
+      expect((await use("order", "--custname", "Away", "--write")).stderr).toMatch(/stayed on/);
+      expect((await use("order", "--custname", "Away", "--write")).stderr).toMatch(/stayed on/);
+      expect((await use("order", "--custname", "Deny", "--write")).stderr).toMatch(/status 403/);
+      expect((await use("order", "--custname", "Deny", "--write")).stderr).toMatch(
+        /answered \d+ s ago/,
+      );
+      sent.splice(3);
 
       expect((await use("order_all")).stderr).toMatch(
         /refused: forms order is a write \(POST https:\/\/httpbin\.org\/post\); add --write/,

@@ -5,6 +5,7 @@
 
 const os = require("os");
 const { resolveRequestDeadlineMs } = require("./host-sessions.cjs");
+const { isSecret } = require("./op-inputs.cjs");
 const { renderTemplate } = require("./op-run.cjs");
 const { requestHost } = require("./playbook-cli.cjs");
 const { parseDoCommands } = require("./workflow-definition.cjs");
@@ -88,7 +89,7 @@ async function handleHookCli(argv, { endpoint, session, sessionSource, admission
     timeoutMs: resolveRequestDeadlineMs("playbook.hook"),
   });
   if (spec.json) return { stdout: JSON.stringify(result, null, 2), stderr: "", exitCode: result.exitCode };
-  const rerun = ["surf", "hook", spec.url, "--goal", spec.goal, ...(spec.do ? ["--do", spec.do] : []), ...Object.entries(spec.samples).flatMap(([name, value]) => [`--${name}`, value]), ...(spec.as ? ["--as", spec.as] : [])];
+  const rerun = ["surf", "hook", spec.url, "--goal", spec.goal, ...(spec.do ? ["--do", spec.do] : []), ...Object.entries(spec.samples).flatMap(([name, value]) => [`--${name}`, isSecret(name) ? `<${name}>` : value]), ...(spec.as ? ["--as", spec.as] : [])];
   return formatHook(result, rerun);
 }
 

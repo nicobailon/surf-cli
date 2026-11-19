@@ -82,13 +82,15 @@ function reserveReceipt({ playbookId, op, args, repeat = false, retryAttempt, ov
     const ageMs = Math.max(0, now - Date.parse(latest.createdAt));
     const windowMs = op.safety.windowMs ?? 30000;
     const windowed = op.safety.duplicate === "repeatable-window";
+    // A send the site answered (a 4xx) is as known as a verified one.
+    const sent = latest.status === "verified" || (latest.status === "indeterminate" && latest.answered === true);
     const passes = repeat
-      || (windowed && latest.status === "verified" && ageMs >= windowMs)
+      || (windowed && sent && ageMs >= windowMs)
       || (windowed && latest.status === "not_dispatched")
       || (overrideInDoubt && latest.status === "indeterminate");
     if (!passes) {
       const ago = (ms) => (ms < 60000 ? `${Math.round(ms / 1000)} s` : `${Math.floor(ms / 60000)} min`);
-      const why = latest.status === "verified" ? `the same op and inputs were sent ${ago(ageMs)} ago${windowed ? ` (blocked for ${ago(windowMs)})` : ""}` : "the last send's outcome is unknown; check the site first";
+      const why = sent ? `the same op and inputs were ${latest.status === "verified" ? "sent" : "answered"} ${ago(ageMs)} ago${windowed ? ` (blocked for ${ago(windowMs)})` : ""}` : "the last send's outcome is unknown; check the site first";
       throw new Error(`write blocked by ${latest.status} receipt ${latest.attemptId}: ${why}; --repeat sends it again`);
     }
   }
@@ -105,7 +107,7 @@ function updateReceipt(handle, status, details = {}, root = getPrivateStateRoot(
   if (!["reserved", "not_dispatched", "dispatched", "indeterminate", "verified"].includes(status)) throw new Error(`invalid receipt status: ${status}`);
   const current = readPrivateJson(handle.path, null, { root });
   if (!current) throw new Error(`receipt is missing: ${handle.attemptId}`);
-  const receipt = { ...current, status, updatedAt: new Date().toISOString(), ...(details.error ? { errorCode: crypto.createHash("sha256").update(String(details.error)).digest("hex").slice(0, 16) } : {}) };
+  const receipt = { ...current, status, updatedAt: new Date().toISOString(), ...(details.error ? { errorCode: crypto.createHash("sha256").update(String(details.error)).digest("hex").slice(0, 16) } : {}), ...(details.answered ? { answered: true } : {}) };
   atomicWriteJson(handle.path, receipt, { root });
   handle.receipt = receipt;
   return receipt;

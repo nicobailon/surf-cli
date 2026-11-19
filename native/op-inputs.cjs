@@ -9,8 +9,10 @@ const SEARCH_KEYS = /^(?:q|s|k|query|search|search_?query|keywords?|term)$/i;
 const PAGE_KEYS = /^(?:page|p|pg|page_?num(?:ber)?)$/i;
 const OFFSET_KEYS = /^(?:start|skip|offset|from)$/i;
 const ID_LIKE = [/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i, /^\d{4}\.\d{4,5}(?:v\d+)?$/, /^[0-9a-f]{16,}$/i, /^\d{4,}$/, /^[a-z0-9-]+_\d+$/i, /^[a-z0-9-]+-\d{3,}$/i];
-// A secret-named field (password, token, secret, key...) is a required input with no stored value.
-const isSecret = (name) => isSensitiveName(name) || /(?:^|[-_.])(?:key|pass|pwd|otp)(?:$|[-_.])/i.test(name);
+// A write's secret-named field (password, token, secret, csrf...) is a required input with no
+// stored value. `newPassword`, `user[password]` and `csrfToken` are read as `new_password` etc.
+const spaced = (name) => String(name).replace(/([a-z0-9])([A-Z])/g, "$1_$2").replace(/[^A-Za-z0-9]+/g, "_");
+const isSecret = (name) => isSensitiveName(spaced(name)) || /(?:^|_)(?:pass|pwd|otp)(?:$|_)/i.test(spaced(name));
 // The request headers an op keeps; the browser supplies the rest.
 const KEPT_HEADERS = new Set(["content-type", "accept", "x-requested-with"]);
 
@@ -22,7 +24,8 @@ const isObject = (value) => value !== null && typeof value === "object" && !Arra
 const isPaging = (name) => PAGE_KEYS.test(name) || OFFSET_KEYS.test(name);
 
 function parseBody(text, type) {
-  if (/x-www-form-urlencoded/i.test(type)) return Object.fromEntries(new URLSearchParams(text));
+  // A repeated form key keeps every value, as a list.
+  if (/x-www-form-urlencoded/i.test(type)) return [...new URLSearchParams(text)].reduce((out, [key, value]) => ({ ...out, [key]: Object.hasOwn(out, key) ? [out[key], value].flat() : value }), {});
   if (/json/i.test(type)) {
     try { return JSON.parse(text); } catch {}
   }
@@ -129,7 +132,7 @@ function nameInputs({ request, samples = {}, typed = [], template }) {
   for (const [name, sample] of Object.entries(samples)) {
     let made;
     if (written.has(name)) continue;
-    if (!place(String(sample), () => (made ??= add(name, String(sample), { unique: false })))) warnings.push(`--${name}'s value ${sample} isn't in the picked request, so it is no input`);
+    if (!place(String(sample), () => (made ??= add(name, String(sample), { unique: false })))) warnings.push(`--${name}'s value ${isSecret(name) ? "" : `${sample} `}isn't in the picked request, so it is no input`);
   }
   for (const value of typed) {
     if (value) place(String(value), (key, before) => add(key === undefined ? snake(singular(before)) || "value" : SEARCH_KEYS.test(key) ? "query" : snake(key) || "value", String(value)));
@@ -143,14 +146,17 @@ function nameInputs({ request, samples = {}, typed = [], template }) {
   }
   const hide = (key, value) => {
     if (!isSecret(key) || value === "" || !["string", "number"].includes(typeof value)) return value;
-    const template = free(String(value)) ? add(snake(key) || "secret", "") : String(value);
+    const template = free(String(value)) ? add(snake(spaced(key)) || "secret", "") : String(value);
     const name = template.match(/^\{\{([a-zA-Z0-9._-]+)\}\}$/)?.[1];
     if (name) args[name] = { required: true };
     return template;
   };
   const hideAll = (node) => (isObject(node) ? Object.fromEntries(Object.entries(node).map(([key, item]) => [key, isObject(item) ? hideAll(item) : hide(key, item)])) : node);
-  for (const pair of pairs) pair[1] = hide(pair[0], pair[1]);
-  body = hideAll(body);
+  if (!["GET", "HEAD"].includes(String(request.method || "GET").toUpperCase())) {
+    for (const pair of pairs) pair[1] = hide(pair[0], pair[1]);
+    body = hideAll(body);
+    for (const name of Object.keys(args)) if (isSecret(name)) args[name] = { required: true };
+  }
   const query = {};
   for (const [key, value] of pairs) query[key] = Object.hasOwn(query, key) ? [query[key], value].flat() : value;
   segments.forEach((segment, index) => {
@@ -180,4 +186,4 @@ function nameInputs({ request, samples = {}, typed = [], template }) {
   };
 }
 
-module.exports = { nameInputs, requestOf };
+module.exports = { isSecret, nameInputs, requestOf };

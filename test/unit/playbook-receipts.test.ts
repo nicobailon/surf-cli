@@ -150,6 +150,11 @@ describe("playbook write receipts", () => {
     const unsent = send({ name: "Cy" }, later);
     receipts.updateReceipt(unsent, "not_dispatched", {}, root);
     expect(send({ name: "Cy" }, later)).toBeTruthy();
+    // A send the site answered with an error is blocked for the window too, then may go again.
+    const denied = send({ name: "Dee" }, later);
+    receipts.updateReceipt(denied, "indeterminate", { error: "status 403", answered: true }, root);
+    expect(() => send({ name: "Dee" }, later + 60_000)).toThrow(/answered 1 min ago/);
+    expect(send({ name: "Dee" }, later + 5 * 60_000)).toBeTruthy();
     expect(fs.readFileSync(after.path, "utf8")).not.toContain("Ada");
   });
 });

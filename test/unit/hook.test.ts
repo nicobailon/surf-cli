@@ -133,6 +133,33 @@ describe("op-rank", () => {
     const [top] = rankRequests([post], { pageUrl: post.url, pageText: visibleText(quotesPage) });
     expect(top.effect).toBe("write");
   });
+
+  it("keeps a form POST answered by a redirect, prefers it for a write goal, and --match POST picks it", () => {
+    const html = (url: string, fields: Partial<Captured> = {}) =>
+      entry({
+        url,
+        responseBody: `<html><body><h1>Comment</h1>${"word ".repeat(30)}</body></html>`,
+        ...fields,
+      });
+    const form = html("https://blog.example/comments/new");
+    const post = html("https://blog.example/comments", {
+      method: "POST",
+      status: 303,
+      responseBody: undefined,
+    });
+    const shown = html("https://blog.example/comments/1");
+    const capture = [form, post, shown];
+    const context = { pageUrl: shown.url, pageText: "Comment" };
+    const written = rankRequests(capture, { ...context, goal: "post a comment" });
+    expect(pickRequest(written, {}).pick.entry).toBe(post);
+    const read = rankRequests(capture, { ...context, goal: "the comment" });
+    expect(read.map((candidate: { entry: Captured }) => candidate.entry)).toContain(post);
+    expect(pickRequest(read, { match: "POST" }).pick.entry).toBe(post);
+    expect(pickRequest(read, { match: "POST /comments" }).pick.entry).toBe(post);
+    expect(pickRequest(read, { match: "GET /comments/1" }).pick.entry).toBe(shown);
+    // A redirected read is still no data.
+    expect(rankRequests([html("https://blog.example/go", { status: 302 })], context)).toEqual([]);
+  });
 });
 
 describe("op-inputs", () => {
@@ -260,6 +287,74 @@ describe("op-inputs", () => {
       typed: ["rust lang"],
     });
     expect(searched.request.query).toEqual({ kw: "{{kw}}" });
+  });
+
+  it("catches secret names in any spelling, keeps a repeated form field, and saves a secret-named wrapper", () => {
+    const { validateOp } = require("../../native/playbooks.cjs");
+    const body = {
+      "user[password]": "hunter2",
+      newPassword: "n3w",
+      clientSecret: "cs",
+      csrfToken: "ct",
+      custname: "Ada",
+      keyword: "pizza",
+      monkey: "m",
+      passenger: "p",
+      key: "theme",
+      topping: ["bacon", "cheese"],
+    };
+    const named = nameInputs({ request: { method: "POST", url: "https://a.example/o", body } });
+    expect(Object.keys(named.args).sort()).toEqual([
+      "client_secret",
+      "csrf_token",
+      "new_password",
+      "user_password",
+    ]);
+    for (const spec of Object.values(named.args)) {
+      expect(spec).toEqual({ required: true });
+    }
+    expect(named.request.body).toMatchObject({
+      custname: "Ada",
+      keyword: "pizza",
+      monkey: "m",
+      passenger: "p",
+      key: "theme",
+    });
+    expect(JSON.stringify(named)).not.toMatch(/hunter2|n3w|"cs"|"ct"/);
+    // A sample given for a secret is never kept.
+    const sampled = nameInputs({
+      request: { method: "POST", url: "https://a.example/o", body: { pw: "s3cret" } },
+      samples: { password: "s3cret" },
+    });
+    expect(sampled.args.password).toEqual({ required: true });
+    // A read keeps its query as it is; the rule is for writes.
+    const read = nameInputs({
+      request: { url: "https://a.example/s", query: { token: "t", key: "theme" } },
+    });
+    expect(read).toMatchObject({ args: {}, request: { query: { token: "t", key: "theme" } } });
+    const form = requestOf(
+      entry({
+        url: "https://a.example/o",
+        method: "POST",
+        requestHeaders: { "Content-Type": "application/x-www-form-urlencoded" },
+        requestBody: "size=large&topping=bacon&topping=cheese",
+      }),
+    );
+    expect(form.body).toEqual({ size: "large", topping: ["bacon", "cheese"] });
+    expect(renderRequest(form, { args: {}, env: {} }).body).toBe(
+      "size=large&topping=bacon&topping=cheese",
+    );
+    const wrapped = nameInputs({
+      request: {
+        method: "POST",
+        url: "https://a.example/login",
+        body: { session: { email: "a@b.c", password: "pw" } },
+      },
+    });
+    expect(wrapped.request.body).toEqual({ session: { email: "a@b.c", password: "{{password}}" } });
+    expect(() =>
+      validateOp({ id: "login", args: wrapped.args, request: wrapped.request }, {}),
+    ).not.toThrow();
   });
 
   it("makes a secret-named body or query field a required input with no stored value", () => {

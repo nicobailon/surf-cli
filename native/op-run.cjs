@@ -63,7 +63,7 @@ function renderRequest(request, context) {
   const body = renderTemplate(request.body, context);
   const type = Object.entries(headers).find(([name]) => name.toLowerCase() === "content-type")?.[1] || "";
   if (typeof body === "string") sent.body = body;
-  else if (/x-www-form-urlencoded/i.test(type)) sent.body = new URLSearchParams(Object.entries(body).map(([key, item]) => [key, String(item)])).toString();
+  else if (/x-www-form-urlencoded/i.test(type)) sent.body = new URLSearchParams(Object.entries(body).flatMap(([key, item]) => (Array.isArray(item) ? item : [item]).map((value) => [key, String(value)]))).toString();
   else {
     sent.body = JSON.stringify(body);
     if (!type) headers["content-type"] = "application/json";
@@ -135,7 +135,8 @@ function preparePage(via, context, { args, url, steps }) {
         await openPage(context, `${new URL(request.url).origin}/`, []);
         response = await evaluate(context, requestScript(request));
       }
-      if (response?.elsewhere) throw new Error(`the tab stayed on ${response.elsewhere}`);
+      // The script sends nothing from another origin, so the write is known not to be sent.
+      if (response?.elsewhere) throw Object.assign(new Error(`the tab stayed on ${response.elsewhere}`), { notSent: true });
       return response;
     };
     return { sent: JSON.stringify(request), read };
@@ -188,6 +189,7 @@ async function readPages(via, context) {
   const records = [];
   for (let page = 1; ; page++) {
     const response = await step.read();
+    context.answer.status = response.status;
     if (response.status >= 400) {
       if (page === 1) throw new Error(`status ${response.status}`);
       return { value: records, note: `stopped at page ${page}: status ${response.status}` };
@@ -239,10 +241,12 @@ async function runOp({ playbook, op, args, url, pages = 1, env = {}, readCookies
       dispatched = true;
       await beforeDispatch({ via, args });
     };
+    // The status the site answered with, if any: a write answered under 500 is no unknown outcome.
+    const answer = {};
     const event = { playbook: playbook.id, op: op.id, using: via };
     onEvent({ type: "strategy.started", ...event, startedAt: new Date().toISOString() });
     try {
-      const { value, note } = await readPages(via, { op, args, url, pages: write ? 1 : pages, env, readCookies, directTimeoutMs, executeTool, signal, sleep, onEvent, origins, markDispatched });
+      const { value, note } = await readPages(via, { op, args, url, pages: write ? 1 : pages, env, readCookies, directTimeoutMs, executeTool, signal, sleep, onEvent, origins, markDispatched, answer });
       if (write) await afterDispatch({ status: "verified", via });
       onEvent({ type: "strategy.completed", ...event, endedAt: new Date().toISOString() });
       return { status: "completed", playbook: playbook.id, op: op.id, via, value, ...(note ? { note } : {}), provenance: playbook.provenance, attempts };
@@ -251,7 +255,7 @@ async function runOp({ playbook, op, args, url, pages = 1, env = {}, readCookies
       attempts.push({ via, error: message });
       onEvent({ type: "strategy.failed", ...event, error: message, endedAt: new Date().toISOString() });
       if (write) {
-        await afterDispatch({ status: dispatched ? "indeterminate" : "not_dispatched", via, error: message });
+        await afterDispatch({ status: dispatched && !error?.notSent ? "indeterminate" : "not_dispatched", via, error: message, answered: answer.status < 500 });
         throw error;
       }
     }

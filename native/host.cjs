@@ -1598,7 +1598,7 @@ async function runHostPlaybook(msg, request) {
     return {
       attemptId: receipt?.attemptId,
       beforeDispatch: async () => updateReceipt(receipt, "dispatched"),
-      afterDispatch: async ({ status, error }) => updateReceipt(receipt, status, { error }),
+      afterDispatch: async ({ status, error, answered }) => updateReceipt(receipt, status, { error, answered }),
     };
   };
   const report = (event) => {
