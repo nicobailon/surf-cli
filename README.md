@@ -1053,7 +1053,7 @@ Selectors cover tag, `#id`, `.class`, `[attr]`, `[attr="v"]`, `:nth-child(n)`, d
 }
 ```
 
-Each step runs an op of the same playbook; `with` gives its inputs (and may set `url` and `pages`) as templates: `{{input}}`, `{{item.<path>}}` (the record an `each` step runs for) or `{{<step>.<path>}}` (an earlier step's result). `each` loops over a step's records, `limit` of them (default 10), 1 s apart (`delayMs`, or `--delay-ms <n>` with `--each`); the chain returns the last step's records. A run makes at most 100 op runs. A chain with a write step, or `--each` over a write, needs `--write`, and each send has its own duplicate guard. Without a file:
+Each step runs an op of the same playbook; `with` gives its inputs (and may set `url` and `pages`) as templates: `{{input}}`, `{{item.<path>}}` (the record an `each` step runs for) or `{{<step>.<path>}}` (an earlier step's result). `each` loops over a step's records, `limit` of them (default 10), each 1 s after the request before it (`delayMs`, or `--delay-ms <n>` with `--each`); the chain returns the last step's records. A run makes at most 100 op runs. A chain with a write step, or `--each` over a write, needs `--write`, and each send has its own duplicate guard. Without a file:
 
 ```bash
 surf use books get_book --each list_books:url --pages 2 --limit 5   # url fills --url; field=input names another input

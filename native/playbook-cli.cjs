@@ -27,7 +27,8 @@ function parseCommandArgs(argv) {
 }
 
 function unwrapResponse(response) {
-  if (response.error) throw new Error(response.error.content?.[0]?.text || JSON.stringify(response.error));
+  // hostError lets the CLI print the error as JSON with --json.
+  if (response.error) throw Object.assign(new Error(response.error.content?.[0]?.text || JSON.stringify(response.error)), { hostError: response.error });
   const text = response.result?.content?.[0]?.text;
   if (text === undefined) return response.result;
   try { return JSON.parse(text); } catch { return text; }
