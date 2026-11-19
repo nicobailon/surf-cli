@@ -3,7 +3,7 @@ const { openClientTransport } = require("./client-transport.cjs");
 const { resolveRequestDeadlineMs } = require("./host-sessions.cjs");
 const { exportRecordHar, saveFromRecent, saveFromRecord, suggestions } = require("./playbook-authoring.cjs");
 const { deriveClient, exportClient, verifyClient } = require("./playbook-client.cjs");
-const { exportPlaybookDirectory, importPlaybookDirectory, listPlaybooks, resolvePlaybook } = require("./playbooks.cjs");
+const { exportPlaybookDirectory, importPlaybookDirectory, listPlaybooks, resolveOp, resolvePlaybook } = require("./playbooks.cjs");
 const { applyFilter, collectFilterFlags, filterText, takeRunFilter } = require("./record-filter.cjs");
 
 function parseCommandArgs(argv) {
@@ -155,6 +155,18 @@ function filterRun(value, filter) {
   }
 }
 
+// `--page (default 2)` or `--q (required)`: an op input as help and pb ops show it.
+const inputLabel = ([name, spec]) => `--${name} (${spec.required ? "required" : spec.default === undefined ? "optional" : `default ${spec.default}`})`;
+
+/** `surf use <playbook> <op> --help`: the op's description, effect and inputs; null without an op name. Throws when the op is missing. */
+function opHelp(argv, { cwd = process.cwd() } = {}) {
+  const [playbookId, opId] = parseCommandArgs(argv.slice(1).filter((arg) => arg !== "--help" && arg !== "-h")).positional;
+  if (!opId) return null;
+  const { op } = resolveOp(playbookId, opId, { cwd });
+  const inputs = Object.entries(op.args || {}).map((input) => (input[1].desc ? `  ${inputLabel(input).padEnd(20)} ${input[1].desc}` : `  ${inputLabel(input)}`));
+  return [`${playbookId} ${opId}${op.description ? ` - ${op.description}` : ""} (${op.effect})`, "", "Inputs:", ...(inputs.length ? inputs : ["  none"])].join("\n");
+}
+
 function playbookCommandNeedsBrowser(argv) {
   if (argv[0] === "use") return true;
   const subcommand = argv[1];
@@ -189,7 +201,7 @@ async function handlePlaybookCli(argv, { endpoint, cwd = process.cwd(), session,
   }
   if (command === "ops") {
     const playbook = resolvePlaybook(parsed.positional[0], { cwd });
-    return { handled: true, value: [...playbook.ops.values()].map((op) => ({ id: op.id, description: op.description || "", effect: op.effect, strategies: op.run ? op.run.map((strategy) => strategy.using) : ["request", "open", "chain"].filter((key) => op[key]) })), json: parsed.options.json === true };
+    return { handled: true, value: [...playbook.ops.values()].map((op) => ({ id: op.id, description: op.description || "", effect: op.effect, inputs: Object.entries(op.args || {}).map(inputLabel), strategies: op.run ? op.run.map((strategy) => strategy.using) : ["request", "open", "chain"].filter((key) => op[key]) })), json: parsed.options.json === true };
   }
   if (command === "test") {
     if (!parsed.positional[0]) throw new Error("Usage: surf pb test <playbook> [<op>] [--no-repair]");
@@ -257,4 +269,4 @@ function formatPlaybookOutput(value, json = false) {
   return value;
 }
 
-module.exports = { formatPlaybookOutput, handlePlaybookCli, playbookCommandNeedsBrowser, requestHost };
+module.exports = { formatPlaybookOutput, handlePlaybookCli, opHelp, playbookCommandNeedsBrowser, requestHost };

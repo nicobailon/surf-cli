@@ -34,7 +34,7 @@ const {
   formatOracleOutput,
   handleOracleCli,
 } = require("./oracle-cli.cjs");
-const { formatPlaybookOutput, handlePlaybookCli } = require("./playbook-cli.cjs");
+const { formatPlaybookOutput, handlePlaybookCli, opHelp } = require("./playbook-cli.cjs");
 const { formatSavedOps } = require("./saved-ops-notice.cjs");
 const { handleHookCli } = require("./hook-cli.cjs");
 const { editDistance } = require("./edit-distance.cjs");
@@ -331,6 +331,9 @@ const REMOVED_COMMANDS = {
   triple_click: "click --button triple",
   left_click_drag: "drag",
 };
+
+// `surf --find` words that lead to hook and use (a whole-word hit ranks them first).
+const OP_KEYWORDS = ["api", "scrape", "extract", "op", "playbook", "save", "reuse"];
 
 const TOOLS = {
   session: {
@@ -1667,6 +1670,7 @@ const TOOLS = {
     desc: "Reusable site operations: threads, feeds and recorded flows",
     commands: {
       hook: {
+        keywords: OP_KEYWORDS,
         desc: "Make a tested read op from a page: open it, pick the request with its data, name inputs, infer the extract, test, save. A picked POST etc. is saved untested as a write",
         args: ["url"],
         opts: {
@@ -1684,6 +1688,7 @@ const TOOLS = {
         ],
       },
       use: {
+        keywords: OP_KEYWORDS,
         desc: "Run a playbook operation, such as reading a whole X thread",
         args: ["playbook", "op"],
         opts: {
@@ -2162,6 +2167,8 @@ Common Commands:
   animate-audit      JSON timeline of element animation/style samples
   perf-audit         PerformanceObserver snapshot for motion/jank debugging
   page.read          Get page accessibility tree (alias: read)
+  hook <url> --goal "<what>"  Make a saved, tested op from a page's data
+  use <site> <op>    Run a saved op; add --help for its inputs
   semantic.find      Optional model-powered candidate selection
   semantic.act       Bounded semantic browser action controller
   semantic.extract   Optional model-powered typed values from the page
@@ -2233,6 +2240,7 @@ Session cleanup: surf session.cleanup --idle-after 1h [--dry-run]
 Recovery: run the exact command printed after Recovery: on tab_gone, session_epoch_stale, tab_busy, or browser_busy
 Concurrency: commands for different session tabs can overlap; each tab remains FIFO; provider flows are browser-exclusive
 Doctor: surf doctor --browser all              # native host/socket diagnostics
+Saved ops: surf hook <url> --goal "<what>" saves a tested op from a page's data; surf use <site> <op> runs it   # --help after it lists its inputs
 Workflow: surf do 'go "https://example.com" | wait 2 | read | click e5 | screenshot'
 More help: surf --help-full | surf <command> --help | surf --help-topic refs | surf --find <query>`);
 };
@@ -2400,8 +2408,10 @@ const fuzzyFind = (query) => {
   for (const [groupName, group] of Object.entries(TOOLS)) {
     for (const [cmd, info] of Object.entries(group.commands)) {
       if (info.alias) continue;
-      const searchText = `${cmd} ${info.desc} ${groupName}`.toLowerCase();
-      const score = terms.filter(t => searchText.includes(t)).length;
+      const keywords = info.keywords || [];
+      const searchText = `${cmd} ${info.desc} ${groupName} ${keywords.join(" ")}`.toLowerCase();
+      // A whole keyword counts twice, so `op` ranks hook above every name that only holds the letters.
+      const score = terms.filter(t => searchText.includes(t)).length + terms.filter(t => keywords.includes(t)).length;
       if (score > 0) {
         results.push({ cmd, desc: info.desc, group: groupName, score });
       }
@@ -2614,6 +2624,14 @@ if (args.includes("--help") || args.includes("-h")) {
   const words = [args[0] === "pb" ? "playbook" : args[0], ...args.slice(1).filter((arg) => !arg.startsWith("-"))];
   const isCommand = (name) => Object.values(TOOLS).some((group) => group.commands[name]);
   const subcommand = [words.slice(0, 3), words.slice(0, 2)].filter((w) => w.length > 1).map((w) => w.join(" ")).find(isCommand);
+  if (args[0] === "use") {
+    try {
+      const help = opHelp(args);
+      if (help) console.log(`\n${help}`);
+    } catch (error) {
+      console.error(error.message);
+    }
+  }
   if (subcommand) showToolHelp(subcommand);
   // A command that shares its group's name (network, ai, upload) shows its own help; `surf <group>` shows the group.
   else if (TOOLS[words[0]] && !isCommand(words[0])) showGroupHelp(words[0]);
