@@ -5,7 +5,7 @@ description: Drive the user's logged-in Chrome from the shell. Use for browser a
 
 # Surf
 
-`surf` controls the user's real, logged-in Chrome. Below: the rules, the everyday commands in full, examples of the tricky shapes, and every other command by name. Before the first use of a command not shown in full, run `surf <cmd> --help` (flags, allowed values, examples). `surf --find <term>` searches commands; `surf --help-topic <topic>` explains refs, selectors, frames and more.
+`surf` controls the user's real, logged-in Chrome. Before the first use of a command not shown in full, run `surf <cmd> --help` (flags, allowed values, examples). `surf --find <term>` searches commands; `surf --help-topic <topic>` explains refs, selectors, frames and more.
 
 ## Rules
 
@@ -24,7 +24,7 @@ It is one tab in its own background window, and its commands run in order. Sessi
 
 **Fail fast on walls.** `wait.ready` returns when the page is ready and fails with `page_login|page_challenge|page_not_found|page_error|page_timeout`; `--accept login` returns that state instead.
 
-**API before scroll.** When `go` prints `saved: <site> <op> --<input>, …`, get the data with `surf use <site> <op> --<input> <v>`, not clicks. A read you'll repeat: `surf hook <url> --goal "<what>"` saves a tested op from the site's own request. Once: `use x thread`, or `network.wait` then `network.replay --set`. `collect` scrolls when there is no API and needs a visible tab (`session.ensure <name> <url> --window --focused`).
+**API before scroll.** When `go` prints `saved: <site> <op> --<input>, …`, get the data with `surf use <site> <op> --<input> <v>`, not clicks. A read you'll repeat: `surf hook <url> --goal "<what>"` saves a tested op from the site's own request; `surf use` repairs it when the site changes (`--no-repair` fails instead). A form: `hook --do` (below). Once: `use x thread`, or `network.wait` then `network.replay --set`. `collect` scrolls when there is no API and needs a visible tab (`session.ensure <name> <url> --window --focused`).
 
 **Values, not pages.** A few values (a total, a date, a count): `semantic.extract` returns them typed, without a full page read.
 
@@ -75,6 +75,8 @@ surf form.fill --data '[{"ref":"e1","value":"John"},{"ref":"e7","value":true}]'
 surf upload --ref e12 --files ./resume.pdf          # e12 may be the "Upload" button
 surf drag --from 100,200 --to 300,200
 surf use x thread --url https://x.com/<user>/status/<id> --format md
+surf hook https://httpbin.org/forms/post --goal order --do 'type "{{custname}}" --into "input[name=custname]" | click --selector "form button"' --custname Ada --as httpbin/order   # submits once, saves a write op; CSS, not refs (page.html --selector form)
+surf use httpbin order --custname Ada --write       # sends it again; same inputs within 5 min need --repeat
 surf network.wait "/api/**/feed" --json             # prints the response and its request id
 surf network.replay r_001 --set query.cursor=abc    # next page
 surf collect --item article --key 'a@href' --field title=h2 --field url=a@href
