@@ -3110,7 +3110,7 @@ export async function handleMessage(
 
     case "START_NETWORK_CAPTURE": {
       if (!tabId) throw new Error("No tabId provided");
-      cdp.clearNetworkRequests(tabId);
+      cdp.clearNetworkRequests(tabId, { restart: true });
       await cdp.enableNetworkTracking(tabId, {
         bodyMode: message.bodyMode || "text",
         perBodyBytes: message.perBodyBytes,
@@ -3222,6 +3222,8 @@ export async function handleMessage(
 
     case "READ_NETWORK_REQUESTS": {
       if (!tabId) throw new Error("No tabId provided");
+      // Taken before reading turns capture on, so a stopped capture shows as stopped.
+      const capture = cdp.getNetworkCaptureStatus(tabId);
 
       try {
         if (message.bodyMode !== undefined || message.perBodyBytes !== undefined || message.totalBodyBytes !== undefined) {
@@ -3255,6 +3257,7 @@ export async function handleMessage(
         const limit = message.limit || 100;
         return {
           entries: entries.slice(0, limit),
+          capture,
           format: message.format,
           verbose: message.verbose
         };
@@ -3282,6 +3285,7 @@ export async function handleMessage(
 
       return {
         requests,
+        capture,
         format: message.format,
         verbose: message.verbose
       };
@@ -4714,6 +4718,8 @@ initNativeMessaging(async (msg) => {
   }
 
   if (tabId && msg.frameId !== undefined) await validateRequestedFrame(tabId, msg.frameId);
+  // A dialog blocks attaching, so dialog commands skip this.
+  if (tabId && !isDialogCommand) await cdp.resumeNetworkCapture(tabId);
   const handle = () => handleMessage({ ...msg, tabId }, {} as chrome.runtime.MessageSender);
   const runAction = tabId && !isDialogCommand
     ? () => returnOnNativeDialog(tabId, msg.watchDialogs === true, handle)

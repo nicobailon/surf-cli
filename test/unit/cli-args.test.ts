@@ -1202,6 +1202,14 @@ describe("CLI argument parsing", () => {
     expect(explicitTab.request).not.toHaveProperty("session");
   });
 
+  it("sends SURF_SESSION with tab and window commands so a session's record can hold them", async () => {
+    const { request } = await runCli(["tab.new", "https://example.test/"], {
+      SURF_SESSION: "alpha",
+    });
+    expect(request).toMatchObject({ recordSession: "alpha" });
+    expect(request).not.toHaveProperty("session");
+  });
+
   it("keeps batch workflows bound to SURF_SESSION", async () => {
     const selected = await runCli(
       [
