@@ -1044,7 +1044,7 @@ describe("surf hook and pb record stop through the fake extension", () => {
       expect(format.code).toBe(1);
       expect(format.stdout).toBe("");
       expect(format.stderr.trim()).toBe(
-        "Error: --format is a surf use option, not a surf hook one: give it to surf use when you run the saved op. surf hook takes --goal, --do, --match, --as, --dry-run, --json and --<input> <sample> (an input named format needs {{format}} in the URL).",
+        "Error: --format is a surf use option, not a surf hook one: give it to surf use when you run the saved op. surf hook takes --goal, --do, --match, --as, --dry-run, --json and --<input> <sample>. An input named format needs {{format}} in the URL or a --do step; a sample under another name works too (--per_page 20).",
       );
       // A flag with no value is refused before it can take the next word as its value.
       const write = await hookBooks(socketPath, site, "--write");
@@ -1144,6 +1144,17 @@ describe("surf hook and pb record stop through the fake extension", () => {
       );
       expect(JSON.parse(fs.readFileSync(`${file}.bak`, "utf8"))).toEqual(edited);
       expect(JSON.parse(fs.readFileSync(file, "utf8")).description).toBe("books with prices");
+
+      // One .bak slot: a third hook keeps the second op there, and says the older .bak is overwritten.
+      const replaced = JSON.parse(fs.readFileSync(file, "utf8"));
+      const third = await hookBooks(socketPath, site);
+      expect(third.stdout).toMatch(
+        new RegExp(
+          `^replaced ${site} list_books \\(the old op is list_books\\.json\\.bak; the older \\.bak is overwritten\\)$`,
+          "m",
+        ),
+      );
+      expect(JSON.parse(fs.readFileSync(`${file}.bak`, "utf8"))).toEqual(replaced);
     } finally {
       await host.dispose();
     }

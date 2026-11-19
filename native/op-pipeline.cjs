@@ -49,7 +49,8 @@ async function captureHook({ url, steps = [], tabId, ...context }) {
 }
 
 // Saves into ~/.surf/playbooks/<site>, adding the op's origin to the site's playbook.json, and
-// keeps an op it replaces as <op>.json.bak. With dryRun it checks the op and writes nothing.
+// keeps an op it replaces as <op>.json.bak (one slot: an older .bak is overwritten). It checks the op
+// first, so a failed save touches nothing; with dryRun it only checks.
 function save(site, op, dryRun) {
   const directory = path.join(os.homedir(), ".surf", "playbooks", site);
   const file = path.join(directory, "ops", `${op.id}.json`);
@@ -58,14 +59,14 @@ function save(site, op, dryRun) {
     manifest = JSON.parse(fs.readFileSync(path.join(directory, "playbook.json"), "utf8"));
   } catch {}
   manifest.origins = [...new Set([...(manifest.origins || []), new URL(op.request.url).origin])];
+  validateOp(op, manifest);
   const replaced = fs.existsSync(file);
-  if (dryRun) {
-    validateOp(op, manifest);
-    return { file, replaced };
+  const overwritesBak = replaced && fs.existsSync(`${file}.bak`);
+  if (!dryRun) {
+    if (replaced) fs.copyFileSync(file, `${file}.bak`);
+    savePlaybook({ manifest, op });
   }
-  if (replaced) fs.copyFileSync(file, `${file}.bak`);
-  savePlaybook({ manifest, op });
-  return { file, replaced };
+  return { file, replaced, overwritesBak };
 }
 
 /**
@@ -99,8 +100,7 @@ async function makeOp({ capture, goal = "", samples = {}, typed = [], template, 
   const runLine = (examples) => ["surf", "use", site, id, ...Object.entries(examples).flatMap(([name, value]) => [`--${name}`, value === undefined ? `<${name}>` : String(value)])];
   const examples = Object.fromEntries(Object.entries(draft.args).map(([name, spec]) => [name, spec.example]));
   const saved = (fields) => {
-    const { file, replaced } = save(site, draft, dryRun);
-    return { ...base, status: dryRun ? "dry-run" : "saved", exitCode: 0, file, replaced, ...fields, ...(dryRun ? { draft } : {}) };
+    return { ...base, status: dryRun ? "dry-run" : "saved", exitCode: 0, ...save(site, draft, dryRun), ...fields, ...(dryRun ? { draft } : {}) };
   };
   if (effect === "write") {
     if (previous) return { ...base, status: "error", exitCode: 1, error: `the new pick is a write (${entry.method} ${base.picked.url})` };
@@ -110,8 +110,9 @@ async function makeOp({ capture, goal = "", samples = {}, typed = [], template, 
       if (found) draft.extract = found.extract;
     } catch {}
     try {
-      // The capture holds the write because the page, or the --do steps, sent it once.
-      return saved({ args: draft.args, extract: draft.extract, test: null, sentBy: capture.after ? "do" : "page", run: [...runLine(examples), "--write"] });
+      // The capture holds the write because the page, or the --do steps (when it came after them), sent it once.
+      const sentBy = capture.after !== undefined && entry.ts >= capture.after ? "do" : "page";
+      return saved({ args: draft.args, extract: draft.extract, test: null, sentBy, run: [...runLine(examples), "--write"] });
     } catch (error) {
       return { ...base, status: "error", exitCode: 1, error: error.message, draft };
     }
@@ -153,8 +154,10 @@ function keepNames(draft, previous) {
   Object.assign(draft, { description: previous.description ?? draft.description, args: { ...draft.args, ...previous.args }, ...(previous.expect ? { expect: previous.expect } : {}) });
 }
 
-// Saves a rebuilt op over its file, the old one kept beside it as <op>.json.bak.
+// Saves a rebuilt op over its file, the old one kept beside it as <op>.json.bak; a failed check
+// touches neither.
 function replaceOp(file, op) {
+  validateOp(op, { origins: [] });
   fs.copyFileSync(file, `${file}.bak`);
   atomicWriteJson(file, op);
   return file;
@@ -208,4 +211,4 @@ async function runWithRepair({ run, playbook, op, args, url: elsewhere, noRepair
   }
 }
 
-module.exports = { captureHook, makeOp, readPage, runWithRepair };
+module.exports = { captureHook, makeOp, readPage, runWithRepair, save };

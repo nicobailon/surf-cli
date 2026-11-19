@@ -1082,9 +1082,9 @@ run      surf use books list_books --page 2
 - The pick scores each request: same site, a JSON list of objects, the page's own document, share of the page's words, sent after the `--do` steps, a word of the goal. Exit 2 when the best leads by under 3 points: it prints the top 3 and a rerun line with `--match <url-part>`.
 - A pick that is not GET or HEAD is saved as a write, untested (`test     not run: the --do steps sent it once; …`), with its extract read from the captured response; its run line ends in `--write`. A secret-named body or query field (`password`, `token`, `secret`, `api_key`, `csrf`…) becomes a required input with no stored value.
 - Exit 1 on an error: it prints the draft op and saves nothing.
-- `--as <site>/<op>` names it; the default is the host name and `get_` with the goal's first three words. An op already there is kept as `<op>.json.bak`, and the output says so: `replaced books list_books (the old op is list_books.json.bak)`.
+- `--as <site>/<op>` names it; the default is the host name and `get_` with the goal's first three words. An op already there is kept as `<op>.json.bak`, and the output says so: `replaced books list_books (the old op is list_books.json.bak)`. There is one `.bak`: the line adds `; the older .bak is overwritten` when one was there.
 - `--dry-run` opens the page, picks, names the inputs and tests as usual, then prints the op instead of saving it.
-- A `surf use` option (`--format`, `--fields`, `--where`, `--limit`, `--pages`, `--write`…) is refused before anything opens, unless the URL or a `--do` step writes it as `{{name}}`.
+- A `surf use` option (`--format`, `--fields`, `--where`, `--limit`, `--pages`, `--write`…) is refused before anything opens, unless the URL or a `--do` step writes it as `{{name}}`, or the op `--as` names already has that input.
 - `surf pb record start <site> --op <name>` captures network requests by default (`--no-network` turns it off), and `surf pb record stop` makes the op the same way from what you did, values you typed included. On a weak pick the record keeps recording: `stop --match <url-part>` picks. `--draft` only drafts, as before.
 
 #### Self-repair and the saved-ops hint
