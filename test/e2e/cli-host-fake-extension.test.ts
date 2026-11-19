@@ -1493,14 +1493,23 @@ describe("surf hook and pb record stop through the fake extension", () => {
     const page = "https://httpbin.org/status/404";
     const answered =
       "Error: https://httpbin.org/status/404 answered 404, so the capture holds no request to pick; check the URL, or add --do steps that load the data";
+    const failed =
+      "Error: https://httpbin.org/status/404 failed to load (net::ERR_NAME_NOT_RESOLVED), so the capture holds no request to pick; check the URL, or add --do steps that load the data";
     let entry: Record<string, unknown> = { status: 404, responseBody: "" };
+    // The tab's location keeps a fragment the captured request doesn't have.
+    let shown = `${page}#top`;
     const host = startHost(socketPath, {
       network: () => [captured(page, entry)],
-      // The tab's location keeps a fragment the captured request doesn't have.
-      javascript: tab(`${page}#top`, "", {}, []),
+      javascript: (code: string) => tab(shown, "", {}, [])(code),
     });
     const hook = async () => {
-      const hooked = await runCli(socketPath, ["hook", page, "--goal", "status"]);
+      // Typed as HTTPBIN.org: Chrome's entry spells the host in lowercase.
+      const hooked = await runCli(socketPath, [
+        "hook",
+        page.replace("httpbin.org", "HTTPBIN.org"),
+        "--goal",
+        "status",
+      ]);
       expect(hooked.code).toBe(1);
       return hooked.stderr.trim();
     };
@@ -1512,9 +1521,13 @@ describe("surf hook and pb record stop through the fake extension", () => {
       expect(await hook()).toBe(answered);
       // A page that got no answer at all.
       entry = { status: 0, flags: ["failed"], errorText: "net::ERR_NAME_NOT_RESOLVED" };
-      expect(await hook()).toBe(
-        "Error: https://httpbin.org/status/404 failed to load (net::ERR_NAME_NOT_RESOLVED), so the capture holds no request to pick; check the URL, or add --do steps that load the data",
-      );
+      expect(await hook()).toBe(failed);
+      // On Chrome's error page, location.href is chrome-error://chromewebdata/: the URL the
+      // hook opened names the page.
+      shown = "chrome-error://chromewebdata/";
+      expect(await hook()).toBe(failed);
+      entry = { status: 404, flags: ["failed"], errorText: "net::ERR_HTTP_RESPONSE_CODE_FAILURE" };
+      expect(await hook()).toBe(answered);
     } finally {
       await host.dispose();
     }

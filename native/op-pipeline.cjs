@@ -24,7 +24,8 @@ const GAP_MS = 1000;
 // A goal that starts with a write verb: "submit the order", "order a book", not "order history".
 // Words that are nouns too (order, book, post, comment) count as verbs only before an object.
 const WRITE_VERB = /^\s*(?:(?:send|submit|create|add|reply|update|delete|remove|save|register|subscribe|buy|pay|upload|edit|vote)\b|(?:order|book|post|comment)\s+(?:a|an|the|my|our|this|that|it|one|some|on)\b)/i;
-const withoutHash = (url) => String(url || "").replace(/#.*$/, "");
+// A URL as Chrome writes it (https://a.test → https://a.test/), without its fragment.
+const withoutHash = (url) => (URL.canParse(url) ? new URL(url).href : String(url || "")).replace(/#.*$/, "");
 // Bodies the capture keeps for ranking: a whole large page, not the 64 KB a record keeps.
 const BODY_BYTES = 2 * 1024 * 1024;
 
@@ -36,7 +37,7 @@ async function runSteps(steps, context) {
   if (result.status !== "completed") throw new Error(result.error || "a step failed");
 }
 
-/** Opens `url` with network capture on and runs `steps`: { entries, pageUrl, pageText, after? }. */
+/** Opens `url` with network capture on and runs `steps`: { entries, opened, pageUrl, pageText, after? }. */
 async function captureHook({ url, steps = [], tabId, ...context }) {
   await context.callExtension({ type: "START_NETWORK_CAPTURE", tabId, bodyMode: "text", perBodyBytes: BODY_BYTES, totalBodyBytes: 8 * BODY_BYTES });
   try {
@@ -46,7 +47,7 @@ async function captureHook({ url, steps = [], tabId, ...context }) {
     await context.executeTool("wait.network", { timeout: 5000 }).catch(() => {});
     const page = await readPage(context);
     const read = await context.callExtension({ type: "READ_NETWORK_REQUESTS", tabId, full: true, limit: TRACE_LIMIT });
-    return { entries: read.entries || [], pageUrl: page.url, pageText: page.text, ...(after ? { after } : {}) };
+    return { entries: read.entries || [], opened: url, pageUrl: page.url, pageText: page.text, ...(after ? { after } : {}) };
   } finally {
     await context.callExtension({ type: "STOP_NETWORK_CAPTURE", tabId }).catch(() => {});
   }
@@ -84,7 +85,9 @@ async function makeOp({ capture, goal = "", samples = {}, typed = [], template, 
   const chosen = pickRequest(ranked, { match });
   if (chosen.error) {
     // Nothing to pick, and the page itself answered an error (a 404 or 500) or failed to load: say so.
-    const page = ranked.length === 0 && capture.entries.find((entry) => (entry.status >= 400 || entry.flags?.includes("failed")) && withoutHash(entry.url) === withoutHash(capture.pageUrl));
+    // The page is the URL the hook opened, or the tab's, unless that is Chrome's error page.
+    const pages = [capture.opened, /^chrome-error:/.test(capture.pageUrl) ? undefined : capture.pageUrl].filter(Boolean).map(withoutHash);
+    const page = ranked.length === 0 && capture.entries.find((entry) => (entry.status >= 400 || entry.flags?.includes("failed")) && pages.includes(withoutHash(entry.url)));
     const why = page && (page.status >= 400 ? `answered ${page.status}` : `failed to load${page.errorText ? ` (${page.errorText})` : ""}`);
     const error = why ? `${redactUrlSecrets(page.url)} ${why}, so the capture holds no request to pick; check the URL, or add --do steps that load the data` : chosen.error;
     return { status: "error", exitCode: 1, error };
