@@ -4145,6 +4145,10 @@ export async function handleMessage(
       if (sender.tab) throw new Error("GET_DIRECT_REQUEST_CONTEXT is only for the native host");
       const url = typeof message.url === "string" ? message.url : "";
       if (!/^https?:\/\//i.test(url)) throw new Error("GET_DIRECT_REQUEST_CONTEXT needs an http or https URL");
+      // An incognito tab keeps its own cookies, which this read would miss; its tab sends the request.
+      if (typeof message.sourceTabId === "number" && (await chrome.tabs.get(message.sourceTabId)).incognito) {
+        throw new Error("the session's tab is incognito, so the tab sends this request");
+      }
       const cookies = await chrome.cookies.getAll({ url });
       return { cookies: cookies.map(({ name, value }) => ({ name, value })), userAgent: navigator.userAgent };
     }

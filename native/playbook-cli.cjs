@@ -130,15 +130,26 @@ async function testPlaybook(siteId, opId, context, flags) {
       continue;
     }
     const args = Object.fromEntries(Object.entries(op.args || {}).filter(([, spec]) => spec.example !== undefined).map(([name, spec]) => [name, spec.example]));
+    let run;
     try {
-      const run = await runRequest({ playbook: siteId, op: op.id, args, options: {} }, context.endpoint, context);
-      const count = Array.isArray(run.value) ? `${run.value.length} records` : "1 value";
-      results.push({ op: op.id, status: "pass", detail: `${count} via ${run.via || run.strategy}`, ...(filter ? applyFilter(run.value, filter) : {}) });
+      run = await runRequest({ playbook: siteId, op: op.id, args, options: {} }, context.endpoint, context);
     } catch (error) {
       results.push({ op: op.id, status: "fail", detail: error.message });
+      continue;
     }
+    const count = Array.isArray(run.value) ? `${run.value.length} records` : "1 value";
+    results.push({ op: op.id, status: "pass", detail: `${count} via ${run.via || run.strategy}`, ...(filter ? filterRun(run.value, filter) : {}) });
   }
   return results;
+}
+
+// The filter only trims what pb test prints, so a field one op lacks is a note, not a failure.
+function filterRun(value, filter) {
+  try {
+    return applyFilter(value, filter);
+  } catch (error) {
+    return { filterError: error.message };
+  }
 }
 
 function playbookCommandNeedsBrowser(argv) {
@@ -182,7 +193,7 @@ async function handlePlaybookCli(argv, { endpoint, cwd = process.cwd(), session,
     const exitCode = results.some((result) => result.status === "fail") ? 1 : 0;
     const width = Math.max(...results.map((result) => result.op.length));
     const line = (result) => `${result.status.padEnd(4)}  ${result.op.padEnd(width)}  ${result.detail}`;
-    const kept = ({ filter, value }) => (filter ? [`Filtered: ${filter.after} of ${filter.before} records (${filterText(filter)})`, JSON.stringify(value, null, 2)] : []);
+    const kept = ({ filter, value, filterError }) => (filterError ? [`  ${filterError}`] : filter ? [`Filtered: ${filter.after} of ${filter.before} records (${filterText(filter)})`, JSON.stringify(value, null, 2)] : []);
     const text = results.flatMap((result) => [line(result), ...kept(result)]).join("\n");
     return { handled: true, value: parsed.options.json === true ? results : text, json: parsed.options.json === true, exitCode };
   }

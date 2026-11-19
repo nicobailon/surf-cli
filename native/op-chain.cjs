@@ -35,19 +35,31 @@ function eachChain(playbook, op, each) {
   if (!listId) throw new Error("--each needs <list-op>:<field>[=<input>], such as list_books:url");
   const list = playbook.ops.get(listId);
   if (!list) throw new Error(`--each: ${playbook.id} has no op ${listId}`);
+  for (const target of [list, op]) if (!target.request && !target.open) throw new Error(`--each runs ${target.id}, ${kind(target)}; it needs an op with request or open`);
   const { [input]: _filled, ...rest } = op.args || {};
-  // Each input goes to the op that names it; each step's run checks its own required inputs.
+  // Each input goes to the op that names it, but --limit only caps the loop (10 unless given);
+  // each step's run checks its own required inputs.
   const loose = (args) => Object.fromEntries(Object.entries(args).map(([name, { required: _, ...spec }]) => [name, spec]));
-  const pass = (args) => Object.fromEntries(Object.keys(args).map((name) => [name, `{{${name}}}`]));
+  const pass = ({ limit: _, ...args }) => Object.fromEntries(Object.keys(args).map((name) => [name, `{{${name}}}`]));
   return {
     id: op.id,
-    args: { pages: { default: 1 }, limit: { default: 10 }, ...loose(list.args || {}), ...loose(rest) },
+    args: { pages: { default: 1 }, ...loose(list.args || {}), ...loose(rest), limit: {} },
     chain: [
       { id: "list", op: listId, with: { ...pass(list.args || {}), pages: "{{pages}}" } },
       { id: "each", op: op.id, each: "list", limit: "{{limit}}", with: { ...pass(rest), [input]: `{{item.${field}}}` } },
     ],
   };
 }
+
+function resolveOn(url, op) {
+  try {
+    return new URL(url, op.request?.url || op.open).href;
+  } catch {
+    return url;
+  }
+}
+
+const kind = (op) => (op.chain ? "a chain op" : "a run-list op");
 
 const readPath = (value, path) => path.replace(/\[(\d+)\]/g, ".$1").split(".").reduce((at, key) => at?.[key], value);
 
@@ -68,6 +80,7 @@ async function runChain({ playbook, op, args, sleep = async () => {}, ...options
   op.chain.forEach((step, index) => {
     const target = playbook.ops.get(step.op);
     if (!target) throw new Error(`chain ${op.id} step ${step.id} names op ${step.op}, which ${playbook.id} doesn't have`);
+    if (!target.request && !target.open) throw new Error(`chain ${op.id} step ${step.id} runs ${step.op}, ${kind(target)}; a step runs an op with request or open`);
     if (target.effect === "write") throw new Error(`chain ${op.id} step ${step.id} runs a write op (${step.op}); chains run reads for now`);
     if (step.each !== undefined && !op.chain.slice(0, index).some((earlier) => earlier.id === step.each)) throw new Error(`chain ${op.id} step ${step.id}: each names no earlier step: ${step.each}`);
   });
@@ -76,12 +89,15 @@ async function runChain({ playbook, op, args, sleep = async () => {}, ...options
   let runs = 0;
   for (const step of op.chain) {
     const target = playbook.ops.get(step.op);
+    const sourceOp = step.each === undefined ? step.op : op.chain.find((earlier) => earlier.id === step.each).op;
     let via;
     const once = async (item, label) => {
       try {
         if (++runs > MAX_RUNS) throw new Error(`a chain run makes at most ${MAX_RUNS} op runs`);
         const scope = { ...args, ...results, ...(item === undefined ? {} : { item }) };
         const given = Object.fromEntries(Object.entries(step.with || {}).map(([name, value]) => [name, fill(value, scope, op.args || {})]).filter(([, value]) => value !== undefined));
+        // A relative url (a JSON path such as /item/3) is on the site of the op that returned it.
+        if (typeof given.url === "string" && !URL.canParse(given.url)) given.url = resolveOn(given.url, playbook.ops.get(sourceOp));
         const result = await runOp({ ...options, sleep, playbook, op: target, ...stepInputs(playbook, target, given) });
         via = result.via;
         return result.value;

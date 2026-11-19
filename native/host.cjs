@@ -1559,9 +1559,10 @@ async function executeNativePlaybook(request, handler, args, options = {}) {
 }
 
 // The browser's cookies for one direct request's URL, read by the extension. They stay in memory
-// for that request: nothing here logs or stores them.
-async function readDirectCookies(request, url) {
-  const reply = await requestExtensionOrThrow(request, "playbook.direct", { type: "GET_DIRECT_REQUEST_CONTEXT", url }, 10000);
+// for that request: nothing here logs or stores them. The extension refuses for an incognito tab,
+// whose cookies are not the profile's, so the tab sends that request.
+async function readDirectCookies(request, url, sourceTabId) {
+  const reply = await requestExtensionOrThrow(request, "playbook.direct", { type: "GET_DIRECT_REQUEST_CONTEXT", url, sourceTabId }, 10000);
   return { cookies: Array.isArray(reply.cookies) ? reply.cookies : [], userAgent: reply.userAgent };
 }
 
@@ -1599,7 +1600,7 @@ async function runHostPlaybook(msg, request) {
     url,
     pages,
     env: { ...process.env, ...params.env },
-    readCookies: (url) => readDirectCookies(request, url),
+    readCookies: (url) => readDirectCookies(request, url, request.target?.tabId ?? msg.tabId),
     attemptId: receipt?.attemptId,
     signal: request.signal,
     executeTool: (tool, args) => executeMappedHostTool(request, tool, args, msg.tabId),
@@ -1642,7 +1643,7 @@ const recordTyped = new Map();
 function pipelineContext(request, tabId) {
   return {
     executeTool: (tool, args) => executeMappedHostTool(request, tool, args, tabId),
-    readCookies: (url) => readDirectCookies(request, url),
+    readCookies: (url) => readDirectCookies(request, url, tabId),
     callExtension: (message) => requestExtensionOrThrow(request, request.tool, message),
     signal: request.signal,
     sleep: (ms) => abortableDelay(ms, request.signal),

@@ -115,6 +115,24 @@ describe("the direct step", () => {
     expect(page.codes).toEqual([]);
   });
 
+  it("falls to the tab when a 200 page reads no records, even with no expect", async () => {
+    for (const body of [{ items: [] }, { items: [{ title: "" }, { title: "x" }] }]) {
+      const site = await serve(json(200, body));
+      const result = await run(listOp(site.origin, { expect: undefined }), browser(), tab());
+      expect(result).toMatchObject({ via: "tab", value: [{ title: "from the tab" }] });
+      expect(result.attempts).toEqual([{ via: "direct", error: "read no records" }]);
+    }
+  });
+
+  it("falls to the tab when the site doesn't answer in time", async () => {
+    const site = await serve(() => {
+      // Never answers.
+    });
+    const result = await run(listOp(site.origin), browser(), tab(), { directTimeoutMs: 50 });
+    expect(result.via).toBe("tab");
+    expect(result.attempts[0].error).toBe("no answer within 0.05 s");
+  });
+
   it("falls to the tab on a 403", async () => {
     const site = await serve(json(403, { error: "blocked" }));
     const page = tab();

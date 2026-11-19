@@ -33,6 +33,7 @@ async function shop() {
               ? []
               : [1, 2].map((n) => ({
                   url: `${origin}/item/${(page - 1) * 2 + n}`,
+                  path: `/item/${(page - 1) * 2 + n}`,
                   slug: `s${n}`,
                 })),
         };
@@ -50,6 +51,12 @@ async function shop() {
       extract: { records: "$.items", fields: { url: "url", slug: "slug" } },
       page: { into: "page", next: "+1" },
       expect: { minItems: 1 },
+    },
+    {
+      id: "list_limited",
+      args: { page: { default: 1 }, limit: { default: 30 } },
+      request: { url: `${origin}/list?page={{page}}&limit={{limit}}` },
+      extract: { records: "$.items", fields: { path: "path" } },
     },
     {
       id: "get_item",
@@ -93,6 +100,7 @@ async function shop() {
       args: { x: {} },
       request: { method: "POST", url: `${origin}/send` },
     },
+    { id: "nested", chain: [{ id: "inner", op: "first_item" }] },
     {
       id: "send_all",
       chain: [
@@ -123,6 +131,29 @@ async function run(site: Awaited<ReturnType<typeof shop>>, op: Record<string, un
 }
 
 describe("chains", () => {
+  it("--each: --limit caps the loop only (10 by default), and a relative url resolves on the site", async () => {
+    const site = await shop();
+    const get = site.playbook.ops.get("get_item");
+    const capped = await run(site, eachChain(site.playbook, get, "list_limited:path=url"), {
+      limit: 1,
+    });
+    expect(site.seen).toEqual(["/list?page=1&limit=30", "/item/1"]);
+    expect(capped.result.value).toEqual([{ name: "Item 1" }]);
+    const op = eachChain(site.playbook, get, "list_limited:path=url");
+    expect(op.chain[0].with).not.toHaveProperty("limit");
+    expect(resolveArgs(op, {}).limit).toBeUndefined();
+  });
+
+  it("names a step or --each op that has no request or open", async () => {
+    const site = await shop();
+    await expect(run(site, site.playbook.ops.get("nested"))).rejects.toThrow(
+      "chain nested step inner runs first_item, a chain op; a step runs an op with request or open",
+    );
+    expect(() =>
+      eachChain(site.playbook, site.playbook.ops.get("get_item"), "first_item:url"),
+    ).toThrow("--each runs first_item, a chain op; it needs an op with request or open");
+  });
+
   it("pages the list op, then runs the detail op once per record up to limit", async () => {
     const site = await shop();
     const { result, sleeps } = await run(site, site.playbook.ops.get("items_with_details"));
