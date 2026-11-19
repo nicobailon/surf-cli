@@ -57,7 +57,7 @@ const parseJson = (text) => {
 // Each literal after `name =` (or `window.name =`): from its { or [ to the bracket that closes it,
 // skipping brackets in double-quoted strings.
 function* literals(text, name) {
-  const bare = name.replace(/^window\./, "").replace(/[.$]/g, "\\$&");
+  const bare = name.replace(/^window\./, "").replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   for (const match of text.matchAll(new RegExp(`(?:^|[^\\w$.])(?:window\\.)?${bare}\\s*=(?!=)\\s*(?=[[{])`, "g"))) {
     const start = match.index + match[0].length;
     let depth = 0;
