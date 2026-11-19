@@ -84,6 +84,27 @@ describe("HTML extract", () => {
     expect(readResponse(page, { records: 'a[href="/x?a=b"]' })).toEqual(["one"]);
   });
 
+  it("reads a record's next sibling with + (a dt and its dd), and nothing when the next one isn't it", () => {
+    const page = {
+      body: '<dl><dt><a href="/a">A</a></dt><dd><b class="t">Alpha</b><i>1</i><i>2</i></dd><dt><a href="/b">B</a></dt><dt><a href="/c">C</a></dt><dd>Gamma</dd></dl>',
+      contentType: "text/html",
+      url: "https://a.test/list",
+    };
+    expect(
+      readResponse(page, {
+        records: "dl > dt",
+        fields: { url: "a@href", title: "+ dd .t", dd: "+ dd", tags: "+ dd i[]", none: "+ dt .t" },
+      }),
+    ).toEqual([
+      { url: "https://a.test/a", title: "Alpha", dd: "Alpha12", tags: ["1", "2"] },
+      { url: "https://a.test/b" },
+      { url: "https://a.test/c", dd: "Gamma" },
+    ]);
+    expect(() => readResponse(page, { records: "dt", fields: { x: "+ dd:has(a)" } })).toThrow(
+      /unsupported selector/,
+    );
+  });
+
   it("refuses a selector outside the subset and names the subset", () => {
     expect(() => readResponse(books, { records: "article:has(a)" })).toThrow(
       /unsupported selector: article:has\(a\).*:nth-child/,

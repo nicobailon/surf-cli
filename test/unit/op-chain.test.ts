@@ -1,10 +1,13 @@
 import { afterEach, describe, expect, it } from "vitest";
 
+const fs = require("node:fs");
 const http = require("node:http");
+const path = require("node:path");
 
 const { eachChain, runChain } = require("../../native/op-chain.cjs");
 const { validateOp } = require("../../native/playbooks.cjs");
 const { resolveArgs } = require("../../native/playbook-runtime.cjs");
+const { inferResponse } = require("../../native/op-infer.cjs");
 
 type Res = {
   writeHead(status: number, headers?: Record<string, string>): void;
@@ -246,5 +249,40 @@ describe("chains", () => {
     expect(() =>
       eachChain(site.playbook, site.playbook.ops.get("send"), "list_items:slug=x", { delayMs: -1 }),
     ).toThrow("--delay-ms must be a whole number of milliseconds from 0 to 600000");
+  });
+  it("--each loops an arXiv-style dt/dd listing per paper, with the extract surf hook infers", async () => {
+    const fixture = (name: string) =>
+      fs.readFileSync(path.join(__dirname, "..", "fixtures", "sites", name), "utf8") as string;
+    const seen: string[] = [];
+    const server = http.createServer((req: { url: string }, res: Res) => {
+      seen.push(req.url);
+      res.writeHead(200, { "content-type": "text/html; charset=utf-8" });
+      res.end(fixture(req.url.startsWith("/abs/") ? "arxiv-abs.html" : "arxiv-list.html"));
+    });
+    await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+    servers.push(server);
+    const origin = `http://127.0.0.1:${server.address().port}`;
+    const listUrl = `${origin}/list/cs.CL/recent`;
+    const { extract, count } = inferResponse({ body: fixture("arxiv-list.html"), url: listUrl });
+    expect(count).toBe(4);
+    const ops = [
+      { id: "list_papers", request: { url: listUrl }, extract },
+      {
+        id: "get_paper",
+        args: { abs_id: { required: true } },
+        request: { url: `${origin}/abs/{{abs_id}}` },
+        extract: { fields: { title: 'meta[name="citation_title"]@content' } },
+      },
+    ].map((op) => validateOp(op, {}));
+    const site = { origin, seen, playbook: { id: "arxiv", ops: new Map(ops.map((op) => [op.id, op])) } };
+    const op = eachChain(site.playbook, site.playbook.ops.get("get_paper"), "list_papers:id=abs_id");
+    const { result, sleeps } = await run(site, op, { limit: 2 });
+    expect(seen).toEqual(["/list/cs.CL/recent", "/abs/2611.23218", "/abs/2611.23197"]);
+    expect(result.value).toEqual([
+      { title: "The First Fermi-LAT Solar Flare Catalog" },
+      { title: "The First Fermi-LAT Solar Flare Catalog" },
+    ]);
+    expect(result.steps[1]).toMatchObject({ id: "each", op: "get_paper", runs: 2 });
+    expect(sleeps).toEqual([1000]);
   });
 });
