@@ -95,7 +95,7 @@ function writeMeta(meta) {
 }
 
 // What is written to disk leaves out secrets: secret header values and the values of
-// secret-named form and JSON body fields. The caller's entry, used in memory, is not changed.
+// secret-named form, multipart and JSON body fields and URL query parameters. The caller's entry, used in memory, is not changed.
 const REDACTED = "<redacted>";
 const isPlainObject = (value) => value !== null && typeof value === "object" && !Array.isArray(value);
 
@@ -122,10 +122,27 @@ function redactForm(body) {
   }).join("&");
 }
 
+// A secret-named part's value; each part's headers and every other part are kept as sent.
+function redactMultipart(body, type) {
+  const boundary = type.match(/boundary=(?:"([^"]+)"|([^;\s]+))/i);
+  if (!boundary) return body;
+  const marker = `--${boundary[1] || boundary[2]}`;
+  return body.split(marker).map((part) => {
+    const blank = part.match(/\r?\n\r?\n/);
+    const name = blank && part.slice(0, blank.index).match(/\bname="([^"]*)"/i)?.[1];
+    if (!name || !isSecret(name)) return part;
+    return `${part.slice(0, blank.index + blank[0].length)}${REDACTED}${part.match(/\r?\n$/)?.[0] ?? ""}`;
+  }).join(marker);
+}
+
+// A secret-named query parameter's value in a saved URL.
+const redactUrl = (url) => (typeof url === "string" ? url.replace(/\?([^#]*)/, (_, query) => `?${redactForm(query)}`) : url);
+
 function redactBody(body, headers) {
   if (typeof body !== "string" || body === "") return body;
   const type = String(Object.entries(isPlainObject(headers) ? headers : {}).find(([name]) => name.toLowerCase() === "content-type")?.[1] || "");
   if (/x-www-form-urlencoded/i.test(type)) return redactForm(body);
+  if (/multipart\/form-data/i.test(type)) return redactMultipart(body, type);
   if (!/json/i.test(type) && !/^\s*[[{]/.test(body)) return body;
   let parsed;
   try { parsed = JSON.parse(body); } catch { return body; }
@@ -140,6 +157,7 @@ function redactBody(body, headers) {
 
 function forDisk(entry) {
   const saved = { ...entry };
+  if ("url" in saved) saved.url = redactUrl(saved.url);
   if ("requestBody" in saved) saved.requestBody = redactBody(saved.requestBody, saved.requestHeaders);
   if ("requestHeaders" in saved) saved.requestHeaders = redactHeaders(saved.requestHeaders);
   if ("responseHeaders" in saved) saved.responseHeaders = redactHeaders(saved.responseHeaders);

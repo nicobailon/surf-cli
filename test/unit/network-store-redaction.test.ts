@@ -167,6 +167,30 @@ describe("network store keeps secrets off disk", () => {
     expect(scan(base, dummy)).toEqual({ files: 1, holding: [] });
   });
 
+  it("redacts secret-named multipart parts and URL query values, keeping the rest as sent", () => {
+    const base = tempStore();
+    const part = (name: string, value: string, extra = "") =>
+      `--XyZ\r\nContent-Disposition: form-data; name="${name}"${extra}\r\n\r\n${value}\r\n`;
+    const body = `${part("username", "ada")}${part("password", dummy)}${part("api_key", dummy)}${part("file", "hello", '; filename="password.txt"')}--XyZ--\r\n`;
+    networkStore.appendEntrySync(
+      {
+        method: "POST",
+        url: `https://a.example/upload?user=ada&access_token=${dummy}&page=2&api%5Fkey=${dummy}#password=x`,
+        requestHeaders: { "Content-Type": 'multipart/form-data; boundary="XyZ"' },
+        requestBody: body,
+      },
+      base,
+    );
+    const [line] = saved(base);
+    expect(line.url).toBe(
+      "https://a.example/upload?user=ada&access_token=<redacted>&page=2&api%5Fkey=<redacted>#password=x",
+    );
+    expect(line.requestBody).toBe(
+      `${part("username", "ada")}${part("password", "<redacted>")}${part("api_key", "<redacted>")}${part("file", "hello", '; filename="password.txt"')}--XyZ--\r\n`,
+    );
+    expect(scan(base, dummy)).toEqual({ files: 1, holding: [] });
+  });
+
   it("still saves a JSON body nested too deep to walk, without its content", () => {
     const base = tempStore();
     const depth = 200_000;
