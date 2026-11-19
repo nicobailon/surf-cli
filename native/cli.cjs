@@ -332,8 +332,9 @@ const REMOVED_COMMANDS = {
   left_click_drag: "drag",
 };
 
-// `surf --find` words that lead to hook and use (a whole-word hit ranks them first).
-const OP_KEYWORDS = ["api", "scrape", "extract", "op", "playbook", "save", "reuse"];
+// `surf --find` words that lead to hook and use; a command named by the word still ranks first.
+const HOOK_KEYWORDS = ["api", "scrape", "extract", "op", "playbook", "save", "reuse"];
+const USE_KEYWORDS = ["api", "op", "playbook", "reuse"];
 
 const TOOLS = {
   session: {
@@ -1670,7 +1671,7 @@ const TOOLS = {
     desc: "Reusable site operations: threads, feeds and recorded flows",
     commands: {
       hook: {
-        keywords: OP_KEYWORDS,
+        keywords: HOOK_KEYWORDS,
         desc: "Make a tested read op from a page: open it, pick the request with its data, name inputs, infer the extract, test, save. A picked POST etc. is saved untested as a write",
         args: ["url"],
         opts: {
@@ -1688,7 +1689,7 @@ const TOOLS = {
         ],
       },
       use: {
-        keywords: OP_KEYWORDS,
+        keywords: USE_KEYWORDS,
         desc: "Run a playbook operation, such as reading a whole X thread",
         args: ["playbook", "op"],
         opts: {
@@ -2167,7 +2168,7 @@ Common Commands:
   animate-audit      JSON timeline of element animation/style samples
   perf-audit         PerformanceObserver snapshot for motion/jank debugging
   page.read          Get page accessibility tree (alias: read)
-  hook <url> --goal "<what>"  Make a saved, tested op from a page's data
+  hook <url> --goal  Make a saved op from a page's data
   use <site> <op>    Run a saved op; add --help for its inputs
   semantic.find      Optional model-powered candidate selection
   semantic.act       Bounded semantic browser action controller
@@ -2240,7 +2241,7 @@ Session cleanup: surf session.cleanup --idle-after 1h [--dry-run]
 Recovery: run the exact command printed after Recovery: on tab_gone, session_epoch_stale, tab_busy, or browser_busy
 Concurrency: commands for different session tabs can overlap; each tab remains FIFO; provider flows are browser-exclusive
 Doctor: surf doctor --browser all              # native host/socket diagnostics
-Saved ops: surf hook <url> --goal "<what>" saves a tested op from a page's data; surf use <site> <op> runs it   # --help after it lists its inputs
+Saved ops: surf hook <url> --goal "<what>" makes one from a page's data; surf use <site> <op> runs it   # --help after it lists its inputs
 Workflow: surf do 'go "https://example.com" | wait 2 | read | click e5 | screenshot'
 More help: surf --help-full | surf <command> --help | surf --help-topic refs | surf --find <query>`);
 };
@@ -2410,15 +2411,17 @@ const fuzzyFind = (query) => {
       if (info.alias) continue;
       const keywords = info.keywords || [];
       const searchText = `${cmd} ${info.desc} ${groupName} ${keywords.join(" ")}`.toLowerCase();
-      // A whole keyword counts twice, so `op` ranks hook above every name that only holds the letters.
-      const score = terms.filter(t => searchText.includes(t)).length + terms.filter(t => keywords.includes(t)).length;
+      // A term that is a whole part of the name or the group counts twice (`save` -> page.save); among
+      // equal scores a whole keyword goes first, so `op` lists hook and use before names that only hold the letters.
+      const parts = [...cmd.split(/[.\s]/), groupName];
+      const score = terms.filter(t => searchText.includes(t)).length + terms.filter(t => parts.includes(t)).length;
       if (score > 0) {
-        results.push({ cmd, desc: info.desc, group: groupName, score });
+        results.push({ cmd, desc: info.desc, group: groupName, score, keyword: terms.filter(t => keywords.includes(t)).length });
       }
     }
   }
 
-  return results.sort((a, b) => b.score - a.score);
+  return results.sort((a, b) => b.score - a.score || b.keyword - a.keyword);
 };
 
 const showFindResults = (query) => {

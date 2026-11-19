@@ -105,17 +105,21 @@ describe("hook, use and an op's inputs in help", () => {
     }
   });
 
-  // A project playbook with a read op that pages and a write op with a required input.
+  function writePlaybook(cwd: string, id: string, ops: Record<string, object>) {
+    const dir = path.join(cwd, ".surf", "playbooks", id);
+    fs.mkdirSync(path.join(dir, "ops"), { recursive: true });
+    fs.writeFileSync(path.join(dir, "playbook.json"), JSON.stringify({ id, version: "1.0.0" }));
+    for (const [opId, op] of Object.entries(ops)) {
+      fs.writeFileSync(path.join(dir, "ops", `${opId}.json`), JSON.stringify({ id: opId, ...op }));
+    }
+  }
+
+  // A project playbook with a read op that pages, a write op with a required input, and a read
+  // whose defaults are not plain strings or numbers.
   function project() {
     const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "surf-op-help-"));
     made.push(cwd);
-    const dir = path.join(cwd, ".surf", "playbooks", "books");
-    fs.mkdirSync(path.join(dir, "ops"), { recursive: true });
-    fs.writeFileSync(
-      path.join(dir, "playbook.json"),
-      JSON.stringify({ id: "books", version: "1.0.0" }),
-    );
-    const ops = {
+    writePlaybook(cwd, "books", {
       list_books: {
         id: "list_books",
         description: "books with prices",
@@ -132,32 +136,60 @@ describe("hook, use and an op's inputs in help", () => {
           body: { custname: "{{custname}}" },
         },
       },
-    };
-    for (const [id, op] of Object.entries(ops)) {
-      fs.writeFileSync(path.join(dir, "ops", `${id}.json`), JSON.stringify(op));
-    }
+      search: {
+        args: {
+          filter: { default: { genre: "poetry" } },
+          sort: { default: "" },
+          tag: { default: null },
+          fresh: { default: false },
+        },
+        request: { url: "https://books.toscrape.com/search" },
+      },
+    });
     return cwd;
   }
 
   it("names hook and use on the first help screen and in --llm-context", () => {
     expect(surf("--help").stdout).toContain(
-      '  hook <url> --goal "<what>"  Make a saved, tested op from a page\'s data\n' +
+      "  hook <url> --goal  Make a saved op from a page's data\n" +
         "  use <site> <op>    Run a saved op; add --help for its inputs\n",
     );
     expect(surf("--llm-context").stdout).toContain(
-      'Saved ops: surf hook <url> --goal "<what>" saves a tested op from a page\'s data; surf use <site> <op> runs it   # --help after it lists its inputs\n',
+      'Saved ops: surf hook <url> --goal "<what>" makes one from a page\'s data; surf use <site> <op> runs it   # --help after it lists its inputs\n',
     );
   });
 
-  it.each(["api", "scrape", "extract", "op", "playbook", "save", "reuse"])(
-    "surf --find %s lists hook and use",
-    (term) => {
-      const { code, stdout } = surf("--find", term);
-      expect(code).toBe(0);
-      expect(stdout).toMatch(/^ {2}hook {2,}/m);
-      expect(stdout).toMatch(/^ {2}use {2,}/m);
-    },
-  );
+  it.each([
+    ["api", ["hook", "use"]],
+    ["scrape", ["hook"]],
+    ["extract", ["hook"]],
+    ["op", ["hook", "use"]],
+    ["playbook", ["hook", "use"]],
+    ["save", ["hook"]],
+    ["reuse", ["hook", "use"]],
+  ])("surf --find %s lists %j", (term, commands) => {
+    const { code, stdout } = surf("--find", term);
+    expect(code).toBe(0);
+    for (const command of commands) {
+      expect(stdout).toMatch(new RegExp(`^ {2}${command} {2,}`, "m"));
+    }
+  });
+
+  it.each([
+    ["extract", "extract"],
+    ["save", "page.save"],
+    ["save page", "page.save"],
+    ["extract text", "page.text"],
+  ])("surf --find %s lists %s above hook and use", (term, first) => {
+    const names = [
+      ...surf("--find", ...term.split(" ")).stdout.matchAll(/^ {2}(\S+(?: \S+)*?) {2,}/gm),
+    ].map((match) => match[1]);
+    expect(names.indexOf(first)).toBeGreaterThanOrEqual(0);
+    expect(names.indexOf(first)).toBeLessThan(names.indexOf("hook"));
+    expect(names.includes("use") ? names.indexOf("use") : Infinity).toBeGreaterThan(
+      names.indexOf(first),
+    );
+  });
 
   it("surf use <site> <op> --help prints the op, then the use flags", () => {
     const cwd = project();
@@ -171,6 +203,26 @@ describe("hook, use and an op's inputs in help", () => {
     const write = surfIn(cwd, "use", "books", "order", "--custname", "Ada", "--help");
     expect(write.stdout).toMatch(
       /^\nbooks order - place an order \(write\)\n\nInputs:\n {2}--custname \(required\) +Customer name\n/,
+    );
+  });
+
+  it("surf use <site> <op> --help shows a default that is not a string or number as JSON, and none when empty", () => {
+    const { stdout } = surfIn(project(), "use", "books", "search", "--help");
+    expect(stdout).toContain(
+      'Inputs:\n  --filter (default {"genre":"poetry"})\n  --sort (optional)\n  --tag (optional)\n  --fresh (default false)\n',
+    );
+  });
+
+  it("surf use <site> <op> --pin-built-in --help shows the built-in op", () => {
+    const cwd = project();
+    writePlaybook(cwd, "x", {
+      thread: { description: "a project copy", request: { url: "https://x.com/{{url}}" } },
+    });
+    expect(surfIn(cwd, "use", "x", "thread", "--help").stdout).toContain(
+      "x thread - a project copy (read)",
+    );
+    expect(surfIn(cwd, "use", "x", "thread", "--pin-built-in", "--help").stdout).toContain(
+      "x thread - Read a thread: the author's posts in order",
     );
   });
 
@@ -188,6 +240,15 @@ describe("hook, use and an op's inputs in help", () => {
     expect(ops.map((op: { id: string; inputs: string[] }) => [op.id, op.inputs])).toEqual([
       ["list_books", ["--page (default 2)"]],
       ["order", ["--custname (required)"]],
+      [
+        "search",
+        [
+          '--filter (default {"genre":"poetry"})',
+          "--sort (optional)",
+          "--tag (optional)",
+          "--fresh (default false)",
+        ],
+      ],
     ]);
   });
 });

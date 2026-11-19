@@ -155,14 +155,17 @@ function filterRun(value, filter) {
   }
 }
 
-// `--page (default 2)` or `--q (required)`: an op input as help and pb ops show it.
-const inputLabel = ([name, spec]) => `--${name} (${spec.required ? "required" : spec.default === undefined ? "optional" : `default ${spec.default}`})`;
+// `--page (default 2)` or `--q (required)`: an op input as help and pb ops show it. An empty or null
+// default shows as optional; a default that is not a string or number as JSON.
+const shownDefault = (value) => (typeof value === "string" || typeof value === "number" ? String(value) : JSON.stringify(value));
+const inputLabel = ([name, spec]) => `--${name} (${spec.required ? "required" : [undefined, null, ""].includes(spec.default) ? "optional" : `default ${shownDefault(spec.default)}`})`;
 
 /** `surf use <playbook> <op> --help`: the op's description, effect and inputs; null without an op name. Throws when the op is missing. */
 function opHelp(argv, { cwd = process.cwd() } = {}) {
-  const [playbookId, opId] = parseCommandArgs(argv.slice(1).filter((arg) => arg !== "--help" && arg !== "-h")).positional;
+  const { positional, options } = parseCommandArgs(argv.slice(1).filter((arg) => arg !== "--help" && arg !== "-h"));
+  const [playbookId, opId] = positional;
   if (!opId) return null;
-  const { op } = resolveOp(playbookId, opId, { cwd });
+  const { op } = resolveOp(playbookId, opId, { cwd, pinBuiltIn: options["pin-built-in"] === true });
   const inputs = Object.entries(op.args || {}).map((input) => (input[1].desc ? `  ${inputLabel(input).padEnd(20)} ${input[1].desc}` : `  ${inputLabel(input)}`));
   return [`${playbookId} ${opId}${op.description ? ` - ${op.description}` : ""} (${op.effect})`, "", "Inputs:", ...(inputs.length ? inputs : ["  none"])].join("\n");
 }
