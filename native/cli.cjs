@@ -35,6 +35,7 @@ const {
   handleOracleCli,
 } = require("./oracle-cli.cjs");
 const { formatPlaybookOutput, handlePlaybookCli } = require("./playbook-cli.cjs");
+const { formatSavedOps } = require("./saved-ops-notice.cjs");
 const { handleHookCli } = require("./hook-cli.cjs");
 const { editDistance } = require("./edit-distance.cjs");
 const { formatGlobalOptions } = require("./global-options.cjs");
@@ -604,7 +605,7 @@ const TOOLS = {
     desc: "Navigation",
     commands: {
       "navigate": {
-        desc: "Go to URL",
+        desc: "Go to URL; on a site with saved ops, prints them once per session (saved: <site> <op> --<input>, …)",
         args: ["url"],
         examples: [{ cmd: 'navigate "https://example.com"', desc: "Go to URL" }]
       },
@@ -1702,6 +1703,7 @@ const TOOLS = {
           fields: "a,b.c: keep only these fields",
           limit: "Keep the first n records; with --each, loop over the first n (default 10)",
           "dry-run": "Print the request the op would send and the steps it tries (direct, then tab); send nothing",
+          "no-repair": "Don't rebuild a hook-made read op whose site changed (a 2xx without records, or a 404/410); fail and print the surf hook command",
           json: "Output raw JSON; via says which step answered (direct, tab, page or chain)",
         },
         examples: [
@@ -1725,6 +1727,7 @@ const TOOLS = {
           where: "As with surf use: print the records that match; expect still checks the whole result",
           fields: "As with surf use: print only these fields",
           limit: "As with surf use: print the first n records",
+          "no-repair": "As with surf use: report a changed site, don't rebuild the op (a repair is reported on the op's line)",
           json: "Output raw JSON",
         },
         examples: [{ cmd: "pb test books list_books", desc: "Test one op" }],
@@ -4089,6 +4092,8 @@ const request = {
   params: { tool: finalTool, args: toolArgs },
   id: "cli-" + Date.now(),
   ...globalOpts,
+  // The host answers with the saved ops, this project's too, for the site the tab lands on.
+  ...(["navigate", "tab.switch"].includes(finalTool) ? { savedOps: { projectDir: process.cwd() } } : {}),
 };
 
 const sendRequest = async (toolName, toolArgs = {}, timeoutMs = 5000) => {
@@ -4509,13 +4514,14 @@ async function handleResponse(response) {
   }
 
   if (wantJson) {
-    const output = response.target || response.notice || response.truncated || response.pageChanges
+    const output = response.target || response.notice || response.truncated || response.pageChanges || response.savedOps
       ? {
         result: data ?? null,
         target: response.target || null,
         notice: response.notice || null,
         ...(response.truncated ? { truncated: response.truncated } : {}),
         ...(response.pageChanges ? { pageChanges: response.pageChanges } : {}),
+        ...(response.savedOps ? { savedOps: response.savedOps } : {}),
       }
       : data ?? null;
     console.log(JSON.stringify(output, null, 2));
@@ -4919,6 +4925,7 @@ async function handleResponse(response) {
     console.log(JSON.stringify(data, null, 2));
   }
   if (pageChangeLines.length > 0 && typeof data !== "string") console.log(pageChangeLines.join("\n"));
+  if (response.savedOps) console.log(formatSavedOps(response.savedOps));
 
   socket.end();
   process.exit(0);

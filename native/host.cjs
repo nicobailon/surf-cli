@@ -66,8 +66,9 @@ const {
 const { runPlaybookOp } = require("./playbook-runtime.cjs");
 const { dryRunOp, runOp } = require("./op-run.cjs");
 const { eachChain, runChain, stepInputs } = require("./op-chain.cjs");
-const { captureHook, makeOp, readPage } = require("./op-pipeline.cjs");
+const { captureHook, makeOp, readPage, runWithRepair } = require("./op-pipeline.cjs");
 const { resolveOp } = require("./playbooks.cjs");
+const { createSavedOpsNotice } = require("./saved-ops-notice.cjs");
 const { replay, waitForResponse } = require("./api-harvest.cjs");
 const { runCollect } = require("./dom-collect.cjs");
 const { formatRecords } = require("./record-format.cjs");
@@ -1605,10 +1606,10 @@ async function runHostPlaybook(msg, request) {
     appendActivity(event);
     appendRecordEvent(event, { target: recordEventTarget(request) });
   };
-  const result = await (op.chain ? runChain : op.run ? runPlaybookOp : runOp)({
+  const run = (target, args = runArgs) => (target.chain ? runChain : target.run ? runPlaybookOp : runOp)({
     playbook,
-    op,
-    args: runArgs,
+    op: target,
+    args,
     url,
     pages,
     env: { ...process.env, ...params.env },
@@ -1618,9 +1619,14 @@ async function runHostPlaybook(msg, request) {
     executeNative: (handler, args, options) => executeNativePlaybook(request, handler, args, options),
     sleep: (ms) => abortableDelay(ms, request.signal),
     onEvent: report,
-    ...(op.run ? guard({ op, args: runArgs }) : { guard }),
+    ...(target.run ? guard({ op: target, args }) : { guard }),
     allowScript: params.allowScript === true,
   });
+  // A read that fails on shape is rebuilt from its source and run again (op-pipeline.cjs).
+  const tabId = request.target?.tabId ?? msg.tabId;
+  const recording = activeRecords().some((record) => record.tabId === tabId);
+  const noRepair = params.noRepair === true ? "--no-repair" : recording ? "a playbook record is open on this tab" : undefined;
+  const result = await runWithRepair({ run, playbook, op, args: runArgs, url, noRepair, tabId, ...pipelineContext(request, tabId) });
   if (params.format === undefined) return result;
   return { ...result, value: formatRecords(result.value, params.format, { markdown: op.markdown, args: runArgs }) };
 }
@@ -1670,7 +1676,8 @@ async function runHook(msg, request) {
   }
   const context = pipelineContext(request, tabId);
   const capture = await captureHook({ url: params.url, steps: params.steps || [], tabId, ...context });
-  return makeOp({ capture, goal: params.goal, samples: params.samples, typed: params.typed, template: params.template, match: params.match, site: params.site, op: params.op, ...context });
+  const source = { url: params.template, goal: params.goal, ...(params.do ? { do: params.do } : {}), ...(params.match === undefined ? {} : { match: params.match }) };
+  return makeOp({ capture, goal: params.goal, samples: params.samples, typed: params.typed, template: params.template, match: params.match, site: params.site, op: params.op, source, ...context });
 }
 
 // Who a command's events belong to. Tab and window commands resolve no tab target, so they go by
@@ -1739,7 +1746,7 @@ async function handleRecordRequest(tool, args, msg, request) {
     if (entries && args.draft !== true) {
       const context = pipelineContext(request, record.tabId);
       hook = await readPage(context)
-        .then((page) => makeOp({ capture: { entries, pageUrl: page.url, pageText: page.text }, typed: recordTyped.get(record.id), match: args.match, site: record.site, op: record.op, ...context }))
+        .then((page) => makeOp({ capture: { entries, pageUrl: page.url, pageText: page.text }, typed: recordTyped.get(record.id), match: args.match, site: record.site, op: record.op, source: { url: page.url, ...(args.match === undefined ? {} : { match: args.match }) }, ...context }))
         .catch((error) => ({ status: "error", exitCode: 1, error: error.message }));
       // A weak pick, or a --match that holds no request, leaves the record open to pick again.
       if (hook.status === "weak") return { record: { id: record.id, status: record.status }, hook };
@@ -1884,6 +1891,23 @@ async function truncatePageTextResult(context, request, output) {
   return { ...output, text: cut.text, truncated: cut.truncated };
 }
 
+const savedOpsNotice = createSavedOpsNotice();
+
+// The saved ops for the site a CLI `go` or `tab.switch` lands on, the first time its session lands there.
+async function savedOpsFor(request, output) {
+  if (request?.savedOpsCwd === undefined) return null;
+  try {
+    return await savedOpsNotice({
+      session: request.target?.session || request.callerSession,
+      cwd: request.savedOpsCwd,
+      pageUrl: async () => (request.tool === "navigate" ? (await inspectBrowserTab(request, request.target?.tabId)).url : output?.url),
+    });
+  } catch (error) {
+    log(`Saved ops lookup failed: ${error.message}`);
+    return null;
+  }
+}
+
 function sendToolResponse(socket, id, result, error) {
   const context = socketContexts.get(socket);
   if (context && !sessionManager.canRespond(context, id)) return;
@@ -1934,6 +1958,7 @@ function sendToolResponse(socket, id, result, error) {
     }
     await cleanupRequestTransfers(request);
     if (request?.settled) return;
+    const savedOps = finalError || request?.signal.aborted ? null : await savedOpsFor(request, output);
     const outcome = request?.signal.aborted
       ? (request.tombstoned ? "cleanup-settled" : "cancelled")
       : finalError ? "error" : "completed";
@@ -1956,6 +1981,7 @@ function sendToolResponse(socket, id, result, error) {
     }
     if (request?.notice) response.notice = request.notice;
     if (pageChanges) response.pageChanges = pageChanges;
+    if (savedOps) response.savedOps = savedOps;
     if (formattedError) response.error = formattedError;
     else {
       response.result = { content: formatToolContent(output, log) };
@@ -2058,6 +2084,10 @@ function handleToolRequest(msg, socket, requestContext = requestStorage.getStore
 
   requestContext.args = args || {};
   requestContext.activityStartedAt = new Date().toISOString();
+  if (msg.savedOps && ["navigate", "tab.switch"].includes(tool)) {
+    const projectDir = msg.savedOps.projectDir;
+    requestContext.savedOpsCwd = requestContext.context?.isRemote || typeof projectDir !== "string" ? process.cwd() : projectDir;
+  }
   if (!tool.startsWith("playbook.")) journalCommand(tool, args || {}, { tabId });
   if (tool.startsWith("session.")) {
     handleBrowserSessionCommand(tool, args || {}, requestContext)
