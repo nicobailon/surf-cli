@@ -220,11 +220,16 @@ function hideEnv(op, env, onEvent) {
 // The steps an op tries: a read with a request goes direct when the browser's cookies can be read.
 const opSteps = (op, direct) => (op.effect === "write" ? [op.request ? "tab" : "page"] : [...(op.request ? [...(direct ? ["direct"] : []), "tab"] : []), ...(op.open ? ["page"] : [])]);
 
-async function runOp({ playbook, op, args, url, pages = 1, env = {}, readCookies, directTimeoutMs, executeTool, signal, sleep = async () => {}, onEvent = () => {}, beforeDispatch = async () => {}, afterDispatch = async () => {} }) {
+/**
+ * Runs a flat op. For a write, `guard({ op, args, url })` runs first: it throws to block the send,
+ * or returns the { beforeDispatch, afterDispatch } that mark the send and its outcome.
+ */
+async function runOp({ playbook, op, args, url, pages = 1, env = {}, readCookies, directTimeoutMs, executeTool, signal, sleep = async () => {}, onEvent = () => {}, guard = async () => ({}) }) {
   const origins = siteOrigins(op);
   if (url !== undefined) assertSite(url, origins);
   onEvent = hideEnv(op, env, onEvent);
   const write = op.effect === "write";
+  const { beforeDispatch = async () => {}, afterDispatch = async () => {} } = write ? await guard({ op, args, url }) : {};
   const vias = opSteps(op, readCookies !== undefined);
   const attempts = [];
   for (const via of vias) {

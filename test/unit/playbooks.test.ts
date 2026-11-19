@@ -95,6 +95,28 @@ describe("playbook resolution and strategies", () => {
     expect(op.origins).toEqual(["https://example.test"]);
   });
 
+  it("takes a flat op's effect from its method and gives a write the default guard", () => {
+    const flat = (fields: Record<string, unknown>) =>
+      playbooks.validateOp({ id: "op", request: { url: "https://a.test/x", ...fields } }, {});
+    expect(flat({}).effect).toBe("read");
+    expect(flat({ method: "HEAD" }).effect).toBe("read");
+    const post = flat({ method: "post" });
+    expect(post).toMatchObject({ effect: "write", request: { method: "POST" } });
+    expect(post.safety).toEqual({
+      authorization: "explicit",
+      duplicate: "repeatable-window",
+      windowMs: 300000,
+    });
+    expect(flat({ method: "DELETE" }).effect).toBe("write");
+    // A POST that only searches says so.
+    const search = playbooks.validateOp(
+      { id: "s", effect: "read", request: { method: "POST", url: "https://a.test/s" } },
+      {},
+    );
+    expect(search).toMatchObject({ effect: "read" });
+    expect(search.safety).toBeUndefined();
+  });
+
   it("rejects literal credentials and unsafe write workflows", () => {
     const validate = (op: unknown) => playbooks.validateOp(op, { origins: [] });
     expect(

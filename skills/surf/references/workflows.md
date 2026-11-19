@@ -40,7 +40,7 @@ surf playbook test books                 # each read op with its examples; exit 
 
 - An op file with `request` (or `open` + `steps`), `extract` and `expect` is in the README's "Ops" section. The body is read in Node: JSON by path, HTML by selector, embedded page data with `extract.in`.
 
-- Write ops need `--write`. Surf records the intent before sending, so a retry can't submit twice.
+- Write ops (a POST etc., or `"effect": "write"`) need `--write` and send once, from the tab. The same op and inputs are blocked for 5 minutes after a send, and after a send whose outcome is unknown; `--repeat` sends again.
 - Script strategies need `--allow-script`.
 - To write a recipe for a new site's feed API (the `api` and `collect` strategies), follow `docs/threads-and-feeds.md` in the Surf repository.
 
@@ -53,7 +53,8 @@ surf hook https://quotes.toscrape.com/scroll --goal quotes --do 'scroll.bottom' 
 
 - `{{name}}` in the URL or a `--do` step, with `--name <sample>`, becomes the op's input; a search key, a page number and an id in the path become inputs on their own.
 - Exit 2: no request clearly leads. Rerun the printed line, with `--match` a part of the right request's URL.
-- Exit 1: an error, or the request is a write (it saves reads only). It prints the draft op: fix it, save it as the op file, run `surf playbook test <site>`.
+- A picked write (a POST etc.) is saved untested; a password, token or key field becomes a required input with no stored value. A search sent as a POST: set `"effect": "read"` in the file.
+- Exit 1: an error. It prints the draft op: fix it, save it as the op file, run `surf playbook test <site>`.
 - When hook can't get there (a login, steps it can't express), record by hand: `pb record start`, do the steps, `pb record stop`. Stop picks, tests and saves the same way (`--match` too; `--draft` only drafts).
 
 ```bash

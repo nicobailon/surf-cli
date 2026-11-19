@@ -1573,22 +1573,34 @@ async function runHostPlaybook(msg, request) {
     pinBuiltIn: params.pinBuiltIn === true,
   });
   const { playbook } = resolved;
-  if (params.each !== undefined && resolved.op.effect === "write") throw new Error(`--each runs reads for now; ${playbook.id} ${resolved.op.id} is a write`);
-  const op = params.each === undefined ? resolved.op : eachChain(playbook, resolved.op, params.each);
+  if (params.delayMs !== undefined && params.each === undefined) throw new Error("--delay-ms spaces the runs of --each; add --each <list-op>:<field>");
+  const op = params.each === undefined ? resolved.op : eachChain(playbook, resolved.op, params.each, { delayMs: params.delayMs });
   if (params.dryRun && !op.request && !op.open) throw new Error(`--dry-run shows ops with request or open; ${playbook.id} ${op.id} has ${op.chain ? "a chain" : "a run list"}`);
   const { args: runArgs, url, pages } = stepInputs(playbook, op, params.args || {});
   if (params.dryRun) return dryRunOp({ playbook, op, args: runArgs, url });
-  if (op.effect === "write" && op.safety.authorization === "explicit" && params.write !== true) {
-    throw new Error(`write op ${playbook.id} ${op.id} requires --write`);
+  // Before anything is sent: a write, or a chain with a write step, needs --write. The refusal
+  // names the method and URL as the op writes them, so no input value is printed.
+  const unsent = (op.chain ? op.chain.map((step) => playbook.ops.get(step.op)) : [op]).find((target) => target?.effect === "write" && target.safety.authorization === "explicit");
+  if (unsent && params.write !== true) {
+    const request = unsent.request || unsent.run?.find((strategy) => strategy.request)?.request;
+    throw new Error(`refused: ${playbook.id} ${unsent.id} is a write (${request ? `${request.method || "GET"} ${request.url}` : `on ${unsent.open || "its page"}`}); add --write to send it`);
   }
-  const receipt = reserveReceipt({
-    playbookId: playbook.id,
-    op,
-    args: runArgs,
-    repeat: params.repeat === true,
-    retryAttempt: params.retryAttempt,
-    overrideInDoubt: params.overrideInDoubt === true,
-  });
+  // Each write send (a chain's or --each's, once per record) has its own duplicate guard.
+  const guard = ({ op: target, args: targetArgs, url: targetUrl }) => {
+    const receipt = reserveReceipt({
+      playbookId: playbook.id,
+      op: target,
+      args: targetUrl === undefined ? targetArgs : { ...targetArgs, url: targetUrl },
+      repeat: params.repeat === true,
+      retryAttempt: params.retryAttempt,
+      overrideInDoubt: params.overrideInDoubt === true,
+    });
+    return {
+      attemptId: receipt?.attemptId,
+      beforeDispatch: async () => updateReceipt(receipt, "dispatched"),
+      afterDispatch: async ({ status, error }) => updateReceipt(receipt, status, { error }),
+    };
+  };
   const report = (event) => {
     appendActivity(event);
     appendRecordEvent(event, { target: recordEventTarget(request) });
@@ -1601,14 +1613,12 @@ async function runHostPlaybook(msg, request) {
     pages,
     env: { ...process.env, ...params.env },
     readCookies: (url) => readDirectCookies(request, url, request.target?.tabId ?? msg.tabId),
-    attemptId: receipt?.attemptId,
     signal: request.signal,
     executeTool: (tool, args) => executeMappedHostTool(request, tool, args, msg.tabId),
     executeNative: (handler, args, options) => executeNativePlaybook(request, handler, args, options),
     sleep: (ms) => abortableDelay(ms, request.signal),
     onEvent: report,
-    beforeDispatch: async () => updateReceipt(receipt, "dispatched"),
-    afterDispatch: async ({ status, error }) => updateReceipt(receipt, status, { error }),
+    ...(op.run ? guard({ op, args: runArgs }) : { guard }),
     allowScript: params.allowScript === true,
   });
   if (params.format === undefined) return result;

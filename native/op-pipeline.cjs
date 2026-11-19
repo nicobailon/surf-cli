@@ -1,6 +1,6 @@
 // One pipeline makes an op: capture → pick → inputs → extract → test → save. `surf hook` captures
 // the URL it opens (captureHook); `pb record stop` hands over its record's capture. makeOp does the
-// rest, and saves only an op whose test passed.
+// rest, and saves only an op whose test passed; a write (a POST etc.) is saved untested.
 
 const fs = require("fs");
 const os = require("os");
@@ -10,6 +10,7 @@ const { nameInputs, requestOf } = require("./op-inputs.cjs");
 const { matchHint, pickRequest, rankRequests } = require("./op-rank.cjs");
 const { evaluate, runOp, sendRequest } = require("./op-run.cjs");
 const { savePlaybook, validateOp } = require("./playbooks.cjs");
+const { redactUrlSecrets } = require("./redaction.cjs");
 const { executeWorkflow } = require("./workflow-runtime.cjs");
 
 const PAGE_TEXT = "({ url: location.href, text: document.body ? document.body.innerText : '' })";
@@ -70,14 +71,22 @@ async function makeOp({ capture, goal = "", samples = {}, typed = [], template, 
   const { entry, reasons, effect } = chosen.pick;
   const sent = requestOf(entry);
   const named = nameInputs({ request: sent, samples, typed, template });
-  const draft = { id, description: goal || `${id} on ${new URL(sent.url).host}`, args: named.args, request: named.request };
-  const base = { playbook: site, op: id, picked: { method: entry.method, url: entry.url, reasons }, warnings: named.warnings };
+  const draft = { id, description: goal || `${id} on ${new URL(sent.url).host}`, ...(effect === "write" ? { effect } : {}), args: named.args, request: named.request };
+  const base = { playbook: site, op: id, picked: { method: entry.method, url: redactUrlSecrets(entry.url), reasons }, warnings: named.warnings };
+  // The run line: each input's sample, or <name> for one with none (a secret).
+  const runLine = (examples) => ["surf", "use", site, id, ...Object.entries(examples).flatMap(([name, value]) => [`--${name}`, value === undefined ? `<${name}>` : String(value)])];
+  const examples = Object.fromEntries(Object.entries(draft.args).map(([name, spec]) => [name, spec.example]));
   if (effect === "write") {
-    // Never sent again: the draft's extract comes from the captured response.
-    let found;
-    try { found = entry.responseBody && inferResponse({ body: entry.responseBody, contentType: entry.mimeType, url: entry.url }); } catch {}
-    const error = `refused: ${entry.method} ${sent.url} can change data; surf hook saves reads only. If it only searches, save the draft below with "effect": "read" and run surf pb test`;
-    return { ...base, status: "error", exitCode: 1, error, draft: { ...draft, effect: "write", ...(found ? { extract: found.extract } : {}) } };
+    // Saved untested, as a write is never sent again here: the extract comes from the captured response.
+    try {
+      const found = entry.responseBody && inferResponse({ body: entry.responseBody, contentType: entry.mimeType, url: entry.url });
+      if (found) draft.extract = found.extract;
+    } catch {}
+    try {
+      return { ...base, status: "saved", exitCode: 0, file: save(site, draft), args: draft.args, extract: draft.extract, test: null, run: [...runLine(examples), "--write"] };
+    } catch (error) {
+      return { ...base, status: "error", exitCode: 1, error: error.message, draft };
+    }
   }
   try {
     await context.sleep(GAP_MS);
@@ -87,7 +96,6 @@ async function makeOp({ capture, goal = "", samples = {}, typed = [], template, 
     if (!found) throw new Error(`found no records or fields in the response of ${sent.url}`);
     draft.extract = found.extract;
     if (named.paging) draft.page = { into: named.paging.name, next: named.paging.next === "+count" ? `+${found.count ?? 1}` : named.paging.next };
-    const examples = Object.fromEntries(Object.entries(draft.args).map(([name, spec]) => [name, spec.example]));
     await context.sleep(GAP_MS);
     const run = await runOp({ playbook: { id: site }, op: validateOp(draft, { origins: [] }), args: examples, ...context });
     const list = Array.isArray(run.value);
@@ -97,7 +105,7 @@ async function makeOp({ capture, goal = "", samples = {}, typed = [], template, 
     draft.expect = { ...(list ? { minItems: 1 } : {}), fields };
     const file = save(site, draft);
     const test = { via: run.via, count: list ? run.value.length : null, fields };
-    return { ...base, status: "saved", exitCode: 0, file, args: draft.args, extract: draft.extract, page: draft.page, test, run: ["surf", "use", site, id, ...Object.entries(examples).flatMap(([name, value]) => [`--${name}`, String(value)])] };
+    return { ...base, status: "saved", exitCode: 0, file, args: draft.args, extract: draft.extract, page: draft.page, test, run: runLine(examples) };
   } catch (error) {
     return { ...base, status: "error", exitCode: 1, error: error.message, draft };
   }

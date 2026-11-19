@@ -55,7 +55,7 @@ function runSpec(argv) {
   const parsed = parseCommandArgs(argv.slice(offset));
   const [playbook, op] = parsed.positional;
   if (!playbook || !op) throw new Error(direct ? "Usage: surf use <playbook> <op> [--arg value]" : "Usage: surf pb run <playbook> <op> [--arg value]");
-  const reserved = new Set(["json", "no-lock", "no-wait", "session", "tab-id", "write", "repeat", "retry-attempt", "override-in-doubt", "pin-built-in", "allow-script", "format", "dry-run", "each"]);
+  const reserved = new Set(["json", "no-lock", "no-wait", "session", "tab-id", "write", "repeat", "retry-attempt", "override-in-doubt", "pin-built-in", "allow-script", "format", "dry-run", "each", "delay-ms"]);
   const args = Object.fromEntries(Object.entries(parsed.options).filter(([name]) => !reserved.has(name)));
   return { playbook, op, args, options: parsed.options, filterFlags: collectFilterFlags(argv.slice(offset)) };
 }
@@ -105,6 +105,7 @@ function runRequest(spec, endpoint, { cwd, session, sessionSource, admission }) 
     dryRun: spec.options["dry-run"] === true,
     env: opEnv(reached),
     ...(spec.options.each === undefined ? {} : { each: String(spec.options.each) }),
+    ...(spec.options["delay-ms"] === undefined ? {} : { delayMs: spec.options["delay-ms"] }),
     ...(format ? { format } : {}),
   };
   return requestHost(endpoint, "playbook.run", args, {

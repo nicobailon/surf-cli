@@ -261,6 +261,31 @@ describe("op-inputs", () => {
     });
     expect(searched.request.query).toEqual({ kw: "{{kw}}" });
   });
+
+  it("makes a secret-named body or query field a required input with no stored value", () => {
+    const named = nameInputs({
+      request: {
+        method: "POST",
+        url: "https://a.example/login",
+        query: { api_key: "k-123", lang: "en" },
+        body: { user: "ada", password: "hunter2", csrf_token: "t0k", nested: { secret: "s" } },
+      },
+      typed: ["ada", "hunter2"],
+      samples: { lang: "en" },
+    });
+    expect(named.request.body).toEqual({
+      user: "{{user}}",
+      password: "{{password}}",
+      csrf_token: "{{csrf_token}}",
+      nested: { secret: "{{secret}}" },
+    });
+    expect(named.request.query).toEqual({ api_key: "{{api_key}}", lang: "{{lang}}" });
+    for (const name of ["password", "csrf_token", "secret", "api_key"]) {
+      expect(named.args[name]).toEqual({ required: true });
+    }
+    expect(named.args.user).toEqual({ required: true, example: "ada" });
+    expect(JSON.stringify(named)).not.toMatch(/hunter2|k-123|t0k/);
+  });
 });
 
 describe("op-infer", () => {

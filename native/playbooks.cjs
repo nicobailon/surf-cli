@@ -185,19 +185,25 @@ function validateFlatOp(value, id, effect) {
   return op;
 }
 
+// A flat write without `safety`: needs --write, and the same inputs are blocked 5 minutes after a send.
+const DEFAULT_GUARD = { authorization: "explicit", duplicate: "repeatable-window", windowMs: 5 * 60 * 1000 };
+
 function validateOp(value, manifest) {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("playbook op must be an object");
   const id = assertId(value.id, "op id");
-  const effect = value.effect || "read";
-  if (effect !== "read" && effect !== "write") throw new Error(`op ${id} effect must be read or write`);
   const kinds = ["request", "open", "chain", "run"].filter((key) => value[key] !== undefined);
   const flat = kinds.length > 0 && !kinds.includes("run");
+  // A flat op that doesn't say is a write when its request is not a GET or HEAD.
+  const sends = flat && isObject(value.request) && !["GET", "HEAD"].includes(String(value.request.method || "GET").toUpperCase());
+  const effect = value.effect || (sends ? "write" : "read");
+  if (effect !== "read" && effect !== "write") throw new Error(`op ${id} effect must be read or write`);
   if (kinds.length === 0 || (kinds.includes("run") && kinds.length > 1) || (kinds.includes("chain") && kinds.length > 1)) {
     throw new Error(`op ${id} needs one of request, open, chain or run (request and open may go together)`);
   }
   if (!flat && (!Array.isArray(value.run) || value.run.length === 0)) throw new Error(`op ${id} requires at least one strategy`);
   let safety = value.safety;
-  if (effect === "write") {
+  if (effect === "write" && flat && safety === undefined) safety = { ...DEFAULT_GUARD };
+  else if (effect === "write") {
     if (!value.safety || !["transactional", "repeatable-window"].includes(value.safety.duplicate)) throw new Error(`write op ${id} requires duplicate safety`);
     if (!Array.isArray(value.safety.key) || value.safety.key.length === 0) throw new Error(`write op ${id} requires a semantic safety key`);
     safety = { ...value.safety, authorization: value.safety.authorization || "explicit" };

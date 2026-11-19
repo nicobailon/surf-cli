@@ -1,7 +1,7 @@
 // surf hook <url> --goal "<text>" [--do '<steps>'] [--<input> <sample>]... [--match <url-part>]
 // [--as <site>/<op>]: the browser host opens the URL, runs the steps, and makes, tests and saves
 // the op (op-pipeline.cjs). Exit 0: a saved, tested op; 2: a weak pick, with the top requests and
-// a rerun line; 1: an error or a write, with the draft.
+// a rerun line; 1: an error, with the draft. A write is saved untested.
 
 const os = require("os");
 const { resolveRequestDeadlineMs } = require("./host-sessions.cjs");
@@ -61,14 +61,15 @@ function formatHook(result, rerun) {
     lines.push(`rerun    ${shell([...rerun, "--match", result.match])}`, "         (or --match a part of the URL of the request that holds the data)");
     return { stdout: lines.join("\n"), stderr: "", exitCode: 2 };
   }
-  const inputs = Object.entries(result.args).map(([name, spec]) => `--${name} (${spec.required ? `required, sample ${spec.example}` : `default ${spec.default}`})`);
+  const sample = (spec) => (spec.example === undefined ? "required" : `required, sample ${spec.example}`);
+  const inputs = Object.entries(result.args).map(([name, spec]) => `--${name} (${spec.required ? sample(spec) : `default ${spec.default}`})`);
   const { extract, test } = result;
   const lines = [
     `picked   ${result.picked.method} ${result.picked.url}   ${result.picked.reasons.filter((reason) => /^(JSON|HTML|\d+ records)/.test(reason)).join(", ")}`,
     `inputs   ${inputs.join(" · ") || "none"}`,
-    `extract  ${extract.in ? `${extract.in} ` : ""}${extract.records ?? "one record"} → ${Object.keys(extract.fields || {}).join(", ") || "the whole value"}`,
+    `extract  ${extract ? `${extract.in ? `${extract.in} ` : ""}${extract.records ?? "one record"} → ${Object.keys(extract.fields || {}).join(", ") || "the whole value"}` : "none: the response as it comes"}`,
     ...(result.page ? [`paging   --pages: ${result.page.into} ${result.page.next}`] : []),
-    `test     ${test.via} ✓ ${plural(test.count)}; ${test.fields.join(", ")} present`,
+    `test     ${test ? `${test.via} ✓ ${plural(test.count)}; ${test.fields.join(", ")} present` : "not run: surf hook sends no write; --write sends it"}`,
     `saved    ${result.file.replace(os.homedir(), "~")}`,
     `run      ${shell(result.run)}`,
     ...result.warnings.map((warning) => `Warning: ${warning}`),

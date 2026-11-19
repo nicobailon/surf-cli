@@ -2,7 +2,8 @@
 // template: {{input}} (the chain's input), {{item.path}} (the record an `each` step runs for) or
 // {{step.path}} (an earlier step's result). `each` runs the step once per record of an earlier
 // step, `limit` (default 10) of them, `delayMs` (default 1000) apart. The chain returns the last
-// step's result. One run makes at most 100 op runs.
+// step's result. One run makes at most 100 op runs. A write step sends once per run, each send
+// passing runOp's guard (--write, the duplicate window).
 
 const { runOp } = require("./op-run.cjs");
 const { resolveArgs } = require("./playbook-runtime.cjs");
@@ -29,8 +30,9 @@ function stepInputs(playbook, op, given = {}) {
   return { args, url, pages: Number(pages) };
 }
 
-/** --each <list-op>:<field>[=<input>]: `op` once per record of the list op, as a two-step chain. */
-function eachChain(playbook, op, each) {
+/** --each <list-op>:<field>[=<input>]: `op` once per record of the list op, as a two-step chain, `delayMs` apart. */
+function eachChain(playbook, op, each, { delayMs } = {}) {
+  if (delayMs !== undefined && !(Number.isInteger(delayMs) && delayMs >= 0 && delayMs <= 600000)) throw new Error("--delay-ms must be a whole number of milliseconds from 0 to 600000");
   const [, listId, field, input = field] = String(each).match(/^([\w-]+):([\w.[\]-]+?)(?:=([\w-]+))?$/) || [];
   if (!listId) throw new Error("--each needs <list-op>:<field>[=<input>], such as list_books:url");
   const list = playbook.ops.get(listId);
@@ -46,7 +48,7 @@ function eachChain(playbook, op, each) {
     args: { pages: { default: 1 }, ...loose(list.args || {}), ...loose(rest), limit: {} },
     chain: [
       { id: "list", op: listId, with: { ...pass(list.args || {}), pages: "{{pages}}" } },
-      { id: "each", op: op.id, each: "list", limit: "{{limit}}", with: { ...pass(rest), [input]: `{{item.${field}}}` } },
+      { id: "each", op: op.id, each: "list", limit: "{{limit}}", ...(delayMs === undefined ? {} : { delayMs }), with: { ...pass(rest), [input]: `{{item.${field}}}` } },
     ],
   };
 }
@@ -81,7 +83,6 @@ async function runChain({ playbook, op, args, sleep = async () => {}, ...options
     const target = playbook.ops.get(step.op);
     if (!target) throw new Error(`chain ${op.id} step ${step.id} names op ${step.op}, which ${playbook.id} doesn't have`);
     if (!target.request && !target.open) throw new Error(`chain ${op.id} step ${step.id} runs ${step.op}, ${kind(target)}; a step runs an op with request or open`);
-    if (target.effect === "write") throw new Error(`chain ${op.id} step ${step.id} runs a write op (${step.op}); chains run reads for now`);
     if (step.each !== undefined && !op.chain.slice(0, index).some((earlier) => earlier.id === step.each)) throw new Error(`chain ${op.id} step ${step.id}: each names no earlier step: ${step.each}`);
   });
   const results = {};
