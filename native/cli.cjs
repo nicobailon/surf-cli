@@ -270,6 +270,7 @@ if (["playbook", "pb", "use"].includes(args[0]) && !helpRequested()) {
     })
     .catch((error) => {
       console.error(`Error: ${error.message}`);
+      if (error.hostError && args.includes("--json")) console.log(hostErrorJson(error.hostError));
       process.exit(1);
     });
   return;
@@ -1698,7 +1699,7 @@ const TOOLS = {
           url: "Run the op on another URL of its site",
           pages: "Follow the op's page rule for up to n pages (default 1, max 100); with --each, the list op's",
           each: "<list-op>:<field>[=<input>]: run the op once per record of the list op, the field filling the input of its name (url fills --url); a write needs --write, each send guarded",
-          "delay-ms": "With --each: milliseconds between the runs (default 1000)",
+          "delay-ms": "With --each: milliseconds before each run, the first too (default 1000)",
           where: "field=value, field!=value or field~=text (contains, any case); repeatable, all must match; dotted fields read nested ones",
           fields: "a,b.c: keep only these fields",
           limit: "Keep the first n records; with --each, loop over the first n (default 10)",
@@ -4435,6 +4436,21 @@ function queueSummary(queue) {
   return pieces.join(" ");
 }
 
+// --json: a host tool-response error as {"error":{"code","message","details"?}} for stdout.
+function hostErrorJson(error) {
+  const text = error.content?.[0]?.text || JSON.stringify(error);
+  // details repeats code/message when the error serialises itself; keep the rest.
+  const { code: _code, message: _message, ...details } =
+    error.details && typeof error.details === "object" ? error.details : {};
+  return JSON.stringify({
+    error: {
+      code: typeof error.code === "string" ? error.code : "error",
+      message: typeof error.message === "string" ? error.message : text.split("\n")[0],
+      ...(Object.keys(details).length > 0 ? { details } : {}),
+    },
+  }, null, 2);
+}
+
 async function handleResponse(response) {
   clearTimeout(timeout);
   printResponseContext(response);
@@ -4453,18 +4469,7 @@ async function handleResponse(response) {
       ? [`${firstLine} [${errorCode}]`, ...restLines].join("\n")
       : errContent;
     console.error("Error:", display);
-    if (wantJson) {
-      // details repeats code/message when the error serialises itself; keep the rest.
-      const { code: _code, message: _message, ...details } =
-        response.error.details && typeof response.error.details === "object" ? response.error.details : {};
-      console.log(JSON.stringify({
-        error: {
-          code: errorCode || "error",
-          message: typeof response.error.message === "string" ? response.error.message : firstLine,
-          ...(Object.keys(details).length > 0 ? { details } : {}),
-        },
-      }, null, 2));
-    }
+    if (wantJson) console.log(hostErrorJson(response.error));
 
     if (autoCapture) {
       await performAutoCapture();

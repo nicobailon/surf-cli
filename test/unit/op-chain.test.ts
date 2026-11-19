@@ -160,8 +160,8 @@ describe("chains", () => {
       { id: "list", op: "list_items", runs: 1, via: "direct" },
       { id: "item", op: "get_item", runs: 3, via: "direct" },
     ]);
-    // 1 s between pages and between each record's run.
-    expect(sleeps).toEqual([1000, 1000, 1000]);
+    // 1 s between pages, between the list and the first record, and between records.
+    expect(sleeps).toEqual([1000, 1000, 1000, 1000]);
   });
 
   it("reads an earlier step's result with {{step.path}}", async () => {
@@ -203,7 +203,8 @@ describe("chains", () => {
     const site = await shop();
     const sent: string[] = [];
     const guarded: unknown[] = [];
-    const sleeps: number[] = [];
+    // Each wait with the sends made before it.
+    const sleeps: [number, number][] = [];
     const chain = (guard: (run: { op: { id: string }; args: unknown }) => Promise<object>) => {
       const op = eachChain(site.playbook, site.playbook.ops.get("send"), "list_items:slug=x", {
         delayMs: 50,
@@ -219,7 +220,7 @@ describe("chains", () => {
           return { output: JSON.stringify({ status: 200, contentType: "application/json", body }) };
         },
         sleep: async (ms: number) => {
-          sleeps.push(ms);
+          sleeps.push([ms, sent.length]);
         },
         guard,
       });
@@ -234,7 +235,11 @@ describe("chains", () => {
       ["send", { x: "s2" }],
     ]);
     expect(sent.map((code) => code.match(/x\\":\\"(s\d)/)?.[1])).toEqual(["s1", "s2"]);
-    expect(sleeps).toEqual([50]);
+    // The list request, a wait, the first send, a wait, the second.
+    expect(sleeps).toEqual([
+      [50, 0],
+      [50, 1],
+    ]);
     // A blocked record stops the loop before it sends.
     sent.length = 0;
     await expect(
@@ -291,6 +296,6 @@ describe("chains", () => {
       { title: "The First Fermi-LAT Solar Flare Catalog" },
     ]);
     expect(result.steps[1]).toMatchObject({ id: "each", op: "get_paper", runs: 2 });
-    expect(sleeps).toEqual([1000]);
+    expect(sleeps).toEqual([1000, 1000]);
   });
 });

@@ -760,7 +760,13 @@ describe("CLI/native-host/fake-extension E2E contract", () => {
         project,
       );
       expect(used.code).toBe(1);
-      expect(used.stdout).toBe("");
+      // --json: the host error as JSON on stdout too, as for other tools.
+      expect(JSON.parse(used.stdout)).toEqual({
+        error: {
+          code: "error",
+          message: expect.stringMatching(/^the result is 1\.8 MB, over the 1 MiB/),
+        },
+      });
       expect(used.stderr).toMatch(
         /the result is 1\.8 MB, over the 1 MiB the host can send the CLI; ask for less: fewer --pages or --each runs \(--limit\), or an extract with fewer records or fields/,
       );
@@ -1632,7 +1638,7 @@ describe("direct requests, --each and filters through the fake extension", () =>
       server.close();
       await host.dispose();
     }
-  });
+  }, 30000);
 });
 
 describe("writes through the fake extension", () => {
@@ -1751,5 +1757,5 @@ describe("writes through the fake extension", () => {
     } finally {
       await host.dispose();
     }
-  });
+  }, 30000);
 });

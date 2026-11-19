@@ -1,9 +1,9 @@
 // Chain ops and --each. A chain step runs another op of the playbook; each `with` value is a
 // template: {{input}} (the chain's input), {{item.path}} (the record an `each` step runs for) or
 // {{step.path}} (an earlier step's result). `each` runs the step once per record of an earlier
-// step, `limit` (default 10) of them, `delayMs` (default 1000) apart. The chain returns the last
-// step's result. One run makes at most 100 op runs. A write step sends once per run, each send
-// passing runOp's guard (--write, the duplicate window).
+// step, `limit` (default 10) of them, each run `delayMs` (default 1000) after the request before
+// it. The chain returns the last step's result. One run makes at most 100 op runs. A write step
+// sends once per run, each send passing runOp's guard (--write, the duplicate window).
 
 const { runOp } = require("./op-run.cjs");
 const { resolveArgs } = require("./playbook-runtime.cjs");
@@ -117,7 +117,7 @@ async function runChain({ playbook, op, args, sleep = async () => {}, ...options
     if (!Number.isInteger(limit) || limit < 1 || limit > MAX_RUNS) throw new Error(`chain ${op.id} step ${step.id}: limit must be a whole number from 1 to ${MAX_RUNS}`);
     const value = [];
     for (const [index, item] of records.slice(0, limit).entries()) {
-      if (index > 0) await sleep(step.delayMs ?? 1000);
+      await sleep(step.delayMs ?? 1000);
       value.push(await once(item, `, record ${index + 1}`));
     }
     results[step.id] = value.flat();
