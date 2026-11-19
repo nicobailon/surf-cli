@@ -1677,9 +1677,10 @@ const TOOLS = {
         opts: {
           goal: "What the op returns, in words (required); its first words name the op",
           do: "surf do steps to run after the page loads, before the pick (clicks, typing)",
-          "<input>": "This run's value of {{input}} in the URL or a --do step, e.g. --page 2; also found in the request",
+          "<input>": "This run's value of {{input}} in the URL or a --do step, e.g. --page 2; also found in the request. A surf use option (--format, --limit, --write…) is refused unless the URL writes it as {{name}}",
           match: "Pick the captured request whose URL holds this text",
-          as: "Save as <site>/<op> (default: the host name and get_ + the goal's first three words)",
+          as: "Save as <site>/<op> (default: the host name and get_ + the goal's first three words); an op already there is kept as <op>.json.bak",
+          "dry-run": "Open the page, pick, name inputs and test as usual, then print the op instead of saving it",
           json: "Output the result as JSON",
         },
         examples: [
