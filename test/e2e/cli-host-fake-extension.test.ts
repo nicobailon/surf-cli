@@ -1581,6 +1581,54 @@ describe("surf hook and pb record stop through the fake extension", () => {
     }
   });
 
+  it("keys a write's receipt on a secret input the URL path carries", async () => {
+    const socketPath = createSocketPath();
+    const site = unique("shop");
+    const token = ["rk", "4f1e", "0b9d"].join("");
+    const page = `https://shop.test/reset/${token}`;
+    const host = startHost(socketPath, {
+      network: () => [
+        captured(page, { responseBody: "<html><body><form></form></body></html>" }),
+        captured(page, {
+          method: "POST",
+          requestHeaders: { "Content-Type": "application/x-www-form-urlencoded" },
+          requestBody: "confirm=yes",
+          responseBody: "<html><body>Password reset</body></html>",
+          ts: Date.now(),
+        }),
+      ],
+      javascript: tab(page, "Password reset", {}, []),
+    });
+
+    try {
+      await host.waitForMessage((message) => message.type === "HOST_READY");
+      const hooked = await runCli(socketPath, [
+        "hook",
+        "https://shop.test/reset/{{token}}",
+        "--token",
+        token,
+        "--goal",
+        "submit the reset",
+        "--do",
+        'click --selector "form button"',
+        "--as",
+        `${site}/reset`,
+      ]);
+      expect(hooked.stderr).toBe("");
+      expect(hooked.code).toBe(0);
+      expect(JSON.parse(fs.readFileSync(opFile(site, "reset"), "utf8"))).toMatchObject({
+        args: { token: { required: true } },
+        request: { method: "POST", url: "https://shop.test/reset/{{token}}" },
+      });
+      expect(receiptClaims(host.stateDir)).toHaveLength(1);
+      const again = await runCli(socketPath, ["use", site, "reset", "--token", token, "--write"]);
+      expect(again.code).toBe(1);
+      expect(again.stderr).toMatch(/write blocked by verified receipt/);
+    } finally {
+      await host.dispose();
+    }
+  });
+
   it("refuses a --do click with no target before it opens the page, as surf do --dry-run does", async () => {
     const socketPath = createSocketPath();
     const steps = 'type "Ada" --into "input[name=custname]" | click "Submit order"';

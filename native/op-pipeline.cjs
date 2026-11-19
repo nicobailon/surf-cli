@@ -129,7 +129,7 @@ async function makeOp({ capture, goal = "", samples = {}, typed = [], template, 
       // The capture holds the write because the page, or the --do steps (when it came after them), sent it once.
       const sentBy = capture.after !== undefined && entry.ts >= capture.after ? "do" : "page";
       // With --dry-run too: the form was sent all the same.
-      recordSend({ site, op: validateOp(draft, { origins: [] }), examples, template: named.request, sent, status: entry.status });
+      recordSend({ site, op: validateOp(draft, { origins: [] }), examples, template: named.request, sent });
       return saved({ args: draft.args, extract: draft.extract, test: null, sentBy, run: [...runLine(examples), "--write"] });
     } catch (error) {
       return { ...base, status: "error", exitCode: 1, error: error.message, draft };
@@ -163,12 +163,27 @@ async function makeOp({ capture, goal = "", samples = {}, typed = [], template, 
   }
 }
 
-// The value `sent` carries where `template` has `mark` as a whole value.
+// The value `sent` carries where `template` has `mark` as a whole value: a query or body value, or
+// a path segment.
 function carried(template, sent, mark) {
+  const fields = inFields({ query: template.query, body: template.body }, { query: sent.query, body: sent.body }, mark);
+  if (fields !== undefined) return fields;
+  const url = new URL(sent.url);
+  const index = template.url.slice(url.origin.length).split("/").indexOf(mark);
+  const segment = index === -1 ? undefined : url.pathname.split("/")[index];
+  if (!segment) return undefined;
+  try {
+    return decodeURIComponent(segment);
+  } catch {
+    return segment;
+  }
+}
+
+function inFields(template, sent, mark) {
   if (template === mark) return sent;
   if (!template || typeof template !== "object") return undefined;
   for (const key of Object.keys(template)) {
-    const found = carried(template[key], sent?.[key], mark);
+    const found = inFields(template[key], sent?.[key], mark);
     if (found !== undefined) return found;
   }
   return undefined;
@@ -177,17 +192,18 @@ function carried(template, sent, mark) {
 // A write the capture holds was sent once, so it gets the receipt `surf use <site> <op> --<inputs>
 // --write` reserves for the same inputs (runHostPlaybook in host.cjs): the same op, and the inputs
 // as the CLI reads them with the op's defaults. The duplicate guard then counts it as a use send.
-function recordSend({ site, op, examples, template, sent, status }) {
+function recordSend({ site, op, examples, template, sent }) {
   // A secret input has no example; its value is the one the request carried, kept only in the key's HMAC.
   const given = {};
   for (const [name, example] of Object.entries(examples)) {
-    const value = example ?? carried({ query: template.query, body: template.body }, { query: sent.query, body: sent.body }, `{{${name}}}`);
+    const value = example ?? carried(template, sent, `{{${name}}}`);
     if (value === undefined || typeof value === "object") return;
     given[name] = optionValue(String(value));
   }
-  // Recorded even over a receipt for the same inputs: this send has happened.
+  // Recorded even over a receipt for the same inputs: this send has happened. The pick is a write
+  // the site answered 200 to 399 (rankRequests), so the send is verified.
   const receipt = reserveReceipt({ playbookId: site, op, args: resolveArgs(op, given), repeat: true });
-  updateReceipt(receipt, status >= 200 && status < 400 ? "verified" : "indeterminate", { answered: status >= 400 && status < 500 });
+  updateReceipt(receipt, "verified");
 }
 
 // A rebuilt op keeps the old one's description, inputs (by name, with their specs) and expect, so
