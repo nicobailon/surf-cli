@@ -1124,11 +1124,45 @@ describe("surf hook and pb record stop through the fake extension", () => {
         },
         extract: { records: "$.quotes" },
         page: { into: "page", next: "+1" },
+        source: { do: 'type "{{query}}" --into "input#q" | key Enter' },
       });
+
+      // A typed value that is no input (a password) stays out of every file; the op can't repair.
+      const secret = await runCli(socketPath, [
+        "hook",
+        page,
+        "--goal",
+        "quotes",
+        "--do",
+        'type "{{query}}" --into "input#q" | type dummy-pass-9 --into "input[name=password]"',
+        "--query",
+        "einstein",
+        "--as",
+        `${site}/login_search`,
+      ]);
+      expect(secret.code).toBe(0);
+      expect(secret.stdout).toMatch(/^Warning: .*no input.* can't repair/m);
+      expect(JSON.parse(fs.readFileSync(opFile(site, "login_search"), "utf8"))).not.toHaveProperty(
+        "source",
+      );
+      type Entry = { name: string; isDirectory(): boolean };
+      const { readdirSync } = require("node:fs") as {
+        readdirSync(dir: string, options: { withFileTypes: true }): Entry[];
+      };
+      const files = (dir: string): string[] =>
+        readdirSync(dir, { withFileTypes: true }).flatMap((entry) =>
+          entry.isDirectory() ? files(path.join(dir, entry.name)) : [path.join(dir, entry.name)],
+        );
+      for (const file of [
+        ...files(path.join(opFile(site, "x"), "..", "..")),
+        ...files(host.stateDir),
+      ]) {
+        expect(fs.readFileSync(file, "utf8")).not.toContain("dummy-pass-9");
+      }
     } finally {
       await host.dispose();
     }
-  });
+  }, 30000);
 
   it("saves a picked write untested, a typed secret as an input with no value", async () => {
     const socketPath = createSocketPath();

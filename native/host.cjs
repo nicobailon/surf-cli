@@ -1606,10 +1606,10 @@ async function runHostPlaybook(msg, request) {
     appendActivity(event);
     appendRecordEvent(event, { target: recordEventTarget(request) });
   };
-  const run = (target) => (target.chain ? runChain : target.run ? runPlaybookOp : runOp)({
+  const run = (target, args = runArgs) => (target.chain ? runChain : target.run ? runPlaybookOp : runOp)({
     playbook,
     op: target,
-    args: runArgs,
+    args,
     url,
     pages,
     env: { ...process.env, ...params.env },
@@ -1619,14 +1619,14 @@ async function runHostPlaybook(msg, request) {
     executeNative: (handler, args, options) => executeNativePlaybook(request, handler, args, options),
     sleep: (ms) => abortableDelay(ms, request.signal),
     onEvent: report,
-    ...(target.run ? guard({ op: target, args: runArgs }) : { guard }),
+    ...(target.run ? guard({ op: target, args }) : { guard }),
     allowScript: params.allowScript === true,
   });
   // A read that fails on shape is rebuilt from its source and run again (op-pipeline.cjs).
   const tabId = request.target?.tabId ?? msg.tabId;
   const recording = activeRecords().some((record) => record.tabId === tabId);
   const noRepair = params.noRepair === true ? "--no-repair" : recording ? "a playbook record is open on this tab" : undefined;
-  const result = await runWithRepair({ run, playbook, op, args: runArgs, noRepair, tabId, ...pipelineContext(request, tabId) });
+  const result = await runWithRepair({ run, playbook, op, args: runArgs, url, noRepair, tabId, ...pipelineContext(request, tabId) });
   if (params.format === undefined) return result;
   return { ...result, value: formatRecords(result.value, params.format, { markdown: op.markdown, args: runArgs }) };
 }

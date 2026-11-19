@@ -8,7 +8,7 @@ const os = require("os");
 const path = require("path");
 const { shell } = require("./hook-cli.cjs");
 const { inferResponse, keyFields } = require("./op-infer.cjs");
-const { nameInputs, requestOf } = require("./op-inputs.cjs");
+const { isSecret, nameInputs, requestOf } = require("./op-inputs.cjs");
 const { matchHint, pickRequest, rankRequests } = require("./op-rank.cjs");
 const { evaluate, renderTemplate, runOp, sendRequest } = require("./op-run.cjs");
 const { savePlaybook, validateOp } = require("./playbooks.cjs");
@@ -75,8 +75,15 @@ async function makeOp({ capture, goal = "", samples = {}, typed = [], template, 
   const { entry, reasons, effect } = chosen.pick;
   const sent = requestOf(entry);
   const named = nameInputs({ request: sent, samples, typed, template });
-  // A write never repairs, and its --do may type a secret, so only a read keeps its source.
-  const draft = { id, description: goal || `${id} on ${new URL(sent.url).host}`, ...(effect === "write" ? { effect } : {}), args: named.args, request: named.request, ...(source && effect !== "write" ? { source } : {}) };
+  // A read keeps its source, each typed value in `do` as its {{input}}. A write never repairs; a typed
+  // value that is no input (a password the request doesn't carry) or a secret keeps the source out.
+  let kept = effect === "write" ? undefined : source;
+  for (const value of source?.do ? typed : []) {
+    const name = Object.keys(named.args).find((key) => String(named.args[key].example) === value);
+    kept = kept && name && !isSecret(name) ? { ...kept, do: kept.do.replaceAll(value, `{{${name}}}`) } : undefined;
+  }
+  if (source && !kept && effect !== "write") named.warnings.push("a --do step types a value that is no input, so the op keeps no source and can't repair itself");
+  const draft = { id, description: goal || `${id} on ${new URL(sent.url).host}`, ...(effect === "write" ? { effect } : {}), args: named.args, request: named.request, ...(kept ? { source: kept } : {}) };
   const base = { playbook: site, op: id, picked: { method: entry.method, url: redactUrlSecrets(entry.url), reasons }, warnings: named.warnings };
   // The run line: each input's sample, or <name> for one with none (a secret).
   const runLine = (examples) => ["surf", "use", site, id, ...Object.entries(examples).flatMap(([name, value]) => [`--${name}`, value === undefined ? `<${name}>` : String(value)])];
@@ -153,19 +160,28 @@ function changes(before, after) {
 
 /**
  * Runs `run(op)`. When a read op made by surf hook or pb record stop fails on shape (its last step
- * got an answer without the records, or a 404 or 410), runs the pipeline again on its `source` with
- * this call's inputs, saves the rebuilt op if it passes the old expect, and runs that. `noRepair`
- * names why not to. A write, a 401, 403, 429, 5xx or network error never repairs.
+ * got an answer without the records, or a 404 or 410), and fails so with its saved sample inputs
+ * too, runs the pipeline again on its `source` with those samples, saves the rebuilt op if it passes
+ * the old expect, and runs that with this call's inputs. `noRepair` names why not to. A write, a
+ * call with --url, a 401, 403, 429, 5xx or network error never repairs.
  */
-async function runWithRepair({ run, playbook, op, args, noRepair, tabId, ...context }) {
+async function runWithRepair({ run, playbook, op, args, url: elsewhere, noRepair, tabId, ...context }) {
   try {
     return await run(op);
   } catch (error) {
-    if (!error.shape || !op.source || op.effect === "write" || op.chain || op.run) throw error;
+    if (!error.shape || !op.source || op.effect === "write" || op.chain || op.run || elsewhere !== undefined) throw error;
     const { url, goal = op.description || op.id, do: steps, match } = op.source;
-    const samples = Object.fromEntries(Object.keys(op.args || {}).filter((name) => args[name] !== undefined).map((name) => [name, args[name]]));
-    const hook = shell(["surf", "hook", url, "--goal", goal, ...(steps ? ["--do", steps] : []), ...(match ? ["--match", match] : []), ...Object.entries(samples).flatMap(([name, value]) => [`--${name}`, String(value)]), "--as", `${playbook.id}/${op.id}`]);
+    // The inputs the op was made and tested with; this call's value for one it saved none of.
+    const samples = Object.fromEntries(Object.entries(op.args || {}).map(([name, spec]) => [name, spec.example ?? spec.default ?? args[name]]).filter(([, value]) => value !== undefined));
+    const flags = Object.entries(samples).flatMap(([name, value]) => [`--${name}`, String(value)]);
+    const hook = `surf hook '${url.replace(/'/g, "'\\''")}' ${shell(["--goal", goal, ...(steps ? ["--do", steps] : []), ...(match ? ["--match", match] : []), ...flags, "--as", `${playbook.id}/${op.id}`])}`;
     if (noRepair) throw new Error(`${error.message}; ${playbook.id} ${op.id} no longer matches the site, not repaired (${noRepair}). Rebuild it: ${hook}`);
+    // This call may just have no records (an empty search, a page past the end): the op is broken
+    // only if its saved samples fail on shape too.
+    const same = Object.entries(samples).every(([name, value]) => String(args[name]) === String(value));
+    const check = same ? error : await run(op, samples).then(() => null, (failure) => failure);
+    if (!check) throw new Error(`${error.message}; with its saved inputs (${flags.join(" ")}) it still reads records, so it was not repaired`);
+    if (!check.shape) throw error;
     const file = path.join(playbook.directory, "ops", `${op.id}.json`);
     const before = JSON.parse(fs.readFileSync(file, "utf8"));
     const made = await captureHook({ url: renderTemplate(url, { args: samples, env: null, encode: encodeURIComponent }), steps: steps ? renderTemplate(parseDoCommands(steps), { args: samples, env: null }) : [], tabId, ...context })
