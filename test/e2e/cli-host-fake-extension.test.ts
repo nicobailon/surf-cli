@@ -740,6 +740,15 @@ describe("CLI/native-host/fake-extension E2E contract", () => {
         extract: { records: "$.items", fields: { text: "text" } },
       }),
     );
+    fs.writeFileSync(
+      path.join(site, "ops", "item_copies.json"),
+      JSON.stringify({
+        id: "item_copies",
+        args: { text: { required: true } },
+        request: { url: "https://big.example/items.json", query: { text: "{{text}}" } },
+        extract: { records: "$.items", fields: { text: "text" } },
+      }),
+    );
     // 1,800 records of 1 kB: about 1.8 MB once the host frames them.
     const items = Array.from({ length: 1800 }, (_, n) => ({ text: `${n} ${"x".repeat(1000)}` }));
     const host = startHost(socketPath, {
@@ -767,10 +776,29 @@ describe("CLI/native-host/fake-extension E2E contract", () => {
           message: expect.stringMatching(/^the result is 1\.8 MB, over the 1 MiB/),
         },
       });
-      expect(used.stderr).toMatch(
-        /the result is 1\.8 MB, over the 1 MiB the host can send the CLI; ask for less: fewer --pages or --each runs \(--limit\), or an extract with fewer records or fields/,
+      expect(used.stderr).toContain(
+        "the result is 1.8 MB, over the 1 MiB the host can send the CLI; --limit and --fields trim it only after it arrives, so ask for less: fewer --pages, or narrow the op's extract (records, fields) in its file",
       );
       expect(Date.now() - started).toBeLessThan(10_000);
+      // With --each, --limit caps the runs in the host, so it is the way to ask for less.
+      const each = await runCli(
+        socketPath,
+        [
+          "use",
+          "big",
+          "item_copies",
+          "--each",
+          "list_items:text",
+          "--limit",
+          "1",
+          "--delay-ms",
+          "0",
+        ],
+        project,
+      );
+      expect(each.stderr).toContain(
+        "MiB the host can send the CLI; ask for less: fewer --each runs (--limit), fewer --pages, or narrow the op's extract (records, fields) in its file",
+      );
     } finally {
       await host.dispose();
     }
@@ -1276,6 +1304,80 @@ describe("surf hook and pb record stop through the fake extension", () => {
       });
       expect(`${hooked.stdout}${saved}`).not.toContain("hunter2");
       expect(fetches(codes)).toEqual([]);
+    } finally {
+      await host.dispose();
+    }
+  });
+
+  it("refuses a --do click with no target before it opens the page, as surf do --dry-run does", async () => {
+    const socketPath = createSocketPath();
+    const steps = 'type "Ada" --into "input[name=custname]" | click "Submit order"';
+    const host = startHost(socketPath, { network: () => [] });
+    try {
+      await host.waitForMessage((message) => message.type === "HOST_READY");
+      const hooked = await runCli(socketPath, [
+        "hook",
+        "https://httpbin.org/forms/post",
+        "--goal",
+        "send the order",
+        "--do",
+        steps,
+      ]);
+      expect(hooked.code).toBe(1);
+      expect(hooked.stderr.trim()).toBe(
+        'Error: --do step 2: click takes a ref (e5), --selector <css> or x y, not "Submit order". Try: click --selector "form button"',
+      );
+      expect(host.messages.some((message) => message.type === "EXECUTE_NAVIGATE")).toBe(false);
+      const dry = await runCli(socketPath, ["do", steps, "--dry-run"]);
+      expect(dry.code).toBe(1);
+      expect(dry.stderr).toContain(
+        'step 2: click takes a ref (e5), --selector <css> or x y, not "Submit order"',
+      );
+    } finally {
+      await host.dispose();
+    }
+  });
+
+  it("says an error page's status when the capture holds no request to pick", async () => {
+    const socketPath = createSocketPath();
+    const page = "https://httpbin.org/status/404";
+    const host = startHost(socketPath, {
+      network: () => [captured(page, { status: 404, responseBody: "" })],
+      javascript: tab(page, "", {}, []),
+    });
+    try {
+      await host.waitForMessage((message) => message.type === "HOST_READY");
+      const hooked = await runCli(socketPath, ["hook", page, "--goal", "status"]);
+      expect(hooked.code).toBe(1);
+      expect(hooked.stderr.trim()).toBe(
+        "Error: https://httpbin.org/status/404 answered 404, so the capture holds no request to pick; check the URL, or add --do steps that load the data",
+      );
+    } finally {
+      await host.dispose();
+    }
+  });
+
+  it("tells a write goal with no captured write to submit the form in --do", async () => {
+    const socketPath = createSocketPath();
+    const page = "https://httpbin.org/forms/post";
+    const form =
+      "<html><body><form><input name=custname><button>Submit order</button></form></body></html>";
+    const host = startHost(socketPath, {
+      network: () => [captured(page, { responseBody: form })],
+      javascript: tab(page, "Customer name Submit order", { [page]: form }, []),
+    });
+    try {
+      await host.waitForMessage((message) => message.type === "HOST_READY");
+      const hooked = await runCli(socketPath, ["hook", page, "--goal", "submit the order"]);
+      expect(hooked.code).toBe(1);
+      expect(hooked.stderr.trim()).toBe(
+        `Error: found no records or fields in the response of ${page}; a form's POST is captured only when --do submits the form: --do 'type "…" --into "<css>" | click --selector "<css>"'`,
+      );
+      // A read goal keeps the short message.
+      const read = await runCli(socketPath, ["hook", page, "--goal", "the form"]);
+      expect(read.stderr.trim()).toBe(
+        `Error: found no records or fields in the response of ${page}`,
+      );
     } finally {
       await host.dispose();
     }
