@@ -7,6 +7,7 @@ const fs = require("fs");
 const os = require("os");
 const path = require("path");
 const { shell } = require("./hook-cli.cjs");
+const { sendDirect } = require("./op-direct.cjs");
 const { inferResponse, keyFields } = require("./op-infer.cjs");
 const { isSecret, nameInputs, requestOf } = require("./op-inputs.cjs");
 const { matchHint, pickRequest, rankRequests } = require("./op-rank.cjs");
@@ -29,6 +30,31 @@ const WRITE_VERB = /^\s*(?:(?:send|submit|create|add|reply|update|delete|remove|
 const withoutHash = (url) => (URL.canParse(url) ? new URL(url).href : String(url || "")).replace(/#.*$/, "");
 // Bodies the capture keeps for ranking: a whole large page, not the 64 KB a record keeps.
 const BODY_BYTES = 2 * 1024 * 1024;
+
+// Another extension's frame in the page: Chrome dropped the debugger and refuses it from then on.
+const foreignFrame = (refused) => refused?.code === "restricted_target" && refused.reason === "foreign_extension_frame";
+const DOCUMENT_ONLY = "Chrome refused the debugger here (another extension's frame), so hook read the page's own HTML only; data the page loads afterwards (XHR/fetch) was not seen.";
+
+/** Chrome's refusal with `tail` after its message, keeping its code and details. */
+function refusal({ code, message, ...details }, tail) {
+  return surfError(code, `${message} ${tail}`, details);
+}
+
+/**
+ * The page's own HTML as the one entry a refused capture can still give: a GET from the host, with
+ * no cookies, as a direct step sends it. Anything but an HTML answer fails with Chrome's refusal.
+ */
+async function readDocument(url, refused, context) {
+  const fail = (why) => refusal(refused, `Hook couldn't read the page's own HTML instead (${why}); turn that extension off for this site and retry.`);
+  await context.sleep(GAP_MS);
+  const response = await sendDirect({ request: { method: "GET", url }, readCookies: async () => ({}), signal: context.signal }).catch((error) => {
+    throw fail(error.message.replace(/; the tab follows redirects$/, ""));
+  });
+  if (response.status >= 400) throw fail(`it answered ${response.status}`);
+  const mimeType = response.contentType.split(";")[0].trim().toLowerCase();
+  if (!mimeType.includes("html")) throw fail(`it answered ${mimeType || "no content type"}, not HTML`);
+  return { type: "Document", method: "GET", url, status: response.status, mimeType, responseBody: response.body };
+}
 
 /** What the tab shows now: { url, text }. */
 const readPage = (context) => evaluate(context, PAGE_TEXT);
@@ -54,7 +80,11 @@ async function startCapture(context, tabId) {
   }
 }
 
-/** Opens `url` with network capture on and runs `steps`: { entries, opened, pageUrl, pageText, after? }. */
+/**
+ * Opens `url` with network capture on and runs `steps`: { entries, opened, pageUrl, pageText, after?,
+ * documentOnly? }. When another extension's frame cut the capture off and there are no steps, the
+ * entries are the page's own HTML only, and `documentOnly` holds Chrome's refusal.
+ */
 async function captureHook({ url, steps = [], tabId, ...context }) {
   await startCapture(context, tabId);
   try {
@@ -66,6 +96,8 @@ async function captureHook({ url, steps = [], tabId, ...context }) {
     const read = await context.callExtension({ type: "READ_NETWORK_REQUESTS", tabId, full: true, limit: TRACE_LIMIT });
     // Chrome dropped the debugger on the way (another extension's frame appeared) and won't take it back.
     const refused = read.capture?.refused;
+    if (foreignFrame(refused) && after) throw refusal(refused, "--do steps need the debugger; turn that extension off for this site and retry.");
+    if (foreignFrame(refused)) return { entries: [await readDocument(url, refused, context)], opened: url, pageUrl: page.url, pageText: page.text, documentOnly: refused };
     if (refused) throw surfError(refused.code, refused.message, refused);
     return { entries: read.entries || [], opened: url, pageUrl: page.url, pageText: page.text, ...(after ? { after } : {}) };
   } finally {
@@ -95,12 +127,24 @@ function save(site, op, dryRun) {
 }
 
 /**
+ * makeOp on a capture that holds the page's own HTML only: a saved op says so in a warning; anything
+ * else fails with Chrome's refusal, as the page needs the debugger.
+ */
+async function makeOp(params) {
+  const result = await pickOp(params);
+  const refused = params.capture.documentOnly;
+  if (!refused) return result;
+  if (result.status === "saved" || result.status === "dry-run") return { ...result, documentOnly: true, warnings: [...result.warnings, DOCUMENT_ONLY] };
+  throw refusal(refused, "The page's own HTML had no records for this goal either; turn that extension off for this site and retry.");
+}
+
+/**
  * Picks the capture's data request, names its inputs, infers its extract from a replay, tests the
  * op through the runner and saves it. Returns { status, exitCode }: saved 0, weak 2 (with the top
  * candidates and a `match` that picks the first), or error 1 (with the draft once there is one). With dryRun it
  * saves nothing and returns status "dry-run", exit 0, with the draft it would save.
  */
-async function makeOp({ capture, goal = "", samples = {}, typed = [], template, match, site, op: id, source, previous, dryRun = false, ...context }) {
+async function pickOp({ capture, goal = "", samples = {}, typed = [], template, match, site, op: id, source, previous, dryRun = false, ...context }) {
   const ranked = rankRequests(capture.entries, { pageUrl: capture.pageUrl, pageText: capture.pageText, goal, after: capture.after });
   const chosen = pickRequest(ranked, { match });
   if (chosen.error) {

@@ -63,6 +63,8 @@ type FakeHostOptions = {
   javascript?: (code: string) => unknown;
   // The requests network capture holds when they are read.
   network?: () => Record<string, unknown>[];
+  // The capture's status as the read gives it; the default is an active capture.
+  capture?: () => Record<string, unknown>;
   // The browser's cookies for a direct request's URL.
   directContext?: (url: string) => Record<string, unknown>;
 };
@@ -200,7 +202,11 @@ function buildExtensionResponse(
       }
       return { id: message.id, error: `Unhandled fake extension message: ${message.type}` };
     case "READ_NETWORK_REQUESTS":
-      return { id: message.id, entries: options.network?.() ?? [], capture: { active: true } };
+      return {
+        id: message.id,
+        entries: options.network?.() ?? [],
+        capture: options.capture?.() ?? { active: true },
+      };
     case "EXECUTE_JAVASCRIPT":
       if (options.javascript) {
         return { id: message.id, output: JSON.stringify(options.javascript(String(message.code))) };
@@ -400,7 +406,7 @@ async function runCli(
 }
 
 type LocalHandler = (
-  req: { url: string; headers: Record<string, string> },
+  req: { url: string; method?: string; headers: Record<string, string> },
   res: {
     writeHead(status: number, headers: Record<string, string>): void;
     end(body: string): void;
@@ -1006,6 +1012,7 @@ describe("surf hook and pb record stop through the fake extension", () => {
       expect(hooked.stdout).toMatch(/^paging +--pages: page \+1$/m);
       expect(hooked.stdout).toMatch(/^test +tab ✓ 3 records; title, url present$/m);
       expect(hooked.stdout).toMatch(new RegExp(`^run +surf use ${site} list_books --page 2$`, "m"));
+      expect(hooked.stdout).not.toContain("Warning:");
       expect(host.messages.find((message) => message.type === "EXECUTE_NAVIGATE")?.url).toBe(page);
       expect(JSON.parse(fs.readFileSync(opFile(site, "list_books"), "utf8"))).toEqual({
         id: "list_books",
@@ -1532,6 +1539,150 @@ describe("surf hook and pb record stop through the fake extension", () => {
       await host.dispose();
     }
   });
+
+  // Chrome detached the debugger when another extension's frame appeared, and refuses it since.
+  const foreignFrame =
+    "Cannot control this page: another extension has put a frame in it (a password manager, ad blocker or similar), and Chrome then blocks Surf's debugger for the whole tab. read still works, and so do click and type on a ref or selector; for hook or a debugger screenshot, turn that extension off for this site and retry.";
+  const refusedCapture = () => ({
+    active: true,
+    interruptions: [{ reason: "target_closed", at: 1 }],
+    refused: {
+      code: "restricted_target",
+      message: foreignFrame,
+      reason: "foreign_extension_frame",
+      tabId: 1,
+    },
+  });
+  // A site on this machine that answers every request with `body` as HTML, and the methods it got.
+  const htmlSite = async (body: string) => {
+    const methods: string[] = [];
+    const served = await serveLocal((req, res) => {
+      methods.push(String(req.method));
+      res.writeHead(200, { "content-type": "text/html; charset=utf-8" });
+      res.end(body);
+    });
+    return { ...served, methods };
+  };
+  const documentOnlyWarning =
+    "Warning: Chrome refused the debugger here (another extension's frame), so hook read the page's own HTML only; data the page loads afterwards (XHR/fetch) was not seen.";
+
+  it("reads the page's own HTML when another extension's frame refuses the capture", async () => {
+    const html = readFixture("books-page-1.html");
+    const books = await htmlSite(html);
+    const socketPath = createSocketPath();
+    const site = unique("framed");
+    const page = `${books.origin}/catalogue/page-2.html`;
+    const host = startHost(socketPath, {
+      network: () => [],
+      capture: refusedCapture,
+      javascript: tab(page, "A Light in the Attic £51.77", { [page]: html }, []),
+      directContext: () => ({ cookies: [] }),
+    });
+
+    try {
+      await host.waitForMessage((message) => message.type === "HOST_READY");
+      const hooked = await runCli(socketPath, [
+        "hook",
+        page,
+        "--goal",
+        "books with prices",
+        "--as",
+        `${site}/list_books`,
+      ]);
+      expect(hooked.stderr).toBe("");
+      expect(hooked.code).toBe(0);
+      expect(hooked.stdout).toMatch(new RegExp(`^picked +GET ${page} +HTML document$`, "m"));
+      expect(hooked.stdout).toMatch(/^test +direct ✓ 3 records; title, url present$/m);
+      expect(hooked.stdout.split("\n")).toContain(documentOnlyWarning);
+      expect(JSON.parse(fs.readFileSync(opFile(site, "list_books"), "utf8"))).toMatchObject({
+        request: { url: `${books.origin}/catalogue/page-{{page}}.html` },
+        extract: { records: "article.product_pod" },
+      });
+      // The page's own GET, then the test run's: nothing but GET reaches the site.
+      expect(books.methods).toEqual(["GET", "GET"]);
+
+      const used = await runCli(socketPath, ["use", site, "list_books", "--json"]);
+      expect(used.code).toBe(0);
+      expect(JSON.parse(used.stdout).value).toHaveLength(3);
+    } finally {
+      books.close();
+      await host.dispose();
+    }
+  }, 30000);
+
+  it("fails with Chrome's refusal when the page's own HTML has no records, and saves nothing", async () => {
+    // quotes.toscrape.com/scroll: its HTML is a shell, and the quotes come by XHR.
+    const html = readFixture("quotes-scroll.html");
+    const quotes = await htmlSite(html);
+    const socketPath = createSocketPath();
+    const site = unique("framed");
+    const page = `${quotes.origin}/scroll`;
+    const host = startHost(socketPath, {
+      network: () => [],
+      capture: refusedCapture,
+      javascript: tab(page, "Quotes to Scrape", { [page]: html }, []),
+      directContext: () => ({ cookies: [] }),
+    });
+
+    try {
+      await host.waitForMessage((message) => message.type === "HOST_READY");
+      const hooked = await runCli(socketPath, [
+        "hook",
+        page,
+        "--goal",
+        "quotes",
+        "--as",
+        `${site}/quotes`,
+      ]);
+      expect(hooked.code).toBe(1);
+      expect(hooked.stdout).toBe("");
+      expect(hooked.stderr.trim()).toBe(
+        `Error: ${foreignFrame} The page's own HTML had no records for this goal either; turn that extension off for this site and retry. [restricted_target]`,
+      );
+      expect(exists(opFile(site, "quotes"))).toBe(false);
+      expect(quotes.methods.every((method) => method === "GET")).toBe(true);
+    } finally {
+      quotes.close();
+      await host.dispose();
+    }
+  }, 30000);
+
+  it("fails with Chrome's refusal and a --do tail when --do steps ran, sending the page nothing", async () => {
+    const html = readFixture("books-page-1.html");
+    const books = await htmlSite(html);
+    const socketPath = createSocketPath();
+    const site = unique("framed");
+    const page = `${books.origin}/catalogue/page-2.html`;
+    const host = startHost(socketPath, {
+      network: () => [],
+      capture: refusedCapture,
+      javascript: tab(page, "A Light in the Attic £51.77", { [page]: html }, []),
+      directContext: () => ({ cookies: [] }),
+    });
+
+    try {
+      await host.waitForMessage((message) => message.type === "HOST_READY");
+      const hooked = await runCli(socketPath, [
+        "hook",
+        page,
+        "--goal",
+        "books",
+        "--do",
+        'click --selector "a.next"',
+        "--as",
+        `${site}/books`,
+      ]);
+      expect(hooked.code).toBe(1);
+      expect(hooked.stderr.trim()).toBe(
+        `Error: ${foreignFrame} --do steps need the debugger; turn that extension off for this site and retry. [restricted_target]`,
+      );
+      expect(exists(opFile(site, "books"))).toBe(false);
+      expect(books.methods).toEqual([]);
+    } finally {
+      books.close();
+      await host.dispose();
+    }
+  }, 30000);
 
   it("tells a write goal with no captured write to submit the form in --do", async () => {
     const socketPath = createSocketPath();
