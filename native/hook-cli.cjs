@@ -96,7 +96,7 @@ function formatHook(result, rerun) {
     `inputs   ${inputs.join(" · ") || "none"}`,
     `extract  ${extract ? `${extract.in ? `${extract.in} ` : ""}${extract.records ?? "one record"} → ${Object.keys(extract.fields || {}).join(", ") || "the whole value"}` : "none: the response as it comes"}`,
     ...(result.page ? [`paging   --pages: ${result.page.into} ${result.page.next}`] : []),
-    `test     ${test ? `${test.via} ✓ ${plural(test.count)}; ${test.fields.join(", ")} present` : `not run: ${result.sentBy === "do" ? "the --do steps" : "the page"} sent it once; surf hook sends nothing more (surf use … --write sends it again)`}`,
+    `test     ${test ? `${test.via} ✓ ${plural(test.count)}; ${test.fields.join(", ")} present` : `not run: ${result.sentBy === "do" ? "the --do steps" : "the page"} sent it once; surf hook sends nothing more (surf use … --write sends it again; within 5 min, add --repeat)`}`,
   ];
   const file = result.file.replace(os.homedir(), "~");
   const bak = `${path.basename(file)}.bak`;
