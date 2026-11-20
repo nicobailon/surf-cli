@@ -130,38 +130,57 @@ const KEY = String.raw`[\p{L}\p{N}_.\-\[\]%]+`;
 const QUOTED = String.raw`"(?:[^"\\\r\n]|\\.)*"|'(?:[^'\\\r\n]|\\.)*'`;
 // The four shapes a secret field takes in text: a multipart part named for it; key=value, to an &,
 // a line end or a space before the next key=; and "key": "value", key: value or 'key': 'value', an
-// unquoted value running to the line end or , ; ) } ].
+// unquoted value running to the line end or , ; ) } ]. The value of the last three ends where
+// valueSpan says.
 const PART = /(\bname="([^"]*)"[^\r\n]*\r?\n(?:[^\r\n]+\r?\n)*\r?\n)([\s\S]*?)(?=\r?\n--)/dg;
 const PAIR = new RegExp(String.raw`(^|[&?;\s])(${KEY})=((?:(?![&\r\n]|\s+${KEY}=).)*)`, "dgu");
 const COLON = new RegExp(String.raw`(^|[^\p{L}\p{N}_.\-\[\]%"'])(["']?)(${KEY})\2([ \t]*:[ \t]*)(${QUOTED}|[^\s"'{[,;)}\]][^\r\n,;)}\]]*)`, "dgu");
 const SHAPES = [
   [PART, 2, 3],
-  [PAIR, 2, 3],
-  [COLON, 3, 5],
+  [PAIR, 2, 3, true],
+  [COLON, 3, 5, true],
 ];
-// What the save-time check also reads as a secret field: <key>value</key> and key => value.
+// What the save-time check also reads as a secret field: <key>value</key> (with a namespace
+// prefix, <wsse:Password>, or a CDATA value), key => value and key = value.
 const GUARD = [
   ...SHAPES,
-  [new RegExp(String.raw`<(${KEY})(?:\s[^>]*)?>([^<]*)</\1\s*>`, "dgu"), 1, 2],
+  [new RegExp(String.raw`<((?:[\p{L}\p{N}_.\-]+:)?(${KEY}))(?:\s[^>]*)?>(<!\[CDATA\[[\s\S]*?\]\]>|[^<]*)</\1\s*>`, "dgu"), 2, 3],
   [new RegExp(String.raw`(["']?)(${KEY})\1\s*=>\s*(${QUOTED}|[^\s,;)}\]]+)`, "dgu"), 2, 3],
+  [new RegExp(String.raw`(^|[^\p{L}\p{N}_.\-\[\]%])(${KEY})[ \t]*=[ \t]*(${QUOTED}|[^\s&,;<>]+)`, "dgu"), 2, 3],
 ];
 
+// Where a key=value or key: value field's value sits in what its pattern took: [offset, length].
+// A quoted value ends at its closing quote; another at the first < > " ' or , that is the text's
+// own (a closing tag, a quote before , ; } ] ) > or the end, a comma before a space). Undefined
+// when such a character sits inside the value any other way: then it can't be told from the text.
+function valueSpan(value) {
+  const quoted = value.match(/^(["'])((?:(?!\1)[^\\\r\n]|\\.)*)\1/);
+  if (quoted) return [1, quoted[2].length];
+  if (/^["']/.test(value)) return undefined;
+  const special = value.search(/[<>"']/);
+  const cut = value.search(/<\/|["'](?=[ \t]*(?:[,;}\])>]|$))|,(?=\s|$)/);
+  if (special === -1) return [0, cut === -1 ? value.length : cut];
+  return cut !== -1 && cut <= special ? [0, cut] : undefined;
+}
+
 // Each secret-named field of `text` with a literal value: { key, start, end }, the value's place.
-// With `deep`, a field inside another's value counts too (GraphQL's `login(password: \"…\")` in a
-// JSON string).
-function secretValues(text, shapes, { deep = false, offset = 0 } = {}) {
+// With `guard`, a field inside another's value counts too (GraphQL's `login(password: \"…\")` in
+// a JSON string), and so does a value valueSpan can't place.
+function secretValues(text, shapes, { guard = false, offset = 0 } = {}) {
   const found = [];
-  for (const [pattern, keyAt, valueAt] of shapes) {
+  for (const [pattern, keyAt, valueAt, spans] of shapes) {
     for (const match of text.matchAll(pattern)) {
       if (pattern === PART && /\bfilename=/i.test(match[1])) continue;
       let [start, end] = match.indices[valueAt];
       let value = match[valueAt];
-      if (/^(["'])[\s\S]*\1$/.test(value) && value.length > 1) [start, end, value] = [start + 1, end - 1, value.slice(1, -1)];
+      const span = spans ? valueSpan(value) : /^(["'])[\s\S]*\1$/.test(value) && value.length > 1 ? [1, value.length - 2] : [0, value.length];
+      if (span) [start, value] = [start + span[0], value.slice(span[0], span[0] + span[1])];
+      else if (!guard) continue;
       const trimmed = value.replace(/\s+$/, "");
-      end -= value.length - trimmed.length;
+      end = start + trimmed.length;
       const key = decodeForm(match[keyAt]);
       if (!trimmed || trimmed.includes("{{") || /^(?:null|true|false)$/.test(trimmed) || !isSecret(key)) {
-        if (deep && trimmed) found.push(...secretValues(trimmed, shapes, { deep, offset: offset + start }));
+        if (guard && trimmed) found.push(...secretValues(trimmed, shapes, { guard, offset: offset + start }));
         continue;
       }
       if (found.some((field) => offset + start < field.end && field.start < offset + end)) continue;
@@ -179,7 +198,7 @@ function templateSecrets(text, name) {
 }
 
 /** The first secret-looking key in `text` that still holds a literal value. */
-const secretLeft = (text) => secretValues(text, GUARD, { deep: true })[0]?.key;
+const secretLeft = (text) => secretValues(text, GUARD, { guard: true })[0]?.key;
 
 const escape = (text) => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
