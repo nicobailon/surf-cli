@@ -284,7 +284,10 @@ if (args[0] === "hook" && !helpRequested()) {
       process.exit(exitCode);
     })
     .catch((error) => {
-      console.error(`Error: ${error.message}`);
+      // A host error's code goes on its first line, as for other commands.
+      const code = typeof error.hostError?.code === "string" ? error.hostError.code : null;
+      const [first, ...rest] = error.message.split("\n");
+      console.error(`Error: ${[code && !first.includes(`[${code}]`) ? `${first} [${code}]` : first, ...rest].join("\n")}`);
       process.exit(1);
     });
   return;
@@ -4501,7 +4504,14 @@ async function handleResponse(response) {
     process.exit(1);
   }
 
-  const result = response.result?.content?.[0]?.text;
+  let result = response.result?.content?.[0]?.text;
+  // A js result's hint follows its value: print the value as before, then the hint.
+  let hint;
+  const hintAt = tool === "js" && typeof result === "string" ? result.lastIndexOf("\n[hint] ") : -1;
+  if (hintAt !== -1) {
+    hint = result.slice(hintAt + "\n[hint] ".length);
+    result = result.slice(0, hintAt);
+  }
 
   let data;
   try {
@@ -4541,11 +4551,12 @@ async function handleResponse(response) {
   }
 
   if (wantJson) {
-    const output = response.target || response.notice || response.truncated || response.pageChanges || response.savedOps
+    const output = response.target || response.notice || response.truncated || response.pageChanges || response.savedOps || hint
       ? {
         result: data ?? null,
         target: response.target || null,
         notice: response.notice || null,
+        ...(hint ? { hint } : {}),
         ...(response.truncated ? { truncated: response.truncated } : {}),
         ...(response.pageChanges ? { pageChanges: response.pageChanges } : {}),
         ...(response.savedOps ? { savedOps: response.savedOps } : {}),
@@ -4777,6 +4788,7 @@ async function handleResponse(response) {
     } else {
       console.log(JSON.stringify(data, null, 2));
     }
+    if (hint) console.log(`[hint] ${hint}`);
   } else if (tool === "health") {
     if (data?.success) {
       const timeStr = data.time ? ` (${data.time}ms)` : "";

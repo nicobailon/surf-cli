@@ -2118,7 +2118,8 @@ function handleToolRequest(msg, socket, requestContext = requestStorage.getStore
   if (tool === "playbook.run" || tool === "playbook.hook") {
     (tool === "playbook.run" ? runHostPlaybook : runHook)(msg, requestContext)
       .then((result) => sendToolResponse(socket, originalId, { output: JSON.stringify(result) }, null))
-      .catch((error) => sendToolResponse(socket, originalId, null, error.message));
+      // A hook error keeps its code (restricted_target when Chrome refuses the debugger).
+      .catch((error) => sendToolResponse(socket, originalId, null, tool === "playbook.hook" ? error : error.message));
     return;
   }
   if (tool.startsWith("playbook.record.")) {

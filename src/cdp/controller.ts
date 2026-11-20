@@ -13,6 +13,30 @@ class CDPControllerError extends Error {
   }
 }
 
+/**
+ * Why Chrome refused the debugger on a tab, from the tab's URL and Chrome's own reason (kept in
+ * details). A web page that holds another extension's frame is refused as a whole.
+ */
+async function restrictedTargetError(tabId: number, chromeError: string): Promise<CDPControllerError> {
+  let url: string | undefined;
+  try {
+    url = (await chrome.tabs.get(tabId))?.url || undefined;
+  } catch {}
+  const details = { tabId, ...(url ? { url } : {}), chromeError };
+  if (url && /^https?:/.test(url) && chromeError.includes("chrome-extension:// URL of different extension")) {
+    return new CDPControllerError(
+      "restricted_target",
+      "Cannot control this page: another extension has put a frame in it (a password manager, ad blocker or similar), and Chrome then blocks Surf's debugger for the whole tab. read, click and type still work; for hook or a debugger screenshot, turn that extension off for this site and retry.",
+      { ...details, reason: "foreign_extension_frame" },
+    );
+  }
+  return new CDPControllerError(
+    "restricted_target",
+    `Cannot control ${url ?? "this page"}: Chrome doesn't let extensions automate chrome:// pages, other extensions' pages or the Web Store. Go to a web page first (surf go <url>) and retry.`,
+    details,
+  );
+}
+
 export interface DebuggerCommandError extends Error {
   /** CDP error code (for example -32000) when the browser reported one. */
   cdpCode?: number;
@@ -293,11 +317,7 @@ export class CDPController {
         );
       }
       if (message.includes("Cannot access") || message.includes("Cannot attach")) {
-        throw new CDPControllerError(
-          "restricted_target",
-          "Cannot control this page. Chrome restricts automation on chrome://, extensions, and web store pages.",
-          { tabId },
-        );
+        throw await restrictedTargetError(tabId, message);
       }
       throw new CDPControllerError("debugger_attach_failed", `Failed to attach debugger: ${message}`, { tabId });
     }
@@ -1643,6 +1663,15 @@ export class CDPController {
     const detachReason = this.detachReasons.get(tabId);
     if (detachReason) {
       this.detachReasons.delete(tabId);
+      // Chrome closes the target when the tab moves to a page it keeps the debugger off (chrome://,
+      // or another extension's frame appears in it). Attaching again names that instead of the detach.
+      if (detachReason === "target_closed") {
+        try {
+          await this.attach(tabId);
+        } catch (err) {
+          if ((err as CDPControllerError).code === "restricted_target") throw err;
+        }
+      }
       throw new CDPControllerError(
         "debugger_detached",
         `Debugger detached from tab ${tabId}: ${detachReason}. Retry after closing any competing debugger.`,
