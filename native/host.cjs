@@ -1985,6 +1985,8 @@ function sendToolResponse(socket, id, result, error) {
     if (formattedError) response.error = formattedError;
     else {
       response.result = { content: formatToolContent(output, log) };
+      // A js result's text is its value alone, for every reader (extract, do); its hint goes beside it.
+      if (typeof output?.output === "string" && output._hint) response.hint = output._hint;
       if (output?.truncated) response.truncated = output.truncated;
       if (request?.tool === "tab.new" && Number.isInteger(output?.tabId) && output.tabId > 0) {
         response.result.tabId = output.tabId;

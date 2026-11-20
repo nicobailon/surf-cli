@@ -212,7 +212,7 @@ function formatToolContent(result, log = () => {}) {
   }
 
   if (result.output !== undefined) {
-    return text(result._hint ? `${result.output}\n[hint] ${result._hint}` : result.output);
+    return text(result.output);
   }
 
   // Screenshot saved to file (has path but no base64)

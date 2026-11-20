@@ -86,7 +86,9 @@ async function clickRef(tabId: number, frameId: number, ref: string, button: str
   try {
     await cdp.attach(tabId);
   } catch (err) {
-    attachFailure = err instanceof Error ? err.message : String(err);
+    attachFailure = (err as BrowserCommandError).details?.reason === "foreign_extension_frame"
+      ? "another extension's frame blocks it here"
+      : err instanceof Error ? err.message : String(err);
   }
   // CDP points are main-frame viewport coordinates and a hidden tab does not process CDP input,
   // so those clicks go in the page, and say so.
@@ -2802,12 +2804,14 @@ export async function handleMessage(
         return { error: "JavaScript cannot run in a selected frame. Run frame.main first.", errorCode: "UNSUPPORTED_FRAME_EXECUTION" };
       }
 
+      let scriptSent = false;
       try {
         await cdp.evaluateScript(tabId, PI_HELPERS_CODE);
 
         const body = codeWithExpressionReturn(message.code);
         const expression = `(async () => { 'use strict'; ${body} })()`;
 
+        scriptSent = true;
         let result = await cdp.evaluateScript(tabId, expression);
 
         // Statement scripts (declarations, loops, explicit `return`) cannot be
@@ -2828,7 +2832,8 @@ export async function handleMessage(
         const output = value === undefined ? "undefined" : JSON.stringify(value, null, 2);
         return { output: output?.substring(0, message.maxOutput ?? 50000) || "undefined" };
       } catch (err) {
-        if ((err as BrowserCommandError).details?.reason === "foreign_extension_frame") {
+        // Once the debugger has sent the script it may have run, so it never runs a second time.
+        if (!scriptSent && (err as BrowserCommandError).details?.reason === "foreign_extension_frame") {
           return await executeJavaScriptInPage(tabId, message.code, message.maxOutput, err as BrowserCommandError);
         }
         if ((err as { code?: string }).code) throw err;

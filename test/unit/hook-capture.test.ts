@@ -77,7 +77,7 @@ describe("surf hook's capture", () => {
 
   it("fails with Chrome's refusal when another extension's frame cut the capture off", async () => {
     const message =
-      "Cannot control this page: another extension has put a frame in it (a password manager, ad blocker or similar), and Chrome then blocks Surf's debugger for the whole tab. read, click and type still work; for hook or a debugger screenshot, turn that extension off for this site and retry.";
+      "Cannot control this page: another extension has put a frame in it (a password manager, ad blocker or similar), and Chrome then blocks Surf's debugger for the whole tab. read still works, and so do click and type on a ref or selector; for hook or a debugger screenshot, turn that extension off for this site and retry.";
     const { context } = fakeTab({
       url: "https://quotes.toscrape.com/",
       capture: {

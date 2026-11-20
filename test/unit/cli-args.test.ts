@@ -150,9 +150,16 @@ function createCliFixtureResult(request: any) {
     return { html: "<!doctype html>\n<html><body>Rendered</body></html>" };
   }
   if (request.params.tool === "js" && request.params.args.code === "document.title") {
-    return '"Books"\n[hint] Ran in the page, not through the debugger';
+    return '"Books"';
   }
   return "OK";
+}
+
+// The host sends a js result's hint beside its text.
+function createCliFixtureHint(request: any) {
+  return request.params.tool === "js" && request.params.args.code === "document.title"
+    ? { hint: "Ran in the page, not through the debugger" }
+    : {};
 }
 
 function runCli(
@@ -178,8 +185,9 @@ function runCli(
 
         request = JSON.parse(buffer.slice(0, lineEnd));
         const result = createCliFixtureResult(request);
+        const hint = createCliFixtureHint(request);
         socket.write(
-          `${JSON.stringify({ id: request.id, result: { content: [{ type: "text", text: typeof result === "string" ? result : JSON.stringify(result) }] } })}\n`,
+          `${JSON.stringify({ id: request.id, result: { content: [{ type: "text", text: typeof result === "string" ? result : JSON.stringify(result) }] }, ...hint })}\n`,
         );
         socket.end();
       });

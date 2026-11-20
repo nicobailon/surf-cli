@@ -26,7 +26,7 @@ async function restrictedTargetError(tabId: number, chromeError: string): Promis
   if (url && /^https?:/.test(url) && chromeError.includes("chrome-extension:// URL of different extension")) {
     return new CDPControllerError(
       "restricted_target",
-      "Cannot control this page: another extension has put a frame in it (a password manager, ad blocker or similar), and Chrome then blocks Surf's debugger for the whole tab. read, click and type still work; for hook or a debugger screenshot, turn that extension off for this site and retry.",
+      "Cannot control this page: another extension has put a frame in it (a password manager, ad blocker or similar), and Chrome then blocks Surf's debugger for the whole tab. read still works, and so do click and type on a ref or selector; for hook or a debugger screenshot, turn that extension off for this site and retry.",
       { ...details, reason: "foreign_extension_frame" },
     );
   }

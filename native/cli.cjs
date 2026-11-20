@@ -4504,14 +4504,9 @@ async function handleResponse(response) {
     process.exit(1);
   }
 
-  let result = response.result?.content?.[0]?.text;
-  // A js result's hint follows its value: print the value as before, then the hint.
-  let hint;
-  const hintAt = tool === "js" && typeof result === "string" ? result.lastIndexOf("\n[hint] ") : -1;
-  if (hintAt !== -1) {
-    hint = result.slice(hintAt + "\n[hint] ".length);
-    result = result.slice(0, hintAt);
-  }
+  const result = response.result?.content?.[0]?.text;
+  // A hint the host sends beside the result (js run in the page) prints after the value.
+  const hint = typeof response.hint === "string" ? response.hint : undefined;
 
   let data;
   try {
@@ -4788,7 +4783,6 @@ async function handleResponse(response) {
     } else {
       console.log(JSON.stringify(data, null, 2));
     }
-    if (hint) console.log(`[hint] ${hint}`);
   } else if (tool === "health") {
     if (data?.success) {
       const timeStr = data.time ? ` (${data.time}ms)` : "";
@@ -4963,6 +4957,7 @@ async function handleResponse(response) {
   } else {
     console.log(JSON.stringify(data, null, 2));
   }
+  if (hint) console.log(`[hint] ${hint}`);
   if (pageChangeLines.length > 0 && typeof data !== "string") console.log(pageChangeLines.join("\n"));
   if (response.savedOps) console.log(formatSavedOps(response.savedOps));
 

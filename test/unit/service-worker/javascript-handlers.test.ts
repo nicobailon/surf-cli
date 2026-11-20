@@ -353,6 +353,43 @@ describe("JavaScript command handlers", () => {
       expect(thrown.error).toContain("\n[hint] Ran in the page, not through the debugger");
     });
 
+    it("does not run the script again in the page once the debugger has sent it", async () => {
+      const handleMessage = await loadHandleMessage();
+      const chrome = (globalThis as any).chrome;
+      chrome.tabs.get.mockResolvedValue({ id: 1, url: "https://books.toscrape.com/" });
+      // The script runs through the debugger and throws; Chrome then drops the debugger (a foreign
+      // frame appeared) and refuses it for the parse check that follows.
+      chrome.debugger.sendCommand.mockImplementation(
+        async (_t: unknown, method: string, params?: any) => {
+          if (
+            method === "Runtime.evaluate" &&
+            !params.expression.includes("if(!window.piHelpers)")
+          ) {
+            chrome.debugger.onDetach.addListener.mock.calls.at(-1)[0](
+              { tabId: 1 },
+              "target_closed",
+            );
+            chrome.debugger.attach.mockRejectedValue(
+              new Error("Cannot access a chrome-extension:// URL of different extension"),
+            );
+            return exceptionDetails(new Error("boom"));
+          }
+          return {};
+        },
+      );
+      vi.stubGlobal("Function", function BlockedFunction() {
+        throw new EvalError("Refused to evaluate a string as JavaScript");
+      });
+      try {
+        await expect(
+          handleMessage({ type: "EXECUTE_JAVASCRIPT", tabId: 1, code: "boom()" }, {}),
+        ).rejects.toMatchObject({ code: "restricted_target" });
+      } finally {
+        vi.unstubAllGlobals();
+      }
+      expect(chrome.scripting.executeScript).not.toHaveBeenCalled();
+    });
+
     it("names the page's Content Security Policy when it blocks code from a string", async () => {
       const { run } = await setup();
       vi.stubGlobal("Function", function BlockedFunction() {
