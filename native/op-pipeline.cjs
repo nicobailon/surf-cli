@@ -7,9 +7,10 @@ const fs = require("fs");
 const os = require("os");
 const path = require("path");
 const { shell } = require("./hook-cli.cjs");
+const { sendDirect } = require("./op-direct.cjs");
 const { inferResponse, keyFields } = require("./op-infer.cjs");
 const { isSecret, nameInputs, requestOf } = require("./op-inputs.cjs");
-const { matchHint, pickRequest, rankRequests } = require("./op-rank.cjs");
+const { matchHint, pageShare, pickRequest, rankRequests } = require("./op-rank.cjs");
 const { evaluate, renderTemplate, runOp, sendRequest } = require("./op-run.cjs");
 const { optionValue } = require("./playbook-cli.cjs");
 const { reserveReceipt, updateReceipt } = require("./playbook-receipts.cjs");
@@ -32,6 +33,35 @@ const WRITE_VERB = /^\s*(?:(?:send|submit|create|add|reply|update|delete|remove|
 const withoutHash = (url) => (URL.canParse(url) ? new URL(url).href : String(url || "")).replace(/#.*$/, "");
 // Bodies the capture keeps for ranking: a whole large page, not the 64 KB a record keeps.
 const BODY_BYTES = 2 * 1024 * 1024;
+
+// Another extension's frame in the page: Chrome dropped the debugger and refuses it from then on.
+const foreignFrame = (refused) => refused?.code === "restricted_target" && refused.reason === "foreign_extension_frame";
+// Marks a pick that failed for want of records: its inference or test run read none.
+const NO_RECORDS = Symbol("no records");
+// The share of the tab's words the page's own HTML must hold to stand for the page.
+const MIN_DOCUMENT_SHARE = 0.5;
+const DOCUMENT_ONLY = "Chrome refused the debugger here (another extension's frame), so hook read the page's own HTML only; data the page loads afterwards (XHR/fetch) was not seen.";
+
+/** Chrome's refusal with `tail` after its message, keeping its code and details. */
+function refusal({ code, message, ...details }, tail) {
+  return surfError(code, `${message} ${tail}`, details);
+}
+
+/**
+ * The page's own HTML as the one entry a refused capture can still give: a GET from the host, with
+ * no cookies, as a direct step sends it. Anything but an HTML answer fails with Chrome's refusal.
+ */
+async function readDocument(url, refused, context) {
+  const fail = (why) => refusal(refused, `Hook couldn't read the page's own HTML instead (${why}).`);
+  await context.sleep(GAP_MS);
+  const response = await sendDirect({ request: { method: "GET", url }, readCookies: async () => ({}), signal: context.signal }).catch((error) => {
+    throw fail(error.message.replace(/; the tab follows redirects$/, ""));
+  });
+  if (response.status >= 400) throw fail(`it answered ${response.status}`);
+  const mimeType = response.contentType.split(";")[0].trim().toLowerCase();
+  if (!mimeType.includes("html")) throw fail(`it answered ${mimeType || "no content type"}, not HTML`);
+  return { type: "Document", method: "GET", url, status: response.status, mimeType, responseBody: response.body };
+}
 
 /** What the tab shows now: { url, text }. */
 const readPage = (context) => evaluate(context, PAGE_TEXT);
@@ -57,7 +87,11 @@ async function startCapture(context, tabId) {
   }
 }
 
-/** Opens `url` with network capture on and runs `steps`: { entries, opened, pageUrl, pageText, after? }. */
+/**
+ * Opens `url` with network capture on and runs `steps`: { entries, opened, pageUrl, pageText, after?,
+ * documentOnly? }. When another extension's frame cut the capture off and there are no steps, the
+ * entries are the page's own HTML only, and `documentOnly` holds Chrome's refusal.
+ */
 async function captureHook({ url, steps = [], tabId, ...context }) {
   await startCapture(context, tabId);
   try {
@@ -69,6 +103,8 @@ async function captureHook({ url, steps = [], tabId, ...context }) {
     const read = await context.callExtension({ type: "READ_NETWORK_REQUESTS", tabId, full: true, limit: TRACE_LIMIT });
     // Chrome dropped the debugger on the way (another extension's frame appeared) and won't take it back.
     const refused = read.capture?.refused;
+    if (foreignFrame(refused) && after) throw refusal(refused, "--do steps need the debugger.");
+    if (foreignFrame(refused)) return { entries: [await readDocument(url, refused, context)], opened: url, pageUrl: page.url, pageText: page.text, documentOnly: refused };
     if (refused) throw surfError(refused.code, refused.message, refused);
     return { entries: read.entries || [], opened: url, pageUrl: page.url, pageText: page.text, ...(after ? { after } : {}) };
   } finally {
@@ -98,12 +134,27 @@ function save(site, op, dryRun) {
 }
 
 /**
+ * makeOp on a capture that holds the page's own HTML only: it must hold most of what the tab shows,
+ * or the page's data came by requests the capture lost. A saved op says so in a warning; anything
+ * else fails with Chrome's refusal and why.
+ */
+async function makeOp(params) {
+  const refused = params.capture.documentOnly;
+  if (!refused) return pickOp(params);
+  const share = pageShare(params.capture.entries[0].responseBody, params.capture.pageText);
+  if (share < MIN_DOCUMENT_SHARE) throw refusal(refused, `The page's own HTML holds only ${Math.round(share * 100)}% of the words the tab shows; the rest comes from requests hook can't see here.`);
+  const result = await pickOp(params);
+  if (result.status === "saved" || result.status === "dry-run") return { ...result, documentOnly: true, warnings: [...result.warnings, DOCUMENT_ONLY] };
+  throw refusal(refused, result[NO_RECORDS] ? "The page's own HTML had no records for this goal either." : `The page's own HTML alone made no op (${result.error || result.reason}).`);
+}
+
+/**
  * Picks the capture's data request, names its inputs, infers its extract from a replay, tests the
  * op through the runner and saves it. Returns { status, exitCode }: saved 0, weak 2 (with the top
  * candidates and a `match` that picks the first), or error 1 (with the draft once there is one). With dryRun it
  * saves nothing and returns status "dry-run", exit 0, with the draft it would save.
  */
-async function makeOp({ capture, goal = "", samples = {}, typed = [], template, match, site, op: id, source, previous, dryRun = false, ...context }) {
+async function pickOp({ capture, goal = "", samples = {}, typed = [], template, match, site, op: id, source, previous, dryRun = false, ...context }) {
   const ranked = rankRequests(capture.entries, { pageUrl: capture.pageUrl, pageText: capture.pageText, goal, after: capture.after });
   const chosen = pickRequest(ranked, { match });
   if (chosen.error) {
@@ -162,24 +213,27 @@ async function makeOp({ capture, goal = "", samples = {}, typed = [], template, 
     const found = inferResponse(response, { detail: named.detail });
     // A write goal with no --do and no write captured: the form was never submitted.
     const submit = WRITE_VERB.test(goal) && !capture.after && !previous ? `; a form's POST is captured only when --do submits the form: --do 'type "…" --into "<css>" | click --selector "<css>"'` : "";
-    if (!found) throw new Error(`found no records or fields in the response of ${sent.url}${submit}`);
+    if (!found) throw Object.assign(new Error(`found no records or fields in the response of ${sent.url}${submit}`), { [NO_RECORDS]: true });
     draft.extract = found.extract;
     if (named.paging) draft.page = { into: named.paging.name, next: named.paging.next === "+count" ? `+${found.count ?? 1}` : named.paging.next };
     if (previous) keepNames(draft, previous);
     await context.sleep(GAP_MS);
-    const run = await runOp({ playbook: { id: site }, op: validateOp(draft, { origins: [] }), args: examples, ...context });
+    const op = validateOp(draft, { origins: [] });
+    const run = await runOp({ playbook: { id: site }, op, args: examples, ...context }).catch((error) => {
+      throw Object.assign(error, { [NO_RECORDS]: true });
+    });
     const list = Array.isArray(run.value);
     const first = list ? run.value[0] : run.value;
     if (!previous) {
       const fields = keyFields(found).filter((name) => ![undefined, null, ""].includes(first?.[name]));
-      if (fields.length === 0) throw new Error(`the test run read no record with ${keyFields(found).join(" or ")}`);
+      if (fields.length === 0) throw Object.assign(new Error(`the test run read no record with ${keyFields(found).join(" or ")}`), { [NO_RECORDS]: true });
       draft.expect = { ...(list ? { minItems: 1 } : {}), fields };
     }
     const test = { via: run.via, count: list ? run.value.length : null, fields: draft.expect.fields || [] };
     const fields = { op: draft, args: draft.args, extract: draft.extract, page: draft.page, test, run: runLine(examples) };
     return previous ? { ...base, status: "saved", exitCode: 0, file: replaceOp(previous.file, draft), ...fields } : saved(fields);
   } catch (error) {
-    return { ...base, status: "error", exitCode: 1, error: error.message, draft };
+    return { ...base, status: "error", exitCode: 1, error: error.message, draft, ...(error[NO_RECORDS] ? { [NO_RECORDS]: true } : {}) };
   }
 }
 

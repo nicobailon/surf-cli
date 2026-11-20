@@ -25,6 +25,24 @@ function visibleText(html) {
     .trim();
 }
 
+// The share (0 to 1) of the page's words that `found` holds.
+function shareOf(pageWords, found) {
+  let shared = 0;
+  for (const word of pageWords) if (found.has(word)) shared++;
+  return shared / pageWords.size;
+}
+
+/**
+ * The share (0 to 1) of the words the tab shows that an HTML body holds, its script text counted
+ * (a page that builds its list from an inline `var data`); undefined when the page shows too few.
+ */
+function pageShare(html, pageText) {
+  const pageWords = words(pageText);
+  if (pageWords.size < MIN_PAGE_WORDS) return undefined;
+  const text = html.replace(/<(style|noscript|template)\b[^>]*>[\s\S]*?<\/\1\s*>/gi, " ").replace(/<[^>]+>/g, " ").replace(/\\u[0-9a-f]{4}|\\[nrt]/gi, " ");
+  return shareOf(pageWords, words(visibleText(text)));
+}
+
 // Same site: the hosts share their last two labels, or three under a two-letter country code with
 // a short second level (example.co.uk).
 function siteOf(host) {
@@ -77,10 +95,7 @@ function scoreEntry(entry, { pageUrl, pageWords, goalWords, after }) {
   }
   if (document && withoutHash(entry.url) === withoutHash(pageUrl)) add(2, "the page itself");
   if (pageWords.size >= MIN_PAGE_WORDS && body) {
-    const found = words(kind === "html" ? visibleText(body) : body);
-    let shared = 0;
-    for (const word of pageWords) if (found.has(word)) shared++;
-    const share = shared / pageWords.size;
+    const share = shareOf(pageWords, words(kind === "html" ? visibleText(body) : body));
     if (share >= 0.1) add(share >= 0.8 ? 5 : share >= 0.3 ? 3 : 1, `${Math.round(share * 100)}% of the page's words`);
   }
   if (after !== undefined && entry.ts >= after) add(5, "sent after the --do steps");
@@ -137,4 +152,4 @@ function matchHint(ranked) {
   return parts.find((part) => ranked.slice(1).every((candidate) => !candidate.entry.url.includes(part))) || url.href;
 }
 
-module.exports = { matchHint, pickRequest, rankRequests, siteOf, visibleText };
+module.exports = { matchHint, pageShare, pickRequest, rankRequests, siteOf, visibleText };
