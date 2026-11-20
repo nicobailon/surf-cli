@@ -1736,7 +1736,7 @@ describe("surf hook and pb record stop through the fake extension", () => {
   // What a tab shows of an HTML page: its text without tags or scripts.
   const shown = (html: string) =>
     html
-      .replace(/<script\b[\s\S]*?<\/script\s*>/gi, " ")
+      .replace(/<script\b[\s\S]*?<\/script\b[^>]*>/gi, " ")
       .replace(/<[^>]+>/g, " ")
       .replace(/\s+/g, " ");
   const documentOnlyWarning =
