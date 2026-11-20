@@ -98,6 +98,7 @@ const { spawn } = require("node:child_process") as {
 const fs = require("node:fs") as {
   mkdirSync(targetPath: string, options: { recursive: boolean }): void;
   mkdtempSync(prefix: string): string;
+  readdirSync(targetPath: string): string[];
   readFileSync(targetPath: string, encoding: "utf8"): string;
   rmSync(targetPath: string, options: { recursive: boolean; force: boolean }): void;
   writeFileSync(targetPath: string, content: string, options?: { mode?: number }): void;
@@ -959,6 +960,13 @@ describe("surf hook and pb record stop through the fake extension", () => {
       };
     };
   const fetches = (codes: string[]) => codes.filter((code) => code.includes("fetch("));
+  // The duplicate-guard claims a host's state holds, one directory per op and inputs.
+  const receiptClaims = (stateDir: string) => {
+    const dir = path.join(stateDir, "playbook-receipts");
+    return exists(path.join(dir, ".salt"))
+      ? fs.readdirSync(dir).filter((name) => name !== ".salt")
+      : [];
+  };
 
   it("saves a tested op from a listing, which pb test then passes", async () => {
     const socketPath = createSocketPath();
@@ -1035,6 +1043,8 @@ describe("surf hook and pb record stop through the fake extension", () => {
       const tested = await runCli(socketPath, ["pb", "test", site, "list_books"]);
       expect(tested.code).toBe(0);
       expect(tested.stdout).toMatch(/^pass +list_books +3 records via tab$/m);
+      // A read records no receipt, in hook or in a run.
+      expect(receiptClaims(host.stateDir)).toEqual([]);
     } finally {
       await host.dispose();
     }
@@ -1434,7 +1444,7 @@ describe("surf hook and pb record stop through the fake extension", () => {
         /^inputs +--custname \(required, sample Ada\) · --password \(required\)$/m,
       );
       expect(hooked.stdout).toMatch(
-        /^test +not run: the --do steps sent it once; surf hook sends nothing more \(surf use … --write sends it again\)$/m,
+        /^test +not run: the --do steps sent it once; surf hook sends nothing more \(surf use … --write sends it again; within 5 min, add --repeat\)$/m,
       );
       expect(hooked.stdout).toMatch(
         new RegExp(
@@ -1453,7 +1463,167 @@ describe("surf hook and pb record stop through the fake extension", () => {
         },
       });
       expect(`${hooked.stdout}${saved}`).not.toContain("hunter2");
+      // The receipt keys the secret the form sent, as a use run given it does, and stores no value.
+      const again = await runCli(socketPath, [
+        "use",
+        site,
+        "order",
+        "--custname",
+        "Ada",
+        "--password",
+        "hunter2",
+        "--write",
+      ]);
+      expect(again.stderr).toMatch(/write blocked by verified receipt/);
+      const receipts = path.join(host.stateDir, "playbook-receipts");
+      for (const claim of receiptClaims(host.stateDir)) {
+        for (const file of fs.readdirSync(path.join(receipts, claim))) {
+          expect(fs.readFileSync(path.join(receipts, claim, file), "utf8")).not.toContain(
+            "hunter2",
+          );
+        }
+      }
       expect(fetches(codes)).toEqual([]);
+    } finally {
+      await host.dispose();
+    }
+  });
+
+  it("counts a write the hook sent toward the 5-minute guard of surf use --write, --dry-run and pb record stop too", async () => {
+    const socketPath = createSocketPath();
+    const site = unique("httpbin");
+    const page = "https://httpbin.org/forms/post";
+    // The form's POST the capture holds: the name the --do steps typed.
+    let custname = "Ada";
+    const sent: string[] = [];
+    const host = startHost(socketPath, {
+      network: () => [
+        captured(page, { responseBody: "<html><body><form></form></body></html>" }),
+        captured("https://httpbin.org/post", {
+          method: "POST",
+          type: "Document",
+          mimeType: "application/json",
+          requestHeaders: { "Content-Type": "application/x-www-form-urlencoded" },
+          requestBody: `custname=${custname}&size=medium`,
+          responseBody: JSON.stringify({ form: { custname, size: "medium" } }),
+          ts: Date.now(),
+        }),
+      ],
+      javascript: (code) => {
+        if (code.includes("innerText")) {
+          return { url: "https://httpbin.org/post", text: `custname ${custname}` };
+        }
+        const name = code.match(/custname=(\w+)/)?.[1] ?? "";
+        sent.push(name);
+        return {
+          status: 200,
+          contentType: "application/json",
+          body: JSON.stringify({ form: { custname: name, size: "medium" } }),
+        };
+      },
+    });
+    const hook = (...extra: string[]) =>
+      runCli(socketPath, [
+        "hook",
+        page,
+        "--goal",
+        "order",
+        "--do",
+        'type "{{custname}}" --into "input[name=custname]" | click --selector "form button"',
+        "--custname",
+        custname,
+        "--as",
+        `${site}/order`,
+        ...extra,
+      ]);
+    const use = (...args: string[]) => runCli(socketPath, ["use", site, ...args]);
+    const blocked =
+      /write blocked by verified receipt \S+: the same op and inputs were sent \d+ s ago \(blocked for 5 min\); --repeat sends it again/;
+
+    try {
+      await host.waitForMessage((message) => message.type === "HOST_READY");
+      const hooked = await hook();
+      expect(hooked.stderr).toBe("");
+      expect(hooked.code).toBe(0);
+      expect(hooked.stdout).toMatch(
+        new RegExp(`^run +surf use ${site} order --custname Ada --write$`, "m"),
+      );
+      // The hook's submit was the first order: the same inputs wait the window, as after a use send.
+      const again = await use("order", "--custname", "Ada", "--write");
+      expect(again.code).toBe(1);
+      expect(again.stderr).toMatch(blocked);
+      expect(sent).toEqual([]);
+      expect((await use("order", "--custname", "Bob", "--write")).code).toBe(0);
+      expect((await use("order", "--custname", "Ada", "--write", "--repeat")).code).toBe(0);
+      expect(sent).toEqual(["Bob", "Ada"]);
+
+      // --dry-run saves nothing, but its --do steps still sent the form.
+      custname = "Cy";
+      const dry = await hook("--dry-run");
+      expect(dry.code).toBe(0);
+      expect((await use("order", "--custname", "Cy", "--write")).stderr).toMatch(blocked);
+
+      // pb record stop saves the write the page sent the same way.
+      custname = "Dee";
+      expect(
+        (await runCli(socketPath, ["pb", "record", "start", site, "--op", "order_dee"])).code,
+      ).toBe(0);
+      const stopped = await runCli(socketPath, ["pb", "record", "stop"]);
+      expect(stopped.stderr).toBe("");
+      expect(stopped.code).toBe(0);
+      expect(stopped.stdout).toMatch(
+        /^test +not run: the page sent it once; surf hook sends nothing more \(surf use … --write sends it again; within 5 min, add --repeat\)$/m,
+      );
+      expect((await use("order_dee", "--write")).stderr).toMatch(blocked);
+      expect(sent).toEqual(["Bob", "Ada"]);
+    } finally {
+      await host.dispose();
+    }
+  });
+
+  it("keys a write's receipt on a secret input the URL path carries", async () => {
+    const socketPath = createSocketPath();
+    const site = unique("shop");
+    const token = ["rk", "4f1e", "0b9d"].join("");
+    const page = `https://shop.test/reset/${token}`;
+    const host = startHost(socketPath, {
+      network: () => [
+        captured(page, { responseBody: "<html><body><form></form></body></html>" }),
+        captured(page, {
+          method: "POST",
+          requestHeaders: { "Content-Type": "application/x-www-form-urlencoded" },
+          requestBody: "confirm=yes",
+          responseBody: "<html><body>Password reset</body></html>",
+          ts: Date.now(),
+        }),
+      ],
+      javascript: tab(page, "Password reset", {}, []),
+    });
+
+    try {
+      await host.waitForMessage((message) => message.type === "HOST_READY");
+      const hooked = await runCli(socketPath, [
+        "hook",
+        "https://shop.test/reset/{{token}}",
+        "--token",
+        token,
+        "--goal",
+        "submit the reset",
+        "--do",
+        'click --selector "form button"',
+        "--as",
+        `${site}/reset`,
+      ]);
+      expect(hooked.stderr).toBe("");
+      expect(hooked.code).toBe(0);
+      expect(JSON.parse(fs.readFileSync(opFile(site, "reset"), "utf8"))).toMatchObject({
+        args: { token: { required: true } },
+        request: { method: "POST", url: "https://shop.test/reset/{{token}}" },
+      });
+      expect(receiptClaims(host.stateDir)).toHaveLength(1);
+      const again = await runCli(socketPath, ["use", site, "reset", "--token", token, "--write"]);
+      expect(again.code).toBe(1);
+      expect(again.stderr).toMatch(/write blocked by verified receipt/);
     } finally {
       await host.dispose();
     }

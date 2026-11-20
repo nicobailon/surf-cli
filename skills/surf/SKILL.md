@@ -76,7 +76,7 @@ surf upload --ref e12 --files ./resume.pdf          # e12 may be the "Upload" bu
 surf drag --from 100,200 --to 300,200
 surf use x thread --url https://x.com/<user>/status/<id> --format md
 surf hook https://httpbin.org/forms/post --goal order --do 'type "{{custname}}" --into "input[name=custname]" | click --selector "form button"' --custname Ada --as httpbin/order   # submits once, saves a write op; CSS, not refs (page.html --selector form)
-surf use httpbin order --custname Ada --write       # sends it again; same inputs within 5 min need --repeat
+surf use httpbin order --custname Ada --write       # blocked within 5 min of the hook's submit; add --repeat to send a second order
 surf network.wait "/api/**/feed" --json             # prints the response and its request id
 surf network.replay r_001 --set query.cursor=abc    # next page
 surf collect --item article --key 'a@href' --field title=h2 --field url=a@href
