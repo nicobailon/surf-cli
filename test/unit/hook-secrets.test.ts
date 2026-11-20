@@ -196,7 +196,7 @@ describe("B: a secret-named field's value in any string body", () => {
       "api_key_id",
       "token_expires_at",
       "refresh_token_expires_in",
-      "secret_ids",
+      "client_secret_type",
       "token_count2",
     ]) {
       expect([name, isSecret(name)]).toEqual([name, false]);
@@ -312,7 +312,7 @@ describe("D: a secret-looking key still holding a literal value", () => {
     const result = await hook(post(xml, "application/xml"), { site });
     expect(result).toMatchObject({ status: "error", exitCode: 1 });
     expect(result.error).toBe(
-      'the request body keeps a literal value under "password", a secret-looking key surf could not make an input, so nothing was saved; check the body, then add --keep-body to save it as it is',
+      'the request body keeps a literal value under "password", a secret-looking key surf could not make an input, so nothing was saved; check the body, then add --keep-body to save it as it is; the request was already sent once, so a rerun with --keep-body sends it again',
     );
     expect(JSON.stringify(result)).not.toContain(password);
     expect(formatHook(result, []).stdout).toBe("");
@@ -362,5 +362,174 @@ describe("D: a secret-looking key still holding a literal value", () => {
     ]);
     expect(parsed.spec["keep-body"]).toBe(true);
     expect(parsed.spec.samples).toEqual({});
+  });
+});
+
+describe("review round: names, truncation, XML, a resend, the picked line", () => {
+  const pw = ["hun", "ter2", "-Zq9"].join("");
+
+  it("keeps an id or number of a secret secret, in an op and in the saved network log; only a key's id is literal", () => {
+    const { isSensitiveName } = require("../../native/redaction.cjs");
+    const credentials = [
+      "secret_id",
+      "secretId",
+      "secret_ids",
+      "token_id",
+      "tokenId",
+      "session_token_id",
+      "access_token_id",
+      "csrf_id",
+      "otp_number",
+      "otp_num",
+      "session_id",
+      "X-Token-Id",
+      "X-Secret-Id",
+    ];
+    for (const name of credentials) {
+      expect([name, isSecret(name)]).toEqual([name, true]);
+    }
+    for (const name of ["token_id", "X-Token-Id", "X-Secret-Id", "secret_id", "csrf_id"]) {
+      expect([name, isSensitiveName(name)]).toEqual([name, true]);
+    }
+    for (const name of ["token_count", "api_key_id", "apiKeyId", "api_key_ids"]) {
+      expect([name, isSecret(name), isSensitiveName(name)]).toEqual([name, false, false]);
+    }
+    // Vault AppRole's login and ForgeRock's tokenId become inputs.
+    const approle = nameInputs({
+      request: requestOf(post(`{"role_id":"r-123","secret_id":"${pw}"}`, "application/json")),
+    });
+    expect(approle.request.body).toEqual({ role_id: "r-123", secret_id: "{{secret_id}}" });
+    const forge = named(`tokenId=${pw}&token_count=5&api_key_id=k-1`, "text/plain");
+    expect(forge.request.body).toBe("tokenId={{token_id}}&token_count=5&api_key_id=k-1");
+    expect(forge.args).toEqual({ token_id: { required: true } });
+    // The network log redacts them in the URL, a header, and a JSON and a form body.
+    const networkStore = require("../../native/network-store.cjs");
+    const base = path.join(
+      fs.mkdtempSync(path.join(require("node:os").tmpdir(), "surf-ids-")),
+      "network",
+    );
+    networkStore.appendEntrySync(
+      {
+        method: "POST",
+        url: `https://a.example/login?token_id=${pw}&token_count=5`,
+        requestHeaders: { "Content-Type": "application/json", "X-Token-Id": pw, "X-Secret-Id": pw },
+        requestBody: `{"role_id":"r-123","secret_id":"${pw}","otp_number":"${pw}"}`,
+      },
+      base,
+    );
+    networkStore.appendEntrySync(
+      {
+        method: "POST",
+        url: "https://a.example/sso",
+        requestHeaders: { "Content-Type": "application/x-www-form-urlencoded" },
+        requestBody: `tokenId=${pw}&csrf_id=${pw}&api_key_id=k-1`,
+      },
+      base,
+    );
+    const log = fs.readFileSync(networkStore.getRequestsPath(base), "utf8");
+    expect(log).not.toContain(pw);
+    expect(log).toContain("token_count=5");
+    expect(log).toContain("api_key_id=k-1");
+  });
+
+  it("templates a secret value up to its closing quote, tag or comma, byte-exact on replay", async () => {
+    const rows: [string, string, string, string][] = [
+      [
+        `<login user="ada" password="${pw}">hello</login>`,
+        "text/xml",
+        "password",
+        `<login user="ada" password="{{password}}">hello</login>`,
+      ],
+      [
+        `<req><url>https://x.test/cb?token=${pw}</url><n>1</n></req>`,
+        "text/xml",
+        "token",
+        "<req><url>https://x.test/cb?token={{token}}</url><n>1</n></req>",
+      ],
+      [
+        // Two NDJSON lines, so the body is no one JSON value.
+        `{"u":"https://x.test/?a=1&token=${pw}","b":2}\n{"c":3}`,
+        "application/x-ndjson",
+        "token",
+        '{"u":"https://x.test/?a=1&token={{token}}","b":2}\n{"c":3}',
+      ],
+      [
+        `username="ada", password="${pw}", realm="x"`,
+        "text/plain",
+        "password",
+        'username="ada", password="{{password}}", realm="x"',
+      ],
+    ];
+    for (const [body, type, name, saved] of rows) {
+      const result = named(body, type);
+      expect(result.request.body).toBe(saved);
+      expect(result.args).toEqual({ [name]: { required: true } });
+      expect(renderRequest(result.request, { args: { [name]: pw }, env: {} }).body).toBe(body);
+    }
+    // The write guard keys on the value itself, not on the text after it.
+    const made = await hook(post(rows[0][0], "text/xml"));
+    expect(made.status).toBe("saved");
+    const { reserveReceipt } = require("../../native/playbook-receipts.cjs");
+    const { resolveArgs } = require("../../native/playbook-runtime.cjs");
+    const { validateOp } = require("../../native/playbooks.cjs");
+    const op = validateOp(JSON.parse(fs.readFileSync(made.file, "utf8")), { origins: [] });
+    expect(() =>
+      reserveReceipt({ playbookId: made.playbook, op, args: resolveArgs(op, { password: pw }) }),
+    ).toThrow(/write blocked by verified receipt/);
+    // A value with a quote or tag that isn't the text's own is left for the save check to refuse.
+    const odd = await hook(post(`user=ada\npassword=ab<c${pw}\n`, "text/plain"));
+    expect(odd).toMatchObject({ status: "error", refused: "keep-body" });
+  });
+
+  it("refuses a namespaced or CDATA password element and password = value", () => {
+    const { secretLeft } = require("../../native/op-body.cjs");
+    expect(
+      secretLeft(`<soap:Envelope><wsse:Password Type="x">${pw}</wsse:Password></soap:Envelope>`),
+    ).toBe("Password");
+    expect(secretLeft(`<ns1:login><ns1:password>${pw}</ns1:password></ns1:login>`)).toBe(
+      "password",
+    );
+    expect(secretLeft(`<login><password><![CDATA[${pw}]]></password></login>`)).toBe("password");
+    expect(secretLeft(`user = ada\npassword = ${pw}\n`)).toBe("password");
+    expect(secretLeft("<wsse:Password>{{password}}</wsse:Password>")).toBeUndefined();
+    expect(secretLeft("<password><![CDATA[{{password}}]]></password>")).toBeUndefined();
+  });
+
+  it("says a refused write was already sent, and counts that send", async () => {
+    const { receiptRoot } = require("../../native/playbook-receipts.cjs");
+    const claims = () => (fs.existsSync(receiptRoot()) ? fs.readdirSync(receiptRoot()).length : 0);
+    const before = claims();
+    const result = await hook(post(`<login><password>${pw}</password></login>`, "application/xml"));
+    expect(result.error).toBe(
+      'the request body keeps a literal value under "password", a secret-looking key surf could not make an input, so nothing was saved; check the body, then add --keep-body to save it as it is; the request was already sent once, so a rerun with --keep-body sends it again',
+    );
+    expect(claims()).toBe(before + 1);
+    // pb record stop sends nothing again, so it doesn't say so.
+    const stopped = await hook(
+      post(`<login><password>${pw}</password></login>`, "application/xml"),
+      {
+        rerunSends: false,
+      },
+    );
+    expect(stopped.error).toMatch(/to save it as it is$/);
+  });
+
+  it("prints no secret surf scrubbed from the op on the picked line", async () => {
+    const entry = {
+      ...post(`custname=Ada&p=${pw}`, "text/plain"),
+      url: `https://httpbin.org/post?p=${pw}`,
+    };
+    const result = await hook(entry, {
+      capture: {
+        pageUrl: page.url,
+        pageText: "order",
+        after: 2000,
+        entries: [page, entry],
+        secrets: [pw],
+      },
+    });
+    expect(result.status).toBe("saved");
+    expect(result.picked.url).toBe("https://httpbin.org/post?p={{password}}");
+    expect(formatHook(result, []).stdout).not.toContain(pw);
   });
 });
