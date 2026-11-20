@@ -1985,6 +1985,8 @@ function sendToolResponse(socket, id, result, error) {
     if (formattedError) response.error = formattedError;
     else {
       response.result = { content: formatToolContent(output, log) };
+      // A js result's text is its value alone, for every reader (extract, do); its hint goes beside it.
+      if (typeof output?.output === "string" && output._hint) response.hint = output._hint;
       if (output?.truncated) response.truncated = output.truncated;
       if (request?.tool === "tab.new" && Number.isInteger(output?.tabId) && output.tabId > 0) {
         response.result.tabId = output.tabId;
@@ -2118,7 +2120,8 @@ function handleToolRequest(msg, socket, requestContext = requestStorage.getStore
   if (tool === "playbook.run" || tool === "playbook.hook") {
     (tool === "playbook.run" ? runHostPlaybook : runHook)(msg, requestContext)
       .then((result) => sendToolResponse(socket, originalId, { output: JSON.stringify(result) }, null))
-      .catch((error) => sendToolResponse(socket, originalId, null, error.message));
+      // A hook error keeps its code (restricted_target when Chrome refuses the debugger).
+      .catch((error) => sendToolResponse(socket, originalId, null, tool === "playbook.hook" ? error : error.message));
     return;
   }
   if (tool.startsWith("playbook.record.")) {

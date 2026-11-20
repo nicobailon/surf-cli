@@ -185,3 +185,23 @@ describe("workflow runtime characterization", () => {
     expect(executeSemanticStep).not.toHaveBeenCalled();
   });
 });
+
+describe("a js step that ran in the page (another extension's frame)", () => {
+  it("keeps the script's value, without the hint", async () => {
+    const { formatToolContent } = require("../../native/host-helpers.cjs");
+    const result = await runtime.executeWorkflow(
+      [{ cmd: "js", args: { code: "({ n: 1 })" }, as: "value" }],
+      {
+        executeTool: async () => ({
+          result: {
+            content: formatToolContent({ output: '{\n  "n": 1\n}', _hint: "Ran in the page" }),
+          },
+        }),
+        sleep: vi.fn(),
+        stepDelay: 0,
+      },
+    );
+
+    expect(result.vars.value).toEqual({ n: 1 });
+  });
+});

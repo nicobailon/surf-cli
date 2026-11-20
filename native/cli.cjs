@@ -284,7 +284,10 @@ if (args[0] === "hook" && !helpRequested()) {
       process.exit(exitCode);
     })
     .catch((error) => {
-      console.error(`Error: ${error.message}`);
+      // A host error's code goes on its first line, as for other commands.
+      const code = typeof error.hostError?.code === "string" ? error.hostError.code : null;
+      const [first, ...rest] = error.message.split("\n");
+      console.error(`Error: ${[code && !first.includes(`[${code}]`) ? `${first} [${code}]` : first, ...rest].join("\n")}`);
       process.exit(1);
     });
   return;
@@ -4502,6 +4505,8 @@ async function handleResponse(response) {
   }
 
   const result = response.result?.content?.[0]?.text;
+  // A hint the host sends beside the result (js run in the page) prints after the value.
+  const hint = typeof response.hint === "string" ? response.hint : undefined;
 
   let data;
   try {
@@ -4541,11 +4546,12 @@ async function handleResponse(response) {
   }
 
   if (wantJson) {
-    const output = response.target || response.notice || response.truncated || response.pageChanges || response.savedOps
+    const output = response.target || response.notice || response.truncated || response.pageChanges || response.savedOps || hint
       ? {
         result: data ?? null,
         target: response.target || null,
         notice: response.notice || null,
+        ...(hint ? { hint } : {}),
         ...(response.truncated ? { truncated: response.truncated } : {}),
         ...(response.pageChanges ? { pageChanges: response.pageChanges } : {}),
         ...(response.savedOps ? { savedOps: response.savedOps } : {}),
@@ -4951,6 +4957,7 @@ async function handleResponse(response) {
   } else {
     console.log(JSON.stringify(data, null, 2));
   }
+  if (hint) console.log(`[hint] ${hint}`);
   if (pageChangeLines.length > 0 && typeof data !== "string") console.log(pageChangeLines.join("\n"));
   if (response.savedOps) console.log(formatSavedOps(response.savedOps));
 

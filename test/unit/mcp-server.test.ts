@@ -33,3 +33,20 @@ describe("MCP file-backed tool schemas", () => {
     );
   });
 });
+
+describe("MCP tool results", () => {
+  it("add the host's hint as its own text after the result", () => {
+    const { formatResult } = require("../../native/mcp-server.cjs");
+    expect(
+      formatResult({
+        result: { content: [{ type: "text", text: '"Books"' }] },
+        hint: "Ran in the page",
+      }),
+    ).toEqual({
+      content: [
+        { type: "text", text: '"Books"' },
+        { type: "text", text: "[hint] Ran in the page" },
+      ],
+    });
+  });
+});

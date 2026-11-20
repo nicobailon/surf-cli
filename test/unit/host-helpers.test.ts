@@ -854,6 +854,12 @@ describe("formatToolContent", () => {
       expect(result[0].text).toContain("[hint] Try this next");
     });
 
+    it("leaves a js result's text as the value; its hint travels apart", () => {
+      expect(
+        helpers.formatToolContent({ output: '"Books"', _hint: "Ran in the page" })[0].text,
+      ).toBe('"Books"');
+    });
+
     it("strips _resolvedTabId from JSON output", () => {
       const result = helpers.formatToolContent({
         someData: "value",
