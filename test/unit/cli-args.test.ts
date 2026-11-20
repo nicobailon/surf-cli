@@ -149,7 +149,17 @@ function createCliFixtureResult(request: any) {
   if (request.params.tool === "page.html" || request.params.tool === "page.save") {
     return { html: "<!doctype html>\n<html><body>Rendered</body></html>" };
   }
+  if (request.params.tool === "js" && request.params.args.code === "document.title") {
+    return '"Books"';
+  }
   return "OK";
+}
+
+// The host sends a js result's hint beside its text.
+function createCliFixtureHint(request: any) {
+  return request.params.tool === "js" && request.params.args.code === "document.title"
+    ? { hint: "Ran in the page, not through the debugger" }
+    : {};
 }
 
 function runCli(
@@ -175,8 +185,9 @@ function runCli(
 
         request = JSON.parse(buffer.slice(0, lineEnd));
         const result = createCliFixtureResult(request);
+        const hint = createCliFixtureHint(request);
         socket.write(
-          `${JSON.stringify({ id: request.id, result: { content: [{ type: "text", text: typeof result === "string" ? result : JSON.stringify(result) }] } })}\n`,
+          `${JSON.stringify({ id: request.id, result: { content: [{ type: "text", text: typeof result === "string" ? result : JSON.stringify(result) }] }, ...hint })}\n`,
         );
         socket.end();
       });
@@ -228,6 +239,13 @@ function extractFixtureResponse(request: ExtractCliRequest) {
     return {
       id: request.id,
       error: { content: [{ type: "text", text: "Inspected target navigated or closed" }] },
+    };
+  }
+  if (tool === "playbook.hook") {
+    const text = "Cannot control this page: another extension has put a frame in it";
+    return {
+      id: request.id,
+      error: { content: [{ type: "text", text }], code: "restricted_target" },
     };
   }
   const texts: Record<string, string> = {
@@ -1627,4 +1645,32 @@ describe("CLI argument parsing", () => {
     },
     CLI_TEST_TIMEOUT_MS,
   );
+});
+
+describe("surf hook errors", () => {
+  it("print the host error's code, as other commands do", async () => {
+    const { code, stderr } = await runExtractCli([
+      "hook",
+      "https://books.toscrape.com/",
+      "--goal",
+      "books",
+    ]);
+    expect(code).toBe(1);
+    expect(stderr).toContain(
+      "Error: Cannot control this page: another extension has put a frame in it [restricted_target]",
+    );
+  });
+});
+
+describe("js output with a hint", () => {
+  it("prints the value as before, then the hint; --json keeps them apart", async () => {
+    const text = await runCli(["js", "document.title"]);
+    expect(text.stdout).toBe('"Books"\n[hint] Ran in the page, not through the debugger\n');
+
+    const json = await runCli(["js", "document.title", "--json"]);
+    expect(JSON.parse(json.stdout)).toMatchObject({
+      result: "Books",
+      hint: "Ran in the page, not through the debugger",
+    });
+  });
 });

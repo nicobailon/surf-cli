@@ -28,6 +28,29 @@ async function clickAfterCancelledBar(reattach: () => Promise<void>) {
   return { result, sent, mouse };
 }
 
+describe("a ref click on a page with another extension's frame", () => {
+  it("clicks in the page and names the frame in a short reason", async () => {
+    vi.resetModules();
+    const chrome = createChromeMock();
+    (globalThis as any).chrome = chrome;
+    chrome.tabs.sendMessage.mockImplementation(async (_tabId: number, message: { type: string }) =>
+      message.type === "CLICK_POINT" ? { x: 10, y: 20, inPage: false } : { success: true },
+    );
+    chrome.debugger.attach.mockRejectedValue(
+      new Error("Cannot access a chrome-extension:// URL of different extension"),
+    );
+    chrome.tabs.get.mockResolvedValue({ id: 5, url: "https://books.toscrape.com/" });
+    const { handleMessage } = await import("../../../src/service-worker/index");
+
+    const result = await handleMessage({ type: "CLICK_REF", tabId: 5, ref: "e1" }, {});
+
+    expect(result._hint).toBe(
+      "Clicked e1 inside the page, not with the mouse, because Surf could not attach its debugger " +
+        "(another extension's frame blocks it here).",
+    );
+  });
+});
+
 describe("ref clicks after the debugging bar was cancelled", () => {
   it("attach again and click with the mouse", async () => {
     const { result, sent, mouse } = await clickAfterCancelledBar(() => Promise.resolve());

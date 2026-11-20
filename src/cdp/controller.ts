@@ -13,6 +13,30 @@ class CDPControllerError extends Error {
   }
 }
 
+/**
+ * Why Chrome refused the debugger on a tab, from the tab's URL and Chrome's own reason (kept in
+ * details). A web page that holds another extension's frame is refused as a whole.
+ */
+async function restrictedTargetError(tabId: number, chromeError: string): Promise<CDPControllerError> {
+  let url: string | undefined;
+  try {
+    url = (await chrome.tabs.get(tabId))?.url || undefined;
+  } catch {}
+  const details = { tabId, ...(url ? { url } : {}), chromeError };
+  if (url && /^https?:/.test(url) && chromeError.includes("chrome-extension:// URL of different extension")) {
+    return new CDPControllerError(
+      "restricted_target",
+      "Cannot control this page: another extension has put a frame in it (a password manager, ad blocker or similar), and Chrome then blocks Surf's debugger for the whole tab. read still works, and so do click and type on a ref or selector; for hook or a debugger screenshot, turn that extension off for this site and retry.",
+      { ...details, reason: "foreign_extension_frame" },
+    );
+  }
+  return new CDPControllerError(
+    "restricted_target",
+    `Cannot control ${url ?? "this page"}: Chrome doesn't let extensions automate chrome:// pages, other extensions' pages or the Web Store. Go to a web page first (surf go <url>) and retry.`,
+    details,
+  );
+}
+
 export interface DebuggerCommandError extends Error {
   /** CDP error code (for example -32000) when the browser reported one. */
   cdpCode?: number;
@@ -293,11 +317,7 @@ export class CDPController {
         );
       }
       if (message.includes("Cannot access") || message.includes("Cannot attach")) {
-        throw new CDPControllerError(
-          "restricted_target",
-          "Cannot control this page. Chrome restricts automation on chrome://, extensions, and web store pages.",
-          { tabId },
-        );
+        throw await restrictedTargetError(tabId, message);
       }
       throw new CDPControllerError("debugger_attach_failed", `Failed to attach debugger: ${message}`, { tabId });
     }
@@ -310,7 +330,10 @@ export class CDPController {
 
     try {
       await this.send(tabId, "Page.enable");
-    } catch (e) {}
+    } catch (e) {
+      // Attached, but Chrome refuses its commands (send has let go of the tab): the attach failed.
+      if ((e as CDPControllerError).code === "restricted_target") throw e;
+    }
     await this.resumeInterruptedCapture(tabId);
   }
 
@@ -402,34 +425,39 @@ export class CDPController {
       const tabId = source.tabId;
       if (tabId && this.targets.has(tabId)) {
         this.detachReasons.set(tabId, reason || "unknown");
-        this.targets.delete(tabId);
-        this.consoleMessages.delete(tabId);
-        // Chrome stops sending network events once the debugger detaches. Note when, keep what was
-        // captured, and turn capture back on at the next attach.
-        const capture = this.networkCapture.get(tabId);
-        if (capture) {
-          this.interruptedCapture.set(tabId, capture);
-          const interruptions = this.networkInterruptions.get(tabId) || [];
-          interruptions.push({ reason: reason || "unknown", at: Date.now() });
-          this.networkInterruptions.set(tabId, interruptions);
-        } else if (!this.interruptedCapture.has(tabId)) {
-          this.networkRequests.delete(tabId);
-          this.networkEntries.delete(tabId);
-          this.networkBodyBytes.delete(tabId);
-        }
-        this.networkCapture.delete(tabId);
-        this.consoleCallbacks.delete(tabId);
-        this.networkCallbacks.delete(tabId);
-        this.notifyScreencastError(tabId, new CDPControllerError(
-          "debugger_detached",
-          `Debugger detached from tab ${tabId}: ${reason || "unknown reason"}`,
-          { tabId, reason: reason || "unknown" },
-        ));
-        this.screencastCallbacks.delete(tabId);
-        this.pendingDialogs.delete(tabId);
-        this.clearRequestStartTimes(tabId);
+        this.forgetTarget(tabId, reason);
       }
     });
+  }
+
+  /** What a detach ends: the target, its listeners and its capture (kept, as interrupted). */
+  private forgetTarget(tabId: number, reason: string | undefined): void {
+    this.targets.delete(tabId);
+    this.consoleMessages.delete(tabId);
+    // Chrome stops sending network events once the debugger detaches. Note when, keep what was
+    // captured, and turn capture back on at the next attach.
+    const capture = this.networkCapture.get(tabId);
+    if (capture) {
+      this.interruptedCapture.set(tabId, capture);
+      const interruptions = this.networkInterruptions.get(tabId) || [];
+      interruptions.push({ reason: reason || "unknown", at: Date.now() });
+      this.networkInterruptions.set(tabId, interruptions);
+    } else if (!this.interruptedCapture.has(tabId)) {
+      this.networkRequests.delete(tabId);
+      this.networkEntries.delete(tabId);
+      this.networkBodyBytes.delete(tabId);
+    }
+    this.networkCapture.delete(tabId);
+    this.consoleCallbacks.delete(tabId);
+    this.networkCallbacks.delete(tabId);
+    this.notifyScreencastError(tabId, new CDPControllerError(
+      "debugger_detached",
+      `Debugger detached from tab ${tabId}: ${reason || "unknown reason"}`,
+      { tabId, reason: reason || "unknown" },
+    ));
+    this.screencastCallbacks.delete(tabId);
+    this.pendingDialogs.delete(tabId);
+    this.clearRequestStartTimes(tabId);
   }
 
   private requestStartKey(tabId: number, requestId: string): string {
@@ -954,7 +982,10 @@ export class CDPController {
     if (!this.networkBodyBytes.has(tabId)) this.networkBodyBytes.set(tabId, 0);
     try {
       await this.send(tabId, "Network.enable", { maxPostDataSize: 65536 });
-    } catch (e) {}
+    } catch (e) {
+      // Chrome refused the debugger here, so capture can't run: say so instead of capturing nothing.
+      if ((e as CDPControllerError).code === "restricted_target") throw e;
+    }
   }
 
   async disableNetworkTracking(tabId: number): Promise<void> {
@@ -1627,6 +1658,16 @@ export class CDPController {
     try {
       return await chrome.debugger.sendCommand(target, method, params);
     } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      // A page Chrome keeps the debugger off arrived after the attach (another extension's frame
+      // appeared): Chrome refuses each command, sometimes without a detach. Let go and say why.
+      if (message.startsWith("Cannot access a ")) {
+        this.forgetTarget(tabId, "target_closed");
+        try {
+          await chrome.debugger.detach(target);
+        } catch {}
+        throw await restrictedTargetError(tabId, message);
+      }
       throw describeDebuggerError(err, method);
     }
   }
@@ -1643,6 +1684,15 @@ export class CDPController {
     const detachReason = this.detachReasons.get(tabId);
     if (detachReason) {
       this.detachReasons.delete(tabId);
+      // Chrome closes the target when the tab moves to a page it keeps the debugger off (chrome://,
+      // or another extension's frame appears in it). Attaching again names that instead of the detach.
+      if (detachReason === "target_closed") {
+        try {
+          await this.attach(tabId);
+        } catch (err) {
+          if ((err as CDPControllerError).code === "restricted_target") throw err;
+        }
+      }
       throw new CDPControllerError(
         "debugger_detached",
         `Debugger detached from tab ${tabId}: ${detachReason}. Retry after closing any competing debugger.`,

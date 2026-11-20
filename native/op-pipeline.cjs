@@ -15,6 +15,7 @@ const { optionValue } = require("./playbook-cli.cjs");
 const { reserveReceipt, updateReceipt } = require("./playbook-receipts.cjs");
 const { resolveArgs } = require("./playbook-runtime.cjs");
 const { savePlaybook, validateOp } = require("./playbooks.cjs");
+const { surfError } = require("./surf-error.cjs");
 const { atomicWriteJson } = require("./private-state.cjs");
 const { redactUrlSecrets } = require("./redaction.cjs");
 const { parseDoCommands } = require("./workflow-definition.cjs");
@@ -40,9 +41,25 @@ async function runSteps(steps, context) {
   if (result.status !== "completed") throw new Error(result.error || "a step failed");
 }
 
+/**
+ * Starts capture on the tab before it opens the URL, so the capture holds the page's own load. Chrome
+ * keeps the debugger off some pages (chrome://, another extension's page or frame): a tab on one
+ * goes to about:blank first, which loads nothing, and capture starts there.
+ */
+async function startCapture(context, tabId) {
+  const start = () => context.callExtension({ type: "START_NETWORK_CAPTURE", tabId, bodyMode: "text", perBodyBytes: BODY_BYTES, totalBodyBytes: 8 * BODY_BYTES });
+  try {
+    await start();
+  } catch (error) {
+    if (error?.code !== "restricted_target") throw error;
+    await context.executeTool("navigate", { url: "about:blank" });
+    await start();
+  }
+}
+
 /** Opens `url` with network capture on and runs `steps`: { entries, opened, pageUrl, pageText, after? }. */
 async function captureHook({ url, steps = [], tabId, ...context }) {
-  await context.callExtension({ type: "START_NETWORK_CAPTURE", tabId, bodyMode: "text", perBodyBytes: BODY_BYTES, totalBodyBytes: 8 * BODY_BYTES });
+  await startCapture(context, tabId);
   try {
     await runSteps([{ cmd: "navigate", args: { url } }], context);
     const after = steps.length > 0 ? Date.now() : undefined;
@@ -50,6 +67,9 @@ async function captureHook({ url, steps = [], tabId, ...context }) {
     await context.executeTool("wait.network", { timeout: 5000 }).catch(() => {});
     const page = await readPage(context);
     const read = await context.callExtension({ type: "READ_NETWORK_REQUESTS", tabId, full: true, limit: TRACE_LIMIT });
+    // Chrome dropped the debugger on the way (another extension's frame appeared) and won't take it back.
+    const refused = read.capture?.refused;
+    if (refused) throw surfError(refused.code, refused.message, refused);
     return { entries: read.entries || [], opened: url, pageUrl: page.url, pageText: page.text, ...(after ? { after } : {}) };
   } finally {
     await context.callExtension({ type: "STOP_NETWORK_CAPTURE", tabId }).catch(() => {});

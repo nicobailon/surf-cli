@@ -406,6 +406,7 @@ function formatResult(resp) {
   if (formatted.length === 0) {
     formatted.push({ type: "text", text: "OK" });
   }
+  if (resp.hint) formatted.push({ type: "text", text: `[hint] ${resp.hint}` });
 
   return { content: formatted };
 }
@@ -572,4 +573,4 @@ if (require.main === module) {
   });
 }
 
-module.exports = { PiChromeMcpServer, TOOL_SCHEMAS };
+module.exports = { PiChromeMcpServer, TOOL_SCHEMAS, formatResult };

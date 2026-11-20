@@ -504,3 +504,34 @@ describe("helpers", () => {
     expect(extract.renderExtractionMarkdown([], [])).toBe("# Extraction\n\n0 rows");
   });
 });
+
+describe("a js result that ran in the page (another extension's frame)", () => {
+  it("is parsed as the script's JSON; the hint stays out of it", async () => {
+    // @ts-expect-error - CommonJS module without type definitions
+    const { formatToolContent } = await import("../../native/host-helpers.cjs");
+    const output = JSON.stringify({ rows: [{ title: "A" }] }, null, 2);
+    const host = scriptedHost([
+      { tool: "wait.ready", reply: ready },
+      {
+        tool: "js",
+        reply: {
+          result: {
+            content: formatToolContent({
+              output,
+              _hint: "Ran in the page, not through the debugger",
+            }),
+          },
+        },
+      },
+    ]);
+
+    const result = await extract.runExtraction({
+      executeTool: host.executeTool,
+      target: true,
+      code: "return { rows: [{ title: 'A' }] };",
+      ready: { timeout: 0, interval: 0 },
+    });
+
+    expect(result.rows).toEqual([{ title: "A" }]);
+  });
+});

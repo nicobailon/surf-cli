@@ -10,6 +10,7 @@ const mockChrome = {
     onEvent: { addListener: vi.fn(), removeListener: vi.fn() },
     onDetach: { addListener: vi.fn(), removeListener: vi.fn() },
   },
+  tabs: { get: vi.fn() },
 };
 
 // Set global chrome before tests
@@ -263,7 +264,51 @@ describe("CDPController", () => {
       }
 
       expect(error).toBeDefined();
-      expect(error?.message).toContain("Cannot control this page");
+      expect(error?.message).toContain("Cannot control");
+    });
+
+    it("names the restricted page and keeps Chrome's reason", async () => {
+      mockChrome.debugger.attach.mockRejectedValue(new Error("Cannot access a chrome:// URL"));
+      mockChrome.tabs.get.mockResolvedValue({ id: tabId, url: "chrome://version/" });
+
+      await expect(controller.attach(tabId)).rejects.toMatchObject({
+        code: "restricted_target",
+        message:
+          "Cannot control chrome://version/: Chrome doesn't let extensions automate chrome:// pages, other extensions' pages or the Web Store. Go to a web page first (surf go <url>) and retry.",
+        details: { tabId, url: "chrome://version/", chromeError: "Cannot access a chrome:// URL" },
+      });
+    });
+
+    it("blames another extension's frame on a web page Chrome refuses", async () => {
+      const chromeError = "Cannot access a chrome-extension:// URL of different extension";
+      mockChrome.debugger.attach.mockRejectedValue(new Error(chromeError));
+      mockChrome.tabs.get.mockResolvedValue({ id: tabId, url: "https://books.toscrape.com/" });
+
+      await expect(controller.attach(tabId)).rejects.toMatchObject({
+        code: "restricted_target",
+        message:
+          "Cannot control this page: another extension has put a frame in it (a password manager, ad blocker or similar), and Chrome then blocks Surf's debugger for the whole tab. read still works, and so do click and type on a ref or selector; for hook or a debugger screenshot, turn that extension off for this site and retry.",
+        details: {
+          tabId,
+          url: "https://books.toscrape.com/",
+          chromeError,
+          reason: "foreign_extension_frame",
+        },
+      });
+    });
+
+    it("treats another extension's own page as restricted, not as a frame in a web page", async () => {
+      mockChrome.debugger.attach.mockRejectedValue(
+        new Error("Cannot access a chrome-extension:// URL of different extension"),
+      );
+      mockChrome.tabs.get.mockResolvedValue({
+        id: tabId,
+        url: "chrome-extension://abc/blocked.html",
+      });
+
+      const error = await controller.attach(tabId).catch((e) => e);
+      expect(error.message).toMatch(/^Cannot control chrome-extension:\/\/abc\/blocked\.html: /);
+      expect(error.details).not.toHaveProperty("reason");
     });
 
     it("throws descriptive error when attach fails", async () => {
@@ -1288,16 +1333,17 @@ describe("CDPController", () => {
         dropped: 0,
       });
 
-      // The next command reports the detach once, then attaches again.
+      // The next command attaches again (Chrome closed the target, so it checks Chrome still
+      // allows it) and reports the detach once; the one after runs.
+      mockChrome.debugger.sendCommand.mockClear();
+      vi.setSystemTime(new Date("2026-11-14T10:00:05Z"));
       await expect(controller.sendCommand(tabId, "Runtime.evaluate")).rejects.toMatchObject({
         code: "debugger_detached",
       });
-      mockChrome.debugger.sendCommand.mockClear();
-      vi.setSystemTime(new Date("2026-11-14T10:00:05Z"));
-      await controller.sendCommand(tabId, "Runtime.evaluate");
       expect(mockChrome.debugger.sendCommand).toHaveBeenCalledWith({ tabId }, "Network.enable", {
         maxPostDataSize: 65536,
       });
+      await controller.sendCommand(tabId, "Runtime.evaluate");
       expect(controller.getNetworkCaptureStatus(tabId)).toEqual({
         active: true,
         interruptions: [{ ...interruption, resumedAt: Date.parse("2026-11-14T10:00:05Z") }],
@@ -1306,6 +1352,43 @@ describe("CDPController", () => {
       expect(controller.getNetworkEntries(tabId, { includeStatic: true })).toHaveLength(1);
       controller.clearNetworkRequests(tabId);
       expect(controller.getNetworkCaptureStatus(tabId).interruptions).toEqual([]);
+    });
+
+    it("reports why Chrome won't let the debugger back on after it closed the target", async () => {
+      // Another extension's frame appeared in the page: Chrome detaches, then refuses the attach.
+      mockChrome.debugger.onDetach.addListener.mock.calls.at(-1)?.[0]({ tabId }, "target_closed");
+      mockChrome.debugger.attach.mockRejectedValue(
+        new Error("Cannot access a chrome-extension:// URL of different extension"),
+      );
+      mockChrome.tabs.get.mockResolvedValue({ id: tabId, url: "https://books.toscrape.com/" });
+
+      await expect(controller.sendCommand(tabId, "Runtime.evaluate")).rejects.toMatchObject({
+        code: "restricted_target",
+        details: { reason: "foreign_extension_frame" },
+      });
+    });
+
+    it("lets go of the debugger when Chrome refuses its commands for another extension's frame", async () => {
+      // The frame appeared after the attach, and Chrome refuses commands without a detach event.
+      const chromeError = "Cannot access a chrome-extension:// URL of different extension";
+      mockChrome.debugger.sendCommand.mockRejectedValue(new Error(chromeError));
+      mockChrome.debugger.detach.mockResolvedValue(undefined);
+      mockChrome.tabs.get.mockResolvedValue({ id: tabId, url: "https://books.toscrape.com/" });
+
+      await expect(controller.sendCommand(tabId, "Runtime.evaluate")).rejects.toMatchObject({
+        code: "restricted_target",
+        details: { reason: "foreign_extension_frame", chromeError },
+      });
+      expect(mockChrome.debugger.detach).toHaveBeenCalledWith({ tabId });
+      expect(controller.isAttached(tabId)).toBe(false);
+      expect(controller.getNetworkCaptureStatus(tabId)).toMatchObject({
+        interruptions: [{ reason: "target_closed" }],
+      });
+      // Turning capture on says so too, instead of capturing nothing.
+      mockChrome.debugger.attach.mockResolvedValue(undefined);
+      await expect(controller.enableNetworkTracking(tabId)).rejects.toMatchObject({
+        code: "restricted_target",
+      });
     });
 
     it("keeps a request that redirected as its own entry, with the redirect status", async () => {

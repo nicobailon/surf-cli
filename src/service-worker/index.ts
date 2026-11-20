@@ -86,7 +86,9 @@ async function clickRef(tabId: number, frameId: number, ref: string, button: str
   try {
     await cdp.attach(tabId);
   } catch (err) {
-    attachFailure = err instanceof Error ? err.message : String(err);
+    attachFailure = (err as BrowserCommandError).details?.reason === "foreign_extension_frame"
+      ? "another extension's frame blocks it here"
+      : err instanceof Error ? err.message : String(err);
   }
   // CDP points are main-frame viewport coordinates and a hidden tab does not process CDP input,
   // so those clicks go in the page, and say so.
@@ -726,6 +728,60 @@ function base64ToBlob(base64: string, mimeType = "image/png"): Blob {
     bytes[i] = binary.charCodeAt(i);
   }
   return new Blob([bytes], { type: mimeType });
+}
+
+// Defines window.piHelpers in the page, once, before a js script runs.
+const PI_HELPERS_CODE = `if(!window.piHelpers){const piHelpers={wait(ms){return new Promise(r=>setTimeout(r,ms))},setValue(el,v,events=['input','change']){let p=Object.getPrototypeOf(el),s=null;while(p&&p!==Object.prototype){const d=Object.getOwnPropertyDescriptor(p,'value');if(d&&d.set){s=d.set;break}p=Object.getPrototypeOf(p)}if(s)s.call(el,v);else el.value=v;for(const n of events)el.dispatchEvent(new Event(n,{bubbles:n!=='blur'}));return el},async waitForSelector(sel,opts={}){const{state='visible',timeout=20000}=opts;const isVis=el=>el&&getComputedStyle(el).display!=='none'&&getComputedStyle(el).visibility!=='hidden'&&getComputedStyle(el).opacity!=='0'&&el.offsetWidth>0&&el.offsetHeight>0;const chk=()=>{const el=document.querySelector(sel);switch(state){case'attached':return el;case'detached':return el?null:document.body;case'hidden':return(!el||!isVis(el))?(el||document.body):null;default:return isVis(el)?el:null}};return new Promise((res,rej)=>{const r=chk();if(r){res(state==='detached'||state==='hidden'?null:r);return}const obs=new MutationObserver(()=>{const r=chk();if(r){obs.disconnect();clearTimeout(tid);res(state==='detached'||state==='hidden'?null:r)}});const tid=setTimeout(()=>{obs.disconnect();rej(new Error('Timeout'))},timeout);obs.observe(document.documentElement,{childList:true,subtree:true,attributes:true,attributeFilter:['style','class','hidden']})})},async waitForText(text,opts={}){const{selector,timeout=20000}=opts;const chk=()=>{const root=selector?document.querySelector(selector):document.body;if(!root)return null;const w=document.createTreeWalker(root,NodeFilter.SHOW_TEXT);while(w.nextNode())if(w.currentNode.textContent?.includes(text))return w.currentNode.parentElement;return null};return new Promise((res,rej)=>{const r=chk();if(r){res(r);return}const obs=new MutationObserver(()=>{const r=chk();if(r){obs.disconnect();clearTimeout(tid);res(r)}});const tid=setTimeout(()=>{obs.disconnect();rej(new Error('Timeout'))},timeout);obs.observe(document.documentElement,{childList:true,subtree:true,characterData:true})})},async waitForHidden(sel,t=20000){await piHelpers.waitForSelector(sel,{state:'hidden',timeout:t})},getByRole(role,opts={}){const{name}=opts;const roles={button:['button','input[type=button]','input[type=submit]','input[type=reset]'],link:['a[href]'],textbox:['input:not([type])','input[type=text]','input[type=email]','input[type=password]','textarea'],checkbox:['input[type=checkbox]'],radio:['input[type=radio]'],combobox:['select'],heading:['h1','h2','h3','h4','h5','h6']};const cands=[...document.querySelectorAll('[role='+role+']')];if(roles[role])roles[role].forEach(s=>cands.push(...document.querySelectorAll(s+':not([role])')));if(!name)return cands[0]||null;const n=name.toLowerCase().trim();for(const el of cands){const l=el.getAttribute('aria-label')?.toLowerCase().trim();const t=el.textContent?.toLowerCase().trim();if(l===n||t===n||l?.includes(n)||t?.includes(n))return el}return null}};window.__piHelpers=piHelpers;window.piHelpers=piHelpers}`;
+
+const IN_PAGE_HINT = "Ran in the page, not through the debugger (another extension's frame blocks it here): the page's Content Security Policy applies, and the value comes back as JSON.stringify writes it.";
+
+/**
+ * Runs in the page's main world through chrome.scripting, the way the debugger path wraps a js
+ * script: an expression's value is returned, else the script runs as statements. The value comes
+ * back as JSON text, so it reads as JSON.stringify writes it (chrome.scripting's own copy of a value
+ * sorts its keys and turns some values to null). Self-contained, as Chrome serialises it into the page.
+ */
+async function runScriptInPage(helpers: string, code: string): Promise<{ json?: string; error?: string; blocked?: string }> {
+  const compile = (body: string) => new Function(`${helpers};return (async () => { 'use strict'; ${body} })()`) as () => Promise<unknown>;
+  let run: () => Promise<unknown>;
+  try {
+    try {
+      run = compile(`return (\n${code}\n);`);
+    } catch (err) {
+      if (!(err instanceof SyntaxError)) throw err;
+      run = compile(code);
+    }
+  } catch (err) {
+    // The page's Content Security Policy forbids compiling a string (no 'unsafe-eval').
+    if (err instanceof EvalError) return { blocked: err.message };
+    return { error: String(err) };
+  }
+  try {
+    return { json: JSON.stringify(await run(), null, 2) };
+  } catch (err) {
+    return { error: err instanceof Error ? err.stack || String(err) : String(err) };
+  }
+}
+
+/** js when another extension's frame keeps the debugger off the tab: runs it in the page instead. */
+async function executeJavaScriptInPage(tabId: number, code: string, maxOutput: number | undefined, refused: BrowserCommandError): Promise<{ output: string; _hint: string } | { error: string }> {
+  let ran: Awaited<ReturnType<typeof runScriptInPage>> | undefined;
+  try {
+    const [frame] = await chrome.scripting.executeScript({ target: { tabId }, world: "MAIN", func: runScriptInPage, args: [PI_HELPERS_CODE, code] });
+    ran = frame?.result as typeof ran;
+  } catch {
+    throw refused;
+  }
+  if (ran?.blocked) {
+    throw new BrowserCommandError(
+      "restricted_target",
+      "Cannot run js on this page: another extension's frame keeps Surf's debugger off it, and the page's Content Security Policy blocks running code in the page instead. Turn that extension off for this site and retry.",
+      { ...refused.details, cspError: ran.blocked },
+    );
+  }
+  // An error has no hint of its own on the way to the CLI, so it carries the line itself.
+  if (!ran || ran.error !== undefined) return { error: `${ran?.error || "Script execution failed"}\n[hint] ${IN_PAGE_HINT}` };
+  return { output: ran.json?.substring(0, maxOutput ?? 50000) || "undefined", _hint: IN_PAGE_HINT };
 }
 
 function codeWithExpressionReturn(code: string): string {
@@ -2748,13 +2804,14 @@ export async function handleMessage(
         return { error: "JavaScript cannot run in a selected frame. Run frame.main first.", errorCode: "UNSUPPORTED_FRAME_EXECUTION" };
       }
 
+      let scriptSent = false;
       try {
-        const piHelpersCode = `if(!window.piHelpers){const piHelpers={wait(ms){return new Promise(r=>setTimeout(r,ms))},setValue(el,v,events=['input','change']){let p=Object.getPrototypeOf(el),s=null;while(p&&p!==Object.prototype){const d=Object.getOwnPropertyDescriptor(p,'value');if(d&&d.set){s=d.set;break}p=Object.getPrototypeOf(p)}if(s)s.call(el,v);else el.value=v;for(const n of events)el.dispatchEvent(new Event(n,{bubbles:n!=='blur'}));return el},async waitForSelector(sel,opts={}){const{state='visible',timeout=20000}=opts;const isVis=el=>el&&getComputedStyle(el).display!=='none'&&getComputedStyle(el).visibility!=='hidden'&&getComputedStyle(el).opacity!=='0'&&el.offsetWidth>0&&el.offsetHeight>0;const chk=()=>{const el=document.querySelector(sel);switch(state){case'attached':return el;case'detached':return el?null:document.body;case'hidden':return(!el||!isVis(el))?(el||document.body):null;default:return isVis(el)?el:null}};return new Promise((res,rej)=>{const r=chk();if(r){res(state==='detached'||state==='hidden'?null:r);return}const obs=new MutationObserver(()=>{const r=chk();if(r){obs.disconnect();clearTimeout(tid);res(state==='detached'||state==='hidden'?null:r)}});const tid=setTimeout(()=>{obs.disconnect();rej(new Error('Timeout'))},timeout);obs.observe(document.documentElement,{childList:true,subtree:true,attributes:true,attributeFilter:['style','class','hidden']})})},async waitForText(text,opts={}){const{selector,timeout=20000}=opts;const chk=()=>{const root=selector?document.querySelector(selector):document.body;if(!root)return null;const w=document.createTreeWalker(root,NodeFilter.SHOW_TEXT);while(w.nextNode())if(w.currentNode.textContent?.includes(text))return w.currentNode.parentElement;return null};return new Promise((res,rej)=>{const r=chk();if(r){res(r);return}const obs=new MutationObserver(()=>{const r=chk();if(r){obs.disconnect();clearTimeout(tid);res(r)}});const tid=setTimeout(()=>{obs.disconnect();rej(new Error('Timeout'))},timeout);obs.observe(document.documentElement,{childList:true,subtree:true,characterData:true})})},async waitForHidden(sel,t=20000){await piHelpers.waitForSelector(sel,{state:'hidden',timeout:t})},getByRole(role,opts={}){const{name}=opts;const roles={button:['button','input[type=button]','input[type=submit]','input[type=reset]'],link:['a[href]'],textbox:['input:not([type])','input[type=text]','input[type=email]','input[type=password]','textarea'],checkbox:['input[type=checkbox]'],radio:['input[type=radio]'],combobox:['select'],heading:['h1','h2','h3','h4','h5','h6']};const cands=[...document.querySelectorAll('[role='+role+']')];if(roles[role])roles[role].forEach(s=>cands.push(...document.querySelectorAll(s+':not([role])')));if(!name)return cands[0]||null;const n=name.toLowerCase().trim();for(const el of cands){const l=el.getAttribute('aria-label')?.toLowerCase().trim();const t=el.textContent?.toLowerCase().trim();if(l===n||t===n||l?.includes(n)||t?.includes(n))return el}return null}};window.__piHelpers=piHelpers;window.piHelpers=piHelpers}`;
-        await cdp.evaluateScript(tabId, piHelpersCode);
+        await cdp.evaluateScript(tabId, PI_HELPERS_CODE);
 
         const body = codeWithExpressionReturn(message.code);
         const expression = `(async () => { 'use strict'; ${body} })()`;
 
+        scriptSent = true;
         let result = await cdp.evaluateScript(tabId, expression);
 
         // Statement scripts (declarations, loops, explicit `return`) cannot be
@@ -2775,11 +2832,12 @@ export async function handleMessage(
         const output = value === undefined ? "undefined" : JSON.stringify(value, null, 2);
         return { output: output?.substring(0, message.maxOutput ?? 50000) || "undefined" };
       } catch (err) {
-        const msg = err instanceof Error ? err.message : "Script execution failed";
-        if (msg.includes("Cannot access") || msg.includes("Cannot attach")) {
-          return { error: "Cannot execute JavaScript on this page (restricted URL)" };
+        // Once the debugger has sent the script it may have run, so it never runs a second time.
+        if (!scriptSent && (err as BrowserCommandError).details?.reason === "foreign_extension_frame") {
+          return await executeJavaScriptInPage(tabId, message.code, message.maxOutput, err as BrowserCommandError);
         }
-        return { error: msg };
+        if ((err as { code?: string }).code) throw err;
+        return { error: err instanceof Error ? err.message : "Script execution failed" };
       }
     }
 
@@ -2868,11 +2926,8 @@ export async function handleMessage(
         }
         return result.result?.value ?? { error: "Animation audit returned no data" };
       } catch (err) {
-        const msg = err instanceof Error ? err.message : "Animation audit failed";
-        if (msg.includes("Cannot access") || msg.includes("Cannot attach")) {
-          return { error: "Cannot execute animation audit on this page (restricted URL)" };
-        }
-        return { error: msg };
+        if ((err as { code?: string }).code) throw err;
+        return { error: err instanceof Error ? err.message : "Animation audit failed" };
       }
     }
 
@@ -3080,11 +3135,8 @@ export async function handleMessage(
         }
         return result.result?.value ?? { error: "Performance audit returned no data" };
       } catch (err) {
-        const msg = err instanceof Error ? err.message : "Performance audit failed";
-        if (msg.includes("Cannot access") || msg.includes("Cannot attach")) {
-          return { error: "Cannot execute performance audit on this page (restricted URL)" };
-        }
-        return { error: msg };
+        if ((err as { code?: string }).code) throw err;
+        return { error: err instanceof Error ? err.message : "Performance audit failed" };
       }
     }
 
@@ -3229,13 +3281,17 @@ export async function handleMessage(
     case "READ_NETWORK_REQUESTS": {
       if (!tabId) throw new Error("No tabId provided");
       // Taken before reading turns capture on, so a stopped capture shows as stopped.
-      const capture = cdp.getNetworkCaptureStatus(tabId);
+      let capture: ReturnType<typeof cdp.getNetworkCaptureStatus> & { refused?: Record<string, unknown> } = cdp.getNetworkCaptureStatus(tabId);
 
       try {
         if (message.bodyMode !== undefined || message.perBodyBytes !== undefined || message.totalBodyBytes !== undefined) {
           await cdp.enableNetworkTracking(tabId, { bodyMode: message.bodyMode, perBodyBytes: message.perBodyBytes, totalBytes: message.totalBodyBytes });
         } else await cdp.enableNetworkTracking(tabId);
-      } catch (e) {}
+      } catch (e) {
+        // Chrome refuses the debugger on this tab now, so capture can't be running: say why.
+        const refusal = e as BrowserCommandError;
+        if (refusal.code === "restricted_target") capture = { ...capture, refused: { ...refusal.details, code: refusal.code, message: refusal.message } };
+      }
       await cdp.drainNetworkEvents(tabId);
 
       // If full flag is passed, use getNetworkEntries for rich data
