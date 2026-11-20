@@ -3,6 +3,7 @@
 // Node reads each body with the op's extract. A read tries each step it has, in that order, and keeps
 // the first that passes `expect`; a write runs its first step once, from the tab. `page` and --pages read more pages; --url points the op at another URL of its site.
 
+const { encoder } = require("./op-body.cjs");
 const { sendDirect } = require("./op-direct.cjs");
 const { readNext, readResponse } = require("./op-extract.cjs");
 const { executeWorkflow } = require("./workflow-runtime.cjs");
@@ -60,8 +61,9 @@ function renderRequest(request, context) {
   const headers = renderTemplate(request.headers || {}, context);
   const sent = { method: String(request.method || "GET").toUpperCase(), url: url.href, headers };
   if (request.body === undefined) return sent;
-  const body = renderTemplate(request.body, context);
   const type = Object.entries(headers).find(([name]) => name.toLowerCase() === "content-type")?.[1] || "";
+  // A value goes into form or JSON text sent as text/plain or untyped as that format writes it.
+  const body = renderTemplate(request.body, typeof request.body === "string" ? { ...context, encode: encoder(request.body, type) } : context);
   if (typeof body === "string") sent.body = body;
   else if (/x-www-form-urlencoded/i.test(type)) sent.body = new URLSearchParams(Object.entries(body).flatMap(([key, item]) => (Array.isArray(item) ? item : [item]).map((value) => [key, String(value)]))).toString();
   else {

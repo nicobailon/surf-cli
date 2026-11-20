@@ -1,8 +1,9 @@
 // surf hook <url> --goal "<text>" [--do '<steps>'] [--<input> <sample>]... [--match <url-part>]
-// [--as <site>/<op>] [--dry-run]: the browser host opens the URL, runs the steps, and makes, tests and saves
+// [--as <site>/<op>] [--dry-run] [--keep-body]: the browser host opens the URL, runs the steps, and makes, tests and saves
 // the op (op-pipeline.cjs). Exit 0: a saved, tested op; 2: a weak pick, with the top requests and
 // a rerun line; 1: an error, with the draft. A write is saved untested. --dry-run does it all but
-// write the op file, and prints the op instead.
+// write the op file, and prints the op instead. --keep-body saves a body that still holds a
+// secret-looking key with a literal value, which is refused without it.
 
 const os = require("os");
 const path = require("path");
@@ -14,10 +15,10 @@ const { requestHost } = require("./playbook-cli.cjs");
 const { resolveOp } = require("./playbooks.cjs");
 const { parseDoCommands } = require("./workflow-definition.cjs");
 
-const USAGE = "Usage: surf hook <url> --goal \"<text>\" [--do '<steps>'] [--<input> <sample>]... [--match <url-part>] [--as <site>/<op>] [--dry-run]";
+const USAGE = "Usage: surf hook <url> --goal \"<text>\" [--do '<steps>'] [--<input> <sample>]... [--match <url-part>] [--as <site>/<op>] [--dry-run] [--keep-body]";
 const OPTIONS = new Set(["goal", "do", "match", "as"]);
 // surf hook's flags with no value, and the global options (`--session`, `--json`…), which are no inputs.
-const FLAGS = new Set(["dry-run", ...GLOBAL_OPTIONS.filter((option) => !option.value).map((option) => option.name)]);
+const FLAGS = new Set(["dry-run", "keep-body", ...GLOBAL_OPTIONS.filter((option) => !option.value).map((option) => option.name)]);
 const GLOBAL_VALUES = new Set(GLOBAL_OPTIONS.filter((option) => option.value).map((option) => option.name));
 // surf use's own options: a mistake here, refused before any request, unless the URL or a --do step
 // writes {{name}}, or the op --as names declares the input (surf's own `Rebuild it:` line).
@@ -51,7 +52,7 @@ function parseHookArgs(argv, { cwd = process.cwd() } = {}) {
     }
     const name = arg.slice(2);
     if (USE_OPTIONS.has(name) && !argv.some((word) => word.includes(`{{${name}}}`)) && !(declared ??= declaredInputs(argv, cwd)).includes(name)) {
-      throw new Error(`${arg} is a surf use option, not a surf hook one: give it to surf use when you run the saved op. surf hook takes --goal, --do, --match, --as, --dry-run, --json and --<input> <sample>. An input named ${name} needs {{${name}}} in the URL or a --do step; a sample under another name works too (--per_page 20).`);
+      throw new Error(`${arg} is a surf use option, not a surf hook one: give it to surf use when you run the saved op. surf hook takes --goal, --do, --match, --as, --dry-run, --keep-body, --json and --<input> <sample>. An input named ${name} needs {{${name}}} in the URL or a --do step; a sample under another name works too (--per_page 20).`);
     }
     if (FLAGS.has(name)) {
       spec[name] = true;
@@ -109,7 +110,7 @@ function formatHook(result, rerun) {
 
 async function handleHookCli(argv, { endpoint, session, sessionSource, admission } = {}) {
   const { spec, url, site, op, steps, typed } = parseHookArgs(argv.slice(1));
-  const args = { url, template: spec.url, goal: spec.goal, steps, samples: spec.samples, typed, site, op, dryRun: spec["dry-run"] === true, ...(spec.do ? { do: spec.do } : {}), ...(spec.match === undefined ? {} : { match: spec.match }) };
+  const args = { url, template: spec.url, goal: spec.goal, steps, samples: spec.samples, typed, site, op, dryRun: spec["dry-run"] === true, keepBody: spec["keep-body"] === true, ...(spec.do ? { do: spec.do } : {}), ...(spec.match === undefined ? {} : { match: spec.match }) };
   const result = await requestHost(endpoint, "playbook.hook", args, {
     tabId: spec["tab-id"],
     session: spec.session || session,
@@ -118,7 +119,7 @@ async function handleHookCli(argv, { endpoint, session, sessionSource, admission
     timeoutMs: resolveRequestDeadlineMs("playbook.hook"),
   });
   if (spec.json) return { stdout: JSON.stringify(result, null, 2), stderr: "", exitCode: result.exitCode };
-  const rerun = ["surf", "hook", spec.url, "--goal", spec.goal, ...(spec.do ? ["--do", spec.do] : []), ...Object.entries(spec.samples).flatMap(([name, value]) => [`--${name}`, isSecret(name) ? `<${name}>` : value]), ...(spec.as ? ["--as", spec.as] : []), ...(spec["dry-run"] ? ["--dry-run"] : [])];
+  const rerun = ["surf", "hook", spec.url, "--goal", spec.goal, ...(spec.do ? ["--do", spec.do] : []), ...Object.entries(spec.samples).flatMap(([name, value]) => [`--${name}`, isSecret(name) ? `<${name}>` : value]), ...(spec.as ? ["--as", spec.as] : []), ...(spec["dry-run"] ? ["--dry-run"] : []), ...(spec["keep-body"] ? ["--keep-body"] : [])];
   return formatHook(result, rerun);
 }
 

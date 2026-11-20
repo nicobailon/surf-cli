@@ -9,6 +9,7 @@ const path = require("path");
 const { shell } = require("./hook-cli.cjs");
 const { sendDirect } = require("./op-direct.cjs");
 const { inferResponse, keyFields } = require("./op-infer.cjs");
+const { scrub, secretLeft, valueIn } = require("./op-body.cjs");
 const { isSecret, nameInputs, requestOf } = require("./op-inputs.cjs");
 const { matchHint, pageShare, pickRequest, rankRequests } = require("./op-rank.cjs");
 const { evaluate, renderTemplate, runOp, sendRequest } = require("./op-run.cjs");
@@ -18,11 +19,14 @@ const { resolveArgs } = require("./playbook-runtime.cjs");
 const { savePlaybook, validateOp } = require("./playbooks.cjs");
 const { surfError } = require("./surf-error.cjs");
 const { atomicWriteJson } = require("./private-state.cjs");
-const { redactUrlSecrets } = require("./redaction.cjs");
+const { isSecretHeader, redactUrlSecrets } = require("./redaction.cjs");
 const { parseDoCommands } = require("./workflow-definition.cjs");
 const { executeWorkflow } = require("./workflow-runtime.cjs");
 
-const PAGE_TEXT = "({ url: location.href, text: document.body ? document.body.innerText : '' })";
+// The page's URL and words, and what its password and one-time-code fields hold: values an op
+// must not keep.
+const PAGE_TEXT = `({ url: location.href, text: document.body ? document.body.innerText : '',
+  secrets: [...document.querySelectorAll('input')].filter((input) => input.type === 'password' || /(?:^|\\s)(?:current-password|new-password|one-time-code)(?:\\s|$)/i.test(input.autocomplete)).map((input) => input.value).filter(Boolean) })`;
 const TRACE_LIMIT = 500;
 // Between the requests the pipeline sends a site (the page, the replay, the test), as paging does.
 const GAP_MS = 1000;
@@ -63,7 +67,7 @@ async function readDocument(url, refused, context) {
   return { type: "Document", method: "GET", url, status: response.status, mimeType, responseBody: response.body };
 }
 
-/** What the tab shows now: { url, text }. */
+/** What the tab shows now: { url, text, secrets }. */
 const readPage = (context) => evaluate(context, PAGE_TEXT);
 
 async function runSteps(steps, context) {
@@ -106,8 +110,8 @@ async function openPage(context, tabId, url) {
 }
 
 /**
- * Opens `url` with network capture on and runs `steps`: { entries, opened, pageUrl, pageText, after?,
- * documentOnly? }. When another extension's frame cut the capture off and there are no steps, the
+ * Opens `url` with network capture on and runs `steps`: { entries, opened, pageUrl, pageText, secrets,
+ * after?, documentOnly? }. When another extension's frame cut the capture off and there are no steps, the
  * entries are the page's own HTML only, and `documentOnly` holds Chrome's refusal.
  */
 async function captureHook({ url, steps = [], tabId, ...context }) {
@@ -122,9 +126,9 @@ async function captureHook({ url, steps = [], tabId, ...context }) {
     // Chrome dropped the debugger on the way (another extension's frame appeared) and won't take it back.
     const refused = read.capture?.refused;
     if (foreignFrame(refused) && after) throw refusal(refused, "--do steps need the debugger.");
-    if (foreignFrame(refused)) return { entries: [await readDocument(url, refused, context)], opened: url, pageUrl: page.url, pageText: page.text, documentOnly: refused };
+    if (foreignFrame(refused)) return { entries: [await readDocument(url, refused, context)], opened: url, pageUrl: page.url, pageText: page.text, secrets: page.secrets || [], documentOnly: refused };
     if (refused) throw surfError(refused.code, refused.message, refused);
-    return { entries: read.entries || [], opened: url, pageUrl: page.url, pageText: page.text, ...(after ? { after } : {}) };
+    return { entries: read.entries || [], opened: url, pageUrl: page.url, pageText: page.text, secrets: page.secrets || [], ...(after ? { after } : {}) };
   } finally {
     await context.callExtension({ type: "STOP_NETWORK_CAPTURE", tabId }).catch(() => {});
   }
@@ -151,6 +155,31 @@ function save(site, op, dryRun) {
   return { file, replaced, overwritesBak };
 }
 
+// Values surf saw as secret: what the page's password fields held, and each cookie and auth
+// header value in the capture (a credential after its scheme too: `Bearer <token>`).
+function seenSecrets(capture) {
+  const secrets = (capture.secrets || []).map((value) => ({ value, name: "password" }));
+  const cookies = (text, split) => {
+    for (const pair of String(text).split(split)) {
+      const at = pair.indexOf("=");
+      if (at > 0) secrets.push({ value: pair.slice(at + 1).split(";")[0].trim(), name: pair.slice(0, at).trim() });
+    }
+  };
+  for (const entry of capture.entries || []) {
+    for (const [header, value] of Object.entries(entry.requestHeaders || {})) {
+      const name = header.toLowerCase();
+      if (name === "cookie") cookies(value, ";");
+      else if (isSecretHeader(name)) {
+        secrets.push({ value: String(value), name });
+        const credential = String(value).match(/^\S+\s+(\S+)$/)?.[1];
+        if (credential) secrets.push({ value: credential, name });
+      }
+    }
+    for (const [header, value] of Object.entries(entry.responseHeaders || {})) if (header.toLowerCase() === "set-cookie") cookies(value, "\n");
+  }
+  return secrets;
+}
+
 /**
  * makeOp on a capture that holds the page's own HTML only: it must hold most of what the tab shows,
  * or the page's data came by requests the capture lost. A saved op says so in a warning; anything
@@ -170,9 +199,12 @@ async function makeOp(params) {
  * Picks the capture's data request, names its inputs, infers its extract from a replay, tests the
  * op through the runner and saves it. Returns { status, exitCode }: saved 0, weak 2 (with the top
  * candidates and a `match` that picks the first), or error 1 (with the draft once there is one). With dryRun it
- * saves nothing and returns status "dry-run", exit 0, with the draft it would save.
+ * saves nothing and returns status "dry-run", exit 0, with the draft it would save. A string body
+ * that still holds a secret-looking key with a literal value is refused (error 1, `refused:
+ * "keep-body"`, no draft) unless keepBody; the refusal says a rerun sends a write again unless
+ * rerunSends is false (pb record stop).
  */
-async function pickOp({ capture, goal = "", samples = {}, typed = [], template, match, site, op: id, source, previous, dryRun = false, ...context }) {
+async function pickOp({ capture, goal = "", samples = {}, typed = [], template, match, site, op: id, source, previous, dryRun = false, keepBody = false, rerunSends = true, ...context }) {
   const ranked = rankRequests(capture.entries, { pageUrl: capture.pageUrl, pageText: capture.pageText, goal, after: capture.after });
   const chosen = pickRequest(ranked, { match });
   if (chosen.error) {
@@ -190,7 +222,7 @@ async function pickOp({ capture, goal = "", samples = {}, typed = [], template, 
   }
   const { entry, reasons, effect } = chosen.pick;
   const sent = requestOf(entry);
-  const named = nameInputs({ request: sent, samples, typed, template });
+  const named = nameInputs({ request: sent, samples, typed, template, secrets: seenSecrets(capture) });
   // A read keeps its source, each typed value in `do` as its {{input}}. A write never repairs; a typed
   // value that is no input (a password the request doesn't carry) or a secret keeps the source out.
   let kept = effect === "write" ? undefined : source;
@@ -200,10 +232,26 @@ async function pickOp({ capture, goal = "", samples = {}, typed = [], template, 
   }
   if (source && !kept && effect !== "write") named.warnings.push("a --do step types a value that is no input, so the op keeps no source and can't repair itself");
   const draft = { id, description: goal || `${id} on ${new URL(sent.url).host}`, ...(effect === "write" ? { effect } : {}), args: named.args, request: named.request, ...(kept ? { source: kept } : {}) };
-  const base = { playbook: site, op: id, picked: { method: entry.method, url: redactUrlSecrets(entry.url), reasons }, warnings: named.warnings };
+  // The picked URL as printed: a secret's value, by name or one surf knows, as in the op.
+  const known = Object.entries(named.values).map(([name, value]) => ({ name, value }));
+  const picked = scrub(redactUrlSecrets(entry.url), known, ({ name }) => `{{${name}}}`);
+  const base = { playbook: site, op: id, picked: { method: entry.method, url: picked, reasons }, warnings: named.warnings };
   // The run line: each input's sample, or <name> for one with none (a secret).
   const runLine = (examples) => ["surf", "use", site, id, ...Object.entries(examples).flatMap(([name, value]) => [`--${name}`, value === undefined ? `<${name}>` : String(value)])];
   const examples = Object.fromEntries(Object.entries(draft.args).map(([name, spec]) => [name, spec.example]));
+  const left = typeof draft.request.body === "string" ? secretLeft(draft.request.body) : undefined;
+  if (left && !keepBody) {
+    // The page or the --do steps sent it once: that send counts toward the write guard, and a
+    // surf hook rerun sends it again (pb record stop doesn't).
+    if (effect === "write") {
+      try {
+        recordSend({ site, op: validateOp(draft, { origins: [] }), examples, template: named.request, sent });
+      } catch {}
+    }
+    const resend = effect === "write" && rerunSends ? "; the request was already sent once, so a rerun with --keep-body sends it again" : "";
+    return { ...base, status: "error", exitCode: 1, refused: "keep-body", error: `the request body keeps a literal value under "${left}", a secret-looking key surf could not make an input, so nothing was saved; check the body, then add --keep-body to save it as it is${resend}` };
+  }
+  if (left) named.warnings.push(`--keep-body: the request body keeps a literal value under "${left}"`);
   const saved = (fields) => {
     return { ...base, status: dryRun ? "dry-run" : "saved", exitCode: 0, ...save(site, draft, dryRun), ...fields, ...(dryRun ? { draft } : {}) };
   };
@@ -237,7 +285,7 @@ async function pickOp({ capture, goal = "", samples = {}, typed = [], template, 
     if (previous) keepNames(draft, previous);
     await context.sleep(GAP_MS);
     const op = validateOp(draft, { origins: [] });
-    const run = await runOp({ playbook: { id: site }, op, args: examples, ...context }).catch((error) => {
+    const run = await runOp({ playbook: { id: site }, op, args: { ...examples, ...named.values }, ...context }).catch((error) => {
       throw Object.assign(error, { [NO_RECORDS]: true });
     });
     const list = Array.isArray(run.value);
@@ -258,6 +306,8 @@ async function pickOp({ capture, goal = "", samples = {}, typed = [], template, 
 // The value `sent` carries where `template` has `mark` as a whole value: a query or body value, or
 // a path segment.
 function carried(template, sent, mark) {
+  const inText = valueIn(template.body, sent.body, mark.slice(2, -2), template.headers?.["content-type"]);
+  if (inText !== undefined) return inText;
   const fields = inFields({ query: template.query, body: template.body }, { query: sent.query, body: sent.body }, mark);
   if (fields !== undefined) return fields;
   const url = new URL(sent.url);

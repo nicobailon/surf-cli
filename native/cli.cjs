@@ -1684,6 +1684,7 @@ const TOOLS = {
           match: "Pick the captured request whose URL holds this text",
           as: "Save as <site>/<op> (default: the host name and get_ + the goal's first three words); an op already there is kept as <op>.json.bak",
           "dry-run": "Open the page, pick, name inputs and test as usual, then print the op instead of saving it",
+          "keep-body": "Save the op even when its text request body still holds a literal value under a secret-looking key (refused without it)",
           json: "Output the result as JSON",
         },
         examples: [
@@ -1768,7 +1769,7 @@ const TOOLS = {
       "playbook record stop": {
         desc: "Stop recording; with network capture, pick, test and save the op as surf hook does (exit 2 on a weak pick keeps recording)",
         args: [],
-        opts: { match: "Pick the captured request whose URL holds this text", draft: "Only save a draft op in the record, as before" },
+        opts: { match: "Pick the captured request whose URL holds this text", draft: "Only save a draft op in the record, as before", "keep-body": "Save the op even when its text request body still holds a literal value under a secret-looking key (refused without it; a refused stop keeps the record open)" },
       },
       "playbook record status": { desc: "Show the recording state (also: pause, resume, discard)", args: [] },
       "playbook trace export": { desc: "Export a record as HAR", args: [], opts: { "from-record": "Record id", har: "Output .har path" } },
