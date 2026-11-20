@@ -1733,6 +1733,12 @@ describe("surf hook and pb record stop through the fake extension", () => {
     });
     return { ...served, methods };
   };
+  // What a tab shows of an HTML page: its text without tags or scripts.
+  const shown = (html: string) =>
+    html
+      .replace(/<script\b[\s\S]*?<\/script>/gi, " ")
+      .replace(/<[^>]+>/g, " ")
+      .replace(/\s+/g, " ");
   const documentOnlyWarning =
     "Warning: Chrome refused the debugger here (another extension's frame), so hook read the page's own HTML only; data the page loads afterwards (XHR/fetch) was not seen.";
 
@@ -1745,7 +1751,8 @@ describe("surf hook and pb record stop through the fake extension", () => {
     const host = startHost(socketPath, {
       network: () => [],
       capture: refusedCapture,
-      javascript: tab(page, "A Light in the Attic £51.77", { [page]: html }, []),
+      // The tab shows what the HTML holds, so the HTML passes the check against the tab.
+      javascript: tab(page, shown(html), { [page]: html }, []),
       directContext: () => ({ cookies: [] }),
     });
 
@@ -1807,12 +1814,105 @@ describe("surf hook and pb record stop through the fake extension", () => {
       expect(hooked.code).toBe(1);
       expect(hooked.stdout).toBe("");
       expect(hooked.stderr.trim()).toBe(
-        `Error: ${foreignFrame} The page's own HTML had no records for this goal either; turn that extension off for this site and retry. [restricted_target]`,
+        `Error: ${foreignFrame} The page's own HTML had no records for this goal either. [restricted_target]`,
       );
       expect(exists(opFile(site, "quotes"))).toBe(false);
       expect(quotes.methods.every((method) => method === "GET")).toBe(true);
     } finally {
       quotes.close();
+      await host.dispose();
+    }
+  }, 30000);
+
+  it("fails with Chrome's refusal when the page's own HTML holds little of what the tab shows", async () => {
+    // A menu in the HTML; the quotes the tab shows came by XHR, which the capture lost.
+    const html = `<html><body><ul class="nav">${["Home", "Products", "Pricing", "Blog", "Contact"]
+      .map((name) => `<li class="nav-item"><a href="/${name.toLowerCase()}">${name}</a></li>`)
+      .join("")}</ul><div id="quotes"></div><script src="/app.js"></script></body></html>`;
+    const quotes = await htmlSite(html);
+    const socketPath = createSocketPath();
+    const site = unique("framed");
+    const page = `${quotes.origin}/quotes`;
+    const text =
+      "Home Products Pricing Blog Contact The world as we have created it is a process of our thinking. Albert Einstein. It is our choices, Harry, that show what we truly are, far more than our abilities. J.K. Rowling. There are only two ways to live your life. Albert Einstein.";
+    const host = startHost(socketPath, {
+      network: () => [],
+      capture: refusedCapture,
+      javascript: tab(page, text, { [page]: html }, []),
+      directContext: () => ({ cookies: [] }),
+    });
+
+    try {
+      await host.waitForMessage((message) => message.type === "HOST_READY");
+      const hooked = await runCli(socketPath, [
+        "hook",
+        page,
+        "--goal",
+        "quotes",
+        "--as",
+        `${site}/quotes`,
+      ]);
+      expect(hooked.code).toBe(1);
+      expect(hooked.stderr.trim()).toBe(
+        `Error: ${foreignFrame} The page's own HTML holds only 18% of the words the tab shows; the rest comes from requests hook can't see here. [restricted_target]`,
+      );
+      expect(exists(opFile(site, "quotes"))).toBe(false);
+      // The page's own GET only: no replay or test run.
+      expect(quotes.methods).toEqual(["GET"]);
+    } finally {
+      quotes.close();
+      await host.dispose();
+    }
+  }, 30000);
+
+  it("fails with Chrome's refusal and the pipeline's own reason when that is not a lack of records", async () => {
+    const html = readFixture("books-page-1.html");
+    const books = await htmlSite(html);
+    const socketPath = createSocketPath();
+    const site = unique("framed");
+    const keyed = `${books.origin}/list?api_key=SUPERSECRET123`;
+    const plain = `${books.origin}/catalogue/`;
+    const host = startHost(socketPath, {
+      network: () => [],
+      capture: refusedCapture,
+      javascript: tab(keyed, shown(html), { [keyed]: html, [plain]: html }, []),
+      directContext: () => ({ cookies: [] }),
+    });
+
+    try {
+      await host.waitForMessage((message) => message.type === "HOST_READY");
+      const secret = await runCli(socketPath, [
+        "hook",
+        keyed,
+        "--goal",
+        "books",
+        "--as",
+        `${site}/keyed`,
+      ]);
+      expect(secret.code).toBe(1);
+      expect(secret.stderr.trim()).toBe(
+        `Error: ${foreignFrame} The page's own HTML alone made no op (playbook requires an auth input instead of a literal api_key). [restricted_target]`,
+      );
+      expect(secret.stderr).not.toContain("SUPERSECRET123");
+      expect(exists(opFile(site, "keyed"))).toBe(false);
+
+      const matched = await runCli(socketPath, [
+        "hook",
+        plain,
+        "--goal",
+        "books",
+        "--match",
+        "/api/books",
+        "--as",
+        `${site}/matched`,
+      ]);
+      expect(matched.code).toBe(1);
+      expect(matched.stderr.trim()).toBe(
+        `Error: ${foreignFrame} The page's own HTML alone made no op (no captured request's URL holds "/api/books"). [restricted_target]`,
+      );
+      expect(exists(opFile(site, "matched"))).toBe(false);
+    } finally {
+      books.close();
       await host.dispose();
     }
   }, 30000);
@@ -1844,7 +1944,7 @@ describe("surf hook and pb record stop through the fake extension", () => {
       ]);
       expect(hooked.code).toBe(1);
       expect(hooked.stderr.trim()).toBe(
-        `Error: ${foreignFrame} --do steps need the debugger; turn that extension off for this site and retry. [restricted_target]`,
+        `Error: ${foreignFrame} --do steps need the debugger. [restricted_target]`,
       );
       expect(exists(opFile(site, "books"))).toBe(false);
       expect(books.methods).toEqual([]);

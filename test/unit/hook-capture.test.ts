@@ -93,7 +93,7 @@ describe("surf hook's capture", () => {
       captureHook({ url: target, steps: parseDoCommands('click --selector "a.next"'), ...context }),
     ).rejects.toMatchObject({
       code: "restricted_target",
-      message: `${message} --do steps need the debugger; turn that extension off for this site and retry.`,
+      message: `${message} --do steps need the debugger.`,
       reason: "foreign_extension_frame",
     });
   });
