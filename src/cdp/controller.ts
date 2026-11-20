@@ -30,9 +30,14 @@ async function restrictedTargetError(tabId: number, chromeError: string): Promis
       { ...details, reason: "foreign_extension_frame" },
     );
   }
+  return restrictedPageError(url, details);
+}
+
+/** A page Chrome keeps every extension off: chrome://, another extension's page or the Web Store. */
+export function restrictedPageError(url: string | undefined, details: Record<string, unknown>): CDPControllerError {
   return new CDPControllerError(
     "restricted_target",
-    `Cannot control ${url ?? "this page"}: Chrome doesn't let extensions automate chrome:// pages, other extensions' pages or the Web Store. Go to a web page first (surf go <url>) and retry.`,
+    `Cannot control ${url ?? "this page"}: Chrome doesn't let extensions automate chrome:// pages, other extensions' pages (such as an ad blocker's "blocked" page) or the Web Store. Go to a web page first (surf go <url>) and retry.`,
     details,
   );
 }

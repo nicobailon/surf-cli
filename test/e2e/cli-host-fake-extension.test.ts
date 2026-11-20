@@ -67,6 +67,8 @@ type FakeHostOptions = {
   capture?: () => Record<string, unknown>;
   // The browser's cookies for a direct request's URL.
   directContext?: (url: string) => Record<string, unknown>;
+  // Where the tab lands for a URL it is sent to, when another extension sends it elsewhere.
+  redirects?: Record<string, string>;
 };
 
 // Messages the fake answers with success and nothing else: capture, waits and page actions.
@@ -296,7 +298,7 @@ function startHost(socketPath: string, options: FakeHostOptions = {}) {
         continue;
       }
       if (message.type === "EXECUTE_NAVIGATE" && message.url) {
-        currentUrl = message.url;
+        currentUrl = options.redirects?.[message.url] ?? message.url;
       }
       writeNativeMessage(child.stdin, buildExtensionResponse(message, currentUrl, options));
     }
@@ -1705,6 +1707,33 @@ describe("surf hook and pb record stop through the fake extension", () => {
       expect(await hook()).toBe(failed);
       entry = { status: 404, flags: ["failed"], errorText: "net::ERR_HTTP_RESPONSE_CODE_FAILURE" };
       expect(await hook()).toBe(answered);
+    } finally {
+      await host.dispose();
+    }
+  });
+
+  it("fails at once when another extension's page takes the tab the hook opened", async () => {
+    const socketPath = createSocketPath();
+    const page = "https://httpbin.org/anything/blocked";
+    const blocked = `chrome-extension://otherextensionid/blocked.html#${page}`;
+    // An extension that waits the redirect out reports the navigation as done.
+    const host = startHost(socketPath, { redirects: { [page]: blocked } });
+    try {
+      await host.waitForMessage((message) => message.type === "HOST_READY");
+      const started = Date.now();
+      const hooked = await runCli(socketPath, ["hook", page, "--goal", "anything"]);
+      expect(Date.now() - started).toBeLessThan(5000);
+      expect(hooked.code).toBe(1);
+      expect(hooked.stderr.trim()).toBe(
+        `Error: Cannot control ${blocked}: Chrome doesn't let extensions automate chrome:// pages, other extensions' pages (such as an ad blocker's "blocked" page) or the Web Store. Go to a web page first (surf go <url>) and retry. [restricted_target]`,
+      );
+      const types = host.messages.map((message) => message.type);
+      const navigated = types.indexOf("EXECUTE_NAVIGATE");
+      // Nothing waits on or reads the page it can't control.
+      expect(types.slice(navigated)).not.toContain("WAIT_FOR_NETWORK_IDLE");
+      expect(types.slice(navigated)).not.toContain("EXECUTE_JAVASCRIPT");
+      expect(types.slice(navigated)).not.toContain("READ_NETWORK_REQUESTS");
+      expect(types.at(-1)).toBe("STOP_NETWORK_CAPTURE");
     } finally {
       await host.dispose();
     }

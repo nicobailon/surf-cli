@@ -274,7 +274,7 @@ describe("CDPController", () => {
       await expect(controller.attach(tabId)).rejects.toMatchObject({
         code: "restricted_target",
         message:
-          "Cannot control chrome://version/: Chrome doesn't let extensions automate chrome:// pages, other extensions' pages or the Web Store. Go to a web page first (surf go <url>) and retry.",
+          "Cannot control chrome://version/: Chrome doesn't let extensions automate chrome:// pages, other extensions' pages (such as an ad blocker's \"blocked\" page) or the Web Store. Go to a web page first (surf go <url>) and retry.",
         details: { tabId, url: "chrome://version/", chromeError: "Cannot access a chrome:// URL" },
       });
     });
