@@ -17,15 +17,23 @@ function isTemplate(value) {
 }
 
 function isSensitiveName(name) {
-  return SECRET_NAME_PATTERN.test(String(name || ""));
+  return SECRET_NAME_PATTERN.test(String(name || "")) && !aboutSecret(name);
 }
 
 // A field is secret when its name, split into words, names one: `newPassword`, `user[password]`,
 // `csrfToken` and `password1` read as `new_password` etc.; `custname` and `keyword` don't.
 const spaced = (name) => String(name).replace(/([a-z0-9])([A-Z])/g, "$1_$2").replace(/[^A-Za-z0-9]+/g, "_");
+// A name that ends in a word about the secret names a fact about it, not the secret: its count,
+// type, id, expiry or length (`token_count`, `token_type`, `api_key_id`, `password_length`,
+// `token_expires_at`). A session id is the session's credential, so `session_id` stays secret.
+const ABOUT_SECRET = /_(?:count|num|number|total|type|kind|ids?|expiry|exp|expires(?:_(?:at|in|on))?|expiration(?:_(?:date|time))?|ttl|length|len|size|min|max)$/;
+const aboutSecret = (name) => {
+  const words = spaced(name).replace(/\d+(?=_|$)/g, "").replace(/^_+|_+$/g, "").toLowerCase();
+  return ABOUT_SECRET.test(words) && !/(?:^|_)session_ids?$/.test(words);
+};
 const isSecret = (name) => {
   const words = spaced(name).replace(/\d+(?=_|$)/g, "");
-  return isSensitiveName(words) || /(?:^|_)(?:pass|pwd|otp)(?:$|_)/i.test(words);
+  return !aboutSecret(name) && (isSensitiveName(words) || /(?:^|_)(?:pass|pwd|otp)(?:$|_)/i.test(words));
 };
 
 function isSecretHeader(name) {

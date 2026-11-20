@@ -1677,7 +1677,7 @@ async function runHook(msg, request) {
   const context = pipelineContext(request, tabId);
   const capture = await captureHook({ url: params.url, steps: params.steps || [], tabId, ...context });
   const source = { url: params.template, goal: params.goal, ...(params.do ? { do: params.do } : {}), ...(params.match === undefined ? {} : { match: params.match }) };
-  return makeOp({ capture, goal: params.goal, samples: params.samples, typed: params.typed, template: params.template, match: params.match, site: params.site, op: params.op, source, dryRun: params.dryRun === true, ...context });
+  return makeOp({ capture, goal: params.goal, samples: params.samples, typed: params.typed, template: params.template, match: params.match, site: params.site, op: params.op, source, dryRun: params.dryRun === true, keepBody: params.keepBody === true, ...context });
 }
 
 // Who a command's events belong to. Tab and window commands resolve no tab target, so they go by
@@ -1746,10 +1746,12 @@ async function handleRecordRequest(tool, args, msg, request) {
     if (entries && args.draft !== true) {
       const context = pipelineContext(request, record.tabId);
       hook = await readPage(context)
-        .then((page) => makeOp({ capture: { entries, pageUrl: page.url, pageText: page.text }, typed: recordTyped.get(record.id), match: args.match, site: record.site, op: record.op, source: { url: page.url, ...(args.match === undefined ? {} : { match: args.match }) }, ...context }))
+        .then((page) => makeOp({ capture: { entries, pageUrl: page.url, pageText: page.text, secrets: page.secrets }, typed: recordTyped.get(record.id), match: args.match, keepBody: args.keepBody === true, site: record.site, op: record.op, source: { url: page.url, ...(args.match === undefined ? {} : { match: args.match }) }, ...context }))
         .catch((error) => ({ status: "error", exitCode: 1, error: error.message }));
       // A weak pick, or a --match that holds no request, leaves the record open to pick again.
       if (hook.status === "weak") return { record: { id: record.id, status: record.status }, hook };
+      // So does a body refused for a secret it still holds, to stop again with --keep-body.
+      if (hook.refused === "keep-body") return { record: { id: record.id, status: record.status }, hook: { ...hook, error: `${hook.error}; record ${record.id} is still open: run surf pb record stop --keep-body to save it, or surf pb record discard` } };
       if (args.match !== undefined && !hook.picked) {
         return { record: { id: record.id, status: record.status }, hook: { ...hook, error: `${hook.error}; record ${record.id} is still open: run surf pb record stop --match with another part of the URL` } };
       }
