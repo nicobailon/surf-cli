@@ -1368,6 +1368,29 @@ describe("CDPController", () => {
       });
     });
 
+    it("lets go of the debugger when Chrome refuses its commands for another extension's frame", async () => {
+      // The frame appeared after the attach, and Chrome refuses commands without a detach event.
+      const chromeError = "Cannot access a chrome-extension:// URL of different extension";
+      mockChrome.debugger.sendCommand.mockRejectedValue(new Error(chromeError));
+      mockChrome.debugger.detach.mockResolvedValue(undefined);
+      mockChrome.tabs.get.mockResolvedValue({ id: tabId, url: "https://books.toscrape.com/" });
+
+      await expect(controller.sendCommand(tabId, "Runtime.evaluate")).rejects.toMatchObject({
+        code: "restricted_target",
+        details: { reason: "foreign_extension_frame", chromeError },
+      });
+      expect(mockChrome.debugger.detach).toHaveBeenCalledWith({ tabId });
+      expect(controller.isAttached(tabId)).toBe(false);
+      expect(controller.getNetworkCaptureStatus(tabId)).toMatchObject({
+        interruptions: [{ reason: "target_closed" }],
+      });
+      // Turning capture on says so too, instead of capturing nothing.
+      mockChrome.debugger.attach.mockResolvedValue(undefined);
+      await expect(controller.enableNetworkTracking(tabId)).rejects.toMatchObject({
+        code: "restricted_target",
+      });
+    });
+
     it("keeps a request that redirected as its own entry, with the redirect status", async () => {
       // Chrome sends the redirected request under the same requestId, with the redirect response.
       const onEvent = mockChrome.debugger.onEvent.addListener.mock.calls.at(-1)?.[0];
