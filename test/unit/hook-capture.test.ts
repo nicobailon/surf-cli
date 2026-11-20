@@ -3,6 +3,7 @@ import { restrictedPageError } from "../../src/cdp/controller";
 
 const { captureHook } = require("../../native/op-pipeline.cjs");
 const { surfError } = require("../../native/surf-error.cjs");
+const { parseDoCommands } = require("../../native/workflow-definition.cjs");
 
 const target = "https://books.toscrape.com/";
 const page = {
@@ -80,6 +81,7 @@ describe("surf hook's capture", () => {
     ]);
     expect(capture.entries).toEqual([page]);
     expect(capture.pageUrl).toBe(target);
+    expect(capture).not.toHaveProperty("documentOnly");
   });
 
   it("fails at once when another extension's page takes the tab again, from that page too", async () => {
@@ -112,7 +114,7 @@ describe("surf hook's capture", () => {
     ]);
   });
 
-  it("fails with Chrome's refusal when another extension's frame cut the capture off", async () => {
+  it("fails with Chrome's refusal and a --do tail when another extension's frame cut off a capture with steps", async () => {
     const message =
       "Cannot control this page: another extension has put a frame in it (a password manager, ad blocker or similar), and Chrome then blocks Surf's debugger for the whole tab. read still works, and so do click and type on a ref or selector; for hook or a debugger screenshot, turn that extension off for this site and retry.";
     const { context } = fakeTab({
@@ -124,10 +126,27 @@ describe("surf hook's capture", () => {
       },
     });
 
+    await expect(
+      captureHook({ url: target, steps: parseDoCommands('click --selector "a.next"'), ...context }),
+    ).rejects.toMatchObject({
+      code: "restricted_target",
+      message: `${message} --do steps need the debugger.`,
+      reason: "foreign_extension_frame",
+    });
+  });
+
+  it("fails with Chrome's refusal as it is for any other refused capture", async () => {
+    const { context } = fakeTab({
+      url: "https://quotes.toscrape.com/",
+      capture: {
+        active: true,
+        refused: { code: "restricted_target", message: "Cannot control chrome://newtab/: …" },
+      },
+    });
+
     await expect(captureHook({ url: target, ...context })).rejects.toMatchObject({
       code: "restricted_target",
-      message,
-      reason: "foreign_extension_frame",
+      message: "Cannot control chrome://newtab/: …",
     });
   });
 
