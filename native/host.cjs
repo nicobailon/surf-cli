@@ -1746,7 +1746,7 @@ async function handleRecordRequest(tool, args, msg, request) {
     if (entries && args.draft !== true) {
       const context = pipelineContext(request, record.tabId);
       hook = await readPage(context)
-        .then((page) => makeOp({ capture: { entries, pageUrl: page.url, pageText: page.text, secrets: page.secrets }, typed: recordTyped.get(record.id), match: args.match, keepBody: args.keepBody === true, site: record.site, op: record.op, source: { url: page.url, ...(args.match === undefined ? {} : { match: args.match }) }, ...context }))
+        .then((page) => makeOp({ capture: { entries, pageUrl: page.url, pageText: page.text, secrets: page.secrets }, typed: recordTyped.get(record.id), match: args.match, keepBody: args.keepBody === true, rerunSends: false, site: record.site, op: record.op, source: { url: page.url, ...(args.match === undefined ? {} : { match: args.match }) }, ...context }))
         .catch((error) => ({ status: "error", exitCode: 1, error: error.message }));
       // A weak pick, or a --match that holds no request, leaves the record open to pick again.
       if (hook.status === "weak") return { record: { id: record.id, status: record.status }, hook };

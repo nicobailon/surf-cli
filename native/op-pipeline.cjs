@@ -9,7 +9,7 @@ const path = require("path");
 const { shell } = require("./hook-cli.cjs");
 const { sendDirect } = require("./op-direct.cjs");
 const { inferResponse, keyFields } = require("./op-infer.cjs");
-const { secretLeft, valueIn } = require("./op-body.cjs");
+const { scrub, secretLeft, valueIn } = require("./op-body.cjs");
 const { isSecret, nameInputs, requestOf } = require("./op-inputs.cjs");
 const { matchHint, pageShare, pickRequest, rankRequests } = require("./op-rank.cjs");
 const { evaluate, renderTemplate, runOp, sendRequest } = require("./op-run.cjs");
@@ -183,9 +183,10 @@ async function makeOp(params) {
  * candidates and a `match` that picks the first), or error 1 (with the draft once there is one). With dryRun it
  * saves nothing and returns status "dry-run", exit 0, with the draft it would save. A string body
  * that still holds a secret-looking key with a literal value is refused (error 1, `refused:
- * "keep-body"`, no draft) unless keepBody.
+ * "keep-body"`, no draft) unless keepBody; the refusal says a rerun sends a write again unless
+ * rerunSends is false (pb record stop).
  */
-async function pickOp({ capture, goal = "", samples = {}, typed = [], template, match, site, op: id, source, previous, dryRun = false, keepBody = false, ...context }) {
+async function pickOp({ capture, goal = "", samples = {}, typed = [], template, match, site, op: id, source, previous, dryRun = false, keepBody = false, rerunSends = true, ...context }) {
   const ranked = rankRequests(capture.entries, { pageUrl: capture.pageUrl, pageText: capture.pageText, goal, after: capture.after });
   const chosen = pickRequest(ranked, { match });
   if (chosen.error) {
@@ -213,13 +214,26 @@ async function pickOp({ capture, goal = "", samples = {}, typed = [], template, 
   }
   if (source && !kept && effect !== "write") named.warnings.push("a --do step types a value that is no input, so the op keeps no source and can't repair itself");
   const draft = { id, description: goal || `${id} on ${new URL(sent.url).host}`, ...(effect === "write" ? { effect } : {}), args: named.args, request: named.request, ...(kept ? { source: kept } : {}) };
-  const base = { playbook: site, op: id, picked: { method: entry.method, url: redactUrlSecrets(entry.url), reasons }, warnings: named.warnings };
-  const left = typeof draft.request.body === "string" ? secretLeft(draft.request.body) : undefined;
-  if (left && !keepBody) return { ...base, status: "error", exitCode: 1, refused: "keep-body", error: `the request body keeps a literal value under "${left}", a secret-looking key surf could not make an input, so nothing was saved; check the body, then add --keep-body to save it as it is` };
-  if (left) named.warnings.push(`--keep-body: the request body keeps a literal value under "${left}"`);
+  // The picked URL as printed: a secret's value, by name or one surf knows, as in the op.
+  const known = Object.entries(named.values).map(([name, value]) => ({ name, value }));
+  const picked = scrub(redactUrlSecrets(entry.url), known, ({ name }) => `{{${name}}}`);
+  const base = { playbook: site, op: id, picked: { method: entry.method, url: picked, reasons }, warnings: named.warnings };
   // The run line: each input's sample, or <name> for one with none (a secret).
   const runLine = (examples) => ["surf", "use", site, id, ...Object.entries(examples).flatMap(([name, value]) => [`--${name}`, value === undefined ? `<${name}>` : String(value)])];
   const examples = Object.fromEntries(Object.entries(draft.args).map(([name, spec]) => [name, spec.example]));
+  const left = typeof draft.request.body === "string" ? secretLeft(draft.request.body) : undefined;
+  if (left && !keepBody) {
+    // The page or the --do steps sent it once: that send counts toward the write guard, and a
+    // surf hook rerun sends it again (pb record stop doesn't).
+    if (effect === "write") {
+      try {
+        recordSend({ site, op: validateOp(draft, { origins: [] }), examples, template: named.request, sent });
+      } catch {}
+    }
+    const resend = effect === "write" && rerunSends ? "; the request was already sent once, so a rerun with --keep-body sends it again" : "";
+    return { ...base, status: "error", exitCode: 1, refused: "keep-body", error: `the request body keeps a literal value under "${left}", a secret-looking key surf could not make an input, so nothing was saved; check the body, then add --keep-body to save it as it is${resend}` };
+  }
+  if (left) named.warnings.push(`--keep-body: the request body keeps a literal value under "${left}"`);
   const saved = (fields) => {
     return { ...base, status: dryRun ? "dry-run" : "saved", exitCode: 0, ...save(site, draft, dryRun), ...fields, ...(dryRun ? { draft } : {}) };
   };
