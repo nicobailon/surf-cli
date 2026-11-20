@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { restrictedPageError } from "../../src/cdp/controller";
 
 const { captureHook } = require("../../native/op-pipeline.cjs");
 const { surfError } = require("../../native/surf-error.cjs");
@@ -96,7 +97,8 @@ describe("surf hook's capture", () => {
 
     await expect(captureHook({ url: requested, ...context })).rejects.toMatchObject({
       code: "restricted_target",
-      message: `Cannot control ${blocked}: Chrome doesn't let extensions automate chrome:// pages, other extensions' pages or the Web Store. Go to a web page first (surf go <url>) and retry.`,
+      // The host's copy of the message is the extension's, word for word.
+      message: restrictedPageError(blocked, {}).message,
       url: blocked,
       requested,
     });

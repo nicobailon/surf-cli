@@ -1718,7 +1718,7 @@ describe("surf hook and pb record stop through the fake extension", () => {
       expect(Date.now() - started).toBeLessThan(5000);
       expect(hooked.code).toBe(1);
       expect(hooked.stderr.trim()).toBe(
-        `Error: Cannot control ${blocked}: Chrome doesn't let extensions automate chrome:// pages, other extensions' pages or the Web Store. Go to a web page first (surf go <url>) and retry. [restricted_target]`,
+        `Error: Cannot control ${blocked}: Chrome doesn't let extensions automate chrome:// pages, other extensions' pages (such as an ad blocker's "blocked" page) or the Web Store. Go to a web page first (surf go <url>) and retry. [restricted_target]`,
       );
       const types = host.messages.map((message) => message.type);
       const navigated = types.indexOf("EXECUTE_NAVIGATE");

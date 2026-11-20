@@ -78,7 +78,7 @@ describe("EXECUTE_NAVIGATE's wait", () => {
 
     expect(state.error).toMatchObject({
       code: "restricted_target",
-      message: `Cannot control ${BLOCKED_PAGE}: Chrome doesn't let extensions automate chrome:// pages, other extensions' pages or the Web Store. Go to a web page first (surf go <url>) and retry.`,
+      message: `Cannot control ${BLOCKED_PAGE}: Chrome doesn't let extensions automate chrome:// pages, other extensions' pages (such as an ad blocker's "blocked" page) or the Web Store. Go to a web page first (surf go <url>) and retry.`,
       details: { tabId: 7, url: BLOCKED_PAGE, requested },
     });
   });

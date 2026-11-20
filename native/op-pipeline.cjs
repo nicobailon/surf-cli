@@ -68,7 +68,7 @@ async function openPage(context, tabId, url) {
   if (extensionOf(landed) && extensionOf(landed) !== extensionOf(url)) {
     throw surfError(
       "restricted_target",
-      `Cannot control ${landed}: Chrome doesn't let extensions automate chrome:// pages, other extensions' pages or the Web Store. Go to a web page first (surf go <url>) and retry.`,
+      `Cannot control ${landed}: Chrome doesn't let extensions automate chrome:// pages, other extensions' pages (such as an ad blocker's "blocked" page) or the Web Store. Go to a web page first (surf go <url>) and retry.`,
       { url: landed, requested: url },
     );
   }
