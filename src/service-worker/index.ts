@@ -937,12 +937,13 @@ chrome.webNavigation.onErrorOccurred.addListener((details) => {
   pendingNavigationFor(details)?.finish();
 });
 
-// The page's own URL with its fragment, or another fragment, loads no new document. A page's own
-// pushState to another URL doesn't count.
+// The page's own URL with its fragment, or another fragment, loads no new document: Chrome reports
+// it before any commit. The page's own pushState or replaceState doesn't count: to another URL, or
+// after this navigation committed (a router replacing its state with the same URL as it starts).
 const sameUrl = (a: string, b: string) => (URL.canParse(a) && URL.canParse(b) ? new URL(a).href === new URL(b).href : a === b);
 const finishInPage = (details: { tabId: number; frameId: number; timeStamp: number; url: string }) => {
   const pending = pendingNavigationFor(details);
-  if (pending && sameUrl(details.url, pending.requested)) pending.finish();
+  if (pending && !pending.committed && sameUrl(details.url, pending.requested)) pending.finish();
 };
 chrome.webNavigation.onReferenceFragmentUpdated.addListener(finishInPage);
 chrome.webNavigation.onHistoryStateUpdated.addListener(finishInPage);

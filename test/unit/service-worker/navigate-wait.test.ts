@@ -161,6 +161,29 @@ describe("EXECUTE_NAVIGATE's wait", () => {
     expect(state.result).toMatchObject({ success: true });
   });
 
+  it("waits for the load when the new page's router replaces its state with the same URL", async () => {
+    const { chrome, dispatch, fire } = await loadDispatcher();
+    const url = "https://app.example/dashboard";
+    const { state, promise } = navigate(dispatch, url);
+    await vi.waitFor(() => expect(chrome.tabs.update).toHaveBeenCalled());
+
+    fire.committed({ tabId: 7, frameId: 0, url, documentId: "new", timeStamp: now() });
+    // React Router and Vue Router call history.replaceState with the unchanged URL as they start.
+    listenersOf(chrome.webNavigation.onHistoryStateUpdated)({
+      tabId: 7,
+      frameId: 0,
+      url,
+      documentId: "new",
+      timeStamp: now(),
+    });
+    await new Promise((resolve) => setTimeout(resolve, 700));
+    expect(state.settled).toBe(false);
+
+    fire.completed({ tabId: 7, frameId: 0, url, documentId: "new", timeStamp: now() });
+    await promise;
+    expect(state.result).toMatchObject({ success: true });
+  });
+
   it("reports a navigation Chrome refuses", async () => {
     const { chrome, dispatch } = await loadDispatcher();
     chrome.tabs.update.mockRejectedValueOnce(new Error("Cannot navigate to a devtools:// URL"));
