@@ -20,17 +20,19 @@ function fakeTab({
   refused,
   capture = {},
   url: start = "chrome://newtab/",
+  redirects = {},
 }: {
   refused?: Error;
   capture?: Record<string, unknown>;
   url?: string;
+  redirects?: Record<string, string>;
 }) {
   const calls: string[] = [];
   let url = start;
   const executeTool = async (tool: string, args: { url?: string; code?: string }) => {
     if (tool === "navigate") {
-      url = String(args.url);
-      calls.push(`navigate ${url}`);
+      calls.push(`navigate ${args.url}`);
+      url = redirects[String(args.url)] ?? String(args.url);
       return { success: true };
     }
     if (tool === "javascript_tool") {
@@ -45,6 +47,9 @@ function fakeTab({
     }
     if (message.type === "READ_NETWORK_REQUESTS") {
       return { entries: [page], capture };
+    }
+    if (message.type === "TARGET_INSPECT") {
+      return { url };
     }
     return { success: true };
   };
@@ -68,11 +73,41 @@ describe("surf hook's capture", () => {
       "navigate about:blank",
       "START_NETWORK_CAPTURE",
       `navigate ${target}`,
+      "TARGET_INSPECT",
       "READ_NETWORK_REQUESTS",
       "STOP_NETWORK_CAPTURE",
     ]);
     expect(capture.entries).toEqual([page]);
     expect(capture.pageUrl).toBe(target);
+  });
+
+  it("fails at once when another extension's page takes the tab again, from that page too", async () => {
+    const blocked =
+      "chrome-extension://otherextensionid/strictblock.html#https://httpbin.org/anything/blocked";
+    const requested = "https://httpbin.org/anything/blocked";
+    const refused = surfError("restricted_target", `Cannot control ${blocked}: …`, {
+      url: blocked,
+    });
+    const { calls, context } = fakeTab({
+      refused,
+      url: blocked,
+      redirects: { [requested]: blocked },
+    });
+
+    await expect(captureHook({ url: requested, ...context })).rejects.toMatchObject({
+      code: "restricted_target",
+      message: `Cannot control ${blocked}: Chrome doesn't let extensions automate chrome:// pages, other extensions' pages or the Web Store. Go to a web page first (surf go <url>) and retry.`,
+      url: blocked,
+      requested,
+    });
+    expect(calls).toEqual([
+      "START_NETWORK_CAPTURE",
+      "navigate about:blank",
+      "START_NETWORK_CAPTURE",
+      `navigate ${requested}`,
+      "TARGET_INSPECT",
+      "STOP_NETWORK_CAPTURE",
+    ]);
   });
 
   it("fails with Chrome's refusal when another extension's frame cut the capture off", async () => {

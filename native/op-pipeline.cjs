@@ -54,11 +54,29 @@ async function startCapture(context, tabId) {
   }
 }
 
+/**
+ * Opens `url`. When another extension's page takes the tab instead (an ad blocker's "blocked" page),
+ * Chrome keeps Surf off it, so this fails at once rather than wait on a page it can't read.
+ */
+async function openPage(context, tabId, url) {
+  const failed = await runSteps([{ cmd: "navigate", args: { url } }], context).then(() => null, (error) => error);
+  const landed = (await context.callExtension({ type: "TARGET_INSPECT", tabId }))?.url;
+  const extensionOf = (page) => /^chrome-extension:\/\/([^/]+)/.exec(page || "")?.[1];
+  if (extensionOf(landed) && extensionOf(landed) !== extensionOf(url)) {
+    throw surfError(
+      "restricted_target",
+      `Cannot control ${landed}: Chrome doesn't let extensions automate chrome:// pages, other extensions' pages or the Web Store. Go to a web page first (surf go <url>) and retry.`,
+      { url: landed, requested: url },
+    );
+  }
+  if (failed) throw failed;
+}
+
 /** Opens `url` with network capture on and runs `steps`: { entries, opened, pageUrl, pageText, after? }. */
 async function captureHook({ url, steps = [], tabId, ...context }) {
   await startCapture(context, tabId);
   try {
-    await runSteps([{ cmd: "navigate", args: { url } }], context);
+    await openPage(context, tabId, url);
     const after = steps.length > 0 ? Date.now() : undefined;
     if (after) await runSteps(steps, context);
     await context.executeTool("wait.network", { timeout: 5000 }).catch(() => {});

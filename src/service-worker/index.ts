@@ -1,4 +1,4 @@
-import { CDPController, type PendingDialog } from "../cdp/controller";
+import { CDPController, type PendingDialog, restrictedPageError } from "../cdp/controller";
 import { debugLog } from "../utils/debug";
 import type { PageChanges } from "../utils/page-changes";
 import {
@@ -857,10 +857,67 @@ async function captureFullPage(tabId: number, maxHeight: number): Promise<{ base
   return { base64, width: canvasWidth, height: canvasHeight };
 }
 
-const navigationResolvers = new Map<number, () => void>();
+/**
+ * The navigation EXECUTE_NAVIGATE waits for, one per tab. Only events from after it started count,
+ * and only the load of the document it committed ends it, so the previous load of the same URL
+ * neither ends it early nor leaves it waiting.
+ */
+interface PendingNavigation {
+  startedAt: number;
+  requested: string;
+  committed?: { documentId?: string };
+  finish: (error?: Error) => void;
+}
+const pendingNavigations = new Map<number, PendingNavigation>();
 const tabNameRegistry = new Map<string, number>();
 
+const isOtherExtensionPage = (url?: string) =>
+  !!url?.startsWith("chrome-extension://") && !url.startsWith(`chrome-extension://${chrome.runtime.id}/`);
+
+/** The tab's pending navigation, when the event came after it started (Chrome stamps events in epoch ms). */
+function pendingNavigationFor(details: { tabId: number; frameId: number; timeStamp: number }): PendingNavigation | undefined {
+  const pending = details.frameId === 0 ? pendingNavigations.get(details.tabId) : undefined;
+  return pending && details.timeStamp >= pending.startedAt ? pending : undefined;
+}
+
+/** Waits for the tab's next navigation, ending the wait of one before it; at most 30 s. */
+function startNavigationWait(tabId: number, requested: string): PendingNavigation & { done: Promise<void> } {
+  pendingNavigations.get(tabId)?.finish();
+  let settle!: (error?: Error) => void;
+  const done = new Promise<void>((resolve, reject) => {
+    settle = (error) => (error ? reject(error) : resolve());
+  });
+  const timer = setTimeout(() => navigation.finish(), 30000);
+  const navigation = {
+    startedAt: Date.now(),
+    requested,
+    done,
+    finish: (error?: Error) => {
+      if (pendingNavigations.get(tabId) === navigation) pendingNavigations.delete(tabId);
+      clearTimeout(timer);
+      settle(error);
+    },
+  };
+  pendingNavigations.set(tabId, navigation);
+  return navigation;
+}
+
+chrome.webNavigation.onCommitted.addListener((details) => {
+  // A detach can leave the tab on a page Chrome won't let the debugger attach to (chrome://), so the
+  // resume before the next command fails. Try again once the tab commits a web page.
+  if (details.frameId === 0 && /^https?:/.test(details.url)) void cdp.resumeNetworkCapture(details.tabId);
+  const pending = pendingNavigationFor(details);
+  if (!pending) return;
+  // Another extension took the tab (an ad blocker's "blocked" page), and Chrome keeps Surf off it.
+  if (isOtherExtensionPage(details.url)) {
+    const { tabId, url } = details;
+    pending.finish(restrictedPageError(url, { tabId, url, requested: pending.requested }));
+  } else pending.committed = { documentId: details.documentId };
+});
+
 chrome.webNavigation.onCompleted.addListener((details) => {
+  const pending = pendingNavigationFor(details);
+  if (pending?.committed && pending.committed.documentId === details.documentId) pending.finish();
   if (details.frameId === 0) {
     // Clear frame context on main frame navigation (iframes may have changed)
     chrome.tabs.get(details.tabId)
@@ -872,30 +929,23 @@ chrome.webNavigation.onCompleted.addListener((details) => {
         title: tab.title,
       }))
       .catch(() => postToNativeHost({ type: "TARGET_EVENT", event: "navigation", tabId: details.tabId, url: details.url }));
-    const resolver = navigationResolvers.get(details.tabId);
-    if (resolver) {
-      resolver();
-      navigationResolvers.delete(details.tabId);
-    }
   }
 });
 
-// A detach can leave the tab on a page Chrome won't let the debugger attach to (chrome://), so the
-// resume before the next command fails. Try again once the tab commits a web page.
-chrome.webNavigation.onCommitted.addListener((details) => {
-  if (details.frameId === 0 && /^https?:/.test(details.url)) void cdp.resumeNetworkCapture(details.tabId);
-});
-
+// Chrome's own error page (a failed load, or an error status with an empty body) reports here.
 chrome.webNavigation.onErrorOccurred.addListener((details) => {
-  if (details.frameId === 0) {
-    const resolver = navigationResolvers.get(details.tabId);
-    if (resolver) {
-      resolver();
-      navigationResolvers.delete(details.tabId);
-    }
-  }
+  pendingNavigationFor(details)?.finish();
 });
 
+// The page's own URL with its fragment, or another fragment, loads no new document. A page's own
+// pushState to another URL doesn't count.
+const sameUrl = (a: string, b: string) => (URL.canParse(a) && URL.canParse(b) ? new URL(a).href === new URL(b).href : a === b);
+const finishInPage = (details: { tabId: number; frameId: number; timeStamp: number; url: string }) => {
+  const pending = pendingNavigationFor(details);
+  if (pending && sameUrl(details.url, pending.requested)) pending.finish();
+};
+chrome.webNavigation.onReferenceFragmentUpdated.addListener(finishInPage);
+chrome.webNavigation.onHistoryStateUpdated.addListener(finishInPage);
 
 
 chrome.tabs.onRemoved.addListener((tabId) => {
@@ -1580,18 +1630,9 @@ export async function handleMessage(
         }, { frameId: getFrameIdForTab(tabId, message) });
       }
 
-      const navigationPromise = new Promise<void>((resolve) => {
-        navigationResolvers.set(tabId, resolve);
-        setTimeout(() => {
-          if (navigationResolvers.has(tabId)) {
-            navigationResolvers.delete(tabId);
-            resolve();
-          }
-        }, 30000);
-      });
-
-      await chrome.tabs.update(tabId, { url: message.url });
-      await navigationPromise;
+      const navigation = startNavigationWait(tabId, message.url);
+      chrome.tabs.update(tabId, { url: message.url }).catch((error) => navigation.finish(error));
+      await navigation.done;
 
       await new Promise(resolve => setTimeout(resolve, 500));
 
