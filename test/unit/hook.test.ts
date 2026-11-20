@@ -8,7 +8,13 @@ const { readResponse } = require("../../native/op-extract.cjs");
 const { renderRequest } = require("../../native/op-run.cjs");
 const { inferResponse, keyFields } = require("../../native/op-infer.cjs");
 const { nameInputs, requestOf } = require("../../native/op-inputs.cjs");
-const { matchHint, pickRequest, rankRequests, visibleText } = require("../../native/op-rank.cjs");
+const {
+  matchHint,
+  pageShare,
+  pickRequest,
+  rankRequests,
+  visibleText,
+} = require("../../native/op-rank.cjs");
 
 const fixture = (name: string) =>
   fs.readFileSync(path.join("test", "fixtures", "sites", name), "utf8") as string;
@@ -163,6 +169,17 @@ describe("op-rank", () => {
     expect(pickRequest(read, { match: "GET /comments/1" }).pick.entry).toBe(shown);
     // A redirected read is still no data.
     expect(rankRequests([html("https://blog.example/go", { status: 302 })], context)).toEqual([]);
+  });
+
+  it("measures how much of what the tab shows a page's HTML holds, its script data counted", () => {
+    // quotes.toscrape.com shows the same quotes on / and /js/; /js/ builds them from an inline
+    // `var data`, and /scroll fetches them by XHR.
+    const shown = visibleText(fixture("quotes-page-1.html"));
+    expect(pageShare(fixture("quotes-js.html"), shown)).toBeGreaterThan(0.9);
+    expect(pageShare(fixture("quotes-scroll.html"), shown)).toBeLessThan(0.1);
+    expect(pageShare(booksList, visibleText(booksList))).toBe(1);
+    // A tab that shows too little to tell.
+    expect(pageShare(booksList, "Books to Scrape")).toBeUndefined();
   });
 });
 
