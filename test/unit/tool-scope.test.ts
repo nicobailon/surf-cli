@@ -35,6 +35,13 @@ describe("tool scope classification", () => {
     expect(classifyTool("oracle.result")).toMatchObject({ scope: "host", targetUse: "host" });
   });
 
+  it("classifies bookmark folder creation as a browser write", () => {
+    expect(classifyTool("bookmark.folder.create", { title: "Research" })).toMatchObject({
+      scope: "browser-write",
+      targetUse: "browser",
+    });
+  });
+
   it("targets no-ID tab.close through the selected session and keeps explicit closes global", () => {
     expect(classifyTool("tab.close", {})).toMatchObject({
       scope: "browser-write",

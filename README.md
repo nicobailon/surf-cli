@@ -1564,12 +1564,23 @@ echo '{"type":"tool_request","method":"execute_tool","params":{"tool":"tab.list"
 | `frame.*` | `list`, `diagnose`, `switch`, `main`, `js` |
 | `wait.*` | `element`, `network`, `url`, `dom`, `load`, `ready` |
 | `cookie` / `cookie.*` | `list`, `get`, `set`, `clear`, `delete` |
-| `bookmark.*` | `add`, `remove`, `list` |
+| `bookmark.*` | `add`, `remove`, `list`, `folder.create` |
 | `history.*` | `list`, `search` |
 | `dialog.*` | `accept`, `dismiss`, `info` |
 | `emulate.*` | `network`, `cpu`, `geo`, `device`, `viewport`, `touch` |
 | `perf.*` | `start`, `stop`, `metrics` |
 | `network.*` | `get`, `body`, `curl`, `origins`, `clear`, `stats`, `export`, `path` |
+
+### Bookmark folders
+
+Create a folder in Chrome's bookmarks:
+
+```bash
+surf bookmark.folder.create "Research"
+surf bookmark.folder.create "Project Alpha" --parent "Work"
+```
+
+Without `--parent`, Surf creates the folder under the unique `Other Bookmarks` folder. A supplied `--parent` must exactly match the title of one existing folder; missing or ambiguous matches are rejected. The new folder title cannot be blank. This command creates folders only and does not move bookmarks.
 
 ## Aliases
 

@@ -371,6 +371,24 @@ describe("CLI native socket integration", () => {
     });
   });
 
+  it("routes bookmark folder title and parent arguments to the host", async () => {
+    const result = await runCliWithFakeHost(
+      ["bookmark.folder.create", "Planning", "--parent", "Work"],
+      (request) => responseWithText(request, JSON.stringify({ success: true })),
+    );
+
+    expect(result.code).toBe(0);
+    expect(result.stderr).toBe("");
+    expect(result.request).toMatchObject({
+      type: "tool_request",
+      method: "execute_tool",
+      params: {
+        tool: "bookmark.folder.create",
+        args: { title: "Planning", parent: "Work" },
+      },
+    });
+  });
+
   it.each([
     ["plain text", "hello from CDP"],
     ["JSON object text", '{"answer":42}'],

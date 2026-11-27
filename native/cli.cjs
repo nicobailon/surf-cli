@@ -1572,6 +1572,12 @@ const TOOLS = {
       "bookmark.add": { desc: "Bookmark the current page (its URL and title)", args: [], opts: { folder: "Existing folder name" } },
       "bookmark.remove": { desc: "Remove the bookmark for the current page's URL", args: [] },
       "bookmark.list": { desc: "List bookmarks", args: [], opts: { folder: "Folder name", limit: "Max results (default: 50)" } },
+      "bookmark.folder.create": {
+        desc: "Create a bookmark folder in Other Bookmarks or a named parent folder",
+        args: ["title"],
+        opts: { parent: "Exact parent folder name (default: Other Bookmarks)" },
+        examples: [{ cmd: 'bookmark.folder.create "Dev Tools" --parent Work', desc: "Create a folder under Work" }],
+      },
     }
   },
   history: {
@@ -2101,7 +2107,7 @@ const ALL_SOCKET_TOOLS = [
   "search", "batch",
   "zoom", "resize",
   "back", "forward",
-  "bookmark.add", "bookmark.remove", "bookmark.list",
+  "bookmark.add", "bookmark.remove", "bookmark.list", "bookmark.folder.create",
   "history.list", "history.search",
   "window.new", "window.list", "window.focus", "window.close", "window.resize",
 ];
@@ -3607,6 +3613,7 @@ const PRIMARY_ARG_MAP = {
   "wait.url": "pattern",
   zoom: "level",
   "history.search": "query",
+  "bookmark.folder.create": "title",
   "network.get": "id",
   "network.body": "id",
   "network.replay": "id",
