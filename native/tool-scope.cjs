@@ -27,6 +27,7 @@ const BROWSER_WRITE_TOOLS = new Set([
   "tab.group", "tab.ungroup",
   "window.new", "window.close", "window.focus", "window.resize",
   "smoke",
+  "bookmark.folder.create",
 ]);
 
 const BROWSER_WRITE_TARGETED_TOOLS = new Set([

@@ -4202,6 +4202,46 @@ export async function handleMessage(
       };
     }
 
+    case "BOOKMARK_FOLDER_CREATE": {
+      const title = message.title;
+      if (typeof title !== "string" || !title.trim()) {
+        throw new Error("BOOKMARK_FOLDER_CREATE requires a non-blank title");
+      }
+
+      let parentTitle = "Other Bookmarks";
+      if (message.parent !== undefined) {
+        if (typeof message.parent !== "string") {
+          throw new Error("BOOKMARK_FOLDER_CREATE parent must be a string");
+        }
+        parentTitle = message.parent;
+      }
+
+      const pending = await chrome.bookmarks.getTree();
+      let parentNode: chrome.bookmarks.BookmarkTreeNode | undefined;
+      while (pending.length > 0) {
+        const node = pending.pop()!;
+        if (node.url === undefined && node.title === parentTitle) {
+          if (parentNode) {
+            throw new Error(`Bookmark folder parent is ambiguous: ${parentTitle}`);
+          }
+          parentNode = node;
+        }
+        if (node.children) {
+          for (const child of node.children) pending.push(child);
+        }
+      }
+      if (!parentNode) {
+        throw new Error(`Bookmark folder parent not found: ${parentTitle}`);
+      }
+
+      const parentId = parentNode.id;
+      const folder = await chrome.bookmarks.create({ title, parentId });
+      return {
+        success: true,
+        folder: { id: folder.id, title: folder.title, parentId: folder.parentId ?? parentId },
+      };
+    }
+
     case "HISTORY_LIST": {
       const limit = typeof message.limit === 'number' ? message.limit : 20;
       const items = await chrome.history.search({
@@ -4702,7 +4742,7 @@ const COMMANDS_WITHOUT_TAB = new Set([
   "TABS_REGISTER", "TABS_UNREGISTER", "TABS_LIST_NAMED", "TABS_GET_BY_NAME",
   "CREATE_TAB_GROUP", "UNGROUP_TABS", "LIST_TAB_GROUPS", "GET_HISTORY", "SEARCH_HISTORY",
   "GET_COOKIES", "SET_COOKIE", "DELETE_COOKIES", "GET_BOOKMARKS", "ADD_BOOKMARK",
-  "DELETE_BOOKMARK", "DIALOG_DISMISS", "DIALOG_ACCEPT", "DIALOG_INFO",
+  "DELETE_BOOKMARK", "BOOKMARK_FOLDER_CREATE", "DIALOG_DISMISS", "DIALOG_ACCEPT", "DIALOG_INFO",
   "CHATGPT_NEW_TAB", "CHATGPT_CLOSE_TAB", "CHATGPT_EVALUATE", "CHATGPT_CDP_COMMAND",
   "GET_CHATGPT_COOKIES", "GET_GOOGLE_COOKIES", "GET_TWITTER_COOKIES", "GET_DIRECT_REQUEST_CONTEXT",
   "PERPLEXITY_NEW_TAB", "PERPLEXITY_CLOSE_TAB", "PERPLEXITY_EVALUATE", "PERPLEXITY_CDP_COMMAND",

@@ -54,6 +54,14 @@ describe("CLI help for commands outside the main tool list", () => {
     expect(stdout).toContain(expected);
   });
 
+  it("shows bookmark folder creation usage and its parent option", () => {
+    const { code, stdout, stderr } = surf("bookmark.folder.create", "--help");
+    expect(code).toBe(0);
+    expect(stderr).toBe("");
+    expect(stdout).toContain("bookmark.folder.create <title>");
+    expect(stdout).toContain("--parent");
+  });
+
   it.each([
     ["oracle", "oracle ask"],
     ["semantic", "semantic.extract"],

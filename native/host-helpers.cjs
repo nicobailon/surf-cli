@@ -1242,6 +1242,9 @@ function mapToolToMessage(tool, args, tabId) {
       return { type: "BOOKMARK_REMOVE", ...baseMsg };
     case "bookmark.list":
       return { type: "BOOKMARK_LIST", folder: a.folder, limit: a.limit !== undefined ? parseInt(a.limit, 10) : 50 };
+    case "bookmark.folder.create":
+      if (typeof a.title !== "string" || !a.title.trim()) throw new Error("title required");
+      return { type: "BOOKMARK_FOLDER_CREATE", title: a.title, parent: a.parent };
     case "history.list":
       return { type: "HISTORY_LIST", limit: a.limit !== undefined ? parseInt(a.limit, 10) : 20 };
     case "history.search":

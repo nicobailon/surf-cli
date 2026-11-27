@@ -98,7 +98,7 @@ act: hover smart_type dialog.info dialog.accept dialog.dismiss scroll.to scroll.
 wait: wait wait.element wait.network wait.url wait.dom wait.load
 capture: snap record video.start video.stop video.status video.restart animate-audit perf-audit perf.start perf.stop perf.metrics
 data: extract network network.get network.body network.curl network.path network.origins network.stats network.clear network.export
-browser: cookie.list cookie.set cookie.clear history.list history.search bookmark.list bookmark.add bookmark.remove
+browser: cookie.list cookie.set cookie.clear history.list history.search bookmark.list bookmark.add bookmark.remove bookmark.folder.create
 emulate: emulate.network emulate.cpu emulate.geo emulate.device emulate.touch
 ai: kimi aistudio aistudio.build ai
 semantic: semantic.find semantic.filter semantic.verify | semantic auth set | semantic auth status | semantic auth clear
